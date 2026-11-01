@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.modules.retrieval.record_fields import ROLE_EDGES, FieldKind
+from app.modules.retrieval.record_fields import ROLE_EDGES, ROLE_OF_EDGE, FieldKind
 from app.modules.retrieval.record_fields import field as field_spec
 from app.modules.retrieval.record_query.model import (
     AllOf,
@@ -40,7 +40,6 @@ if TYPE_CHECKING:
 
 Row = dict[str, Any]
 _DAY_MS = 86_400_000
-ROLE_OF_EDGE: dict[str, str] = {edge: role for role, edges in ROLE_EDGES.items() for edge in edges}
 
 
 def field_value(row: Row, name: str) -> Any:  # noqa: ANN401 - a field is a value, a number or a date

@@ -472,7 +472,7 @@ def _cases(g: Graph) -> dict[str, Pushdown]:
         "people_assignee": Pushdown(people=[PushedPeople(edges=list(ROLE_EDGES["assignee"]), ids=[ann])]),
         "people_any_role_person_node": Pushdown(people=[PushedPeople(edges=list(PERSON_EDGES), ids=[pete])]),
         "people_mentioned_user_to_record": Pushdown(
-            people=[PushedPeople(edges=list(ROLE_EDGES["participant"]), ids=[bob])]),
+            people=[PushedPeople(edges=list(ROLE_EDGES["mentioned"]), ids=[bob])]),
         "people_two_conditions": Pushdown(people=[
             PushedPeople(edges=list(ROLE_EDGES["assignee"]), ids=[ann, bob]),
             PushedPeople(edges=list(ROLE_EDGES["reporter"]), ids=[ann]),

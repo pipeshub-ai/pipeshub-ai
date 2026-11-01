@@ -35,6 +35,7 @@ from app.modules.agents.qna.chat_state import (
 )
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
+from app.modules.retrieval.record_fields import ROLE_EDGES as _RECORD_ROLES
 from app.modules.retrieval.selection_scope import (
     connection_sources_of,
     resolve_user_key,
@@ -1401,12 +1402,11 @@ class KnowledgeGraph:
         path="/tools/knowledgegraph/find_records_by_person",
         short_description="List the records a person is assigned, reported, created, wrote, last edited, received, reviews, owns, leads or is mentioned in",
         description=(
-            "List the records the connectors link to a person by role (assignee, reporter, "
-            "creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved) that you "
-            "can read, newest first. Use it for "
+            f"List the records the connectors link to a person by role ({_record_roles_guide()}) "
+            "that you can read, newest first. Use it for "
             "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
             "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
-            "the links the connectors write (mentioned/involved come from indexing): for any "
+            "the links the connectors write (mentioned/participant come from indexing): for any "
             "other record whose text mentions a name, search instead.\n\n"
             "Pass a full name or an email; several people with that name are listed for you to "
             "pick by email. Pages with cursor, the next call printed in the output; \"That is "
@@ -1423,19 +1423,11 @@ class KnowledgeGraph:
                 name="roles",
                 type=ParameterType.ARRAY,
                 description=(
-                    "Optional roles: assignee, reporter, creator, author (a mail's sender, a comment's "
-                    "writer), owner, editor (who last changed a file or page), reviewer, recipient (to/cc of a "
-                    "mail), lead, mentioned, involved. "
-                    "Omit for all."
+                    "Optional roles (author: a mail's sender or a comment's writer; editor: who last "
+                    "changed a file or page; recipient: to/cc of a mail). Omit for all."
                 ),
                 required=False,
-                items={
-                    "type": "string",
-                    "enum": [
-                        "assignee", "reporter", "creator", "author", "owner", "editor", "reviewer",
-                        "recipient", "lead", "mentioned", "involved",
-                    ],
-                },
+                items={"type": "string", "enum": list(_RECORD_ROLES)},
             ),
             ToolParameter(
                 name="record_types",

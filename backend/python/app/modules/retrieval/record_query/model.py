@@ -15,7 +15,7 @@ from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.modules.retrieval.record_fields import FIELDS, ROLE_EDGES, FieldKind, field
+from app.modules.retrieval.record_fields import FIELDS, FieldKind, canonical_role, field
 
 MAX_ROWS = 50
 MAX_GROUPS = 20
@@ -79,9 +79,7 @@ class _People(_Strict):
     @field_validator("role")
     @classmethod
     def _known_role(cls, role: str | None) -> str | None:
-        if role is not None and role not in ROLE_EDGES:
-            raise ValueError(f"unknown role {role!r}; roles: {', '.join(ROLE_EDGES)}")
-        return role
+        return None if role is None else canonical_role(role)
 
 
 class PersonCondition(_Strict):
@@ -159,6 +157,11 @@ class GroupBy(_Strict):
     organization: bool = False
     month: str | None = None
 
+    @field_validator("person_role")
+    @classmethod
+    def _known_role(cls, role: str | None) -> str | None:
+        return None if role is None else canonical_role(role)
+
     @model_validator(mode="after")
     def _one(self) -> GroupBy:
         chosen = [self.field is not None, self.by_person or self.person_role is not None, self.organization,
@@ -169,8 +172,6 @@ class GroupBy(_Strict):
             raise ValueError(f"group by {self.field} is not possible; group by a value field or use month")
         if self.month is not None and field(self.month).kind is not FieldKind.DATE:
             raise ValueError(f"month needs a date field, not {self.month}")
-        if self.person_role is not None and self.person_role not in ROLE_EDGES:
-            raise ValueError(f"unknown role {self.person_role!r}; roles: {', '.join(ROLE_EDGES)}")
         return self
 
 

@@ -24,6 +24,7 @@ from app.agents.agent_loop.knowledge_graph_policy import (
     KnowledgeGraphMode,
     KnowledgeGraphPolicy,
 )
+from app.modules.retrieval import record_fields
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
@@ -212,13 +213,24 @@ class TestRoles:
 
     async def test_no_roles_means_every_role(self, listing) -> None:
         await execute_find_records_by_person(_state([DARSHAN]), "Darshan")
-        assert listing.probe.await_args.kwargs["edge_types"] == list(ROLE_EDGES.values())
+        assert listing.probe.await_args.kwargs["edge_types"] == list(record_fields.PERSON_EDGES)
 
     async def test_an_unknown_role_is_refused_with_the_valid_ones(self, listing) -> None:
         ok, text = await execute_find_records_by_person(_state([DARSHAN]), "Darshan", roles=["watcher"])
         assert ok is False
         assert "watcher" in text and all(role in text for role in ROLE_EDGES)
         listing.assert_not_awaited()
+
+    async def test_every_role_the_record_query_knows_is_accepted(self, listing) -> None:
+        await execute_find_records_by_person(_state([DARSHAN]), "Darshan", roles=["owner", "author", "editor"])
+        assert listing.probe.await_args.kwargs["edge_types"] == ["OWNED_BY", "AUTHORED_BY", "LAST_MODIFIED_BY"]
+
+    async def test_involved_still_names_the_participant_role(self, listing) -> None:
+        await execute_find_records_by_person(_state([DARSHAN]), "Darshan", roles=["involved", "participant"])
+        assert listing.probe.await_args.kwargs["edge_types"] == ["INVOLVED_IN"]
+
+    def test_the_role_map_is_the_record_query_registry(self) -> None:
+        assert ROLE_EDGES is record_fields.ROLE_EDGES
 
 
 class TestPaging:
@@ -328,7 +340,7 @@ class TestRouting:
     def test_tool_roles_are_the_ops_roles_and_description_is_short(self) -> None:
         meta = _meta()
         roles = next(p for p in meta.parameters if p.name == "roles")
-        assert roles.items["enum"] == list(ROLE_EDGES)
+        assert roles.items["enum"] == list(record_fields.ROLE_EDGES)
         assert len(meta.description.split()) <= 120
         assert "assigned" in meta.description and "\"me\"" in meta.description
 
@@ -408,4 +420,4 @@ class TestEveryLinkedEdgeIsReachable:
         assert self._written_edge_types() <= set(PERSON_EDGES_TO_USER)
 
     def test_every_edge_the_linker_writes_has_a_role(self) -> None:
-        assert self._written_edge_types() <= set(ROLE_EDGES.values())
+        assert self._written_edge_types() <= set(record_fields.PERSON_EDGES)

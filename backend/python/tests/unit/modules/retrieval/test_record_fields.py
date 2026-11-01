@@ -74,3 +74,27 @@ def test_a_project_lead_is_a_role() -> None:
 
 def test_the_roles_cover_exactly_the_person_edges_the_graph_stores() -> None:
     assert set(record_fields.PERSON_EDGES) == set(PERSON_EDGES_TO_USER) | set(PERSON_EDGES_FROM_USER)
+
+
+def test_each_role_is_one_stored_edge_and_each_edge_one_role() -> None:
+    assert all(len(edges) == 1 for edges in record_fields.ROLE_EDGES.values())
+    assert len(record_fields.PERSON_EDGES) == len(record_fields.ROLE_EDGES)
+    assert role_edges("author") == (EntityRelations.AUTHORED_BY.value,)
+    assert role_edges("creator") == (EntityRelations.CREATED_BY.value,)
+    assert role_edges("mentioned") == (EntityRelations.MENTIONED_IN.value,)
+    assert role_edges("participant") == (EntityRelations.INVOLVED_IN.value,)
+
+
+def test_the_people_tool_vocabulary_resolves() -> None:
+    # find_records_by_person's names before the roles were one list.
+    for role in ("assignee", "reporter", "creator", "lead", "mentioned"):
+        assert role_edges(role)
+    assert role_edges("involved") == role_edges("participant")
+    assert role_edges(" Assignee ") == role_edges("assignee")
+
+
+def test_the_direction_tables_are_the_registry_split_by_stored_direction() -> None:
+    from_person = record_fields.EDGES_FROM_PERSON
+    assert PERSON_EDGES_TO_USER == tuple(e for e in record_fields.PERSON_EDGES if e not in from_person)
+    assert PERSON_EDGES_FROM_USER == tuple(e for e in record_fields.PERSON_EDGES if e in from_person)
+

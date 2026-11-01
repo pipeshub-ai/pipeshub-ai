@@ -6,9 +6,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
-    EntityRelations,
     OriginTypes,
     RecordRelations,
+)
+from app.modules.retrieval.record_fields import (
+    PERSON_EDGES_FROM_PERSON,
+    PERSON_EDGES_TO_PERSON,
 )
 from app.services.graph_db.taxonomy import TAXONOMY_ENTITY_TYPE_BY_COLLECTION
 
@@ -247,19 +250,11 @@ class PermittedEntityRows(EntityCandidateRows):
         )
 
 
-# A person (User node) as a listable entity: the connector-written relations
-# linking a person to a record, by the direction they are stored in.
+# A person as a listable entity: the connector-written relations linking a
+# person to a record, by the direction they are stored in (record_fields).
 PERSON_ENTITY_TYPE = "person"
-PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
-    EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
-    EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
-    EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
-    EntityRelations.REVIEWED_BY, EntityRelations.ADDRESSED_TO,
-    EntityRelations.LAST_MODIFIED_BY,
-))
-PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
-    EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
-))
+PERSON_EDGES_TO_USER: tuple[str, ...] = PERSON_EDGES_TO_PERSON
+PERSON_EDGES_FROM_USER: tuple[str, ...] = PERSON_EDGES_FROM_PERSON
 
 
 def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:

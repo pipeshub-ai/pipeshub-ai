@@ -82,19 +82,33 @@ FIELDS: dict[str, RecordField] = {f.name: f for f in (
                 description="another record this one links to, in either direction"),
 )}
 
-# A role a question names, and the edge types that hold it.
+# A role a question names, and the one edge type that holds it. The one list
+# of person roles: the record query, find_records_by_person and the graph
+# providers' direction tables all read it.
 ROLE_EDGES: dict[str, tuple[str, ...]] = {
     "assignee": (EntityRelations.ASSIGNED_TO.value,),
     "reporter": (EntityRelations.REPORTED_BY.value,),
-    "author": (EntityRelations.CREATED_BY.value, EntityRelations.AUTHORED_BY.value),
+    "creator": (EntityRelations.CREATED_BY.value,),
+    "author": (EntityRelations.AUTHORED_BY.value,),
     "owner": (EntityRelations.OWNED_BY.value,),
     "reviewer": (EntityRelations.REVIEWED_BY.value,),
     "editor": (EntityRelations.LAST_MODIFIED_BY.value,),
     "recipient": (EntityRelations.ADDRESSED_TO.value,),
     "lead": (EntityRelations.LEAD_BY.value,),
-    "participant": (EntityRelations.INVOLVED_IN.value, EntityRelations.MENTIONED_IN.value),
+    "mentioned": (EntityRelations.MENTIONED_IN.value,),
+    "participant": (EntityRelations.INVOLVED_IN.value,),
 }
+# Names find_records_by_person took before the roles were one list.
+ROLE_ALIASES: dict[str, str] = {"involved": "participant"}
+# Edges stored person -> record (Slack threads, extracted mentions); every
+# other person edge is stored record -> person.
+EDGES_FROM_PERSON: frozenset[str] = frozenset({
+    EntityRelations.MENTIONED_IN.value, EntityRelations.INVOLVED_IN.value,
+})
 PERSON_EDGES: tuple[str, ...] = tuple(dict.fromkeys(e for edges in ROLE_EDGES.values() for e in edges))
+PERSON_EDGES_TO_PERSON: tuple[str, ...] = tuple(e for e in PERSON_EDGES if e not in EDGES_FROM_PERSON)
+PERSON_EDGES_FROM_PERSON: tuple[str, ...] = tuple(e for e in PERSON_EDGES if e in EDGES_FROM_PERSON)
+ROLE_OF_EDGE: dict[str, str] = {edge: role for role, edges in ROLE_EDGES.items() for edge in edges}
 ORGANIZATION_EDGES: tuple[str, ...] = (EntityRelations.FOR_ACCOUNT.value, EntityRelations.MENTIONS.value)
 
 
@@ -105,24 +119,38 @@ def field(name: str) -> RecordField:
     return FIELDS[name]
 
 
+def canonical_role(role: str) -> str:
+    """``role`` as the registry names it (case and old names folded); a
+    ValueError names the roles there are."""
+    name = role.strip().lower()
+    name = ROLE_ALIASES.get(name, name)
+    if name not in ROLE_EDGES:
+        raise ValueError(f"unknown role {role!r}; roles: {', '.join(ROLE_EDGES)}")
+    return name
+
+
 def role_edges(role: str | None) -> tuple[str, ...]:
     """The edge types for ``role``; every person edge when no role is given."""
     if role is None:
         return PERSON_EDGES
-    if role not in ROLE_EDGES:
-        raise ValueError(f"unknown role {role!r}; roles: {', '.join(ROLE_EDGES)}")
-    return ROLE_EDGES[role]
+    return ROLE_EDGES[canonical_role(role)]
 
 
 __all__ = [
     "DEAL_OUTCOMES",
+    "EDGES_FROM_PERSON",
     "FIELDS",
     "ORGANIZATION_EDGES",
     "PERSON_EDGES",
+    "PERSON_EDGES_FROM_PERSON",
+    "PERSON_EDGES_TO_PERSON",
+    "ROLE_ALIASES",
     "ROLE_EDGES",
+    "ROLE_OF_EDGE",
     "FieldKind",
     "RecordField",
     "Store",
+    "canonical_role",
     "field",
     "role_edges",
 ]

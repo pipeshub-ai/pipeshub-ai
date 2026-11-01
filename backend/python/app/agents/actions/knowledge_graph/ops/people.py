@@ -1,6 +1,5 @@
 """``find_records_by_person`` operation — records a person is linked to by a
-role the connectors write (assignee, reporter, creator, author, owner,
-editor, reviewer, recipient, lead, mentioned, involved), limited to what the user can read inside the turn, newest first,
+role the connectors write (the roles of ``record_fields.ROLE_EDGES``), limited to what the user can read inside the turn, newest first,
 paged by cursor.
 
 Listing and access go through the entity listing engine
@@ -27,7 +26,6 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
 )
 from app.agents.actions.knowledge_graph.views import _read_hint, _trunc
 from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
-from app.config.constants.arangodb import EntityRelations
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
@@ -36,6 +34,7 @@ from app.modules.retrieval.entity_permissions import (
     readable_person_offsets,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
+from app.modules.retrieval.record_fields import ROLE_ALIASES, ROLE_EDGES
 from app.utils.chat_helpers import (
     get_record_id_shortener_if_enabled,
     resolve_frontend_url,
@@ -46,19 +45,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ROLE_EDGES: dict[str, str] = {
-    "assignee": EntityRelations.ASSIGNED_TO.value,
-    "reporter": EntityRelations.REPORTED_BY.value,
-    "creator": EntityRelations.CREATED_BY.value,
-    "author": EntityRelations.AUTHORED_BY.value,
-    "owner": EntityRelations.OWNED_BY.value,
-    "editor": EntityRelations.LAST_MODIFIED_BY.value,
-    "reviewer": EntityRelations.REVIEWED_BY.value,
-    "recipient": EntityRelations.ADDRESSED_TO.value,
-    "lead": EntityRelations.LEAD_BY.value,
-    "mentioned": EntityRelations.MENTIONED_IN.value,
-    "involved": EntityRelations.INVOLVED_IN.value,
-}
 SELF_NAMES = frozenset({"me", "myself", "i"})
 _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
@@ -91,11 +77,12 @@ async def execute_find_records_by_person(
         return False, "person is required: a full name, an email, or \"me\"."
     if isinstance(roles, str):
         roles = [roles]
-    wanted_roles = list(dict.fromkeys(str(r).strip().lower() for r in roles or () if str(r).strip()))
+    asked_roles = [str(r).strip().lower() for r in roles or () if str(r).strip()]
+    wanted_roles = list(dict.fromkeys(ROLE_ALIASES.get(r, r) for r in asked_roles))
     unknown = [r for r in wanted_roles if r not in ROLE_EDGES]
     if unknown:
         return False, f"Unknown role(s) {', '.join(unknown)} — pass any of: {', '.join(ROLE_EDGES)}."
-    edge_types = [ROLE_EDGES[r] for r in wanted_roles or ROLE_EDGES]
+    edge_types = list(dict.fromkeys(e for r in wanted_roles or ROLE_EDGES for e in ROLE_EDGES[r]))
     wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()] or None
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
 

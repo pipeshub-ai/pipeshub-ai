@@ -48,10 +48,19 @@ graph providers, or the `find_records` agent tool.
 | `organization` | organisation | all | `ENTITYRELATIONS` `FOR_ACCOUNT` / `MENTIONS` |
 | `linked_to` | record | all | `RECORD_LINK` edge, any `relationshipType` |
 
-Roles map to edge types: assignee `ASSIGNED_TO`; reporter `REPORTED_BY`;
-author `CREATED_BY`, `AUTHORED_BY`; owner `OWNED_BY`; reviewer `REVIEWED_BY`;
-editor `LAST_MODIFIED_BY`; recipient `ADDRESSED_TO`; participant
-`INVOLVED_IN`, `MENTIONED_IN`, `RELATED_TO_PERSON`. No role means any of them.
+Each role is one stored edge type, and `record_fields.ROLE_EDGES` is the only
+list of them: assignee `ASSIGNED_TO`; reporter `REPORTED_BY`; creator
+`CREATED_BY`; author `AUTHORED_BY`; owner `OWNED_BY`; reviewer `REVIEWED_BY`;
+editor `LAST_MODIFIED_BY`; recipient `ADDRESSED_TO`; lead `LEAD_BY`; mentioned
+`MENTIONED_IN`; participant `INVOLVED_IN`. No role means any of them. A
+question that means either of two roles ("who wrote it": creator or author)
+says so with `any_of`. `find_records_by_person` takes the same roles, and
+`involved`, its earlier name for participant. `MENTIONED_IN` and
+`INVOLVED_IN` are stored person -> record (`EDGES_FROM_PERSON`), every other
+role record -> person; the providers' direction tables
+(`PERSON_EDGES_TO_USER`, `PERSON_EDGES_FROM_USER`) are derived from that
+split. The eval harness (`kg_eval/facets.py`) files each connector slot under
+the role of the edge it writes, checked by a unit test.
 
 **Unknown is never "no".** A record whose connector did not supply a field
 neither matches nor fails a condition on it: the engine counts it as
