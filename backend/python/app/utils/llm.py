@@ -15,6 +15,7 @@ from app.utils.aimodels import (
     get_stt_model,
     get_tts_model,
     is_local_cpu_embedding_provider,
+    iter_model_names,
 )
 
 # Users read these as a file's failure reason or a chat error, so each says what to do next.
@@ -231,6 +232,28 @@ async def get_llm_for_role(
         pass
 
     return await get_llm(config_service, reasoning_effort=reasoning_effort or "low")
+
+
+async def get_llm_by_name(
+    config_service: ConfigurationService,
+    name: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> tuple[BaseChatModel, dict[str, Any]] | None:
+    """The configured LLM whose ``modelKey`` or one of whose model names is
+    *name*, or None when no configured LLM matches (the caller then picks
+    its default). An entry matched by key builds its first model."""
+    ai_models = await load_ai_models(config_service)
+    for config in ai_models.get("llm") or []:
+        names = iter_model_names(config.get("configuration"))
+        if config.get("modelKey") != name and name not in names:
+            continue
+        model_name = name if name in names else None
+        llm = await asyncio.to_thread(
+            get_generator_model, config["provider"], config, model_name, reasoning_effort,
+        )
+        return (llm, config) if llm else None
+    return None
 
 
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict | None:
