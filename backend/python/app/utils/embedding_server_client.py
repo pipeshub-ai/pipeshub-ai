@@ -75,6 +75,8 @@ class EmbeddingServerEmbeddings(Embeddings):
         self.max_retries = max_retries if max_retries is not None else _embedding_server_max_retries()
         self.timeout = timeout if timeout is not None else _embedding_server_timeout()
         self.trust_remote_code = trust_remote_code
+        # Tokens the server's model adds to every input; set when the limit is read.
+        self.prompt_tokens = 0
         # Falls back to the process-wide default so this shares a pause
         # signal with ParsingClient/DoclingClient in the same indexing
         # worker without every construction site needing to plumb one in.
@@ -118,6 +120,8 @@ class EmbeddingServerEmbeddings(Embeddings):
             await client.close()
         for item in page.data:
             if item.id == self.model:
+                overhead = getattr(item, "prompt_tokens", 0)
+                self.prompt_tokens = overhead if isinstance(overhead, int) and overhead > 0 else 0
                 limit = getattr(item, "max_seq_length", None)
                 return limit if isinstance(limit, int) and limit > 0 else None
         return None

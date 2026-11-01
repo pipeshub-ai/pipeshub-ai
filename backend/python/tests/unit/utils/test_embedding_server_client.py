@@ -680,6 +680,14 @@ class TestMaxInputTokens:
         assert server.requests[0][2]["auth"] == "Bearer not-needed"
 
     @pytest.mark.asyncio
+    async def test_reads_the_prompt_overhead_next_to_the_limit(self, embedding_server) -> None:
+        embedding_server([{**_model("m", 512), "prompt_tokens": 9}])
+        client = EmbeddingServerEmbeddings(model="m")
+        assert client.prompt_tokens == 0
+        assert await client.max_input_tokens() == 512
+        assert client.prompt_tokens == 9
+
+    @pytest.mark.asyncio
     async def test_none_when_the_server_does_not_say(self, embedding_server) -> None:
         embedding_server([_model("m", None)])
         assert await EmbeddingServerEmbeddings(model="m").max_input_tokens() is None

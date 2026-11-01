@@ -323,6 +323,8 @@ class ModelListItem(BaseModel):
     owned_by: str = "pipeshub"
     # Longest input in tokens; longer text is silently cut by the model.
     max_seq_length: int | None = None
+    # Tokens the model adds to every input from its default prompt; they count against max_seq_length.
+    prompt_tokens: int = 0
 
 
 class ModelListResponse(BaseModel):
@@ -530,6 +532,21 @@ class ModelManager:
 
     def list_loaded_models(self) -> list[str]:
         return list(self._models)
+
+    @staticmethod
+    def _default_prompt(model: object) -> str:
+        """The prompt ``encode`` puts in front of every text, as it resolves it."""
+        name = getattr(model, "default_prompt_name", None)
+        prompts = getattr(model, "prompts", None)
+        prompt = prompts.get(name) if name and isinstance(prompts, dict) else None
+        return prompt if isinstance(prompt, str) else ""
+
+    def prompt_tokens(self, model_name: str) -> int:
+        model = self._models.get(self._cache_key(model_name))
+        prompt = self._default_prompt(model) if model is not None else ""
+        if not prompt:
+            return 0
+        return len(model.tokenizer([prompt], add_special_tokens=False)["input_ids"][0])
 
     def max_seq_length(self, model_name: str) -> int | None:
         limit = getattr(self._models.get(self._cache_key(model_name)), "max_seq_length", None)
@@ -768,8 +785,11 @@ class ModelManager:
     ) -> list[int]:
         """Tokens the model itself reads for each text, special tokens included."""
         async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
+            prompt = self._default_prompt(model)
+
             def _count() -> list[int]:
-                ids = model.tokenizer(texts, add_special_tokens=True, truncation=False)["input_ids"]
+                # What encode reads: the default prompt, then the text.
+                ids = model.tokenizer([prompt + t for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
                 return [len(i) for i in ids]
 
             async with self._encode_gate.slot(EncodePriority.BULK):
@@ -978,7 +998,10 @@ async def health_check() -> JSONResponse:
 async def list_models() -> ModelListResponse:
     created = int(time.time())
     models = [
-        ModelListItem(id=name, created=created, max_seq_length=model_manager.max_seq_length(name))
+        ModelListItem(
+            id=name, created=created, max_seq_length=model_manager.max_seq_length(name),
+            prompt_tokens=model_manager.prompt_tokens(name),
+        )
         for name in model_manager.list_loaded_models()
     ]
     if not models:

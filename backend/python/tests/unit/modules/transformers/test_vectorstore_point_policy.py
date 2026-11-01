@@ -536,3 +536,44 @@ def test_a_413_is_logged_as_an_error_and_split_smaller_without_falling_back(capl
         assert vs._server_counts(ask, ["a", "b", "c", "d", "e"]) == [9] * 5
     assert any("too large" in r.message for r in caplog.records)
     assert not vs._tokenize_unavailable
+
+
+class _PromptedModel:
+    """A local model that reads a 20-token prompt in front of every input, limit 100."""
+
+    prompt_tokens = 20
+
+    async def max_input_tokens(self) -> int:
+        return 100
+
+    def count_tokens(self, texts: list[str]) -> list[int]:
+        return [len(t) + self.prompt_tokens + 2 for t in texts]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("tokenize_state")
+async def test_a_near_limit_block_is_cut_when_the_models_prompt_takes_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBED_POINT_POLICY", "B")
+    window = await vs._model_window(_PromptedModel())
+    text = "x" * 85  # 85 + 2 < 100, but 85 + 20 prompt + 2 does not fit
+    docs = _points("B", monkeypatch, text=text, window=window)
+    assert len(docs) > 1
+    assert max(_PromptedModel().count_tokens([d.page_content for d in docs])) <= 100
+
+
+@pytest.mark.asyncio
+async def test_a_model_without_a_prompt_keeps_its_near_limit_block_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Plain(_PromptedModel):
+        prompt_tokens = 0
+
+    monkeypatch.setenv("EMBED_POINT_POLICY", "B")
+    window = await vs._model_window(Plain())
+    assert len(_points("B", monkeypatch, text="x" * 85, window=window)) == 1
+
+
+@pytest.mark.usefixtures("tokenize_state")
+def test_the_fallback_count_includes_the_prompt_overhead() -> None:
+    def ask(texts: list[str]) -> list[int]:
+        raise _status_error(404)
+
+    assert vs._server_counts(ask, ["word " * 100], 20)[0] == vs._server_counts(ask, ["word " * 100])[0] + 20

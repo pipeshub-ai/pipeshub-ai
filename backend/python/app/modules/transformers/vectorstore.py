@@ -246,7 +246,9 @@ def _ask_chunk(ask_server: Callable[[list[str]], list[int]], chunk: list[str]) -
         return _ask_chunk(ask_server, chunk[:mid]) + _ask_chunk(ask_server, chunk[mid:])
 
 
-def _server_counts(ask_server: Callable[[list[str]], list[int]], texts: list[str]) -> list[int]:
+def _server_counts(
+    ask_server: Callable[[list[str]], list[int]], texts: list[str], overhead: int = 0,
+) -> list[int]:
     """Model token counts from the embedding server.
 
     A server without ``/v1/tokenize`` (404 or 405: an older image, or another
@@ -271,7 +273,7 @@ def _server_counts(ask_server: Callable[[list[str]], list[int]], texts: list[str
                     "Embedding server could not count tokens (%s); this call uses cl100k x %s",
                     exc, _WORST_CASE_TOKEN_RATIO,
                 )
-    return [math.ceil(_token_len(t) * _WORST_CASE_TOKEN_RATIO) for t in texts]
+    return [math.ceil(_token_len(t) * _WORST_CASE_TOKEN_RATIO) + overhead for t in texts]
 
 
 async def _model_window(embeddings: object) -> _Window | None:
@@ -289,15 +291,18 @@ async def _model_window(embeddings: object) -> _Window | None:
         return None
     limit = min(limit, _embed_token_ceiling())
     ask_server = embeddings.count_tokens
+    # The model's default prompt is read in front of every input and counts against the limit.
+    overhead = getattr(embeddings, "prompt_tokens", 0)
+    overhead = overhead if isinstance(overhead, int) else 0
 
     def count(texts: list[str]) -> list[int]:
-        # A token covers at least one byte, so a text of limit - 2 bytes or fewer
-        # fits without asking the server.
+        # A token covers at least one byte, so a text of limit - 2 - overhead bytes
+        # or fewer fits without asking the server.
         sizes: list[int | None] = [
-            n if (n := len(t.encode("utf-8")) + 2) <= limit else None for t in texts
+            n if (n := len(t.encode("utf-8")) + 2 + overhead) <= limit else None for t in texts
         ]
         todo = [t for t, n in zip(texts, sizes) if n is None]
-        asked = iter(_server_counts(ask_server, todo) if todo else [])
+        asked = iter(_server_counts(ask_server, todo, overhead) if todo else [])
         return [n if n is not None else next(asked) for n in sizes]
 
     return _Window(limit, count)

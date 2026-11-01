@@ -57,6 +57,7 @@ def client():
     mock_manager = MagicMock(spec=ModelManager)
     mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
     mock_manager.max_seq_length.return_value = 512
+    mock_manager.prompt_tokens.return_value = 0
     mock_manager.encode = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
 
     mock_manager.warmup = AsyncMock()
@@ -337,6 +338,30 @@ class TestModelManager:
         manager._encode_gate = gate
         assert await manager.count_tokens("m", ["ab", "abcde"]) == [2, 5]
         assert len(entered) == 1  # takes an encode slot like embeddings do
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_includes_the_default_prompt_encode_would_add(self) -> None:
+        seen: list[list[str]] = []
+
+        class Model:
+            default_prompt_name = "query"
+            prompts = {"query": "search: "}
+
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool = False) -> dict:
+                seen.append(texts)
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        assert await manager.count_tokens("m", ["ab"]) == [10]  # "search: ab"
+        assert manager.prompt_tokens("m") == 8
+
+    def test_a_model_without_a_default_prompt_adds_no_tokens(self) -> None:
+        manager = ModelManager()
+        manager._models = {"m": MagicMock(default_prompt_name=None, prompts={"query": "x"}), "n": MagicMock(spec=[])}
+        assert manager.prompt_tokens("m") == 0
+        assert manager.prompt_tokens("n") == 0
+        assert manager.prompt_tokens("not-loaded") == 0
 
     def test_max_seq_length_reads_the_loaded_model(self) -> None:
         manager = ModelManager()
