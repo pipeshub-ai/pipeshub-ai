@@ -30,6 +30,9 @@ _VARIED = {
 }
 
 
+# Served only with the record-query flag (docs/record-query.md).
+_FIND_RECORDS = "knowledgegraph__find_records"
+
 def _tools(offered: bool, *, named: bool = True) -> tuple[list[Any], list[Any]]:
     policy = KnowledgeGraphPolicy(mode=KnowledgeGraphMode.FULL, named_entities=named, search_by_entities=offered)
     instance = KnowledgeGraph(state={KNOWLEDGE_GRAPH_POLICY_STATE_KEY: policy})
@@ -45,7 +48,8 @@ def _schema(tool: Any) -> tuple[str, str, list[Any]]:  # noqa: ANN401
 
 def test_not_offered_is_the_declared_toolset_without_the_tool() -> None:
     declared, served = _tools(False)
-    assert [t.name for t in served] == [t.name for t in declared if t.name != SEARCH_BY_ENTITIES_TOOL_NAME]
+    withdrawn = {SEARCH_BY_ENTITIES_TOOL_NAME, _FIND_RECORDS}
+    assert [t.name for t in served] == [t.name for t in declared if t.name not in withdrawn]
     by_name = {t.name: t for t in declared}
     assert all(t is by_name[t.name] for t in served), "the declared tools themselves, unchanged"
     assert not any("search_by_entities" in t.description or "named_entity'" in t.description for t in served)
@@ -59,7 +63,7 @@ def test_extraction_off_leaves_out_the_named_entity_tool_and_parameter() -> None
     declared, served = _tools(False, named=False)
     left_out = {
         SEARCH_BY_ENTITIES_TOOL_NAME, "knowledgegraph__find_records_by_value",
-        "knowledgegraph__find_co_mentioned_entities",
+        "knowledgegraph__find_co_mentioned_entities", _FIND_RECORDS,
     }
     assert [t.name for t in served] == [t.name for t in declared if t.name not in left_out]
     by_name = {t.name: t for t in declared}
@@ -88,7 +92,7 @@ async def test_search_entities_without_the_kinds_parameter_still_runs_the_op() -
 
 def test_offered_adds_the_tool_and_the_named_entity_descriptions() -> None:
     declared, served = _tools(True)
-    assert [t.name for t in served] == [t.name for t in declared]
+    assert [t.name for t in served] == [t.name for t in declared if t.name != _FIND_RECORDS]
     by_name = {t.name: t for t in served}
     declared_by_name = {t.name: t for t in declared}
     for name, tool in by_name.items():

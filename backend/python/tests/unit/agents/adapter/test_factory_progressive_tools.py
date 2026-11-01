@@ -52,6 +52,14 @@ class _FakeKnowledgeGraphToolset:
     async def find_records_by_entity(self, entity_id: str) -> str:
         return "ok"
 
+    @tool(
+        path="/tools/knowledgegraph/find_records",
+        short_description="Find records",
+        description="Exact record query",
+    )
+    async def find_records(self, where: list | None = None) -> str:
+        return "ok"
+
 
 def _patch_knowledgegraph_toolset_registry() -> tuple[Any, Any]:
     fake_registry = MagicMock()
@@ -83,13 +91,23 @@ def _skills_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _create(
-    mode: str = "quick", *, with_store: bool = True, history: list | None = None,
+    mode: str = "quick", *, with_store: bool = True, history: list | None = None, record_query: bool = False,
 ) -> tuple[Any, Any, Any]:
     context = make_context(
         llm=FakeChatModel(), has_knowledge=True, previous_conversations=history or [],
     )
     if with_store:
         context.tool_state["entity_vector_store"] = MagicMock()
+    if record_query:
+        from app.agents.agent_loop.knowledge_graph_policy import (
+            KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
+            KnowledgeGraphMode,
+            KnowledgeGraphPolicy,
+        )
+
+        context.tool_state[KNOWLEDGE_GRAPH_POLICY_STATE_KEY] = KnowledgeGraphPolicy(
+            mode=KnowledgeGraphMode.FULL, record_query=True,
+        )
     registry_patch, factory_patch = _patch_knowledgegraph_toolset_registry()
     with registry_patch, factory_patch:
         agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
@@ -195,3 +213,28 @@ class TestExplorerEntityToolGrant:
         await progressive_entity_tools(context)(ctx, _noop_next)
 
         assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in explorer.tool_names
+
+
+@pytest.mark.asyncio
+class TestRecordQueryToolGrant:
+    async def test_without_the_flag_find_records_is_never_granted(self) -> None:
+        history = [{"role": "bot_response", "content": "…", "tool_results": [
+            {"tool_name": SEARCH_ENTITIES_TOOL_NAME, "result": "{}"}]}]
+        _context, agent, _runtime = await _create(history=history)
+
+        assert "knowledgegraph__find_records" not in agent.spec.tool_names
+
+    async def test_with_the_flag_neither_listing_tool_is_in_the_first_grant(self) -> None:
+        _context, agent, _runtime = await _create(record_query=True)
+
+        assert "knowledgegraph__find_records" not in agent.spec.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in agent.spec.tool_names
+        assert SEARCH_ENTITIES_TOOL_NAME in agent.spec.tool_names
+
+    async def test_with_the_flag_history_grants_find_records_only(self) -> None:
+        history = [{"role": "bot_response", "content": "…", "tool_results": [
+            {"tool_name": "knowledgegraph__find_records", "result": "Total: 3"}]}]
+        _context, agent, _runtime = await _create(history=history, record_query=True)
+
+        assert "knowledgegraph__find_records" in agent.spec.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in agent.spec.tool_names

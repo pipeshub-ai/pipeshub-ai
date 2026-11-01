@@ -51,6 +51,8 @@ from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
 from .navigator import GraphNavigator, ListingFailedError
 from .ops.results import result_text, search_result_summary
+from .ops.record_query import field_guide as _record_field_guide
+from .ops.record_query import roles_guide as _record_roles_guide
 from .ops.scope import (
     NODE_NOT_FOUND_MESSAGE,
     _has_selection,
@@ -1162,6 +1164,92 @@ class KnowledgeGraph:
             record_types=record_types,
             limit=limit,
             cursor=cursor,
+        )
+
+    # -----------------------------------------------------------------------
+    # find_records — exact filters, totals and groups (docs/record-query.md).
+    # In place of find_records_by_entity when the record-query flag is on;
+    # granted after the first search, like it.
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/find_records",
+        short_description="Filter, count, total and group every record the user can open, exactly",
+        description=(
+            "Answer 'how many', 'which', 'total' and 'who has the most' questions over records exactly: it "
+            "reads every record you can open that matches, so its total and groups are exact (or marked "
+            "approximate when a limit stopped it). Use it instead of counting search results. Results lead "
+            "with the total, then a page of matching records to cite.\n\n"
+            "where: conditions that must all hold. Each is one of {\"field\": name, \"in\": [values]}, "
+            "{\"field\": name, \"from\": ..., \"to\": ...} (dates as YYYY-MM-DD, inclusive), "
+            "{\"person\": {\"role\": role, \"ids\": [...]}}, {\"organization\": {\"ids\": [...]}}, "
+            "{\"linked_to\": {\"ids\": [record ids]}}, {\"entity\": {\"type\": ..., \"id\": ...}}, "
+            "or {\"any_of\": [...]}, {\"all_of\": [...]}, {\"not\": {...}}.\n"
+            f"Fields: {_record_field_guide()}.\nRoles: {_record_roles_guide()}.\n"
+            "Values are not listed here: pass describe=[field] to get a field's values among the matches. "
+            "Get person, organization and entity ids from search_entities.\n\n"
+            "Examples: highest-priority tickets opened in March: where=[{\"field\": \"priority\", \"in\": "
+            "[\"HIGHEST\"]}, {\"field\": \"created\", \"from\": \"2026-03-01\", \"to\": \"2026-03-31\"}]. "
+            "Won deal value by month: where=[{\"field\": \"deal_outcome\", \"in\": [\"WON\"]}], "
+            "aggregate={\"op\": \"sum\", \"field\": \"amount\"}, group_by={\"month\": \"close_date\"}.\n\n"
+            "A record that does not carry a field is reported as not counted, never as a non-match."
+        ),
+        parameters=[
+            ToolParameter(
+                name="where", type=ParameterType.ARRAY, required=False, items={"type": "object"},
+                description="Conditions that must all hold (see the description).",
+            ),
+            ToolParameter(
+                name="aggregate", type=ParameterType.OBJECT, required=False,
+                description='{"op": "count" | "sum" | "min" | "max" | "avg", "field": number field}; default count.',
+                properties={
+                    "op": {"type": "string", "enum": ["count", "sum", "min", "max", "avg"]},
+                    "field": {"type": "string"},
+                },
+            ),
+            ToolParameter(
+                name="group_by", type=ParameterType.OBJECT, required=False,
+                description=(
+                    'One of {"field": value field}, {"month": date field}, {"person_role": role}, '
+                    '{"by_person": true}, {"organization": true}.'
+                ),
+            ),
+            ToolParameter(
+                name="describe", type=ParameterType.ARRAY, required=False, items={"type": "string"},
+                description="Value fields whose values among the matches to list, with counts (top 20).",
+            ),
+            ToolParameter(
+                name="top", type=ParameterType.INTEGER, required=False, default=10,
+                description="Groups to return (1-20, default 10).",
+            ),
+            ToolParameter(
+                name="limit", type=ParameterType.INTEGER, required=False, default=20,
+                description="Records per page (0-50, default 20); 0 returns only the totals.",
+            ),
+            ToolParameter(
+                name="cursor", type=ParameterType.STRING, required=False,
+                description="Cursor from the previous page's output, copied exactly. Omit for the first page.",
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: "Queried records",
+        display_name="Queried records",
+    )
+    async def find_records(
+        self,
+        where: list[dict[str, Any]] | None = None,
+        aggregate: dict[str, Any] | None = None,
+        group_by: dict[str, Any] | None = None,
+        describe: list[str] | None = None,
+        top: int | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[bool, str]:
+        """Exact record query — calls ops/record_query.py."""
+        from .ops.record_query import execute_find_records
+        return await execute_find_records(
+            self.state, where=where, aggregate=aggregate, group_by=group_by, describe=describe,
+            top=top, limit=limit, cursor=cursor,
         )
 
     @tool(

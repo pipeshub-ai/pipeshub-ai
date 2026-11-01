@@ -1,5 +1,7 @@
 """``progressive_entity_tools``: POST_TOOL_USE hook that grants
-``knowledgegraph__find_records_by_entity`` once ``search_entities`` has run.
+``knowledgegraph__find_records_by_entity`` once ``search_entities`` has run,
+or, with the record-query flag, ``knowledgegraph__find_records`` once any
+search has run (``docs/record-query.md``). Never both: the two would overlap.
 
 ``find_records_by_entity`` needs an entityId, and ``search_entities`` is the
 only tool that produces one, so its schema is left out of the initial grant
@@ -28,18 +30,30 @@ logger = logging.getLogger(__name__)
 
 SEARCH_ENTITIES_TOOL_NAME = "knowledgegraph__search_entities"
 PROGRESSIVE_FIND_RECORDS_TOOL_NAME = "knowledgegraph__find_records_by_entity"
-PROGRESSIVE_TOOL_NAMES: frozenset[str] = frozenset({PROGRESSIVE_FIND_RECORDS_TOOL_NAME})
+RECORD_QUERY_TOOL_NAME = "knowledgegraph__find_records"
+PROGRESSIVE_TOOL_NAMES: frozenset[str] = frozenset({PROGRESSIVE_FIND_RECORDS_TOOL_NAME, RECORD_QUERY_TOOL_NAME})
 ENTITY_TOOL_NAMES: frozenset[str] = frozenset(
-    {SEARCH_ENTITIES_TOOL_NAME, PROGRESSIVE_FIND_RECORDS_TOOL_NAME}
+    {SEARCH_ENTITIES_TOOL_NAME, PROGRESSIVE_FIND_RECORDS_TOOL_NAME, RECORD_QUERY_TOOL_NAME}
 )
+# find_records needs no entity id, so any search shows it is a records question.
+_SEARCH_TRIGGER_NAMES = frozenset({"knowledgegraph__search", "knowledgegraph_search"})
 # `resolve_tool_name` falls back to a single-underscore join when the path
 # is not registered (see `_tool_naming.py`), so both spellings trigger.
 _ENTITY_SEARCH_TRIGGER_NAMES = frozenset(
     {SEARCH_ENTITIES_TOOL_NAME, "knowledgegraph_search_entities"}
 )
 _ENTITY_HISTORY_NAMES = ENTITY_TOOL_NAMES | _ENTITY_SEARCH_TRIGGER_NAMES | {
-    "knowledgegraph_find_records_by_entity"
+    "knowledgegraph_find_records_by_entity", "knowledgegraph_find_records"
 }
+
+
+def progressive_tool_name(tool_state: "dict[str, Any] | None") -> str:
+    """The one listing tool this request grants progressively."""
+    from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
+
+    return RECORD_QUERY_TOOL_NAME if knowledge_graph_policy_in(tool_state).record_query else (
+        PROGRESSIVE_FIND_RECORDS_TOOL_NAME
+    )
 
 
 def entity_tools_used_in_history(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -48,14 +62,13 @@ def entity_tools_used_in_history(previous_conversations: list[dict[str, Any]] | 
     return bool(tool_names_used_in_history(previous_conversations) & _ENTITY_HISTORY_NAMES)
 
 
-def _grant(spec: "AgentSpec | None") -> None:
+def _grant(spec: "AgentSpec | None", name: str) -> None:
     """``tool_schemas_for_turn`` binds exactly ``spec.tool_names`` once it is
     non-empty, so a tool left out of the initial grant must be appended."""
     if spec is None or not spec.tool_names:
         return
-    for name in PROGRESSIVE_TOOL_NAMES:
-        if name not in spec.tool_names:
-            spec.tool_names.append(name)
+    if name not in spec.tool_names:
+        spec.tool_names.append(name)
 
 
 def progressive_entity_tools(context: "AgentContext") -> "Middleware[ToolResultContext]":
@@ -66,22 +79,28 @@ def progressive_entity_tools(context: "AgentContext") -> "Middleware[ToolResultC
 
         from app.agents.agent_loop.hooks._tool_naming import resolve_tool_name
 
-        if resolve_tool_name(ctx) not in _ENTITY_SEARCH_TRIGGER_NAMES:
-            return
-        # A failed or empty search leaves no entityId to pass it.
-        if not context.tool_state.get(ENTITY_INDEX_CACHE_KEY):
-            return
+        name = progressive_tool_name(context.tool_state)
+        called = resolve_tool_name(ctx)
+        if name == RECORD_QUERY_TOOL_NAME:
+            if called not in _ENTITY_SEARCH_TRIGGER_NAMES | _SEARCH_TRIGGER_NAMES:
+                return
+        else:
+            if called not in _ENTITY_SEARCH_TRIGGER_NAMES:
+                return
+            # A failed or empty search leaves no entityId to pass it.
+            if not context.tool_state.get(ENTITY_INDEX_CACHE_KEY):
+                return
 
         run_scope = ctx.scope.turn.run if ctx.scope is not None else None
         if run_scope is not None:
-            _grant(run_scope.spec)
+            _grant(run_scope.spec, name)
             if getattr(run_scope, "visible_tools", None) is not None:
-                run_scope.visible_tools.update(PROGRESSIVE_TOOL_NAMES)
+                run_scope.visible_tools.add(name)
         # Hooks are shared with sub-agents; only grant to the root when it
         # can call search_entities itself (never deep mode's orchestrator).
         root_spec = context.root_agent_spec
         if root_spec is not None and SEARCH_ENTITIES_TOOL_NAME in (root_spec.tool_names or []):
-            _grant(root_spec)
+            _grant(root_spec, name)
 
     return _middleware
 
@@ -90,7 +109,9 @@ __all__ = [
     "ENTITY_TOOL_NAMES",
     "PROGRESSIVE_FIND_RECORDS_TOOL_NAME",
     "PROGRESSIVE_TOOL_NAMES",
+    "RECORD_QUERY_TOOL_NAME",
     "SEARCH_ENTITIES_TOOL_NAME",
     "entity_tools_used_in_history",
     "progressive_entity_tools",
+    "progressive_tool_name",
 ]

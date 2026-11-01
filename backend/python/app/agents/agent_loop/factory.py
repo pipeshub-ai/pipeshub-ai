@@ -134,6 +134,7 @@ from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
     PROGRESSIVE_TOOL_NAMES,
     entity_tools_used_in_history,
+    progressive_tool_name,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.knowledge_graph_policy import (
@@ -391,6 +392,9 @@ def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -
     entity tool and its ids are in the history."""
     if not entity_tools_granted(context.tool_state):
         return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
+    # Only this request's listing tool is ever granted: the two overlap.
+    other = PROGRESSIVE_TOOL_NAMES - {progressive_tool_name(context.tool_state)}
+    tool_names = [n for n in tool_names if n not in other]
     if entity_tools_used_in_history(context.previous_conversations):
         return tool_names
     return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]

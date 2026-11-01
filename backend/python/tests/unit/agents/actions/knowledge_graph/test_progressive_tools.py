@@ -30,6 +30,7 @@ _EXPECTED_TOOL_PATHS = {
     "/tools/knowledgegraph/list_files",
     "/tools/knowledgegraph/search_entities",
     "/tools/knowledgegraph/find_records_by_entity",
+    "/tools/knowledgegraph/find_records",
     "/tools/knowledgegraph/find_records_by_value",
     "/tools/knowledgegraph/find_co_mentioned_entities",
     "/tools/knowledgegraph/find_records_by_person",

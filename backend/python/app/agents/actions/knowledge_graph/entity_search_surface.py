@@ -43,11 +43,13 @@ SEARCH_ENTITIES_TOOL_NAME = "knowledgegraph__search_entities"
 FIND_RECORDS_BY_ENTITY_TOOL_NAME = "knowledgegraph__find_records_by_entity"
 FIND_RECORDS_BY_VALUE_TOOL_NAME = "knowledgegraph__find_records_by_value"
 FIND_CO_MENTIONED_TOOL_NAME = "knowledgegraph__find_co_mentioned_entities"
+FIND_RECORDS_TOOL_NAME = "knowledgegraph__find_records"
 # Tools that read only named entities: left out with extraction off, where they could only fail.
 _NAMED_ENTITY_ONLY_TOOLS = frozenset({FIND_RECORDS_BY_VALUE_TOOL_NAME, FIND_CO_MENTIONED_TOOL_NAME})
 ENTITY_TOOL_NAMES: frozenset[str] = frozenset({
     SEARCH_ENTITIES_TOOL_NAME,
     FIND_RECORDS_BY_ENTITY_TOOL_NAME,
+    FIND_RECORDS_TOOL_NAME,
     SEARCH_BY_ENTITIES_TOOL_NAME,
 }) | _NAMED_ENTITY_ONLY_TOOLS
 
@@ -201,6 +203,14 @@ _TAXONOMY_VARIANTS: dict[str, _Variant] = {
         ),
         parameters=(("entity_type", (_Edit("'record_group', 'person', 'organization' or 'record'", "'record_group' or 'record'"),)),),
     ),
+    FIND_RECORDS_TOOL_NAME: _Variant(
+        description=(
+            _Edit('{"person": {"role": role, "ids": [...]}}, {"organization": {"ids": [...]}}, ', ""),
+            _Edit("\nRoles: assignee, reporter, author, owner, reviewer, editor, recipient, participant.", ""),
+            _Edit("Get person, organization and entity ids from search_entities.", "Get entity ids from search_entities."),
+        ),
+        parameters=(("group_by", (_Edit(', {"person_role": role}, {"by_person": true}, {"organization": true}', ""),)),),
+    ),
 }
 
 
@@ -234,6 +244,8 @@ def _withdrawn(policy: KnowledgeGraphPolicy) -> frozenset[str]:
     if not policy.entity_tools:
         return ENTITY_TOOL_NAMES
     withdrawn = set() if policy.search_by_entities else {SEARCH_BY_ENTITIES_TOOL_NAME}
+    # One listing tool per request: find_records replaces find_records_by_entity.
+    withdrawn.add(FIND_RECORDS_BY_ENTITY_TOOL_NAME if policy.record_query else FIND_RECORDS_TOOL_NAME)
     if not policy.named_entities:
         withdrawn |= _NAMED_ENTITY_ONLY_TOOLS
     return frozenset(withdrawn)
