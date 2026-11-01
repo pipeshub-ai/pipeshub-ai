@@ -18,6 +18,7 @@ import codecs
 import inspect
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -25,6 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
+import openai
 from langchain_core.documents import Document
 
 from app.config.constants.arangodb import CollectionNames
@@ -210,6 +212,31 @@ class _Window:
     count: Callable[[list[str]], list[int]] | None = None
 
 
+# bge read at most 2.13 times the cl100k count on the worst text measured (Russian, code).
+_WORST_CASE_TOKEN_RATIO = 2.13
+_tokenize_unavailable = False
+
+
+def _server_counts(ask_server: Callable[[list[str]], list[int]], texts: list[str]) -> list[int]:
+    """Model token counts from the embedding server.
+
+    A server without ``/v1/tokenize`` (an older image, or another
+    OpenAI-compatible server) or one that errors switches this process, once and
+    with one warning, to the cl100k count scaled by the worst measured ratio.
+    """
+    global _tokenize_unavailable  # noqa: PLW0603
+    if not _tokenize_unavailable:
+        try:
+            return ask_server(texts)
+        except openai.OpenAIError:
+            _tokenize_unavailable = True
+            _module_logger.warning(
+                "Embedding server cannot count tokens; windows are sized from cl100k counts "
+                "x %s from now on", _WORST_CASE_TOKEN_RATIO, exc_info=True,
+            )
+    return [math.ceil(_token_len(t) * _WORST_CASE_TOKEN_RATIO) for t in texts]
+
+
 async def _model_window(embeddings: object) -> _Window | None:
     """The window of the local embedding model, or None for any other provider.
 
@@ -232,7 +259,8 @@ async def _model_window(embeddings: object) -> _Window | None:
         sizes: list[int | None] = [
             n if (n := len(t.encode("utf-8")) + 2) <= limit else None for t in texts
         ]
-        asked = iter(ask_server([t for t, n in zip(texts, sizes) if n is None]) if None in sizes else [])
+        todo = [t for t, n in zip(texts, sizes) if n is None]
+        asked = iter(_server_counts(ask_server, todo) if todo else [])
         return [n if n is not None else next(asked) for n in sizes]
 
     return _Window(limit, count)

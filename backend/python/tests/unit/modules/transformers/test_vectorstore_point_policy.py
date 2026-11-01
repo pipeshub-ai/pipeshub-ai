@@ -353,3 +353,57 @@ async def test_rows_of_two_sql_tables_are_indexed_in_separate_groups() -> None:
     await store.vs.index_documents(BlocksContainer(blocks=blocks, block_groups=[]), "o", "rec", "vr")
     groups = sorted(p.payload["metadata"].get("rowBlockIds", []) for p in store.points.values())
     assert groups == [["s0_0", "s0_1", "s0_2"], ["s1_0", "s1_1", "s1_2"]]
+
+
+@pytest.fixture
+def tokenize_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(vs, "_tokenize_unavailable", False)
+
+
+@pytest.mark.parametrize("failure", ["missing", "error"])
+@pytest.mark.usefixtures("tokenize_state")
+def test_a_server_without_tokenize_falls_back_to_scaled_cl100k_once(
+    failure: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "http://x/v1/tokenize")
+    status = 404 if failure == "missing" else 500
+    calls: list[int] = []
+
+    def ask(texts: list[str]) -> list[int]:
+        calls.append(len(texts))
+        raise openai.APIStatusError("no", response=httpx.Response(status, request=request), body=None)
+
+    text = "word " * 400
+    with caplog.at_level("WARNING"):
+        first = vs._server_counts(ask, [text])
+        second = vs._server_counts(ask, [text])
+    expected = [-(-int(vs._token_len(text) * vs._WORST_CASE_TOKEN_RATIO * 100) // 100)]
+    assert first == second and abs(first[0] - expected[0]) <= 1
+    assert first[0] > vs._token_len(text) * 2
+    assert calls == [1]  # asked once; the process then stays on the fallback
+    assert sum("cannot count tokens" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("tokenize_state")
+async def test_a_window_with_no_tokenize_still_fits_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+    import openai
+
+    class Old:
+        async def max_input_tokens(self) -> int:
+            return 128
+
+        def count_tokens(self, texts: list[str]) -> list[int]:
+            raise openai.APIStatusError(
+                "no", response=httpx.Response(404, request=httpx.Request("POST", "http://x")), body=None,
+            )
+
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    window = await vs._model_window(Old())
+    docs = _points("C", monkeypatch, text=RUSSIAN, window=window)
+    assert len(docs) > 1
+    assert max(_heavy_count([d.page_content for d in docs])) <= 128
