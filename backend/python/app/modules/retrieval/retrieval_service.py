@@ -4,7 +4,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.blocks import GroupType
+from app.models.blocks import BlockType, GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
@@ -47,6 +47,19 @@ from app.modules.retrieval.record_cut import (
     hit_record_id,
     passages_per_record,
     point_record_id,
+)
+from app.modules.retrieval.record_rerank import (
+    HITS,
+    POINTS,
+    ItemView,
+    RecordOrder,
+    RecordRerank,
+    RecordReranker,
+    RecordTexts,
+    RerankerDeps,
+    create_record_reranker,
+    reorder_items,
+    rerank_order,
 )
 from app.modules.retrieval.source_diversity import (
     SourceDiversity,
@@ -437,6 +450,17 @@ def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
     return filters
 
 
+_RecordTitles = Callable[[list[str]], Awaitable[dict[str, str]]]
+
+
+@dataclass(frozen=True)
+class _RecordRerankScope:
+    """A record rerank, and how to name the records this user may read."""
+
+    rerank: RecordRerank
+    titles: _RecordTitles
+
+
 def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[str]:
     if not current:
         return allowed
@@ -710,8 +734,12 @@ class RetrievalService:
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
+        record_rerank: RecordRerank | None = None,
     ) -> dict[str, Any]:
-        """Perform semantic search on records the given user may access (graph permission checks)."""
+        """Perform semantic search on records the given user may access (graph permission checks).
+
+        ``record_rerank`` reorders the readable records before the record cut.
+        """
 
         try:
             # Get accessible records
@@ -894,6 +922,7 @@ class RetrievalService:
                     plan=plan,
                     user_key=user_key,
                     scopes=scopes,
+                    record_rerank=record_rerank,
                 )
                 if verification_degraded:
                     # The graph could not answer. Telling this user to upload
@@ -915,6 +944,7 @@ class RetrievalService:
                         replacement = await self._search_by_record_ids(
                             queries, limit, org_id, user_id, user_key, filters, time_range,
                             virtual_record_ids_from_tool, selection, scopes, plan,
+                            record_rerank=record_rerank,
                         )
                     except Exception as exc:
                         if not search_results:
@@ -970,7 +1000,11 @@ class RetrievalService:
                         )
             if not use_containers:
                 search_results = await self._execute_parallel_searches(
-                    queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
+                    queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut,
+                    record_rerank=self._record_id_rerank(
+                        record_rerank, accessible_virtual_id_to_record_id, user_key, org_id,
+                        requested_scope_ids(filters), scopes,
+                    ),
                 )
                 try:
                     enumerated = enumerated_map = accessible_virtual_id_to_record_id
@@ -1935,6 +1969,8 @@ class RetrievalService:
         selection: "SelectionScope | None",
         scopes: Sequence[SelectionScope],
         plan: "_QueryPlan",
+        *,
+        record_rerank: RecordRerank | None = None,
     ) -> "_RecordIdSearch":
         """The record-id path for a search the container filter could not serve.
 
@@ -1956,6 +1992,9 @@ class RetrievalService:
         results = await self._execute_parallel_searches(
             queries, id_filter, limit, org_id, user_id, plan=plan,
             record_cut=_record_cut_for(scope_virtual_ids),
+            record_rerank=self._record_id_rerank(
+                record_rerank, enumerated, user_key, org_id, requested_scope_ids(filters), scopes,
+            ),
         )
         accessible = await self._keep_permitted_hits(
             results, enumerated, user_key, org_id,
@@ -2020,6 +2059,7 @@ class RetrievalService:
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
         scopes: Sequence[SelectionScope] = (),
+        record_rerank: RecordRerank | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
 
@@ -2183,6 +2223,13 @@ class RetrievalService:
             and (result.get("metadata") or {}).get("virtualRecordId") in best_accessible
         ]
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
+        # After verification, so the strategy reads only records this user may
+        # see; not on a page the record-id search is about to replace.
+        if record_rerank is not None and not plan.narrow_shortfall:
+            scope = _RecordRerankScope(record_rerank, self._verified_titles(best_accessible, org_id))
+            order = await self._record_rerank_order(scope, admitted, HITS, org_id, user_id, plan.collections)
+            if order is not None:
+                admitted = reorder_items(admitted, order.records, HITS)
         if record_cut is not None:
             return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
@@ -2417,7 +2464,22 @@ class RetrievalService:
             for result in search_results
             if isinstance(result, dict)
         }
-        hits = {vrid: accessible[vrid] for vrid in hit_vrids if vrid in accessible}
+        return await self._permitted_records(
+            hit_vrids, accessible, user_key, org_id, scope_connector_ids=scope_connector_ids, scopes=scopes,
+        )
+
+    async def _permitted_records(
+        self,
+        vrids: Iterable[str | None],
+        accessible: dict[str, str],
+        user_key: str | None,
+        org_id: str,
+        *,
+        scope_connector_ids: "tuple[str, ...] | None" = None,
+        scopes: Sequence[SelectionScope] = (),
+    ) -> dict[str, str]:
+        """``_keep_permitted_hits`` for the records ``vrids`` name."""
+        hits = {vrid: accessible[vrid] for vrid in vrids if vrid in accessible}
         if not hits:
             return hits
         connector_ids = frozenset(scope_connector_ids) if scope_connector_ids is not None else None
@@ -2570,6 +2632,7 @@ class RetrievalService:
     async def _execute_parallel_searches(
         self, queries, filter, limit, org_id: str, user_id: str | None = None,
         *, plan: "_QueryPlan | None" = None, record_cut: RecordCut | None = None,
+        record_rerank: _RecordRerankScope | None = None,
     ) -> list[dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
 
@@ -2583,7 +2646,8 @@ class RetrievalService:
         merges the raw results before the caller's global rerank/sort.
 
         With ``record_cut``, each query fuses deeper and is cut back to
-        ``limit`` by record; without it, by point.
+        ``limit`` by record; without it, by point. ``record_rerank`` is for a
+        search whose filter names only records the user may reach.
         """
         # Embedding is the only genuinely expensive, uncached step here, and a
         # re-query differs from the first attempt in nothing but `limit`.
@@ -2593,6 +2657,7 @@ class RetrievalService:
             return await self._run_searches(
                 queries, filter, limit, org_id, user_id,
                 dense_query_embeddings, sparse_query_embeddings, plan=plan, record_cut=record_cut,
+                record_rerank=record_rerank,
             )
 
         dense_embeddings = await self.get_embedding_model_instance()
@@ -2638,6 +2703,7 @@ class RetrievalService:
         return await self._run_searches(
             queries, filter, limit, org_id, user_id,
             dense_query_embeddings, sparse_query_embeddings, plan=plan, record_cut=record_cut,
+            record_rerank=record_rerank,
         )
 
     async def _run_searches(
@@ -2652,6 +2718,7 @@ class RetrievalService:
         *,
         plan: "_QueryPlan | None" = None,
         record_cut: RecordCut | None = None,
+        record_rerank: _RecordRerankScope | None = None,
     ) -> list[dict[str, Any]]:
         """Everything downstream of embedding: build requests, fan out, dedupe.
 
@@ -2696,6 +2763,10 @@ class RetrievalService:
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        if record_rerank is not None:
+            search_results = await self._rerank_batches(
+                record_rerank, search_results, org_id, user_id, collections,
+            )
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2718,6 +2789,131 @@ class RetrievalService:
                 all_results.append((doc, point.score))
 
         return self._format_results(all_results)
+
+    async def _rerank_batches(
+        self,
+        scope: _RecordRerankScope,
+        batches: list[list],
+        org_id: str,
+        user_id: str | None,
+        collections: list[str],
+    ) -> list[list]:
+        """Every query's points in one record order, reranked over their union."""
+        union: dict[Any, Any] = {}
+        for batch in batches:
+            for point in batch:
+                union.setdefault(point.id, point)
+        order = await self._record_rerank_order(scope, list(union.values()), POINTS, org_id, user_id, collections)
+        if order is None:
+            return batches
+        return [reorder_items(batch, order.records, POINTS) for batch in batches]
+
+    async def _record_rerank_order(
+        self,
+        scope: _RecordRerankScope,
+        items: list,
+        view: ItemView,
+        org_id: str,
+        user_id: str | None,
+        collections: list[str] | None,
+    ) -> RecordOrder | None:
+        """The reranked record order of ``items``, or None to keep theirs."""
+
+        async def summaries(vrids: list[str]) -> dict[str, str]:
+            resolved = collections or await self._resolve_search_collections(org_id, user_id)
+            return await self._record_summaries(resolved, org_id, vrids)
+
+        return await rerank_order(
+            scope.rerank, items, view,
+            reranker=self._record_reranker(scope.rerank.settings.strategy),
+            texts=RecordTexts(titles=scope.titles, summaries=summaries),
+            org_id=org_id,
+        )
+
+    def _record_reranker(self, strategy: str) -> RecordReranker | None:
+        """One instance per strategy for the life of the service, so a
+        strategy's caches (a model per org) outlive a search."""
+        rerankers = getattr(self, "_record_rerankers", None)
+        if rerankers is None:
+            rerankers = self._record_rerankers = {}
+        if strategy not in rerankers:
+            rerankers[strategy] = create_record_reranker(
+                strategy, RerankerDeps(config_service=getattr(self, "config_service", None)),
+            )
+        return rerankers[strategy]
+
+    def _record_id_rerank(
+        self,
+        rerank: RecordRerank | None,
+        enumerated: dict[str, str],
+        user_key: str | None,
+        org_id: str,
+        scope_connector_ids: "tuple[str, ...] | None",
+        scopes: Sequence[SelectionScope],
+    ) -> _RecordRerankScope | None:
+        """``rerank`` for a search under the record-id filter. The enumeration
+        admits records the access rules may still deny (a RESTRICTED page), so
+        each offered record is checked as the hits are."""
+        if rerank is None:
+            return None
+
+        async def titles(vrids: list[str]) -> dict[str, str]:
+            permitted = await self._permitted_records(
+                vrids, enumerated, user_key, org_id, scope_connector_ids=scope_connector_ids, scopes=scopes,
+            )
+            return await self._record_names(permitted, org_id)
+
+        return _RecordRerankScope(rerank, titles)
+
+    def _verified_titles(self, accessible: dict[str, str], org_id: str) -> _RecordTitles:
+        """Names of the records in ``accessible``, already checked for this user."""
+
+        async def titles(vrids: list[str]) -> dict[str, str]:
+            return await self._record_names({vrid: accessible[vrid] for vrid in vrids if vrid in accessible}, org_id)
+
+        return titles
+
+    async def _record_names(self, records: dict[str, str], org_id: str) -> dict[str, str]:
+        """``recordName`` by virtual record id for ``{vrid: recordId}``; a
+        record the graph does not return is left out."""
+        if not records:
+            return {}
+        by_record_id = {record_id: vrid for vrid, record_id in records.items()}
+        fetched = await self.graph_provider.get_records_by_record_ids(list(by_record_id), org_id)
+        names: dict[str, str] = {}
+        for record in fetched or []:
+            key = (record.get("_key") or record.get("id")) if isinstance(record, dict) else None
+            if key in by_record_id:
+                names[by_record_id[key]] = record.get("recordName") or ""
+        return names
+
+    async def _record_summaries(self, collections: list[str], org_id: str, vrids: list[str]) -> dict[str, str]:
+        """Each record's summary point text, for records the user may read.
+        Best effort: a store that cannot filter on the block type yields
+        none, and the rerank shows passages instead."""
+        summaries: dict[str, str] = {}
+        try:
+            summary_filter = await self.vector_db_service.filter_collection(
+                must={"orgId": org_id, "virtualRecordId": list(vrids), "blockType": BlockType.RECORD_SUMMARY.value},
+            )
+            for collection in collections:
+                page = await self.vector_db_service.scroll(
+                    collection, summary_filter, limit=2 * len(vrids),
+                    with_payload=["page_content", "metadata.virtualRecordId"],
+                )
+                for point in page.points:
+                    vrid = point_record_id(point)
+                    text = (point.payload or {}).get("page_content")
+                    if vrid and isinstance(text, str) and text.strip():
+                        summaries.setdefault(vrid, text.strip())
+        except Exception as exc:
+            # Warned once: on a store that cannot filter by block type it fails on every search.
+            if getattr(self, "_summary_read_warned", False):
+                self.logger.debug("record_rerank: could not read record summaries: %r", exc)
+            else:
+                self._summary_read_warned = True
+                self.logger.warning("record_rerank: could not read record summaries, showing passages: %r", exc)
+        return summaries
 
     def _cut_batches(self, record_cut: RecordCut, batches: list[list], limit: int) -> list[list]:
         cut = [record_cut.cut(batch, limit, point_record_id) for batch in batches]
