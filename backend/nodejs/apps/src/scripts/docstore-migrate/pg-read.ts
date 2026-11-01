@@ -22,6 +22,23 @@ const ident = (s: string): string => {
   return s;
 };
 
+/**
+ * `to_jsonb(alias)` with the bigint columns as JSON strings: `pg` parses the result with JSON.parse, which rounds a number above 2^53
+ * (the decoder turns the string back into a number when it is safe).
+ */
+const rowJson = (alias: string, bigints: string[]): string =>
+  bigints.length === 0
+    ? `to_jsonb(${alias})`
+    : `to_jsonb(${alias}) || jsonb_build_object(${bigints
+        .map((c) => `'${ident(c)}', ${alias}.${ident(c)}::text`)
+        .join(', ')})`;
+
+const rootJson = (m: CollectionMapping): string =>
+  rowJson('t', [
+    ...(m.idType === 'bigint' ? [m.idCol] : []),
+    ...m.fields.filter((f) => f.type === 'bigint').map((f) => f.col),
+  ]);
+
 async function childRows(
   k: KernelTx,
   m: CollectionMapping,
@@ -31,8 +48,12 @@ async function childRows(
   for (const c of m.children ?? []) {
     const { rows } = await k.query<{ r: Row }>(
       fill(
-        '/* pipeshub:verify.children */ SELECT to_jsonb(c) AS r FROM @{T} c WHERE c.@{P} = ANY($1::text[])',
+        '/* pipeshub:verify.children */ SELECT @{J} AS r FROM @{T} c WHERE c.@{P} = ANY($1::text[])',
         {
+          J: rowJson(
+            'c',
+            c.fields.filter((f) => f.type === 'bigint').map((f) => f.col),
+          ),
           T: ident(c.table),
           P: ident(c.parentCol),
         },
@@ -72,8 +93,9 @@ export async function readDecoded(
   if (ids.length === 0) return [];
   const { rows } = await k.query<{ r: Row }>(
     fill(
-      '/* pipeshub:verify.roots */ SELECT to_jsonb(t) AS r FROM @{T} t WHERE t.@{I} = ANY($1::@{K}[])',
+      '/* pipeshub:verify.roots */ SELECT @{J} AS r FROM @{T} t WHERE t.@{I} = ANY($1::@{K}[])',
       {
+        J: rootJson(m),
         T: ident(m.table),
         I: ident(m.idCol),
         K: m.idType === 'bigint' ? 'bigint' : 'text',
@@ -102,8 +124,13 @@ export async function readDecodedPage(
 ): Promise<Doc[]> {
   const { rows } = await k.query<{ r: Row }>(
     fill(
-      '/* pipeshub:verify.page */ SELECT to_jsonb(t) AS r FROM @{T} t WHERE ($1::text IS NULL OR t.@{I} > $1::text) ORDER BY t.@{I} LIMIT $2',
-      { T: ident(m.table), I: ident(m.idCol) },
+      '/* pipeshub:verify.page */ SELECT @{J} AS r FROM @{T} t WHERE ($1::@{K} IS NULL OR t.@{I} > $1::@{K}) ORDER BY t.@{I} LIMIT $2',
+      {
+        J: rootJson(m),
+        T: ident(m.table),
+        I: ident(m.idCol),
+        K: m.idType === 'bigint' ? 'bigint' : 'text',
+      },
     ),
     [afterId, limit],
   );

@@ -77,6 +77,19 @@ export const emptyProgress = (): Progress => ({
   collections: {},
 });
 
+/** Progress as stored: a JSON object whose `collections` is an object too. Anything else is refused, not merged into a fresh state. */
+function toProgress(raw: unknown): Progress {
+  const isObj = (x: unknown): boolean =>
+    typeof x === 'object' && x !== null && !Array.isArray(x);
+  if (raw === null || raw === undefined) return emptyProgress();
+  const p = isObj(raw)
+    ? { ...emptyProgress(), ...(raw as Partial<Progress>) }
+    : null;
+  if (!p || !isObj(p.collections))
+    throw new Error('platform.jobs.progress is not a valid migration state');
+  return p;
+}
+
 export class JobState {
   private constructor(
     private readonly rt: MigrationRuntime,
@@ -100,7 +113,7 @@ export class JobState {
     return {
       id: Number(rows[0].id),
       status: rows[0].status,
-      progress: { ...emptyProgress(), ...(rows[0].progress ?? {}) },
+      progress: toProgress(rows[0].progress),
     };
   }
 
@@ -120,7 +133,7 @@ export class JobState {
     return {
       id: Number(rows[0].id),
       status: rows[0].status,
-      progress: { ...emptyProgress(), ...(rows[0].progress ?? {}) },
+      progress: toProgress(rows[0].progress),
     };
   }
 
@@ -169,10 +182,7 @@ export class JobState {
     const { rows } = await this.rt.migratePool.query<{
       progress: Progress | null;
     }>('SELECT progress FROM platform.jobs WHERE id = $1::bigint', [this.id]);
-    const theirs: Progress = {
-      ...emptyProgress(),
-      ...(rows[0]?.progress ?? {}),
-    };
+    const theirs: Progress = toProgress(rows[0]?.progress);
     for (const [k, v] of Object.entries(this.progress))
       if (canon(v) !== this.seen.get(k))
         (theirs as Record<string, unknown>)[k] = v;

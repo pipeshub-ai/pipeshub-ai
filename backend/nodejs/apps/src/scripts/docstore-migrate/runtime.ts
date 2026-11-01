@@ -14,6 +14,19 @@ import { PgTx } from '../../libs/repositories/pg';
 import type { Tx } from '../../libs/repositories/uow';
 import type { MigrateConfig } from './config';
 
+/** The migrate login's pool. An idle client error (a restart, a pooler disconnect) must not end a long run: the next query reconnects. */
+export function createMigratePool(connectionString: string): Pool {
+  const pool = new Pool({
+    connectionString,
+    max: 2,
+    application_name: 'docstore-migrate',
+  });
+  pool.on('error', (e) => {
+    console.warn(`migrate pool idle client error: ${e.message}`);
+  });
+  return pool;
+}
+
 export class MigrationRuntime {
   private constructor(
     readonly cfg: MigrateConfig,
@@ -25,6 +38,9 @@ export class MigrationRuntime {
   static async open(cfg: MigrateConfig): Promise<MigrationRuntime> {
     // the repositories are picked by DOC_STORE; the copy writes through the PostgreSQL ones
     process.env.DOC_STORE = 'postgres';
+    // checked before connecting: a throw after the connection would leave the MongoDB client open and the process hanging
+    if (Boolean(cfg.pgImportUrl) !== Boolean(cfg.pgMigrateUrl))
+      throw new Error('PG_IMPORT_URL and PG_MIGRATE_URL are both needed');
     const mongo = await new MongoClient(cfg.mongoUri, {
       serverSelectionTimeoutMS: 8000,
       appName: 'docstore-migrate',
@@ -32,8 +48,6 @@ export class MigrationRuntime {
     }).connect();
     if (!cfg.pgImportUrl && !cfg.pgMigrateUrl)
       return new MigrationRuntime(cfg, mongo, undefined, []);
-    if (!cfg.pgImportUrl || !cfg.pgMigrateUrl)
-      throw new Error('PG_IMPORT_URL and PG_MIGRATE_URL are both needed');
     const jobsPool = createPgPool({
       connectionString: cfg.pgImportUrl,
       service: 'import',
@@ -48,11 +62,7 @@ export class MigrationRuntime {
           max: 4,
         })
       : undefined;
-    const migratePool = new Pool({
-      connectionString: cfg.pgMigrateUrl,
-      max: 2,
-      application_name: 'docstore-migrate',
-    });
+    const migratePool = createMigratePool(cfg.pgMigrateUrl);
     // no store fence: the migrator is the one that moves it
     configurePg(
       new PgRuntime({

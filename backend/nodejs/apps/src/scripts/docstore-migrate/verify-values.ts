@@ -79,7 +79,7 @@ export function canonicalDocument(
     const o = v as Record<string, unknown>;
     const s = scalar(o);
     if (s) return s.v;
-    const out: Record<string, Json> = {};
+    const out: Array<[string, Json]> = [];
     for (const [k, x] of Object.entries(o)) {
       let k2 = k;
       if (k.includes('\u0000')) {
@@ -90,9 +90,10 @@ export function canonicalDocument(
         k2 = k.split('\u0000').join('');
       }
       const y = walk(x, path ? `${path}.${k2}` : k2);
-      if (y !== undefined) out[k2] = y;
+      if (y !== undefined) out.push([k2, y]);
     }
-    return out;
+    // fromEntries, not `out[k] =`: an own `__proto__` key would set the prototype and vanish
+    return Object.fromEntries(out);
   };
   return walk(ejson, '') as Record<string, Json>;
 }

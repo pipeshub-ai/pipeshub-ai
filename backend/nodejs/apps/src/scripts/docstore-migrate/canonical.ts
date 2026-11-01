@@ -59,10 +59,12 @@ export function plainJson(v: unknown): unknown {
   if (v instanceof Date) return v.toISOString();
   if (Array.isArray(v)) return v.map(plainJson);
   if (v !== null && typeof v === 'object') {
-    const out: Doc = {};
-    for (const [k, x] of Object.entries(v as Doc))
-      if (x !== undefined) out[k] = plainJson(x);
-    return out;
+    // fromEntries, not `out[k] =`: an own `__proto__` key would set the prototype and vanish
+    return Object.fromEntries(
+      Object.entries(v as Doc)
+        .filter(([, x]) => x !== undefined)
+        .map(([k, x]) => [k, plainJson(x)]),
+    );
   }
   return v;
 }
@@ -73,9 +75,11 @@ export function canonicalJson(v: unknown): string {
     if (Array.isArray(x)) return x.map(walk);
     if (x !== null && typeof x === 'object') {
       const o = x as Doc;
-      const out: Doc = {};
-      for (const k of Object.keys(o).sort()) out[k] = walk(o[k]);
-      return out;
+      return Object.fromEntries(
+        Object.keys(o)
+          .sort()
+          .map((k) => [k, walk(o[k])]),
+      );
     }
     return x;
   };
@@ -100,19 +104,19 @@ export function stripNulCounted<T>(value: T, counts: Map<string, number>): T {
       !Buffer.isBuffer(v) &&
       !(v instanceof Date)
     ) {
-      const out: Doc = {};
-      for (const [k, x] of Object.entries(v as Doc)) {
-        let k2 = k;
-        if (k.includes('\u0000')) {
-          counts.set(
-            `${path}.<key>`,
-            (counts.get(`${path}.<key>`) ?? 0) + k.split('\u0000').length - 1,
-          );
-          k2 = k.split('\u0000').join('');
-        }
-        out[k2] = walk(x, path ? `${path}.${k2}` : k2);
-      }
-      return out;
+      return Object.fromEntries(
+        Object.entries(v as Doc).map(([k, x]) => {
+          let k2 = k;
+          if (k.includes('\u0000')) {
+            counts.set(
+              `${path}.<key>`,
+              (counts.get(`${path}.<key>`) ?? 0) + k.split('\u0000').length - 1,
+            );
+            k2 = k.split('\u0000').join('');
+          }
+          return [k2, walk(x, path ? `${path}.${k2}` : k2)];
+        }),
+      );
     }
     return v;
   };

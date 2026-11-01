@@ -9,6 +9,9 @@ import type { CollectionMapping } from '../../../src/scripts/docstore-migrate/ma
 import { SourceReport, prepareSource } from '../../../src/scripts/docstore-migrate/source';
 import { loadConfig, redact } from '../../../src/scripts/docstore-migrate/config';
 import { docHash } from '../../../src/scripts/docstore-migrate/canonical';
+import { readDecoded, readDecodedPage } from '../../../src/scripts/docstore-migrate/pg-read';
+import { MigrationRuntime, createMigratePool } from '../../../src/scripts/docstore-migrate/runtime';
+import { JobState } from '../../../src/scripts/docstore-migrate/state';
 
 const M: CollectionMapping = {
   collection: 'things',
@@ -50,7 +53,7 @@ describe('docstore-migrate engine', () => {
           members: [{ userId: oid }],
         },
         rep,
-      ) as Record<string, any>;
+      ) as Record<string, unknown>;
       expect(d.title).to.equal('ab');
       expect(d.metadata).to.deep.equal({ big: '9007199254740993', small: 7, price: '1.10', 'a.b': 1, k: 2 });
       expect(d.at).to.equal('1969-07-20T20:17:40.000Z');
@@ -60,10 +63,32 @@ describe('docstore-migrate engine', () => {
 
     it('hashes a secret and reads an absent array as empty (listed)', () => {
       const rep = new SourceReport();
-      const d = prepareSource(M, { _id: oid, orgId: oid, code: 'abc' }, rep) as Record<string, any>;
+      const d = prepareSource(M, { _id: oid, orgId: oid, code: 'abc' }, rep) as Record<string, unknown>;
       expect(d.code).to.equal('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
       expect(d.members).to.deep.equal([]);
       expect(rep.applied.get('absent array members read as []')).to.equal(1);
+    });
+  });
+
+  describe('own __proto__ keys', () => {
+    const withProto = (): Record<string, unknown> => JSON.parse('{"__proto__":{"a":1},"b":2}') as Record<string, unknown>;
+    it('stay in the hash and in the source document', () => {
+      expect(docHash(withProto())).to.not.equal(docHash({ b: 2 }));
+      const d = prepareSource(M, { _id: oid, orgId: oid, metadata: withProto() }, new SourceReport()) as { metadata: object };
+      expect(Object.keys(d.metadata)).to.deep.equal(['__proto__', 'b']);
+    });
+  });
+
+  describe('PostgreSQL reads', () => {
+    const seen: string[] = [];
+    const k = { query: (text: string) => (seen.push(text), Promise.resolve({ rows: [], rowCount: 0 })) };
+    const outbox: CollectionMapping = { ...M, table: 'x.outbox', idType: 'bigint', fields: [{ col: 'size', path: 'size', type: 'bigint' }], children: [] };
+    it('pages a bigint id by number and reads bigint columns as text', async () => {
+      seen.length = 0;
+      await readDecodedPage(k, outbox, null, 10);
+      await readDecoded(k, outbox, ['1']);
+      expect(seen[0]).to.include('$1::bigint IS NULL').and.include('t.id > $1::bigint');
+      for (const q of seen) expect(q).to.include("'id', t.id::text").and.include("'size', t.size::text");
     });
   });
 
@@ -125,6 +150,30 @@ describe('docstore-migrate engine', () => {
       expect(cfg.pgMigrateUrl).to.equal('postgresql://m:secret@h/db');
       expect(redact(cfg.pgMigrateUrl)).to.equal('postgresql://m:***@h/db');
       expect(redact('connect ECONNREFUSED mongodb://root:hunter2@mongodb:27017/')).to.not.include('hunter2');
+    });
+    it('hides a password that holds an @', () => {
+      expect(redact('postgresql://m:pa@ss@h/db')).to.equal('postgresql://m:***@h/db');
+    });
+  });
+
+  describe('runtime and state', () => {
+    it('refuses one PostgreSQL URL without opening MongoDB', async () => {
+      const cfg = { mongoUri: 'mongodb://127.0.0.1:1/', pgImportUrl: 'postgresql://j@127.0.0.1:1/db' } as never;
+      const t = Date.now();
+      const err = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
+      expect(err?.message).to.include('both needed');
+      expect(Date.now() - t).to.be.lessThan(2000);
+    });
+    it('keeps the migrate pool alive through an idle client error', async () => {
+      const pool = createMigratePool('postgresql://m@127.0.0.1:1/db');
+      expect(() => pool.emit('error', new Error('terminating connection'))).to.not.throw();
+      await pool.end();
+    });
+    it('refuses stored progress that is not a migration state', async () => {
+      const rt = (progress: unknown): never => ({ migratePool: { query: () => Promise.resolve({ rows: [{ id: '1', status: 'running', progress }] }) } }) as never;
+      for (const bad of [[1], 'abc', { collections: [] }, { collections: 'x' }])
+        expect(await JobState.current(rt(bad)).then(() => 'ok', () => 'refused')).to.equal('refused');
+      expect((await JobState.current(rt(null)))?.progress.collections).to.deep.equal({});
     });
   });
 });

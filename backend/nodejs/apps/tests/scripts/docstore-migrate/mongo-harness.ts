@@ -33,27 +33,29 @@ export async function startMongo(work: string, replSet = true): Promise<TestMong
       await new Promise((r) => setTimeout(r, 200));
     }
   }
-  if (!client) {
-    proc.kill('SIGKILL');
-    throw new Error('mongod did not start');
-  }
-  if (replSet) {
-    await client.db('admin').command({ replSetInitiate: { _id: 'rs0', members: [{ _id: 0, host: `127.0.0.1:${port}` }] } });
-    for (let i = 0; i < 100; i++) {
-      const h = await client.db('admin').command({ hello: 1 });
-      if (h.isWritablePrimary) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  return {
-    uri: `mongodb://127.0.0.1:${port}/?directConnection=true`,
-    port,
-    client,
-    async stop() {
-      await client?.close().catch(() => undefined);
+  const stop = async (): Promise<void> => {
+    await client?.close().catch(() => undefined);
+    // a mongod that has already exited never emits 'exit' again
+    if (proc.exitCode === null && proc.signalCode === null) {
+      const exited = new Promise((r) => proc.once('exit', r));
       proc.kill('SIGTERM');
-      await new Promise((r) => proc.once('exit', r));
-      rmSync(root, { recursive: true, force: true });
-    },
+      await exited;
+    }
+    rmSync(root, { recursive: true, force: true });
   };
+  try {
+    if (!client) throw new Error('mongod did not start');
+    if (replSet) {
+      await client.db('admin').command({ replSetInitiate: { _id: 'rs0', members: [{ _id: 0, host: `127.0.0.1:${port}` }] } });
+      for (let i = 0; i < 100; i++) {
+        const h = await client.db('admin').command({ hello: 1 });
+        if (h.isWritablePrimary) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+  } catch (e) {
+    await stop();
+    throw e;
+  }
+  return { uri: `mongodb://127.0.0.1:${port}/?directConnection=true`, port, client, stop };
 }

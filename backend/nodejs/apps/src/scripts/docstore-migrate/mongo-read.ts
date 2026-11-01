@@ -9,6 +9,7 @@ const HEX24 = /^[0-9a-fA-F]{24}$/;
 export const idFilter = (id: string): ObjectId | string =>
   HEX24.test(id) ? new ObjectId(id) : id;
 
+/** Checkpoint text of an `_id`. Every migrated collection has ObjectId ids (the preflight refuses any other), whose text is already lowercase hex. */
 export const idString = (id: unknown): string => String(id).toLowerCase();
 
 export interface RawBatch {
