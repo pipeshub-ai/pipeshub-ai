@@ -96,6 +96,8 @@ const documents: CollectionMapping = {
       presence: 'null',
       readAbsentAs: null,
     },
+    { col: 'write_seq', path: 'writeSeq', type: 'bigint', absentWhen: 0 },
+    { col: 'writers', path: 'writers', type: 'json', absentWhen: [] },
     { col: 'created_at', path: 'createdAt', type: 'epoch_ms' },
     { col: 'updated_at', path: 'updatedAt', type: 'epoch_ms' },
   ],
