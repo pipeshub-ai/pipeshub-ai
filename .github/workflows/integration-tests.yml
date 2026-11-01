@@ -402,8 +402,8 @@ jobs:
       # loads its own org). The connector reaches it by the alias salesforce-sim.internal, the instance URL the
       # simulator hands out (docker-compose.integration.salesforce-sim.yml). CONNSIM_SALESFORCE_REF is a
       # connectors-simulator commit with connsim/sources/salesforce and the behaviours a live org showed
-      # (wall clock, Chatter edits, SOQL faults; branch sim/salesforce-live-facts, until it merges).
-      CONNSIM_SALESFORCE_REF: bd65c811ebdfe97c3a801ceb81794f9c4fd24739
+      # (wall clock, Chatter edits, SOQL faults; connectors-simulator #22).
+      CONNSIM_SALESFORCE_REF: c40c2911a800b46d87a47283c7197fe8c18e7ac2
       SALESFORCE_SIM_IMAGE: pipeshub/connectors-simulator:salesforce-it
       NEEDS_SALESFORCE_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'salesforce')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
