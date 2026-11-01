@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.models.entities import TicketRecord
@@ -342,6 +343,212 @@ class TestFetchIssuesBatched:
         await sync.fetch_issues_batched(repo)
 
         c.data_entities_processor.on_new_records.assert_not_awaited()
+
+
+_RESUME = {
+    "listing_resume_page": 2,
+    "listing_resume_cursor": "cursor-2",
+    "listing_resume_since": None,
+    "listing_resume_watermark": 1_800_000_000_000,
+    "listing_resume_created": 100,
+    "listing_resume_window": None,
+}
+
+
+def _rolling(operator: str) -> FilterCollection:
+    return FilterCollection(filters=[Filter(
+        key=SyncFilterKey.MODIFIED.value, type="datetime", operator=operator, value=None,
+    )])
+
+
+class TestResumeInterruptedListing:
+    """A listing longer than one hour's rate limit used to start again from the
+    first page every sync, and so never finished: Apache Arrow's reached page
+    454 of about 490 and began again. It now reads on from where it stopped."""
+
+    @staticmethod
+    def _sync(c: object, checkpoint: dict) -> IssuesSync:
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value=dict(checkpoint))
+        sync._write_checkpoint = AsyncMock()
+        sync._reconcile_removed_issues = AsyncMock(return_value=(True, 5))
+        return sync
+
+    async def test_a_failure_past_the_first_page_saves_where_it_stopped(self) -> None:
+        c = make_mock_connector()
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, failed_response("rate limited", status_code=429)])
+        sync = self._sync(c, {})
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_once_with("1-work-items", {
+            "listing_resume_page": 2,
+            "listing_resume_cursor": "cursor-2",
+            "listing_resume_since": None,
+            "listing_resume_watermark": epoch_ms_or_now(datetime(2024, 1, 2, tzinfo=timezone.utc)),
+            "listing_resume_created": 100,
+            "listing_resume_window": None,
+        })
+
+    async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, _RESUME)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (2, "cursor-2")
+        # Issues created on the pages read before count towards the total check.
+        assert sync._reconcile_removed_issues.await_args.args[3] == 101
+        (group, written), _ = sync._write_checkpoint.await_args
+        # The watermark is the newest issue of the whole listing, read before the stop.
+        assert written["last_sync_time"] == _RESUME["listing_resume_watermark"]
+        assert all(written[k] is None for k in _RESUME)
+
+    async def test_a_place_read_back_without_its_null_fields_reads_on(self) -> None:
+        """Neo4j drops a property set to null, so a place saved with no window comes back
+        without its start."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        place = {k: v for k, v in _RESUME.items() if v is not None}
+        sync = self._sync(c, place)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"], kwargs["since"]) == (2, "cursor-2", None)
+
+    async def test_a_saved_place_from_another_window_is_not_used(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_since": 1_600_000_000_000})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (1, None)
+
+    async def test_a_saved_place_github_refuses_is_forgotten(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("bad cursor", status_code=422))
+        sync = self._sync(c, _RESUME)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_once_with("1-work-items", dict.fromkeys(_RESUME))
+
+    async def test_a_place_without_a_cursor_reads_the_page_before_again(self) -> None:
+        """A page number is an offset. An issue removed from a page already read moves a
+        later one onto it, so reading on starts a page early."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_page": 4, "listing_resume_cursor": None})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (3, None)
+
+    async def test_a_failed_removal_check_keeps_the_place(self) -> None:
+        """The watermark is not committed when the check fails, so the next sync must read
+        on from the place again rather than start from page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, _RESUME)
+        sync._reconcile_removed_issues = AsyncMock(return_value=(False, None))
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_not_awaited()
+
+    async def test_turning_issues_off_forgets_the_place(self) -> None:
+        c = make_mock_connector()
+        c.issue_reconciler.remove_all = AsyncMock()
+        repo = make_repo(repo_id=1)
+        repo.has_issues = False
+        sync = self._sync(c, {**_RESUME, "issue_total": 40})
+
+        await sync.fetch_issues_batched(repo)
+
+        sync._write_checkpoint.assert_awaited_once_with(
+            "1-work-items", {"issue_total": 0, **dict.fromkeys(_RESUME)},
+        )
+
+    async def test_a_rate_limit_at_the_saved_place_keeps_it(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        sync = self._sync(c, _RESUME)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == _RESUME
+
+    async def test_a_rate_limit_on_the_page_before_keeps_the_saved_place(self) -> None:
+        """Reading on without a cursor starts a page early. A failure there must not store
+        that earlier page, or each failed sync would step the place back towards page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        place = {**_RESUME, "listing_resume_page": 4, "listing_resume_cursor": None}
+        sync = self._sync(c, place)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 3
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == place
+
+    async def test_a_rolling_window_saves_its_name_with_the_place(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        recent = [_issue(number=n) for n in range(100)]
+        for issue in recent:  # inside the window
+            issue.updated_at = issue.created_at = datetime.now(timezone.utc)
+        first = ok_response(recent)
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, failed_response("rate limited", status_code=429)])
+        sync = self._sync(c, {})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written["listing_resume_window"] == "last_90_days"
+        assert written["listing_resume_since"] is not None
+
+    async def test_a_rolling_window_that_moved_on_reads_on_with_its_saved_start(self) -> None:
+        """"Last 90 days" starts later on every sync. The interrupted listing reads on
+        with the start it began with, or it would begin again from page 1 every sync."""
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        saved_since = 1_780_000_000_000
+        place = {**_RESUME, "listing_resume_since": saved_since, "listing_resume_window": "last_90_days"}
+        sync = self._sync(c, place)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (2, "cursor-2")
+        assert kwargs["since"] == datetime.fromtimestamp(saved_since / 1000, tz=timezone.utc)
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == place
+
+    async def test_a_place_saved_for_another_rolling_window_is_not_used(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_since": 1_780_000_000_000,
+                              "listing_resume_window": "last_30_days"})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (1, None)
 
 
 class TestProcessIssueToTicket:
