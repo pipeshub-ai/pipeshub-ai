@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
 from app.agents.agent_loop.converters import token_usage_from_ai_message
@@ -417,12 +417,11 @@ async def _ask_selector(llm: BaseChatModel, prompt: str) -> tuple[dict[str, Any]
         ),
         timeout=SELECTION_TIMEOUT_SECONDS,
     )
-    usage = token_usage_from_ai_message(reply) if isinstance(reply, AIMessage) else None
+    usage = token_usage_from_ai_message(reply)
     try:
-        verdict = extract_json_from_string(cleanup_content(coerce_message_content_to_text(reply.content)))
+        return extract_json_from_string(cleanup_content(coerce_message_content_to_text(reply.content))), usage
     except ValueError:
         return None, usage
-    return (verdict if isinstance(verdict, dict) else None), usage
 
 
 def _stop_asked(token: CancellationToken | None) -> bool:
@@ -566,7 +565,12 @@ def _record_blocks(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if not isinstance(blocks, list):
         return []
     found = [cast("Mapping[str, Any]", block) for block in cast("list[object]", blocks) if isinstance(block, Mapping)]
-    return sorted(found, key=lambda block: block.get("index") if isinstance(block.get("index"), int) else 0)
+    return sorted(found, key=_block_index)
+
+
+def _block_index(block: Mapping[str, Any]) -> int:
+    index: object = block.get("index")
+    return index if isinstance(index, int) else 0
 
 
 def _block_text(block: Mapping[str, Any]) -> str:

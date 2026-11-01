@@ -150,12 +150,12 @@ def system(reason: str) -> Iterator[OrgContext]:
         yield ctx
 
 
-def spawn_detached(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task:
+def spawn_detached[T](coro: Coroutine[Any, Any, T], *, name: str | None = None) -> asyncio.Task[T]:
     """Start long-lived work with an empty context (loops, consumers, lazily created clients)."""
     return asyncio.get_running_loop().create_task(coro, name=name, context=contextvars.Context())
 
 
-def spawn_in_request(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task:
+def spawn_in_request[T](coro: Coroutine[Any, Any, T], *, name: str | None = None) -> asyncio.Task[T]:
     """Start request-scoped child work, explicitly keeping the caller's context."""
     return asyncio.get_running_loop().create_task(coro, name=name, context=contextvars.copy_context())
 
