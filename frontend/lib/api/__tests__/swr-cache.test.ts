@@ -4,6 +4,7 @@ import useSWR from 'swr';
 
 import {
   isSwrReadUnavailable,
+  onSwrNamespaceRevalidate,
   revalidateSwrKey,
   revalidateSwrNamespace,
   SWR_NS,
@@ -217,5 +218,94 @@ describe('isSwrReadUnavailable', () => {
   it('is true when the thing is gone or forbidden, even with data shown', () => {
     expect(isSwrReadUnavailable(true, failure(404))).toBe(true);
     expect(isSwrReadUnavailable(true, failure(403))).toBe(true);
+  });
+});
+
+describe('SWR_POLICY.sessionStable', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    clearSessionCache();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('is not refetched on focus or reconnect', () => {
+    expect(SWR_POLICY.sessionStable).toMatchObject({ revalidateOnFocus: false, revalidateOnReconnect: false });
+  });
+
+  it('reuses a response for the whole session', async () => {
+    const fetcher = vi.fn(async () => 'org');
+    (await mountKey([SWR_NS.org, 'details'], fetcher, SWR_POLICY.sessionStable)).unmount();
+    await settle(3_600_000);
+    await mountKey([SWR_NS.org, 'details'], fetcher, SWR_POLICY.sessionStable);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('after an invalidation made while unmounted, the next mount refetches in the background', async () => {
+    let answer = 'old';
+    let release: () => void = () => undefined;
+    const fetcher = vi.fn(
+      () => new Promise<string>((resolve) => {
+        const value = answer;
+        release = () => resolve(value);
+        if (value === 'old') release();
+      }),
+    );
+    (await mountKey([SWR_NS.org, 'details'], fetcher, SWR_POLICY.sessionStable)).unmount();
+
+    answer = 'new';
+    revalidateSwrNamespace(SWR_NS.org);
+    const view = await mountKey([SWR_NS.org, 'details'], fetcher, SWR_POLICY.sessionStable);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(view.result.current.data).toBe('old');
+
+    await act(async () => {
+      release();
+    });
+    expect(view.result.current.data).toBe('new');
+  });
+
+  it('does not cache a failure: the next mount asks again', async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue('org');
+    const mountReadingData = async () => {
+      // Reading `data` during render subscribes the hook to it.
+      const view = renderHook(() => useSWR([SWR_NS.org, 'details'], fetcher, SWR_POLICY.sessionStable).data);
+      await settle();
+      return view;
+    };
+    (await mountReadingData()).unmount();
+    const view = await mountReadingData();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(view.result.current).toBe('org');
+  });
+});
+
+describe('onSwrNamespaceRevalidate', () => {
+  it('runs on an invalidation of its namespace only, even when no SWR key of it exists', () => {
+    const models = vi.fn();
+    const org = vi.fn();
+    const stopModels = onSwrNamespaceRevalidate(SWR_NS.aiModelConfig, models);
+    const stopOrg = onSwrNamespaceRevalidate(SWR_NS.org, org);
+
+    revalidateSwrNamespace(SWR_NS.aiModelConfig);
+
+    expect(models).toHaveBeenCalledTimes(1);
+    expect(org).not.toHaveBeenCalled();
+    stopModels();
+    stopOrg();
+  });
+
+  it('is not run after it unsubscribes', () => {
+    const listener = vi.fn();
+    onSwrNamespaceRevalidate(SWR_NS.aiModelConfig, listener)();
+
+    revalidateSwrNamespace(SWR_NS.aiModelConfig);
+
+    expect(listener).not.toHaveBeenCalled();
   });
 });

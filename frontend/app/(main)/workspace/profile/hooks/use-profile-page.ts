@@ -1,14 +1,19 @@
 'use client';
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectProfile, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { logoutFromWorkspaceMenu } from '@/config';
 import { useProfileStore, isProfileFormDirty } from '../store';
 import { ProfileApi } from '../api';
 import { getUserIdFromToken, getUserEmailFromToken } from '@/lib/utils/jwt';
 import { isProcessedError } from '@/lib/api';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
 import { USER_ROLES } from '../../constants';
+
+const PASSWORD_STATUS_KEY = [SWR_NS.profile, 'password-status'] as const;
 
 // ========================================
 // Hook
@@ -19,41 +24,39 @@ export function useProfilePage() {
   const addToast = useToastStore((s) => s.addToast);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Signed-in user (read once per session by the profile initializer) ──
+  const profile = useUserStore(selectProfile);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const updateUserProfile = useUserStore((s) => s.updateProfile);
+  const setStoreAvatarUrl = useUserStore((s) => s.setAvatarUrl);
+  const avatarUrl = profile?.avatarUrl ?? null;
+  const role = profile?.isAdmin ? USER_ROLES.ADMIN : USER_ROLES.MEMBER;
+
   // ── Local state ──────────────────────────────────────────────
-  const [userId, setUserId] = useState<string | null>(null);
+  const [userId] = useState<string | null>(() => getUserIdFromToken());
+  const [email] = useState<string>(() => getUserEmailFromToken() ?? '');
+  /** False until the form holds the server's name and designation; Save stays hidden until then. */
+  const [profileLoaded, setProfileLoaded] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const [hasPassword, setHasPassword] = useState<boolean | null>(null);
-  const [passwordStatusFailed, setPasswordStatusFailed] = useState(false);
   const [settingPassword, setSettingPassword] = useState(false);
   const [setPasswordDialogOpen, setSetPasswordDialogOpen] = useState(false);
-  const [passwordStatusAttempt, setPasswordStatusAttempt] = useState(0);
 
-  // Stays unknown on failure: guessing "has a password" would send a passwordless user
-  // into a form that asks for a current password they do not have.
-  useEffect(() => {
-    let cancelled = false;
-    setPasswordStatusFailed(false);
-    ProfileApi.getPasswordStatus()
-      .then((status) => {
-        if (!cancelled) setHasPassword(status.hasPassword);
-      })
-      .catch(() => {
-        if (!cancelled) setPasswordStatusFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [passwordStatusAttempt]);
-
+  // Read once per session: both password flows end in sign-out. Stays unknown on failure:
+  // guessing "has a password" would send a passwordless user into a form that asks for a
+  // current password they do not have.
+  const passwordStatus = useSWR(
+    PASSWORD_STATUS_KEY,
+    () => ProfileApi.getPasswordStatus(),
+    SWR_POLICY.sessionStable,
+  );
+  const hasPassword = passwordStatus.data?.hasPassword ?? null;
+  const passwordStatusFailed = Boolean(passwordStatus.error) && !passwordStatus.isValidating;
+  const { mutate: mutatePasswordStatus } = passwordStatus;
   const retryPasswordStatus = useCallback(() => {
-    setPasswordStatusAttempt((n) => n + 1);
-  }, []);
+    void mutatePasswordStatus();
+  }, [mutatePasswordStatus]);
   const [changeEmailOpen, setChangeEmailOpen] = useState(false);
-  const [email, setEmail] = useState<string>('');
-  const [emailLoading, setEmailLoading] = useState(false);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
-  const [role, setRole] = useState<string>(USER_ROLES.MEMBER);
 
   // ── Store ─────────────────────────────────────────────────────
   const form = useProfileStore((s) => s.form);
@@ -69,62 +72,54 @@ export function useProfilePage() {
   const setDiscardDialogOpen = useProfileStore((s) => s.setDiscardDialogOpen);
   const setLoading = useProfileStore((s) => s.setLoading);
   /** Subscribe to form + savedForm so Zustand re-renders after markSaved (savedForm-only updates). */
-  const isFormDirty = useProfileStore((s) =>
+  const isFormEdited = useProfileStore((s) =>
     isProfileFormDirty(s.form, s.savedForm),
   );
+  // Saving before the server's values are in would overwrite the stored designation with ''.
+  const isFormDirty = profileLoaded && isFormEdited;
 
-  // ── Load profile on mount ─────────────────────────────────────
+  // ── Fill the form once per signed-in user ─────────────────────
   useEffect(() => {
-    const fetchProfile = async () => {
-      const uid = getUserIdFromToken();
-      setUserId(uid);
-
-      // Get email from JWT
-      setEmailLoading(true);
-      const emailFromToken = getUserEmailFromToken();
-      if (emailFromToken) {
-        setEmail(emailFromToken);
-      }
-      setEmailLoading(false);
-
-      if (!uid) {
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const [userData, avatarObjectUrl] = await Promise.all([
-          ProfileApi.getUser(uid),
-          ProfileApi.getAvatar(),
-        ]);
-
-        setForm({
-          fullName: userData.fullName ?? '',
-          designation: userData.designation ?? '',
-        });
-
-        // Org admin is stored on User.role ('admin' | 'member')
-        const roleLower =
-          typeof userData.role === 'string'
-            ? userData.role.trim().toLowerCase()
-            : '';
-        setRole(roleLower === 'admin' ? USER_ROLES.ADMIN : USER_ROLES.MEMBER);
-
-        if (avatarObjectUrl) setAvatarUrl(avatarObjectUrl);
-
-        setLoading(false);
-      } catch {
+    if (!isProfileInitialized) return;
+    setProfileLoaded(false);
+    const known = useUserStore.getState().profile;
+    if (known && known.designation !== undefined) {
+      setForm({ fullName: known.fullName ?? '', designation: known.designation ?? '' });
+      setProfileLoaded(true);
+      setLoading(false);
+      return;
+    }
+    // The sign-in read of users/:id failed, so name and designation are unknown: ask once more.
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    ProfileApi.getUser(userId)
+      .then((userData) => {
+        if (cancelled) return;
+        const fullName = userData.fullName ?? '';
+        const designation = userData.designation ?? '';
+        setForm({ fullName, designation });
+        updateUserProfile({ fullName: fullName || null, designation: userData.designation ?? null });
+        setProfileLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
         addToast({
           variant: 'error',
           title: t('workspace.profile.toasts.loadError'),
           description: t('workspace.profile.toasts.loadErrorDescription'),
         });
-        setLoading(false);
-      }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
     };
-
-    fetchProfile();
-  }, []);
+  }, [isProfileInitialized, profile?.userId]);
 
   // ── Form handlers ─────────────────────────────────────────────
 
@@ -147,6 +142,7 @@ export function useProfilePage() {
         designation: form.designation,
       });
       markSaved();
+      updateUserProfile({ fullName: form.fullName, designation: form.designation });
       addToast({
         variant: 'success',
         title: t('workspace.profile.toasts.saveSuccess'),
@@ -159,7 +155,7 @@ export function useProfilePage() {
         description: t('workspace.profile.toasts.saveErrorDescription'),
       });
     }
-  }, [form, userId, validate, markSaved, addToast]);
+  }, [form, userId, validate, markSaved, updateUserProfile, addToast]);
 
   // ── Password change ───────────────────────────────────────────
 
@@ -241,21 +237,20 @@ export function useProfilePage() {
       e.target.value = '';
 
       setAvatarUploading(true);
-      const previewUrl = URL.createObjectURL(file);
-      setAvatarUrl(previewUrl);
+      const previousUrl = avatarUrl;
+      // The store revokes a replaced blob: URL, so the preview is freed when it is swapped out.
+      setStoreAvatarUrl(URL.createObjectURL(file));
 
       try {
         const processedUrl = await ProfileApi.uploadAvatar(file);
-        URL.revokeObjectURL(previewUrl);
-        if (processedUrl) setAvatarUrl(processedUrl);
+        if (processedUrl) setStoreAvatarUrl(processedUrl);
         addToast({
           variant: 'success',
           title: t('workspace.profile.toasts.avatarSaved'),
           description: t('workspace.profile.toasts.avatarSavedDescription'),
         });
       } catch (err: unknown) {
-        URL.revokeObjectURL(previewUrl);
-        setAvatarUrl(avatarUrl);
+        setStoreAvatarUrl(previousUrl);
         const errMessage = isProcessedError(err) ? err.message : undefined;
         addToast({
           variant: 'error',
@@ -266,7 +261,7 @@ export function useProfilePage() {
         setAvatarUploading(false);
       }
     },
-    [userId, avatarUrl, addToast, t]
+    [userId, avatarUrl, setStoreAvatarUrl, addToast, t]
   );
 
   // ── Avatar delete ──────────────────────────────────────────────
@@ -276,7 +271,7 @@ export function useProfilePage() {
     setAvatarUploading(true);
     try {
       await ProfileApi.deleteAvatar();
-      setAvatarUrl(null);
+      setStoreAvatarUrl(null);
       addToast({
         variant: 'success',
         title: t('workspace.profile.toasts.avatarRemoved'),
@@ -292,7 +287,7 @@ export function useProfilePage() {
     } finally {
       setAvatarUploading(false);
     }
-  }, [userId, addToast]);
+  }, [userId, setStoreAvatarUrl, addToast]);
 
   // ── Computed ──────────────────────────────────────────────────
 
@@ -320,7 +315,7 @@ export function useProfilePage() {
     changeEmailOpen,
     setChangeEmailOpen,
     email,
-    emailLoading,
+    emailLoading: false,
     avatarUrl,
     avatarUploading,
     avatarInitial,

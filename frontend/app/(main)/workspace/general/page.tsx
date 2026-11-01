@@ -21,7 +21,8 @@ import {
 import { useToastStore } from '@/lib/store/toast-store';
 import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
-import { OrgApi, MetricsApi } from './api';
+import { OrgApi, MetricsApi, type MetricsConfig, type OrgResponse } from './api';
+import { useOrg, useOrgLogo, useOrgMetrics } from './use-org';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
@@ -89,6 +90,21 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   );
 }
 
+function toGeneralForm(org: OrgResponse, metrics: MetricsConfig | null): GeneralFormData {
+  return {
+    registeredName: org.registeredName || '',
+    displayName: org.shortName || '',
+    contactEmail: org.contactEmail || '',
+    streetAddress: org.permanentAddress?.addressLine1 || '',
+    country: org.permanentAddress?.country || '',
+    state: org.permanentAddress?.state || '',
+    city: org.permanentAddress?.city || '',
+    zipCode: org.permanentAddress?.postCode || '',
+    dataCollection: metrics?.enableMetricCollection === 'true',
+    logoFileName: null,
+  };
+}
+
 // ========================================
 // Main Page
 // ========================================
@@ -99,14 +115,16 @@ export default function GeneralPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Blob URL for the currently saved logo (fetched via auth)
-  const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  /** True when the org has a logo on the server (controls delete visibility). */
-  const [hasServerLogo, setHasServerLogo] = useState(false);
+  const { data: org, error: orgError } = useOrg();
+  const { data: savedLogoUrl } = useOrgLogo();
+  const { data: metrics, error: metricsError } = useOrgMetrics(isProfileInitialized && isAdmin === true);
+  // Local preview of a logo while it uploads; the saved logo comes from the cache.
+  const [previewLogoUrl, setPreviewLogoUrl] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoDeleting, setLogoDeleting] = useState(false);
-  // Last server-confirmed logo URL — used to revert preview on discard
-  const savedLogoUrlRef = useRef<string | null>(null);
+  const logoUrl = previewLogoUrl ?? savedLogoUrl ?? null;
+  const hasServerLogo = Boolean(savedLogoUrl);
+  const formSeededRef = useRef(false);
 
   // ── Store selectors ────────────────────────────────────────
   const form = useGeneralStore((s) => s.form);
@@ -133,68 +151,25 @@ export default function GeneralPage() {
 
   // ── Load org data on mount ─────────────────────────────────
 
+  // Seeded once per visit: later org/metrics refreshes (after Save) must not replace what is being edited.
   useEffect(() => {
-    // Wait until the profile is initialized before deciding which branch to fetch
-    // — isAdmin is null until resolved, which would cause the wrong branch to run.
-    if (!isProfileInitialized) return;
-    const fetchOrg = async () => {
-      try {
-        if (isAdmin) {
-          const [org, logoObjectUrl, metricsConfig] = await Promise.all([
-            OrgApi.getOrg(),
-            OrgApi.getLogoUrl(),
-            MetricsApi.getMetricsCollection(),
-          ]);
-          const loaded: GeneralFormData = {
-            registeredName: org.registeredName || '',
-            displayName: org.shortName || '',
-            contactEmail: org.contactEmail || '',
-            streetAddress: org.permanentAddress?.addressLine1 || '',
-            country: org.permanentAddress?.country || '',
-            state: org.permanentAddress?.state || '',
-            city: org.permanentAddress?.city || '',
-            zipCode: org.permanentAddress?.postCode || '',
-            dataCollection: metricsConfig.enableMetricCollection === 'true',
-            logoFileName: null,
-          };
-          setForm(loaded);
-          setLogoUrl(logoObjectUrl);
-          savedLogoUrlRef.current = logoObjectUrl;
-          setHasServerLogo(logoObjectUrl !== null);
-        } else {
-          const [org, logoObjectUrl] = await Promise.all([
-            OrgApi.getOrg(),
-            OrgApi.getLogoUrl(),
-          ]);
-          const loaded: GeneralFormData = {
-            registeredName: org.registeredName || '',
-            displayName: org.shortName || '',
-            contactEmail: org.contactEmail || '',
-            streetAddress: org.permanentAddress?.addressLine1 || '',
-            country: org.permanentAddress?.country || '',
-            state: org.permanentAddress?.state || '',
-            city: org.permanentAddress?.city || '',
-            zipCode: org.permanentAddress?.postCode || '',
-            dataCollection: false,
-            logoFileName: null,
-          };
-          setForm(loaded);
-          setLogoUrl(logoObjectUrl);
-          savedLogoUrlRef.current = logoObjectUrl;
-          setHasServerLogo(logoObjectUrl !== null);
-        }
-      } catch {
-        addToast({
-          variant: 'error',
-          title: t('workspace.general.toasts.loadError'),
-          description: t('workspace.general.toasts.loadErrorDescription'),
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchOrg();
-  }, [isAdmin, isProfileInitialized, addToast, setForm, setLoading]);
+    // isAdmin is null until the profile is initialized, which would pick the wrong branch.
+    if (!isProfileInitialized || formSeededRef.current) return;
+    if (orgError || metricsError) {
+      formSeededRef.current = true;
+      addToast({
+        variant: 'error',
+        title: t('workspace.general.toasts.loadError'),
+        description: t('workspace.general.toasts.loadErrorDescription'),
+      });
+      setLoading(false);
+      return;
+    }
+    if (!org || savedLogoUrl === undefined || (isAdmin && !metrics)) return;
+    formSeededRef.current = true;
+    setForm(toGeneralForm(org, isAdmin ? metrics : null));
+    setLoading(false);
+  }, [isAdmin, isProfileInitialized, org, savedLogoUrl, metrics, orgError, metricsError, addToast, setForm, setLoading]);
 
   // ── Handlers ───────────────────────────────────────────────
 
@@ -253,7 +228,7 @@ export default function GeneralPage() {
   }, [setDiscardDialogOpen]);
 
   const handleDiscardConfirm = useCallback(() => {
-    setLogoUrl(savedLogoUrlRef.current);
+    setPreviewLogoUrl(null);
     discardChanges();
     addToast({
       variant: 'success',
@@ -268,33 +243,26 @@ export default function GeneralPage() {
       if (!file) return;
       e.target.value = '';
 
-      const previousSavedUrl = savedLogoUrlRef.current;
       const previewUrl = URL.createObjectURL(file);
-      setLogoUrl(previewUrl);
+      setPreviewLogoUrl(previewUrl);
 
       setLogoUploading(true);
       try {
         await OrgApi.uploadLogo(file);
-        const freshUrl = await OrgApi.getLogoUrl();
-        setLogoUrl(freshUrl);
-        savedLogoUrlRef.current = freshUrl;
-        setHasServerLogo(freshUrl !== null);
-        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-        if (previousSavedUrl?.startsWith('blob:')) URL.revokeObjectURL(previousSavedUrl);
         addToast({
           variant: 'success',
           title: t('workspace.general.toasts.logoUpdated'),
           description: t('workspace.general.toasts.logoUpdatedDescription'),
         });
       } catch {
-        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-        setLogoUrl(savedLogoUrlRef.current);
         addToast({
           variant: 'error',
           title: t('workspace.general.toasts.logoUploadError'),
           description: t('workspace.general.toasts.logoUploadErrorDescription'),
         });
       } finally {
+        URL.revokeObjectURL(previewUrl);
+        setPreviewLogoUrl(null);
         setLogoUploading(false);
       }
     },
@@ -302,16 +270,9 @@ export default function GeneralPage() {
   );
 
   const handleDeleteLogo = useCallback(async () => {
-    const saved = savedLogoUrlRef.current;
-    const preview = logoUrl;
     setLogoDeleting(true);
     try {
       await OrgApi.deleteLogo();
-      if (saved?.startsWith('blob:')) URL.revokeObjectURL(saved);
-      if (preview?.startsWith('blob:') && preview !== saved) URL.revokeObjectURL(preview);
-      savedLogoUrlRef.current = null;
-      setLogoUrl(null);
-      setHasServerLogo(false);
       addToast({
         variant: 'success',
         title: t('workspace.general.toasts.logoRemoved'),
@@ -326,7 +287,7 @@ export default function GeneralPage() {
     } finally {
       setLogoDeleting(false);
     }
-  }, [logoUrl, addToast]);
+  }, [addToast]);
 
   const logoInitial = form.displayName
     ? form.displayName.charAt(0).toUpperCase()
