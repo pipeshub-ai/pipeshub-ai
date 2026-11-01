@@ -236,6 +236,7 @@ class TestAbstractMethodInventory:
         # Query operations
         "execute_query",
         "get_nodes_by_filters",
+        "filter_linked_record_ids",
         "get_nodes_by_field_in",
         "get_nodes_by_field_prefix",
         "search_nodes_by_field_terms",

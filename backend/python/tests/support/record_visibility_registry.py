@@ -129,6 +129,11 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
+    "filter_linked_record_ids": (
+        Rule.ALL,
+        _STRUCTURE + ": whether each of the caller's records still hangs under a record group or parent; "
+        "a trashed record's permissions are left as they were",
+    ),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
     "get_record_taxonomy_links": (

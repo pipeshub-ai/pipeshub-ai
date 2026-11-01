@@ -1623,6 +1623,22 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def filter_linked_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        The ids among ``record_ids`` that still hang in the hierarchy: a belongsTo edge to a
+        record group, or a parent record above them (a PARENT_CHILD or ATTACHMENT record
+        relation). A record a full sync no longer saw is unlinked and has neither; a step that
+        grants access across all of a connector's records uses this to leave it unreadable.
+
+        A failed query raises.
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
     async def get_nodes_by_field_in(
         self,
         collection: str,
