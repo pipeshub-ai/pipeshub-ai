@@ -1,4 +1,4 @@
-"""Where the factory puts the coverage gate among the POST_MODEL hooks."""
+"""Where the factory puts the coverage gate and the steps after the draft among the POST_MODEL hooks."""
 
 from __future__ import annotations
 
@@ -18,7 +18,9 @@ def _post_model_hooks(chat_mode: str) -> list[str]:
 
 def test_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COVERAGE_LOOP", raising=False)
-    assert "coverage_gate" not in _post_model_hooks("internal_search")
+    monkeypatch.delenv("ANSWER_COMPLETENESS_PASS", raising=False)
+    hooks = _post_model_hooks("internal_search")
+    assert "coverage_gate" not in hooks and "record_completeness_pass" not in hooks
 
 
 def test_on_for_enterprise_search_before_the_completion_gate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,3 +39,11 @@ def test_the_gate_part_turns_off_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COVERAGE_LOOP", "true")
     monkeypatch.setenv("COVERAGE_LOOP_GATE", "false")
     assert "coverage_gate" not in _post_model_hooks("internal_search")
+
+
+def test_the_completeness_pass_is_outermost_of_the_send_backs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COVERAGE_LOOP", "true")
+    monkeypatch.setenv("ANSWER_COMPLETENESS_PASS", "true")
+    hooks = _post_model_hooks("internal_search")
+    assert hooks.index("record_completeness_pass") < hooks.index("coverage_gate")
+    assert "record_completeness_pass" not in _post_model_hooks("agent")

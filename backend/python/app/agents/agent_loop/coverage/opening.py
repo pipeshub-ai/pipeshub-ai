@@ -159,8 +159,17 @@ _ABSENT_RE = re.compile(
     r"|document|provide|describe|set|record)\b",
     re.IGNORECASE,
 )
+# Wider than `_ABSENT_RE`, read on the first sentence only: "the policies do not establish a quorum".
+_NOT_ESTABLISHED_RE = re.compile(
+    r"\b(?:do|does|did)(?: not|n['’]t) (?:establish|enumerate|confirm|cover|identify|indicate|say|show|contain|specify"
+    r"|state|define|list|name|give|mention|include|document|provide|describe|record)\b"
+    r"|\b(?:remains?|is|are) (?:unconfirmed|unknown|unspecified|undocumented)\b"
+    r"|\bnot (?:specified|stated|documented|defined|established|enumerated|confirmed)\b",
+    re.IGNORECASE,
+)
 _LINK_RE = re.compile(r"\s*\[\d+\]\((?:https?://[^)\s]+|ref[\w-]+)\)|\s*\[source\]\([^)]*\)")
 _ANSWER_LABEL_RE = re.compile(r"^\*\*(?:Short answer|Answer|Summary):?\*\*:?\s*")
+_MARKUP_RE = re.compile(r"[*_`]+")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _MAX_SENTENCE_WINDOW_CHARS = 250
 _ABSENT_SENTENCES = 2
@@ -196,6 +205,12 @@ def framing_exempt(draft: str) -> bool:
     return _ABSENT_RE.search(_first_sentences(plain_text(draft), _ABSENT_SENTENCES)) is not None
 
 
+def concedes_absence(draft: str) -> bool:
+    """The draft's first sentence says what was asked for is not in the records."""
+    first = _first_sentences(_MARKUP_RE.sub("", plain_text(draft)), 1).split("\n\n")[0]
+    return _ABSENT_RE.search(first) is not None or _NOT_ESTABLISHED_RE.search(first) is not None
+
+
 def framing_hits(question: str, draft: str) -> list[FramingHit]:
     """What in a cited draft's framing should be rewritten, or nothing."""
     if framing_exempt(draft):
@@ -221,6 +236,7 @@ def framing_hits(question: str, draft: str) -> list[FramingHit]:
 __all__ = [
     "FramingHit",
     "asks_about_status",
+    "concedes_absence",
     "framing_exempt",
     "framing_hits",
     "limitation_lead",

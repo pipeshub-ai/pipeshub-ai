@@ -7,6 +7,7 @@ import pytest
 from app.agents.agent_loop.coverage.opening import (
     FramingHit,
     asks_about_status,
+    concedes_absence,
     framing_exempt,
     framing_hits,
     limitation_lead,
@@ -216,3 +217,12 @@ class TestFramingHits:
         assert framing_hits(_ARCHIVE_QUESTION, _STATUS_LED) == [
             FramingHit("opening", "The audit archive has not been sent yet."),
         ]
+
+
+@pytest.mark.parametrize(("draft", "concedes"), [
+    (f"**The door policies do not establish a quorum** for badge exceptions {_link(2)}.", True),
+    (f"The badge exception owner remains unconfirmed {_link(2)}. Facilities is the likely team.", True),
+    (f"Facilities owns badge exceptions {_link(2)}. The policies do not name a deputy.", False),
+])
+def test_concedes_absence_reads_the_first_sentence(draft: str, concedes: bool) -> None:
+    assert concedes_absence(draft) is concedes
