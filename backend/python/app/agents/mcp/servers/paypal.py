@@ -29,5 +29,6 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         tags=["payments", "finance"],
     )
 )
-class PayPalMCPServer:
-    """Marker class — see `mcp_template` for the registered catalog entry."""
+def register_paypal_server() -> None:
+    """Register the official PayPal MCP server template with dynamic client registration."""
+    pass

@@ -29,5 +29,6 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         tags=["payments", "commerce", "orders", "pos"],
     )
 )
-class SquareMCPServer:
-    """Marker class — see `mcp_template` for the registered catalog entry."""
+def register_square_server() -> None:
+    """Register the official Square MCP server template with dynamic client registration."""
+    pass
