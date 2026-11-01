@@ -157,6 +157,8 @@ def grep_to_ripgrep(tokens: list[str], rg: str, *, walk: bool, threads: int) -> 
         patterns, operands = [operands[0]], operands[1:]
     if walk and not operands:
         return None  # grep -r with no path walks ".", rg would read the pipe
+    if any("\n" in p for p in patterns):
+        return None  # GNU grep splits a pattern on newlines; rg refuses a newline in one
     fixed = "F" in chosen
     if fixed:
         exprs: list[str] = patterns

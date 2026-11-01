@@ -151,6 +151,8 @@ def test_first_stage_argv() -> None:
     ["grep", "-rl", r"\(p\)\1", "."],
     ["rg", "-l", "x", "."],
     ["xargs", "-0", "grep", "-l", "x"],
+    ["grep", "-rl", "north\nsouth", "."],  # GNU grep splits a pattern on newlines; rg refuses them
+    ["grep", "-rlF", "-e", "north\nsouth", "."],
 ])
 def test_stages_ripgrep_cannot_run_exactly_stay_on_grep(tokens: list[str]) -> None:
     assert walk(tokens) is None
