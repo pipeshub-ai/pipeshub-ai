@@ -11,6 +11,7 @@ import pytest
 
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.notion.connector import (
     NotionConnector,
     _DatabaseUnavailable,
@@ -162,6 +163,45 @@ async def test_an_unchanged_recheck_saves_a_page_whose_indexing_was_turned_back_
     conn.indexing_filters = MagicMock()
     conn.indexing_filters.is_enabled = MagicMock(return_value=True)
     assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is not None
+
+
+def _indexing_off_for(conn: NotionConnector, key: IndexingFilterKey) -> None:
+    conn.indexing_filters = MagicMock()
+    conn.indexing_filters.is_enabled = MagicMock(side_effect=lambda k: k != key)
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_waiting_page_whose_indexing_was_turned_off() -> None:
+    conn = _unchanged_recheck([], [])
+    conn.data_entities_processor.get_record_by_external_id.return_value.indexing_status = (
+        ProgressStatus.NOT_STARTED.value
+    )
+    _indexing_off_for(conn, IndexingFilterKey.PAGES)
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None
+    assert records[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_waiting_file_whose_indexing_was_turned_off() -> None:
+    waiting = _stored("ca_c1_file", RecordType.FILE)
+    waiting.indexing_status = ProgressStatus.NOT_STARTED.value
+    fetched = _stored("ca_c1_file", RecordType.FILE)
+    conn = _unchanged_recheck([waiting], [fetched])
+    _indexing_off_for(conn, IndexingFilterKey.FILES)
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None and fetched in [r for r, _ in records]
+    assert fetched.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_leaves_a_page_already_kept_out_of_indexing_unsaved() -> None:
+    conn = _unchanged_recheck([], [])
+    conn.data_entities_processor.get_record_by_external_id.return_value.indexing_status = (
+        ProgressStatus.AUTO_INDEX_OFF.value
+    )
+    _indexing_off_for(conn, IndexingFilterKey.PAGES)
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is None
 
 
 @pytest.mark.asyncio

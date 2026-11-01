@@ -173,12 +173,13 @@ _OAUTH_REQUIRED_SCOPES = (
 )
 
 
-def _indexing_turned_on(record: Record, *, enabled: bool) -> bool:
-    """Stored with indexing off while its filter now allows it: only a save queues it again."""
-    return enabled and getattr(record, "indexing_status", None) in (
-        ProgressStatus.AUTO_INDEX_OFF,
-        ProgressStatus.AUTO_INDEX_OFF.value,
-    )
+def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
+    """Stored with indexing off while its filter now allows it, or still waiting to be indexed
+    while its filter now turns indexing off: only a save brings the status in line."""
+    status = getattr(record, "indexing_status", None)
+    if enabled:
+        return status in (ProgressStatus.AUTO_INDEX_OFF, ProgressStatus.AUTO_INDEX_OFF.value)
+    return status in (ProgressStatus.NOT_STARTED, ProgressStatus.NOT_STARTED.value)
 
 
 def _edit_part(revision: str | None) -> str | None:
@@ -2672,11 +2673,11 @@ class NotionConnector(BaseConnector):
             stored = {c.external_record_id: c for c in children or [] if c.record_type == RecordType.FILE}
             # Saving it again would change nothing but its timestamps, on every page the rotation
             # reaches. It is saved below when a failed batch left one of its files unstored or
-            # stale, or when indexing was turned back on for the page or a file.
-            if not _indexing_turned_on(existing, enabled=indexing_enabled) and all(
+            # stale, or when its indexing filter was turned on or off since the page or a file was stored.
+            if not _indexing_status_outdated(existing, enabled=indexing_enabled) and all(
                 f.external_record_id in stored
                 and stored[f.external_record_id].external_revision_id == f.external_revision_id
-                and not _indexing_turned_on(stored[f.external_record_id], enabled=files_indexing_enabled)
+                and not _indexing_status_outdated(stored[f.external_record_id], enabled=files_indexing_enabled)
                 for f in files
             ):
                 current = {f.external_record_id for f in files}
