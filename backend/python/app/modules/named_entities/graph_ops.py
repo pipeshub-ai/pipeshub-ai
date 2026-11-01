@@ -1423,11 +1423,11 @@ def filter_constraints(entity_ids: list[str] | None, query: NamedEntityQueryLike
     consumed: set[str] = set()
     constraints: list[list[_Part]] = []
     if ids or prefix:
+        # A name or an id only ever matches an entity node, so only node kinds narrow it;
+        # a value kind is a constraint of its own below ("records about Acme that state an
+        # amount": entity_ids with kinds=["currency"]).
         consumed.update(node_kinds)
-        # A name or an id only ever matches an entity node, so a filter whose kinds
-        # are all values leaves this constraint unsatisfiable.
-        possible = not kinds or bool(node_kinds)
-        constraints.append([_Part("node", {"ids": ids, "kinds": node_kinds, "prefix": prefix})] if possible else [])
+        constraints.append([_Part("node", {"ids": ids, "kinds": node_kinds, "prefix": prefix})])
     if query is not None:
         typed = {
             "date": query.date_start_ms is not None and {"dateStart": query.date_start_ms, "dateEnd": query.date_end_ms},

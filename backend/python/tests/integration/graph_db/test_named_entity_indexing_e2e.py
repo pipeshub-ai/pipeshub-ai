@@ -93,9 +93,9 @@ class _UserGraph:
         return getattr(self._provider, name)
 
 
-def _agent_scope(*app_ids: str) -> EntityAccessContext:
+def _agent_scope(*app_ids: str, org_id: str = "") -> EntityAccessContext:
     return EntityAccessContext(
-        org_id="", user_key="u", app_level_app_ids=frozenset(app_ids),
+        org_id=org_id, user_key="u", app_level_app_ids=frozenset(app_ids),
         record_level_app_ids=frozenset(), record_group_ids=frozenset(), app_names={},
     )
 
@@ -124,17 +124,19 @@ async def test_indexed_values_are_queryable_and_only_for_readable_in_scope_recor
     doc = await provider.get_document(readable, "records")
     assert doc.get("entityExtractionStatus") is None
 
+    acme = next(str(row.get("id") or row.get("_key")) for row in stored if row["kind"] == "organization")
     user_graph = _UserGraph(provider, {readable, other_app})
     state = {"graph_provider": user_graph, "org_id": org_id, "user_id": "u"}
     with (
         patch.object(values, "_named_entities_enabled", AsyncMock(return_value=True)),
-        patch.object(values, "load_entity_access_context", AsyncMock(return_value=_agent_scope(f"{org_id}-conn"))),
+        patch.object(values, "load_entity_access_context", AsyncMock(return_value=_agent_scope(f"{org_id}-conn", org_id=org_id))),
         patch.object(values, "resolve_frontend_url", AsyncMock(return_value=None)),
     ):
         for query, matched in (
             ({"amount_min": 20_000, "amount_max": 30_000, "currency": "USD"}, True),
             ({"date_from": _ms(2026, 3, 1), "date_to": _ms(2026, 3, 31)}, True),
-            ({"kinds": ["organization"], "name": "acme"}, False),
+            # The entity node from an entity search; a name is linked through the same lookup.
+            ({"kinds": ["organization"], "entity_ids": [acme]}, False),
         ):
             ok, body = await values.execute_find_records_by_value(state, **query)
             assert ok, body
