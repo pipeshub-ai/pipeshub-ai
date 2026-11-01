@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.coverage.facets import Facet, FacetPlan
 from app.agents.agent_loop.coverage.gate import Gap, GateDecision
+from app.agents.agent_loop.coverage.opening import FramingHit
 from app.agents.agent_loop.coverage.state import coverage_state
 from app.agents.agent_loop.coverage.targeted import TargetedResult
 from app.agents.agent_loop.hooks import coverage_gate as gate_module
@@ -208,8 +210,9 @@ class TestAnswerOpening:
         second = await run_post_model(gate, AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
 
         assert isinstance(first.recovery_message, UserMessage) and first.recovery_message.injected
-        assert first.recovery_message.content == render_opening_request(_LEAD)
-        assert "No new search is needed" in first.recovery_message.content
+        assert first.recovery_message.content == render_opening_request([FramingHit("opening", _LEAD)])
+        assert f'- your draft opens with "{_LEAD}"' in first.recovery_message.content
+        assert "Do not search again." in first.recovery_message.content
         assert first.recovery_message.content.endswith(RESTATE_THE_ANSWER)
         opening_on.assert_not_called()
         assert second.recovery_message is None
@@ -220,16 +223,32 @@ class TestAnswerOpening:
 
     async def test_switched_off_the_draft_stands(self, stubs, monkeypatch) -> None:
         monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+        monkeypatch.setenv("ANSWER_OPENING_CHECK_DISPUTE", "true")
+        monkeypatch.setattr(gate_module, "framing_hits", MagicMock(side_effect=AssertionError))
+        monkeypatch.setattr(gate_module, "disputed_quotes", AsyncMock(side_effect=AssertionError))
         monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
         context = _archive_context()
         ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
         assert ctx.recovery_message is None
         state = coverage_state(context.tool_state)
-        assert state.gate_rounds == 0 and "gate_opening_rewrites" not in state.counters
+        assert state.gate_rounds == 0 and not state.opening_rewrite_sent
+        assert "gate_opening_rewrites" not in state.counters and "gate_dispute_checks" not in state.counters
+
+    async def test_switched_off_a_gap_request_is_unchanged(self, stubs, monkeypatch) -> None:
+        decision = GateDecision(gaps=[Gap("facet", "EU region", "q")], checked=True)
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=decision))
+        ctx = await run_post_model(
+            coverage_gate(_archive_context()), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope(),
+        )
+        results = gate_module.render_results(await stubs.side_effect(_archive_context(), ["q"]))
+        assert ctx.recovery_message.content == render_gap_request(decision, results)
 
     async def test_a_substance_led_draft_is_final(self, opening_on, monkeypatch) -> None:
         monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
-        draft = f"The archive is a notarised index [1](ref1). {_LEAD}"
+        draft = (
+            "The archive is a notarised index [1](ref1). It keeps per-file checksums. It covers the June "
+            f"window. {_LEAD}"
+        )
         ctx = await run_post_model(coverage_gate(_archive_context()), AssistantMessage(content=draft), scope=_scope())
         assert ctx.recovery_message is None
 
@@ -239,7 +258,8 @@ class TestAnswerOpening:
         ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
         content = ctx.recovery_message.content
         assert "- Your draft may lack: EU region" in content
-        assert f'- Your draft opens with "{_LEAD}": lead with the substance the records give' in content
+        assert f'- Your draft opens with "{_LEAD}"\n- Lead with the answer the records you read support.' in content
+        assert "Do not search again" not in content
         state = coverage_state(context.tool_state)
         assert state.gate_rounds == 1 and state.counters["gate_opening_rewrites"] == 1
 
@@ -249,9 +269,132 @@ class TestAnswerOpening:
         monkeypatch.setattr(gate_module, "assess_draft", _decision(Gap("facet", "EU region", "q")))
         context = _archive_context()
         ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
-        assert ctx.recovery_message.content == render_opening_request(_LEAD)
+        assert ctx.recovery_message.content == render_opening_request([FramingHit("opening", _LEAD)])
         state = coverage_state(context.tool_state)
         assert state.gate_rounds == 1 and state.counters["gate_nothing_found"] == 1
+
+    async def test_a_dispute_in_the_body_asks_for_the_whole_answer(self, opening_on, monkeypatch) -> None:
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
+        question = "Which setting ended the upload timeouts on large attachments?"
+        draft = (
+            "The change was turning on chunked uploads with `upload_chunking=true` [7](ref7).\n\n"
+            'Her reply says "done already", which doesn\'t say whether she enabled it on this tenant.'
+        )
+        context = AgentContext(org_id="o", user_id="u", user_email="u@example.com", query=question)
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=draft), scope=_scope())
+        content = ctx.recovery_message.content
+        assert content.startswith(
+            "Before this answer is sent, revise it once. A review of the draft found:\n- your draft says \""
+        )
+        assert "doesn't say whether she enabled it" in content and "[7]" not in content.split("\n\n")[0]
+        assert content.endswith(
+            "Lead with the answer the records you read support. Keep a caveat only if it changes the answer, in "
+            "one sentence after it. Do not dispute wording the question uses for a value the record states. Do "
+            "not search again. Keep every fact, value and citation link of the draft that answers the question, "
+            f"with the citation links exactly as written. {RESTATE_THE_ANSWER}"
+        )
+
+    @pytest.mark.parametrize("draft", [
+        "The closest match is DOC-311, which sets a 14-day hold [1](ref1).",
+        "I couldn't find a declared severity for HD-7731. No record I found gives one [1](ref1).",
+        "No record I found gives a declared severity for HD-7731.",
+    ])
+    async def test_closest_match_and_not_found_drafts_are_final(self, opening_on, monkeypatch, draft) -> None:
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
+        ctx = await run_post_model(coverage_gate(_archive_context()), AssistantMessage(content=draft), scope=_scope())
+        assert ctx.recovery_message is None
+
+
+_PAYROLL_QUESTION = (
+    "What did the co-founder say about keeping payroll records inside the EU and logging every export for the "
+    "vendor pilot?"
+)
+_PAYROLL_DRAFT = (
+    'Ines Varga said: "Payroll stays in the EU; every export gets logged, no exceptions." [1](ref1)\n\n'
+    "- **Data type:** Brightwell is a small design studio, so the records in question are client invoices, "
+    "not payroll records. [1](ref1)"
+)
+_DISPUTE = "the records in question are client invoices, not payroll records"
+
+
+def _dispute_reply(*violations: tuple[str, str]) -> MagicMock:
+    return _checker({"violations": [{"type": kind, "quote": quote, "fix": "x"} for kind, quote in violations],
+                     "verdict": "revise"})
+
+
+class TestDisputeChecker:
+    @pytest.fixture
+    def checker_on(self, stubs, monkeypatch) -> None:
+        monkeypatch.setenv("ANSWER_OPENING_CHECK", "true")
+        monkeypatch.setenv("ANSWER_OPENING_CHECK_DISPUTE", "true")
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
+
+    def _context(self) -> AgentContext:
+        return AgentContext(org_id="o", user_id="u", user_email="u@example.com", query=_PAYROLL_QUESTION)
+
+    async def test_a_dispute_it_reads_sends_the_rewrite_once(self, checker_on, monkeypatch) -> None:
+        llm = _dispute_reply(("opening_concedes", "I found no co-founder statement"), ("disputes_stated_fact", _DISPUTE))
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=llm))
+        context = self._context()
+        gate = coverage_gate(context)
+        first = await run_post_model(gate, AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        second = await run_post_model(gate, AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        assert first.recovery_message.content == render_opening_request([FramingHit("checker", _DISPUTE)])
+        assert "I found no co-founder statement" not in first.recovery_message.content
+        assert second.recovery_message is None
+        assert llm.ainvoke.await_count == 1
+        prompt = llm.ainvoke.await_args.args[0][1].content
+        assert _PAYROLL_QUESTION in prompt and "(ref1)" not in prompt
+        state = coverage_state(context.tool_state)
+        assert state.gate_rounds == 1 and state.counters["gate_opening_rewrites"] == 1
+        assert state.counters["gate_dispute_checks"] == 1
+
+    @pytest.mark.parametrize("violation", [("opening_concedes", "x"), ("internal_error", "y"), ("rival_value_mixed", "z")])
+    async def test_other_kinds_do_not_fire(self, checker_on, monkeypatch, violation) -> None:
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=_dispute_reply(violation)))
+        ctx = await run_post_model(coverage_gate(self._context()), AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        assert ctx.recovery_message is None
+
+    async def test_sub_switch_off_no_call(self, checker_on, monkeypatch) -> None:
+        monkeypatch.delenv("ANSWER_OPENING_CHECK_DISPUTE")
+        llm = _dispute_reply(("disputes_stated_fact", _DISPUTE))
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=llm))
+        context = self._context()
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        assert ctx.recovery_message is None
+        llm.ainvoke.assert_not_called()
+        assert "gate_dispute_checks" not in coverage_state(context.tool_state).counters
+
+    async def test_a_timeout_does_not_block_or_fire(self, checker_on, monkeypatch) -> None:
+        async def _slow(*args, **kwargs) -> AIMessage:
+            await asyncio.sleep(5)
+            return AIMessage(content=json.dumps({"violations": [{"type": "disputes_stated_fact", "quote": _DISPUTE}]}))
+
+        llm = MagicMock()
+        llm.ainvoke = _slow
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=llm))
+        monkeypatch.setattr(gate_module, "CHECK_TIMEOUT_S", 0.05)
+        ctx = await asyncio.wait_for(
+            run_post_model(coverage_gate(self._context()), AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope()),
+            timeout=2,
+        )
+        assert ctx.recovery_message is None
+
+    async def test_an_error_does_not_fire(self, checker_on, monkeypatch) -> None:
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(side_effect=RuntimeError("no model")))
+        ctx = await run_post_model(coverage_gate(self._context()), AssistantMessage(content=_PAYROLL_DRAFT), scope=_scope())
+        assert ctx.recovery_message is None
+
+    @pytest.mark.parametrize("draft", [
+        _PAYROLL_DRAFT.replace("[1](ref1)", ""),
+        f"I couldn't find a co-founder statement about payroll records. {_PAYROLL_DRAFT}",
+        f"{_PAYROLL_DRAFT} The note doesn't say whether the pilot was extended.",
+    ])
+    async def test_not_called_when_exempt_or_the_patterns_already_fired(self, checker_on, monkeypatch, draft) -> None:
+        llm = _dispute_reply(("disputes_stated_fact", _DISPUTE))
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=llm))
+        await run_post_model(coverage_gate(self._context()), AssistantMessage(content=draft), scope=_scope())
+        llm.ainvoke.assert_not_called()
 
 
 def test_the_request_fills_gaps_and_keeps_cited_values_unless_revised() -> None:
