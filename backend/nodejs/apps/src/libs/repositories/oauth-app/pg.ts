@@ -23,6 +23,10 @@ import {
   type UpdateOwnedOptions,
 } from './types';
 import { ConflictError } from '../errors';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importOAuthAppDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
 interface AppRow {
   id: string;
@@ -122,7 +126,15 @@ function owned(p: Params, orgId: string, userId: string): string {
     AND NOT starts_with(client_id, ${p.add(PAT_APP_CLIENT_ID_PREFIX)}) AND NOT starts_with(client_id, ${p.add(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)})`;
 }
 
-export class PgOAuthAppRepository implements OAuthAppRepository {
+export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importOAuthAppDocs(kernelTx(tx), docs);
+  }
   async create(input: NewOAuthApp): Promise<OAuthAppDto> {
     const i = stripNul(input, 'oauth-app', 'app');
     return inOrgUnit(i.orgId, undefined, true, async (k) => {
