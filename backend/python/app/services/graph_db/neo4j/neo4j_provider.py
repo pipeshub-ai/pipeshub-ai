@@ -54,6 +54,7 @@ from app.services.graph_db.common.utils import record_status_field
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
+    from app.modules.retrieval.record_query.pushdown import Pushdown
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
     COLLECTION_TO_LABEL,
@@ -138,6 +139,14 @@ from app.services.graph_db.common.full_sync_unlink import (
     unseen_node_keys,
 )
 from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
+from app.services.graph_db.common.record_query_rows import (
+    LINKED_PER_ROW,
+    ORGANIZATION_EDGES,
+    PERSON_EDGES,
+    RecordCandidates,
+    matches_nothing,
+    record_query_seed,
+)
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -23288,6 +23297,212 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         capped=bool(row.get("capped")),
                     )
         return results
+
+    _RECORD_QUERY_ROW = """{_key: rec.id, recordName: rec.recordName, recordType: rec.recordType,
+                  connectorName: rec.connectorName, connectorId: rec.connectorId,
+                  recordGroupId: rec.recordGroupId, webUrl: rec.webUrl,
+                  createdAt: rec.sourceCreatedAtTimestamp, updatedAt: rec.sourceLastModifiedTimestamp,
+                  ticket: head(COLLECT {
+                    MATCH (rec)-[:IS_OF_TYPE]->(t:Ticket)
+                    RETURN {status: t.status, sourceStatus: t.sourceStatus, priority: t.priority,
+                            resolvedAt: t.resolvedAtTimestamp, dueAt: t.dueDateTimestamp} LIMIT 1
+                  }),
+                  deal: head(COLLECT {
+                    MATCH (rec)-[:IS_OF_TYPE]->(d:Deals)
+                    RETURN {amount: d.amount, closeDate: d.closeDate, isWon: d.isWon, isClosed: d.isClosed} LIMIT 1
+                  }),
+                  people: COLLECT {
+                    MATCH (rec)-[pr:ENTITYRELATIONS]-(p:User|Person)
+                    WHERE p.orgId = $org_id AND pr.edgeType IN $person_edges
+                    RETURN {role: pr.edgeType, id: p.id, name: p.fullName} LIMIT $linked_per_row
+                  },
+                  organizations: COLLECT {
+                    MATCH (rec)-[orl:ENTITYRELATIONS]->(o:Organization)
+                    WHERE o.isExternal = true AND o.parentOrgId = $org_id AND orl.edgeType IN $org_edges
+                    RETURN {id: o.id, name: o.name} LIMIT $linked_per_row
+                  },
+                  links: COLLECT {
+                    MATCH (rec)-[lk:RECORD_LINK]-(lo:Record)
+                    WHERE lo.orgId = $org_id
+                    RETURN {id: lo.id, relation: lk.relationshipType} LIMIT $linked_per_row
+                  }}"""
+
+    def _record_query_entity_condition(self, entity_type: str, param: str) -> str | None:
+        """Record ``rec`` is connected to the entity ``$<param>`` as
+        ``get_entity_candidate_records`` connects it; None for a type it does
+        not take."""
+        if entity_type == KnowledgeGraphEntityType.RECORD.value:
+            return f"rec.id = ${param}"
+        if entity_type not in self._ENTITY_CANDIDATE_TARGETS:
+            return None
+        relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        scope = f" AND {self._ENTITY_TENANT_SCOPE[entity_type]}" if entity_type in self._ENTITY_TENANT_SCOPE else ""
+        return (
+            f"EXISTS {{ MATCH (rec)-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{'|'.join(labels)}) "
+            f"WHERE e.id = ${param}{scope} }}"
+        )
+
+    def _record_query_cypher(self, pushed: Pushdown) -> tuple[str, dict[str, Any]] | None:
+        """The candidate query for ``pushed`` and its parameters, or None when
+        it names an entity type no record can be connected to. Fragments are
+        chosen by which keys are present; every value is a parameter."""
+        params: dict[str, Any] = {
+            "record_types": list(pushed["record_types"]) if "record_types" in pushed else None,
+            "person_edges": list(PERSON_EDGES),
+            "org_edges": list(ORGANIZATION_EDGES),
+            "linked_per_row": LINKED_PER_ROW,
+        }
+        where = [self._ENTITY_CANDIDATE_RECORD_FILTER, self._ENTITY_WITHIN_FILTER]
+        if "sources" in pushed:
+            params["sources"] = list(pushed["sources"])
+            where.append("rec.connectorName IN $sources")
+        for key, prop in (("created", "sourceCreatedAtTimestamp"), ("updated", "sourceLastModifiedTimestamp")):
+            start, end = ([*pushed.get(key, []), None, None])[:2]
+            if start is not None:
+                params[f"{key}_start"] = int(start)
+                where.append(f"rec.{prop} >= ${key}_start")
+            if end is not None:
+                params[f"{key}_end"] = int(end)
+                where.append(f"rec.{prop} <= ${key}_end")
+        prelude, carry = "", "rec, ref"
+        if "containers" in pushed:
+            params["containers"] = list(pushed["containers"])
+            # A record names only its own group; one in a nested group is found
+            # by walking down from the named ones as a selection is walked.
+            prelude = f"""
+            CALL {{
+              MATCH (sg:RecordGroup) WHERE sg.id IN $containers AND sg.orgId = $org_id
+                AND NOT coalesce(sg.isDeleted, false)
+              MATCH (sg) ((:RecordGroup)-[cr:NODE_RELATION]->(cg:RecordGroup)
+                          WHERE cr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                            AND NOT coalesce(cg.isDeleted, false)){{0,{ACCESS_WALK_MAX_DEPTH}}} (g:RecordGroup)
+              RETURN collect(DISTINCT g.id) AS nested
+            }}
+            WITH ref, $containers + nested AS container_groups"""
+            carry += ", container_groups"
+            where.append("rec.recordGroupId IN container_groups")
+        for i, person in enumerate(pushed.get("people", [])):
+            params[f"people_{i}_ids"], params[f"people_{i}_edges"] = list(person["ids"]), list(person["edges"])
+            where.append(
+                f"EXISTS {{ MATCH (rec)-[pr:ENTITYRELATIONS]-(p:User|Person) WHERE p.id IN $people_{i}_ids "
+                f"AND pr.edgeType IN $people_{i}_edges AND p.orgId = $org_id }}"
+            )
+        for i, org_ids in enumerate(pushed.get("organizations", [])):
+            params[f"orgs_{i}"] = list(org_ids)
+            where.append(
+                f"EXISTS {{ MATCH (rec)-[orl:ENTITYRELATIONS]->(o:Organization) WHERE o.id IN $orgs_{i} "
+                f"AND orl.edgeType IN $org_edges AND o.isExternal = true AND o.parentOrgId = $org_id }}"
+            )
+        for i, link in enumerate(pushed.get("links", [])):
+            params[f"links_{i}_ids"], params[f"links_{i}_relation"] = list(link["ids"]), link.get("relation")
+            where.append(
+                f"EXISTS {{ MATCH (rec)-[lk:RECORD_LINK]-(lo:Record) WHERE lo.id IN $links_{i}_ids "
+                f"AND lo.orgId = $org_id AND ($links_{i}_relation IS NULL "
+                f"OR lk.relationshipType = $links_{i}_relation) }}"
+            )
+        for i, entity in enumerate(pushed.get("entities", [])):
+            params[f"entities_{i}"] = str(entity.get("id") or "")
+            condition = self._record_query_entity_condition(str(entity.get("type") or ""), f"entities_{i}")
+            if condition is None:
+                return None
+            where.append(condition)
+
+        seed = record_query_seed(pushed)
+        params["seed_id"] = None
+        if seed == "entities":
+            first = pushed["entities"][0]
+            entity_type = str(first.get("type") or "")
+            params["seed_id"] = str(first.get("id") or "")
+            if entity_type == KnowledgeGraphEntityType.RECORD.value:
+                scan = "MATCH (rec:Record) WHERE rec.id = ref.id AND"
+            else:
+                relationship, entity_match = self._entity_node_match(entity_type)
+                if entity_type in self._ENTITY_TENANT_SCOPE:
+                    entity_match += f"\n            WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}"
+                scan = f"""{entity_match}
+            MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)
+            WITH DISTINCT {carry} WHERE"""
+        elif seed == "links":
+            params["seed_ids"] = list(pushed["links"][0]["ids"])
+            scan = f"""MATCH (seed:Record) WHERE seed.id IN $seed_ids AND seed.orgId = $org_id
+            MATCH (rec:Record)-[:RECORD_LINK]-(seed)
+            WITH DISTINCT {carry} WHERE"""
+        elif seed == "people":
+            params["seed_ids"] = list(pushed["people"][0]["ids"])
+            scan = f"""UNWIND $seed_ids AS pid
+            CALL {{
+              WITH pid MATCH (seed:User {{id: pid}}) RETURN seed
+              UNION
+              WITH pid MATCH (seed:Person {{id: pid}}) RETURN seed
+            }}
+            MATCH (rec:Record)-[:ENTITYRELATIONS]-(seed) WHERE seed.orgId = $org_id
+            WITH DISTINCT {carry} WHERE"""
+        elif seed == "organizations":
+            params["seed_ids"] = list(pushed["organizations"][0])
+            scan = f"""MATCH (seed:Organization) WHERE seed.id IN $seed_ids
+            MATCH (rec:Record)-[:ENTITYRELATIONS]->(seed)
+            WITH DISTINCT {carry} WHERE"""
+        elif seed == "containers":
+            scan = "MATCH (rec:Record) WHERE rec.recordGroupId IN container_groups AND"
+        else:
+            scan = "MATCH (rec:Record) WHERE"
+        filters = "\n                AND ".join(where)
+        query = f"""
+            WITH {{id: $seed_id, connectorIds: $connector_ids}} AS ref{prelude}
+            {scan} {filters}
+            WITH DISTINCT rec
+            LIMIT $scan_cap
+            WITH collect(rec) AS scanned
+            CALL {{
+              WITH scanned
+              UNWIND scanned AS rec
+              WITH rec
+              ORDER BY {self._entity_candidate_order}
+              SKIP $offset LIMIT $window
+              RETURN collect({self._RECORD_QUERY_ROW}) AS rows
+            }}
+            RETURN rows, size(scanned) >= $scan_cap AS capped
+            """
+        return query, params
+
+    async def get_record_query_candidates(
+        self,
+        org_id: str,
+        *,
+        connector_ids: list[str],
+        pushdown: Pushdown,
+        offset: int = 0,
+        window: int = 500,
+        scan_cap: int = 20_000,
+        timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
+    ) -> RecordCandidates:
+        """See :meth:`IGraphDBProvider.get_record_query_candidates`."""
+        if not org_id or not connector_ids or matches_nothing(pushdown):
+            return RecordCandidates()
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        built = self._record_query_cypher(pushdown)
+        if built is None:
+            return RecordCandidates()
+        query, params = built
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                **params,
+                "org_id": org_id,
+                "connector_ids": list(connector_ids),
+                "within": within_param(within),
+                "completed": ProgressStatus.COMPLETED.value,
+                "offset": max(0, offset),
+                "window": max(1, window),
+                "scan_cap": max(1, scan_cap),
+            },
+            **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
+        )
+        first = (rows or [{}])[0]
+        found = [dict(r) for r in first.get("rows") or []]
+        return RecordCandidates(found, window_size=len(found), capped=bool(first.get("capped")))
 
     # ------------------------------------------------------------------
     # Taxonomy entity resolution (per-org canonical nodes)
