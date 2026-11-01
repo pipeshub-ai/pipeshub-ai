@@ -15,7 +15,7 @@ from app.modules.named_entities.domain.models import (
     TerminationReason,
 )
 from app.modules.named_entities.guardrails import apply_caps
-from app.modules.named_entities.merge import mentions_to_entities
+from app.modules.named_entities.merge import mentions_to_entities, resolve_overlaps
 from app.modules.named_entities.normalizers import normalize_value
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.recognizers.pattern import PatternRecognizer
@@ -89,7 +89,9 @@ def _deterministic(units: list[TextUnit], enabled: frozenset[EntityKind], norm: 
         if mention.extractor == "value" and normalize_value(mention.kind, mention.surface, norm) is None:
             continue
         kept.append(mention)
-    return kept
+    # The single dates inside a range are proposed in case the range does not read;
+    # when it does, they are the same text counted twice.
+    return sorted(resolve_overlaps(kept), key=lambda mention: (mention.block_index, mention.char_start))
 
 
 class NamedEntityExtractor:

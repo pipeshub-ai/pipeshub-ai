@@ -386,10 +386,10 @@ export function ShareSidebar({
           ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderRadius: isMobile ? 0 : 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -410,8 +410,6 @@ export function ShareSidebar({
               style={{
                 padding: '12px 16px',
                 borderBottom: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
                 flexShrink: 0,
               }}
             >
@@ -443,6 +441,8 @@ export function ShareSidebar({
               </Flex>
               <IconButton
                 variant="ghost"
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ margin: 0 }}
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
@@ -470,8 +470,6 @@ export function ShareSidebar({
               style={{
                 padding: '12px 16px',
                 borderTop: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
                 flexShrink: 0,
               }}
             >
@@ -505,8 +503,6 @@ export function ShareSidebar({
               style={{
                 padding: '8px 16px',
                 borderBottom: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -514,6 +510,8 @@ export function ShareSidebar({
               </Text>
               <IconButton
                 variant="ghost"
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ margin: 0 }}
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
@@ -523,7 +521,7 @@ export function ShareSidebar({
             </Flex>
 
             {/* Search input */}
-            <Box style={{ padding: '16px 16px 8px', background: 'var(--effects-translucent)', backdropFilter: 'blur(8px)' }}>
+            <Box style={{ padding: '16px 16px 8px' }}>
               <ShareSearchInput
                 selections={selectedItems}
                 searchQuery={searchQueryInput}
@@ -550,8 +548,6 @@ export function ShareSidebar({
                 flex: 1,
                 overflow: 'auto',
                 padding: '0 16px 16px',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               {headerContent}
@@ -730,8 +726,6 @@ export function ShareSidebar({
                 padding: '12px 16px',
                 borderTop: '1px solid var(--olive-3)',
                 flexShrink: 0,
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               <Button

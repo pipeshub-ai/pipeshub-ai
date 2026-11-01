@@ -35,10 +35,12 @@ import { getQueryModeConfig } from '@/chat/constants';
 import {
   useChatStore,
   ctxKeyFromAgent,
+  getEffectiveModel,
   isModelReasoningCapable,
   getModelDefaultReasoningEffort,
   projectCapabilitiesKey,
 } from '@/chat/store';
+import { chatModelOptions } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget, TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -498,12 +500,17 @@ export function ChatInput({
   // model-related reads/writes below are keyed by this so assistant selections
   // don't leak into agents and vice-versa.
   const modelCtxKey = ctxKeyFromAgent(agentId);
-  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
-  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
-  const displayModel = contextSelectedModel ?? contextDefaultModel;
-  const displayModelLabel = displayModel
-    ? (displayModel.modelFriendlyName || displayModel.modelName)
-    : t('chat.aiModelsTooltip');
+  const openedProjectId = useChatStore((s) => s.projectScope?.projectId ?? null);
+  const displayModel = useMemo(
+    () => getEffectiveModel(modelCtxKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getEffectiveModel reads these from the store
+    [modelCtxKey, openedProjectId, settings.newChatDefaultModel, settings.selectedModels, settings.defaultModels],
+  );
+  const displayModelLabel =
+    chatModelOptions.selectionLabel(t, displayModel) ??
+    (displayModel
+      ? (displayModel.modelFriendlyName || displayModel.modelName)
+      : t('chat.aiModelsTooltip'));
   const handleModelSelect = useCallback(
     (model: ModelOverride | null) => {
       setSelectedModelForCtx(modelCtxKey, model);
@@ -1775,8 +1782,8 @@ export function ChatInput({
           pointerEvents: 'auto',
           background: 'color-mix(in srgb, var(--olive-1) 42%, transparent)',
           border: '1px solid var(--olive-3)',
-          backdropFilter: 'blur(25px)',
-          WebkitBackdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           borderRadius: 'var(--radius-1)',
           padding: '7px 8px',
           boxSizing: 'border-box',
@@ -1940,9 +1947,9 @@ export function ChatInput({
         pointerEvents: 'auto',
         fontFamily: 'Manrope, sans-serif',
         backdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         WebkitBackdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         background: dockGlass
           ? 'color-mix(in srgb, var(--olive-1) 42%, transparent)'
           : composerActive || message.trim() || isListening
@@ -2331,7 +2338,7 @@ export function ChatInput({
           maxHeight="380px"
         >
           <ModelSelectorPanel
-            selectedModel={contextSelectedModel ?? contextDefaultModel}
+            selectedModel={displayModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
           />

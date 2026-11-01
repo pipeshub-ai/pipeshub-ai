@@ -4,6 +4,8 @@ import React from 'react';
 import { Box, Flex, Heading, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from './settings-page-container';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export interface EntityPageHeaderProps {
   /** Page title (e.g. "Users") */
@@ -36,7 +38,7 @@ export interface EntityPageHeaderProps {
  * EntityPageHeader — shared header for Users, Groups, Teams pages.
  *
  * Renders title + subtitle on the left, search + CTA button on the right.
- * Matches the Figma design: 40px left padding, 64px top padding, 136px height.
+ * 40px left padding; top padding matches the other settings pages (PAGE_PADDING_TOP).
  */
 export function EntityPageHeader({
   title,
@@ -50,8 +52,11 @@ export function EntityPageHeader({
   additionalActions,
   ctaDisabled = false,
   ctaTooltip,
-  paddingTop = '64px',
+  paddingTop: paddingTopProp,
 }: EntityPageHeaderProps) {
+  // Phones clear the fixed menu button, like every other settings page
+  const isMobile = useIsMobile();
+  const paddingTop = paddingTopProp ?? (isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP);
   const canHover = useCanHover();
   const ctaButton = (
     <Button

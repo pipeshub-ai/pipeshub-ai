@@ -1,3 +1,4 @@
+import socket
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -20,10 +21,42 @@ except ImportError:
     raise ImportError("azure-storage-blob is not installed. Please install it with `pip install azure-storage-blob`")
 
 from app.sources.client.azure.azure_blob import AzureBlobClient, AzureBlobResponse
-from app.sources.client.azure.connection_string import INVALID_ACCOUNT_KEY
+from app.sources.client.azure.connection_string import (
+    ACCOUNT_NOT_FOUND,
+    CREDENTIALS_REFUSED,
+    INVALID_ACCOUNT_KEY,
+)
+from app.utils.url_fetcher import UnresolvableHostError
 from app.utils.url_redaction import redact_urls_in_text
 
 _ERROR_TEXT_LIMIT = 300
+
+# Resolver answers that mean the name does not exist, as opposed to EAI_AGAIN (try again).
+_HOST_NOT_FOUND = frozenset(
+    code for code in (getattr(socket, "EAI_NONAME", None), getattr(socket, "EAI_NODATA", None)) if code is not None
+)
+
+
+def _account_host_not_found(error: BaseException) -> bool:
+    """Whether the address guard found that the account's host does not exist.
+
+    Only the guard's lookup is trusted: it checks the account endpoint itself before the SDK
+    connects, and is skipped when a proxy is configured. A DNS error the SDK reports names
+    whichever host it tried, which behind a proxy is the proxy.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [error]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, UnresolvableHostError):
+            cause = current.__cause__
+            # No resolver error: the name resolved to no addresses at all.
+            return not isinstance(cause, socket.gaierror) or cause.errno in _HOST_NOT_FOUND
+        pending += [current.__cause__, current.__context__]
+    return False
 
 
 def azure_error_text(error: BaseException) -> str:
@@ -39,9 +72,14 @@ def azure_error_text(error: BaseException) -> str:
     status = getattr(error, "status_code", None)
     code = getattr(error, "error_code", None)
     code = getattr(code, "value", code)
+    if code == "AuthenticationFailed":
+        return f"{CREDENTIALS_REFUSED} (HTTP {status or 403} AuthenticationFailed)"
     message = (str(error).strip().splitlines() or [type(error).__name__])[0]
     head = " ".join(str(part) for part in (f"HTTP {status}" if status else None, code) if part)
     text = f"{head}: {message}" if head else message
+    if _account_host_not_found(error):
+        # The guard's own reason stays: it names the host that was looked up.
+        text = f"{ACCOUNT_NOT_FOUND} ({text})"
     return redact_urls_in_text(text)[:_ERROR_TEXT_LIMIT]
 
 

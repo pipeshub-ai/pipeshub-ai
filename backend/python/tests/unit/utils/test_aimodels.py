@@ -659,6 +659,13 @@ class TestReasoningEffortKwargs:
             "use_responses_api": True,
         }
 
+    def test_allow_disabled_reasoning_keeps_none_on_chat_completions(self) -> None:
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "none", config, provider="azureOpenAI", model_name="gpt-5.4-mini",
+        )
+        assert result == {"reasoning_effort": "none"}
+
 
 # ---------------------------------------------------------------------------
 # get_default_embedding_model
@@ -2018,6 +2025,54 @@ class TestModelDefaultReasoningEffort:
             None, config, provider_in_bedrock="openai", model_name="openai.gpt-oss-120b-1:0",
         )
         assert fields == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize(
+        ("provider", "model_name", "expected"),
+        [
+            ("anthropic", "anthropic.claude-3-7-sonnet-20250219-v1:0", {}),
+            ("anthropic", "anthropic.claude-opus-4-8", {}),
+            ("anthropic", "anthropic.claude-sonnet-5", {"thinking": {"type": "disabled"}}),
+            ("anthropic", "anthropic.claude-sonnet-5-5", {"thinking": {"type": "between_tools"}}),
+            (
+                "anthropic",
+                "anthropic.claude-opus-5-5",
+                {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}},
+            ),
+            ("openai", "global.openai.gpt-5.4", {"reasoning": {"effort": "none"}}),
+            ("openai", "openai.gpt-oss-120b-1:0", {"reasoning_effort": "low"}),
+        ],
+    )
+    def test_bedrock_none_with_reasoning_allowed_off(
+        self, provider: str, model_name: str, expected: dict
+    ) -> None:
+        from app.utils.aimodels import _bedrock_additional_model_request_fields
+
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        fields = _bedrock_additional_model_request_fields(
+            "none", config, provider_in_bedrock=provider, model_name=model_name,
+        )
+        assert fields == expected
+
+    @pytest.mark.parametrize(
+        ("model_name", "expected"),
+        [
+            # Claude 4.8 and older only think when asked.
+            ("claude-sonnet-4-5", {}),
+            ("claude-opus-4-8", {}),
+            # Claude 5 thinks when the field is left out, so it is turned off explicitly.
+            ("claude-opus-5", {"thinking": {"type": "disabled"}}),
+            ("claude-haiku-5-5", {"thinking": {"type": "disabled"}}),
+            ("claude-sonnet-5-5", {"thinking": {"type": "between_tools"}}),
+            # These always think; the lowest effort is the closest to none.
+            ("claude-opus-5-5", {"reasoning_effort": "low"}),
+            ("claude-fable-5-1", {"reasoning_effort": "low"}),
+        ],
+    )
+    def test_anthropic_none_with_reasoning_allowed_off(self, model_name: str, expected: dict) -> None:
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        assert _reasoning_effort_kwargs(
+            "none", config, provider="anthropic", model_name=model_name,
+        ) == expected
 
     def test_bedrock_request_effort_overrides_model_default(self) -> None:
         from app.utils.aimodels import _bedrock_additional_model_request_fields

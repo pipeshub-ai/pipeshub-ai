@@ -703,3 +703,17 @@ class TestStream:
         with pytest.raises(TransportError):
             async for _ in transport.stream([UserMessage(content="hi")]):
                 pass
+
+
+class TestEmptyAssistantTurn:
+    def test_format_messages_skips_empty_assistant_turn(self) -> None:
+        transport = _transport()
+        formatted = transport._format_messages(
+            [
+                UserMessage(content="hi"),
+                AssistantMessage(content=[]),
+                UserMessage(content="Your last reply came through empty"),
+            ]
+        )
+        assert [m["role"] for m in formatted] == ["user", "user"]
+        assert all({"type": "text", "text": ""} not in m["content"] for m in formatted if isinstance(m["content"], list))

@@ -159,11 +159,6 @@ def test_csv_row_longer_than_its_header_keeps_every_value() -> None:
     assert "surprise-extra" in [str(v) for v in rows[0].values()]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="excel_parser.py: a damaged or non-xlsx file raises zipfile.BadZipFile out of "
-    "parse(), which the parsing service reports as a 500 outage instead of a parse error",
-)
 @pytest.mark.parametrize(
     "content", [b"not a workbook", OLE_SIGNATURE + b"\0" * 512], ids=["garbage", "old-binary-container"]
 )

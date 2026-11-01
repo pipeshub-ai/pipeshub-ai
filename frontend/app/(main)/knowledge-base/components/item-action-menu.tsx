@@ -97,15 +97,17 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
       </DropdownMenu.Trigger>
       <DropdownMenu.Content
         size="1"
+        // Same rows, hover and colours as the settings tables' row menu (entity-row-action-menu)
+        className="row-action-menu"
         style={{
-          minWidth: isMobile ? 200 : 140,
+          minWidth: isMobile ? 200 : 178,
           // The viewport already pads 4px (globals.css); a second 4 here doubles it.
           padding: 0,
-          background: 'var(--olive-2)',
+          // Frosted surface comes from the shared .rt-BaseMenuContent rule in globals.css
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',
-          backdropFilter: 'blur(25px)',
-          WebkitBackdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
         }}
         onClick={(e) => e.stopPropagation()}
         onCloseAutoFocus={(e) => {
@@ -117,7 +119,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
         {visibleActions.map((action, i) => {
           const iconColor =
             action.iconColor ||
-            (action.color === 'red' ? 'var(--red-11)' : 'var(--neutral-11)');
+            (action.color === 'red' ? 'var(--red-10)' : 'var(--slate-11)');
           const isPending = pendingIndex === i || action.isLoading === true;
           const anyPending = pendingIndex !== null;
           const isBlocked = isPending || (anyPending && pendingIndex !== i) || action.disabled === true;
@@ -156,7 +158,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                   }
                 }}
               >
-                <Flex align="center" gap="1">
+                <Flex align="center" gap="2">
                   {isPending ? (
                     <Spinner size={14} color={iconColor} />
                   ) : (
@@ -168,7 +170,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                       fontWeight: 400,
                       letterSpacing: '0.04px',
                       lineHeight: '16px',
-                      color: action.color === 'red' ? 'var(--red-11)' : 'var(--neutral-11)',
+                      color: action.color === 'red' ? 'var(--red-10)' : 'var(--slate-11)',
                     }}
                   >
                     {action.label}

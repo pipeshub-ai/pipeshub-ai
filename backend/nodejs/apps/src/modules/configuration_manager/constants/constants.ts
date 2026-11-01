@@ -177,6 +177,14 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     advanced: true,
   },
   {
+    key: 'ENABLE_CLASSIFY_ON_FIRST_USE',
+    label: 'Classify Records When First Used',
+    description:
+      'Make records searchable without classifying them, and classify a record (summary, categories, topics, departments) the first time a search returns it. Saves the classification model calls for records nobody searches for; until then a record has no summary and does not match category or department filters. Disable to classify every record right after it is indexed; records already waiting then stay unclassified until they are reindexed.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
     key: 'ENABLE_ARTIFACT_WRITE',
     label: 'Store Content Revisions as Files',
     description:

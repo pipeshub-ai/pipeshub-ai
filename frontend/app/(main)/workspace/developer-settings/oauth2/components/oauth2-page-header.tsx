@@ -5,7 +5,7 @@ import { Box, Button, Flex, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { WorkspaceDocsButton } from '../../../components/workspace-docs-button';
-import { MOBILE_PAGE_PADDING_TOP } from '../../../components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '../../../components/settings-page-container';
 
 export interface Oauth2PageHeaderProps {
   title: string;
@@ -36,7 +36,7 @@ export function Oauth2PageHeader({
     <Flex
       direction="column"
       gap="4"
-      style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 16, width: '100%' }}
+      style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP, paddingBottom: 16, width: '100%' }}
     >
       <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
         <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>

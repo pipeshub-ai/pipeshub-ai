@@ -2568,6 +2568,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         index_lease_pool = "indexing"
         parsing_admission: concurrency.Admission | None = None
         memory_admission: concurrency.Admission | None = None
+        download_admission: concurrency.Admission | None = None
         index_admission: concurrency.Admission | None = None
         distributed_leases = concurrency.new_lease_set(self)
         lease_handle: Any | None = None
@@ -2748,7 +2749,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
-                    nonlocal memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
@@ -2756,12 +2757,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                 if (
                                     event.event == IndexingEvent.START_DOWNLOAD
                                     and memory_admission is None
+                                    and download_admission is None
                                 ):
                                     # Before the download: a record waiting
-                                    # for memory must not hold its content.
+                                    # for memory, or behind the heavy records
+                                    # already holding content for a parse
+                                    # slot, must not hold its own.
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        # Place first: a record waiting for memory
+                                        # must not hold what a place holder needs,
+                                        # nor the reverse (one cycle, both time out).
+                                        download_admission = await concurrency.acquire_download_slot(
+                                            self, index_tier, timeout=wait.remaining(),
+                                        )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self,
                                             index_tier,
@@ -2825,6 +2835,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         shutting_down = True
                                         return
                                     timeline.mark(timing.PARSE_ADMITTED)
+                                    # The permit and lease now account for the content.
+                                    concurrency.release_admission(download_admission)
                                     self.logger.debug(
                                         f"Acquired parsing slot for {message_id}"
                                     )
@@ -2853,6 +2865,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     )
                                     concurrency.release_admission(index_admission)
                                     concurrency.release_admission(memory_admission)
+                                    concurrency.release_admission(download_admission)
                                     indexing_held = False
                                     self.logger.debug(
                                         f"Released indexing gate for {message_id}"
@@ -3027,6 +3040,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if suspect_held:
                 self._suspects.release()
             concurrency.release_admission(memory_admission)
+            concurrency.release_admission(download_admission)
             try:
                 # Ensure semaphores are released even on error
                 if renewal_task is not None:
