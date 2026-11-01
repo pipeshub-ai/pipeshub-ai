@@ -27,7 +27,7 @@
  * are valuable.
  */
 
-import { useAuthStore, logoutAndRedirect } from '@/config';
+import { useAuthStore } from '@/config';
 import {
   CHAT_STREAM_ERROR_MESSAGES,
   STREAM_ERROR_MESSAGES,
@@ -38,7 +38,7 @@ import {
 import {
   isTokenExpired,
   isRefreshInProgress,
-  refreshAccessToken,
+  refreshOrSignOut,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { streamingFetch, isElectron } from '@/lib/electron';
@@ -139,9 +139,7 @@ async function ensureFreshToken(): Promise<
   }
 
   if (isRefreshInProgress() || isTokenExpired(token)) {
-    const ok = await refreshAccessToken();
-    if (!ok) {
-      logoutAndRedirect();
+    if ((await refreshOrSignOut()) !== 'refreshed') {
       return { token: null, sessionExpired: true };
     }
     token = useAuthStore.getState().accessToken;

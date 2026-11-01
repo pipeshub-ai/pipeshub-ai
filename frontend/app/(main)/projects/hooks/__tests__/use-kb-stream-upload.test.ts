@@ -13,6 +13,7 @@ import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { useUploadStore } from '@/lib/store/upload-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 
 vi.mock('@/lib/store/auth-store', () => ({
   useAuthStore: { getState: () => ({ isHydrated: true }) },
@@ -209,5 +210,49 @@ describe('useKbStreamUpload', () => {
 
     expect(getKbId).not.toHaveBeenCalled();
     expect(useUploadStore.getState().items).toHaveLength(0);
+  });
+
+  it('cancels the upload at sign-out and writes no result for the next person', async () => {
+    const { KnowledgeBaseApi } = await import('@/knowledge-base/api');
+    let signal: AbortSignal | undefined;
+    vi.mocked(KnowledgeBaseApi.streamUpload).mockImplementationOnce(
+      (_kb, _folder, _files, _meta, options) =>
+        new Promise<void>((_resolve, reject) => {
+          signal = options.signal;
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const onUploaded = vi.fn();
+    const hook = mountHook(() => useKbStreamUpload({ getKbId: vi.fn().mockResolvedValue('kb1'), onUploaded }));
+
+    let upload!: Promise<void>;
+    await act(async () => {
+      upload = hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+    clearSessionCache();
+    await act(async () => {
+      await upload;
+    });
+
+    expect(signal?.aborted).toBe(true);
+    expect(useUploadStore.getState().items).toEqual([]);
+    expect(onUploaded).not.toHaveBeenCalled();
+  });
+
+  it('keeps working after an upload that finished within the session', async () => {
+    scriptedEvents = [
+      { event: 'file:succeeded', data: { filePath: 'a.txt' } },
+      { event: 'done', data: {} },
+    ];
+    const hook = mountHook(() => useKbStreamUpload({ getKbId: vi.fn().mockResolvedValue('kb1') }));
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+
+    // The finished upload no longer listens for the session end.
+    clearSessionCache();
+    expect(useUploadStore.getState().items).toEqual([]);
+    const { KnowledgeBaseApi } = await import('@/knowledge-base/api');
+    expect(vi.mocked(KnowledgeBaseApi.streamUpload).mock.calls[0][4].signal?.aborted).toBe(false);
   });
 });

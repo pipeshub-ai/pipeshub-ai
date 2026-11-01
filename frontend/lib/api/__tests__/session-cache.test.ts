@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
 import useSWR from 'swr';
 
-import { clearSessionCache, onSessionEnd } from '../session-cache';
+import { create } from 'zustand';
+import { createJSONStorage, devtools, persist } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
+
+import { clearSessionCache, onSessionEnd, resetStoreOnSessionEnd, sessionToken } from '../session-cache';
 import { revalidateSwrNamespace, SWR_NS } from '../swr-cache';
 
 async function settle(ms = 20) {
@@ -157,5 +161,86 @@ describe('clearSessionCache', () => {
     expect(after).toHaveBeenCalledTimes(1);
     stopBroken();
     stopAfter();
+  });
+});
+
+describe('sessionToken', () => {
+  it('reads true until the session ends, and a token taken afterwards belongs to the next one', () => {
+    const before = sessionToken();
+    expect(before()).toBe(true);
+
+    clearSessionCache();
+
+    expect(before()).toBe(false);
+    expect(sessionToken()()).toBe(true);
+  });
+
+  it('has already moved on when the resets run', () => {
+    const before = sessionToken();
+    let duringReset: (() => boolean) | null = null;
+    const stop = onSessionEnd(() => {
+      duringReset = sessionToken();
+    });
+
+    clearSessionCache();
+
+    expect(before()).toBe(false);
+    expect(duringReset?.()).toBe(true);
+    stop();
+  });
+});
+
+describe('resetStoreOnSessionEnd', () => {
+  interface CounterState {
+    count: number;
+    extra?: string;
+    increment: () => void;
+  }
+
+  it('puts a store back to the state it was created with, actions included', () => {
+    const useCounter = create<CounterState>((set) => ({ count: 0, increment: () => set((s) => ({ count: s.count + 1 })) }));
+    const stop = resetStoreOnSessionEnd(useCounter);
+    useCounter.getState().increment();
+    useCounter.setState({ extra: 'added later' });
+
+    clearSessionCache();
+
+    expect(useCounter.getState().count).toBe(0);
+    expect('extra' in useCounter.getState()).toBe(false);
+    useCounter.getState().increment();
+    expect(useCounter.getState().count).toBe(1);
+    stop();
+  });
+
+  it('works through devtools, persist and immer, and rewrites the stored copy', () => {
+    const saved = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => saved.get(k) ?? null,
+      setItem: (k: string, v: string) => void saved.set(k, v),
+      removeItem: (k: string) => void saved.delete(k),
+    };
+    const useProfile = create<{ name: string | null; setName: (n: string) => void }>()(
+      devtools(
+        persist(
+          immer((set) => ({
+            name: null,
+            setName: (n) =>
+              set((s) => {
+                s.name = n;
+              }),
+          })),
+          { name: 'test-profile', storage: createJSONStorage(() => storage) },
+        ),
+      ),
+    );
+    const stop = resetStoreOnSessionEnd(useProfile);
+    useProfile.getState().setName('Ada');
+    expect(saved.get('test-profile')).toContain('Ada');
+
+    clearSessionCache();
+
+    expect(useProfile.getState().name).toBeNull();
+    expect(saved.get('test-profile')).not.toContain('Ada');
+    stop();
   });
 });

@@ -84,6 +84,7 @@ import {
 } from './utils/root-app-list';
 import { openFolderChildren, storeChildrenList } from './utils/folder-children';
 import { kbSessionToken } from './utils/kb-session';
+import { onSessionEnd } from '@/lib/api/session-cache';
 // Registers the sign-out reset for the knowledge base's cached state.
 import './utils/sidebar-session';
 import {
@@ -1766,6 +1767,11 @@ function KnowledgeBasePageContent() {
       // Mark only valid files as uploading — oversized ones are already failed
       validEntries.forEach((entry) => startUpload(entry.storeId));
 
+      // Signing out cancels the batch in flight and the rest: a later batch would go out
+      // with the next person's token, into the last person's collection.
+      const upload = new AbortController();
+      const stopOnSessionEnd = onSessionEnd(() => upload.abort());
+
       let anySuccess = false;
 
       const normalizePath = (p: string) =>
@@ -1775,6 +1781,7 @@ function KnowledgeBasePageContent() {
       // outcomes (rejections, storage upload, indexing). Map each event to its
       // row by file path within the batch.
       const sendBatch = async (batch: FileEntry[]) => {
+        if (upload.signal.aborted) return;
         const batchFiles = batch.map((e) => e.file);
         const batchMetadata: FileMetadata[] = batch.map((e) => ({
           file_path: e.filePath,
@@ -1800,6 +1807,7 @@ function KnowledgeBasePageContent() {
           batchFiles,
           batchMetadata,
           {
+            signal: upload.signal,
             onEvent: (evt) => {
               const data = evt.data as any;
               if (evt.event === 'file:succeeded') {
@@ -1969,6 +1977,8 @@ function KnowledgeBasePageContent() {
           () => poolWorker()
         )
       );
+      stopOnSessionEnd();
+      if (upload.signal.aborted) return;
 
       // All batch streams have settled — finalize the session (completes any
       // rows still in flight as a safety net).

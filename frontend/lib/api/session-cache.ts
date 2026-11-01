@@ -1,6 +1,7 @@
 import { mutate, unload } from 'swr';
 
 const resetters = new Set<() => void>();
+let generation = 0;
 
 /** Registers per-user state that must not outlive the session. Returns a function that unregisters it. */
 export function onSessionEnd(reset: () => void): () => void {
@@ -8,6 +9,24 @@ export function onSessionEnd(reset: () => void): () => void {
   return () => {
     resetters.delete(reset);
   };
+}
+
+/** Captures the current session; the returned check turns false once it ends. */
+export function sessionToken(): () => boolean {
+  const captured = generation;
+  return () => captured === generation;
+}
+
+interface ResettableStore<T> {
+  getInitialState(): T;
+  setState(state: T, replace: true): unknown;
+}
+
+/** Puts a Zustand store back to the state it was created with when the session ends. */
+export function resetStoreOnSessionEnd<T>(store: ResettableStore<T>): () => void {
+  return onSessionEnd(() => {
+    store.setState(store.getInitialState(), true);
+  });
 }
 
 export interface ClearSessionCacheOptions {
@@ -24,7 +43,9 @@ export interface ClearSessionCacheOptions {
  * org switch). Never throws, so signing out always completes.
  */
 export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions = {}): void {
-  // Stores first: a refetch started by unload calls its fetcher at once, and a
+  // First, so a resetter or refetch that takes a session token already belongs to the next session.
+  generation += 1;
+  // Stores next: a refetch started by unload calls its fetcher at once, and a
   // reset after that would throw away the new session's answer.
   resetters.forEach((reset) => {
     try {

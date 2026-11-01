@@ -4,11 +4,12 @@ import { ErrorType, extractApiErrorMessage, processError, ProcessedError } from 
 import { STREAM_ERROR_MESSAGES } from './stream-errors';
 import { showErrorToast } from './error-toast';
 import {
-  refreshAccessToken,
+  refreshOrSignOut,
   isTokenExpired,
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
+import { sessionToken } from './session-cache';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { applyElectronOverrides } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
@@ -21,8 +22,21 @@ declare module 'axios' {
      * the backend's message through the generic toast.
      */
     suppressErrorToast?: boolean | ((error: ProcessedError) => boolean);
+    /** The session the request was sent in; an answer that arrives after it ended is dropped. */
+    sessionCurrent?: () => boolean;
   }
 }
+
+const sessionEnded = (config: { sessionCurrent?: () => boolean } | undefined): boolean =>
+  config?.sessionCurrent?.() === false;
+
+/**
+ * What a caller gets for an answer that arrives after its session ended: a
+ * promise that never settles, so none of its handlers (state writes, toasts)
+ * run for the next person. Fresh each time, so the dropped handlers can be
+ * garbage collected.
+ */
+const dropped = (): Promise<never> => new Promise<never>(() => {});
 
 // Default to '' (same origin). A single sentinel avoids `"undefined"` leaking
 // into template-built URLs when `NEXT_PUBLIC_API_BASE_URL` is unset.
@@ -58,6 +72,8 @@ export const apiClient = axios.create({
 // Bearer tokens are used instead.
 apiClient.interceptors.request.use(
   async (config) => {
+    // Kept on the 401 retry, which passes the same config back in.
+    config.sessionCurrent ??= sessionToken();
     config.baseURL = getApiBaseUrl();
     applyElectronOverrides(config);
 
@@ -80,11 +96,12 @@ apiClient.interceptors.request.use(
     let accessToken = headerToken ?? storeToken;
 
     if (accessToken && isTokenExpired(accessToken)) {
-      const refreshed = await refreshAccessToken();
-      if (refreshed) {
+      const outcome = await refreshOrSignOut();
+      if (outcome === 'refreshed') {
         accessToken = useAuthStore.getState().accessToken;
+      } else if (outcome === 'session-ended') {
+        return dropped();
       } else {
-        logoutAndRedirect();
         const sessionExpired: ProcessedError = {
           type: ErrorType.AUTHENTICATION_ERROR,
           message: STREAM_ERROR_MESSAGES.sessionExpired,
@@ -110,13 +127,15 @@ apiClient.interceptors.request.use(
 // All concurrent 401s collapse onto the same in-flight refresh via the
 // shared lock in `token-refresh.ts`.
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => (sessionEnded(response.config) ? dropped() : response),
   async (error: AxiosError) => {
     // A rejection from the request interceptor lands here too, with no
     // request config; it is already the error the caller should see.
     if (!isAxiosError(error)) {
       return Promise.reject(error);
     }
+    // Neither a toast nor a refresh for the last session: a stale 401 must not sign the next person out.
+    if (sessionEnded(error.config)) return dropped();
 
     if (error.response?.data instanceof Blob) {
       try {
@@ -145,19 +164,20 @@ apiClient.interceptors.response.use(
       try {
         // If a refresh is already running (timer or another 401), this just
         // awaits the existing promise; otherwise it kicks off a new one.
-        const refreshSuccess = await refreshAccessToken();
+        const outcome = await refreshOrSignOut();
 
-        if (refreshSuccess) {
+        if (outcome === 'refreshed') {
           const newToken = useAuthStore.getState().accessToken;
           if (newToken) {
             originalRequest.headers.Authorization = `Bearer ${newToken}`;
           }
           return apiClient(originalRequest);
         }
+        if (outcome === 'session-ended') return dropped();
 
-        logoutAndRedirect();
         return Promise.reject(processError(error));
       } catch {
+        if (sessionEnded(originalRequest)) return dropped();
         logoutAndRedirect();
         return Promise.reject(processError(error));
       }

@@ -7,6 +7,7 @@ import { useUploadStore } from '@/lib/store/upload-store';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import KnowledgeBasePage from '../page';
@@ -1455,6 +1456,40 @@ describe('Knowledge base page — uploading', () => {
       const failed = useUploadStore.getState().items.filter((i) => i.status === 'failed');
       expect(failed.map((i) => i.name).sort()).toEqual(['one.txt', 'two.txt']);
     });
+  });
+
+  it('stops at sign-out: the batch in flight is cancelled and no further batch is sent', async () => {
+    await openEngineering();
+    const folder = (name: string) => {
+      const file = fileOfSize(`${name}.txt`, 10);
+      return { id: name, name, size: 10, type: 'folder' as const, filesWithPaths: [{ file, relativePath: file.name }] };
+    };
+    // Two top-level folders: two batches, sent one after the other.
+    upload.items = [folder('Reports'), folder('Slides')];
+    const signals: AbortSignal[] = [];
+    api.kb.streamUpload.mockImplementation(
+      (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { signal: AbortSignal }) => {
+        signals.push(opts.signal);
+        return new Promise<void>((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    );
+    api.hub.loadFolderData.mockClear();
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
+
+    act(() => clearSessionCache());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(signals[0].aborted).toBe(true);
+    expect(api.kb.streamUpload).toHaveBeenCalledTimes(1);
+    expect(api.hub.loadFolderData).not.toHaveBeenCalled();
+    expect(useUploadStore.getState().items).toEqual([]);
   });
 });
 

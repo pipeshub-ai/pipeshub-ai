@@ -15,7 +15,8 @@
 import {
   REFRESH_TOKEN_STORAGE_KEY,
 } from '@/lib/store/auth-store';
-import { useAuthStore } from '@/config';
+import { useAuthStore, logoutAndRedirect } from '@/config';
+import { onSessionEnd, sessionToken } from '@/lib/api/session-cache';
 
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
@@ -92,7 +93,8 @@ export async function refreshAccessToken(): Promise<boolean> {
     return refreshPromise;
   }
 
-  refreshPromise = (async () => {
+  const current = sessionToken();
+  const promise = (async () => {
     try {
       const refreshToken =
         useAuthStore.getState().refreshToken ??
@@ -122,6 +124,9 @@ export async function refreshAccessToken(): Promise<boolean> {
       const data = await response.json();
       const newAccessToken: string | undefined = data.accessToken;
 
+      // Signed out while the refresh was out: storing the token would sign the last user back in.
+      if (!current()) return false;
+
       if (newAccessToken) {
         useAuthStore.getState().setTokens(newAccessToken, refreshToken);
         return true;
@@ -134,9 +139,29 @@ export async function refreshAccessToken(): Promise<boolean> {
     }
   })();
 
+  refreshPromise = promise;
   try {
-    return await refreshPromise;
+    return await promise;
   } finally {
-    refreshPromise = null;
+    if (refreshPromise === promise) refreshPromise = null;
   }
+}
+
+// The next person must not wait on, or be answered by, the last person's refresh.
+onSessionEnd(() => {
+  refreshPromise = null;
+});
+
+export type RefreshOutcome = 'refreshed' | 'signed-out' | 'session-ended';
+
+/**
+ * Refreshes the access token. On failure it signs out, unless the session that
+ * asked has already ended: then signing out again would sign out the next person.
+ */
+export async function refreshOrSignOut(): Promise<RefreshOutcome> {
+  const current = sessionToken();
+  if (await refreshAccessToken()) return 'refreshed';
+  if (!current()) return 'session-ended';
+  logoutAndRedirect();
+  return 'signed-out';
 }

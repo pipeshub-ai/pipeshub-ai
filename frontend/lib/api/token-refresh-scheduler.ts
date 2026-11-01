@@ -24,9 +24,9 @@ import {
   ACCESS_TOKEN_STORAGE_KEY,
   REFRESH_TOKEN_STORAGE_KEY,
 } from '@/lib/store/auth-store';
-import { useAuthStore, logoutAndRedirect } from '@/config';
+import { useAuthStore } from '@/config';
 import {
-  refreshAccessToken,
+  refreshOrSignOut,
   isTokenExpired,
   getTokenExpirySeconds,
   decodeJwtPayload,
@@ -58,12 +58,10 @@ async function refreshNow(): Promise<void> {
   timerId = null;
   scheduledForToken = null;
 
-  const ok = await refreshAccessToken();
-  if (!ok) {
-    // Hard stop: clear any state that may have been re-armed concurrently
-    // by an inbound `storage` event, then log the user out.
+  // On failure this logs the user out, unless the session already ended meanwhile.
+  if ((await refreshOrSignOut()) !== 'refreshed') {
+    // Hard stop: clear any state that may have been re-armed concurrently by an inbound `storage` event.
     clearTimer();
-    logoutAndRedirect();
   }
 }
 
