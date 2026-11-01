@@ -152,7 +152,7 @@ def _render_entity_filter(filters: object, search: str | None) -> str | None:
     return (
         "## Entity filter\n"
         f"Searches through `{search}` for this request return only records that mention {described}. "
-        f"{refers}Listing, browsing, fetching and the find_records_by_* lookups are not limited by it."
+        f"{refers}Listing, browsing, fetching, find_records and the find_records_by_* lookups are not limited by it."
     )
 
 

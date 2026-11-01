@@ -1177,6 +1177,8 @@ class TestEntityFilterInBandC:
         assert 'organization) whose name starts with "Northwind Logistics"' in volatile
         assert "Searches through `knowledgegraph__search` for this request" in volatile
         assert "find_records_by_* lookups are not limited by it" in volatile
+        # find_records reads every record the turn may open, not the filtered search.
+        assert "fetching, find_records and the find_records_by_* lookups" in volatile
 
     def test_a_parent_that_searches_through_the_exploration_agent_is_told_too(self) -> None:
         """Composed modes (react, planExecute) give the parent only the delegate."""
