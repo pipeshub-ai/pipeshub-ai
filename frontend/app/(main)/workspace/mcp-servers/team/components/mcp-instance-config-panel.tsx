@@ -19,6 +19,8 @@ import { mcpConnectionState, usesSharedCredential, type McpConnectionState } fro
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { McpPanelTitle, McpServerActionsMenu, type McpMenuEntry } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
+import { McpLogoField } from './mcp-logo-field';
+import { setMcpServerLogo, useMcpServerLogo } from '../../logo-store';
 import { McpToolsApprovalsTab, type McpToolsLoad } from './mcp-tools-approvals-tab';
 import {
   isOauthClientMissing,
@@ -159,6 +161,9 @@ export function McpInstanceConfigPanel({
   const [scopeTags, setScopeTags] = useState<TagItem[]>([]);
   const [connectTimeout, setConnectTimeout] = useState('');
   const [callTimeout, setCallTimeout] = useState('');
+  const savedLogo = useMcpServerLogo(mode === 'edit' ? editingInstance?._id : null);
+  /** undefined: unchanged; null: remove it; a data URL: the new logo. */
+  const [logoDraft, setLogoDraft] = useState<string | null | undefined>(undefined);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
@@ -187,6 +192,7 @@ export function McpInstanceConfigPanel({
     setToolsLoad({ status: 'idle' });
     setConfirmDiscard(false);
     setPendingImpact('none');
+    setLogoDraft(undefined);
     if (editingInstance) {
       setName(editingInstance.name);
       setDescription(editingInstance.description ?? '');
@@ -436,6 +442,22 @@ export function McpInstanceConfigPanel({
     }
   };
 
+  const saveLogoIfChanged = async (instanceId: string) => {
+    if (isTemplateBased || logoDraft === undefined || logoDraft === savedLogo) return;
+    try {
+      if (logoDraft) {
+        const { logo } = await McpServersApi.setLogo(instanceId, logoDraft);
+        setMcpServerLogo(instanceId, logo);
+      } else {
+        await McpServersApi.removeLogo(instanceId);
+        setMcpServerLogo(instanceId, null);
+      }
+    } catch (error) {
+      const detail = isProcessedError(error) ? error.message : undefined;
+      toast.error(t('workspace.mcpServers.toasts.logoSaveError'), detail ? { description: detail } : undefined);
+    }
+  };
+
   const buildPayload = (): McpServerInstancePayload => ({
     name: name.trim(),
     typeId: resolvedTemplate?.typeId ?? null,
@@ -499,6 +521,7 @@ export function McpInstanceConfigPanel({
       }
 
       await saveCredentialsIfProvided(instanceId);
+      await saveLogoIfChanged(instanceId);
 
       onSaved();
       requestOpenChange(false);
@@ -689,6 +712,10 @@ export function McpInstanceConfigPanel({
       <FormField label={t('workspace.mcpServers.form.description')} optional>
         <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
       </FormField>
+
+      {!isTemplateBased && !isReadOnly && (
+        <McpLogoField logo={logoDraft === undefined ? savedLogo : logoDraft} onChange={setLogoDraft} />
+      )}
 
       {!isTemplateBased && (
         <FormField label={t('workspace.mcpServers.form.transport')} required>
@@ -1009,7 +1036,11 @@ export function McpInstanceConfigPanel({
         icon={mode === 'edit' && liveInstance ? undefined : 'hub'}
         titleNode={
           mode === 'edit' && liveInstance ? (
-            <McpPanelTitle instance={liveInstance} state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState} />
+            <McpPanelTitle
+              instance={liveInstance}
+              state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState}
+              logo={savedLogo}
+            />
           ) : undefined
         }
         primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}

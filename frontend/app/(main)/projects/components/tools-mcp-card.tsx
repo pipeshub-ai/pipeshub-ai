@@ -47,7 +47,7 @@ function toCardRows(groups: CatalogToolGroupRow[], kind: 'toolset' | 'mcp'): Too
     toolKinds: byBareName(g.toolKinds),
     icon:
       kind === 'mcp' ? (
-        <McpServerIcon typeId={g.typeId} name={g.label} />
+        <McpServerIcon instanceId={g.instanceId} typeId={g.typeId} name={g.label} />
       ) : (
         <ConnectorIcon type={resolveConnectorType(g.toolsetSlug || g.label)} size={16} />
       ),
