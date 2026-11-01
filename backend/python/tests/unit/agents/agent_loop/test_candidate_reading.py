@@ -169,3 +169,16 @@ class TestHook:
     def test_request_wording_for_one_record(self) -> None:
         text = render_reading_request(["chg-1 (record r1)"])
         assert "this record" in text and "have not read it" in text
+
+
+def test_scope_guard_holds_a_switch_to_the_question_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANSWER_SCOPE_GUARD", raising=False)
+    off = render_reading_request(["chg-1 (record r1)"])
+    assert "at least as fully as the record your draft relies on" not in off
+    monkeypatch.setenv("ANSWER_SCOPE_GUARD", "true")
+    on = render_reading_request(["chg-1 (record r1)"])
+    assert "at least as fully as the record your draft relies on" in on
+    assert "do not merge its steps, thresholds, approvals or schedules" in on
+    assert on.replace(
+        on[on.index("Answer from a record here"):on.index("Keep every fact")], "",
+    ) == off

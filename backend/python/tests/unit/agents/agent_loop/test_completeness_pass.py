@@ -70,7 +70,8 @@ def test_checks_a_draft_that_relies_on_a_record_and_answers(draft: str, expected
     assert should_check(draft, _REF_TO_URL) is expected
 
 
-def test_the_request_keeps_scope_and_asks_for_the_answer_only() -> None:
+def test_the_request_keeps_scope_and_asks_for_the_answer_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANSWER_SCOPE_GUARD", raising=False)
     assert render_request() == REQUEST
     assert "another purpose or another part" in REQUEST and "what a record does not say" in REQUEST
     assert REQUEST.endswith("Reply with the complete final answer only, with nothing before or after it.")
@@ -114,3 +115,14 @@ class TestSendBack:
     async def test_sub_agents_and_the_last_turns_keep_the_draft(self, scope: TurnScope) -> None:
         ctx = await run_post_model(record_completeness_pass(_context()), AssistantMessage(content=_DRAFT), scope=scope)
         assert ctx.recovery_message is None
+
+
+def test_scope_guard_keeps_other_scopes_to_one_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANSWER_SCOPE_GUARD", raising=False)
+    off = render_request()
+    assert off == REQUEST
+    monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+    assert render_request() == REQUEST
+    monkeypatch.setenv("ANSWER_SCOPE_GUARD", "true")
+    on = render_request()
+    assert on.startswith(off) and "another scope gives at most one attributed sentence" in on

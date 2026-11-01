@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.agent_loop.answer_rules import answer_scope_guard_enabled
 from app.agents.agent_loop.candidate_reading import TopCandidate, unread_top_candidates
 from app.agents.agent_loop.coverage.evidence import collect_evidence
 from app.agents.agent_loop.coverage.opening import framing_exempt
@@ -39,18 +40,29 @@ _MIN_TURNS_LEFT = 3
 _LOGGED_NAME_CHARS = 120
 
 
+# ANSWER_SCOPE_GUARD: a candidate that only shared the question's words took the lead from the record the question
+# describes, and another tier's runbook merged its steps into the answer.
+_SCOPE_GUARD = (
+    "Answer from a record here only if it states the question's own details about which case it means (who, "
+    "which customer, scope, window or version) at least as fully as the record your draft relies on. A record "
+    "about another scope, tier, version line or process adds at most one attributed sentence; do not merge its "
+    "steps, thresholds, approvals or schedules into the answer. "
+)
+
+
 def render_reading_request(labels: list[str]) -> str:
     found = "\n".join(f"- {label}" for label in labels)
     which = "this record" if len(labels) == 1 else "these records"
+    guard = _SCOPE_GUARD if answer_scope_guard_enabled() else ""
     return (
         "Before this answer is final: your searches ranked "
         f"{which} at the top of their results, and you have not read {'it' if len(labels) == 1 else 'them'}:\n"
         f"{found}\n\n"
         f"Read {which} with {FETCH_RECORD_TOOL_NAME}, in one call. If one of them states what the question asks, "
         "for the specific case it names (its names, identifiers, dates and scope), more directly than the records "
-        "your draft relies on, answer from it and cite it. Otherwise keep your draft's answer. Keep every fact, "
-        f"value and citation link of the draft that still answers the question, with the links exactly as written. "
-        f"{RESTATE_THE_ANSWER}"
+        f"your draft relies on, answer from it and cite it. Otherwise keep your draft's answer. {guard}Keep every "
+        "fact, value and citation link of the draft that still answers the question, with the links exactly as "
+        f"written. {RESTATE_THE_ANSWER}"
     )
 
 
