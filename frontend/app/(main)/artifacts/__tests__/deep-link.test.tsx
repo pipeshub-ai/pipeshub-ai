@@ -69,6 +69,16 @@ describe('notification deep link', () => {
     await waitFor(() => expect(api.list).toHaveBeenLastCalledWith(expect.objectContaining({ ownership: 'shared' })));
   });
 
+  it('lists once on a first visit from a link, and only the linked tab', async () => {
+    search.params = new URLSearchParams('tab=shared&artifactId=a9');
+    render(<ArtifactsPage />);
+
+    expect(await screen.findByRole('dialog', { name: 'pricing.pdf' })).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(api.list).toHaveBeenCalledWith(expect.objectContaining({ ownership: 'shared' }));
+  });
+
   it('works when the page is already open on another tab', async () => {
     search.params = new URLSearchParams('tab=mine');
     const { rerender } = render(<ArtifactsPage />);

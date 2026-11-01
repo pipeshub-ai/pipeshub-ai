@@ -12,7 +12,8 @@ import { ShareSidebar } from '@/app/components/share';
 import { ChatInput } from '@/chat/components/chat-input';
 import { ChatApi } from '@/chat/api';
 import type { AttachmentRef, AppliedFilters } from '@/chat/types';
-import { ProjectApi } from '@/chat/project-api';
+import { ProjectApi, projectDetailKey } from '@/chat/project-api';
+import { writeSwrKey } from '@/lib/api/swr-cache';
 import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
 import { createProjectShareAdapter } from '@/chat/share-adapter';
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
@@ -157,6 +158,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   // Every settings edit below calls `setProject(...)`, so the composer's
   // allow-list follows the right-hand cards live.
   useProjectScopeHydration(project);
+
+  // The project chat and the project sidebar read this project from the shared
+  // cache: keep it equal to what is on screen here, without asking again.
+  useEffect(() => {
+    if (project) writeSwrKey(projectDetailKey(projectId), project);
+  }, [project, projectId]);
 
   // Preload org models so the composer's model pill (and the "Chat defaults"
   // card) aren't empty on a fresh session that never visited /chat first.

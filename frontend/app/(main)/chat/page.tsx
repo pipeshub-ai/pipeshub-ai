@@ -27,7 +27,9 @@ import {
   extractAgentKnowledgeConnectors,
   extractAgentKnowledgeCollectionRows,
 } from '@/app/(main)/agents/api';
-import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import type { GetAgentResult } from '@/app/(main)/agents/types';
+import { useAgentDetail } from '@/chat/hooks/use-agent-detail';
+import { showErrorToast } from '@/lib/api/error-toast';
 import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -42,7 +44,7 @@ import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/
 import { FilePreviewMobile } from '@/app/components/file-preview/file-preview-mobile';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
-import { createChatShareAdapter } from './share-adapter';
+import { createChatShareAdapter, toChatSharedMembers } from './share-adapter';
 import { ChatSearch } from './components/search';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -64,11 +66,17 @@ import {
 } from '@/lib/store/feature-flags-store';
 import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
 import { buildApiActionGroups } from '@/chat/tool-groups';
-import { ProjectApi } from '@/chat/project-api';
-import type { ProjectDetail } from '@/chat/project-types';
+import { useProjectDetail } from '@/chat/hooks/use-project-detail';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
 import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
+
+function deprecatedAgentToolNames(agent: GetAgentResult['agent']): string[] {
+  return (agent?.toolsets ?? [])
+    .flatMap((ts) => ts.tools ?? [])
+    .filter((tool) => tool.deprecated === true)
+    .map((tool) => tool.name);
+}
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -349,127 +357,111 @@ function ChatContent() {
     };
   }, [router]);
 
-  // Populate agent side-effects (tools, display name) and kick off the model
-  // fetch for the current context. The shared `fetchModelsForContext` handles
-  // caching, default resolution, and stale-selection invalidation per ctxKey.
+  // Populate agent side-effects (tools, display name) from the shared agent
+  // detail. Models for the composer are loaded by `ChatInputWrapper`.
+  const {
+    detail: agentDetail,
+    unavailable: agentUnavailable,
+    error: agentDetailError,
+  } = useAgentDetail(agentId);
+  // The agent sidebar resets every agent field when it mounts for an agent; with the detail
+  // already cached the page can hydrate before that, so hydrate again after the reset.
+  const agentSidebarAgentId = useChatStore((s) => s.agentSidebarAgentId);
+
+  // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
+  // open, and the chat itself loads without it, so only a new agent chat reports the failure.
+  useEffect(() => {
+    if (!agentUnavailable || conversationId) return;
+    if (isProcessedError(agentDetailError)) showErrorToast(agentDetailError);
+  }, [agentUnavailable, agentDetailError]);
+
   useEffect(() => {
     let cancelled = false;
+    const store = useChatStore.getState();
+    const clearAgentContext = () => {
+      store.hydrateAgentChatResources(null);
+      store.setAgentContextDisplayName(null);
+      store.setAgentContextCreatedBy(null);
+      store.setAgentContextAccess(null);
+    };
+
+    if (!agentId?.trim()) {
+      clearAgentContext();
+      return;
+    }
+    if (agentUnavailable) {
+      console.error('Failed to fetch agent details:', agentDetailError);
+      clearAgentContext();
+      return;
+    }
+    if (!agentDetail) return;
 
     const load = async () => {
-      const store = useChatStore.getState();
-      const ctxKey = ctxKeyFromAgent(agentId);
+      try {
+        const { agent, toolFullNames } = agentDetail;
+        const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
+        const collectionRows = extractAgentKnowledgeCollectionRows(agent);
+        const wholeCollections = collectionRows.filter((r) => !r.nodeType);
+        const kbIds =
+          wholeCollections.length > 0
+            ? wholeCollections.map((r) => r.id)
+            : knowledgeDefaults.kb;
+        const knowledgeDefaultsForStore = {
+          ...knowledgeDefaults,
+          kb: kbIds,
+        };
+        const connectors = extractAgentKnowledgeConnectors(agent);
+        const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
+        // Without the list there is nothing to name the operations by: treat it as no API actions.
+        const apiActionGroups = attachedApiTools.length
+          ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
+          : [];
+        if (cancelled) return;
+        store.hydrateAgentChatResources({
+          toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
+          toolGroups: [...buildAgentChatToolGroups(agent), ...apiActionGroups],
+          mcpGroups: buildAgentChatMcpGroups(agent),
+          connectors,
+          kbIds,
+          knowledgeCollectionRows: collectionRows,
+          knowledgeDefaults: knowledgeDefaultsForStore,
+          deprecatedToolNames: deprecatedAgentToolNames(agent),
+          hasWebSearch: agent?.webSearch != null,
+        });
+        store.setAgentContextDisplayName(agent?.name?.trim() || null);
+        store.setAgentContextCreatedBy(agent?.createdBy ?? null);
+        store.setAgentContextAccess(
+          agent ? getAgentSidebarRowMenuAccess(agent) : null,
+        );
 
-      if (agentId?.trim()) {
-        try {
-          // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
-          // open, and the chat itself loads without it, so that is not worth an error toast.
-          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId, { quiet: Boolean(conversationId) });
-          if (cancelled) return;
-          const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
-          const collectionRows = extractAgentKnowledgeCollectionRows(agent);
-          const wholeCollections = collectionRows.filter((r) => !r.nodeType);
-          const kbIds =
-            wholeCollections.length > 0
-              ? wholeCollections.map((r) => r.id)
-              : knowledgeDefaults.kb;
-          const knowledgeDefaultsForStore = {
-            ...knowledgeDefaults,
-            kb: kbIds,
-          };
-          const connectors = extractAgentKnowledgeConnectors(agent);
-          const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
-          // Without the list there is nothing to name the operations by: treat it as no API actions.
-          const apiActionGroups = attachedApiTools.length
-            ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
-            : [];
-          if (cancelled) return;
-          const toolGroups = [...buildAgentChatToolGroups(agent), ...apiActionGroups];
-          const mcpGroups = buildAgentChatMcpGroups(agent);
-          const deprecatedToolNames = (agent?.toolsets ?? [])
-            .flatMap((ts) => ts.tools ?? [])
-            .filter((tool) => tool.deprecated === true)
-            .map((tool) => tool.name);
-          store.hydrateAgentChatResources({
-            toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
-            toolGroups,
-            mcpGroups,
-            connectors,
-            kbIds,
-            knowledgeCollectionRows: collectionRows,
-            knowledgeDefaults: knowledgeDefaultsForStore,
-            deprecatedToolNames,
-            hasWebSearch: agent?.webSearch != null,
-          });
-          store.setAgentContextDisplayName(agent?.name?.trim() || null);
-          store.setAgentContextCreatedBy(agent?.createdBy ?? null);
-          store.setAgentContextAccess(
-            agent ? getAgentSidebarRowMenuAccess(agent) : null,
-          );
-
-          // Warn when any tool attached to this agent has been removed from
-          // server code since the agent was last saved (deprecated=true is
-          // stamped by the GET /agent/:id handler at read time).
-          if (deprecatedToolNames.length > 0) {
-            toast.error(t('chat.toasts.deprecatedTools'), {
-              action: {
-                label: t('chat.toasts.openAgentBuilder'),
-                onClick: () =>
-                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
-              },
-            });
-          }
-
-          // hydrateAgentChatResources always resets agentKnowledgeScope to null.
-          // On page reload with an existing conversationId, loadHistory may have
-          // already set the scope from the last message's appliedFilters before
-          // getAgent resolved. Re-apply it so the race doesn't wipe it out.
-          if (conversationId) {
-            const freshStore = useChatStore.getState();
-            const existing = freshStore.getSlotByConvId(conversationId, { forAgentId: agentId });
-            if (existing?.slot.isInitialized) {
-              const lastWithFilters = [...existing.slot.messages].reverse().find(
-                (msg) =>
-                  msg.role === 'user' &&
-                  (msg.metadata as { custom?: { appliedFilters?: import('./types').AppliedFilters } })
-                    ?.custom?.appliedFilters != null
-              );
-              const af = (
-                lastWithFilters?.metadata as {
-                  custom?: { appliedFilters?: import('./types').AppliedFilters };
-                }
-              )?.custom?.appliedFilters;
-              // Every bucket, not only apps and collections: a folder or record
-              // the agent chat was narrowed to stays in its scope.
-              if (af) restoreAppliedFilters(af, true);
-            }
-          }
-        } catch (error) {
-          if (!cancelled) {
-            console.error('Failed to fetch agent details:', error);
-            store.hydrateAgentChatResources(null);
-            store.setAgentContextDisplayName(null);
-            store.setAgentContextCreatedBy(null);
-            store.setAgentContextAccess(null);
+        // hydrateAgentChatResources always resets agentKnowledgeScope to null.
+        // On page reload with an existing conversationId, loadHistory may have
+        // already set the scope from the last message's appliedFilters before
+        // the agent arrived. Re-apply it so the race doesn't wipe it out.
+        if (conversationId) {
+          const freshStore = useChatStore.getState();
+          const existing = freshStore.getSlotByConvId(conversationId, { forAgentId: agentId });
+          if (existing?.slot.isInitialized) {
+            const lastWithFilters = [...existing.slot.messages].reverse().find(
+              (msg) =>
+                msg.role === 'user' &&
+                (msg.metadata as { custom?: { appliedFilters?: import('./types').AppliedFilters } })
+                  ?.custom?.appliedFilters != null
+            );
+            const af = (
+              lastWithFilters?.metadata as {
+                custom?: { appliedFilters?: import('./types').AppliedFilters };
+              }
+            )?.custom?.appliedFilters;
+            // Every bucket, not only apps and collections: a folder or record
+            // the agent chat was narrowed to stays in its scope.
+            if (af) restoreAppliedFilters(af, true);
           }
         }
-      } else {
-        store.hydrateAgentChatResources(null);
-        store.setAgentContextDisplayName(null);
-        store.setAgentContextCreatedBy(null);
-        store.setAgentContextAccess(null);
-      }
-
-      try {
-        // Force a refetch for agent contexts: the agent's configured models
-        // can change between visits (Agent Builder save, admin edits) and
-        // stale cached lists would surface wrong defaults in the pill and
-        // the model selector. Assistant (org-wide) models change far less
-        // often, so the normal freshness window is fine there.
-        const force = Boolean(agentId?.trim());
-        await fetchModelsForContext(ctxKey, { force });
       } catch (error) {
-        if (!cancelled && useServicesHealthStore.getState().apiServerReachable) {
-          console.error('Failed to fetch models for context', ctxKey, error);
+        if (!cancelled) {
+          console.error('Failed to apply agent details:', error);
+          clearAgentContext();
         }
       }
     };
@@ -479,7 +471,20 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, apiActionsEnabled, router, t]);
+  }, [agentId, agentDetail, agentUnavailable, agentSidebarAgentId, apiActionsEnabled, router, t]);
+
+  // Warn when any tool attached to this agent has been removed from server code
+  // since the agent was last saved (deprecated=true is stamped by the GET
+  // /agent/:id handler at read time). Once per loaded detail, not per re-hydration.
+  useEffect(() => {
+    if (!agentId || !agentDetail || deprecatedAgentToolNames(agentDetail.agent).length === 0) return;
+    toast.error(t('chat.toasts.deprecatedTools'), {
+      action: {
+        label: t('chat.toasts.openAgentBuilder'),
+        onClick: () => router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`),
+      },
+    });
+  }, [agentDetail]);
 
   // Keep the store's `activeProjectId` (read by ProjectsSection /
   // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
@@ -728,6 +733,7 @@ function ChatContent() {
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
+          sharedWith: detail.conversation.sharedWith ?? null,
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -845,30 +851,22 @@ function ChatContent() {
   // `/projects?projectId=…` and linked from the sidebar.
   //
   // The loaded detail also drives the composer's allow-list (connectors,
-  // collections, tools) via `useProjectScopeHydration`. `projectsVersion`
-  // bumps whenever project settings are saved anywhere in the app, so the
-  // composer picks up changes without a reload.
-  const projectsVersion = useChatStore((s) => s.projectsVersion);
-  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
+  // collections, tools) via `useProjectScopeHydration`. The project workspace
+  // writes its edits into the shared cache, so the composer follows them.
+  const {
+    project: projectDetail,
+    unavailable: projectUnavailable,
+    gone: projectGone,
+  } = useProjectDetail(projectId);
   useEffect(() => {
-    if (!projectId) { setProjectDetail(null); return; }
-    let cancelled = false;
-    // The page shows the one error; the client's own toast made it two.
-    ProjectApi.get(projectId, { suppressErrorToast: true }).then((p) => {
-      if (!cancelled) setProjectDetail(p);
-    }).catch((error: unknown) => {
-      if (cancelled) return;
-      setProjectDetail(null);
-      toast.error(t('chat.projects.workspace.failedToLoad'));
-      // A project the user can't open left them a working composer inside a
-      // nameless project. Fall back to a plain chat (keeping an open thread).
-      const status = isProcessedError(error) ? error.statusCode : undefined;
-      if (status === 403 || status === 404) {
-        router.replace(buildChatHref({ conversationId }));
-      }
-    });
-    return () => { cancelled = true; };
-  }, [projectId, projectsVersion, t, router, conversationId]);
+    if (!projectUnavailable) return;
+    toast.error(t('chat.projects.workspace.failedToLoad'));
+    // A project the user can't open left them a working composer inside a
+    // nameless project. Fall back to a plain chat (keeping an open thread).
+    if (projectGone) {
+      router.replace(buildChatHref({ conversationId }));
+    }
+  }, [projectUnavailable, projectGone]);
   useProjectScopeHydration(projectDetail);
   const projectName = projectDetail?.name ?? null;
   const projectColor = projectDetail?.color ?? null;
@@ -1048,19 +1046,26 @@ function ChatContent() {
   }, [chatShareAdapter]);
 
   // ── Load shared members for header avatars ───────────────────────
-  // Fires whenever the active conversation changes. Uses the same
-  // getSharedMembers() path as the share sidebar so IDs stay consistent.
+  // From the `sharedWith` the open conversation was loaded with (or the last
+  // share/unshare answer), built the same way as the share sidebar's rows.
+  // Only the slot the URL names: while switching chats the previous slot is
+  // still active for a render.
+  const activeSlotSharedWith = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.sharedWith ?? null : null
+  );
+  const headerSharedWith =
+    showConversationShare && activeSlotConvId === conversationId ? activeSlotSharedWith : null;
   useEffect(() => {
-    if (!conversationId || !chatShareAdapter || !showConversationShare) {
+    // The owner is not in the avatar row, so a chat shared with nobody needs no lookup.
+    if (!headerSharedWith?.length) {
       setSharedMembers([]);
       return;
     }
 
     let cancelled = false;
 
-    chatShareAdapter.getSharedMembers().then((members) => {
+    toChatSharedMembers(headerSharedWith).then((members) => {
       if (cancelled) return;
-      // Exclude the owner from the avatar row (same shape as onShareSuccess)
       setSharedMembers(
         members
           .filter((m) => !m.isOwner)
@@ -1078,7 +1083,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [conversationId, chatShareAdapter, showConversationShare]);
+  }, [headerSharedWith]);
 
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
@@ -1615,20 +1620,6 @@ function ChatContent() {
           open={isShareSidebarOpen}
           onOpenChange={setIsShareSidebarOpen}
           adapter={chatShareAdapter}
-          onShareSuccess={() => {
-            chatShareAdapter.getSharedMembers().then((members) => {
-              setSharedMembers(
-                members
-                  .filter((m) => !m.isOwner)
-                  .map((m) => ({
-                    id: m.id,
-                    name: m.name,
-                    avatarUrl: m.avatarUrl || undefined,
-                    type: m.type,
-                  }))
-              );
-            });
-          }}
         />
       )}
 

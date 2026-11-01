@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
-import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { revalidateSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
@@ -469,6 +470,37 @@ function emptyPagination(): AgentsListPagination {
   };
 }
 
+/** SWR key of one agent's detail (`GET /agents/:agentKey`). */
+export const agentDetailKey = (agentKey: string) => [SWR_NS.agentDetails, agentKey] as const;
+
+// The chat page, the agent sidebar and the model loader ask for the same agent at once on open.
+const pendingAgentRequests = new Map<string, Promise<GetAgentResult>>();
+// A request from the previous session may never settle; the next user must not wait on it.
+onSessionEnd(() => pendingAgentRequests.clear());
+
+const pendingAgentId = (agentKey: string, quiet: boolean) => `${agentKey}|${quiet}`;
+
+/** A request that started before this agent was written must not answer a later read. */
+function forgetPendingAgent(agentKey: string): void {
+  pendingAgentRequests.delete(pendingAgentId(agentKey, true));
+  pendingAgentRequests.delete(pendingAgentId(agentKey, false));
+}
+
+async function requestAgent(agentKey: string, quiet: boolean): Promise<GetAgentResult> {
+  const { data } = await apiClient.get<GetAgentApiResponse>(
+    `${AGENTS_BASE_URL}/${agentKey}`,
+    quiet ? { suppressErrorToast: true } : undefined,
+  );
+  const agent = data?.agent;
+  if (!agent || typeof agent !== 'object') {
+    return { agent: null, toolFullNames: [] };
+  }
+  return {
+    agent,
+    toolFullNames: extractAgentToolFullNames(agent),
+  };
+}
+
 export const AgentsApi = {
   async getAgents(
     params?: AgentsListParams,
@@ -496,18 +528,15 @@ export const AgentsApi = {
    * with it: someone a chat was shared with may not be allowed to open the agent it belongs to.
    */
   async getAgent(agentKey: string, options?: { quiet?: boolean }): Promise<GetAgentResult> {
-    const { data } = await apiClient.get<GetAgentApiResponse>(
-      `${AGENTS_BASE_URL}/${agentKey}`,
-      options?.quiet ? { suppressErrorToast: true } : undefined,
-    );
-    const agent = data?.agent;
-    if (!agent || typeof agent !== 'object') {
-      return { agent: null, toolFullNames: [] };
-    }
-    return {
-      agent,
-      toolFullNames: extractAgentToolFullNames(agent),
-    };
+    const quiet = Boolean(options?.quiet);
+    const id = pendingAgentId(agentKey, quiet);
+    const pending = pendingAgentRequests.get(id);
+    if (pending) return pending;
+    const request = requestAgent(agentKey, quiet).finally(() => {
+      if (pendingAgentRequests.get(id) === request) pendingAgentRequests.delete(id);
+    });
+    pendingAgentRequests.set(id, request);
+    return request;
   },
 
   /**
@@ -735,6 +764,8 @@ export const AgentsApi = {
     const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
 
     revalidateSwrNamespace(SWR_NS.agentLists);
+    forgetPendingAgent(agentKey);
+    revalidateSwrKey(agentDetailKey(agentKey));
     if (data?.agent && typeof data.agent === 'object') {
       return data.agent;
     }
@@ -752,6 +783,9 @@ export const AgentsApi = {
   async deleteAgent(agentKey: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
     revalidateSwrNamespace(SWR_NS.agentLists);
+    forgetPendingAgent(agentKey);
+    // Gone, without asking: refetching an agent that was just deleted would only bring back a 404.
+    writeSwrKey<GetAgentResult>(agentDetailKey(agentKey), { agent: null, toolFullNames: [] });
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */
