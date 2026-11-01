@@ -116,9 +116,11 @@ TAILED_FAMILIES = [
 
 
 def _cpu(fn, text: str) -> float:
-    start = time.process_time()
+    # This thread's CPU only: process_time also counts other threads left running in
+    # the test process, which inflated a 4x step to 8x on CI.
+    start = time.thread_time()
     fn(text)
-    return time.process_time() - start
+    return time.thread_time() - start
 
 
 @pytest.mark.parametrize("name", sorted(REFERENCE))
