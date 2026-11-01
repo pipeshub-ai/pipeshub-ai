@@ -41,20 +41,21 @@ class TestHealthCheck:
         )
 
     async def test_lane_stats_run_off_the_event_loop(self) -> None:
-        """Both can wait up to a second on the lane mutex; neither may hold the loop."""
+        """Both can wait up to a second on the lane mutex; neither may hold the loop
+        nor queue behind parse work on the default executor."""
         import threading
 
         from app.parsing_main import app as parsing_main_app
         from app.parsing_main import health_check
 
-        seen: dict[str, int] = {}
+        seen: dict[str, str] = {}
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
-        governor.stats.side_effect = lambda: seen.setdefault("stats", threading.get_ident()) and {}
+        governor.stats.side_effect = lambda: seen.setdefault("stats", threading.current_thread().name) and {}
 
         def fake_lanes_health(*_args: object) -> dict[str, object]:
-            seen["lanes"] = threading.get_ident()
+            seen["lanes"] = threading.current_thread().name
             return {}
 
         with (
@@ -65,7 +66,40 @@ class TestHealthCheck:
             await health_check()
 
         assert set(seen) == {"stats", "lanes"}
-        assert threading.get_ident() not in seen.values()
+        assert all(name.startswith("health-stats") for name in seen.values())
+
+    async def test_health_answers_while_parse_work_fills_the_default_executor(self) -> None:
+        """Conversions and to_thread offloads can occupy every default-executor
+        thread; the liveness probe must still answer."""
+        import asyncio
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        governor = MagicMock()
+        governor.stats.return_value = {}
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        busy = ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(busy)
+        blocker = asyncio.to_thread(release.wait, 30)
+        blocker_task = asyncio.ensure_future(blocker)
+        try:
+            with (
+                patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+                patch.object(parsing_main_app.state, "governor", governor, create=True),
+                patch("app.parsing_main.lanes_health", return_value={}),
+            ):
+                response = await asyncio.wait_for(health_check(), 5)
+            assert response.status_code == 200
+        finally:
+            release.set()
+            await blocker_task
+            busy.shutdown(wait=True)
 
     async def test_health_reports_lanes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.parsing_main import app as parsing_main_app

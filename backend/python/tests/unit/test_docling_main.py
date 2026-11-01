@@ -398,15 +398,16 @@ class TestHealthCheck:
         assert json.loads(result.body)["resource_governor"] == {"ceilings": {"heavy_parse": 3}}
 
     async def test_governor_stats_run_off_the_event_loop(self) -> None:
-        """stats() can wait up to a second on the lane mutex; it must not hold the loop."""
+        """stats() can wait up to a second on the lane mutex; it must not hold the loop
+        nor queue behind parse work on the default executor."""
         import threading
 
         from app.docling_main import app as docling_main_app
         from app.docling_main import health_check
 
-        seen: list[int] = []
+        seen: list[str] = []
         mock_governor = MagicMock()
-        mock_governor.stats.side_effect = lambda: seen.append(threading.get_ident()) or {}
+        mock_governor.stats.side_effect = lambda: seen.append(threading.current_thread().name) or {}
 
         with (
             patch.object(docling_main_app.state, "docling_service", _make_docling_service(healthy=True), create=True),
@@ -415,7 +416,8 @@ class TestHealthCheck:
         ):
             await health_check()
 
-        assert seen and seen[0] != threading.get_ident()
+        # Its own threads: the default executor also runs parse work.
+        assert seen and seen[0].startswith("health-stats")
 
     async def test_governor_stats_failure_is_not_echoed(self):
         """Still healthy; the exception goes to the log and the payload says only that stats are unavailable."""

@@ -1704,19 +1704,21 @@ class TestIndexingHealthCheck:
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
     async def test_governor_stats_run_off_the_event_loop(self) -> None:
-        """stats() can wait up to a second on the lane mutex; it must not hold the loop."""
+        """stats() can wait up to a second on the lane mutex; it must not hold the loop
+        nor queue behind parse work on the default executor."""
         import threading
 
         from app.indexing_main import health_check
 
-        seen: list[int] = []
+        seen: list[str] = []
         mock_governor = MagicMock()
-        mock_governor.stats.side_effect = lambda: seen.append(threading.get_ident()) or {}
+        mock_governor.stats.side_effect = lambda: seen.append(threading.current_thread().name) or {}
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
             await health_check(_make_health_request(governor=mock_governor))
 
-        assert seen and seen[0] != threading.get_ident()
+        # Its own threads: the default executor also runs parse work.
+        assert seen and seen[0].startswith("health-stats")
 
     @pytest.mark.parametrize("failure", [None, SystemExit("worker loop killed")])
     async def test_health_check_is_unhealthy_once_the_worker_loop_died(self, failure) -> None:

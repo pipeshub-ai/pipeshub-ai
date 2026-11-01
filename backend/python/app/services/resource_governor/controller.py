@@ -5,11 +5,13 @@ construct at process startup and share across their consumers/routes.
 from __future__ import annotations
 
 import asyncio
+import functools
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.services.resource_governor.download_ahead import (
     HEAVY_DOWNLOAD_AHEAD,
@@ -77,6 +79,19 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
     from pathlib import Path
+
+
+_T = TypeVar("_T")
+
+# /health reads its statistics in threads of its own. The default executor also
+# runs parse work (Docling conversions, asyncio.to_thread offloads), and a
+# liveness probe must not queue behind it. Threads start on first use.
+_HEALTH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="health-stats")
+
+
+async def run_for_health(fn: Callable[..., _T], *args: object) -> _T:
+    """Run a blocking statistics call for ``/health`` off the event loop and off the parse executor."""
+    return await asyncio.get_running_loop().run_in_executor(_HEALTH_EXECUTOR, functools.partial(fn, *args))
 
 
 def _fmt_bytes(value: int | None) -> str:

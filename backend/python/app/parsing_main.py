@@ -72,6 +72,7 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.lanes import lanes_health
 from app.services.resource_governor.probe import (
     effective_cpu_count,
@@ -370,13 +371,13 @@ async def health_check() -> JSONResponse:
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     try:
-        content["lanes"] = await asyncio.to_thread(lanes_health, governor, effective_cpu_count())
+        content["lanes"] = await run_for_health(lanes_health, governor, effective_cpu_count())
     except Exception as lanes_error:
         container.logger().warning("Lane plan failed: %s", lanes_error)
         content["lanes"] = {"error": "unavailable"}
     if governor is not None:
         try:
-            content["resource_governor"] = await asyncio.to_thread(governor.stats)
+            content["resource_governor"] = await run_for_health(governor.stats)
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.

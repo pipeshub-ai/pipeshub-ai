@@ -95,6 +95,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
 from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
@@ -2622,7 +2623,7 @@ async def health_check(request: Request) -> JSONResponse:
         }
         if governor is not None:
             try:
-                content["resource_governor"] = await asyncio.to_thread(governor.stats)
+                content["resource_governor"] = await run_for_health(governor.stats)
             except Exception as stats_error:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.
