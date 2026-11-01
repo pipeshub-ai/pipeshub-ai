@@ -22,13 +22,14 @@ import math
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
 import openai
 from langchain_core.documents import Document
 
+from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -217,6 +218,34 @@ _WORST_CASE_TOKEN_RATIO = 2.13
 _tokenize_unavailable = False
 
 
+def _tokenize_chunks(texts: list[str]) -> Iterator[list[str]]:
+    """*texts* in requests the server accepts: at most TOKENIZE_MAX_ITEMS texts and
+    TOKENIZE_MAX_CHARS characters each (one text longer than that goes alone)."""
+    chunk: list[str] = []
+    chars = 0
+    for t in texts:
+        if chunk and (len(chunk) >= TOKENIZE_MAX_ITEMS or chars + len(t) > TOKENIZE_MAX_CHARS):
+            yield chunk
+            chunk, chars = [], 0
+        chunk.append(t)
+        chars += len(t)
+    if chunk:
+        yield chunk
+
+
+def _ask_chunk(ask_server: Callable[[list[str]], list[int]], chunk: list[str]) -> list[int]:
+    try:
+        return ask_server(chunk)
+    except openai.APIStatusError as exc:
+        if exc.status_code != 413 or len(chunk) < 2:
+            raise
+        # The client sent more than the server takes: a bug in the limits, not a reason
+        # to give up exact counts.
+        _module_logger.error("Embedding server refused %d texts as too large; splitting", len(chunk))
+        mid = len(chunk) // 2
+        return _ask_chunk(ask_server, chunk[:mid]) + _ask_chunk(ask_server, chunk[mid:])
+
+
 def _server_counts(ask_server: Callable[[list[str]], list[int]], texts: list[str]) -> list[int]:
     """Model token counts from the embedding server.
 
@@ -229,7 +258,7 @@ def _server_counts(ask_server: Callable[[list[str]], list[int]], texts: list[str
     global _tokenize_unavailable  # noqa: PLW0603
     if not _tokenize_unavailable:
         try:
-            return ask_server(texts)
+            return [n for chunk in _tokenize_chunks(texts) for n in _ask_chunk(ask_server, chunk)]
         except openai.OpenAIError as exc:
             if getattr(exc, "status_code", None) in (404, 405):
                 _tokenize_unavailable = True

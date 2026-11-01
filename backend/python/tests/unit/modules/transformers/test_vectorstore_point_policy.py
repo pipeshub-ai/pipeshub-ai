@@ -492,3 +492,47 @@ async def test_counting_tokens_does_not_block_the_event_loop() -> None:
     task.cancel()
     assert ticks >= 20  # the loop kept turning during the 0.4 s of counting
     assert store.rows()
+
+
+@pytest.mark.usefixtures("tokenize_state")
+def test_five_thousand_texts_go_out_in_three_requests_within_the_servers_limits() -> None:
+    from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
+
+    sent: list[list[str]] = []
+
+    def ask(texts: list[str]) -> list[int]:
+        assert len(texts) <= TOKENIZE_MAX_ITEMS and sum(map(len, texts)) <= TOKENIZE_MAX_CHARS
+        sent.append(texts)
+        return [7 for _ in texts]
+
+    texts = [f"row {i}" for i in range(5000)]
+    assert vs._server_counts(ask, texts) == [7] * 5000
+    assert [len(c) for c in sent] == [2048, 2048, 904]
+
+
+@pytest.mark.usefixtures("tokenize_state")
+def test_a_request_near_the_character_limit_is_split_in_two() -> None:
+    from app.config.constants.ai_models import TOKENIZE_MAX_CHARS
+
+    sent: list[int] = []
+
+    def ask(texts: list[str]) -> list[int]:
+        sent.append(sum(map(len, texts)))
+        return [1 for _ in texts]
+
+    half = TOKENIZE_MAX_CHARS // 2
+    assert vs._server_counts(ask, ["a" * half, "b" * (half + 1)]) == [1, 1]
+    assert len(sent) == 2 and max(sent) <= TOKENIZE_MAX_CHARS
+
+
+@pytest.mark.usefixtures("tokenize_state")
+def test_a_413_is_logged_as_an_error_and_split_smaller_without_falling_back(caplog: pytest.LogCaptureFixture) -> None:
+    def ask(texts: list[str]) -> list[int]:
+        if len(texts) > 2:
+            raise _status_error(413)
+        return [9 for _ in texts]
+
+    with caplog.at_level("ERROR"):
+        assert vs._server_counts(ask, ["a", "b", "c", "d", "e"]) == [9] * 5
+    assert any("too large" in r.message for r in caplog.records)
+    assert not vs._tokenize_unavailable

@@ -34,6 +34,8 @@ from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_PRIORITY_QUERY,
     EMBEDDING_SERVER_PORT,
+    TOKENIZE_MAX_CHARS,
+    TOKENIZE_MAX_ITEMS,
 )
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
@@ -1094,11 +1096,6 @@ async def create_embeddings(
             total_tokens=token_estimate,
         ),
     )
-
-
-# /v1/embeddings has no size limit; tokenizing is cheap but still holds a thread, so bound it.
-TOKENIZE_MAX_ITEMS = 2048
-TOKENIZE_MAX_CHARS = 2_000_000
 
 
 @app.post("/v1/tokenize")
