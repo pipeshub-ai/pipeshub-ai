@@ -1212,6 +1212,38 @@ class KnowledgeGraph:
         )
 
     @tool(
+        path="/tools/knowledgegraph/find_co_mentioned_entities",
+        short_description="List the people, companies or products mentioned together with an entity",
+        description=(
+            "List the named entities (people, organizations, products, places, events, ...) mentioned in "
+            "the records that mention one entity, with how many of those records mention each, most "
+            "first, counted only over records you can read. Use it for \"who worked with Acme\", "
+            "\"which products come up with Pinecrest\", \"people in the Tidewater contracts\". Pass the "
+            "entity_ids search_entities returned for that one entity (all of its ids, aliases included). Each entity comes with its id and example records to cite; list "
+            "every record of one with find_records_by_entity. Contact details (emails, phones) are "
+            "listed only when named in kinds."
+        ),
+        parameters=[
+            ToolParameter(
+                name="entity_ids", type=ParameterType.ARRAY, required=True, items={"type": "string"},
+                description="Ids of one entity (up to 5) that search_entities returned.",
+            ),
+            ToolParameter(
+                name="kinds", type=ParameterType.ARRAY, required=False, items={"type": "string"},
+                description="Optional kinds to list: person, organization, product, location, event, ...",
+            ),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Entities to list (default 20, max 50).", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        display_name="Found entities mentioned together",
+    )
+    async def find_co_mentioned_entities(
+        self, entity_ids: list[str], kinds: list[str] | None = None, limit: int = 20,
+    ) -> tuple[bool, str]:
+        from .ops.co_mentions import execute_find_co_mentioned_entities
+        return await execute_find_co_mentioned_entities(self.state, entity_ids=entity_ids, kinds=kinds, limit=limit)
+
+    @tool(
         path="/tools/knowledgegraph/find_records_by_person",
         short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
         description=(
