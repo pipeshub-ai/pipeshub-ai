@@ -57,6 +57,8 @@ PEOPLE_NOT_ALLOWED_MSG = (
     "People and organisation conditions are not available in this workspace; filter by the other fields."
 )
 _TOP_ROWS_SHOWN_AS_IDS = 50
+# Share of matched plus unclassified records above which the answer is said to be mostly unknown.
+_UNKNOWN_DOMINATES = 0.5
 # Row facts a citation quotes (row_view names), in this order.
 _CITED_FACTS = ("type", "source", "status", "priority", "created", "updated", "resolved", "amount", "outcome",
                 "close_date")
@@ -193,6 +195,10 @@ def render(
             f"Not counted: {result.unknown[NOT_CLASSIFIED]} records not classified yet, so whether they "
             "match a topic, category or organisation condition is unknown (neither a match nor a miss)."
         )
+    undecided = result.unknown.get(NOT_CLASSIFIED, 0) + result.unknown.get(CLASSIFICATION_FAILED, 0)
+    if undecided > _UNKNOWN_DOMINATES * (result.total + undecided):
+        lines.append("Most records here are not classified, so the answer is mostly unknown; "
+                     "a classification pass (reindex) would make it exact.")
     if result.unknown.get(CLASSIFICATION_FAILED):
         lines.append(
             f"Not counted: {result.unknown[CLASSIFICATION_FAILED]} records whose classification failed, so "

@@ -139,6 +139,9 @@ limit:      rows per page (default 20, max 50); cursor
   `(no organization)` for classified records naming none. With at most one
   organisation a record, groups plus these add up to the total; a record
   naming two organisations counts in both groups.
+- When records not classified yet or failed outnumber the matches (over half
+  of matches plus those), one line says the answer is mostly unknown and a
+  classification pass would make it exact.
 - `unknown`: `{field: count}` of admitted candidates a condition could not judge;
   `classification` counts records not classified yet, `classification_failed`
   those whose classification failed.

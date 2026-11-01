@@ -198,3 +198,17 @@ async def test_records_no_organisation_group_holds_are_listed_apart_and_labelled
     assert "- Acme: 2 (exact)" in text
     assert "- unknown (not classified yet): 3 (exact)" in text
     assert "- unknown (classification failed): 1 (exact)" in text
+
+
+@pytest.mark.parametrize(("total", "unknown", "noted"), [
+    (2, {"classification": 2, "classification_failed": 1}, True),
+    (3, {"classification": 3}, False),
+    (10, {"classification": 1, "status": 40}, False),
+])
+async def test_one_line_says_when_unclassified_records_dominate_the_answer(
+    engine: AsyncMock, total: int, unknown: dict, noted: bool,
+) -> None:
+    engine.return_value = RecordQueryResult(total=total, unknown=unknown)
+    _, text = await op.execute_find_records(_state(), where=[{"entity": {"type": "topic", "id": "t"}}])
+    assert ("answer is mostly unknown" in text) is noted
+    assert text.count("mostly unknown") <= 1
