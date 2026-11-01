@@ -210,6 +210,10 @@ services:
       # every part of the question, and gaps are searched, before it is final.
       - COVERAGE_LOOP=${COVERAGE_LOOP:-}
       - COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S=${COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S:-}
+      # Opt-in only, with COVERAGE_LOOP: a cited answer that opens with a limitation
+      # or disputes the question's wording goes back once to lead with the answer.
+      - ANSWER_OPENING_CHECK=${ANSWER_OPENING_CHECK:-}
+      - ANSWER_OPENING_CHECK_DISPUTE=${ANSWER_OPENING_CHECK_DISPUTE:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}

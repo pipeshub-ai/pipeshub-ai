@@ -376,6 +376,10 @@ config:
   # evidence of every part of the question before it is final, and the gaps
   # are searched; COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S bounds each of those
   # searches (default 20). Its other settings are in backend/env.template.
+  # ANSWER_OPENING_CHECK, also off unless "true" through extraEnv and only with
+  # COVERAGE_LOOP, sends a cited answer that opens with a limitation or disputes
+  # the question's wording back once to lead with the answer;
+  # ANSWER_OPENING_CHECK_DISPUTE adds a small-model read for disputed wording.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
