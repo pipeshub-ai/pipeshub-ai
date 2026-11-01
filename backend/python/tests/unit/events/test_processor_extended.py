@@ -796,7 +796,7 @@ class TestProcessBlockgroupsEmpty:
         ):
             proc.parsers = {"md": MagicMock()}
             with pytest.raises(RuntimeError, match="parser failed"):
-                await proc._process_blockgroups(bc, "test.md")
+                await proc._process_blockgroups(bc, "test.md", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_no_blockgroups_to_process(self):
@@ -812,7 +812,7 @@ class TestProcessBlockgroupsEmpty:
         )
         bc = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups(bc, "test.md")
+        result = await proc._process_blockgroups(bc, "test.md", allow_remote_fetch=True)
         assert result is bc
 
 
@@ -1602,7 +1602,7 @@ class TestProcessorCoverageBranchesTo95:
 
         proc.parsers = {"md": md_parser, "png": png_parser}
 
-        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3)
+        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3, allow_remote_fetch=True)
         assert mod_md == "text"
         assert cmap.get("cap1") == "data:x"
 

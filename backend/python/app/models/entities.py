@@ -29,6 +29,7 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
+from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
 from app.utils.jinja_templates import compiled_template, one_line
 from app.utils.time_conversion import (
@@ -337,6 +338,7 @@ class Record(BaseModel):
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
     is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")
+    push_origin: bool = Field(default=False, description="Created by an API push; indexing never fetches a remote image for it")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -506,6 +508,9 @@ class Record(BaseModel):
             base["uploadedBy"] = self.uploaded_by
         if self.source_timestamp_origin:
             base[SOURCE_TIMESTAMP_ORIGIN_FIELD] = self.source_timestamp_origin
+        # Written only when set: an older Arango schema rejects the key, even as false.
+        if self.push_origin:
+            base[PUSH_ORIGIN_FIELD] = True
         return base
 
     @staticmethod
@@ -595,6 +600,7 @@ class Record(BaseModel):
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
             source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
+            push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -839,6 +845,7 @@ class FileRecord(Record):
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
             source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
+            push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
             **Record.progress_state_from_arango(arango_base_record),
         )
