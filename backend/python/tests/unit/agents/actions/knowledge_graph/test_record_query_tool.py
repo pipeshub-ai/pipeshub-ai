@@ -178,3 +178,12 @@ async def test_under_a_selection_the_result_says_it_counts_only_the_selection(en
 async def test_without_a_selection_there_is_no_scope_note(engine: AsyncMock) -> None:
     _, text = await op.execute_find_records(_state(), limit=0)
     assert LIMITED_SCOPE_NOTE not in text
+
+
+
+async def test_records_whose_classification_failed_are_reported_apart(engine: AsyncMock) -> None:
+    engine.return_value = RecordQueryResult(total=1, unknown={"classification": 2, "classification_failed": 4})
+    _, text = await op.execute_find_records(_state(), where=[{"entity": {"type": "topic", "id": "t"}}])
+    assert "2 records not classified yet" in text
+    assert "4 records whose classification failed" in text and "reindex" in text
+    assert "lack classification" not in text

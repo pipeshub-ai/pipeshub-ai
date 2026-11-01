@@ -194,7 +194,7 @@ def test_a_record_not_classified_yet_is_unknown_for_a_topic_never_a_miss(status:
     assert found.unknown == {"classification": 1}
 
 
-@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "SKIPPED"])
+@pytest.mark.parametrize("status", ["COMPLETED", "SKIPPED"])
 def test_a_classified_record_without_the_topic_is_a_miss(status: str) -> None:
     query = q(where=[{"entity": {"type": "topic", "id": "billing"}}])
     assert evaluate_all(query.where, _classified("a", status)).value is False
@@ -222,3 +222,15 @@ def test_the_rows_left_unknown_for_classification_are_kept_up_to_a_bound() -> No
     found = tally(query, rows, keep_not_classified=3)
     assert [r["_key"] for r in found.not_classified] == ["r0", "r1", "r2"]
     assert found.unknown == {"classification": 5}
+
+
+def test_a_record_whose_classification_failed_is_unknown_for_its_own_reason() -> None:
+    rows = [_classified("failed", "FAILED"), _classified("waiting", "NOT_STARTED"), _classified("done", "COMPLETED"),
+            _classified("failed_linked", "FAILED", topics=["billing"], orgs=["acme"])]
+    topic = tally(q(where=[{"entity": {"type": "topic", "id": "billing"}}]), rows, keep_not_classified=10)
+    assert [r["_key"] for r in topic.matched] == ["failed_linked"]
+    assert topic.unknown == {"classification": 1, "classification_failed": 1}
+    # Only records still waiting are handed to first use: a failed one would be retried forever.
+    assert [r["_key"] for r in topic.not_classified] == ["waiting"]
+    org = tally(q(where=[{"organization": {"ids": ["acme"]}}]), rows)
+    assert org.unknown == {"classification": 1, "classification_failed": 1}

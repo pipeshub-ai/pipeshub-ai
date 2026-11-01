@@ -35,6 +35,7 @@ from app.modules.retrieval.record_query.model import (
 )
 from app.services.graph_db.common.record_query_rows import (
     CLASSIFIED_ENTITY_TYPES,
+    classification_failed,
     classification_pending,
 )
 
@@ -48,6 +49,8 @@ _DAY_MS = 86_400_000
 # The unknown reason of a row that a condition only classification decides,
 # when the record has not been classified yet.
 NOT_CLASSIFIED = "classification"
+# ... and when its classification failed: not known either, and not retried on use.
+CLASSIFICATION_FAILED = "classification_failed"
 
 
 def field_value(row: Row, name: str) -> Any:  # noqa: ANN401 - a field is a value, a number or a date
@@ -107,8 +110,14 @@ def _field(cond: FieldCondition, row: Row) -> Verdict:
     return Verdict((low is None or value >= low) and (high is None or value <= high))
 
 
-def _not_classified() -> Verdict:
-    return Verdict(None, frozenset({NOT_CLASSIFIED}))
+def _undecided(row: Row) -> Verdict:
+    """A row without the classification edge a condition needs: a miss once
+    classification succeeded (or does not apply), else unknown."""
+    if classification_pending(row):
+        return Verdict(None, frozenset({NOT_CLASSIFIED}))
+    if classification_failed(row):
+        return Verdict(None, frozenset({CLASSIFICATION_FAILED}))
+    return Verdict(False)
 
 
 def evaluate(cond: Condition, row: Row) -> Verdict:
@@ -122,7 +131,7 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
         if any(o["id"] in cond.organization.ids for o in row.get("organizations") or []):
             return Verdict(True)
         # Classification writes the MENTIONS edges; before it runs, no link is no answer.
-        return _not_classified() if classification_pending(row) else Verdict(False)
+        return _undecided(row)
     if isinstance(cond, LinkCondition):
         relation = cond.linked_to.relation
         return Verdict(any(
@@ -138,7 +147,7 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
             return Verdict(True)
         if any(e["type"] == cond.entity.type and e["id"] == cond.entity.id for e in row["entities"]):
             return Verdict(True)
-        return _not_classified() if classification_pending(row) else Verdict(False)
+        return _undecided(row)
     if isinstance(cond, Not):
         inner = evaluate(cond.not_, row)
         return Verdict(None if inner.value is None else not inner.value, inner.unknown_fields)
@@ -239,5 +248,5 @@ def groups(query: RecordQuery, rows: list[Row]) -> list[Group]:
     return out
 
 
-__all__ = ["NOT_CLASSIFIED", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
+__all__ = ["CLASSIFICATION_FAILED", "NOT_CLASSIFIED", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
            "field_value", "groups", "tally"]

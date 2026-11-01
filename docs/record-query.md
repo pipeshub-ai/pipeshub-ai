@@ -91,13 +91,19 @@ classification. With the Labs flag `ENABLE_CLASSIFY_ON_FIRST_USE`
 (`docs/indexing-service.md`) a record stays `extractionStatus` NOT_STARTED
 until first used, and any record is QUEUED or IN_PROGRESS while it waits; it
 has none of those edges whatever it is about. So the providers push such a
-condition down as "edge exists, or not classified yet" (`extractionStatus`
-missing or NOT_STARTED, QUEUED, IN_PROGRESS, PAUSED), and a scan seeded from
-such an entity or organisation also reads the org's records not classified
-yet. A row reports which of the query's classified entities it links to
+condition down as "edge exists, or not classified yet or failed"
+(`extractionStatus` missing or NOT_STARTED, QUEUED, IN_PROGRESS, PAUSED,
+FAILED), and a scan seeded from such an entity or organisation also reads
+the org's records in those states. A row reports which of the query's classified entities it links to
 (`entities`); one that links to none and is not classified yet is unknown,
 counted as `unknown["classification"]` and reported as such, never as a
-miss. FAILED and SKIPPED are outcomes and stay misses. An organisation
+miss. A record whose classification FAILED is unknown too, under its own
+reason (`unknown["classification_failed"]`): its taxonomy is just as unknown,
+but first use does not ask for it again, which would retry it on every query;
+a reindex with `stages: ["classify"]` retries it. SKIPPED stays a miss:
+classification does not apply to that record (the pipeline policy leaves its
+kind unclassified, or it has nothing to classify), so it has none of those
+edges by design, not by delay. An organisation
 condition still matches on a connector's `FOR_ACCOUNT` edge before
 classification. When the flag is on, find_records asks for classification of
 up to 50 such records a query, the shown rows first, through the same
@@ -128,7 +134,8 @@ limit:      rows per page (default 20, max 50); cursor
 - `value`: the aggregate, over admitted rows only.
 - `groups`: `[{key, label, count, value}]`, top N by count.
 - `unknown`: `{field: count}` of admitted candidates a condition could not judge;
-  `classification` counts records not classified yet.
+  `classification` counts records not classified yet, `classification_failed`
+  those whose classification failed.
 - `rows`: a page, readable names first (title, type, source, status, people
   by role, dates, amount), with record ids for fetch. Each row gets a
   record-level Citation ID through `cite_listed_records`, as navigate,

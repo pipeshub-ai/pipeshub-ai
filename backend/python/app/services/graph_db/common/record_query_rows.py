@@ -22,15 +22,21 @@ LINKED_PER_ROW = 100
 # them whatever it is about. See "Classify on first use" in docs/indexing-service.md.
 CLASSIFIED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {"organization"}
 # extractionStatus of a record whose classification has not run yet; a record
-# with none stored reads the same. FAILED and SKIPPED are outcomes, not waits.
+# with none stored reads the same.
 CLASSIFICATION_PENDING: tuple[str, ...] = (
     ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value,
     ProgressStatus.IN_PROGRESS.value, ProgressStatus.PAUSED.value,
 )
+# Classification ran and failed: the taxonomy is not known either, but asking
+# again on first use would retry it forever; a reindex retries it.
+CLASSIFICATION_FAILED: tuple[str, ...] = (ProgressStatus.FAILED.value,)
+# Every status whose record may lack the edges classification writes. SKIPPED
+# is not here: classification does not apply to that record, so it has none.
+CLASSIFICATION_UNDECIDED: tuple[str, ...] = CLASSIFICATION_PENDING + CLASSIFICATION_FAILED
 
 __all__ = [
-    "CLASSIFICATION_PENDING", "CLASSIFIED_ENTITY_TYPES", "LINKED_PER_ROW", "ORGANIZATION_EDGES", "PERSON_EDGES",
-    "CandidateKey", "RecordCandidates", "Seed", "classification_pending", "classified_entities", "matches_nothing",
+    "CLASSIFICATION_FAILED", "CLASSIFICATION_PENDING", "CLASSIFICATION_UNDECIDED", "CLASSIFIED_ENTITY_TYPES", "LINKED_PER_ROW", "ORGANIZATION_EDGES", "PERSON_EDGES",
+    "CandidateKey", "RecordCandidates", "Seed", "classification_failed", "classification_pending", "classified_entities", "matches_nothing",
     "record_query_seed",
 ]
 
@@ -39,6 +45,10 @@ def classification_pending(row: dict[str, Any]) -> bool:
     """Whether the row's record has not been classified yet."""
     status = row.get("extractionStatus")
     return status is None or status in CLASSIFICATION_PENDING
+
+
+def classification_failed(row: dict[str, Any]) -> bool:
+    return row.get("extractionStatus") in CLASSIFICATION_FAILED
 
 
 def classified_entities(pushed: Pushdown) -> list[dict[str, str]]:

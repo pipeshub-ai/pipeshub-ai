@@ -57,7 +57,7 @@ from app.modules.retrieval.record_query.pushdown import (
     PushedPeople,
 )
 from app.services.graph_db.common.record_query_rows import (
-    CLASSIFICATION_PENDING,
+    CLASSIFICATION_UNDECIDED,
     CLASSIFIED_ENTITY_TYPES,
     CandidateKey,
 )
@@ -131,6 +131,8 @@ SPECS: dict[str, Spec] = {
     # edge from an earlier classification while it is classified again.
     "u1": Spec("file", JIRA, "jira", 3_500, 35_000, extraction=ProgressStatus.NOT_STARTED.value),
     "u2": Spec("file", JIRA, "jira", 3_600, 36_000, extraction=ProgressStatus.QUEUED.value, topic=True),
+    # Classification ran and failed: no edges, and not known either.
+    "u3": Spec("file", JIRA, "jira", 3_700, 37_000, extraction=ProgressStatus.FAILED.value),
     "deleted": Spec("ticket", ZENDESK, "child", 1_500, 99_000, ticket=_ticket("OPEN", "Open", "HIGH"), deleted=True),
     "placeholder": Spec("ticket", ZENDESK, "child", 1_600, 98_000, ticket=_ticket("OPEN", "Open", "HIGH"),
                         placeholder=True),
@@ -431,7 +433,7 @@ def _holds(g: Graph, name: str, pushed: Pushdown, within: list[dict[str, list[st
     for person in pushed.get("people", []):
         if not any(p["id"] in person["ids"] and p["role"] in person["edges"] for p in row["people"]):
             return False
-    waiting = spec.extraction in CLASSIFICATION_PENDING
+    waiting = spec.extraction in CLASSIFICATION_UNDECIDED
     for org_ids in pushed.get("organizations", []):
         if not (any(o["id"] in org_ids for o in row["organizations"]) or waiting):
             return False
@@ -570,11 +572,11 @@ async def test_the_reference_cases_select_what_they_say(seeded: Graph) -> None:
     def keys(case: str) -> list[str]:
         return [r["_key"].removeprefix(f"{g.org}-") for r in _reference(g, cases[case])]
 
-    assert keys("nothing") == ["t4", "t2", "t1", "t3", "u2", "u1", "t5", "d1", "f1", "d2"]
+    assert keys("nothing") == ["t4", "t2", "t1", "t3", "u3", "u2", "u1", "t5", "d1", "f1", "d2"]
     # Records not classified yet stay candidates for what classification links.
-    assert keys("entity_topic") == ["t1", "t3", "u2", "u1"]
-    assert keys("organizations") == ["t1", "u2", "u1", "d1", "d2"]
-    assert keys("organizations_in_container") == ["u2", "u1"]
+    assert keys("entity_topic") == ["t1", "t3", "u3", "u2", "u1"]
+    assert keys("organizations") == ["t1", "u3", "u2", "u1", "d1", "d2"]
+    assert keys("organizations_in_container") == ["u3", "u2", "u1"]
     assert keys("containers_root_nested") == ["t4", "t2", "t1"]
     assert keys("people_assignee") == ["t4", "t1"]
     assert keys("people_any_role_person_node") == ["t1", "d2"]
@@ -592,6 +594,7 @@ async def test_hydration_shapes_and_missing_values(seeded: Graph) -> None:
                             "webUrl", "createdAt", "updatedAt", "ticket", "deal", "people", "organizations", "links",
                             "extractionStatus", "indexingStatus", "virtualRecordId", "contentRev", "mimeType",
                             "entities"}
+    assert by_key["u3"]["extractionStatus"] == "FAILED"
     assert by_key["u1"]["extractionStatus"] == "NOT_STARTED" and by_key["t1"]["extractionStatus"] == "COMPLETED"
     assert by_key["u1"]["indexingStatus"] == "COMPLETED" and by_key["u1"]["entities"] == []
     assert by_key["t3"]["ticket"] == {"status": None, "sourceStatus": None, "priority": None,
@@ -675,7 +678,7 @@ async def test_empty_scope_reads_nothing(seeded: Graph) -> None:
     only_jira = await g.graph.get_record_query_candidates(
         g.org, connector_ids=[g.connectors[JIRA]], pushdown=Pushdown(),
     )
-    assert sorted(k.id for k in only_jira.keys) == sorted(g.rid(n) for n in ("f1", "t3", "u1", "u2"))
+    assert sorted(k.id for k in only_jira.keys) == sorted(g.rid(n) for n in ("f1", "t3", "u1", "u2", "u3"))
     unknown = await g.graph.get_record_query_candidates(
         g.org, connector_ids=g.connector_ids, pushdown=Pushdown(entities=[{"type": "nonsense", "id": "x"}]),
     )
@@ -853,7 +856,7 @@ async def test_sort_by_a_date_field_pages_in_order_with_unknowns_last(seeded: Gr
         if not cursor:
             break
     # t5 has no created time: last, never placed as if it were oldest or newest.
-    assert seen == ["f1", "d1", "t4", "u2", "u1", "t3", "t1", "t5"]
+    assert seen == ["f1", "d1", "t4", "u3", "u2", "u1", "t3", "t1", "t5"]
 
 
 async def test_records_not_classified_yet_are_unknown_never_a_miss(seeded: Graph) -> None:
@@ -863,18 +866,18 @@ async def test_records_not_classified_yet_are_unknown_never_a_miss(seeded: Graph
     }))
     # u2 keeps its topic edge while it is classified again; u1 has none yet.
     assert sorted(r["record_id"] for r in topic.rows) == sorted(g.rid(n) for n in ("t1", "t3", "u2"))
-    assert (topic.total, topic.unknown) == (3, {"classification": 1})
+    assert (topic.total, topic.unknown) == (3, {"classification": 1, "classification_failed": 1})
     assert sorted(d["_key"] for d in topic.not_classified) == sorted([g.rid("u1"), g.rid("u2")])
 
     acme = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
         "where": [{"organization": {"ids": [g.nid("acme")]}}],
     }))
     assert sorted(r["record_id"] for r in acme.rows) == sorted(g.rid(n) for n in ("t1", "d1"))
-    assert acme.unknown == {"classification": 2}
+    assert acme.unknown == {"classification": 2, "classification_failed": 1}
 
     not_acme = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
         "where": [{"field": "source", "in": ["JIRA"]},
                   {"not": {"organization": {"ids": [g.nid("acme")]}}}],
     }))
     assert sorted(r["record_id"] for r in not_acme.rows) == sorted(g.rid(n) for n in ("t3", "f1"))
-    assert not_acme.unknown == {"classification": 2}
+    assert not_acme.unknown == {"classification": 2, "classification_failed": 1}

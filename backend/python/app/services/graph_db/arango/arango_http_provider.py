@@ -193,7 +193,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
 )
 from app.services.graph_db.common.record_query_rows import (
-    CLASSIFICATION_PENDING,
+    CLASSIFICATION_UNDECIDED,
     CLASSIFIED_ENTITY_TYPES,
     LINKED_PER_ROW,
     ORGANIZATION_EDGES,
@@ -22345,7 +22345,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return f"FOR rec IN {records} FILTER rec.orgId == @org_id AND rec.recordGroupId IN container_groups", False
         return f"FOR rec IN {records} FILTER rec.orgId == @org_id", False
 
-    _RECORD_QUERY_PENDING = "(rec.extractionStatus == null OR rec.extractionStatus IN @pending_extraction)"
+    _RECORD_QUERY_UNDECIDED = "(rec.extractionStatus == null OR rec.extractionStatus IN @undecided_extraction)"
 
     def _record_query_aql(self, pushed: Pushdown) -> tuple[str, dict[str, Any]] | None:
         """The candidate query for ``pushed`` and its bind variables, or None
@@ -22402,13 +22402,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         LIMIT 1 RETURN 1) > 0""")
         for i, org_ids in enumerate(pushed.get("organizations", [])):
             bind_vars[f"orgs_{i}"], bind_vars["org_edges"] = list(org_ids), list(ORGANIZATION_EDGES)
-            bind_vars["pending_extraction"] = list(CLASSIFICATION_PENDING)
+            bind_vars["undecided_extraction"] = list(CLASSIFICATION_UNDECIDED)
             # A record not classified yet lacks the MENTIONS edges classification
             # writes: it stays a candidate, and the evaluator counts it unknown.
             where.append(f"""(LENGTH(FOR o, orl IN 1..1 OUTBOUND rec {relations}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", o) AND o._key IN @orgs_{i}
                             AND orl.edgeType IN @org_edges AND o.isExternal == true AND o.parentOrgId == @org_id
-                        LIMIT 1 RETURN 1) > 0 OR {self._RECORD_QUERY_PENDING})""")
+                        LIMIT 1 RETURN 1) > 0 OR {self._RECORD_QUERY_UNDECIDED})""")
         for i, link in enumerate(pushed.get("links", [])):
             bind_vars[f"links_{i}_ids"], bind_vars[f"links_{i}_relation"] = list(link["ids"]), link.get("relation")
             where.append(f"""LENGTH(FOR lo, lk IN 1..1 ANY rec {CollectionNames.RECORD_LINKS.value}
@@ -22423,8 +22423,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if condition is None:
                 return None
             if entity_type in CLASSIFIED_ENTITY_TYPES:
-                bind_vars["pending_extraction"] = list(CLASSIFICATION_PENDING)
-                condition = f"({condition} OR {self._RECORD_QUERY_PENDING})"
+                bind_vars["undecided_extraction"] = list(CLASSIFICATION_UNDECIDED)
+                condition = f"({condition} OR {self._RECORD_QUERY_UNDECIDED})"
             where.append(condition)
 
         seed = record_query_seed(pushed)
@@ -22447,9 +22447,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         keys = scanned(loop, repeats=repeats)
         if seed.with_pending:
             # No classification edge reaches a record not classified yet.
-            bind_vars["pending_extraction"] = list(CLASSIFICATION_PENDING)
+            bind_vars["undecided_extraction"] = list(CLASSIFICATION_UNDECIDED)
             pending = scanned(f"FOR rec IN {CollectionNames.RECORDS.value} FILTER rec.orgId == @org_id "
-                              f"AND {self._RECORD_QUERY_PENDING}", repeats=False)
+                              f"AND {self._RECORD_QUERY_UNDECIDED}", repeats=False)
             keys = f"SLICE(UNION_DISTINCT({keys}, {pending}), 0, @scan_cap)"
         # One scan per query returning keys only; rows are read by id afterwards,
         # so no window re-runs the scan.

@@ -28,7 +28,10 @@ from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.modules.retrieval.record_fields import FIELDS, ROLE_EDGES, FieldKind, Store
 from app.modules.retrieval.record_query.engine import run_record_query
-from app.modules.retrieval.record_query.evaluate import NOT_CLASSIFIED
+from app.modules.retrieval.record_query.evaluate import (
+    CLASSIFICATION_FAILED,
+    NOT_CLASSIFIED,
+)
 from app.modules.retrieval.record_query.model import (
     EntityCondition,
     LinkCondition,
@@ -181,7 +184,7 @@ def render(
         lines += [f"- {g.label}: {'at least ' if result.approximate else ''}{g.count}"
                   + (f", {query.aggregate.op} {_number(g.value)}" if g.value is not None else "") + f" ({kind})"
                   for g in result.groups]
-    lacking = {name: n for name, n in result.unknown.items() if name != NOT_CLASSIFIED}
+    lacking = {name: n for name, n in result.unknown.items() if name not in (NOT_CLASSIFIED, CLASSIFICATION_FAILED)}
     if lacking:
         lines.append("Not counted, because the record does not carry the field: " + ", ".join(
             f"{n} lack {name}" for name, n in lacking.items()))
@@ -189,6 +192,11 @@ def render(
         lines.append(
             f"Not counted: {result.unknown[NOT_CLASSIFIED]} records not classified yet, so whether they "
             "match a topic, category or organisation condition is unknown (neither a match nor a miss)."
+        )
+    if result.unknown.get(CLASSIFICATION_FAILED):
+        lines.append(
+            f"Not counted: {result.unknown[CLASSIFICATION_FAILED]} records whose classification failed, so "
+            "whether they match a topic, category or organisation condition is unknown; a reindex retries them."
         )
     for name, values in result.described.items():
         lines.append(f"Values of {name} among the matches: " + (

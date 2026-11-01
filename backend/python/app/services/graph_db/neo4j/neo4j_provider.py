@@ -140,7 +140,7 @@ from app.services.graph_db.common.full_sync_unlink import (
 )
 from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
 from app.services.graph_db.common.record_query_rows import (
-    CLASSIFICATION_PENDING,
+    CLASSIFICATION_UNDECIDED,
     CLASSIFIED_ENTITY_TYPES,
     LINKED_PER_ROW,
     ORGANIZATION_EDGES,
@@ -23397,7 +23397,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             f"WHERE e.id = ${param}{scope} }}"
         )
 
-    _RECORD_QUERY_PENDING = "(rec.extractionStatus IS NULL OR rec.extractionStatus IN $pending_extraction)"
+    _RECORD_QUERY_UNDECIDED = "(rec.extractionStatus IS NULL OR rec.extractionStatus IN $undecided_extraction)"
 
     def _with_pending(self, linked: str) -> str:
         """``linked``, clauses binding ``rec`` from ``ref``, joined with every
@@ -23408,7 +23408,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               RETURN rec
               UNION
               WITH ref
-              MATCH (rec:Record) WHERE rec.orgId = $org_id AND {self._RECORD_QUERY_PENDING}
+              MATCH (rec:Record) WHERE rec.orgId = $org_id AND {self._RECORD_QUERY_UNDECIDED}
               RETURN rec
             }}"""
 
@@ -23419,7 +23419,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         params: dict[str, Any] = {
             "record_types": list(pushed["record_types"]) if "record_types" in pushed else None,
             "org_edges": list(ORGANIZATION_EDGES),
-            "pending_extraction": list(CLASSIFICATION_PENDING),
+            "undecided_extraction": list(CLASSIFICATION_UNDECIDED),
         }
         where = [self._ENTITY_CANDIDATE_RECORD_FILTER, self._ENTITY_WITHIN_FILTER]
         if "sources" in pushed:
@@ -23463,7 +23463,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             where.append(
                 f"(EXISTS {{ MATCH (rec)-[orl:ENTITYRELATIONS]->(o:Organization) WHERE o.id IN $orgs_{i} "
                 f"AND orl.edgeType IN $org_edges AND o.isExternal = true AND o.parentOrgId = $org_id }} "
-                f"OR {self._RECORD_QUERY_PENDING})"
+                f"OR {self._RECORD_QUERY_UNDECIDED})"
             )
         for i, link in enumerate(pushed.get("links", [])):
             params[f"links_{i}_ids"], params[f"links_{i}_relation"] = list(link["ids"]), link.get("relation")
@@ -23479,7 +23479,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if condition is None:
                 return None
             if entity_type in CLASSIFIED_ENTITY_TYPES:
-                condition = f"({condition} OR {self._RECORD_QUERY_PENDING})"
+                condition = f"({condition} OR {self._RECORD_QUERY_UNDECIDED})"
             where.append(condition)
 
         seed = record_query_seed(pushed)
