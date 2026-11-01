@@ -220,6 +220,11 @@ services:
       # or disputes the question's wording goes back once to lead with the answer.
       - ANSWER_OPENING_CHECK=${ANSWER_OPENING_CHECK:-}
       - ANSWER_OPENING_CHECK_DISPUTE=${ANSWER_OPENING_CHECK_DISPUTE:-}
+      # Opt-in only: before an enterprise-search answer is final, send it back once
+      # to add the specifics its records give, and to read top search results it skipped.
+      - ANSWER_COMPLETENESS_PASS=${ANSWER_COMPLETENESS_PASS:-}
+      - ANSWER_CANDIDATE_READING=${ANSWER_CANDIDATE_READING:-}
+      - ANSWER_SCOPE_GUARD=${ANSWER_SCOPE_GUARD:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}

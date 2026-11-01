@@ -203,6 +203,11 @@ services:
       # or disputes the question's wording goes back once to lead with the answer.
       - ANSWER_OPENING_CHECK=${ANSWER_OPENING_CHECK:-}
       - ANSWER_OPENING_CHECK_DISPUTE=${ANSWER_OPENING_CHECK_DISPUTE:-}
+      # Opt-in only: before an enterprise-search answer is final, send it back once
+      # to add the specifics its records give, and to read top search results it skipped.
+      - ANSWER_COMPLETENESS_PASS=${ANSWER_COMPLETENESS_PASS:-}
+      - ANSWER_CANDIDATE_READING=${ANSWER_CANDIDATE_READING:-}
+      - ANSWER_SCOPE_GUARD=${ANSWER_SCOPE_GUARD:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
