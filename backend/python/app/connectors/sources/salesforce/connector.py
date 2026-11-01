@@ -2470,12 +2470,13 @@ class SalesforceConnector(BaseConnector):
         user_email: str,
         record_ids: List[str],
         api_version: str,
-        unknown: set | None = None,
+        incomplete: set | None = None,
     ) -> AsyncGenerator[tuple[str, str, str], None]:
         """
         Yields (record_id, user_email, access_level) tuples for a given user,
-        streaming results as each composite batch resolves. The ids of a query that
-        failed go into ``unknown``: for them this read is not the user's full access.
+        streaming results as each composite batch resolves. A query that failed
+        adds the user's email to ``incomplete``: what was yielded is then not the
+        user's full access.
         """
         unique_ids = list(dict.fromkeys(rid for rid in record_ids if rid))
         if not unique_ids or not user_id:
@@ -2485,8 +2486,8 @@ class SalesforceConnector(BaseConnector):
             safe_user_id = _sanitize_soql_id(user_id)
         except ValueError:
             self.logger.warning("Invalid Salesforce user ID in access check: %r", user_id)
-            if unknown is not None:
-                unknown.update(unique_ids)
+            if incomplete is not None:
+                incomplete.add(user_email)
             return
 
         base_query_url = f"/services/data/v{api_version}/query/"
@@ -2552,10 +2553,8 @@ class SalesforceConnector(BaseConnector):
                     f"Error processing access batch {i} for user {user_email}: {e}",
                     exc_info=True
                 )
-            if unknown is not None:
-                for sub in batch:
-                    if sub["referenceId"] not in answered:
-                        unknown.update(batch_ids[sub["referenceId"]])
+            if incomplete is not None and any(sub["referenceId"] not in answered for sub in batch):
+                incomplete.add(user_email)
 
     async def _authenticated_user_id(self) -> Optional[str]:
         """The user id that ends the identity URL Salesforce returns with every token."""
@@ -6489,7 +6488,7 @@ class SalesforceConnector(BaseConnector):
                 salesforce_record_group_external_ids=salesforce_rg_external_ids,
                 api_version=api_version,
                 semaphore=semaphore,
-                unknown_users=unknown_users,
+                incomplete=unknown_users,
             )
             for user in sf_users
         ]
@@ -6670,7 +6669,7 @@ class SalesforceConnector(BaseConnector):
         salesforce_record_group_external_ids: List[str],
         api_version: str,
         semaphore: asyncio.Semaphore,
-        unknown_users: set | None = None,
+        incomplete: set | None = None,
     ) -> list[tuple[str, str, str, bool]]:
         """
         Collect all permission tuples for one user via the Salesforce UserRecordAccess
@@ -6691,7 +6690,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_external_ids,
                 api_version=api_version,
-                unknown=unread,
+                incomplete=unread,
             ):
                 collected.append((email, rec_id, access_level, False))
 
@@ -6700,12 +6699,12 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_record_group_external_ids,
                 api_version=api_version,
-                unknown=unread,
+                incomplete=unread,
             ):
                 collected.append((email, rg_id, access_level, True))
 
-        if unread and unknown_users is not None:
-            unknown_users.add(user_email.lower())
+        if unread and incomplete is not None:
+            incomplete.add(user_email.lower())
         return collected
 
     async def salesforce_record_group_permissions_sync(

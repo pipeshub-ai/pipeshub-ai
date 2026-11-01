@@ -3757,9 +3757,9 @@ class TestSyncPermissionsEdgesPartialReads:
 
     @pytest.mark.asyncio
     async def test_a_partial_read_flagged_by_the_collector_keeps_stored_edges(self) -> None:
-        async def per_user(user, unknown_users=None, **_) -> list[tuple[str, str, str, bool]]:
+        async def per_user(user, incomplete=None, **_) -> list[tuple[str, str, str, bool]]:
             if user["Id"] == "sf-2":
-                unknown_users.add(user["Email"].lower())  # a composite batch failed mid-way
+                incomplete.add(user["Email"].lower())  # a composite batch failed mid-way
                 return []
             return [("alice@example.com", "opp-1", "READER", False)]
 
@@ -3790,7 +3790,7 @@ class TestSyncPermissionsEdgesPartialReads:
             salesforce_record_group_external_ids=[],
             api_version="59.0",
             semaphore=__import__("asyncio").Semaphore(1),
-            unknown_users=unknown_users,
+            incomplete=unknown_users,
         )
         assert out == [] and unknown_users == {"alice@example.com"}
 
@@ -7248,7 +7248,7 @@ class TestSyncPermissionsEdgesRemaining:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 if rid == opp_id:
                     yield (rid, user_email, "READER")
@@ -7294,7 +7294,7 @@ class TestSyncPermissionsForUserRemaining:
         acc_id = "001000000000001AAA"
         semaphore = __import__("asyncio").Semaphore(1)
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 yield (rid, user_email, "READER")
 
@@ -7864,7 +7864,7 @@ class TestSyncPermissionsEdgesUnknownAccess:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 if rid == opp_id:
                     yield (rid, user_email, "INVALID_LEVEL")
@@ -8735,7 +8735,7 @@ class TestFinalCoveragePush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             yield (opp_id, user_email, "READER")
 
         connector._iter_record_access = _iter_access
@@ -8759,7 +8759,7 @@ class TestFinalCoveragePush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             if record_ids and record_ids[0] == opp_id:
                 yield (opp_id, user_email, "READER")
 
@@ -9212,7 +9212,7 @@ class TestCoverageFinalPush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             yield ("006000000000099AAA", user_email, "READER")
 
         connector._iter_record_access = _iter_access
@@ -9514,19 +9514,19 @@ class TestRecordAccessBatching:
         connector.data_source = MagicMock()
         connector.data_source.composite = AsyncMock(return_value=_sf_response(data={"compositeResponse": []}))
         ids = [f"006{i:012d}AAA" for i in range(1201)]  # 7 queries of up to 200 ids
-        unknown: set = set()
-        async for _ in connector._iter_record_access("005000000000001AAA", "u@x.com", ids, "59.0", unknown):
+        incomplete: set = set()
+        async for _ in connector._iter_record_access("005000000000001AAA", "u@x.com", ids, "59.0", incomplete):
             pass
         sizes = [len(call.kwargs["data"]["compositeRequest"]) for call in connector.data_source.composite.await_args_list]
         assert sizes == [5, 2]
         for call in connector.data_source.composite.await_args_list:
             for sub in call.kwargs["data"]["compositeRequest"]:
                 assert sub["url"].count("%27006") <= 200
-        # No query came back, so none of these ids is known.
-        assert len(unknown) == 1201
+        # No query came back, so this read is not the user's full access.
+        assert incomplete == {"u@x.com"}
 
     @pytest.mark.asyncio
-    async def test_a_failed_query_marks_only_its_ids_unknown(self) -> None:
+    async def test_a_failed_query_marks_the_user_incomplete_and_keeps_the_answered_rows(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         ids = [f"006{i:012d}AAA" for i in range(400)]
@@ -9539,10 +9539,10 @@ class TestRecordAccessBatching:
                 {"referenceId": parts[1]["referenceId"], "httpStatusCode": 500, "body": [{"errorCode": "UNKNOWN_EXCEPTION"}]},
             ]})
         connector.data_source.composite = composite
-        unknown: set = set()
-        rows = [r async for r in connector._iter_record_access("005000000000001AAA", "u@x.com", ids, "59.0", unknown)]
+        incomplete: set = set()
+        rows = [r async for r in connector._iter_record_access("005000000000001AAA", "u@x.com", ids, "59.0", incomplete)]
         assert rows == [(ids[0], "u@x.com", "READER")]
-        assert unknown == set(ids[200:])
+        assert incomplete == {"u@x.com"}
 
 
 class TestCappedDownload:
