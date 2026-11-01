@@ -779,6 +779,25 @@ class TestTheSearchToolOverAWideSpan:
         assert corpus.calls == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extra_state", "kwargs"), [
+        ({}, {"entity_ids": ["dept-1"]}),
+        ({"filters": {"apps": ["slack-1"], "kb": [], "entityFilters": {"departments": ["d1"]}}}, {}),
+    ], ids=["entity-ids", "request-entity-filter"])
+    async def test_exact_match_inside_an_entity_scope_keeps_the_timeline(
+        self, extra_state: dict[str, Any], kwargs: dict[str, Any],
+    ) -> None:
+        """An entity-scoped search never runs the exact-text pass, so exact_match
+        would only trade the timeline's coverage for nothing."""
+        corpus = _Corpus(_THREE_MONTHS)
+
+        _, ranked = await _run_search(
+            corpus, _state(corpus, **extra_state),
+            created_after="2026-03-01", created_before="2026-05-31", exact_match=True, **kwargs,
+        )
+
+        ranked.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_switched_off_it_stays_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
         corpus = _Corpus(_THREE_MONTHS)

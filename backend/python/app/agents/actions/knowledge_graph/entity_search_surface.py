@@ -165,7 +165,9 @@ EXACT_MATCH_PARAMETER = ToolParameter(
         "unless dates spanning more than 31 days make the search run period by period, "
         "which skips it. Set this when an ordinary word or name has to occur as written, "
         "when searching by meaning keeps coming back without it, or to keep the literal "
-        "pass on such a long date range (the search then stays one ranked search)."
+        "pass on such a long date range (the search then stays one ranked search). It "
+        "does nothing together with entity_ids: a search narrowed to entities never "
+        "runs the literal pass."
     ),
     required=False,
     default=False,

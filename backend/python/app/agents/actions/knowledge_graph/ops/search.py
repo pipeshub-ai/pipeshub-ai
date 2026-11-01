@@ -101,6 +101,8 @@ from app.utils.pattern_match import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
     from app.modules.agents.record_escalation.models import FetchPlan
@@ -310,6 +312,13 @@ def _result_frame(
     )
 
 
+def _exact_text_can_run(state: Mapping[str, Any], entity_ids: list[str] | None) -> bool:
+    """Whether the exact-text pass could run: not inside an entity scope, which
+    it cannot honour (``entity_scoped`` in ``_execute_search``)."""
+    filters: Mapping[str, Any] = state.get("filters") or {}
+    return not entity_ids and not filters.get("entityFilters")
+
+
 def _note_provenance(
     state: "ChatState",
     semantic_units: list[dict[str, Any]],
@@ -505,9 +514,10 @@ async def execute_search(
     ``exact_match`` runs the exact-text pass whatever the query looks like
     (``exact_text_search_wanted``).
 
-    Without a scope or ``exact_match``, dates over a span longer than a month
-    run the timeline tool's search instead
-    (``ops/timeline.automatic_timeline_search``), which has no exact-text pass.
+    Without a scope, dates over a span longer than a month run the timeline
+    tool's search instead (``ops/timeline.automatic_timeline_search``). It has no
+    exact-text pass, so ``exact_match`` keeps the ranked search, except inside an
+    entity scope, where that pass never runs either.
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
@@ -526,7 +536,7 @@ async def execute_search(
             created_after=created_after, created_before=created_before,
             modified_after=modified_after, modified_before=modified_before,
         )
-    if scope_virtual_record_ids is None and not exact_match:
+    if scope_virtual_record_ids is None and not (exact_match and _exact_text_can_run(state or {}, entity_ids)):
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
         )
