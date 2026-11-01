@@ -93,11 +93,12 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
   const pendingConversations = useChatStore((s) => s.pendingConversations);
   const slots = useChatStore((s) => s.slots);
 
-  const { project, unavailable: projectUnavailable } = useProjectDetail(projectId);
+  const { project, unavailable: projectUnavailable, gone: projectGone } = useProjectDetail(projectId);
   const [conversations, setConversations] = useState<ProjectConversationRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [conversationsFailed, setConversationsFailed] = useState(false);
-  const hasError = conversationsFailed || projectUnavailable;
+  // A project deleted or left in this tab is not a load failure: the page is about to move away.
+  const hasError = conversationsFailed || (projectUnavailable && !projectGone);
 
   const load = useCallback(async () => {
     setIsLoading(true);

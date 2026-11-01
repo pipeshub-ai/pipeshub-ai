@@ -8,7 +8,6 @@ vi.mock('@/lib/api', () => ({
 import { apiClient } from '@/lib/api';
 import { ErrorType } from '@/lib/api/api-error';
 import { clearSessionCache } from '@/lib/api/session-cache';
-import { useUserStore } from '@/lib/store/user-store';
 import { ProjectApi } from '@/chat/project-api';
 import { useProjectDetail } from '../use-project-detail';
 
@@ -29,7 +28,6 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   clearSessionCache();
-  useUserStore.setState({ profile: { userId: 'me' } as never });
   api.get.mockResolvedValue({ data: { project: PROJECT } });
   api.post.mockResolvedValue({ data: { project: PROJECT } });
   api.delete.mockResolvedValue({ data: { removed: true } });
@@ -111,7 +109,7 @@ describe('useProjectDetail', () => {
 
   it.each([
     ['deleting it', () => ProjectApi.remove('p1')],
-    ['leaving it', () => ProjectApi.removeMember('p1', 'me')],
+    ['leaving it', () => ProjectApi.leave('p1', 'me')],
   ])('shows the project as gone after %s, with no request, now and on the next mount', async (_name, write) => {
     const open = mountReader();
     await settle();
@@ -135,6 +133,19 @@ describe('useProjectDetail', () => {
 
     await act(async () => {
       await ProjectApi.removeMember('p1', 'someone-else');
+    });
+    await settle();
+
+    expect(open.result.current.project?.name).toBe('Launch plan');
+  });
+
+  it('keeps the project when leaving was refused (membership through a team)', async () => {
+    const open = mountReader();
+    await settle();
+    api.delete.mockResolvedValueOnce({ data: { removed: false } });
+
+    await act(async () => {
+      await ProjectApi.leave('p1', 'me');
     });
     await settle();
 

@@ -38,6 +38,15 @@ export function revalidateSwrKey(key: SwrKey): void {
 }
 
 /**
+ * Drops `key`'s data and fetches it again: now if mounted, otherwise on the
+ * next mount, which then waits for the answer instead of showing the old one.
+ * For the user's own edit when the write's answer is not what the read returns.
+ */
+export function refreshSwrKey(key: SwrKey): void {
+  void mutate(key, undefined);
+}
+
+/**
  * Whether a cached read means the entity is not available: it is missing or
  * forbidden, or it failed before anything was shown. A failed background
  * refresh keeps the data already on screen.

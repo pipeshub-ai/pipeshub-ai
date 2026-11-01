@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api';
-import { revalidateSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
+import { refreshSwrKey, revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { onSessionEnd } from '@/lib/api/session-cache';
 import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
@@ -765,7 +765,9 @@ export const AgentsApi = {
 
     revalidateSwrNamespace(SWR_NS.agentLists);
     forgetPendingAgent(agentKey);
-    revalidateSwrKey(agentDetailKey(agentKey));
+    // Not the PUT answer: only GET stamps tools removed from the server as deprecated.
+    // The next reader waits for the saved agent rather than flashing the old one.
+    refreshSwrKey(agentDetailKey(agentKey));
     if (data?.agent && typeof data.agent === 'object') {
       return data.agent;
     }
@@ -784,8 +786,8 @@ export const AgentsApi = {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
     revalidateSwrNamespace(SWR_NS.agentLists);
     forgetPendingAgent(agentKey);
-    // Gone, without asking: refetching an agent that was just deleted would only bring back a 404.
-    writeSwrKey<GetAgentResult>(agentDetailKey(agentKey), { agent: null, toolFullNames: [] });
+    // Its next reader asks again and gets the 404 (and its "not found" toast on a new chat), as before caching.
+    refreshSwrKey(agentDetailKey(agentKey));
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */

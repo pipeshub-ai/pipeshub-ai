@@ -364,9 +364,6 @@ function ChatContent() {
     unavailable: agentUnavailable,
     error: agentDetailError,
   } = useAgentDetail(agentId);
-  // The agent sidebar resets every agent field when it mounts for an agent; with the detail
-  // already cached the page can hydrate before that, so hydrate again after the reset.
-  const agentSidebarAgentId = useChatStore((s) => s.agentSidebarAgentId);
 
   // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
   // open, and the chat itself loads without it, so only a new agent chat reports the failure.
@@ -394,7 +391,11 @@ function ChatContent() {
       clearAgentContext();
       return;
     }
-    if (!agentDetail) return;
+    // Still loading this agent: show none of the previous agent's tools or knowledge meanwhile.
+    if (!agentDetail) {
+      clearAgentContext();
+      return;
+    }
 
     const load = async () => {
       try {
@@ -471,11 +472,13 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, agentDetail, agentUnavailable, agentSidebarAgentId, apiActionsEnabled, router, t]);
+  }, [agentId, agentDetail, agentUnavailable, apiActionsEnabled, router, t]);
 
   // Warn when any tool attached to this agent has been removed from server code
   // since the agent was last saved (deprecated=true is stamped by the GET
-  // /agent/:id handler at read time). Once per loaded detail, not per re-hydration.
+  // /agent/:id handler at read time). Keyed on the loaded detail only: once per
+  // detail SWR hands over (a new agent always brings a new one), never per
+  // re-hydration from `apiActionsEnabled` or `t` changes.
   useEffect(() => {
     if (!agentId || !agentDetail || deprecatedAgentToolNames(agentDetail.agent).length === 0) return;
     toast.error(t('chat.toasts.deprecatedTools'), {
@@ -866,7 +869,7 @@ function ChatContent() {
     if (projectGone) {
       router.replace(buildChatHref({ conversationId }));
     }
-  }, [projectUnavailable, projectGone]);
+  }, [projectId, projectUnavailable, projectGone]);
   useProjectScopeHydration(projectDetail);
   const projectName = projectDetail?.name ?? null;
   const projectColor = projectDetail?.color ?? null;

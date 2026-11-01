@@ -300,7 +300,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     }
     setIsLeaving(true);
     try {
-      const { removed } = await ProjectApi.removeMember(projectId, myUserId);
+      const { removed } = await ProjectApi.leave(projectId, myUserId);
       if (!removed) {
         setLeaveOpen(false);
         toast.error(t('chat.projects.leaveDialog.inherited'));

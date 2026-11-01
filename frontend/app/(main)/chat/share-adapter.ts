@@ -25,7 +25,7 @@ function knownSharedWith(conversationId: string): SharedWithEntry[] | null {
   const { activeSlotId, slots } = useChatStore.getState();
   const active = activeSlotId ? slots[activeSlotId] : undefined;
   if (active?.convId === conversationId) return active.sharedWith;
-  return Object.values(slots).find((slot) => slot.convId === conversationId)?.sharedWith ?? null;
+  return Object.values(slots).find((slot) => slot.convId === conversationId && slot.sharedWith)?.sharedWith ?? null;
 }
 
 /** Every slot of the conversation, so whichever one is shown stays current. */

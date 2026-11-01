@@ -22,7 +22,7 @@ export function useAgentDetail(agentId: string | null): AgentDetailState {
   const id = agentId?.trim() || null;
   const { data, error } = useSWR(
     id ? agentDetailKey(id) : null,
-    ([, key]) => AgentsApi.getAgent(key, { quiet: true }),
+    ([, key]: ReturnType<typeof agentDetailKey>) => AgentsApi.getAgent(key, { quiet: true }),
     SWR_POLICY.list60s,
   );
   const unavailable = isSwrReadUnavailable(Boolean(data), error);

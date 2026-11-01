@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
@@ -11,9 +11,11 @@ import type { ConversationMessage } from '../types';
 let searchParams = new URLSearchParams();
 const routerPush = vi.fn();
 const routerReplace = vi.fn();
+// One object, as Next's useRouter gives: effects that depend on the router must not re-run per render.
+const router = { push: (...args: unknown[]) => routerPush(...args), replace: (...args: unknown[]) => routerReplace(...args) };
 vi.mock('next/navigation', () => ({
   useSearchParams: () => searchParams,
-  useRouter: () => ({ push: routerPush, replace: routerReplace }),
+  useRouter: () => router,
 }));
 
 const append = vi.fn();
@@ -98,6 +100,11 @@ vi.mock('@/app/(main)/agents/api', async (importOriginal) => ({
   },
 }));
 
+const listInstances = vi.fn();
+vi.mock('@/app/(main)/workspace/api-toolsets/api', () => ({
+  ApiToolsetsApi: { listInstances: (...args: unknown[]) => listInstances(...args) },
+}));
+
 const fetchModelsForContext = vi.fn();
 vi.mock('@/chat/utils/fetch-models-for-context', () => ({
   fetchModelsForContext: (...args: unknown[]) => fetchModelsForContext(...args),
@@ -179,6 +186,9 @@ import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useCommandStore } from '@/lib/store/command-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
+import { refreshSwrKey, writeSwrKey } from '@/lib/api/swr-cache';
+import { agentDetailKey } from '@/app/(main)/agents/api';
+import { projectDetailKey } from '@/chat/project-api';
 
 // ── Fixtures ───────────────────────────────────────────────────────
 
@@ -265,6 +275,7 @@ beforeEach(() => {
   fetchModelsForContext.mockResolvedValue(undefined);
   getSharedMembers.mockResolvedValue([]);
   getUsersByIds.mockResolvedValue([]);
+  listInstances.mockResolvedValue([]);
 });
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -835,7 +846,7 @@ describe('Chat page — agent chats', () => {
     expect(getAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('fills the agent in again when the agent sidebar mounts after the page and resets it', async () => {
+  it('keeps the agent filled in when the agent sidebar mounts after the page', async () => {
     getAgent.mockResolvedValue({
       agent: { _key: 'agent-7', name: 'Support Bot', toolsets: [], knowledge: [] },
       toolFullNames: ['jira.search'],
@@ -843,13 +854,68 @@ describe('Chat page — agent chats', () => {
     renderPage('agentId=agent-7');
     expect(await screen.findByText('Support Bot')).toBeTruthy();
 
-    // What the agent sidebar's mount does to the page-owned agent fields.
     act(() => useChatStore.getState().setAgentSidebarAgentId('agent-7'));
 
-    await waitFor(() => expect(useChatStore.getState().agentContextDisplayName).toBe('Support Bot'));
+    expect(useChatStore.getState().agentContextDisplayName).toBe('Support Bot');
     expect(useChatStore.getState().agentToolCatalogFullNames).toEqual(['jira.search']);
     expect(useChatStore.getState().agentContextAccess).not.toBeNull();
     expect(getAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('fills a cached agent in once per open, with one API actions lookup, when the sidebar mounts alongside', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_API_TOOLSETS: true } } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    getAgent.mockResolvedValue({
+      agent: { _key: 'agent-7', name: 'Support Bot', toolsets: [], apiToolsetTools: [{ instanceId: 'i1', operationId: 'op' }] },
+      toolFullNames: [],
+    });
+    // Stands in for the agent sidebar, which claims the agent from its own effect in the same commit.
+    function AgentSidebarStandIn() {
+      useEffect(() => {
+        useChatStore.getState().setAgentSidebarAgentId('agent-7');
+        return () => useChatStore.getState().setAgentSidebarAgentId(null);
+      }, []);
+      return null;
+    }
+    const openWithSidebar = () => {
+      searchParams = new URLSearchParams('agentId=agent-7');
+      return render(<Theme><AgentSidebarStandIn /><ChatPage /></Theme>);
+    };
+
+    openWithSidebar();
+    expect(await screen.findByText('Support Bot')).toBeTruthy();
+    await waitFor(() => expect(listInstances).toHaveBeenCalledTimes(1));
+    cleanup();
+
+    openWithSidebar();
+    expect(await screen.findByText('Support Bot')).toBeTruthy();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(listInstances).toHaveBeenCalledTimes(2);
+    expect(getAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('after the user fixes and saves the agent, coming back shows the saved agent and no stale warning', async () => {
+    const withRemovedTool = {
+      _key: 'agent-7',
+      name: 'Support Bot',
+      toolsets: [{ name: 'jira', tools: [{ name: 'jira.search', fullName: 'jira.search', deprecated: true }] }],
+    };
+    getAgent.mockResolvedValue({ agent: withRemovedTool, toolFullNames: ['jira.search'] });
+    renderPage('agentId=agent-7');
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+    cleanup();
+
+    // The builder saves the agent without the removed tool.
+    const saved = { ...withRemovedTool, name: 'Support Bot v2', toolsets: [] };
+    act(() => refreshSwrKey(agentDetailKey('agent-7')));
+    toastError.mockClear();
+    getAgent.mockResolvedValue({ agent: saved, toolFullNames: [] });
+    renderPage('agentId=agent-7');
+
+    expect(await screen.findByText('Support Bot v2')).toBeTruthy();
+    expect(screen.queryByText('Support Bot')).toBeNull();
+    expect(toastError).not.toHaveBeenCalled();
+    expect(useChatStore.getState().agentToolCatalogFullNames).toEqual([]);
   });
 
   it('shows the new agent, never the previous one, when switching to an agent already loaded', async () => {
@@ -1011,6 +1077,31 @@ describe('Chat page — projects and previews', () => {
     renderPage('projectId=p-1');
 
     await waitFor(() => expect(toastError).toHaveBeenCalledWith('Failed to load this project'));
+  });
+
+  it('treats a project deleted or left in this tab as gone: one toast, back to a plain chat, no request', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    // What ProjectApi.remove and ProjectApi.leave write.
+    writeSwrKey(projectDetailKey('p-1'), null);
+
+    renderPage('projectId=p-1');
+
+    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/chat/'));
+    expect(toastError).toHaveBeenCalledTimes(1);
+    expect(toastError).toHaveBeenCalledWith('Failed to load this project');
+    expect(getProject).not.toHaveBeenCalled();
+  });
+
+  it('reports each project that fails to load, not only the first', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    getProject.mockRejectedValue(new Error('boom'));
+    const { rerender } = renderPage('projectId=p-1');
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+
+    searchParams = new URLSearchParams('projectId=p-2');
+    rerender(<Theme><ChatPage /></Theme>);
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(2));
   });
 
   it('ignores the project in the address bar when projects are turned off', () => {

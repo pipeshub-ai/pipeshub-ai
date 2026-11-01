@@ -1,6 +1,5 @@
 import { apiClient } from '@/lib/api';
 import { revalidateSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
-import { useUserStore } from '@/lib/store/user-store';
 import type {
   CreateProjectInput,
   ListProjectsParams,
@@ -178,12 +177,14 @@ export const ProjectApi = {
       { params: { principalType } },
     );
     // Older servers omit `removed`; a 200 from them always meant a removal.
-    const removed = data.removed !== false;
-    // Leaving: the project is no longer this user's to open.
-    if (removed && principalType === 'user' && memberPrincipalId === useUserStore.getState().profile?.userId) {
-      forgetProject(projectId);
-    }
-    return { members: data.members ?? [], removed };
+    return { members: data.members ?? [], removed: data.removed !== false };
+  },
+
+  /** Removes the caller (`myUserId`) from the project; once left, it is no longer theirs to open. */
+  async leave(projectId: string, myUserId: string): Promise<{ members: ProjectMember[]; removed: boolean }> {
+    const result = await ProjectApi.removeMember(projectId, myUserId);
+    if (result.removed) forgetProject(projectId);
+    return result;
   },
 
   async setConversationProject(

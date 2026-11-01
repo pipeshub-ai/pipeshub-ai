@@ -105,7 +105,15 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
+
+/** Past the 300 ms search debounce, the last thing that could start another list. */
+async function passSearchDebounce() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(400);
+  });
+}
 
 async function renderPage() {
   render(
@@ -250,19 +258,21 @@ describe('finding artifacts', () => {
   });
 
   it('lists artifacts once per visit, the first visit and a revisit alike', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await renderPage();
-    await new Promise((r) => setTimeout(r, 400));
+    await passSearchDebounce();
     expect(api.list).toHaveBeenCalledTimes(1);
 
     cleanup();
     await renderPage();
-    await new Promise((r) => setTimeout(r, 400));
+    await passSearchDebounce();
     expect(api.list).toHaveBeenCalledTimes(2);
   });
 
   it('lists once more when a filter changes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     await renderPage();
-    await new Promise((r) => setTimeout(r, 400));
+    await passSearchDebounce();
     act(() => useArtifactsStore.getState().setArtifactTypes(['DATA_FILE']));
     await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
     expect(api.list).toHaveBeenLastCalledWith(expect.objectContaining({ artifactTypes: ['DATA_FILE'] }));

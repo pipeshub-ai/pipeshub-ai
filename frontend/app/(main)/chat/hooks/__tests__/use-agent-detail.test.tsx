@@ -136,22 +136,43 @@ describe('useAgentDetail', () => {
     expect(agentGets()).toBe(2);
   });
 
-  it('shows a deleted agent as gone with no request, now and on the next mount', async () => {
-    const open = mountReader();
+  it('after a save, the next reader never sees the agent from before it', async () => {
+    mountReader().unmount();
+    await settle();
+    const saved = { ...AGENT, name: 'Support Bot v2' };
+    api.put.mockResolvedValue({ data: { agent: saved } });
+    await act(async () => {
+      await AgentsApi.updateAgent('agent-7', { name: 'Support Bot v2' });
+    });
+    api.get.mockResolvedValue({ data: { agent: saved } });
+
+    const seen: (string | undefined)[] = [];
+    const back = renderHook(() => {
+      const { detail } = useAgentDetail('agent-7');
+      seen.push(detail?.agent?.name);
+      return detail;
+    });
+    await settle();
+
+    expect(back.result.current?.agent?.name).toBe('Support Bot v2');
+    expect(seen).not.toContain('Support Bot');
+    expect(agentGets()).toBe(2);
+  });
+
+  it('after a delete, the next reader inside the window asks again and sees the agent is gone', async () => {
+    mountReader().unmount();
     await settle();
     api.delete.mockResolvedValue({ data: {} });
-
     await act(async () => {
       await AgentsApi.deleteAgent('agent-7');
     });
-    await settle();
-    expect(open.result.current.detail?.agent).toBeNull();
-    open.unmount();
+    api.get.mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
 
     const back = mountReader();
     await settle();
-    expect(back.result.current.detail?.agent).toBeNull();
-    expect(agentGets()).toBe(1);
+
+    expect(agentGets()).toBe(2);
+    expect(back.result.current).toEqual({ detail: undefined, unavailable: true });
   });
 
   it('starts over after sign-out', async () => {
