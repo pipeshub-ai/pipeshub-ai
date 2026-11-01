@@ -50,7 +50,10 @@ const labelled = (e: unknown, label: string): boolean =>
  * COMMIT with a client-side deadline. `maxCommitTimeMS` bounds the server's work, not a stall in front of it, so at the
  * deadline the session is killed on the server (which aborts a transaction that has not committed) before reporting.
  */
-async function commitWithin(session: ClientSession, ms: number): Promise<void> {
+export async function commitWithin(
+  session: ClientSession,
+  ms: number,
+): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const commit = session.commitTransaction();
   commit.catch(() => undefined);
@@ -68,7 +71,10 @@ async function commitWithin(session: ClientSession, ms: number): Promise<void> {
   }
   await mongoose.connection.db
     ?.admin()
-    .command({ killSessions: [session.id?.id] })
+    .command(
+      { killSessions: session.id ? [session.id] : [] },
+      { timeoutMS: WRITE_TIMEOUT_MS },
+    )
     .catch(() => undefined);
   throw new ServiceUnavailableError(
     'The commit did not finish in time; its outcome is unknown',
@@ -188,7 +194,8 @@ export async function mongoDrainRequested(): Promise<boolean> {
         { _id: 'fence' },
         { readPreference: 'primary', timeoutMS: 2_000 },
       );
-    draining = doc?.mode === 'draining';
+    // every mode but `active` refuses the turn: after `draining` the writes are refused too, so a stream would only fail late
+    draining = doc?.mode !== undefined && doc.mode !== 'active';
   } catch {
     draining = false;
   }

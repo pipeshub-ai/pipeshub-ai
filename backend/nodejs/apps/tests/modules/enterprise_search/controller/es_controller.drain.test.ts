@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import * as drain from '../../../../src/libs/repositories/drain'
+import * as nonStreaming from '../../../../src/modules/enterprise_search/controller/non-streaming-chat.controller'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 
 // While the system is being moved to a new document store, every handler that starts a chat turn
@@ -17,6 +18,13 @@ describe('chat-turn handlers during a document store move', () => {
     ['addMessageStreamToAgentConversation', controller.addMessageStreamToAgentConversation as any],
     ['regenerateAgentAnswers', controller.regenerateAgentAnswers as any],
   ]
+
+  handlers.push(
+    ['createConversation', nonStreaming.createConversation as any],
+    ['addMessage', nonStreaming.addMessage as any],
+    ['createAgentConversation', nonStreaming.createAgentConversation as any],
+    ['addMessageToAgentConversation', nonStreaming.addMessageToAgentConversation as any],
+  )
 
   for (const [name, make] of handlers) {
     it(`${name} stops where the refusal was sent`, async () => {
