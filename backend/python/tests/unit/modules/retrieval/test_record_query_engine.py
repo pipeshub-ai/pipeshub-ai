@@ -142,3 +142,10 @@ def test_a_row_reads_as_names_and_leaves_empty_values_out() -> None:
     assert view["people"] == {"assignee": ["Ravi"]} and view["organizations"] == ["Orrin Biotech"]
     assert view["status"] == "Open" and "amount" not in view and view["created"] == "2026-03-01"
     assert entity_permissions.RECORD_GROUP_ENTITY_TYPE == "record_group"
+
+
+def test_a_row_never_carries_a_url_so_a_hidden_link_cannot_show() -> None:
+    row = _row(1, assignee="ravi")
+    row["webUrl"] = "https://secret.example/hidden"
+    row["hideWeburl"] = True
+    assert "url" not in engine.row_view(row) and "secret" not in str(engine.row_view(row))

@@ -143,7 +143,8 @@ def row_view(row: Row) -> dict[str, Any]:
         "outcome": field_value(row, "deal_outcome"), "close_date": deal.get("closeDate"),
         "people": {k: sorted(set(v)) for k, v in people.items()} or None,
         "organizations": sorted({o.get("name") or o["id"] for o in row.get("organizations") or []}) or None,
-        "record_id": row.get("_key"), "url": row.get("webUrl"),
+        # No URL: a row is cited by record_id, and a link the source hides must never show.
+        "record_id": row.get("_key"),
     }
     return {k: v for k, v in view.items() if v not in (None, "", [], {})}
 

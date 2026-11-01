@@ -174,6 +174,10 @@ class GroupBy(_Strict):
         return self
 
 
+def _is_container(cond: object) -> bool:
+    return isinstance(cond, FieldCondition) and cond.field == "container"
+
+
 class RecordQuery(_Strict):
     where: list[Condition] = Field(default_factory=list)
     aggregate: Aggregate = Field(default_factory=Aggregate)
@@ -186,14 +190,16 @@ class RecordQuery(_Strict):
     @model_validator(mode="after")
     def _entities_on_top(self) -> RecordQuery:
         def nested(cond: Condition) -> bool:
-            if isinstance(cond, EntityCondition):
+            if isinstance(cond, EntityCondition) or _is_container(cond):
                 return True
             if isinstance(cond, (AllOf, AnyOf)):
                 return any(nested(c) for c in (cond.all_of if isinstance(cond, AllOf) else cond.any_of))
             return isinstance(cond, Not) and nested(cond.not_)
 
-        if any(nested(c) for c in self.where if not isinstance(c, EntityCondition)):
-            raise ValueError("an entity condition goes in the top-level where list, not inside all_of, any_of or not")
+        if any(nested(c) for c in self.where if not (isinstance(c, EntityCondition) or _is_container(c))):
+            raise ValueError(
+                "an entity or container condition goes in the top-level where list, not inside all_of, any_of or not"
+            )
         return self
 
     @field_validator("describe")

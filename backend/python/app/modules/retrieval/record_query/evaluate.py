@@ -81,6 +81,10 @@ class Verdict:
 
 
 def _field(cond: FieldCondition, row: Row) -> Verdict:
+    if cond.field == "container":
+        # Only ever top level (RecordQuery checks), where the provider applies it
+        # with nested groups included; a row knows only its own group.
+        return Verdict(True)
     value = field_value(row, cond.field)
     if value is None:
         return Verdict(None, frozenset({cond.field}))

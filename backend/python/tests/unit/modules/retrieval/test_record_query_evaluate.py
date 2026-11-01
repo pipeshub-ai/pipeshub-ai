@@ -148,3 +148,14 @@ def test_groups_rank_by_count_and_a_row_counts_for_each_person() -> None:
 def test_a_record_without_the_grouped_field_is_in_no_group() -> None:
     rows = [_ticket("a", status="OPEN"), _ticket("b", status="OPEN"), _ticket("c", status=None)]
     assert [(g.key, g.count) for g in groups(q(group_by={"field": "status"}), rows)] == [("OPEN", 2)]
+
+
+def test_a_container_condition_is_scope_and_must_be_top_level() -> None:
+    # The provider selects records in nested groups too; the evaluator, which
+    # sees only a record's own group, must not reject them.
+    query = q(where=[{"field": "container", "in": ["parent-group"]}])
+    nested = _ticket("a")
+    nested["recordGroupId"] = "child-group"
+    assert [r["_key"] for r in tally(query, [nested]).matched] == ["a"]
+    with pytest.raises(ValidationError, match="top-level"):
+        q(where=[{"any_of": [{"field": "container", "in": ["g"]}, {"field": "status", "in": ["OPEN"]}]}])
