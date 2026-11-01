@@ -32,6 +32,7 @@ from langchain_core.documents import Document
 from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import (
+    ChunkingError,
     DocumentProcessingError,
     EmbeddingError,
     EmbeddingModelUnavailableError,
@@ -216,6 +217,8 @@ class _Window:
 # bge read at most 2.13 times the cl100k count on the worst text measured (Russian, code).
 _WORST_CASE_TOKEN_RATIO = 2.13
 _tokenize_unavailable = False
+# Fewest tokens of text a window must have room for; below this no useful point can be cut.
+_MIN_TEXT_TOKENS = 16
 
 
 def _tokenize_chunks(texts: list[str]) -> Iterator[list[str]]:
@@ -290,10 +293,17 @@ async def _model_window(embeddings: object) -> _Window | None:
     if not isinstance(limit, int) or limit <= 0:
         return None
     limit = min(limit, _embed_token_ceiling())
-    ask_server = embeddings.count_tokens
-    # The model's default prompt is read in front of every input and counts against the limit.
     overhead = getattr(embeddings, "prompt_tokens", 0)
     overhead = overhead if isinstance(overhead, int) else 0
+    if limit - overhead < _MIN_TEXT_TOKENS:
+        raise EmbeddingNotConfiguredError(
+            f"Embedding model {getattr(embeddings, 'model', 'unknown')!r} leaves {limit - overhead} tokens "
+            f"for text: its input limit is {limit} and its default prompt takes {overhead} "
+            f"(at least {_MIN_TEXT_TOKENS} are needed). Use a model with a longer input or no default prompt.",
+            details={"limit": limit, "prompt_tokens": overhead},
+        )
+    ask_server = embeddings.count_tokens
+    # The model's default prompt is read in front of every input and counts against the limit.
 
     def count(texts: list[str]) -> list[int]:
         # A token covers at least one byte, so a text of limit - 2 - overhead bytes
@@ -628,6 +638,14 @@ def _split_to_token_ceiling(
             return pieces
         step = max(1, step // 2)
 
+    if count is not None:
+        # The model's own count says these pieces would be cut off by the model:
+        # fail the record visibly rather than index a truncated tail.
+        raise ChunkingError(
+            f"Could not cut a {len(text)}-character text into pieces of at most {ceiling} "
+            f"model tokens after {_MAX_SPLIT_ATTEMPTS} attempts",
+            details={"characters": len(text), "limit": ceiling},
+        )
     _module_logger.warning(
         "Could not split a %d-character block under the %d-token ceiling after "
         "%d attempts; emitting %d piece(s) anyway.",

@@ -577,3 +577,49 @@ def test_the_fallback_count_includes_the_prompt_overhead() -> None:
         raise _status_error(404)
 
     assert vs._server_counts(ask, ["word " * 100], 20)[0] == vs._server_counts(ask, ["word " * 100])[0] + 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("limit", "prompt"), [(100, 100), (100, 120), (100, 90)])
+async def test_a_prompt_that_leaves_no_room_for_text_is_a_configuration_error(
+    limit: int, prompt: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.exceptions.indexing_exceptions import EmbeddingNotConfiguredError
+
+    class Crowded(_PromptedModel):
+        model = "crowded-model"
+        prompt_tokens = prompt
+
+        async def max_input_tokens(self) -> int:
+            return limit
+
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    with pytest.raises(EmbeddingNotConfiguredError) as err:
+        await vs._model_window(Crowded())
+    assert "crowded-model" in str(err.value) and str(limit) in str(err.value) and str(prompt) in str(err.value)
+
+
+def test_the_splitter_raises_instead_of_returning_pieces_the_model_would_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.exceptions.indexing_exceptions import ChunkingError, IndexingError
+
+    def never_fits(texts: list[str]) -> list[int]:
+        return [10_000 for _ in texts]
+
+    with pytest.raises(ChunkingError) as err:
+        vs._split_to_token_ceiling("word " * 200, 100, never_fits)
+    assert isinstance(err.value, IndexingError)  # index_documents reports it as an indexing failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("policy_c")
+async def test_a_record_whose_text_cannot_be_cut_to_fit_fails_to_index() -> None:
+    from app.exceptions.indexing_exceptions import IndexingError
+
+    store = _Store()
+    store.vs.model_window = vs._Window(100, lambda texts: [10_000 for _ in texts])
+    container = BlocksContainer(
+        blocks=[Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="word " * 200)], block_groups=[],
+    )
+    with pytest.raises(IndexingError):
+        await store.vs.index_documents(container, "o", "rec", "vr")
+    assert not store.points
