@@ -347,6 +347,21 @@ describe('useSidebarConversations', () => {
     expect(fetchConversations).toHaveBeenCalledTimes(4);
   });
 
+  it('still refreshes after a write once the org was switched on this screen', async () => {
+    await mount();
+    answerOwned(chat('b', 'B'));
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+    expect(ownedTitles()).toEqual(['B']);
+
+    answerOwned(chat('c', 'C'), chat('b', 'B'));
+    act(() => useChatStore.getState().bumpConversationsVersion());
+    await settle();
+
+    expect(fetchConversations).toHaveBeenCalledTimes(6);
+    expect(ownedTitles()).toEqual(['C', 'B']);
+  });
+
   it('does not write a response that was in flight at sign-out', async () => {
     const owned = deferred<ReturnType<typeof page>>();
     fetchConversations.mockImplementation((_p: number, _l: number, opts: Options) =>

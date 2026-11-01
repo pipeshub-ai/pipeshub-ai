@@ -1,4 +1,4 @@
-import { unload } from 'swr';
+import { mutate, unload } from 'swr';
 
 const resetters = new Set<() => void>();
 
@@ -33,5 +33,13 @@ export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions 
       console.error('Session reset failed:', error);
     }
   });
-  unload({ revalidate: refetch });
+  if (!refetch) {
+    unload({ revalidate: false });
+    return;
+  }
+  // unload() would delete each entry with the original key that namespace
+  // revalidation matches on, and hooks still on screen write it back only on
+  // remount. Overwriting every entry keeps that key, clears data and error, and
+  // still drops answers in flight (a mutation newer than their start wins).
+  void mutate(() => true, undefined, { revalidate: true });
 }

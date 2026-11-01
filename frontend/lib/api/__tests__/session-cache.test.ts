@@ -3,6 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import useSWR from 'swr';
 
 import { clearSessionCache, onSessionEnd } from '../session-cache';
+import { revalidateSwrNamespace, SWR_NS } from '../swr-cache';
 
 async function settle(ms = 20) {
   await act(async () => {
@@ -45,6 +46,55 @@ describe('clearSessionCache', () => {
 
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(result.current).toBe('org B rows');
+  });
+
+  it('keeps a list on screen refreshable by its namespace after an org switch', async () => {
+    const fetcher = vi.fn(async () => 'rows');
+    renderHook(() => useSWR([SWR_NS.agentLists, 'sidebar'], fetcher).data);
+    await settle();
+
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    act(() => revalidateSwrNamespace(SWR_NS.agentLists));
+    await settle();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('on an org switch, drops the old answer still in flight and shows the new one', async () => {
+    const answers: Array<(value: string) => void> = [];
+    const onSuccess = vi.fn();
+    const { result } = renderHook(() =>
+      useSWR(['test/list'], () => new Promise<string>((resolve) => answers.push(resolve)), { onSuccess }).data,
+    );
+    await settle();
+
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+    await act(async () => answers[0]('old org rows'));
+    await act(async () => answers[1]('new org rows'));
+    await settle();
+
+    expect(result.current).toBe('new org rows');
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(onSuccess).toHaveBeenCalledWith('new org rows', expect.anything(), expect.anything());
+  });
+
+  it('on an org switch, forgets an error from before it', async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error('old org 500')).mockResolvedValueOnce('new org rows');
+    const { result } = renderHook(() => {
+      const { data, error } = useSWR(['test/list'], fetcher, { shouldRetryOnError: false });
+      return { data, error };
+    });
+    await settle();
+    expect(result.current.error).toBeTruthy();
+
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.data).toBe('new org rows');
   });
 
   it('resets the stores before any refetch starts, so the refetch belongs to the new session', async () => {
