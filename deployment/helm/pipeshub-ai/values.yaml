@@ -371,6 +371,10 @@ config:
   # "true" through extraEnv. With it on, no one connector type holds more than
   # 4 of the first 10 records of a search API result; the records it pushes
   # down come back after the first page.
+  # PROJECT_TIMELINE is not part of this mode: it is off unless set to "true"
+  # through extraEnv. With it on, enterprise search gives a question about one
+  # project or policy a dated list of that subject's records and a rule for
+  # settling the ones that disagree (see backend/env.template).
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

@@ -36,6 +36,7 @@ MAX_CALLS_PER_FRAME = 200
 
 GREP_GENERATION_SOURCE = "grep_generation"
 ENTITY_LINKING_SOURCE = "entity_linking"
+PROJECT_TIMELINE_SOURCE = "project_timeline"
 
 
 @dataclass
@@ -44,8 +45,8 @@ class UsageLedger:
     labelled by its source: `main`, `sub_agent:<name>`, `single_shot:<name>`,
     `auto_compact`, `plan_critic`, `result_critic`, `planner`, `replanner`
     (from the request's transports, see `UsageReportingTransport`),
-    `grep_generation` and `entity_linking`. Only wired when the request opted
-    in, so a normal request records nothing."""
+    `grep_generation`, `entity_linking` and `project_timeline`. Only wired
+    when the request opted in, so a normal request records nothing."""
 
     entries: list[tuple[str, TokenUsage]] = field(default_factory=list)
 
