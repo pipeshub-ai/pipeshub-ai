@@ -205,7 +205,7 @@ async def health_check() -> JSONResponse:
             governor: ResourceGovernor | None = getattr(app.state, "governor", None)
             if governor is not None:
                 try:
-                    content["resource_governor"] = governor.stats()
+                    content["resource_governor"] = await asyncio.to_thread(governor.stats)
                 except Exception as stats_error:
                     # Observability failure must not fail the liveness
                     # probe — the service itself is still healthy.

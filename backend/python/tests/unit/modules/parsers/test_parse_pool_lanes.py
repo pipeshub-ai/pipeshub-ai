@@ -1184,6 +1184,33 @@ def test_interactive_parse_is_not_blocked_by_background(lanes_on: None, make_bud
     background.future.result(timeout=60)
 
 
+def test_every_pool_call_under_interactive_parsing_uses_the_interactive_pool(lanes_on: None, make_budget: Callable[..., LaneBudget]) -> None:
+    """A chat attachment's parser calls the pool deep inside (text PDF, XLSX, CSV,
+    large text), in threads started with asyncio.to_thread; none of them passes
+    a flag, and each must still land on the interactive pool."""
+    import asyncio
+
+    from app.modules.parsers.parse_pool_lanes import interactive_parsing
+
+    budget = make_budget(2)
+    parse_pool.set_resource_governor(_governor(budget, 4))
+    try:
+        background = parse_pool._pool()
+        assert isinstance(background, LanePool) and background.kind == "budgeted"
+
+        async def chat_upload() -> list[object]:
+            with interactive_parsing():
+                in_task = parse_pool._pool()
+                in_thread = await asyncio.to_thread(parse_pool._pool)  # e.g. run_blocking from the XLSX load
+            return [in_task, in_thread]
+
+        for pool in asyncio.run(chat_upload()):
+            assert isinstance(pool, LanePool) and pool.kind == "interactive"
+        assert parse_pool._pool() is background  # the flag ends with the block
+    finally:
+        parse_pool.shutdown_parse_pool()
+
+
 def test_interactive_is_ignored_when_lanes_are_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PARSE_LANES", raising=False)
     monkeypatch.setenv("PARSE_POOL_WORKERS", "1")

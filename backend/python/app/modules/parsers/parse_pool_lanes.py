@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import math
 import os
@@ -69,11 +70,26 @@ from app.services.resource_governor.lanes import (
 from app.utils.user_errors import PARSE_WORKER_UNAVAILABLE
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from app.services.resource_governor import ResourceGovernor
 
 _logger = logging.getLogger(__name__)
+
+# Set while a person waits on the parse (a chat attachment). Every pool call
+# made under it, however deep in a parser and in threads started with
+# asyncio.to_thread (which copy the context), goes to the interactive pool.
+_interactive: contextvars.ContextVar[bool] = contextvars.ContextVar("parse_pool_interactive", default=False)
+
+
+@contextlib.contextmanager
+def interactive_parsing() -> Iterator[None]:
+    """Send every parse-pool call in this block to the interactive pool (``PARSE_LANES=on``)."""
+    token = _interactive.set(True)
+    try:
+        yield
+    finally:
+        _interactive.reset(token)
 
 WAIT_ENV = "LANE_WAIT_SECONDS"
 THREADS_ENV = "PDF_TABLE_MODEL_THREADS"
@@ -828,6 +844,7 @@ def _build(governor: ResourceGovernor, *, interactive: bool) -> LanePool | None:
 
 
 def get_pool(governor: ResourceGovernor, *, interactive: bool) -> LanePool | None:
+    interactive = interactive or _interactive.get()
     with legacy._State.lock:
         slot = "interactive_pool" if interactive else "pool"
         pool = getattr(legacy._State, slot)

@@ -1703,6 +1703,21 @@ class TestIndexingHealthCheck:
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
+    async def test_governor_stats_run_off_the_event_loop(self) -> None:
+        """stats() can wait up to a second on the lane mutex; it must not hold the loop."""
+        import threading
+
+        from app.indexing_main import health_check
+
+        seen: list[int] = []
+        mock_governor = MagicMock()
+        mock_governor.stats.side_effect = lambda: seen.append(threading.get_ident()) or {}
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            await health_check(_make_health_request(governor=mock_governor))
+
+        assert seen and seen[0] != threading.get_ident()
+
     @pytest.mark.parametrize("failure", [None, SystemExit("worker loop killed")])
     async def test_health_check_is_unhealthy_once_the_worker_loop_died(self, failure) -> None:
         """Its consumers stopped themselves, so the node no longer indexes and the probe must

@@ -171,6 +171,47 @@ async def test_upload_csv_dispatches_to_lightweight_parser():
     orch.index.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_every_parse_of_an_upload_runs_as_interactive() -> None:
+    """The parsers reach the parse pool deep inside (CSV, XLSX, text PDF, large
+    text), also from threads; the whole upload must run as interactive so each
+    of those lands on the chat attachment pool."""
+    import asyncio
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.modules.parsers import parse_pool_lanes
+
+    csv_bytes = b"name,amount\nAlice,10\n"
+    req = MagicMock()
+    req.json = AsyncMock(return_value={"conversationId": "conv-1", "attachments": [_csv_attachment("sales.csv", csv_bytes)]})
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    req.app.container = MagicMock()
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    fake_blocks = BlocksContainer(blocks=[], block_groups=[])
+    seen: list[bool] = []
+
+    async def parse_csv(*_args: object, **_kwargs: object) -> BlocksContainer:
+        seen.append(parse_pool_lanes._interactive.get())
+        seen.append(await asyncio.to_thread(parse_pool_lanes._interactive.get))
+        return fake_blocks
+
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot.convert_record_dict_to_record",
+        return_value=MagicMock(block_containers=fake_blocks),
+    ), patch(
+        "app.api.routes.chatbot.TransformContext",
+        MagicMock(side_effect=lambda **_: MagicMock()),
+    ), patch("app.api.routes.chatbot._build_csv_blocks", side_effect=parse_csv):
+        mock_bs_cls.return_value.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert seen == [True, True]
+    assert parse_pool_lanes._interactive.get() is False
+
+
 def _csv_attachment(name: str, content: bytes) -> dict:
     return {
         "fileName": name,

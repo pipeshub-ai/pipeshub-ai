@@ -370,13 +370,13 @@ async def health_check() -> JSONResponse:
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     try:
-        content["lanes"] = lanes_health(governor, effective_cpu_count())
+        content["lanes"] = await asyncio.to_thread(lanes_health, governor, effective_cpu_count())
     except Exception as lanes_error:
         container.logger().warning("Lane plan failed: %s", lanes_error)
         content["lanes"] = {"error": "unavailable"}
     if governor is not None:
         try:
-            content["resource_governor"] = governor.stats()
+            content["resource_governor"] = await asyncio.to_thread(governor.stats)
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.

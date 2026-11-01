@@ -40,6 +40,33 @@ class TestHealthCheck:
             "Resource governor stats failed: %s", error
         )
 
+    async def test_lane_stats_run_off_the_event_loop(self) -> None:
+        """Both can wait up to a second on the lane mutex; neither may hold the loop."""
+        import threading
+
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        seen: dict[str, int] = {}
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        governor = MagicMock()
+        governor.stats.side_effect = lambda: seen.setdefault("stats", threading.get_ident()) and {}
+
+        def fake_lanes_health(*_args: object) -> dict[str, object]:
+            seen["lanes"] = threading.get_ident()
+            return {}
+
+        with (
+            patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+            patch.object(parsing_main_app.state, "governor", governor, create=True),
+            patch("app.parsing_main.lanes_health", side_effect=fake_lanes_health),
+        ):
+            await health_check()
+
+        assert set(seen) == {"stats", "lanes"}
+        assert threading.get_ident() not in seen.values()
+
     async def test_health_reports_lanes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.parsing_main import app as parsing_main_app
         from app.parsing_main import health_check

@@ -47,6 +47,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseWorkerError
+from app.modules.parsers.parse_pool_lanes import interactive_parsing
 from app.modules.parsers.pdf.pdf_inspection import needs_ocr_and_page_count
 from app.modules.parsers.pdf.pdf_rasterizer import (
     render_all_pages_as_png,
@@ -608,6 +609,17 @@ async def upload_chat_attachments(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> dict[str, Any]:
+    # A person is waiting: every parse below, however deep in a parser, runs on
+    # the chat attachment pool, never behind background indexing.
+    with interactive_parsing():
+        return await _upload_chat_attachments(request, graph_provider, config_service)
+
+
+async def _upload_chat_attachments(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+) -> dict[str, Any]:
     try:
         body = await request.json()
     except Exception:
@@ -785,7 +797,6 @@ async def upload_chat_attachments(
                         file_binary,
                         label=item.fileName,
                         size=len(file_binary),
-                        interactive=True,
                     )
                     if needs_ocr:
                         if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
@@ -803,7 +814,6 @@ async def upload_chat_attachments(
                             144,
                             label=item.fileName,
                             size=len(file_binary),
-                            interactive=True,
                         )
                         block_containers = _build_pdf_image_blocks(png_pages)
                         ocr_image_pages_used += page_count
