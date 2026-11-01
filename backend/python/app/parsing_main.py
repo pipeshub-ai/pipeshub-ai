@@ -315,6 +315,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     app_logger.info("🔄 Parsing Service shutting down")
+    # The pool goes first: its workers hold leases and tokens of the governor's
+    # lane budget, and closing the budget under them strands the waiters.
+    # Cleared first, or the next submit in this process starts a new pool.
+    set_parse_pool_governor(None)
+    shutdown_parse_pool()
     governor.stop()
     governor_task.cancel()
     try:
@@ -325,9 +330,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_logger.exception("Error during resource governor shutdown")
     governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
-    # Cleared first, or the next submit in this process starts a new pool.
-    set_parse_pool_governor(None)
-    shutdown_parse_pool()
     try:
         config_service.close()
     except Exception:

@@ -785,6 +785,7 @@ async def upload_chat_attachments(
                         file_binary,
                         label=item.fileName,
                         size=len(file_binary),
+                        interactive=True,
                     )
                     if needs_ocr:
                         if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
@@ -802,6 +803,7 @@ async def upload_chat_attachments(
                             144,
                             label=item.fileName,
                             size=len(file_binary),
+                            interactive=True,
                         )
                         block_containers = _build_pdf_image_blocks(png_pages)
                         ocr_image_pages_used += page_count

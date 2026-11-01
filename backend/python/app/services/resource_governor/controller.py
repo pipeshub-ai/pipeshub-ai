@@ -21,6 +21,13 @@ from app.services.resource_governor.feedback import (
     get_default_downstream_feedback,
 )
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
+from app.services.resource_governor.lanes import (
+    LaneBudget,
+    lanes_health,
+    open_lane_budget,
+    parse_lanes_mode,
+    plan_for_governor,
+)
 from app.services.resource_governor.memory_budget import MemoryBudget
 from app.services.resource_governor.models import (
     Ceilings,
@@ -54,7 +61,11 @@ from app.services.resource_governor.policy import (
     start_rate_limiter_params,
     warm_start_limits,
 )
-from app.services.resource_governor.probe import ResourceProbe, build_probe
+from app.services.resource_governor.probe import (
+    ResourceProbe,
+    build_probe,
+    effective_cpu_count,
+)
 from app.services.resource_governor.registry import LimitRegistry
 from app.services.resource_governor.shared_slots import (
     SharedSlots,
@@ -184,6 +195,9 @@ class ResourceGovernor:
         self.download_ahead = DownloadAhead(HEAVY_DOWNLOAD_AHEAD)
 
         self._running = False
+        self._lanes_lock = threading.Lock()
+        self._lanes: LaneBudget | None = None
+        self._lanes_built = False
 
         self._logger.info(
             "ResourceGovernor initialised: probe_source=%s cpu_quota=%.2f mem_limit=%s "
@@ -296,6 +310,24 @@ class ResourceGovernor:
         return self._ceilings
 
     @property
+    def lanes(self) -> LaneBudget | None:
+        """The CPU lane budget of this memory domain; ``None`` unless ``PARSE_LANES=on``.
+
+        Built on first use, never in ``off``, and closed with the governor.
+        """
+        with self._lanes_lock:
+            if not self._lanes_built:
+                self._lanes_built = True
+                if parse_lanes_mode() == "on":
+                    plan = plan_for_governor(self, effective_cpu_count())
+                    self._lanes = open_lane_budget(
+                        plan,
+                        local_share=max(1, self._ceilings.heavy // 2),
+                        plan_refresh=lambda: plan_for_governor(self, effective_cpu_count()),
+                    )
+            return self._lanes
+
+    @property
     def fleet_ceilings(self) -> Ceilings:
         """The ceilings for every worker process of this service together,
         before ``ceilings`` split them. The cluster-wide leases are sized
@@ -378,11 +410,22 @@ class ResourceGovernor:
         slots, self._heavy_parse_slots = self._heavy_parse_slots, None
         if slots is not None:
             slots.close()
+        with self._lanes_lock:
+            lanes, self._lanes, self._lanes_built = self._lanes, None, True
+        if lanes is not None:
+            lanes.close()
 
     async def _sample_once(self) -> None:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)
         self.memory_budget.limit = free_memory_share_bytes(snapshot, self._worker_count)
+        lanes = self._lanes
+        if lanes is not None:
+            try:
+                # File locks: off the event loop.
+                await asyncio.to_thread(lanes.brake_step, snapshot.mem_pressure_raw)
+            except Exception:
+                self._logger.exception("ResourceGovernor: the lane brake step failed")
         demand = self._drain_all_demand()
         feedback = self._feedback.drain()
 
@@ -507,6 +550,12 @@ class ResourceGovernor:
         self._logger.warning(
             "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
         )
+        lanes = self._lanes
+        if lanes is not None:
+            try:
+                lanes.report_incident()
+            except Exception:
+                self._logger.exception("ResourceGovernor: could not record the incident in the lane ledger")
 
     # -- observability ------------------------------------------------------
 
@@ -552,6 +601,7 @@ class ResourceGovernor:
                 "index_heavy": self._ceilings.index_heavy,
                 "index_light": self._ceilings.index_light,
             },
+            "lanes": lanes_health(self, effective_cpu_count()),
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),

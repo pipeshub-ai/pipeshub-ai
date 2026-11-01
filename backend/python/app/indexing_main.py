@@ -2540,6 +2540,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
 
+    # The parse pool before the governor closes: its workers hold leases and
+    # tokens of the governor's lane budget.
+    try:
+        from app.modules.parsers import parse_pool
+        # Cleared first, or the next submit in this process starts a new pool.
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down parse worker pool: {e}")
+
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.
     governor.stop()
@@ -2580,15 +2591,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
-
-    try:
-        from app.modules.parsers import parse_pool
-        # Cleared first, or the next submit in this process starts a new pool.
-        parse_pool.set_resource_governor(None)
-        if parse_pool.shutdown_parse_pool():
-            logger.info("✅ Parse worker pool shut down")
-    except Exception as e:
-        logger.error(f"❌ Error shutting down parse worker pool: {e}")
 
 
 set_service_suffix("-is")
