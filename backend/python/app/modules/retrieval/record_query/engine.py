@@ -37,7 +37,7 @@ from app.modules.retrieval.record_query.model import (
     RecordQueryResult,
     walk_conditions,
 )
-from app.modules.retrieval.record_query.paging import NEWEST, page
+from app.modules.retrieval.record_query.paging import page
 from app.modules.retrieval.record_query.pushdown import pushdown
 
 if TYPE_CHECKING:
@@ -162,7 +162,9 @@ def _result(query: RecordQuery, admitted: list[Row], *, approximate: bool) -> Re
     found = tally(query, admitted)
     matched = found.matched
     value, _ = aggregate_value(query, matched) if query.aggregate.op != "count" else (float(len(matched)), 0)
-    shown, start, next_cursor = page(matched, sort=NEWEST, cursor=query.cursor, limit=query.limit)
+    shown, start, next_cursor = page(
+        matched, sort=query.sort, cursor=query.cursor, limit=query.limit, value_of=field_value,
+    )
     return RecordQueryResult(
         total=len(matched), approximate=approximate, value=value, groups=groups(query, matched),
         unknown=dict(found.unknown), described=_described(query, matched),

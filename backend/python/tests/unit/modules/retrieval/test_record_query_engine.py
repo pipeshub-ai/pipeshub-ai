@@ -290,3 +290,37 @@ async def test_a_person_lookup_failure_is_an_error_not_an_empty_answer(readable:
     provider.get_person_nodes = down  # type: ignore[method-assign]
     with pytest.raises(EntityAccessError):
         await run_record_query(provider, CONTEXT, q(where=[{"person": {"ids": ["ravi"]}}]))
+
+
+async def test_sort_by_a_number_field_puts_records_without_it_last_either_way(readable: set[str]) -> None:
+    rows = [_row(i, assignee="ravi", amount=a) for i, a in enumerate([500.0, None, 2000.0, 1000.0, None])]
+    readable.update(r["_key"] for r in rows)
+    desc = await run_record_query(FakeProvider(rows), CONTEXT, q(sort="amount desc"))
+    asc = await run_record_query(FakeProvider(rows), CONTEXT, q(sort="Amount  ASC"))
+    oldest = await run_record_query(FakeProvider(rows), CONTEXT, q(sort="oldest"))
+    assert [r["record_id"] for r in desc.rows] == ["r002", "r003", "r000", "r004", "r001"]
+    assert [r["record_id"] for r in asc.rows] == ["r000", "r003", "r002", "r004", "r001"]
+    assert [r["record_id"] for r in oldest.rows] == ["r000", "r001", "r002", "r003", "r004"]
+
+
+async def test_a_sorted_query_pages_by_its_own_cursor(readable: set[str]) -> None:
+    rows = [_row(i, assignee="ravi", amount=float(i % 3)) for i in range(7)]
+    readable.update(r["_key"] for r in rows)
+    seen: list[str] = []
+    cursor = None
+    while True:
+        page = await run_record_query(FakeProvider(rows), CONTEXT, q(sort="amount desc", limit=2, cursor=cursor))
+        seen += [r["record_id"] for r in page.rows]
+        if not page.next_cursor:
+            break
+        cursor = page.next_cursor
+    everything = await run_record_query(FakeProvider(rows), CONTEXT, q(sort="amount desc", limit=50))
+    assert seen == [r["record_id"] for r in everything.rows] and len(set(seen)) == 7
+    with pytest.raises(ValueError, match="cursor"):
+        q(sort="newest", cursor=cursor)
+
+
+@pytest.mark.parametrize("sort", ["status asc", "amount up", "colour desc", "amount desc created asc", "person desc"])
+def test_a_sort_on_anything_but_one_date_or_number_field_is_refused(sort: str) -> None:
+    with pytest.raises(ValueError, match="sort is newest, oldest"):
+        q(sort=sort)

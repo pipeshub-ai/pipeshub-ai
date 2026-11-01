@@ -809,3 +809,18 @@ async def _touch(g: Graph, record_id: str, updated: int) -> None:
     await g.graph.http_client.execute_aql(
         f"UPDATE @key WITH {{sourceLastModifiedTimestamp: @ts}} IN {C.RECORDS.value}", {"key": record_id, "ts": updated},
     )
+
+
+async def test_sort_by_a_date_field_pages_in_order_with_unknowns_last(seeded: Graph) -> None:
+    g = seeded
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):
+        page = await run_record_query(g.graph, _context(g), RecordQuery.model_validate(
+            {"sort": "created desc", "limit": 4, **({"cursor": cursor} if cursor else {})}))
+        seen += [r["record_id"].removeprefix(f"{g.org}-") for r in page.rows]
+        cursor = page.next_cursor
+        if not cursor:
+            break
+    # t5 has no created time: last, never placed as if it were oldest or newest.
+    assert seen == ["f1", "d1", "t4", "t3", "t1", "t5"]

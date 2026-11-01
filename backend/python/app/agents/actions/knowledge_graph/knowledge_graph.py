@@ -1229,6 +1229,10 @@ class KnowledgeGraph:
                 description="Records per page (0-50, default 20); 0 returns only the totals.",
             ),
             ToolParameter(
+                name="sort", type=ParameterType.STRING, required=False,
+                description='Row order: "newest" (default), "oldest", or "<date or number field> asc|desc".',
+            ),
+            ToolParameter(
                 name="cursor", type=ParameterType.STRING, required=False,
                 description="Cursor from the previous page's output, copied exactly. Omit for the first page.",
             ),
@@ -1245,13 +1249,14 @@ class KnowledgeGraph:
         describe: list[str] | None = None,
         top: int | None = None,
         limit: int | None = None,
+        sort: str | None = None,
         cursor: str | None = None,
     ) -> tuple[bool, str]:
         """Exact record query — calls ops/record_query.py."""
         from .ops.record_query import execute_find_records
         return await execute_find_records(
             self.state, where=where, aggregate=aggregate, group_by=group_by, describe=describe,
-            top=top, limit=limit, cursor=cursor,
+            top=top, limit=limit, sort=sort, cursor=cursor,
         )
 
     @tool(

@@ -32,6 +32,7 @@ from app.modules.retrieval.record_query.model import (
     RecordQuery,
     walk_conditions,
 )
+from app.modules.retrieval.record_query.paging import NEWEST
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 
 if TYPE_CHECKING:
@@ -151,7 +152,8 @@ def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = No
             ", ".join(f"{g.key} ({g.count})" for g in values) or "none"))
     if result.rows:
         start = result.offset
-        lines.append(f"Records {start + 1}-{start + len(result.rows)} of {total}:")
+        order = "" if query.sort == NEWEST else f", {query.sort}"
+        lines.append(f"Records {start + 1}-{start + len(result.rows)} of {total}{order}:")
         for row in result.rows[:_TOP_ROWS_SHOWN_AS_IDS]:
             shown = dict(row)
             if shortener is not None and shown.get("record_id"):

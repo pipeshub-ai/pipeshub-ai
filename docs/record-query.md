@@ -98,7 +98,7 @@ where:      Condition                     # optional; AND of the top-level list
             | entity(type, id)            # any entity find_records_by_entity takes
 aggregate:  count | sum(field) | min(field) | max(field) | avg(field)
 group_by:   field | person(role?) | organization | month(date field)  # top N groups
-sort:       newest (default) | oldest | field asc/desc
+sort:       newest (default) | oldest | "<date or number field> asc|desc"  # one key
 limit:      rows per page (default 20, max 50); cursor
 ```
 
@@ -140,6 +140,16 @@ of `WINDOW` ids. Rows carry: `_key`, `recordName`, `recordType`,
 timestamps, the ticket fields, the deal fields, `people: [{role, id, name, email}]`,
 `organizations: [{id, name}]`, `links: [{id, relation}]`. A row of another
 org, or of a deleted record, is never returned.
+
+## Sorting
+
+`newest` (the default) orders by the time the candidate order uses (source
+modified time), `oldest` reverses it, and `"<field> asc"` / `"<field> desc"`
+orders by one date or number field (`amount`, `created`, `resolved`, ...);
+value and text fields are grouped, not sorted. Ties go newest first, then by
+id. A record without the field comes after every record with it in either
+direction: unknown is neither high nor low. When the scan stopped early the
+order is over the records scanned, which the approximate total says.
 
 ## Paging
 

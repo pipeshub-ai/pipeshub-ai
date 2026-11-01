@@ -113,3 +113,10 @@ async def test_a_complete_scan_labels_every_aggregate_and_group_exact(engine: As
     )
     figures = [line for line in text.splitlines() if line.startswith(("sum of", "Groups by", "- "))]
     assert len(figures) == 3 and all("exact" in line and "approximate" not in line for line in figures)
+
+
+async def test_sort_reaches_the_engine_and_the_rows_say_their_order(engine: AsyncMock) -> None:
+    engine.return_value = RecordQueryResult(total=1, rows=[{"title": "Deal", "record_id": "r1"}])
+    ok, text = await op.execute_find_records(_state(), sort="amount desc")
+    assert ok and engine.await_args.args[2].sort == "amount desc"
+    assert "Records 1-1 of 1, amount desc:" in text

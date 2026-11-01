@@ -16,7 +16,7 @@ from typing import Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.modules.retrieval.record_fields import FIELDS, FieldKind, canonical_role, field
-from app.modules.retrieval.record_query.paging import NEWEST, decode_cursor
+from app.modules.retrieval.record_query.paging import NEWEST, OLDEST, decode_cursor
 
 MAX_ROWS = 50
 MAX_GROUPS = 20
@@ -200,8 +200,23 @@ class RecordQuery(_Strict):
     group_by: GroupBy | None = None
     top: int = Field(default=10, ge=1, le=MAX_GROUPS)
     limit: int = Field(default=20, ge=0, le=MAX_ROWS)
+    sort: str = NEWEST
     cursor: str | None = None
     describe: list[str] = Field(default_factory=list)
+
+    @field_validator("sort")
+    @classmethod
+    def _sortable(cls, sort: str) -> str:
+        """``newest``, ``oldest`` or ``"<date or number field> asc|desc"``; one key only."""
+        sort = " ".join(sort.lower().split())
+        if sort in (NEWEST, OLDEST):
+            return sort
+        name, _, direction = sort.partition(" ")
+        if direction not in ("asc", "desc") or name not in FIELDS or FIELDS[name].kind not in _RANGE_KINDS:
+            sortable = sorted(n for n, f in FIELDS.items() if f.kind in _RANGE_KINDS)
+            raise ValueError(f"sort is newest, oldest, or \"<field> asc\" / \"<field> desc\" with one of "
+                             f"{', '.join(sortable)}")
+        return sort
 
     @model_validator(mode="after")
     def _entities_on_top(self) -> RecordQuery:
@@ -221,7 +236,7 @@ class RecordQuery(_Strict):
     @model_validator(mode="after")
     def _cursor_fits(self) -> RecordQuery:
         if self.cursor:
-            decode_cursor(NEWEST, self.cursor)
+            decode_cursor(self.sort, self.cursor)
         return self
 
     @field_validator("describe")
