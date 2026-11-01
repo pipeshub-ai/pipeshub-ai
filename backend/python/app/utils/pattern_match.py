@@ -17,6 +17,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
+    _EXEC_TIMEOUT_SECS,
     _GREP_SHORT_VALUE_LETTERS,
     _SHORT_VALUE_LETTERS,
     StoragePatternMatch,
@@ -47,7 +48,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     requested_scope_ids,
 )
-from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
+from app.utils.env_utils import accuracy_feature_enabled, env_int, high_accuracy_mode
 from app.utils.exact_text_index import (
     LexicalSearcher,
     plan_command,
@@ -67,7 +68,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PATTERN_MATCH_TIMEOUT = 30
+# Per source; PATTERN_MATCH_TIMEOUT_SECS sets it with one grep pipeline's run time.
+_PATTERN_MATCH_TIMEOUT = _EXEC_TIMEOUT_SECS
 # Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
 _LLM_GREP_ATTEMPT_TIMEOUT = 10.0
@@ -77,7 +79,8 @@ _GREP_LLM_TTL_SECS = 300.0
 # Runs inside the total budget before any grep, so a stalled config read must not eat it.
 _GREP_LLM_LOOKUP_TIMEOUT = 3.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
-_PATTERN_MATCH_TOTAL_BUDGET = 35.0
+# Raise it with PATTERN_MATCH_TIMEOUT_SECS, or a longer grep is still cut here.
+_PATTERN_MATCH_TOTAL_BUDGET = float(env_int("PATTERN_MATCH_TOTAL_BUDGET_SECS", 35, lo=5, hi=300) or 35)
 # How long a search that asked for the short keyword-search budget waits for
 # the pattern match once its semantic results are in, before it goes on with
 # the matches found so far. Measured on agent chats over MCP: semantic results

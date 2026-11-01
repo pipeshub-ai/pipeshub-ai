@@ -232,10 +232,15 @@ class TestEngineSwitch:
 
 class TestConfinedCpuTime:
     def test_each_thread_gets_the_stage_cpu_time(self) -> None:
-        one = _confined(["grep", "-rl", "x", "."], "/data", 1)
+        one = _confined(["grep", "-rl", "x", "."], "/data", 1, 30)
         assert one == [sys.executable, "-I", "-S", one[3], "/data", "--", "grep", "-rl", "x", "."]
-        four = _confined([RG, "x"], "/data", 4)
+        four = _confined([RG, "x"], "/data", 4, 30)
         assert four[5:7] == [f"--cpu-seconds={landlock_exec.CPU_SECONDS * 4}", "--"]
+
+    def test_a_longer_time_limit_raises_the_cpu_time(self) -> None:
+        assert _confined(["grep", "x"], "/data", 1, 90)[5] == "--cpu-seconds=90"
+        assert _confined([RG, "x"], "/data", 2, 90)[5] == "--cpu-seconds=180"
+        assert _confined(["grep", "x"], "/data", 1, 10)[5] == "--"
 
     def test_the_wrapper_applies_the_cpu_time_it_is_given(self) -> None:
         code = (

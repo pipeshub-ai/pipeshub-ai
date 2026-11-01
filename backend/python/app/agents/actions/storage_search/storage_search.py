@@ -52,6 +52,7 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
 from app.utils.bounded_cache import SizeBoundedCache
+from app.utils.env_utils import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _MAX_OUTPUT_CHARS = 8_000
-_EXEC_TIMEOUT_SECS = 30
+# One pipeline's run time; also each source's time in a pattern match.
+_EXEC_TIMEOUT_SECS = env_int("PATTERN_MATCH_TIMEOUT_SECS", 30, lo=5, hi=300) or 30
 # Per pipeline stage, whatever the caller asks for; bounds worker memory.
 _MAX_STAGE_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_STDERR_BYTES = 64 * 1024
@@ -1050,11 +1052,12 @@ def _stage_env() -> dict[str, str]:
     return {k: v for k in _STAGE_ENV_KEYS if (v := os.environ.get(k))}
 
 
-def _confined(argv: list[str], confine_to: str, threads: int) -> list[str]:
-    """*argv* run under Landlock, with CPU time for each of its *threads*."""
+def _confined(argv: list[str], confine_to: str, threads: int, timeout: int) -> list[str]:
+    """*argv* run under Landlock, with CPU time for each of its *threads* to
+    run until *timeout*, the wall-clock limit that stops it."""
     from app.agents.actions.storage_search.landlock_exec import CPU_SECONDS
 
-    cpu_seconds = CPU_SECONDS * threads
+    cpu_seconds = max(timeout, CPU_SECONDS) * threads
     limit = [f"--cpu-seconds={cpu_seconds}"] if cpu_seconds != CPU_SECONDS else []
     return [sys.executable, "-I", "-S", _LANDLOCK_EXEC, confine_to, *limit, "--", *argv]
 
@@ -1141,7 +1144,7 @@ async def _run_subprocess(
             if confine_to is not None:
                 # Landlock: the stage (and whatever it starts) may read only
                 # confine_to and the system's programs, write nothing, no network.
-                stage_argv = _confined(stage_argv, confine_to, threads)
+                stage_argv = _confined(stage_argv, confine_to, threads, timeout)
             proc = await asyncio.create_subprocess_exec(
                 *stage_argv,
                 stdin=asyncio.subprocess.PIPE,

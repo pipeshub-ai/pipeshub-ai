@@ -1988,6 +1988,12 @@ class TestScaleConstants:
     def test_timeout_sufficient_for_large_datasets(self):
         assert _PATTERN_MATCH_TIMEOUT >= 30
 
+    def test_a_source_gets_as_long_as_one_grep_pipeline(self) -> None:
+        # One setting (PATTERN_MATCH_TIMEOUT_SECS) sets both, so a longer grep is never cut early.
+        from app.agents.actions.storage_search.storage_search import _EXEC_TIMEOUT_SECS
+
+        assert _PATTERN_MATCH_TIMEOUT == _EXEC_TIMEOUT_SECS
+
     def test_llm_grep_timeout_set(self):
         assert _LLM_GREP_TIMEOUT == 15.0
 

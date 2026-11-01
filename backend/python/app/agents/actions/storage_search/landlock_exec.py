@@ -5,7 +5,8 @@
 The command, and everything it starts, may read <readable-dir> and the system's
 programs and libraries, write only /dev/null, and use no network (on kernels
 with Landlock ABI 4 or later). Each stage also gets at most 30 s of CPU (N with
---cpu-seconds, for a multi-threaded stage) and 2 GiB of memory. The storage
+--cpu-seconds, for a longer time limit or a multi-threaded stage) and 2 GiB of
+memory. The storage
 tools run every pipeline stage this way, so a command that slips past their
 validator still cannot read another tenant's files, the app's configuration or
 /proc, or write anything. Exits 126 without running the command when Landlock

@@ -375,6 +375,9 @@ config:
   # runs the keyword search's grep stages that read record files with rg on
   # PATTERN_MATCH_RG_THREADS threads (default 4, at most 8), with the same
   # results as grep.
+  # PATTERN_MATCH_TIMEOUT_SECS (default 30) and PATTERN_MATCH_TOTAL_BUDGET_SECS
+  # (default 35), through extraEnv, set the keyword search's time limit per
+  # source and per search call.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
