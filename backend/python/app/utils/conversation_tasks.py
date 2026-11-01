@@ -50,6 +50,23 @@ def pop_tasks(conversation_id: str) -> list[asyncio.Task]:
     return _conversation_tasks.pop(conversation_id, [])
 
 
+def discard_tasks(conversation_id: str | None) -> int:
+    """Drop and cancel whatever is still registered for *conversation_id*.
+
+    Run teardown calls this on every exit. The success path has already
+    drained the registry, so this is then a no-op; after an error or a cancel
+    nobody will collect the tasks, and the entry would otherwise live for the
+    life of the process.
+    """
+    if not conversation_id:
+        return 0
+    tasks = pop_tasks(conversation_id)
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    return len(tasks)
+
+
 async def await_and_collect_results(conversation_id: str) -> list[dict[str, Any]]:
     """Await every task registered for *conversation_id* and return results.
 

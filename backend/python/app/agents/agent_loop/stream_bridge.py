@@ -54,6 +54,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.utils.conversation_tasks import discard_tasks
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -549,6 +550,7 @@ async def run_agent_loop_stream(
             log.debug("agent-loop stream: _DONE enqueued, starting cleanup")
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
+            discard_tasks(query_info.get("conversationId"))
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:
