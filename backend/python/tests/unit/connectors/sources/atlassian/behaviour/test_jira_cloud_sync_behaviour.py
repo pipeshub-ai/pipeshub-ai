@@ -38,8 +38,10 @@ from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import (
     FileRecord,
+    Record,
     RecordGroup,
     RecordGroupType,
     RecordType,
@@ -2497,3 +2499,78 @@ class TestPlaceholderParents:
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
         assert db.records["1"].parent_external_record_id is None
+
+
+class LookupsBeforeEitherStores(CloudRecordsDb):
+    """The sync and the stream of an issue each look for its attachment before either
+    has stored it, and every record either one writes is kept, as the graph keeps it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids_written: dict[str, set[str]] = {}
+
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        if external_record_id.startswith("attachment_"):
+            return None
+        return await super().get_record_by_external_id(connector_id, external_record_id)
+
+    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+        await super().on_new_records(records_with_permissions)
+        for record, _ in records_with_permissions:
+            self.ids_written.setdefault(record.external_record_id, set()).add(record.id)
+
+
+async def children_of_streamed(connector: JiraConnector, record: TicketRecord) -> set[str]:
+    container = json.loads(await connector._process_issue_blockgroups_for_streaming(record))
+    return {c["child_id"] for g in container["block_groups"] for c in g.get("children_records") or []}
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """Each writer that found the attachment unstored created its own record, so the
+    graph held two records for one attachment. The next full sync rewrote the one its
+    lookup found and unlinked the other, which lost its issue and the access it inherits."""
+
+    COMMENTS = [comment("c1", "see the notes", file=NOTES)]
+
+    async def test_the_sync_and_the_stream_store_one_record(self, api, checkpoints, search) -> None:
+        db = LookupsBeforeEitherStores()
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", self.COMMENTS)]})
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, self.COMMENTS))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        linked = await children_of_streamed(connector, db.records["1"])
+
+        assert sum(r.external_record_id == "attachment_902" for b in db.record_batches for r in b) == 2, (
+            "both writers created the attachment")
+        doubled = {ext: ids for ext, ids in db.ids_written.items() if len(ids) > 1}
+        assert set(db.ids_written) >= {"attachment_901", "attachment_902"} and not doubled, (
+            f"attachments stored as more than one record: {doubled}")
+        assert linked == {db.records["attachment_901"].id, db.records["attachment_902"].id}, (
+            "the blocks link the records that are stored")
+
+    async def test_a_stored_attachment_keeps_its_id(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", self.COMMENTS)]})
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, self.COMMENTS))
+        connector, _ = await ready_connector(db, checkpoints)
+        stored = connector._create_attachment_file_record(
+            attachment_id="902", filename="notes.txt", mime_type="text/plain", file_size=20, created_at=0,
+            parent_issue_id="1", parent_node_id=None, project_id="10000", weburl=None, record_id="f-902",
+        )
+        db.records["attachment_902"] = stored
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        linked = await children_of_streamed(connector, db.records["1"])
+
+        assert db.records["attachment_902"].id == "f-902"
+        assert linked == {db.records["attachment_901"].id, "f-902"}
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self, api, checkpoints) -> None:
+        async def new_id() -> str:
+            connector, _ = await ready_connector(CloudRecordsDb(), checkpoints)
+            return connector._create_attachment_file_record(
+                attachment_id="902", filename="notes.txt", mime_type="text/plain", file_size=20, created_at=0,
+                parent_issue_id="1", parent_node_id=None, project_id="10000", weburl=None,
+            ).id
+
+        assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_902")
