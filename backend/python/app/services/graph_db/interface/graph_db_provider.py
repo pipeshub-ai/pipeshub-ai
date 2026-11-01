@@ -8376,7 +8376,15 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
-        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        """``{id, kind, name, normKey, normalizedAliases}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_alias(
+        self, org_id: str, pairs: list[tuple[str, str]], limit: int = 3
+    ) -> list[dict]:
+        """Nodes carrying a ``(kind, key)`` pair's key as an alias other than their own
+        key, at most ``limit`` per pair, each row tagged with that ``key``."""
         raise NotImplementedError
 
     @abstractmethod
@@ -8483,6 +8491,12 @@ class IGraphDBProvider(ABC):
         backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
         when its marker is already gone (its claim committed before the failure).
         Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reproject(self, org_id: str, record_id: str) -> None:
+        """Queue the record's stored extraction to be written again, due now, counting no
+        failure; a record with a pending retry or re-extraction keeps that one."""
         raise NotImplementedError
 
     @abstractmethod

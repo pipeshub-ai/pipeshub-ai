@@ -27,6 +27,8 @@ from app.agents.actions.knowledge_graph.views import (
 from app.models.entities import resolve_weburl
 from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.config import load_named_entity_config
+from app.modules.named_entities.linking.candidates import alias_family
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
     SEARCH_SCOPE_MAX_ENTITIES,
@@ -48,6 +50,8 @@ if TYPE_CHECKING:
     from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
+
+NAMED_ENTITY_TYPE = "named_entity"
 
 _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
@@ -132,7 +136,8 @@ async def execute_find_records_by_entity(
         # and contradicts what the caller was just shown.
         if cursor:
             return True, NO_FURTHER_RECORDS_MSG
-        return True, " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
+        empty = " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
+        return True, empty + await _alias_note(state, context, resolved_id, resolved_type)
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(
@@ -140,7 +145,9 @@ async def execute_find_records_by_entity(
     )
     note_retrieved_by(state, "entity", graph_record_refs(page.records))
     name = indexed.get("name") if indexed.get("type") == resolved_type else None
-    return True, _render_page(
+    # The first page names the same entity's other nodes, so a count or listing covers them too.
+    note = "" if cursor else await _alias_note(state, context, resolved_id, resolved_type)
+    return True, note.strip() + ("\n" if note else "") + _render_page(
         page.records,
         context,
         entity_ref=raw_id,
@@ -150,6 +157,32 @@ async def execute_find_records_by_entity(
         capped=page.capped,
         shortener=shortener,
         frontend_url=await resolve_frontend_url(state.get("config_service")),
+    )
+
+
+async def _alias_note(state: "ChatState", context: EntityAccessContext, entity_id: str, entity_type: str) -> str:
+    """The same company or product's other nodes, under a learned short or full name,
+    with the call that lists each; empty when it has none or alias linking is off."""
+    if entity_type != NAMED_ENTITY_TYPE:
+        return ""
+    try:
+        if not (await load_named_entity_config(state.get("config_service"))).link_aliases:
+            return ""
+        family = await alias_family(state["graph_provider"], context, entity_id)
+    except Exception:
+        # Only a pointer to more records: the listing stands without it.
+        logger.warning("find_records_by_entity: alias lookup failed", exc_info=True)
+        return ""
+    if not family:
+        return ""
+    calls = "; ".join(
+        f'{_trunc(node.get("name") or "")} ({node.get("kind")}): '
+        f'knowledgegraph__find_records_by_entity(entity_id="{node["id"]}", entity_type="{NAMED_ENTITY_TYPE}")'
+        for node in family
+    )
+    return (
+        f"\nThe same entity is also stored under a learned alias; list these too for every record "
+        f"(and add them to a count): {calls}."
     )
 
 

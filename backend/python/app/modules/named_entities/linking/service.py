@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.linking.candidates import (
+    SETTLED_SOURCES,
     Candidate,
     CandidateFinder,
     CandidateSource,
@@ -127,7 +128,7 @@ class EntityLinker:
             # taken too: the extractor files one thing under either, so it is not a look-alike.
             exact = [
                 c for c in pool
-                if c.source is CandidateSource.EXACT and mention.hinted(c.kind)
+                if c.source in SETTLED_SOURCES and mention.hinted(c.kind)
             ]
             if exact:
                 # A first name stored on its own ("Sam") must not hide the full

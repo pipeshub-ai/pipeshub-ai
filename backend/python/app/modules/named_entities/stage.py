@@ -12,6 +12,7 @@ import time
 from typing import TYPE_CHECKING
 
 from app.modules.entity_resolution.models import ResolutionMode
+from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.config import load_named_entity_config
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.named_entities.extractor import (
@@ -171,7 +172,10 @@ async def persist_named_entities(
             outcome = "failed"
             return "kept"
         resolver = NamedEntityResolver(graph_provider, llm=llm, mode=ResolutionMode.SHADOW)
-        resolved = await resolver.resolve(record.org_id, extraction.entities)
+        # A kept extraction from before a fold rule folds now, so writing it again
+        # (a reprojection, a persist retry) learns the short forms as aliases.
+        entities = link_short_forms([entity.model_copy(deep=True) for entity in extraction.entities])
+        resolved = await resolver.resolve(record.org_id, entities)
         embeddable = await writer.write(record.org_id, record.id, resolved, retry_due=retry_due)
         if entity_vector_store and embeddable:
             await entity_vector_store.upsert_entities_batch(embeddable)
