@@ -90,6 +90,7 @@ from app.utils.record_block_selection import (  # noqa: E402
     ReadHints,
     continuation_hint,
     describe_gaps,
+    grouped_row_indexes,
     no_fit_hint,
     record_trailer_reserve,
     selection_hint,
@@ -3083,21 +3084,6 @@ def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tu
     return index, *check
 
 
-def _grouped_row_indexes(meta: dict[str, Any], blocks: list[dict[str, Any]], index: int) -> list[int]:
-    """Positions of the table rows one point stands for.
-
-    A point built from several rows lists their block ids in ``rowBlockIds`` and
-    carries the first row's index; any other point is its own single row. Ids no
-    longer in the record (a row since removed) are dropped.
-    """
-    ids = meta.get("rowBlockIds")
-    if not ids:
-        return [index]
-    wanted = set(ids)
-    found = [i for i, block in enumerate(blocks) if block.get("id") in wanted]
-    return found or [index]
-
-
 def _note_matched_block(unit: dict[str, Any], block_index: int | None, score: float) -> None:
     """Record a block the search matched, with its hit's score, on an expanded unit.
 
@@ -3160,7 +3146,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     blocks: list[dict[str, Any]], score: float) -> None:
         """Queue the table rows one point stands for; a row already queued only has its score raised."""
         virtual_record_id = rows_key.rsplit("_", 1)[0]
-        for row_index in _grouped_row_indexes(meta, blocks, index):
+        for row_index in grouped_row_indexes(meta, blocks, index):
             row_chunk_id = f"{virtual_record_id}-{row_index}"
             if row_chunk_id in pending_split_rows:
                 _raise_pending_row(row_chunk_id, score)

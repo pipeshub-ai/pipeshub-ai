@@ -149,8 +149,27 @@ def _block_indices(record: dict[str, Any]) -> list[int]:
     )
 
 
-def _hits_from_search(response: object, virtual_record_id: str) -> list[int]:
+def grouped_row_indexes(meta: dict[str, Any], blocks: list[dict[str, Any]], index: int) -> list[int]:
+    """Positions of the table rows one point stands for.
+
+    A point built from several rows lists their block ids in ``rowBlockIds`` and
+    carries the first row's index; any other point is its own single row. Ids no
+    longer in the record (a row since removed) are dropped.
+    """
+    ids = meta.get("rowBlockIds")
+    if not ids:
+        return [index]
+    wanted = set(ids)
+    found = [i for i, block in enumerate(blocks) if block.get("id") in wanted]
+    return found or [index]
+
+
+def _hits_from_search(
+    response: object, virtual_record_id: str, blocks: list[dict[str, Any]] | None = None,
+) -> list[int]:
     """Block indices from a search response, best first.
+
+    A grouped-row point yields every row it lists.
 
     Results without a `blockIndex` are skipped rather than guessed at: a wrong
     index would pull an unrelated block into the selection.
@@ -165,8 +184,11 @@ def _hits_from_search(response: object, virtual_record_id: str) -> list[int]:
         if metadata.get("virtualRecordId") not in (None, virtual_record_id):
             continue
         index = metadata.get("blockIndex")
-        if isinstance(index, int) and index not in ordered:
-            ordered.append(index)
+        if not isinstance(index, int):
+            continue
+        for row in grouped_row_indexes(metadata, blocks or [], index):
+            if row not in ordered:
+                ordered.append(row)
     return ordered
 
 
@@ -227,7 +249,9 @@ async def select_relevant_blocks(
         )
         return None
 
-    hits = _hits_from_search(response, virtual_record_id)
+    hits = _hits_from_search(
+        response, virtual_record_id, (record.get("block_containers") or {}).get("blocks", []),
+    )
     if not hits:
         logger.debug("No ranked blocks for %s; falling back to a positional window", virtual_record_id)
         return None

@@ -192,9 +192,10 @@ _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
 #   C           B, and ``EMBED_TABLE_ROWS_PER_POINT`` table rows per point.
 _POINT_POLICY_ENV = "EMBED_POINT_POLICY"
 _ROW_GROUP_META = "_rowGroup"
-# Block windows are counted with cl100k, which reads fewer tokens than a
-# WordPiece model such as bge does for the same text.
-_WINDOW_HEADROOM = 0.9
+# Windows are counted with cl100k, but a WordPiece model such as bge reads more
+# tokens for the same text: measured on 100 Python docs pages, the largest
+# bge/cl100k ratio among points over 200 tokens was 1.67 (median 1.2).
+_WINDOW_HEADROOM = 0.6  # 1 / 1.67
 
 
 def _point_policy() -> str:
