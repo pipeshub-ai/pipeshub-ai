@@ -234,6 +234,16 @@ class TestAnswerOpening:
         assert state.gate_rounds == 0 and not state.opening_rewrite_sent
         assert "gate_opening_rewrites" not in state.counters and "gate_dispute_checks" not in state.counters
 
+    async def test_a_failing_framing_check_still_lets_the_gate_send_gaps_back(self, opening_on, monkeypatch) -> None:
+        monkeypatch.setattr(gate_module, "framing_hits", MagicMock(side_effect=ValueError("bad pattern")))
+        decision = GateDecision(gaps=[Gap("facet", "EU region", "q")], checked=True)
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=decision))
+        context = _archive_context()
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
+        results = gate_module.render_results(await opening_on.side_effect(_archive_context(), ["q"]))
+        assert ctx.recovery_message.content == render_gap_request(decision, results)
+        assert not coverage_state(context.tool_state).opening_rewrite_sent
+
     async def test_switched_off_a_gap_request_is_unchanged(self, stubs, monkeypatch) -> None:
         decision = GateDecision(gaps=[Gap("facet", "EU region", "q")], checked=True)
         monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=decision))

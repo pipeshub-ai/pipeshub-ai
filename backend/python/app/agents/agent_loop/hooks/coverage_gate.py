@@ -245,9 +245,14 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
 
 
 def _framing_hits(context: "AgentContext", text: str) -> list[FramingHit]:
+    """Never raises: a failure here skips the framing check, not the gate."""
     if not answer_opening_check_enabled() or coverage_state(context.tool_state).opening_rewrite_sent:
         return []
-    return framing_hits(context.query, text)
+    try:
+        return framing_hits(context.query, text)
+    except Exception:
+        logger.warning("coverage_loop: framing check failed", exc_info=True)
+        return []
 
 
 def _wants_dispute_check(context: "AgentContext", text: str, framing: list[FramingHit]) -> bool:
