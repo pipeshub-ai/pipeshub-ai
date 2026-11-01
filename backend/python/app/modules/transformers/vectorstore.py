@@ -15,6 +15,7 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import codecs
+import inspect
 import json
 import logging
 import os
@@ -184,6 +185,55 @@ _OVERSIZED_CHUNK_SIZE = 1500
 _OVERSIZED_CHUNK_OVERLAP = 200
 _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
+
+# How a record's text becomes points (``EMBED_POINT_POLICY``):
+#   A (default) sentence points plus the block, one point per table row.
+#   B           one point per text block, no sentence points.
+#   C           B, and ``EMBED_TABLE_ROWS_PER_POINT`` table rows per point.
+_POINT_POLICY_ENV = "EMBED_POINT_POLICY"
+_ROW_GROUP_META = "_rowGroup"
+# Block windows are counted with cl100k, which reads fewer tokens than a
+# WordPiece model such as bge does for the same text.
+_WINDOW_HEADROOM = 0.9
+
+
+def _point_policy() -> str:
+    p = os.getenv(_POINT_POLICY_ENV, "A").strip().upper()
+    return p if p in ("A", "B", "C") else "A"
+
+
+async def _model_token_limit(embeddings: object) -> int | None:
+    """The model's maximum input tokens when its client reports one, else None.
+
+    Only the local embedding client does. shortcut: hosted providers expose no
+    limit, so they use the ceiling (``PIPESHUB_EMBED_TOKEN_LIMIT``, default
+    8191); set that variable for a hosted model with a smaller window.
+    """
+    ask = getattr(embeddings, "max_input_tokens", None)
+    if _point_policy() == "A" or not inspect.iscoroutinefunction(ask):
+        return None
+    limit = await ask()
+    return limit if isinstance(limit, int) and limit > 0 else None
+
+
+def _row_group_meta(parent_index: object) -> dict:
+    # Only C needs the table tag; A's and B's payload stays as it was.
+    return {_ROW_GROUP_META: parent_index} if _point_policy() == "C" else {}
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _rows_per_point() -> int:
+    return _env_positive_int("EMBED_TABLE_ROWS_PER_POINT", 5)
+
+
+def _max_row_points_per_table() -> int:
+    return _env_positive_int("EMBED_MAX_TABLE_POINTS", 200)
 
 # Safety-net timeouts — prevent any single step from blocking the pipeline forever.
 # asyncio.to_thread / run_in_executor cannot actually kill the underlying thread on
@@ -523,12 +573,59 @@ def _with_title(title: str | None, text: str) -> str:
     return f"{title}: {text}" if title else text
 
 
-def _bounded_documents(text: str, metadata: dict) -> list[Document]:
+def _point_token_limit(model_limit: int | None) -> int:
+    """Tokens one block or row-group point may hold before it is windowed.
+
+    The embedding model's own maximum when it reports one (the local embedding
+    server does), otherwise the ceiling. Under policy A it is the ceiling, so
+    A's points do not depend on the model.
+    """
+    ceiling = _embed_token_ceiling()
+    if _point_policy() == "A" or not model_limit:
+        return ceiling
+    return max(1, min(ceiling, int(model_limit * _WINDOW_HEADROOM)))
+
+
+def _group_table_row_documents(documents: list, ceiling: int) -> list:
+    """Policy C: merge consecutive TABLE_ROW documents of one table into points
+    of ``_rows_per_point()`` rows. A table with more rows than the cap allows
+    gets larger groups, so it never exceeds ``_max_row_points_per_table()``
+    points. A point keeps the first row's block id and lists every row's id in
+    ``rowBlockIds``, which readers use to cite the rows."""
+    out: list = []
+    run: list[Document] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        size = max(_rows_per_point(), -(-len(run) // _max_row_points_per_table()))
+        for i in range(0, len(run), size):
+            part = run[i:i + size]
+            meta = {k: v for k, v in part[0].metadata.items() if k != _ROW_GROUP_META}
+            if len(part) > 1:
+                meta["rowBlockIds"] = [d.metadata["blockId"] for d in part]
+            out.extend(_bounded_documents("\n".join(d.page_content for d in part), meta, ceiling))
+        run.clear()
+
+    for d in documents:
+        is_row = isinstance(d, Document) and d.metadata.get("blockType") == BlockType.TABLE_ROW.value
+        if is_row and run and run[-1].metadata.get(_ROW_GROUP_META) != d.metadata.get(_ROW_GROUP_META):
+            flush()
+        if is_row:
+            run.append(d)
+        else:
+            flush()
+            out.append(d)
+    flush()
+    return out
+
+
+def _bounded_documents(text: str, metadata: dict, ceiling: int | None = None) -> list[Document]:
     """Documents for one piece of table or SQL text, split to the model's token
     ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
     and an over-long one is rejected by the embedding API only after the full
     retry budget."""
-    ceiling = _embed_token_ceiling()
+    ceiling = ceiling or _embed_token_ceiling()
     if not _exceeds_token_ceiling(text, ceiling):
         return [Document(page_content=text, metadata=metadata)]
     return [
@@ -542,8 +639,12 @@ def _build_text_documents(
     virtual_record_id: str,
     org_id: str,
     language: str,
+    token_limit: int | None = None,
 ) -> List[Document]:
     """Sentence-split each text block into embeddable Documents.
+
+    Under policies B and C a block over ``_point_token_limit(token_limit)`` is
+    cut into as few windows as fit, all carrying the block's id and index.
 
     CPU-bound (regex/rule-based sentence segmentation); callers should run
     this via ``asyncio.to_thread`` to keep the event loop responsive.
@@ -586,6 +687,14 @@ def _build_text_documents(
                 # A sentence longer than the window is emitted whole by
                 # _chunk_oversized_text; bound it rather than let it be rejected.
                 for piece in _split_to_token_ceiling(chunk, ceiling)
+            )
+            continue
+
+        if _point_policy() != "A":
+            window = _point_token_limit(token_limit)
+            documents.extend(
+                Document(page_content=piece, metadata={**metadata, "isBlock": i == 0})
+                for i, piece in enumerate(_split_to_token_ceiling(block_text, window))
             )
             continue
 
@@ -673,6 +782,7 @@ def _process_text_blocks(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
+    token_limit: int | None = None,
 ) -> List[Document]:
     """Detect language and build embeddable Documents for a record's text blocks.
 
@@ -680,7 +790,7 @@ def _process_text_blocks(
     ``asyncio.to_thread`` call (see call site in ``index_documents``).
     """
     language = _detect_record_language(text_blocks)
-    return _build_text_documents(text_blocks, virtual_record_id, org_id, language)
+    return _build_text_documents(text_blocks, virtual_record_id, org_id, language, token_limit)
 
 
 def _storage_reconcile_enabled() -> bool:
@@ -730,6 +840,8 @@ class _RecordPresence:
 
 
 class VectorStore(Transformer):
+    # The embedding model's input limit, once known; None until then and under policy A.
+    model_token_limit: int | None = None
 
     def __init__(
         self,
@@ -1275,6 +1387,7 @@ class VectorStore(Transformer):
 
         await self._ensure_sparse_embeddings()
 
+        self.model_token_limit = await _model_token_limit(dense_embeddings)
         self.dense_embeddings = dense_embeddings
         self.embedding_provider = provider
         self.embedding_size = embedding_size
@@ -1933,7 +2046,8 @@ class VectorStore(Transformer):
                     with stage("chunk", detail=f"{len(text_blocks)} text blocks"):
                         text_documents = await asyncio.wait_for(
                             asyncio.to_thread(
-                                _process_text_blocks, text_blocks, virtual_record_id, org_id
+                                _process_text_blocks, text_blocks, virtual_record_id, org_id,
+                                self.model_token_limit,
                             ),
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
@@ -2115,6 +2229,7 @@ class VectorStore(Transformer):
                             "isBlock": True,
                             "isBlockGroup": False,
                             "blockType": BlockType.TABLE_ROW.value,
+                            **_row_group_meta(None),
                         },
                     ))
                     sql_rows_embedded += 1
@@ -2164,8 +2279,14 @@ class VectorStore(Transformer):
                                     "isBlock": True,
                                     "isBlockGroup": False,
                                     "blockType": BlockType.TABLE_ROW.value,
+                                    **_row_group_meta(block.parent_index),
                                 },
                             ))
+
+            if _point_policy() == "C":
+                documents_to_embed = _group_table_row_documents(
+                    documents_to_embed, _point_token_limit(self.model_token_limit)
+                )
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):

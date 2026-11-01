@@ -603,3 +603,32 @@ class TestGetEmbeddingServerEmbeddings:
             trust_remote_code=True,
         )
         assert result is mock_instance
+
+
+class TestMaxInputTokens:
+    @staticmethod
+    def _client_listing(*items):
+        client = EmbeddingServerEmbeddings(model="m")
+        client._inner = MagicMock()
+        client._inner.root_async_client.models.list = AsyncMock(
+            return_value=MagicMock(data=list(items))
+        )
+        return client
+
+    @pytest.mark.asyncio
+    async def test_reports_the_limit_of_its_own_model(self):
+        client = self._client_listing(
+            MagicMock(id="other", max_seq_length=128), MagicMock(id="m", max_seq_length=512)
+        )
+        assert await client.max_input_tokens() == 512
+
+    @pytest.mark.asyncio
+    async def test_none_when_the_server_does_not_say(self):
+        assert await self._client_listing(MagicMock(id="m", max_seq_length=None)).max_input_tokens() is None
+        assert await self._client_listing().max_input_tokens() is None
+
+    @pytest.mark.asyncio
+    async def test_none_when_the_server_is_unreachable(self):
+        client = self._client_listing()
+        client._inner.root_async_client.models.list = AsyncMock(side_effect=RuntimeError("down"))
+        assert await client.max_input_tokens() is None

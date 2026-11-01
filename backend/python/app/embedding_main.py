@@ -314,6 +314,8 @@ class ModelListItem(BaseModel):
     object: str = "model"
     created: int
     owned_by: str = "pipeshub"
+    # Longest input in tokens; longer text is silently cut by the model.
+    max_seq_length: int | None = None
 
 
 class ModelListResponse(BaseModel):
@@ -521,6 +523,10 @@ class ModelManager:
 
     def list_loaded_models(self) -> list[str]:
         return list(self._models)
+
+    def max_seq_length(self, model_name: str) -> int | None:
+        limit = getattr(self._models.get(self._cache_key(model_name)), "max_seq_length", None)
+        return limit if isinstance(limit, int) and limit > 0 else None
 
     def is_ready(self, model_name: str) -> bool:
         return model_name in self.list_loaded_models()
@@ -953,7 +959,7 @@ async def health_check() -> JSONResponse:
 async def list_models() -> ModelListResponse:
     created = int(time.time())
     models = [
-        ModelListItem(id=name, created=created)
+        ModelListItem(id=name, created=created, max_seq_length=model_manager.max_seq_length(name))
         for name in model_manager.list_loaded_models()
     ]
     if not models:

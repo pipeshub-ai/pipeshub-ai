@@ -102,6 +102,19 @@ class EmbeddingServerEmbeddings(Embeddings):
             default_headers={EMBEDDING_PRIORITY_HEADER: EMBEDDING_PRIORITY_QUERY},
         )
 
+    async def max_input_tokens(self) -> int | None:
+        """The model's longest input as the server reports it, or None."""
+        try:
+            page = await self._inner.root_async_client.models.list()
+        except Exception:
+            logger.warning("Embedding server did not report the model's input limit", exc_info=True)
+            return None
+        for item in page.data:
+            if item.id == self.model:
+                limit = getattr(item, "max_seq_length", None)
+                return limit if isinstance(limit, int) and limit > 0 else None
+        return None
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return call_with_retry(
             lambda: self._inner.embed_documents(texts),

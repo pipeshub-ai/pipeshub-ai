@@ -56,6 +56,7 @@ def _no_settings_lookup_at_startup() -> Iterator[None]:
 def client():
     mock_manager = MagicMock(spec=ModelManager)
     mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
+    mock_manager.max_seq_length.return_value = 512
     mock_manager.encode = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
 
     mock_manager.warmup = AsyncMock()
@@ -80,6 +81,7 @@ class TestEmbeddingServerRoutes:
         body = response.json()
         assert body["object"] == "list"
         assert body["data"][0]["id"] == DEFAULT_EMBEDDING_MODEL
+        assert body["data"][0]["max_seq_length"] == 512
 
     def test_create_embeddings_single_input(self, client):
         test_client, mock_manager = client
@@ -294,6 +296,13 @@ class TestModelManager:
         manager = ModelManager()
         manager._models = {"model-a": MagicMock(), "model-b": MagicMock()}
         assert sorted(manager.list_loaded_models()) == ["model-a", "model-b"]
+
+    def test_max_seq_length_reads_the_loaded_model(self):
+        manager = ModelManager()
+        manager._models = {"a": MagicMock(max_seq_length=384), "b": MagicMock(max_seq_length=None)}
+        assert manager.max_seq_length("a") == 384
+        assert manager.max_seq_length("b") is None
+        assert manager.max_seq_length("not-loaded") is None
 
     @pytest.mark.asyncio
     async def test_get_model_returns_cached_without_loading(self):

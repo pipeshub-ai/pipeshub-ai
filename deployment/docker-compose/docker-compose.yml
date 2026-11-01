@@ -395,6 +395,9 @@ services:
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
       - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}
+      # Vector points per record: A (default), B (one per text block) or C (B plus
+      # 5 table rows per point). See docs/indexing-service.md.
+      - EMBED_POINT_POLICY=${EMBED_POINT_POLICY:-A}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
