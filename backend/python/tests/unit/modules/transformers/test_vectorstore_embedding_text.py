@@ -234,6 +234,91 @@ async def test_the_documents_own_title_names_the_record() -> None:
     assert capture.dense == ["Glasshouse Rules › Pests\nBody."]
 
 
+async def _first_lines_title(vs, capture, name: str, extension: str | None, *lines: str) -> set[str]:
+    container = BlocksContainer(blocks=[_text_block(i, line) for i, line in enumerate(lines)])
+    await _index_record(vs, container, _record(name=name, extension=extension))
+    assert capture.dense
+    return {text.split("\n", 1)[0] for text in capture.dense}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_file_named_by_ids_is_titled_by_its_opening_line() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "exp_4be1c0f2a9d84e7b9c3a5f6d7e8f9012__ops-311.txt", "txt",
+        "Humidity Probe Recalibration Plan",
+        "The west probe reads two points high after each restart.",
+    )
+    assert titles == {"Humidity Probe Recalibration Plan"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_file_name_without_ids_stays_the_title() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "probe-notes.txt", "txt",
+        "Humidity Probe Recalibration Plan", "The west probe reads high.",
+    )
+    assert titles == {"probe-notes"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_an_opening_sentence_is_not_taken_as_the_title() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "exp_4be1c0f2a9d84e7b9c3a5f6d7e8f9012__probe-notes.txt", "txt",
+        "We moved the probe check to Thursdays.", "Facilities agreed on the call.",
+    )
+    assert titles == {"probe notes"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_chat_export_is_titled_by_its_channel_and_the_words_of_its_name() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "thr_5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b__1712345678-misting-valve-schedule", "txt",
+        "plant-ops", "dana: the misting valve sticks open after midnight.",
+    )
+    assert titles == {"plant-ops › misting valve schedule"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_chat_export_named_only_by_ids_is_titled_by_its_channel() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "7c1e2b3a-4d5f-6a7b-8c9d-0e1f2a3b4c5d_1712345678.txt", "txt",
+        "plant-ops", "omar: who resets the timer after a power cut?",
+    )
+    assert titles == {"plant-ops"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_ticket_title_with_an_id_in_it_is_kept() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "OPS-42 Replace misting valve", None,
+        "Steps to reproduce", "Open the valve twice within a minute.",
+    )
+    assert titles == {"OPS-42 Replace misting valve"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_channel_line_the_name_repeats_is_not_said_twice() -> None:
+    vs, capture = _capturing_vectorstore()
+    titles = await _first_lines_title(
+        vs, capture, "ch_0a1b2c3d4e5f60718293a4b5__plant_ops.txt", "txt",
+        "plant-ops", "Rota for April.",
+    )
+    assert titles == {"plant ops"}
+
+
 @pytest.mark.asyncio
 async def test_switched_off_text_with_headings_embeds_as_before(monkeypatch) -> None:
     monkeypatch.delenv("INDEXING_SECTION_PATHS", raising=False)

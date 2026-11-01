@@ -82,6 +82,13 @@ from app.utils.embedding_retry import (
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
+from app.utils.record_titles import (
+    has_id_tokens,
+    is_mostly_ids,
+    is_weak_title,
+    readable_record_name,
+    title_words,
+)
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -196,6 +203,13 @@ _OVERSIZED_CHUNK_SIZE = 1500
 _OVERSIZED_CHUNK_OVERLAP = 200
 _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
+_TEXT_BLOCK_TYPES = frozenset({"text", "paragraph", "textsection", "heading", "quote"})
+_MAX_OPENING_TITLE_CHARS = 120
+
+
+def _block_type_name(block: object) -> str:
+    block_type = getattr(block, "type", None)
+    return str(getattr(block_type, "value", block_type)).lower()
 
 # Safety-net timeouts — prevent any single step from blocking the pipeline forever.
 # asyncio.to_thread / run_in_executor cannot actually kill the underlying thread on
@@ -584,18 +598,55 @@ def _stored_metadata(metadata: dict) -> dict:
     return {k: v for k, v in metadata.items() if k not in (_SPARSE_EXTRA, _EMBED_CONTEXT)}
 
 
+def _opening_line(text_blocks: list[object]) -> str:
+    """A document's first block when it is one short line followed by more text."""
+    if len(text_blocks) < 2:
+        return ""
+    first = min(text_blocks, key=lambda b: getattr(b, "index", 0) or 0)
+    data = getattr(first, "data", None)
+    line = data.strip() if isinstance(data, str) else ""
+    if "\n" in line or len(line) > _MAX_OPENING_TITLE_CHARS or line.endswith((".", "?", "!", ":", ";", ",")):
+        return ""
+    return line
+
+
 def _record_title(record: Optional["Record"], block_containers: BlocksContainer) -> str:
-    """The title the document gives itself, else the record's name; a stored
-    file name loses its extension."""
+    """What a record's text is embedded under as its title.
+
+    The title the document gives itself comes first, then the record's name (a
+    stored file name loses its extension). A name made of ids says little, so
+    such a record is titled by its opening line when that reads as a title
+    (three words or more, not ending like a sentence), or else by what its name
+    says once the ids go: a chat export opens with its channel ("plant-ops"),
+    and its name's slug says the rest.
+    """
     document_title = getattr(block_containers, "document_title", None)
     if isinstance(document_title, str) and document_title.strip():
         return document_title.strip()
     name = getattr(record, "record_name", None) if record is not None else None
     name = name.strip() if isinstance(name, str) else ""
     extension = getattr(record, "extension", None)
-    if isinstance(extension, str) and extension and name.lower().endswith(f".{extension.lower()}"):
+    is_file = isinstance(extension, str) and bool(extension)
+    if is_file and name.lower().endswith(f".{extension.lower()}"):
         name = name[: -len(extension) - 1].strip()
-    return name
+    # A ticket or page title with an id in it ("OPS-42 ...") is still its title.
+    says_little = has_id_tokens(name) if is_file else is_mostly_ids(name)
+    if name and not says_little:
+        return name
+    text_blocks = [
+        b for b in getattr(block_containers, "blocks", None) or []
+        if _block_type_name(b) in _TEXT_BLOCK_TYPES
+    ]
+    opening = _opening_line(text_blocks)
+    if opening and not is_weak_title(opening):
+        return opening
+    readable = readable_record_name(name, strip_extension=False)
+    if opening:
+        if not readable:
+            return opening
+        if title_words(readable) - title_words(opening):
+            return f"{opening}{SECTION_PATH_SEPARATOR}{readable}"
+    return readable or name
 
 
 def _build_text_documents(
@@ -1963,7 +2014,7 @@ class VectorStore(Transformer):
                 )
                 if block_type == "code":
                     code_blocks.append(block)
-                elif block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
+                elif block_type in _TEXT_BLOCK_TYPES:
                     text_blocks.append(block)
                 elif (
                     block_type in ["image", "drawing"]
