@@ -36,6 +36,8 @@ MAX_CALLS_PER_FRAME = 200
 
 GREP_GENERATION_SOURCE = "grep_generation"
 ENTITY_LINKING_SOURCE = "entity_linking"
+ANSWER_SELECTION_SOURCE = "answer_selection"
+ANSWER_DRAFT_SOURCE_PREFIX = "answer_draft"
 
 
 @dataclass
@@ -44,8 +46,10 @@ class UsageLedger:
     labelled by its source: `main`, `sub_agent:<name>`, `single_shot:<name>`,
     `auto_compact`, `plan_critic`, `result_critic`, `planner`, `replanner`
     (from the request's transports, see `UsageReportingTransport`),
-    `grep_generation` and `entity_linking`. Only wired when the request opted
-    in, so a normal request records nothing."""
+    `grep_generation` and `entity_linking`. Under answer selection, the calls
+    of every run that was not chosen keep their source behind `answer_draft:`
+    and the choosing call is `answer_selection`. Only wired when the request
+    opted in, so a normal request records nothing."""
 
     entries: list[tuple[str, TokenUsage]] = field(default_factory=list)
 
