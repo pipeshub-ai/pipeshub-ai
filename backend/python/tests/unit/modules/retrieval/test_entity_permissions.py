@@ -537,6 +537,45 @@ class TestSearchEntitiesForUser:
         assert [(h.entity_id, h.entity_type) for h in hits] == [("u-ann", "person")]
 
     @pytest.mark.asyncio
+    async def test_person_hits_of_one_email_are_one_hit_carrying_every_id(self) -> None:
+        store = _store([_hit("u-ann", "person", 0.9), _hit("t1", "topic", 0.85), _hit("u-ann-zd", "person", 0.8),
+                        _hit("u-bob", "person", 0.7)])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "u-ann": [_row("r1", "conf-1")], "u-ann-zd": [_row("r2", "conf-1"), _row("r1", "conf-1")],
+                "u-bob": [_row("r3", "conf-1")], "t1": [_row("r3", "conf-1")],
+            },
+            permitted={"r1", "r2", "r3"},
+        )
+        graph.get_person_nodes = AsyncMock(return_value=[
+            {"id": "u-ann", "name": "Ann", "email": "ann@x.io"},
+            {"id": "u-ann-zd", "name": "", "email": "ANN@x.io"},
+            {"id": "u-bob", "name": "Bob", "email": "bob@x.io"},
+        ])
+
+        hits = await search_entities_for_user(store, graph, _context(), "ann", top_k=5)
+
+        assert [(h.entity_id, h.ids) for h in hits] == [
+            ("u-ann", ("u-ann", "u-ann-zd")), ("t1", ("t1",)), ("u-bob", ("u-bob",)),
+        ]
+        assert sorted(r["_key"] for r in hits[0].records) == ["r1", "r2"]
+        graph.get_person_nodes.assert_awaited_once()
+        assert graph.get_person_nodes.await_args.args[0] == ORG
+
+    @pytest.mark.asyncio
+    async def test_people_stay_separate_when_their_lookup_fails(self) -> None:
+        store = _store([_hit("u-ann", "person", 0.9), _hit("u-ann-zd", "person", 0.8)])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"u-ann": [_row("r1", "conf-1")], "u-ann-zd": [_row("r2", "conf-1")]},
+            permitted={"r1", "r2"},
+        )
+        graph.get_person_nodes = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        hits = await search_entities_for_user(store, graph, _context(), "ann", top_k=5)
+
+        assert [h.ids for h in hits] == [("u-ann",), ("u-ann-zd",)]
+
+    @pytest.mark.asyncio
     async def test_an_organization_is_kept_only_through_a_record_the_user_can_read(self) -> None:
         store = _store([_hit("acme", "organization", 0.9), _hit("globex", "organization", 0.8)])
         graph = _graph(
@@ -1370,3 +1409,17 @@ class TestProbePermittedEntities:
 
         with pytest.raises(EntityAccessError):
             await ep.probe_permitted_entities(graph, _context(), [("ne-1", "named_entity")])
+
+
+@pytest.mark.asyncio
+async def test_a_person_listing_reads_every_node_of_the_person() -> None:
+    graph = _graph(candidates=lambda refs, org, **k: {"u-ann": [_row("r1", "conf-1")]}, permitted={"r1"})
+    graph.get_person_nodes = AsyncMock(return_value=[
+        {"id": "u-ann", "name": "Ann", "email": "ann@x.io"}, {"id": "u-ann-zd", "name": "", "email": "ann@x.io"},
+    ])
+
+    await list_accessible_entity_records(graph, _context(), entity_id="u-ann", entity_type="person")
+
+    assert graph.get_person_nodes.await_args.args[:2] == (ORG, ["u-ann"])
+    ref = graph.get_permitted_entity_records.await_args.args[0][0]
+    assert ref["userIds"] == ["u-ann", "u-ann-zd"]

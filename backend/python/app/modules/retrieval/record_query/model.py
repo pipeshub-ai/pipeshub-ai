@@ -175,6 +175,20 @@ class GroupBy(_Strict):
         return self
 
 
+def walk_conditions(conditions: list[Condition]) -> list[Condition]:
+    """Every condition, nested ones included, parents first."""
+    out: list[Condition] = []
+    for cond in conditions:
+        out.append(cond)
+        if isinstance(cond, AllOf):
+            out += walk_conditions(cond.all_of)
+        elif isinstance(cond, AnyOf):
+            out += walk_conditions(cond.any_of)
+        elif isinstance(cond, Not):
+            out += walk_conditions([cond.not_])
+    return out
+
+
 def _is_container(cond: object) -> bool:
     return isinstance(cond, FieldCondition) and cond.field == "container"
 
@@ -253,4 +267,5 @@ __all__ = [
     "RecordQuery",
     "RecordQueryResult",
     "day_start_ms",
+    "walk_conditions",
 ]

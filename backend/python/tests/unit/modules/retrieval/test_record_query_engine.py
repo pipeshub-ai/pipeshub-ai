@@ -35,10 +35,22 @@ def _row(i: int, *, assignee: str, status: str = "OPEN", amount: float | None = 
 class FakeProvider:
     """Applies the person and source parts of a pushdown, newest first, in windows."""
 
-    def __init__(self, rows: list[dict[str, Any]], *, fail: bool = False) -> None:
+    def __init__(
+        self, rows: list[dict[str, Any]], *, fail: bool = False, nodes: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.rows = sorted(rows, key=lambda r: (-r["updatedAt"], r["_key"]))
         self.fail = fail
         self.calls: list[dict[str, Any]] = []
+        # Person nodes: {"id", "name", "email", "orgId"}.
+        self.nodes = nodes or []
+        self.person_lookups: list[tuple[str, list[str]]] = []
+
+    async def get_person_nodes(self, org_id: str, ids: list[str], *, limit: int = 200) -> list[dict[str, Any]]:
+        self.person_lookups.append((org_id, list(ids)))
+        mine = [n for n in self.nodes if n["orgId"] == org_id]
+        emails = {n["email"].lower() for n in mine if n["id"] in ids and n.get("email")}
+        found = [n for n in mine if n["id"] in ids or (n.get("email") or "").lower() in emails]
+        return [{"id": n["id"], "name": n.get("name"), "email": n.get("email")} for n in found][:limit]
 
     async def get_record_query_candidates(self, org_id: str, **kw: Any) -> RecordCandidates:  # noqa: ANN401
         self.calls.append(kw)
@@ -149,3 +161,71 @@ def test_a_row_never_carries_a_url_so_a_hidden_link_cannot_show() -> None:
     row["webUrl"] = "https://secret.example/hidden"
     row["hideWeburl"] = True
     assert "url" not in engine.row_view(row) and "secret" not in str(engine.row_view(row))
+
+
+RAVI_NODES = [
+    {"id": "ravi", "name": "Ravi Kumar", "email": "ravi@x.io", "orgId": "org"},
+    {"id": "ravi-zd", "name": "", "email": "RAVI@x.io", "orgId": "org"},
+    {"id": "ravi-other-org", "name": "Ravi Kumar", "email": "ravi@x.io", "orgId": "elsewhere"},
+]
+
+
+async def test_a_person_is_every_node_of_their_email(readable: set[str]) -> None:
+    rows = [_row(1, assignee="ravi"), _row(2, assignee="ravi-zd"), _row(3, assignee="ravi-other-org"),
+            _row(4, assignee="ama")]
+    readable.update(r["_key"] for r in rows)
+    provider = FakeProvider(rows, nodes=RAVI_NODES)
+    result = await run_record_query(provider, CONTEXT, q(where=[{"person": {"role": "assignee", "ids": ["ravi"]}}]))
+    assert {r["record_id"] for r in result.rows} == {"r001", "r002"}
+    assert provider.calls[0]["pushdown"]["people"][0]["ids"] == ["ravi", "ravi-zd"]
+    assert provider.person_lookups == [("org", ["ravi"])]
+
+
+async def test_a_person_nested_in_any_of_is_resolved_too(readable: set[str]) -> None:
+    rows = [_row(1, assignee="ravi"), _row(2, assignee="ravi-zd"), _row(3, assignee="ama")]
+    readable.update(r["_key"] for r in rows)
+    result = await run_record_query(FakeProvider(rows, nodes=RAVI_NODES), CONTEXT, q(where=[{"any_of": [
+        {"person": {"ids": ["ravi-zd"]}}, {"field": "status", "in": ["CLOSED"]}]}]))
+    assert {r["record_id"] for r in result.rows} == {"r001", "r002"}
+
+
+async def test_an_id_of_another_org_names_no_one_here(readable: set[str]) -> None:
+    rows = [_row(1, assignee="ravi"), _row(2, assignee="ravi-other-org")]
+    readable.update(r["_key"] for r in rows)
+    provider = FakeProvider(rows, nodes=RAVI_NODES)
+    result = await run_record_query(provider, CONTEXT, q(where=[{"person": {"ids": ["ravi-other-org"]}}]))
+    # Not widened to the org's Ravi; the foreign node itself the provider never matches.
+    assert provider.calls[0]["pushdown"]["people"][0]["ids"] == ["ravi-other-org"]
+    assert result.total == 1
+
+
+async def test_me_is_the_person_asking(readable: set[str]) -> None:
+    rows = [_row(1, assignee="u"), _row(2, assignee="u-zd"), _row(3, assignee="ama")]
+    readable.update(r["_key"] for r in rows)
+    nodes = [{"id": "u", "name": "Me", "email": "me@x.io", "orgId": "org"},
+             {"id": "u-zd", "name": "", "email": "me@x.io", "orgId": "org"}]
+    result = await run_record_query(FakeProvider(rows, nodes=nodes), CONTEXT,
+                                    q(where=[{"person": {"role": "assignee", "ids": ["Me"]}}]))
+    assert {r["record_id"] for r in result.rows} == {"r001", "r002"}
+
+
+async def test_people_group_by_person_with_a_readable_label(readable: set[str]) -> None:
+    rows = [_row(1, assignee="ravi"), _row(2, assignee="ravi-zd"), _row(3, assignee="ama")]
+    rows[0]["people"][0]["email"] = "ravi@x.io"
+    rows[1]["people"][0].update(email="RAVI@x.io", name=None)
+    readable.update(r["_key"] for r in rows)
+    result = await run_record_query(FakeProvider(rows), CONTEXT, q(group_by={"by_person": True}))
+    assert [(g.key, g.label, g.count) for g in result.groups] == [
+        ("ravi", "Ravi (ravi@x.io)", 2), ("ama", "Ama", 1),
+    ]
+
+
+async def test_a_person_lookup_failure_is_an_error_not_an_empty_answer(readable: set[str]) -> None:
+    provider = FakeProvider([])
+
+    async def down(*_: Any, **__: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        raise RuntimeError("graph down")
+
+    provider.get_person_nodes = down  # type: ignore[method-assign]
+    with pytest.raises(EntityAccessError):
+        await run_record_query(provider, CONTEXT, q(where=[{"person": {"ids": ["ravi"]}}]))

@@ -583,3 +583,19 @@ class TestRecordHitsWhoseContentIsNotIndexed:
         state = _state()
         await execute_search_entities(state, "plan", entity_types=["record"])
         assert "r1" in state["known_record_ids"]
+
+
+class TestOnePersonManyNodes:
+    @pytest.mark.asyncio
+    async def test_a_person_found_as_several_nodes_is_one_result_with_every_id(self, patched) -> None:
+        ann = replace(_hit("u-ann", "person", records=[_row("r1")]), entity_ids=("u-ann", "u-ann-zd"))
+        patched[1].return_value = [ann, _hit("u-bob", "person")]
+        state = _state()
+
+        ok, text = await execute_search_entities(state, "ann")
+
+        results = json.loads(text)["results"]
+        assert ok and len(results) == 2
+        assert results[0]["entityId"] == "u-ann" and results[0]["entityIds"] == ["u-ann", "u-ann-zd"]
+        assert "entityIds" not in results[1]
+        assert {"u-ann", "u-ann-zd"} <= set(state[ENTITY_INDEX_CACHE_KEY])

@@ -8630,6 +8630,23 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_person_nodes(self, org_id: str, ids: list[str], *, limit: int = 200) -> list[dict[str, Any]]:
+        """The person nodes of ``org_id`` (members in ``users``, outsiders in
+        ``person``) that are one of ``ids`` or share an email, compared
+        case-insensitively, with one that is: every node of the people the
+        ids name. An id of another org, or of no person node, names no one.
+        No permission check: as ``find_users``.
+
+        Returns:
+            At most ``limit`` ``{"id", "name", "email"}``, ordered by id;
+            ``name`` is the node's full name.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_record_query_candidates(
         self,
         org_id: str,

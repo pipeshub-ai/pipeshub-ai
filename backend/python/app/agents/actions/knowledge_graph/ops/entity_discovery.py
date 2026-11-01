@@ -185,10 +185,10 @@ async def execute_search_entities(
         state,
         [
             {
-                "entityId": h.entity_id, "entityType": h.entity_type, "name": h.name,
+                "entityId": entity_id, "entityType": h.entity_type, "name": h.name,
                 "filterName": h.graph_filter_name,
             }
-            for h in hits
+            for h in hits for entity_id in h.ids
         ],
     )
     shortener = get_record_id_shortener_if_enabled(state)
@@ -303,6 +303,9 @@ def _render_hits(
             "entityType": hit.entity_type,
             "name": _trunc(hit.name),
         }
+        if len(hit.ids) > 1:
+            # One person found as several nodes: any of the ids names them all.
+            item["entityIds"] = list(hit.ids)
         if with_kind and hit.kind:
             item["kind"] = hit.kind
         apps = sorted({

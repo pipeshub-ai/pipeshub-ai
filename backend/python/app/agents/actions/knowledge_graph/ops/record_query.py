@@ -25,20 +25,18 @@ from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_b
 from app.modules.retrieval.record_fields import FIELDS, ROLE_EDGES, FieldKind, Store
 from app.modules.retrieval.record_query.engine import run_record_query
 from app.modules.retrieval.record_query.model import (
-    AllOf,
-    AnyOf,
     EntityCondition,
     LinkCondition,
-    Not,
     OrganizationCondition,
     PersonCondition,
     RecordQuery,
+    walk_conditions,
 )
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
-    from app.modules.retrieval.record_query.model import Condition, RecordQueryResult
+    from app.modules.retrieval.record_query.model import RecordQueryResult
 
 logger = logging.getLogger(__name__)
 
@@ -59,25 +57,12 @@ def field_guide() -> str:
     return "; ".join(f"{kind}: {', '.join(names)}" for kind, names in by_kind.items())
 
 
-def _walk(conditions: list[Condition]) -> list[Condition]:
-    out: list[Condition] = []
-    for cond in conditions:
-        out.append(cond)
-        if isinstance(cond, AllOf):
-            out += _walk(cond.all_of)
-        elif isinstance(cond, AnyOf):
-            out += _walk(cond.any_of)
-        elif isinstance(cond, Not):
-            out += _walk([cond.not_])
-    return out
-
-
 def _resolve_ids(query: RecordQuery, state: ChatState) -> None:
     """Ids the model copied from earlier output may be shortened; resolve them in place."""
     shortener = get_record_id_shortener_if_enabled(state)
     if shortener is None:
         return
-    for cond in _walk(query.where):
+    for cond in walk_conditions(query.where):
         if isinstance(cond, PersonCondition):
             cond.person.ids = [shortener.resolve(i) for i in cond.person.ids]
         elif isinstance(cond, OrganizationCondition):
@@ -108,7 +93,7 @@ async def execute_find_records(state: ChatState, **args: Any) -> tuple[bool, str
         query = RecordQuery.model_validate(raw)
     except ValidationError as exc:
         return False, _errors(exc)
-    conditions = _walk(query.where)
+    conditions = walk_conditions(query.where)
     by_people = any(isinstance(c, (PersonCondition, OrganizationCondition)) for c in conditions)
     if (by_people or (query.group_by and (query.group_by.organization or query.group_by.by_person
                                           or query.group_by.person_role))) and not policy.people_and_companies:

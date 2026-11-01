@@ -23255,6 +23255,44 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return [dict(row) for row in rows or [] if row.get("id")]
 
+    async def get_person_nodes(self, org_id: str, ids: list[str], *, limit: int = 200) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_person_nodes`."""
+        wanted = list(dict.fromkeys(str(i) for i in ids or [] if i))
+        if not org_id or not wanted:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        user = collection_to_label(CollectionNames.USERS.value)
+        person = collection_to_label(CollectionNames.PEOPLE.value)
+        # One index seek per label and id; the email pass reads the org's nodes
+        # only when an asked node has an email, as find_users' email lookup does.
+        rows = await self.client.execute_query(
+            f"""
+            CALL {{
+              UNWIND $ids AS pid MATCH (n:{user} {{id: pid}}) WHERE n.orgId = $org_id RETURN n
+              UNION
+              UNWIND $ids AS pid MATCH (n:{person} {{id: pid}}) WHERE n.orgId = $org_id RETURN n
+            }}
+            WITH collect(DISTINCT n) AS asked
+            WITH asked, [e IN [a IN asked | toLower(coalesce(a.email, ''))] WHERE e <> ''] AS emails
+            CALL {{
+              WITH asked UNWIND asked AS n RETURN n
+              UNION
+              WITH emails WITH emails WHERE size(emails) > 0
+              MATCH (n:{user}) WHERE n.orgId = $org_id AND toLower(n.email) IN emails RETURN n
+              UNION
+              WITH emails WITH emails WHERE size(emails) > 0
+              MATCH (n:{person}) WHERE n.orgId = $org_id AND toLower(n.email) IN emails RETURN n
+            }}
+            WITH DISTINCT n
+            RETURN n.id AS id, n.fullName AS name, n.email AS email
+            ORDER BY id
+            LIMIT $limit
+            """,
+            parameters={"org_id": org_id, "ids": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row.get("id")]
+
     async def get_entity_candidate_records(
         self,
         refs: list[dict[str, Any]],
@@ -23314,7 +23352,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   people: COLLECT {
                     MATCH (rec)-[pr:ENTITYRELATIONS]-(p:User|Person)
                     WHERE p.orgId = $org_id AND pr.edgeType IN $person_edges
-                    RETURN {role: pr.edgeType, id: p.id, name: p.fullName} LIMIT $linked_per_row
+                    RETURN {role: pr.edgeType, id: p.id, name: p.fullName, email: p.email} LIMIT $linked_per_row
                   },
                   organizations: COLLECT {
                     MATCH (rec)-[orl:ENTITYRELATIONS]->(o:Organization)

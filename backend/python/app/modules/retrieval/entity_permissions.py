@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.core.org_context import spawn_in_request
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.retrieval.person_identity import expand_person_ids, people_of
 from app.modules.retrieval.selection_scope import (
     SelectionScope,
     limits_rows,
@@ -171,6 +172,13 @@ class EntityHit:
     indexed: bool = True
     """False for a record hit whose content search cannot read yet. A graph row
     without the status key (an older provider) counts as indexed."""
+    entity_ids: tuple[str, ...] = ()
+    """Every node id of a person found as several (``person_identity``),
+    ``entity_id`` first; empty when the hit is one node."""
+
+    @property
+    def ids(self) -> tuple[str, ...]:
+        return self.entity_ids or (self.entity_id,)
 
     @property
     def graph_filter_name(self) -> str:
@@ -691,6 +699,7 @@ async def search_entities_for_user(
         if (probe.entity_type, probe.entity_id) in shown_names
     ]
     kept.sort(key=lambda h: h.score, reverse=True)
+    kept = await _one_hit_per_person(graph_provider, context, kept)
     logger.info(
         "entity search org=%s passes=[%s] evaluated=%d rounds=%d kept=%d deadline_hit=%s latency_ms=%d",
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
@@ -703,6 +712,54 @@ async def search_entities_for_user(
     if not kept and ((naming_timed_out and kept_probes) or reachable_group_undecided):
         raise EntitySearchTimedOut("Entity search timed out before naming a match the user can reach")
     return kept[:top_k]
+
+
+async def _one_hit_per_person(
+    graph_provider: "IGraphDBProvider", context: EntityAccessContext, hits: list[EntityHit],
+) -> list[EntityHit]:
+    """Person hits that are one person (``person_identity``) as one hit, in
+    the best one's place, carrying every id among them and their records.
+    Only ids already confirmed reachable are carried. When the lookup fails
+    the hits stay as they are: separate, never dropped."""
+    person_ids = [h.entity_id for h in hits if h.entity_type == PERSON_ENTITY_TYPE]
+    if len(person_ids) < 2:
+        return hits
+    try:
+        people = await people_of(graph_provider, context.org_id, person_ids)
+    except Exception:
+        logger.warning("entity search: person lookup failed org=%s; people left as found", context.org_id,
+                       exc_info=True)
+        return hits
+    person_of = {i: p.key for p in people for i in p.ids}
+    merged: dict[str, list[EntityHit]] = {}
+    out: list[EntityHit | str] = []
+    for hit in hits:
+        key = person_of.get(hit.entity_id) if hit.entity_type == PERSON_ENTITY_TYPE else None
+        if key is None:
+            out.append(hit)
+            continue
+        if key not in merged:
+            out.append(key)
+        merged.setdefault(key, []).append(hit)
+
+    def one(group: list[EntityHit]) -> EntityHit:
+        best = group[0]
+        if len(group) == 1:
+            return best
+        records = list({r["_key"]: r for h in group for r in h.records if r.get("_key")}.values())
+        return replace(
+            best,
+            entity_ids=tuple(dict.fromkeys(h.entity_id for h in group)),
+            records=records[:PREVIEW_RECORD_COUNT],
+            more_records=len(records) > PREVIEW_RECORD_COUNT or any(h.more_records for h in group),
+        )
+
+    collapsed = [one(merged[item]) if isinstance(item, str) else item for item in out]
+    logger.debug(
+        "entity search org=%s person hits=%d people=%d", context.org_id, len(person_ids),
+        sum(1 for item in out if isinstance(item, str)),
+    )
+    return collapsed
 
 
 async def readable_spellings(
@@ -950,8 +1007,16 @@ async def list_accessible_entity_records(
     An ``entity_type`` outside ``allowed_types`` is refused like an unknown one."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES or entity_type not in allowed_types:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
+    ref: dict[str, Any] = {"id": entity_id, "type": entity_type}
+    if entity_type == PERSON_ENTITY_TYPE:
+        # Every node of the person; the cursor offsets this set, which the
+        # same id resolves to again on the next page.
+        try:
+            ref["userIds"] = await expand_person_ids(graph_provider, context.org_id, [entity_id])
+        except Exception as exc:
+            raise EntityAccessError("Person lookup failed") from exc
     return await _list_ref_records(
-        graph_provider, context, {"id": entity_id, "type": entity_type},
+        graph_provider, context, ref,
         record_types=record_types, limit=limit, cursor=cursor, max_scan=max_scan,
     )
 

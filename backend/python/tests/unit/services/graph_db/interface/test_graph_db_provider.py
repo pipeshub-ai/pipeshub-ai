@@ -311,6 +311,7 @@ class TestAbstractMethodInventory:
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "find_users",
+        "get_person_nodes",
         "get_record_query_candidates",
         "get_record_people",
         "get_record_organizations",

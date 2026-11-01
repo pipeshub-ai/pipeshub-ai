@@ -19,6 +19,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.person_identity import group_people, person_key
 from app.modules.retrieval.record_fields import ROLE_EDGES, ROLE_OF_EDGE, FieldKind
 from app.modules.retrieval.record_fields import field as field_spec
 from app.modules.retrieval.record_query.model import (
@@ -181,18 +182,33 @@ def _group_keys(query: RecordQuery, row: Row) -> list[tuple[str, str]]:
         return [] if value is None else [(_iso(value)[:7],) * 2]
     if by.organization:
         return [(o["id"], o.get("name") or o["id"]) for o in row.get("organizations") or []]
-    edges = set(ROLE_EDGES[by.person_role]) if by.person_role else set(ROLE_OF_EDGE)
-    return list({(p["id"], p.get("name") or p["id"]) for p in row.get("people") or [] if p["role"] in edges})
+    return [(person_key(p.get("email"), p["id"]), "") for p in _people_in_role(by.person_role, row)]
+
+
+def _people_in_role(role: str | None, row: Row) -> list[dict[str, Any]]:
+    edges = set(ROLE_EDGES[role]) if role else set(ROLE_OF_EDGE)
+    return [p for p in row.get("people") or [] if p["role"] in edges]
 
 
 def groups(query: RecordQuery, rows: list[Row]) -> list[Group]:
-    """Top groups by count; a row with two people in the role counts for both."""
-    if query.group_by is None:
+    """Top groups by count; a row with two people in the role counts for both.
+    People group by person (``person_identity``), not by node: the key is
+    one of their ids, the label their name and email."""
+    by = query.group_by
+    if by is None:
         return []
     members: dict[tuple[str, str], list[Row]] = defaultdict(list)
     for row in rows:
-        for key in _group_keys(query, row):
+        for key in dict.fromkeys(_group_keys(query, row)):
             members[key].append(row)
+    if by.by_person or by.person_role is not None:
+        people = {
+            p.key: p for p in group_people(
+                {"id": n["id"], "name": n.get("name"), "email": n.get("email")}
+                for row in rows for n in _people_in_role(by.person_role, row)
+            )
+        }
+        members = {(people[key].ids[0], people[key].label): rows_in for (key, _), rows_in in members.items()}
     ranked = sorted(members.items(), key=lambda kv: (-len(kv[1]), kv[0][1]))[: query.top]
     out = []
     for (key, label), rows_in in ranked:

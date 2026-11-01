@@ -22063,6 +22063,42 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
         return refs_by_type
 
+    async def get_person_nodes(self, org_id: str, ids: list[str], *, limit: int = 200) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_person_nodes`."""
+        wanted = list(dict.fromkeys(str(i) for i in ids or [] if i))
+        if not org_id or not wanted:
+            return []
+        users, people = CollectionNames.USERS.value, CollectionNames.PEOPLE.value
+        rows = await self.execute_query(
+            f"""
+            LET asked = (
+                FOR pid IN @ids
+                    FOR n IN [DOCUMENT(CONCAT("{users}/", pid)), DOCUMENT(CONCAT("{people}/", pid))]
+                        FILTER n != null AND n.orgId == @org_id
+                        RETURN n
+            )
+            LET emails = UNIQUE(asked[* FILTER NOT_NULL(CURRENT.email, "") != "" RETURN LOWER(CURRENT.email)])
+            // The emails test first, so the org's nodes are read only when an
+            // asked node has an email, as find_users' email lookup reads them.
+            LET members = (
+                FOR n IN {users}
+                    FILTER LENGTH(emails) > 0 AND n.orgId == @org_id AND LOWER(n.email) IN emails
+                    RETURN n
+            )
+            LET outsiders = (
+                FOR n IN {people}
+                    FILTER LENGTH(emails) > 0 AND n.orgId == @org_id AND LOWER(n.email) IN emails
+                    RETURN n
+            )
+            FOR n IN UNION_DISTINCT(asked, members, outsiders)
+                SORT n._key
+                LIMIT @limit
+                RETURN {{id: n._key, name: n.fullName, email: n.email}}
+            """,
+            bind_vars={"org_id": org_id, "ids": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row and row.get("id")]
+
     async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.find_users`."""
         # lower(), not casefold(): the stored side is LOWER(), which keeps "ß".
@@ -22186,7 +22222,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 OR IS_SAME_COLLECTION("{CollectionNames.PEOPLE.value}", p))
                                 AND p.orgId == @org_id AND pr.edgeType IN @person_edges
                             LIMIT @linked_per_row
-                            RETURN {{role: pr.edgeType, id: p._key, name: p.fullName}}
+                            RETURN {{role: pr.edgeType, id: p._key, name: p.fullName, email: p.email}}
                     )
                     LET organizations = (
                         FOR o, orl IN 1..1 OUTBOUND r {CollectionNames.ENTITY_RELATIONS.value}

@@ -62,6 +62,19 @@ role record -> person; the providers' direction tables
 split. The eval harness (`kg_eval/facets.py`) files each connector slot under
 the role of the edge it writes, checked by a unit test.
 
+**A person is an email.** A human can be several graph nodes: one `users`
+node per account and, for someone outside the org, a `person` node that
+`record_people` writes. Nodes sharing an email (case-insensitive) are one
+person; a node without one is a person on its own
+(`app/modules/retrieval/person_identity.py`, provider
+`get_person_nodes`). The engine expands every person condition's ids to all
+nodes of those people before pushdown, inside the user's org only (an id of
+another org stays as given and matches nothing); the id `me` is the user
+asking. `group_by` person groups by person, keyed by one of their ids and
+labelled "Name (email)". `search_entities` returns one hit per person with
+`entityIds` listing the nodes it found, and `find_records_by_entity` on a
+person lists every node's records.
+
 **Unknown is never "no".** A record whose connector did not supply a field
 neither matches nor fails a condition on it: the engine counts it as
 `unknown` for that field and reports the count. A derived field is unknown
@@ -111,7 +124,7 @@ scan_cap, timeout_seconds, within)` returns `(rows, capped)`:
   are stable and a cursor is an offset.
 - Rows carry: `_key`, `recordName`, `recordType`, `connectorName`,
   `recordGroupId`, `webUrl`, created/updated timestamps, the ticket fields,
-  the deal fields, `people: [{role, id, name}]`, `organizations: [{id, name}]`.
+  the deal fields, `people: [{role, id, name, email}]`, `organizations: [{id, name}]`.
 - The query is built from fixed fragments with parameters; no caller text
   reaches Cypher or AQL.
 

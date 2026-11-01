@@ -145,6 +145,20 @@ def test_groups_rank_by_count_and_a_row_counts_for_each_person() -> None:
     assert [(g.key, g.count) for g in by_month] == [("2026-03", 3)]
 
 
+def test_people_group_as_one_person_per_email_and_once_per_row() -> None:
+    rows = [
+        _ticket("a", people=[{"role": "ASSIGNED_TO", "id": "ravi", "name": "Ravi", "email": "ravi@x.io"},
+                             {"role": "ASSIGNED_TO", "id": "ravi-2", "name": "", "email": "Ravi@X.io"}]),
+        _ticket("b", people=[{"role": "ASSIGNED_TO", "id": "ravi-2", "name": None, "email": "ravi@x.io"}]),
+        _ticket("c", people=[{"role": "ASSIGNED_TO", "id": "nomail", "name": "Nomail", "email": None},
+                             {"role": "ASSIGNED_TO", "id": "nomail-2", "name": "Nomail", "email": None}]),
+    ]
+    out = groups(q(group_by={"person_role": "assignee"}), rows)
+    assert [(g.key, g.label, g.count) for g in out] == [
+        ("ravi", "Ravi (ravi@x.io)", 2), ("nomail", "Nomail", 1), ("nomail-2", "Nomail", 1),
+    ]
+
+
 def test_a_record_without_the_grouped_field_is_in_no_group() -> None:
     rows = [_ticket("a", status="OPEN"), _ticket("b", status="OPEN"), _ticket("c", status=None)]
     assert [(g.key, g.count) for g in groups(q(group_by={"field": "status"}), rows)] == [("OPEN", 2)]

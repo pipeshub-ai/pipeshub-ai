@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+import uuid
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     admitted_node_ids,
 )
+from app.modules.retrieval.person_identity import people_of
 from app.modules.retrieval.record_query.evaluate import (
     ROLE_OF_EDGE,
     aggregate_value,
@@ -30,8 +32,10 @@ from app.modules.retrieval.record_query.evaluate import (
 from app.modules.retrieval.record_query.model import (
     MAX_DESCRIBED_VALUES,
     Group,
+    PersonCondition,
     RecordQuery,
     RecordQueryResult,
+    walk_conditions,
 )
 from app.modules.retrieval.record_query.pushdown import pushdown
 
@@ -47,6 +51,8 @@ SCAN_CAP = 20_000
 WINDOW = 500
 DEADLINE_SECONDS = 20.0
 _SERVER_GRACE_SECONDS = 2.0
+# A person id that names the user asking.
+SELF_ID = "me"
 
 
 def _connector_ids(context: EntityAccessContext, query: RecordQuery) -> list[str]:
@@ -70,6 +76,8 @@ async def run_record_query(
     connector_ids = _connector_ids(context, query)
     if not connector_ids:
         return RecordQueryResult(total=0)
+    query_id = uuid.uuid4().hex[:12]
+    query = await resolve_people(graph_provider, context, query, query_id=query_id)
     pushed = pushdown(query)
     deadline = time.monotonic() + deadline_seconds
     admitted_rows: list[Row] = []
@@ -96,10 +104,41 @@ async def run_record_query(
             break
     result = _result(query, admitted_rows, approximate=approximate)
     logger.info(
-        "record query org=%s scanned=%d admitted=%d total=%d approximate=%s",
-        context.org_id, offset, len(admitted_rows), result.total, result.approximate,
+        "record query id=%s org=%s scanned=%d admitted=%d total=%d approximate=%s",
+        query_id, context.org_id, offset, len(admitted_rows), result.total, result.approximate,
     )
     return result
+
+
+async def resolve_people(
+    graph_provider: IGraphDBProvider, context: EntityAccessContext, query: RecordQuery, *, query_id: str = "",
+) -> RecordQuery:
+    """``query`` with each person condition naming every node of the people
+    its ids name (``person_identity``), and ``me`` as the user asking. Ids
+    are resolved inside the user's org only; one the org does not hold stays
+    as given and matches nothing."""
+    if not any(isinstance(c, PersonCondition) for c in walk_conditions(query.where)):
+        return query
+    resolved = query.model_copy(deep=True)
+    conditions = [c for c in walk_conditions(resolved.where) if isinstance(c, PersonCondition)]
+
+    def named(ids: list[str]) -> list[str]:
+        return [context.user_key if i.strip().casefold() == SELF_ID else i for i in ids]
+
+    asked = list(dict.fromkeys(i for c in conditions for i in named(c.person.ids)))
+    try:
+        people = await people_of(graph_provider, context.org_id, asked)
+    except Exception as exc:
+        raise EntityAccessError("Record query failed") from exc
+    mates = {i: person.ids for person in people for i in person.ids}
+    for cond in conditions:
+        ids = named(cond.person.ids)
+        cond.person.ids = list(dict.fromkeys([*ids, *(m for i in ids for m in mates.get(i, ()))]))
+    logger.debug(
+        "record query id=%s people resolved: conditions=%d asked=%d people=%d nodes=%d",
+        query_id, len(conditions), len(asked), len(people), len(mates),
+    )
+    return resolved
 
 
 def _result(query: RecordQuery, admitted: list[Row], *, approximate: bool) -> RecordQueryResult:
@@ -149,4 +188,4 @@ def row_view(row: Row) -> dict[str, Any]:
     return {k: v for k, v in view.items() if v not in (None, "", [], {})}
 
 
-__all__ = ["DEADLINE_SECONDS", "SCAN_CAP", "WINDOW", "row_view", "run_record_query"]
+__all__ = ["DEADLINE_SECONDS", "SCAN_CAP", "SELF_ID", "WINDOW", "resolve_people", "row_view", "run_record_query"]

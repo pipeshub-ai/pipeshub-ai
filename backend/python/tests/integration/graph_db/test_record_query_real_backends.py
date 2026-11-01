@@ -129,15 +129,20 @@ SPECS: dict[str, Spec] = {
 LIVE = [name for name, s in SPECS.items() if not (s.deleted or s.placeholder or s.other_org)]
 
 # (record, person, edge type); "ann" and "bob" are members, "pete" a Person
-# node, "zed" another org's member and "xena" another org's Person.
-PEOPLE = {"ann": "user", "bob": "user", "pete": "person", "zed": "user", "xena": "person"}
-FOREIGN_PEOPLE = {"zed", "xena"}
+# node, "zed" another org's member and "xena" another org's Person. Ann is
+# three nodes of one email: "ann", a second account "ann2" and an outsider
+# node "annx"; "annz" has her email in another org.
+PEOPLE = {"ann": "user", "bob": "user", "pete": "person", "zed": "user", "xena": "person",
+          "ann2": "user", "annx": "person", "annz": "user"}
+FOREIGN_PEOPLE = {"zed", "xena", "annz"}
+ANN_NODES = ("ann", "ann2", "annx")
 RECORD_PEOPLE = [
     ("t1", "ann", "ASSIGNED_TO"), ("t1", "pete", "REPORTED_BY"), ("t1", "zed", "ASSIGNED_TO"),
     ("t2", "ann", "REPORTED_BY"), ("t2", "bob", "ASSIGNED_TO"),
     ("t3", "bob", "ASSIGNED_TO"), ("t3", "xena", "REPORTED_BY"),
     ("t4", "ann", "ASSIGNED_TO"), ("t4", "ann", "REPORTED_BY"),
-    ("d1", "ann", "OWNED_BY"), ("d2", "pete", "INVOLVED_IN"),
+    ("d1", "ann", "OWNED_BY"), ("d1", "ann2", "LAST_MODIFIED_BY"), ("d2", "pete", "INVOLVED_IN"),
+    ("t5", "annx", "REPORTED_BY"), ("t5", "annz", "ASSIGNED_TO"),
     ("deleted", "ann", "ASSIGNED_TO"), ("placeholder", "ann", "ASSIGNED_TO"), ("foreign", "ann", "ASSIGNED_TO"),
 ]
 # Written user -> record, as Slack mentions are.
@@ -149,7 +154,8 @@ RECORD_ORGS = [
     ("deleted", "acme", "FOR_ACCOUNT"),
 ]
 RECORD_LINKS = [("t3", "t1", "BLOCKS"), ("f1", "t4", "RELATED")]
-NAMES = {"ann": "Ann", "bob": "Bob", "pete": "Pete", "zed": "Zed", "xena": "Xena",
+NAMES = {"ann": "Ann", "bob": "Bob", "pete": "Pete", "zed": "Zed", "xena": "Xena", "ann2": "", "annx": "Ann X",
+         "annz": "Ann",
          "acme": "Acme", "globex": "Globex", "foreignco": "Foreign Co"}
 
 
@@ -168,6 +174,14 @@ class Graph:
 
     def gid(self, name: str) -> str:
         return f"{self.org}-g-{name}"
+
+    def email(self, person: str) -> str:
+        """Ann's nodes share one email, in two spellings of its case."""
+        if person in ("ann", "annx", "annz"):
+            return f"ann@{self.org}.test"
+        if person == "ann2":
+            return f"ANN@{self.org}.test"
+        return f"{person}@{self.org}.test" if PEOPLE[person] == "user" else f"{person}@outside.test"
 
     @property
     def connector_ids(self) -> list[str]:
@@ -208,11 +222,11 @@ async def _seed(g: Graph) -> None:
     ], C.APPS.value)
     await graph.batch_upsert_nodes([
         {"id": g.nid(n), "userId": g.nid(n), "orgId": g.other if n in FOREIGN_PEOPLE else g.org,
-         "email": f"{n}@{g.org}.test", "fullName": NAMES[n], "isActive": True}
+         "email": g.email(n), "fullName": NAMES[n], "isActive": True}
         for n, kind in PEOPLE.items() if kind == "user"
     ], C.USERS.value)
     await graph.batch_upsert_nodes([
-        Person(id=g.nid(n), org_id=g.other if n in FOREIGN_PEOPLE else g.org, email=f"{n}@outside.test",
+        Person(id=g.nid(n), org_id=g.other if n in FOREIGN_PEOPLE else g.org, email=g.email(n),
                full_name=NAMES[n]).to_arango_person()
         for n, kind in PEOPLE.items() if kind == "person"
     ], C.PEOPLE.value)
@@ -342,7 +356,7 @@ async def seeded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 def _expected_row(g: Graph, name: str) -> dict[str, Any]:
     spec = SPECS[name]
     people = [
-        {"role": t, "id": g.nid(p), "name": NAMES[p]}
+        {"role": t, "id": g.nid(p), "name": NAMES[p], "email": g.email(p)}
         for r, p, t in RECORD_PEOPLE + PEOPLE_TO_RECORD if r == name and p not in FOREIGN_PEOPLE
     ]
     orgs = [{"id": g.nid(o), "name": NAMES[o]} for r, o, _ in RECORD_ORGS if r == name and ACCOUNTS[o]]
@@ -555,11 +569,15 @@ async def test_hydration_shapes_and_missing_values(seeded: Graph) -> None:
     assert sorted((p["role"], p["name"]) for p in by_key["t1"]["people"]) == [("ASSIGNED_TO", "Ann"),
                                                                               ("REPORTED_BY", "Pete")]
     assert sorted(p["role"] for p in by_key["t4"]["people"]) == ["ASSIGNED_TO", "REPORTED_BY"]
-    assert by_key["t3"]["people"] == [{"role": "ASSIGNED_TO", "id": g.nid("bob"), "name": "Bob"}]
-    assert by_key["f1"]["people"] == [{"role": "MENTIONED_IN", "id": g.nid("bob"), "name": "Bob"}]
+    assert by_key["t3"]["people"] == [{"role": "ASSIGNED_TO", "id": g.nid("bob"), "name": "Bob",
+                                       "email": g.email("bob")}]
+    assert by_key["f1"]["people"] == [{"role": "MENTIONED_IN", "id": g.nid("bob"), "name": "Bob",
+                                       "email": g.email("bob")}]
     assert by_key["t2"]["organizations"] == [{"id": g.nid("globex"), "name": "Globex"}]
     assert by_key["t1"]["links"] == [{"id": g.rid("t3"), "relation": "BLOCKS"}]
-    assert by_key["t5"]["people"] == [] and by_key["t5"]["organizations"] == [] and by_key["t5"]["links"] == []
+    assert by_key["t5"]["people"] == [{"role": "REPORTED_BY", "id": g.nid("annx"), "name": "Ann X",
+                                       "email": g.email("annx")}]
+    assert by_key["t5"]["organizations"] == [] and by_key["t5"]["links"] == []
 
 
 async def test_windows_page_to_the_same_rows_as_one_window(seeded: Graph) -> None:
@@ -652,7 +670,9 @@ async def test_a_member_counts_sums_and_groups_only_what_they_can_read(seeded: G
     assert tickets.approximate is False
     assert {r["record_id"] for r in tickets.rows} == {g.rid(n) for n in ("t1", "t3", "t4", "t5")}
     # Bob is assignee of t2 (unreadable) and t3; Ann of t1 and t4.
-    assert {(grp.label, grp.count) for grp in tickets.groups} == {("Ann", 2), ("Bob", 1)}
+    assert {(grp.label, grp.count) for grp in tickets.groups} == {
+        (f"Ann ({g.email('ann')})", 2), (f"Bob ({g.email('bob')})", 1),
+    }
 
     deals = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
         "where": [{"field": "record_type", "in": ["deal"]}, {"organization": {"ids": [g.nid("acme")]}}],
@@ -664,5 +684,49 @@ async def test_a_member_counts_sums_and_groups_only_what_they_can_read(seeded: G
     linked = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
         "where": [{"person": {"role": "reporter", "ids": [g.nid("ann")]}}],
     }))
-    assert [r["record_id"] for r in linked.rows] == [g.rid("t4")]
-    assert linked.total == 1
+    # Ann reports t4 as herself and t5 as her outsider node.
+    assert [r["record_id"] for r in linked.rows] == [g.rid("t4"), g.rid("t5")]
+    assert linked.total == 2
+
+
+# ---------------------------------------------------------------- one person
+
+
+async def test_person_nodes_are_every_node_of_one_email_in_the_org(seeded: Graph) -> None:
+    g = seeded
+
+    async def ids(*names: str) -> list[str]:
+        return [n["id"] for n in await g.graph.get_person_nodes(g.org, [g.nid(x) for x in names])]
+
+    ann = sorted(g.nid(n) for n in ANN_NODES)
+    assert await ids("ann") == ann
+    assert await ids("ann2") == ann and await ids("annx") == ann
+    assert await ids("bob") == [g.nid("bob")]
+    assert await ids("pete") == [g.nid("pete")]
+    # Another org's node, even one with Ann's email, names no one here.
+    assert await ids("annz") == [] and await ids("zed") == []
+    assert await g.graph.get_person_nodes(g.org, ["no-such-node"]) == []
+    one = await g.graph.get_person_nodes(g.org, [g.nid("ann")])
+    assert {n["id"]: (n["name"], n["email"]) for n in one}[g.nid("annx")] == ("Ann X", g.email("annx"))
+    assert len(await g.graph.get_person_nodes(g.org, [g.nid("ann")], limit=2)) == 2
+
+
+async def test_a_person_condition_and_me_match_every_node_of_the_person(seeded: Graph) -> None:
+    g = seeded
+    for ids in ([g.nid("ann")], [g.nid("annx")], ["me"]):
+        found = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+            "where": [{"person": {"ids": ids}}], "group_by": {"by_person": True},
+        }))
+        # t2 is unreadable; t5 is Ann's as the outsider node, d1 as ann and ann2.
+        assert {r["record_id"] for r in found.rows} == {g.rid(n) for n in ("t1", "t4", "d1", "t5")}, ids
+    editor = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"person": {"role": "editor", "ids": ["me"]}}],
+    }))
+    assert [r["record_id"] for r in editor.rows] == [g.rid("d1")]
+    by_person = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"field": "record_type", "in": ["deal", "ticket"]}], "group_by": {"by_person": True},
+    }))
+    ann_groups = [grp for grp in by_person.groups if grp.label.startswith("Ann")]
+    assert [(grp.key, grp.label) for grp in ann_groups] == [(g.nid("ann"), f"Ann ({g.email('ann')})")]
+    # t1, t4, t5 and d1 are Ann's and readable; t2 is not readable.
+    assert ann_groups[0].count == 4
