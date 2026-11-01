@@ -11,7 +11,7 @@ import pytest
 
 from app.models.blocks import BlocksContainer
 from app.models.entities import EntityType
-from app.modules.named_entities import stage
+from app.modules.named_entities import extractor, stage
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.models import (
     Mention,
@@ -212,7 +212,7 @@ async def test_a_malformed_config_blob_runs_with_the_defaults(config):
     with patch(
         "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
         AsyncMock(return_value=True),
-    ), patch.object(stage, "indexing_llm", AsyncMock(side_effect=RuntimeError("no model"))):
+    ), patch.object(extractor, "indexing_llm", AsyncMock(side_effect=RuntimeError("no model"))):
         result = await sink.extract_named_entities(SimpleNamespace(record=record))
     assert (result.status, result.termination_reason) == ("SKIPPED", "empty")
 
