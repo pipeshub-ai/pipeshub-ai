@@ -6,7 +6,6 @@ synchronous PDF open or a large table walk delays every other record.
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 import os
 import threading
@@ -32,7 +31,7 @@ from app.utils.table_enrichment import TableEnrichmentResult
 from tests.support.pdf_samples import blank_pdf
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable
 
 MAX_GAP_SECONDS = 0.2
 
@@ -205,19 +204,6 @@ def _page(region: LayoutRegion) -> ParsedPageData:
 
 def _processor() -> PDFPlumberOpenCVProcessor:
     return PDFPlumberOpenCVProcessor(logging.getLogger("test-loop"), MagicMock())
-
-
-@pytest.fixture
-def frozen_heap() -> Iterator[None]:
-    """Keep a full GC pass over the suite's large heap out of the measurement.
-
-    A generation-2 collection holds the GIL for as long as the heap is big, whichever
-    thread triggers it; that is a property of the test process, not of the code under test.
-    """
-    gc.collect()
-    gc.freeze()
-    yield
-    gc.unfreeze()
 
 
 class TestTableRows:

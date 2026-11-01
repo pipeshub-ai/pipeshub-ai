@@ -162,7 +162,8 @@ class TestLinearTime:
 
     Wall-clock limits break under coverage or a loaded xdist worker, so each
     shape is timed at two sizes instead: linear work grows about 4x from n to
-    4n, quadratic work 16x.
+    4n, quadratic work 16x. Runs are timed in this thread's CPU time, so a run
+    that waits for a CPU taken by other workers does not count as slower.
     """
 
     SMALL = 250_000
@@ -181,9 +182,9 @@ class TestLinearTime:
     def _best_of_three(text: str) -> float:
         best = float("inf")
         for _ in range(3):
-            start = time.perf_counter()
+            start = time.thread_time()
             redact_secrets_in_text(text)
-            best = min(best, time.perf_counter() - start)
+            best = min(best, time.thread_time() - start)
         return best
 
     def _assert_linear(self, make: Callable[[int], str]) -> None:
