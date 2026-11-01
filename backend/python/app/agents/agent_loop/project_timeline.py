@@ -79,12 +79,14 @@ _SUBJECT_REPLY = (
     'Answer with JSON only: {"kind": "project" | "policy" | "none", "subject": "<the name the question uses for '
     'it, or a short noun phrase>", "searches": ["<up to two other short phrasings to search for it>"]}'
 )
+# Most questions are answered by one record, and a list of thirty records only distracts from it.
 _SUBJECT_PROMPT = (
-    "You are given one question about a company's internal records. Say whether it is about one project or one "
-    "policy.\n"
+    "You are given one question about a company's internal records. Say whether a good answer has to weigh many "
+    "records about one project or one policy that were written at different times.\n"
     f"{_SUBJECT_KINDS}"
-    "- none: everything else, such as one fact from one record, a person, a definition, or a count or "
-    "comparison across unrelated things.\n"
+    "- none: everything else, including a question a single record answers (one limit, setting, name, date, "
+    "owner or figure) even if that record is part of a project or policy, and questions about a person, a "
+    "definition, or a count or comparison across unrelated things.\n"
     f"{_SUBJECT_REPLY}"
 )
 

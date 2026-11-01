@@ -109,6 +109,13 @@ async def test_the_subject_call_reads_a_fenced_reply_and_reports_its_usage(monke
     assert [source for source, _usage in ledger.entries] == ["project_timeline"]
 
 
+async def test_the_subject_call_counts_a_one_record_question_as_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm = _Llm(AIMessage(content='{"kind": "none"}'))
+    _use_model(monkeypatch, llm)
+    assert await pt.detect_subject(_context(), "Who owns the reader firmware repo?") is None
+    assert "a single record answers" in llm.calls[0][0].content
+
+
 async def test_a_reply_that_is_not_json_names_no_subject(monkeypatch: pytest.MonkeyPatch) -> None:
     _use_model(monkeypatch, _Llm(AIMessage(content="It is about a project.")))
     assert await pt.detect_subject(_context(), "q") is None
