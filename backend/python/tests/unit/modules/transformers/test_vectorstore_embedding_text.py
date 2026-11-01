@@ -222,6 +222,19 @@ async def test_the_context_line_changes_the_point_id() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_the_documents_own_title_names_the_record() -> None:
+    vs, capture = _capturing_vectorstore()
+    container = BlocksContainer(
+        blocks=[_under(_text_block(0, "Body."), "Pests")], document_title="Glasshouse Rules",
+    )
+
+    await _index_record(vs, container, _record(name="upload_3c9d.html"))
+
+    assert capture.dense == ["Glasshouse Rules › Pests\nBody."]
+
+
+@pytest.mark.asyncio
 async def test_switched_off_text_with_headings_embeds_as_before(monkeypatch) -> None:
     monkeypatch.delenv("INDEXING_SECTION_PATHS", raising=False)
     vs, capture = _capturing_vectorstore()

@@ -584,8 +584,12 @@ def _stored_metadata(metadata: dict) -> dict:
     return {k: v for k, v in metadata.items() if k not in (_SPARSE_EXTRA, _EMBED_CONTEXT)}
 
 
-def _record_title(record: Optional["Record"]) -> str:
-    """The record's name as a title: a stored file name loses its extension."""
+def _record_title(record: Optional["Record"], block_containers: BlocksContainer) -> str:
+    """The title the document gives itself, else the record's name; a stored
+    file name loses its extension."""
+    document_title = getattr(block_containers, "document_title", None)
+    if isinstance(document_title, str) and document_title.strip():
+        return document_title.strip()
     name = getattr(record, "record_name", None) if record is not None else None
     name = name.strip() if isinstance(name, str) else ""
     extension = getattr(record, "extension", None)
@@ -880,7 +884,9 @@ class VectorStore(Transformer):
         is_reconciliation = False
         # A changed row's heading may be an unchanged block left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
-        record_title = _record_title(record) if section_paths_enabled() else None
+        record_title = (
+            _record_title(record, block_containers) if section_paths_enabled() else None
+        )
 
         if (
             ctx.reconciliation_context
@@ -1915,7 +1921,7 @@ class VectorStore(Transformer):
         if not section_paths_enabled():
             record_title = None
         elif record_title is None:
-            record_title = _record_title(record)
+            record_title = _record_title(record, block_containers)
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:

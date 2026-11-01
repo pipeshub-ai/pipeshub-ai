@@ -618,6 +618,31 @@ def _encode_link_destinations_on_tree(root: LexborNode) -> None:
                 node.attrs[attr] = encoded
 
 
+_MAX_DOCUMENT_TITLE_CHARS = 200
+
+
+def _document_title(parser: LexborHTMLParser) -> str:
+    """The title a page gives itself: ``og:title``, then ``<title>``, then the first ``<h1>``.
+
+    ``og:title`` comes first because it is the bare title, where ``<title>``
+    usually carries a " - Site name" suffix.
+    """
+    candidates: list[str] = []
+    for meta in parser.css("meta"):
+        attrs = meta.attributes or {}
+        if (attrs.get("property") or attrs.get("name") or "").strip().lower() == "og:title":
+            candidates.append(attrs.get("content") or "")
+    for selector in ("head > title", "h1"):
+        node = parser.css_first(selector)
+        if node is not None:
+            candidates.append(_node_text(node))
+    for candidate in candidates:
+        title = " ".join(candidate.split())
+        if title:
+            return title[:_MAX_DOCUMENT_TITLE_CHARS]
+    return ""
+
+
 # Set by ``SelectolaxHtmlParser.extract_and_replace_images``, which rewrites
 # ``alt`` to a lookup key for the downloaded image; this keeps the author's alt.
 ORIGINAL_ALT_ATTR = "data-ph-alt"
@@ -1511,7 +1536,10 @@ class HtmlToBlocksConverter:
             original_alts=_original_alts(root),
             figure_captions=figure_captions,
         )
-        return walker.walk(root)
+        container = walker.walk(root)
+        if walker.section_openers is not None:
+            container.document_title = _document_title(parser) or None
+        return container
 
 
 # ---------------------------------------------------------------------------
