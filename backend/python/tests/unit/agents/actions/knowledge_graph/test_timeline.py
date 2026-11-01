@@ -745,6 +745,19 @@ class TestTheSearchToolOverAWideSpan:
         assert result == "ranked"
 
     @pytest.mark.asyncio
+    async def test_a_search_that_asks_for_exact_text_stays_ranked(self) -> None:
+        """A timeline runs no exact-text pass, so it would ignore the request."""
+        corpus = _Corpus(_THREE_MONTHS)
+
+        result, ranked = await _run_search(
+            corpus, created_after="2026-03-01", created_before="2026-05-31", exact_match=True,
+        )
+
+        assert result == "ranked"
+        assert ranked.await_args.kwargs["exact_match"] is True
+        assert corpus.calls == []
+
+    @pytest.mark.asyncio
     async def test_switched_off_it_stays_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
         corpus = _Corpus(_THREE_MONTHS)
