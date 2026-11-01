@@ -15,6 +15,15 @@ class ReconciliationContext(BaseModel):
 #: indexed with an extractionStatus that looks final, and a duplicate would copy it.
 ENRICHMENT_FOLLOWS = "enrichment_follows"
 
+#: ``TransformContext.settings`` key, set by the indexed write in place of
+#: ``ENRICHMENT_FOLLOWS`` when classification waits for the record's first use:
+#: extraction is marked NOT_STARTED and the classify stage is not dispatched.
+ENRICHMENT_DEFERRED = "enrichment_deferred"
+
+#: Record field written with that NOT_STARTED, so a hand-off lost to a crash is
+#: told apart from a cut-short enrichment or an older record, which are final.
+EXTRACTION_DEFERRED_FIELD = "extractionDeferred"
+
 #: ``TransformContext.settings`` key: seconds the image-description pass may
 #: take before the remaining images are stored undescribed. Unset means no limit.
 IMAGE_DESCRIPTION_BUDGET_S = "image_description_budget_s"

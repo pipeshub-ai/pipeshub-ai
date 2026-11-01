@@ -1199,7 +1199,7 @@ class TestGetLinkedRecords:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"id": "r2", "name": "Linked"}, {"id": "r3", "name": "Hidden"}]
+            side_effect=[[{"id": "r2", "name": "Linked"}, {"id": "r3", "name": "Hidden"}], []]
         )
         connected_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"r2"})))
         result = await connected_provider.get_linked_records("r1", "org1", "u1", ["RELATED"])

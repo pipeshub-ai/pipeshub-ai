@@ -2404,6 +2404,7 @@
         "developerSettings": "개발자 설정",
         "oauth2": "OAuth 2.0 앱",
         "personalAccessTokens": "개인 액세스 토큰",
+        "apiDocumentation": "API 문서",
         "profile": "프로필",
         "yourConnectors": "내 개인 커넥터",
         "yourActions": "내 액션",

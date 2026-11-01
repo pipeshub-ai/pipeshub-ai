@@ -10,8 +10,10 @@
 import type {
   Document,
   DocumentVersion,
+  FingerprintState,
   StorageVendor,
 } from '../../../modules/storage/types/storage.service.types';
+import { ServiceUnavailableError } from '../../errors/http.errors';
 
 export type DocumentRow = Document;
 
@@ -77,6 +79,20 @@ export interface ArtifactFence {
 export interface IdempotencyClaim {
   key: string;
   fingerprint: string;
+}
+
+/** The store's own clock could not be read: a write is refused before any byte, a read answers "not trusted". */
+export class ServerClockUnavailable extends ServiceUnavailableError {
+  constructor() {
+    super('The storage clock is unavailable; try again');
+  }
+}
+
+/** Another writer holds the last free slot of a document: nothing was written. */
+export class DocumentBusy extends ServiceUnavailableError {
+  constructor() {
+    super('The document is busy; try again');
+  }
 }
 
 export interface DocumentRepository {
@@ -265,4 +281,63 @@ export interface DocumentRepository {
     scope: ConnectorScope,
   ): AsyncIterable<{ _id: string; documentPath?: string }>;
   deleteByConnector(orgId: string, scope: ConnectorScope): Promise<number>;
+
+  /**
+   * Write state (STOR-FP). `beginWrite`, `renewWrite`, `endWrite` and `bumpSeq` never take part in a caller's unit of work:
+   * they commit on their own, so a token is visible to every reader at once and survives a rollback of the caller. Time is
+   * the store's clock, never the pod's.
+   *
+   * Registers a writer (a random `token`, alive for `windowMs`) and bumps the sequence, in one atomic write. Expired tokens of
+   * others are pruned; live ones are kept. Null when the row is gone; throws `DocumentBusy` when 64 writers are in flight and
+   * `ServerClockUnavailable` when the clock cannot be read.
+   */
+  beginWrite(
+    orgId: string,
+    id: string,
+    token: string,
+    windowMs: number,
+  ): Promise<{ writeSeq: number } | null>;
+  /** Heartbeat: extends this token (never shortens it, never brings back one that ended). Does not change the sequence. */
+  renewWrite(
+    orgId: string,
+    id: string,
+    token: string,
+    windowMs: number,
+  ): Promise<void>;
+  /** Removes this token only and bumps the sequence. Idempotent per token; a missing row is not an error. */
+  endWrite(orgId: string, id: string, token: string): Promise<void>;
+  /** One atomic increment of the sequence. Null when the row is gone. */
+  bumpSeq(orgId: string, id: string): Promise<{ writeSeq: number } | null>;
+  /**
+   * Completes an unfinished direct upload: clears the flag, stores the size the object really has and bumps the sequence.
+   * True for the one caller that did it.
+   */
+  adoptDirectUpload(orgId: string, id: string, size: number): Promise<boolean>;
+  /** Compare-and-set of `sizeInBytes` (no sequence change). */
+  correctSize(
+    orgId: string,
+    id: string,
+    from: number | null | undefined,
+    to: number,
+  ): Promise<void>;
+  /** A direct-upload link was issued: path, flag, vendor URL and the sequence move in one write. Null when the row is gone. */
+  markAwaitingDirectUpload(
+    orgId: string,
+    id: string,
+    patch: DocumentPatch,
+  ): Promise<{ row: DocumentRow; writeSeq: number } | null>;
+  /**
+   * The row and its write state from one read (the row carries none of the state), with the store's clock taken BEFORE the
+   * row was read (`serverNow`, epoch ms): a later clock could only call a live token expired.
+   */
+  getWithFingerprintState(
+    orgId: string,
+    id: string,
+  ): Promise<
+    ({ row: DocumentRow; serverNow: number } & FingerprintState) | null
+  >;
+  /** Only the write state (the re-read of a verified pass). */
+  peekWriteState(orgId: string, id: string): Promise<FingerprintState | null>;
+  /** The store's clock in epoch ms. Throws `ServerClockUnavailable`. */
+  serverClockMs(): Promise<number>;
 }

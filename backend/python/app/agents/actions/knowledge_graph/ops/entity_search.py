@@ -35,10 +35,12 @@ from app.agents.agent_loop.protocol.run_usage import (
     llm_usage_reporter,
 )
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.config import load_named_entity_config
 from app.modules.named_entities.domain.kinds import kind_family
 from app.modules.named_entities.linking.candidates import (
     MAX_CANDIDATES,
     CandidateFinder,
+    CandidateSource,
 )
 from app.modules.named_entities.linking.mentions import parse_mentions
 from app.modules.named_entities.linking.records import (
@@ -122,9 +124,11 @@ async def execute_search_by_entities(
         return False, LOOKUP_FAILED_MSG
     started = time.monotonic()
     try:
-        context = await load_entity_access_context(state)
+        context, config = await asyncio.gather(
+            load_entity_access_context(state), load_named_entity_config(state.get("config_service")),
+        )
         linker = EntityLinker(
-            CandidateFinder(graph, context, dense=_dense_search(state, graph, context)),
+            CandidateFinder(graph, context, dense=_dense_search(state, graph, context), aliases=config.link_aliases),
             _verifier(state),
             graph,
             context.org_id,
@@ -322,7 +326,9 @@ def _more_related(result: LinkResult) -> str:
 
 
 def _entity(candidate: Candidate, names: dict[str, str]) -> str:
-    return f"{_trunc(names.get(candidate.entity_id, candidate.name))} ({candidate.kind or 'entity'})"
+    # A learned short form or full form of the name asked: the same thing written another way.
+    alias = ", same entity by a learned alias" if candidate.source is CandidateSource.ALIAS else ""
+    return f"{_trunc(names.get(candidate.entity_id, candidate.name))} ({candidate.kind or 'entity'}{alias})"
 
 
 def _entities(candidates: list[Candidate], names: dict[str, str]) -> str:

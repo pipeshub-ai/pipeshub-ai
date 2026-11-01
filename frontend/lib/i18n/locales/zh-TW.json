@@ -2404,6 +2404,7 @@
         "developerSettings": "開發人員設定",
         "oauth2": "OAuth 2.0 應用程式",
         "personalAccessTokens": "個人存取權杖",
+        "apiDocumentation": "API 文件",
         "profile": "個人資料",
         "yourConnectors": "您的個人連接器",
         "yourActions": "您的動作",

@@ -130,7 +130,8 @@ async def test_unreadable_records_are_never_named(env: AsyncMock) -> None:
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
     assert ok and _listed(body) == ["r001", "r005"]
     assert re.findall(r"doc-(r\d+)", body) == ["r001", "r005"]
-    graph.get_records_by_record_ids.assert_awaited_once_with(["r001", "r005"], "org")
+    # Loaded to list and again to cite, only ever for the readable ones.
+    assert {tuple(call.args[0]) for call in graph.get_records_by_record_ids.await_args_list} == {("r001", "r005")}
 
 
 async def test_record_types_are_kept_before_any_permission_check(env: AsyncMock) -> None:
@@ -331,3 +332,81 @@ async def test_a_turn_with_no_sources_and_none_named_just_matches_nothing(env: A
     env.return_value = _context(app_level_app_ids=frozenset())
     ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(3))), kinds=["date"])
     assert (ok, body) == (True, values.NO_MATCH_MSG)
+
+
+# --- the listed records can be cited ---------------------------------------------------
+
+async def test_a_citation_states_a_name_the_record_matched_beside_its_values(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cite = AsyncMock(return_value={})
+    monkeypatch.setattr(values, "cite_listed_records", cite)
+    graph = _graph(_rows(1))
+    graph.get_named_entity_values_in_records = AsyncMock(return_value={"r000": ["USD 1,250,000"]})
+    await values.execute_find_records_by_value(_state(graph), name="acme", amount_min=1_000_000)
+    assert cite.await_args.args[3]["r000"].startswith('matched name="acme", amount_min=1000000 · extracted values: USD 1,250,000')
+
+
+async def test_listed_records_are_citable_for_the_values_they_matched(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.agents.actions.knowledge_graph import listing_citations
+    from app.utils.citations import (
+        RECORD_PAGE_LISTED_FACTS,
+        normalize_citations_and_chunks,
+    )
+
+    monkeypatch.setattr(listing_citations, "resolve_frontend_url", AsyncMock(return_value="https://ph.example"))
+    graph = _graph(_rows(2))
+    graph.get_named_entity_values_in_records = AsyncMock(return_value={"r000": ["USD 1,686,400"]})
+    state = _state(graph)
+
+    ok, body = await values.execute_find_records_by_value(state, amount_min=1_000_000, currency="USD")
+
+    assert ok and body.count("Cite a fact this listing states") == 1
+    refs = re.findall(r"cite=(\S+)", body)
+    assert len(refs) == 2
+    answers = (
+        f"Sales forecast Q1 states USD 1,686,400 [source]({refs[0]}).",
+        # A bare link to the record's page is resolved the same way.
+        "Sales forecast Q1 states USD 1,686,400 [doc](https://ph.example/record/r000).",
+    )
+    for answer in answers:
+        _, citations = normalize_citations_and_chunks(
+            answer, [], state["tool_records"], ref_to_url=state["citation_ref_mapper"].ref_to_url,
+        )
+        assert len(citations) == 1
+        assert citations[0]["metadata"]["blockType"] == RECORD_PAGE_LISTED_FACTS
+        assert citations[0]["content"].startswith(
+            'matched amount_min=1000000, currency="USD" · extracted values: USD 1,686,400',
+        )
+
+
+async def test_without_its_matched_values_a_citation_still_states_the_filter_matched(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cite = AsyncMock(return_value={})
+    monkeypatch.setattr(values, "cite_listed_records", cite)
+    graph = _graph(_rows(1))
+    graph.get_named_entity_values_in_records = AsyncMock(side_effect=RuntimeError("values lookup down"))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), amount_min=1_000_000, currency="USD")
+    assert ok and cite.await_args.args[3]["r000"].startswith('matched amount_min=1000000, currency="USD"')
+
+
+async def test_a_listing_whose_records_cannot_be_cited_is_shown_as_before(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    graph.get_records_by_record_ids = AsyncMock(side_effect=[
+        [{"_key": "r000", "recordName": "doc-r000", "recordType": "FILE", "connectorId": APP}],
+        RuntimeError("records store down"),
+    ])
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=1)
+    assert ok and _listed(body) == ["r000"] and "cite=" not in body and "Cite a fact" not in body
+
+
+async def test_a_zero_date_bound_is_neither_applied_nor_stated(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A strict tool schema sends every parameter, so an unused bound arrives as 0.
+    cite = AsyncMock(return_value={})
+    monkeypatch.setattr(values, "cite_listed_records", cite)
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), date_from=1_700_000_000_000, date_to=0)
+    assert ok and "date_to" not in body.splitlines()[0]
+    assert "date_to" not in cite.await_args.args[3]["r000"]

@@ -12,12 +12,13 @@ import time
 from typing import TYPE_CHECKING
 
 from app.modules.entity_resolution.models import ResolutionMode
+from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.config import load_named_entity_config
-from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.named_entities.domain.models import NamedEntityExtraction, model_failed
 from app.modules.named_entities.extractor import (
     NamedEntityExtractor,
     NamedEntityRequest,
-    indexing_llm,
+    indexing_llm_or_none,
 )
 from app.modules.named_entities.graph_writer import (
     NamedEntityGraphWriter,
@@ -55,14 +56,14 @@ REEXTRACT_MAX_WINDOWS = 50
 
 def needs_reextract(extraction: NamedEntityExtraction) -> bool:
     """A written extraction that left text unread: the call budget ran out, or
-    the agent stopped with blocks it had not read. Failed calls are not a reason:
-    a re-extraction would fail the same way, and the last good entities stay."""
+    the agent stopped with blocks it had not read. A failed call is not one of
+    these: the entities stage retries the whole record (``model_failed``)."""
     stats = extraction.stats
-    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS:
+    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS or model_failed(extraction):
         return False
     if stats.windows_total > stats.windows_run:
         return True
-    return extraction.strategy == "agent" and extraction.termination_reason != "llm_error"
+    return extraction.strategy == "agent"
 
 
 async def extract_named_entities(
@@ -97,14 +98,9 @@ async def extract_named_entities(
             enabled_kinds=[kind.value for kind in config.enabled()],
             budgets=budgets.model_dump(),
         )
-    llm = transport = None
-    provider = model = "indexing"
-    try:
-        llm, transport, provider, model = await indexing_llm(
-            config_service, org_id=record.org_id, shard_key=record.record_name or "",
-        )
-    except Exception:
-        logger.warning("Named-entity model unavailable; keeping deterministic spans")
+    llm, transport, provider, model, kinds = await indexing_llm_or_none(
+        config_service, config.enabled(), org_id=record.org_id, shard_key=record.record_name or "",
+    )
     request = NamedEntityRequest(
         blocks=blocks,
         org_id=record.org_id,
@@ -112,7 +108,7 @@ async def extract_named_entities(
         record_type=getattr(record.record_type, "value", "") or "",
         reference_time_ms=_reference_ms(record),
         tz=config.tz,
-        enabled=config.enabled(),
+        enabled=kinds,
         budgets=budgets,
         llm=llm,
         transport=transport,
@@ -171,7 +167,10 @@ async def persist_named_entities(
             outcome = "failed"
             return "kept"
         resolver = NamedEntityResolver(graph_provider, llm=llm, mode=ResolutionMode.SHADOW)
-        resolved = await resolver.resolve(record.org_id, extraction.entities)
+        # A kept extraction from before a fold rule folds now, so writing it again
+        # (a reprojection, a persist retry) learns the short forms as aliases.
+        entities = link_short_forms([entity.model_copy(deep=True) for entity in extraction.entities])
+        resolved = await resolver.resolve(record.org_id, entities)
         embeddable = await writer.write(record.org_id, record.id, resolved, retry_due=retry_due)
         if entity_vector_store and embeddable:
             await entity_vector_store.upsert_entities_batch(embeddable)

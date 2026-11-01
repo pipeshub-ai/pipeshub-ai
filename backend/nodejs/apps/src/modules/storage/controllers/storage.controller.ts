@@ -71,6 +71,8 @@ import {
   writeToStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
+import { withWriteWindow } from './storage.write-window';
+import { readDocumentWithFingerprint } from './storage.fingerprint';
 import { scopedStorageServiceJwtGenerator } from '../../../libs/utils/createJwt';
 import { storedServiceEndpoint } from '../utils/service-endpoint';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
@@ -212,6 +214,14 @@ export class StorageController {
     private keyValueStoreService: KeyValueStoreService,
     private readonly scopedJwtSecret: string,
   ) {}
+
+  /**
+   * Test seam of the interleaving tests (tests/stores/storage-fingerprint.itest.ts): awaited at the named points of a verified
+   * read. Never set in production.
+   */
+  fingerprintTestPoint?: (
+    name: 'R:afterRow' | 'R:afterStat' | 'R:afterReread',
+  ) => Promise<void>;
 
   async getStorageConfig(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
@@ -508,17 +518,38 @@ export class StorageController {
       if (!documentId) {
         throw new BadRequestError(' document id is not passed ');
       }
-      const orgId = extractOrgId(req);
-      const doc = await getDocumentRepository().get(
-        requireId(orgId, 'organization'),
+      const orgId = requireId(extractOrgId(req), 'organization');
+      const verify = req.query.verify === '1' || req.query.verify === 'true';
+      // Always revalidated: the fingerprint is only worth anything fresh.
+      res.setHeader('Cache-Control', 'no-store');
+      const repo = getDocumentRepository();
+      // The object store is asked only for a verified read; the adapter is built only then.
+      const adapter = verify
+        ? await this.initializeStorageAdapter(req)
+        : undefined;
+      const read = await readDocumentWithFingerprint(
+        {
+          repo,
+          stat: (document) => {
+            if (!adapter) return Promise.resolve(null);
+            return adapter.statObject(document);
+          },
+          logger: this.logger,
+          point: this.fingerprintTestPoint,
+        },
+        orgId,
         documentId,
+        verify,
       );
 
-      if (!doc) {
+      if (!read) {
         throw new NotFoundError('Document not found');
       }
 
-      res.status(HTTP_STATUS.OK).json(doc);
+      res.status(HTTP_STATUS.OK).json({
+        ...read.document,
+        storageFingerprint: read.storageFingerprint,
+      });
     } catch (error) {
       next(error);
     }
@@ -1322,7 +1353,24 @@ export class StorageController {
         );
       }
       if (exists) {
-        await repo.clearAwaitingDirectUpload(orgId, document._id);
+        // The upload completed: record the size it really has (the same adoption a verified read does), then refuse the abort.
+        let adopted = false;
+        try {
+          const stat = await adapter.statObject(document);
+          if (stat) {
+            await repo.adoptDirectUpload(orgId, document._id, stat.size);
+            adopted = true;
+          }
+        } catch (error) {
+          this.logger.warn('Could not stat an arrived direct upload', {
+            documentId: document._id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (!adopted) {
+          await repo.clearAwaitingDirectUpload(orgId, document._id);
+          await repo.bumpSeq(orgId, document._id);
+        }
         throw new ConflictError(
           'The file arrived in storage; the document was kept',
         );
@@ -2103,7 +2151,10 @@ export class StorageController {
       );
 
       if (document.storageVendor === StorageVendor.Local) {
-        serveFileFromLocalStorage(document, res, resolvedVersion);
+        // Local files are bound to the identity the caller verified (`ifMatch`): S3 and Azure callers send `If-Match` themselves.
+        const ifMatch =
+          typeof req.query.ifMatch === 'string' ? req.query.ifMatch : undefined;
+        serveFileFromLocalStorage(document, res, resolvedVersion, ifMatch);
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }
@@ -2186,31 +2237,34 @@ export class StorageController {
       }
 
       const adapter = await this.initializeStorageAdapterForWrite(req);
-      let uploadResult: StorageServiceResponse<string>;
-      try {
-        uploadResult = await adapter.updateBuffer(buffer, document);
-      } catch (error) {
-        this.logger.error('Failed to upload buffer', {
-          documentId: document._id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
-      }
+      // The bytes and the save of the row run in one writer window: a reader never trusts the fingerprint while they may change.
+      const uploadData = await withWriteWindow(document, async () => {
+        let uploadResult: StorageServiceResponse<string>;
+        try {
+          uploadResult = await adapter.updateBuffer(buffer, document);
+        } catch (error) {
+          this.logger.error('Failed to upload buffer', {
+            documentId: document._id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        }
 
-      if (uploadResult.statusCode === 200) {
+        if (uploadResult.statusCode !== 200) {
+          this.logger.error('Failed to upload buffer', {
+            documentId: document._id,
+            statusCode: uploadResult.statusCode,
+            error: uploadResult.msg,
+          });
+          throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        }
         await this.saveDocument(document, {
           mutationCount: (document.mutationCount ?? 0) + 1,
           sizeInBytes: size,
         });
-        res.status(200).json(uploadResult.data);
-      } else {
-        this.logger.error('Failed to upload buffer', {
-          documentId: document._id,
-          statusCode: uploadResult.statusCode,
-          error: uploadResult.msg,
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
-      }
+        return uploadResult.data;
+      });
+      res.status(200).json(uploadData);
     } catch (error) {
       next(error);
     }
@@ -2274,7 +2328,7 @@ export class StorageController {
         addedVersions.push(version);
       };
 
-      if (document.isVersionedFile === false) {
+      if (!document.isVersionedFile) {
         throw new BadRequestError('This document cannot be versioned');
       }
 
@@ -2374,7 +2428,7 @@ export class StorageController {
         ));
 
         // If current document was modified since last version, save it as a new version first
-        if (isDocumentChanged === true) {
+        if (isDocumentChanged) {
           const versionToSave = document.versionHistory?.length ?? 0;
           const versionFilePath = getVersionFilePath(
             basePath,
@@ -2459,59 +2513,62 @@ export class StorageController {
         isVersioned: document.isVersionedFile,
       };
 
-      // The version file first, then the current file. Written together, a
-      // failed version write could still replace the current file while the
-      // document keeps describing the previous one.
-      const logContext = { documentId: document._id };
-      const versionResponse = await writeToStorage(
-        adapter,
-        nextVersionPayload,
-        logContext,
-      );
-      const currentResponse = await writeToStorage(
-        adapter,
-        currentPayload,
-        logContext,
-      );
+      // The writes of the new bytes and the save of the row run in one writer window.
+      const saved = await withWriteWindow(document, async () => {
+        // The version file first, then the current file. Written together, a
+        // failed version write could still replace the current file while the
+        // document keeps describing the previous one.
+        const logContext = { documentId: document._id };
+        const versionResponse = await writeToStorage(
+          adapter,
+          nextVersionPayload,
+          logContext,
+        );
+        const currentResponse = await writeToStorage(
+          adapter,
+          currentPayload,
+          logContext,
+        );
 
-      const fileExtension = path.extname(originalname);
+        const fileExtension = path.extname(originalname);
 
-      // Update document metadata
-      document.mutationCount = (document.mutationCount ?? 0) + 1;
-      document.sizeInBytes = size;
+        // Update document metadata
+        document.mutationCount = (document.mutationCount ?? 0) + 1;
+        document.sizeInBytes = size;
 
-      addVersion({
-        version: nextVersion,
-        [document.storageVendor]: {
-          url: versionResponse?.data,
-        },
-        size: size,
-        mutationCount: document.mutationCount,
-        extension: fileExtension,
-        note: nextVersionNote,
-        initiatedByUserId,
-        createdAt: Date.now(),
-      });
-      const storageUrl: Pick<Document, 's3' | 'azureBlob'> = {};
-      if (storageType === StorageVendor.S3 && currentResponse?.data) {
-        storageUrl.s3 = { url: currentResponse.data };
-      } else if (
-        storageType === StorageVendor.AzureBlob &&
-        currentResponse?.data
-      ) {
-        storageUrl.azureBlob = { url: currentResponse.data };
-      }
-
-      // Single save at the end
-      const saved = await this.saveDocument(
-        document,
-        {
+        addVersion({
+          version: nextVersion,
+          [document.storageVendor]: {
+            url: versionResponse?.data,
+          },
+          size: size,
           mutationCount: document.mutationCount,
-          sizeInBytes: document.sizeInBytes,
-          ...storageUrl,
-        },
-        addedVersions,
-      );
+          extension: fileExtension,
+          note: nextVersionNote,
+          initiatedByUserId,
+          createdAt: Date.now(),
+        });
+        const storageUrl: Pick<Document, 's3' | 'azureBlob'> = {};
+        if (storageType === StorageVendor.S3 && currentResponse?.data) {
+          storageUrl.s3 = { url: currentResponse.data };
+        } else if (
+          storageType === StorageVendor.AzureBlob &&
+          currentResponse?.data
+        ) {
+          storageUrl.azureBlob = { url: currentResponse.data };
+        }
+
+        // Single save at the end
+        return await this.saveDocument(
+          document,
+          {
+            mutationCount: document.mutationCount,
+            sizeInBytes: document.sizeInBytes,
+            ...storageUrl,
+          },
+          addedVersions,
+        );
+      });
 
       res.status(HTTP_STATUS.OK).json(saved);
     } catch (error) {
@@ -2588,67 +2645,72 @@ export class StorageController {
         throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
       }
 
-      const currentFileResponse = await this.cloneDocument(
-        document,
-        bufferResult.data as Buffer,
-        getCurrentFilePath(basePath, document.documentName ?? '', ext, true),
-        next,
-        adapter,
-      );
-
-      if (!currentFileResponse) {
-        throw new InternalServerError(
-          'Some error occurred while cloning document',
-        );
-      }
-
-      const nextVersion = document.versionHistory
-        ? document.versionHistory.length
-        : 0;
-      const newDocumentFilePath = getVersionFilePath(
-        basePath,
-        nextVersion,
-        ext,
-      );
-      const response = await this.cloneDocument(
-        document,
-        bufferResult.data as Buffer,
-        newDocumentFilePath,
-        next,
-        adapter,
-      );
-
-      if (!response) {
-        throw new InternalServerError(
-          'Some error occurred while cloning document',
-        );
-      }
-
+      // Checked before any byte is written: a failure here must not leave changed bytes behind an unchanged row.
       if (!isValidStorageVendor(document.storageVendor)) {
         throw new BadRequestError(
           `Invalid storage type: ${document.storageVendor}`,
         );
       }
-      const mutationCount = (document.mutationCount ?? 0) + 1;
-      const restoredSize = document.versionHistory?.[versionNum]?.size;
-      const saved = await this.saveDocument(
-        document,
-        { mutationCount, sizeInBytes: restoredSize },
-        [
-          {
-            version: nextVersion,
-            [document.storageVendor]: {
-              url: response?.data,
+
+      // Cloning the version over the current file changes the document's bytes: the clones and the save run in one writer window.
+      const saved = await withWriteWindow(document, async () => {
+        const currentFileResponse = await this.cloneDocument(
+          document,
+          bufferResult.data as Buffer,
+          getCurrentFilePath(basePath, document.documentName ?? '', ext, true),
+          next,
+          adapter,
+        );
+
+        if (!currentFileResponse) {
+          throw new InternalServerError(
+            'Some error occurred while cloning document',
+          );
+        }
+
+        const nextVersion = document.versionHistory
+          ? document.versionHistory.length
+          : 0;
+        const newDocumentFilePath = getVersionFilePath(
+          basePath,
+          nextVersion,
+          ext,
+        );
+        const response = await this.cloneDocument(
+          document,
+          bufferResult.data as Buffer,
+          newDocumentFilePath,
+          next,
+          adapter,
+        );
+
+        if (!response) {
+          throw new InternalServerError(
+            'Some error occurred while cloning document',
+          );
+        }
+
+        const mutationCount = (document.mutationCount ?? 0) + 1;
+        const restoredSize = document.versionHistory?.[versionNum]?.size;
+        return await this.saveDocument(
+          document,
+          { mutationCount, sizeInBytes: restoredSize },
+          [
+            {
+              version: nextVersion,
+              [document.storageVendor]: {
+                url: response?.data,
+              },
+              mutationCount,
+              extension: document.extension,
+              note: note,
+              size: restoredSize,
+              initiatedByUserId,
+              createdAt: Date.now(),
             },
-            mutationCount,
-            extension: document.extension,
-            note: note,
-            size: restoredSize,
-            initiatedByUserId,
-            createdAt: Date.now(),
-          },
-        ],
-      );
+          ],
+        );
+      });
 
       res.status(HTTP_STATUS.OK).json(saved);
     } catch (error) {
@@ -2725,6 +2787,24 @@ export class StorageController {
         };
       }
 
+      // The link can change this document's bytes at any time within its life, with no event the server sees: the sequence moves
+      // at issue, before the link leaves (nothing is handed out if it cannot).
+      let bumped: { writeSeq: number } | null;
+      try {
+        bumped = await getDocumentRepository().bumpSeq(
+          requireId(orgId, 'organization'),
+          document._id,
+        );
+      } catch (error) {
+        this.logger.error('Could not record a direct-upload link', {
+          documentId: document._id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      }
+      if (!bumped) {
+        throw new NotFoundError('Document does not exist');
+      }
       await this.saveDocument(document, storageUrl);
       res.status(HTTP_STATUS.OK).json({
         signedUrl: presignedUrlResponse.data?.url,
@@ -2771,9 +2851,9 @@ export class StorageController {
         adapter,
       ));
 
-      if (isDocumentChanged === true) {
+      if (isDocumentChanged) {
         res.status(HTTP_STATUS.OK).json(true);
-      } else if (isDocumentChanged === false) {
+      } else if (!isDocumentChanged) {
         res.status(HTTP_STATUS.OK).json(false);
       } else {
         throw new InternalServerError(

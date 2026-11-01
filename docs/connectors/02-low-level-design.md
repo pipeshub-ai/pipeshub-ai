@@ -218,6 +218,7 @@ Retry on deadlock: the write methods are wrapped in `@retry_on_deadlock()` (`con
 How `on_new_records` decides between insert and update:
 
 - It matches on `(connector_id, external_record_id)`. A match is updated in place and keeps its PipesHub id.
+- The match is a lookup and then an insert, and nothing in the graph keeps one record per external id. So when two paths can create the same record at once, such as the sync and `stream_record` creating a child the parent links to, give a record you create the id `new_record_id(connector_id, external_record_id)` (`connectors/utils/record_ids.py`) on every one of those paths, never `uuid4()`. With random ids both writers insert, and the next full sync unlinks the copy its lookup did not return.
 - A changed `external_revision_id` re-queues the record for indexing, and bumps `version` if you left it at `0`. On an already indexed record this happens even when you set `AUTO_INDEX_OFF`.
 - An unchanged record that is already indexed (`COMPLETED`) is not re-queued, so re-sending unchanged records in a full sync is cheap. An unchanged record not yet indexed is re-published as `newRecord`; `on_new_records` never sends `updateRecord`.
 - A missing `weburl` or source timestamp is carried over from the stored record.

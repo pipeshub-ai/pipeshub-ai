@@ -670,6 +670,43 @@ class TestCodingSandboxArtifactBridge:
         assert ctx.tool_response.data["stderr"] == "warn: <workdir>/script.py"
         assert ctx.tool_response.data["error_analysis"]["message"] == "at <output>/x.pdf"
 
+    @pytest.mark.parametrize(
+        ("tool", "response", "field"),
+        [
+            # A failed run (or a failure set by another hook) still carries output.
+            ("run_code", ToolOutput(success=False, data={"stdout": "REDIS_URL=redis://:hunter2pass@redis:6379"}), "stdout"),
+            ("run_code", ToolOutput(success=True, data={"error": "bad redis://:hunter2pass@redis:6379"}), "error"),
+            ("run_code", ToolOutput(success=False, error="bad redis://:hunter2pass@redis:6379"), None),
+            ("read_sandbox_file", ToolOutput(success=True, data={
+                "content": "REDIS_URL=redis://:hunter2pass@redis:6379", "encoding": "utf-8", "truncated": False,
+            }), "content"),
+        ],
+    )
+    async def test_redacts_secrets(self, tool: str, response: ToolOutput, field: str | None) -> None:
+        ctx = ToolResultContext(
+            tool_path=f"/toolsets/coding_sandbox/{tool}",
+            tool_use_id=uuid4(),
+            tool_response=response,
+        )
+
+        await coding_sandbox_artifact_bridge(_make_context(), SandboxManager())(ctx, _noop_next)
+
+        out = ctx.tool_response.data[field] if field else ctx.tool_response.error
+        assert "hunter2pass" not in out
+        assert "REDACTED" in out
+
+    async def test_leaves_base64_content_alone(self) -> None:
+        content = "cmVkaXM6Ly86aHVudGVyMnBhc3NAcmVkaXM="
+        ctx = ToolResultContext(
+            tool_path="/toolsets/coding_sandbox/read_sandbox_file",
+            tool_use_id=uuid4(),
+            tool_response=ToolOutput(success=True, data={"content": content, "encoding": "base64"}),
+        )
+
+        await coding_sandbox_artifact_bridge(_make_context(), SandboxManager())(ctx, _noop_next)
+
+        assert ctx.tool_response.data["content"] == content
+
     async def test_no_artifacts_key_skips_upload_entirely(self) -> None:
         context = _make_context()
         manager = SandboxManager()
@@ -1238,6 +1275,34 @@ class TestScratchOnlyRun:
         assert ctx.tool_response.data["scratch_files"] == ["scratch.tmp"]
         assert context.artifacts_produced_this_run is False
         mock_register.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("name", "shown"),
+        [
+            ("sk-abcdefghijklmnopqrstuvwx.txt", "[REDACTED].txt"),
+            ("report_sk-abcdefghijklmnopqrstuvwx.txt", "report_[REDACTED].txt"),
+        ],
+    )
+    async def test_scratch_file_names_are_redacted(self, monkeypatch, name: str, shown: str) -> None:
+        context = _make_context()
+        registry = _make_mock_registry()
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        manager = SandboxManager()
+        manager.register_backend_factory(SandboxType.CODING, lambda: _FakeBackend({}))
+        sandbox_id, _ = await manager.get_or_create(SandboxType.CODING)
+
+        ctx = ToolResultContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_use_id=__import__("uuid").uuid4(),
+            tool_response=ToolOutput(success=True, data={"artifacts": [name], "sandbox_id": sandbox_id}),
+        )
+
+        with patch("app.agents.agent_loop.sandbox_bridge._record_scratch_for_fallback") as record:
+            await coding_sandbox_artifact_bridge(context, manager)(ctx, _noop_next)
+
+        assert ctx.tool_response.data["scratch_files"] == [shown]
+        # The real path is kept for the end-of-run rescue.
+        assert record.call_args.kwargs["paths"] == [name]
 
     async def test_dotfile_cache_never_reported_as_scratch_or_rescued(self, monkeypatch) -> None:
         blob_store = AsyncMock()

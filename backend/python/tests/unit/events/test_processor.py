@@ -109,6 +109,11 @@ class TestConvertRecordDictToRecord:
         assert record.record_status == ProgressStatus.NOT_STARTED
         assert record.version == 1
 
+    def test_the_content_id_is_kept(self) -> None:
+        # Background jobs rebuild a record from its document and find its stored content by it.
+        assert convert_record_dict_to_record(_base_record_dict(virtualRecordId="v-1")).virtual_record_id == "v-1"
+        assert convert_record_dict_to_record(_base_record_dict()).virtual_record_id is None
+
     def test_connector_name_maps_to_enum(self):
         """Known connectorName values map to Connectors enum."""
         d = _base_record_dict(connectorName="DRIVE")

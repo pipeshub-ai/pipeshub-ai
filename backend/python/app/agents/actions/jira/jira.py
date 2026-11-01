@@ -4,14 +4,17 @@ import logging
 import re
 import traceback
 from http import HTTPStatus
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
+from app.agents.actions.jira.attachments import JiraIssueAttachments
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.attachment_delivery import attachment_display_parameter, has_text
+from app.agents.actions.util.attachments import attachment_record_ids_parameter
 from app.agents.actions.util.tool_summaries import (
     args_template,
     confirmation,
@@ -35,6 +38,9 @@ from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
+
+if TYPE_CHECKING:
+    from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +418,13 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
     return False, json.dumps({"error": message})
 
 
+_CLOUD_INLINE_NOTE = (
+    "Jira Cloud cannot show uploaded images inside the text, so 'inline' adds links to the "
+    "attached files instead."
+)
+
+
+
 # Backstops against a server that keeps pointing to more pages.
 _MAX_SEARCH_PAGES = 50
 _MAX_CREATE_FIELD_PAGES = 100
@@ -538,13 +551,16 @@ def _jira_comment_label(comment: dict[str, Any]) -> str:
 class Jira:
     """JIRA tool exposed to the agents using JiraDataSource"""
 
-    def __init__(self, client: JiraClient) -> None:
+    def __init__(self, client: JiraClient, *, state: "ChatState | None" = None) -> None:
         """Initialize the JIRA tool
 
         Args:
             client: JIRA client object
+            state: Agent runtime state (ChatState). Required for attachment_record_ids.
         """
         self.client = JiraDataSource(client)
+        self.chat_state = state
+        self._attachments = JiraIssueAttachments(self.client, state, flavor="cloud", site_url=self._get_site_url)
         self._site_url = None  # Cache for site URL
         self._field_schema_cache: Optional[dict[str, dict[str, str]]] = None  # Cache for field schema mapping
         self._create_fields_cache: dict[str, list[dict[str, Any]]] = {}  # Cache for create-field metadata per project+issue type
@@ -1799,7 +1815,10 @@ class Jira:
             "parent_key) as named parameters. Pass all other fields via custom_fields using field IDs "
             "and value formats from get_create_issue_fields.\n"
             "\n"
-            "Do not use this tool when the user wants to modify an existing issue — use update_issue instead."
+            "Do not use this tool when the user wants to modify an existing issue — use update_issue instead.\n"
+            "\n"
+            "To attach files the user shared (screenshots, logs, documents), pass their record IDs in "
+            "attachment_record_ids; they are attached after the issue is created."
         ),
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project", required=True),
@@ -1813,12 +1832,47 @@ class Jira:
             ToolParameter(name="components", type=ParameterType.LIST, description="The components of the Jira issue", required=False),
             ToolParameter(name="parent_key", type=ParameterType.STRING, description="The key of the Jira parent issue", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.DICT, description="The custom fields of the Jira issue", required=False),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
         tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
         args_summary=args_template('Creating Jira issue in {project_key}: "{summary}"', "project_key", "summary"),
         result_summary=entity_summary(lambda e: f"Created {e.get('key', '?')}"),
     )
     async def create_issue(
+        self,
+        project_key: str,
+        summary: str,
+        issue_type_name: str,
+        description: str | None = None,
+        assignee_account_id: str | None = None,
+        assignee_query: str | None = None,
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        parent_key: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Create a new JIRA issue, then attach any requested files"""
+        if not attachment_record_ids:
+            return await self._create_issue(
+                project_key, summary, issue_type_name, description, assignee_account_id,
+                assignee_query, priority_name, labels, components, parent_key, custom_fields,
+            )
+
+        return await self._attachments.create_with_files(
+            attachment_record_ids,
+            attachment_display,
+            self._normalize_description(description) if description else description,
+            lambda text: self._create_issue(
+                project_key, summary, issue_type_name, text, assignee_account_id,
+                assignee_query, priority_name, labels, components, parent_key, custom_fields,
+            ),
+        )
+
+    async def _create_issue(
         self,
         project_key: str,
         summary: str,
@@ -1984,7 +2038,8 @@ class Jira:
             "\n"
             "Status changes are resolved through Jira workflow transitions automatically.\n"
             "\n"
-            "Always include at least one field to change alongside issue_key."
+            "Always include at least one field to change alongside issue_key, or files to attach in "
+            "attachment_record_ids."
         ),
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="The key of the Jira issue", required=True),
@@ -2000,12 +2055,58 @@ class Jira:
             ToolParameter(name="components", type=ParameterType.LIST, description="The components of the Jira issue", required=False),
             ToolParameter(name="status", type=ParameterType.STRING, description="The status of the Jira issue", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.DICT, description="The custom fields of the Jira issue", required=False),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
         tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
         args_summary=args_template("Updating Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Updated {e.get('key', '?')}"),
     )
     async def update_issue(
+        self,
+        issue_key: str,
+        summary: str | None = None,
+        description: str | None = None,
+        issue_type_name: str | None = None,
+        assignee_account_id: str | None = None,
+        assignee_query: str | None = None,
+        reporter_account_id: str | None = None,
+        reporter_query: str | None = None,
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        status: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Update an existing JIRA issue, then attach any requested files"""
+        changes = (
+            summary, description, issue_type_name, assignee_account_id, assignee_query,
+            reporter_account_id, reporter_query, priority_name, labels, components, status, custom_fields,
+        )
+        if not attachment_record_ids:
+            return await self._update_issue(issue_key, *changes)
+
+        # A description that is blank once placeholders are removed is not a change: on its
+        # own it would fail the update ("No updates provided") before any file is sent.
+        new_description = self._normalize_description(description) if has_text(description) else None
+
+        async def _update(text: str | None) -> tuple[bool, str]:
+            return await self._update_issue(issue_key, summary, text, *changes[2:])
+
+        # Empty values ("", [], {}) are skipped by `_update_issue` the same way, so they are
+        # not changes either.
+        field_changes = (summary, new_description, *changes[2:])
+        return await self._attachments.update_with_files(
+            issue_key,
+            attachment_record_ids,
+            attachment_display,
+            new_description,
+            _update if any(field_changes) else None,
+        )
+
+    async def _update_issue(
         self,
         issue_key: str,
         summary: Optional[str] = None,
@@ -2763,16 +2864,69 @@ class Jira:
     @tool(
         path="/tools/jira/add_comment",
         short_description="Add a comment to a JIRA issue",
-        description="Add a comment to an existing JIRA issue. The comment text is automatically converted to ADF format.",
+        description=(
+            "Add a comment to an existing JIRA issue. The comment text is automatically converted to ADF format. "
+            "Files in attachment_record_ids are attached to the issue (Jira has no comment attachments); "
+            "with attachment_display='inline' the comment links to them."
+        ),
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Comment text to add", required=True),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
         ],
         tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
         args_summary=args_template("Adding comment to {issue_key}", "issue_key"),
         result_summary=confirmation("Comment added to {issue_key}", "issue_key"),
     )
-    async def add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
+    async def add_comment(
+        self,
+        issue_key: str,
+        comment: str,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        if not attachment_record_ids:
+            return await self._add_comment(issue_key, comment)
+
+        return await self._attachments.comment_with_files(
+            issue_key,
+            attachment_record_ids,
+            attachment_display,
+            comment,
+            lambda body: self._add_comment(issue_key, body),
+        )
+
+    @tool(
+        path="/tools/jira/add_attachments",
+        short_description="Attach files to an existing Jira issue",
+        description=(
+            "Attach files the user shared (chat uploads, Slack files, knowledge base files) to an existing "
+            "Jira issue. Pass their record IDs in attachment_record_ids. To also change fields, use "
+            "update_issue with attachment_record_ids instead."
+        ),
+        parameters=[
+            ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
+            attachment_record_ids_parameter(required=True),
+            attachment_display_parameter(inline_note=_CLOUD_INLINE_NOTE),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Attaching files to {issue_key}", "issue_key"),
+        result_summary=confirmation("Files attached to {issue_key}", "issue_key"),
+    )
+    async def add_attachments(
+        self,
+        issue_key: str,
+        attachment_record_ids: list[str],
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        return await self.update_issue(
+            issue_key,
+            attachment_record_ids=attachment_record_ids,
+            attachment_display=attachment_display,
+        )
+
+    async def _add_comment(self, issue_key: str, comment: str | dict[str, Any]) -> tuple[bool, str]:
 
         try:
             # Convert plain text comment to ADF format if it's a string

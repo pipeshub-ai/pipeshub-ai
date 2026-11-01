@@ -102,7 +102,7 @@ def _agent_scope(*app_ids: str) -> EntityAccessContext:
 
 async def _index(provider, record) -> None:
     ctx = SimpleNamespace(record=record)
-    with patch.object(stage, "indexing_llm", AsyncMock(return_value=(None, SlottedTransport(_model()), "fake", "fake-agent"))):
+    with patch.object(stage, "indexing_llm_or_none", AsyncMock(side_effect=lambda _config, kinds, **_: (None, SlottedTransport(_model()), "fake", "fake-agent", kinds))):
         extraction = await stage.extract_named_entities(ctx, config_service=None, enabled=True)
     assert (extraction.strategy, extraction.status) == ("agent", "COMPLETED")
     await stage.persist_named_entities(

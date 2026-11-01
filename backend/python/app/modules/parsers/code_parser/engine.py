@@ -812,7 +812,14 @@ def _nodes_of_types(root: Node, cfg: LanguageConfig, types: tuple[str, ...]) -> 
 
 
 def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
-    """`self.x = Foo()`, `x: Foo = …` and a parameter's `x: Foo` are the usable bindings."""
+    """`self.x = Foo()`, `x: Foo = …` and a parameter's `x: Foo` are the usable bindings.
+
+    Python is mostly untyped, so members are also keyed by owner for the builder to
+    evaluate: `Owner.x` from `self.x = …` in a method (or `x = Foo()` in the class
+    body), and `Owner.m()` / `f()` from a return annotation or, unannotated, from
+    returns that all agree. A value that is not a constructor call is kept as
+    `=expr` (`self.admin = model_admin`, `return self._chain()`).
+    """
     for node in _nodes_of_types(root, cfg, ("typed_parameter", "typed_default_parameter", "assignment")):
         if node.type in ("typed_parameter", "typed_default_parameter"):
             # A parameter's annotation types every call on it in the body (P-5).
@@ -832,6 +839,104 @@ def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str], cf
                     called = _text(fn, src).rsplit(".", 1)[-1]
                     if called[:1].isupper():
                         table.setdefault(_text(left, src).split(".")[-1], called)
+    for cls in _nodes_of_types(root, cfg, ("class_definition",)):
+        owner_node, body = _field(cls, "name"), _field(cls, "body")
+        if owner_node is None or body is None:
+            continue
+        owner = _text(owner_node, src)
+        for stmt in body.named_children:
+            if stmt.type == "expression_statement" and stmt.named_children and stmt.named_children[0].type == "assignment":
+                assign = stmt.named_children[0]
+                left, right = _field(assign, "left"), _field(assign, "right")
+                value = _py_value(right, src)
+                if left is not None and left.type == "identifier" and value and not value.startswith("="):
+                    table.setdefault(f"{owner}.{_text(left, src)}", value)
+            func = stmt.named_children[-1] if stmt.type == "decorated_definition" and stmt.named_children else stmt
+            if func.type == "function_definition":
+                _py_function_types(func, src, table, cfg, owner)
+    for stmt in root.named_children if root.type == "module" else ():
+        func = stmt.named_children[-1] if stmt.type == "decorated_definition" and stmt.named_children else stmt
+        if func.type == "function_definition":
+            _py_function_types(func, src, table, cfg, None)
+
+
+_PY_SIMPLE_EXPR = re.compile(r"[A-Za-z_][\w.]*(\(.*\))?(\.[A-Za-z_]\w*(\(.*\))?)*", re.S)
+
+
+def _py_value(node: Node | None, src: bytes) -> str | None:
+    """What a Python expression is worth to the type table: the class a
+    constructor call names, `=expr` for a name or call chain, else None."""
+    if node is None:
+        return None
+    if node.type == "call":
+        fn = _field(node, "function")
+        if fn is not None and fn.type in ("identifier", "attribute"):
+            called = _text(fn, src).rsplit(".", 1)[-1]
+            if called[:1].isupper():
+                return called
+    if node.type in ("identifier", "attribute", "call"):
+        text = _text(node, src)
+        if len(text) <= 200 and _PY_SIMPLE_EXPR.fullmatch(text):
+            return "=" + text
+    return None
+
+
+def _py_function_types(func: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig,
+                       owner: str | None) -> None:
+    """A Python function's return type, and in a method the `self.x` it assigns."""
+    name_node = _field(func, "name")
+    if name_node is None:
+        return
+    name = _text(name_node, src)
+    returns_key = f"{owner}.{name}()" if owner else f"{name}()"
+    ann = _field(func, "return_type")
+    if ann is not None:
+        table.setdefault(returns_key, _annotated_type(_text(ann, src)))
+    else:
+        body = _field(func, "body")
+        locals_ = _py_local_values(func, src, cfg)
+        values = set()
+        for ret in _nodes_of_types(body, cfg, ("return_statement",)) if body is not None else ():
+            if _py_enclosing_function(ret) != func:
+                continue
+            expr = ret.named_children[0] if ret.named_children else None
+            if expr is None or (expr.type == "none"):
+                continue
+            value = _py_value(expr, src)
+            if value and value.startswith("=") and value[1:] in locals_:  # `return clone` with `clone = self._chain()`
+                value = locals_[value[1:]]
+            values.add(value)
+        if len(values) == 1 and None not in values:
+            table.setdefault(returns_key, values.pop())
+    if owner is None:
+        return
+    for node in _nodes_of_types(func, cfg, ("assignment",)):
+        left, right = _field(node, "left"), _field(node, "right")
+        if left is None or left.type != "attribute" or _text(left, src).count(".") != 1:
+            continue
+        obj, _, attr = _text(left, src).partition(".")
+        value = _py_value(right, src)
+        if obj == "self" and value:
+            table.setdefault(f"{owner}.{attr}", value)
+
+
+def _py_enclosing_function(node: Node) -> Node | None:
+    scope = node.parent
+    while scope is not None and scope.type not in ("function_definition", "lambda"):
+        scope = scope.parent
+    return scope
+
+
+def _py_local_values(func: Node, src: bytes, cfg: LanguageConfig) -> dict[str, str]:
+    """`x = …` assigned once in *func* itself (not a nested function): x's table value."""
+    seen: dict[str, set[str | None]] = {}
+    for node in _nodes_of_types(func, cfg, ("assignment",)):
+        left = _field(node, "left")
+        if left is None or left.type != "identifier" or _py_enclosing_function(node) != func:
+            continue
+        seen.setdefault(_text(left, src), set()).add(_py_value(_field(node, "right"), src))
+    return {name: next(iter(values)) for name, values in seen.items()
+            if len(values) == 1 and None not in values}
 
 
 def _collect_type_table_java(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
@@ -1571,6 +1676,17 @@ class _Walker:
     def _head_type(self, node: Node, qualifier: str | None, suffix: str = "") -> str | None:
         """The function-scoped type of the variable a TS receiver chain starts from;
         *suffix* `<>` asks for its type argument instead."""
+        if qualifier and self.cfg.type_table_handler_name == "python" and not suffix:
+            head = _TS_HEAD.match(qualifier)
+            if not head or head.group() in ("self", "cls"):
+                return None
+            func = _py_enclosing_function(node)
+            if func is None or func.type != "function_definition":
+                return None
+            table = self._scope_tables.get(func.start_byte)
+            if table is None:
+                table = self._scope_tables[func.start_byte] = _py_local_values(func, self.src, self.cfg)
+            return table.get(head.group())
         if not qualifier or self.cfg.type_table_handler_name != "ts":
             return None
         head = _TS_HEAD.match(qualifier)
@@ -1710,8 +1826,10 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
 
     # A member call on a built-in container can never resolve -- resolution
     # needs a known receiver type and these receivers are language primitives
-    # -- so keeping the fact would only bloat a traversed node.
-    builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset())
+    # -- so keeping the fact would only bloat a traversed node. Python keeps them:
+    # an untyped receiver there is as often a repo object (`qs.count()`, `cache.get()`)
+    # whose type the builder can still work out, and it guesses no further.
+    builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset()) if cfg.name != "python" else frozenset()
     parsed.pending = [
         fact for fact in parsed.pending
         if not (

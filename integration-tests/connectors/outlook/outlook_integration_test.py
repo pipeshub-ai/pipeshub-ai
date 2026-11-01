@@ -71,6 +71,7 @@ from connectors.outlook.outlook_test_utils import (  # noqa: E402
     admitted,
     bool_value,
     list_value,
+    resync_while,
     run_sync_and_wait,
     sync_filters,
     wait_until_outlook_condition,
@@ -108,6 +109,10 @@ _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _APPS = CollectionNames.APPS.value
 _AUTO_INDEX_OFF = ProgressStatus.AUTO_INDEX_OFF.value
+
+# The B2 sync can read the seed group's members before Graph drops S from them.
+_MEMBERSHIP_RESYNCS = 3
+_MEMBERSHIP_RESYNC_WAIT_SEC = 30
 
 
 # --------------------------------------------------------------------------- shared helpers
@@ -859,7 +864,7 @@ async def phase_b1(ctx: Ctx) -> dict[str, Any]:
         state["group_reply_post_id"] = reply_post
         return True
 
-    await wait_until_outlook_condition(_source_settled, description="B1 source changes visible", timeout=300)
+    await wait_until_outlook_condition(_source_settled, description="B1 source changes visible", timeout=600)
     # The reply-all also leaves ordinary mail in P's mailbox (Sent Items, and Inbox as a group member).
     for folder in ("sentitems", "inbox"):
         for msg in await h.find_messages_by_subject(p, f"RE: {w.subjects['group']}", folder):
@@ -1053,7 +1058,37 @@ async def phase_b2(ctx: Ctx, phase_b1: dict[str, Any]) -> dict[str, Any]:
 
     await wait_until_outlook_condition(_gone, description="throwaway group gone from the group list", timeout=600)
     state["sync_count"] = await ctx.incremental_sync("B2 incremental sync")
+    # The re-syncs below are for S's membership only; the other removals must land in this sync.
+    state["after_first_sync"] = await _b2_removals(ctx, phase_b1, state)
+    state["membership_resyncs"] = await resync_while(
+        lambda: _seed_group_member_edge(ctx),
+        lambda n: ctx.incremental_sync(f"B2 re-sync {n} for S leaving the seed group"),
+        attempts=_MEMBERSHIP_RESYNCS,
+        wait_sec=_MEMBERSHIP_RESYNC_WAIT_SEC,
+        description="S's seed-group membership edge",
+    )
     return state
+
+
+async def _b2_removals(ctx: Ctx, phase_b1: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    gid, disabled = phase_b1["new_group_id"], state["disabled_node_id"]
+    post = await ctx.record(ctx.world.group_posts["group"])
+    return {
+        "disabled_app_relation": await ctx.graph.principal_app_relation(ctx.cid, state["disabled_user_upn"]),
+        "group_post_id": post.id if post is not None else None,
+        "disabled_reads_post": bool(disabled and post is not None and await ctx.admitted(disabled, post.id)),
+        "deleted_group": await ctx.graph.get_user_group_by_external_id(ctx.cid, gid),
+        "deleted_group_grants": await ctx.graph.count_permission_edges_to_record_groups(ctx.cid, gid),
+        "deleted_user": await ctx.graph.get_user_by_source_id(phase_b1["new_user_id"], ctx.cid),
+    }
+
+
+async def _seed_group_member_edge(ctx: Ctx) -> bool:
+    group_node = await ctx.graph.get_user_group_by_external_id(ctx.cid, ctx.world.group_id)
+    s_node = await ctx.graph.get_user_by_source_id(ctx.s.source_id, ctx.cid)
+    if group_node is None or s_node is None:
+        return False
+    return bool(await ctx.edges(_USERS, s_node.id, _GROUPS, group_node.id, _PERMISSION))
 
 
 async def _record_ids(ctx: Ctx) -> set[str]:
@@ -1071,12 +1106,11 @@ class TestB2Removals:
     @pytest.mark.order(60)
     async def test_tc_ol_user_003_disabled_account_loses_access(self, ctx: Ctx, phase_b2: dict[str, Any]) -> None:
         """A disabled account loses the connector: no user-app relation, the group's posts unreachable."""
+        first = phase_b2["after_first_sync"]
         assert phase_b2["disabled_node_id"], "mailbox-less user was not synced in B1"
-        assert await ctx.graph.principal_app_relation(ctx.cid, phase_b2["disabled_user_upn"]) is None, (
-            "disabled account is still linked to the connector"
-        )
-        post = await ctx.must_record(ctx.world.group_posts["group"], "group post")
-        assert not await ctx.admitted(phase_b2["disabled_node_id"], post.id), "disabled account still reads group posts"
+        assert first["disabled_app_relation"] is None, "disabled account is still linked to the connector"
+        assert first["group_post_id"] is not None, "group post was not synced"
+        assert not first["disabled_reads_post"], "disabled account still reads group posts"
 
     @pytest.mark.order(60)
     async def test_tc_ol_incr_020_member_removed_loses_access(self, ctx: Ctx, phase_b2: dict[str, Any]) -> None:
@@ -1092,11 +1126,9 @@ class TestB2Removals:
     @pytest.mark.order(61)
     async def test_tc_ol_incr_021_m365_group_deleted(self, ctx: Ctx, phase_b1: dict[str, Any], phase_b2: dict[str, Any]) -> None:
         """A deleted M365 group no longer grants anything."""
-        gid = phase_b1["new_group_id"]
-        assert await ctx.graph.get_user_group_by_external_id(ctx.cid, gid) is None, "deleted group still synced"
-        assert await ctx.graph.count_permission_edges_to_record_groups(ctx.cid, gid) == 0, (
-            "deleted group's mailbox still carries a grant"
-        )
+        first = phase_b2["after_first_sync"]
+        assert first["deleted_group"] is None, "deleted group still synced"
+        assert first["deleted_group_grants"] == 0, "deleted group's mailbox still carries a grant"
 
     @pytest.mark.order(62)
     @pytest.mark.xfail(
@@ -1111,8 +1143,7 @@ class TestB2Removals:
                 "the test app may not delete directory users (disabled and renamed it instead): "
                 f"{phase_b2['user_delete_refused']}"
             )
-        user = await ctx.graph.get_user_by_source_id(phase_b1["new_user_id"], ctx.cid)
-        assert user is None, "deleted AAD user is still synced as an app user"
+        assert phase_b2["after_first_sync"]["deleted_user"] is None, "deleted AAD user is still synced as an app user"
 
     @pytest.mark.order(63)
     async def test_tc_ol_incr_023_idempotent_rerun(self, ctx: Ctx, phase_b2: dict[str, Any]) -> None:

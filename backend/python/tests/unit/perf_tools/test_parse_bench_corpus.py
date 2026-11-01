@@ -189,3 +189,13 @@ class TestMaxMbIsAnUpperBound:
     def test_the_estimate_of_a_small_large_file_is_not_a_whole_image(self) -> None:
         small = corpus.estimate_bytes(corpus.resolve_params("smoke", 1.0, 20, None))
         assert 20 * corpus.MIB < small < 30 * corpus.MIB
+
+
+@pytest.mark.parametrize("profile", ["workset60", "workset300"])
+def test_workset_profiles_hold_one_long_file_per_page_heavy_kind(profile: str) -> None:
+    pages = int(profile.removeprefix("workset"))
+    params = corpus.resolve_params(profile, 1.0, None, None)
+    for kind in ("digital", "scanned", "tables", "figures"):
+        assert params[kind] == (1, pages)
+    assert params["large_mb"] == 0
+    assert corpus.estimate_bytes(params) < 120 * 1024**2

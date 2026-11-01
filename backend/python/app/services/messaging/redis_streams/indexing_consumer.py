@@ -26,6 +26,7 @@ from app.services.messaging.config import (
     IndexingMessageHandler,
     RedisStreamsConfig,
     StreamMessage,
+    Topic,
     compute_retry_backoff_seconds,
     messaging_env,
 )
@@ -50,6 +51,7 @@ from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.lanes.assignment import read_lane_map, write_lane_count
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
+from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
@@ -413,12 +415,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         known = set(self.config.topics)
+        # A replica reading a lane subset leaves the configured lanes it was
+        # not given to the replicas that were; only lanes left over from a
+        # larger lane count are everyone's to drain.
+        subset = messaging_env.indexing_consume_lanes is not None
+        subset_base = Topic.RECORD_EVENTS.value
+        lane_count = messaging_env.fair_scheduling_lane_count
         discovered: list[str] = []
         try:
             for base in bases:
                 async for key in self.redis.scan_iter(match=f"{base}.*"):
                     name = key.decode() if isinstance(key, bytes) else str(key)
-                    if name in known or not _LANE_SUFFIX.search(name):
+                    suffix = _LANE_SUFFIX.search(name)
+                    if name in known or not suffix:
+                        continue
+                    if subset and base == subset_base and int(suffix.group()[1:]) < lane_count:
                         continue
                     if await self.redis.type(name) != _STREAM_TYPE:  # type: ignore
                         continue
@@ -671,6 +682,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         ]
         if not streams:
             raise RuntimeError(f"This consumer does not read {topic}")
+        if messaging_env.indexing_consume_lanes is not None and topic == Topic.RECORD_EVENTS.value:
+            # Reading a lane subset, this replica still judges every lane: the sweep
+            # and lane upkeep take a lane missing from this reading as caught up.
+            every_lane = RedisLaneRouter(messaging_env.fair_scheduling_lane_count).lane_topics(topic)
+            judged = [s for s in every_lane if s not in streams]
+            await self.__ensure_groups(judged)
+            streams = [*streams, *judged]
         oldest, pending = await read_stream_backlog_detail(
             self.redis, self.config.group_id, streams
         )
@@ -694,6 +712,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
 
         return LaneBacklog(topic, oldest, lanes_for_event, pending)
+
+    async def __ensure_groups(self, streams: list[str]) -> None:
+        """Create the group, from the start, on lanes another pool consumes, so
+        their backlog can be read before that pool has started: a lane that
+        cannot be read fails the whole reading. The pool's replicas then join
+        this group, as they would one they made. Made on every read, not once,
+        so a group deleted by hand comes back instead of failing the reading."""
+        for stream in streams:
+            try:
+                await self.redis.xgroup_create(  # type: ignore[union-attr]
+                    stream, self.config.group_id, id="0", mkstream=True
+                )
+            except Exception as e:
+                if _BUSYGROUP_ERROR not in str(e):
+                    raise
 
     async def __read_lane_map(self, topic: str) -> "Mapping[str, LaneEntry] | None":
         """The lane map, once per backlog read; None if it cannot be read,
@@ -2906,6 +2939,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         index_lease_pool = "indexing"
         parsing_admission: concurrency.Admission | None = None
         memory_admission: concurrency.Admission | None = None
+        download_admission: concurrency.Admission | None = None
         index_admission: concurrency.Admission | None = None
         distributed_leases = concurrency.new_lease_set(self)
         lease_handle: Any | None = None
@@ -3131,7 +3165,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
-                    nonlocal memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
@@ -3139,12 +3173,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 if (
                                     event.event == IndexingEvent.START_DOWNLOAD
                                     and memory_admission is None
+                                    and download_admission is None
                                 ):
                                     # Before the download: a record waiting
-                                    # for memory must not hold its content.
+                                    # for memory, or behind the heavy records
+                                    # already holding content for a parse
+                                    # slot, must not hold its own.
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        # Place first: a record waiting for memory
+                                        # must not hold what a place holder needs,
+                                        # nor the reverse (one cycle, both time out).
+                                        download_admission = await concurrency.acquire_download_slot(
+                                            self, index_tier, timeout=wait.remaining(),
+                                        )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self,
                                             index_tier,
@@ -3208,6 +3251,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         shutting_down = True
                                         return
                                     timeline.mark(timing.PARSE_ADMITTED)
+                                    # The permit and lease now account for the content.
+                                    concurrency.release_admission(download_admission)
                                 elif (
                                     event.event == IndexingEvent.PARSING_COMPLETE
                                     and parsing_held
@@ -3230,6 +3275,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     )
                                     concurrency.release_admission(index_admission)
                                     concurrency.release_admission(memory_admission)
+                                    concurrency.release_admission(download_admission)
                                     indexing_held = False
                                     indexing_complete = True
                                     break
@@ -3475,6 +3521,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if suspect_held:
                 self._suspects.release()
             concurrency.release_admission(memory_admission)
+            concurrency.release_admission(download_admission)
             try:
                 if renewal_task is not None:
                     renewal_task.cancel()

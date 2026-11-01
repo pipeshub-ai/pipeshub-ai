@@ -1,5 +1,6 @@
 import { injectable } from 'inversify';
 import mongoose, { Connection, ConnectOptions } from 'mongoose';
+import { fenceClientOptions, installMongoFence } from '../repositories/fence';
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
 import { Logger } from './logger.service';
@@ -75,10 +76,12 @@ export class MongoService {
       const connectOptions: ConnectOptions = {
         dbName: db,
         ...(options ?? defaultOptions),
+        ...fenceClientOptions(),
         autoCreate: true,
         autoIndex: true,
       };
 
+      installMongoFence(mongoose.mongo.Collection);
       // Connect to MongoDB
       await mongoose.connect(uri, connectOptions);
       this.connection = mongoose.connection;

@@ -1709,12 +1709,26 @@ class RecordEventHandler(BaseEventService):
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
                 dispatched = await stage_ingress.redrive(
-                    virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
+                    virtual_record_id,
+                    record.get("contentRev"),
+                    [str(s) for s in stages],
+                    # A search asking for a record it found is not a request to redo work.
+                    force=not payload.get("firstUse"),
                 )
                 if dispatched is not None:
                     self.logger.info(f"🔁 Re-running stages {stages} for record {record_id}: {dispatched}")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                if payload.get("firstUse"):
+                    # A search is no reason to re-parse and re-embed a record; one the
+                    # runtime never saw is left to an explicit reindex.
+                    self.logger.info(
+                        f"Not classifying record {record_id} on first use: no stage state for revision "
+                        f"{record.get('contentRev')}"
+                    )
+                    for done in (IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE):
+                        yield PipelineEvent(event=done, data=PipelineEventData(record_id=record_id))
                     return
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
@@ -2038,12 +2052,16 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            # Always: the consumer holds a record that would sit on its file
+            # waiting for a parse slot back until it is not downloaded yet.
             known_size = doc.get("sizeInBytes")
-            if isinstance(known_size, int) and known_size > 0:
-                yield PipelineEvent(
-                    event=IndexingEvent.START_DOWNLOAD,
-                    data=PipelineEventData(record_id=record_id, size_bytes=known_size),
-                )
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD,
+                data=PipelineEventData(
+                    record_id=record_id,
+                    size_bytes=known_size if isinstance(known_size, int) and known_size > 0 else None,
+                ),
+            )
 
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
@@ -2071,6 +2089,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -2132,6 +2155,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()

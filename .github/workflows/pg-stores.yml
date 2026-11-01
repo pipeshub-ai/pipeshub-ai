@@ -10,6 +10,10 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/db/**'
+      - 'backend/nodejs/apps/src/modules/storage/**'
+      - 'backend/nodejs/apps/tests/support/**'
+      - 'backend/nodejs/apps/tests/storage/fingerprint-model/**'
       - 'backend/nodejs/apps/src/libs/services/ttl-sweeper.service.ts'
       - 'backend/nodejs/apps/tests/stores/**'
       - 'backend/nodejs/apps/tests/libs/repositories/**'
@@ -85,8 +89,22 @@ jobs:
           REPLICA_SET_AVAILABLE: 'false'
         run: npm run test:pg-stores -- --reporter xunit --reporter-option output="$RUNNER_TEMP/pg-stores-junit.xml"
 
+      - name: Count the fingerprint tests defined for the PostgreSQL leg
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: |
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --dry-run --reporter json \
+            --reporter-option output="$RUNNER_TEMP/fingerprint-defined.json" tests/stores/pg-storage-fingerprint.itest.ts > /dev/null
+          python3 -c "import json,os; print('FP_DEFINED=' + str(json.load(open(os.environ['RUNNER_TEMP'] + '/fingerprint-defined.json'))['stats']['tests']))" >> "$GITHUB_ENV"
+
       - name: No unexpected skips
         if: ${{ always() }}
         run: >-
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pg-stores-junit.xml"
           --expect-suite "PostgreSQL content stores (/usr/lib/postgresql/${{ matrix.pg }}/bin) behind PgBouncer DocumentRepository contract document store contract (state hidden)=3"
+          --expect-suite "PostgreSQL content stores (/usr/lib/postgresql/${{ matrix.pg }}/bin) behind PgBouncer DocumentRepository contract document store contract (fingerprint)=15"
+          --expect-suite "document fingerprint=${{ env.FP_DEFINED }}"

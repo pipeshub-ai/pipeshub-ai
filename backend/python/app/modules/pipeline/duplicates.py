@@ -18,9 +18,13 @@ from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import (
+    DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
+    DUPLICATE_RECONCILE_DUE_AT_FIELD,
+    DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     IGraphDBProvider,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 SyncVectorMembership = Callable[[str], Awaitable[None]]
 # (record id, virtual record id) of a record whose copies were just promoted.
@@ -80,6 +84,9 @@ class QueuedCopies:
             raise QueuedCopiesNotReleasedError(record_id)
         if promoted > 0 or had_pending:
             await self._reconcile(record_id, virtual_record_id)
+        elif await self._has_copies(record_id, virtual_record_id):
+            await self._arm_pending(record_id)
+            await self._reconcile(record_id, virtual_record_id)
         if promoted > 0 and self._on_promoted is not None:
             await self._on_promoted(record_id, virtual_record_id)
         if promoted > 0 and indexing_status == ProgressStatus.COMPLETED.value:
@@ -89,6 +96,30 @@ class QueuedCopies:
                 external_record_group_id=record.get("externalGroupId"),
                 org_id=record.get("orgId"),
             )
+
+    async def _has_copies(self, record_id: str, virtual_record_id: str | None) -> bool:
+        """Copies indexed while this record waited for first use took NOT_STARTED,
+        which reads as final, so no promotion counts them; the reconcile gives them
+        the outcome. One lookup, and only when classification has ended."""
+        if not virtual_record_id:
+            return False
+        try:
+            keys = await self._graph.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True) or []
+        except Exception:
+            # Unknown is not "none": leave it to the retry sweep, which outlives this
+            # delivery, and fail the delivery so the stage runs release again.
+            await self._arm_pending(record_id)
+            raise
+        return any(key and key != record_id for key in keys)
+
+    async def _arm_pending(self, record_id: str) -> None:
+        """The fields the promotion sets in its own write, so a reconcile that fails
+        or never runs is finished by the retry sweep."""
+        await self._graph.update_node(record_id, CollectionNames.RECORDS.value, {
+            DUPLICATE_RECONCILE_PENDING_FIELD: True,
+            DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+            DUPLICATE_RECONCILE_DUE_AT_FIELD: get_epoch_timestamp_in_ms() + DUPLICATE_RECONCILE_GRACE_MS,
+        })
 
     async def _reconcile(self, record_id: str, virtual_record_id: str | None) -> None:
         reconciler = DuplicateReconciler(

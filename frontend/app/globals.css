@@ -421,6 +421,13 @@ body {
   background-color: var(--frost-scrim);
 }
 
+/* A disabled switch that is on: Radix greys the track whatever the state, so in dark mode
+   it reads as off. Keep a faint accent track so on and off still differ. */
+.rt-SwitchRoot[data-disabled][data-state='checked']::before {
+  background-color: var(--accent-a5);
+  box-shadow: inset 0 0 0 1px var(--accent-a6);
+}
+
 /* Workspace side panels (WorkspaceRightPanel): the frost tokens below, one layer only;
    header, body and footer stay transparent so the tint doesn't stack. */
 .workspace-drawer-frost {

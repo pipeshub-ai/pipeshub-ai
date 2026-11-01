@@ -99,6 +99,7 @@ from app.connectors.sources.linear.team_access import (
     team_permissions,
     visibility,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -3696,7 +3697,8 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning: use existing record's id and increment version if changed
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(
+            self.connector_id, attachment_id)
 
         if is_new:
             version = 0
@@ -3783,7 +3785,8 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning: use existing record's id and increment version if changed
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(
+            self.connector_id, document_id)
 
         if is_new:
             version = 0
@@ -3862,7 +3865,8 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(
+            self.connector_id, file_record_id(file_url, parent_external_id))
 
         if is_new:
             version = 0

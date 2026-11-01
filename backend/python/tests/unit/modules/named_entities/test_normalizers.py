@@ -4,6 +4,7 @@ import pytest
 
 from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
 from app.modules.named_entities.extractor import _deterministic
+from app.modules.named_entities.merge import resolve_overlaps
 from app.modules.named_entities.normalizers.contacts import normalize_contact
 from app.modules.named_entities.normalizers.dates import (
     NormalizationContext,
@@ -379,8 +380,14 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
         "a." * 20_000,
         "₹" + "1,23," * 20_000,
         "1" + ",23" * 10_000 + " INR",
+        "May 1-" * 10_000,
+        "1 May - " * 10_000,
+        "2025-01-01-" * 10_000,
     ],
-    ids=["space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix", "indian-suffix"],
+    ids=[
+        "space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix",
+        "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes",
+    ],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
     import time
@@ -550,3 +557,141 @@ def test_a_dash_before_a_non_temperature_is_not_a_sign() -> None:
     (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", "Weights: -5 kg each")])
     assert mention.surface == "5 kg"
     assert normalize_quantity("-5 kg") is None and normalize_quantity("-20 tokens") is None
+
+
+@pytest.mark.parametrize(
+    ("surface", "timex", "start", "end"),
+    [
+        ("May 20–22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("May 20-22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("May 20 - 22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("May 20th–22nd, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("from May 20 to 22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("9–11 September 2025", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        ("9 to 11 September 2025", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        ("May 28 – June 3, 2025", "2025-05-28/2025-06-03", (2025, 5, 28), (2025, 6, 4)),
+        ("28 May – 3 June 2025", "2025-05-28/2025-06-03", (2025, 5, 28), (2025, 6, 4)),
+        ("May 20, 2025 – June 3, 2025", "2025-05-20/2025-06-03", (2025, 5, 20), (2025, 6, 4)),
+        ("2025-09-09 to 2025-09-11", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        ("2025-09-09-2025-09-11", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        # A range that wraps the year takes the year it leaves out from the other end.
+        ("Dec 28 – Jan 3, 2026", "2025-12-28/2026-01-03", (2025, 12, 28), (2026, 1, 4)),
+        ("Dec 28, 2025 – Jan 3", "2025-12-28/2026-01-03", (2025, 12, 28), (2026, 1, 4)),
+        ("Jan–Mar 2025", "2025-01/2025-03", (2025, 1, 1), (2025, 4, 1)),
+        ("January to March 2025", "2025-01/2025-03", (2025, 1, 1), (2025, 4, 1)),
+        ("Nov–Feb 2026", "2025-11/2026-02", (2025, 11, 1), (2026, 3, 1)),
+        # Any backwards pair of months is read across the year end, as "Sep–Jun 2025" is a school year.
+        ("Sep–Jun 2025", "2024-09/2025-06", (2024, 9, 1), (2025, 7, 1)),
+        ("Mar 5 – Feb 3, 2025", "2024-03-05/2025-02-03", (2024, 3, 5), (2025, 2, 4)),
+    ],
+)
+def test_a_date_range_keeps_both_ends(surface, timex, start, end) -> None:
+    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    assert value is not None
+    assert (value.timex, value.start_ms, value.end_ms) == (timex, _ms(*start), _ms(*end))
+    assert value.anchor_source == "explicit"
+
+
+def test_an_iso_datetime_range_keeps_its_times() -> None:
+    value = normalize_temporal(
+        EntityKind.DATE_RANGE, "2025-09-09T10:00 to 2025-09-09T12:30", NormalizationContext(tz="UTC"),
+    )
+    assert value is not None
+    assert value.granularity == "minute"
+    assert value.timex == "2025-09-09T10:00/2025-09-09T12:30"
+
+
+@pytest.mark.parametrize(
+    ("surface", "timex"),
+    [("May 20–22", "XXXX-05-20/XXXX-05-22"), ("May 20    –    22", "XXXX-05-20/XXXX-05-22"), ("Dec 28 – Jan 3", "XXXX-12-28/XXXX-01-03"), ("Sep 9 – 11", "XXXX-09-09/XXXX-09-11")],
+)
+def test_a_range_with_no_year_is_not_given_one(surface, timex) -> None:
+    # dateparser read the last day as the year: "May 20–22" was 2022-05-20.
+    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(reference_time_ms=_ms(2026, 3, 10)))
+    assert value is not None
+    assert (value.timex, value.start_ms, value.ambiguous) == (timex, None, True)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ["May 22–20, 2025", "May 22–20", "Feb 28–30, 2025", "3-1 May 2025", "May 22, 2026 – May 20, 2025", "May 20–Jun 2025"],
+)
+def test_a_backwards_or_impossible_range_has_no_value(surface) -> None:
+    """Not handed on to dateparser, which made one day of it ("Feb 28–30, 2025" was Feb 28)."""
+    assert normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC")) is None
+
+
+@pytest.mark.parametrize(("surface", "day"), [("May 20th, 2025", (2025, 5, 20)), ("3rd of June 2025", (2025, 6, 3))])
+def test_an_ordinal_day_is_read_as_stated(surface, day) -> None:
+    value = normalize_temporal(EntityKind.DATE, surface, NormalizationContext(tz="UTC"))
+    assert value is not None
+    assert (value.start_ms, value.anchor_source) == (_ms(*day), "explicit")
+
+
+def _date_spans(text: str) -> list[tuple[str, str]]:
+    found = _deterministic([TextUnit(0, "b", text)], default_enabled_kinds(), NormalizationContext(tz="UTC"))
+    return [
+        (mention.surface, mention.kind.value)
+        for mention in resolve_overlaps(found)
+        if mention.kind in {EntityKind.DATE, EntityKind.DATE_RANGE, EntityKind.DATE_TIME, EntityKind.DURATION}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "surface"),
+    [
+        ("Held May 20–22, 2025 in Pune.", "May 20–22, 2025"),
+        ("Held 9–11 September 2025 in Pune.", "9–11 September 2025"),
+        ("The trip is May 28 – June 3, 2025.", "May 28 – June 3, 2025"),
+        ("Valid May 20, 2025 – June 3, 2025 only.", "May 20, 2025 – June 3, 2025"),
+        ("Q1 ran Jan–Mar 2025.", "Jan–Mar 2025"),
+        ("Window 2025-09-09/2025-09-11 agreed.", "2025-09-09/2025-09-11"),
+        ("Window 2025-09-09 to 2025-09-11 agreed.", "2025-09-09 to 2025-09-11"),
+        ("Call 2025-09-09T10:00 to 2025-09-09T12:00 booked.", "2025-09-09T10:00 to 2025-09-09T12:00"),
+        ("Office closed Dec 28 – Jan 3, 2026.", "Dec 28 – Jan 3, 2026"),
+        ("Due Sept. 3–5, 2025.", "Sept. 3–5, 2025"),
+    ],
+)
+def test_a_range_is_one_span(text, surface) -> None:
+    assert _date_spans(text) == [(surface, "date_range")]
+
+
+@pytest.mark.parametrize(
+    ("text", "spans"),
+    [
+        # A score before a date is no range; the date still counts.
+        ("Won 3-1 May 2025.", [("1 May 2025", "date")]),
+        ("Meeting Sep 9 – 11:00 AM.", [("Sep 9", "date")]),
+        ("Meeting May 3 – 5 PM.", [("May 3", "date")]),
+        ("From May 3 to 5pm.", [("May 3", "date")]),
+        ("Starts Jun 10-2025.", [("Jun 10", "date")]),
+        ("May 2025 - 3 items shipped.", [("May 2025", "date")]),
+        ("Signed May 20, 2025 and 2025-09-09.", [("May 20, 2025", "date"), ("2025-09-09", "date")]),
+        ("Ship by 15 May 2026, please.", [("15 May 2026", "date")]),
+        # A link takes part of the range; the date left outside it still counts.
+        ("Logs at http://x.com/2025-09-09 to 2025-09-11 kept.", [("2025-09-11", "date")]),
+    ],
+)
+def test_what_is_not_a_range_keeps_its_single_dates(text, spans) -> None:
+    assert _date_spans(text) == spans
+
+
+def test_a_range_reaches_the_indexed_values_whole() -> None:
+    found = _deterministic(
+        [TextUnit(0, "b", "Conference on 9–11 September 2025 in Pune.")], default_enabled_kinds(), NormalizationContext(tz="UTC"),
+    )
+    # The single date inside the range is not counted a second time.
+    (mention,) = [m for m in found if m.kind in {EntityKind.DATE, EntityKind.DATE_RANGE}]
+    assert mention.kind is EntityKind.DATE_RANGE
+    value = normalize_temporal(mention.kind, mention.surface, NormalizationContext(tz="UTC"))
+    assert value is not None
+    assert (value.start_ms, value.end_ms) == (_ms(2025, 9, 9), _ms(2025, 9, 12))
+
+
+def test_a_date_padded_with_spaces_normalizes_in_linear_time() -> None:
+    import time
+
+    # The single-date pattern takes any run of spaces ("Jan     5" in a padded table).
+    start = time.process_time()
+    normalize_temporal(EntityKind.DATE, "Jan" + " " * 16_000 + "5", NormalizationContext(tz="UTC"))
+    assert time.process_time() - start < 1.0

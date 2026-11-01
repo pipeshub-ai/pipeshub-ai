@@ -257,6 +257,17 @@ async def artifact_read_mode(config_service: ConfigurationService | None = None)
     return (await artifact_read_state(config_service)).mode
 
 
+async def is_classify_on_first_use_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether classification waits until a search first returns the record.
+    Read on every indexed record and every search, so from the cache a Labs
+    save invalidates. Defaults to disabled: classify right after indexing."""
+    if config_service is not None:
+        return await read_platform_feature_flag(
+            CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE, config_service, default=False, use_cache=True
+        )
+    return await _platform_flag(None, CONFIG.ENABLE_CLASSIFY_ON_FIRST_USE, default=False)
+
+
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Whether a record delete moves the record to the trash instead of removing it.
 

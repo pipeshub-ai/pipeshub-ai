@@ -256,7 +256,7 @@ That is all the registration there is: no list to edit, and no route or Node cha
 - **One URL for everyone.** A catalog instance always connects to the template's `default_url`, and the admin can't change it. A server whose address differs per customer (`https://<your-instance>.service-now.com/…`, self-managed GitLab, a regional host) can't be a working catalog entry today; people add it as a custom server instead.
 - **Pin STDIO packages to an exact version**, such as `exa-mcp-server@3.4.1`, never `@latest`. `npx -y` and `uvx` run whatever was published last.
 - **Env var names must pass `stdio_policy.is_allowed_env_name`.** That means upper case, and not a name that changes how a process loads (`PATH`, `HOME`, `LD_*`, `NODE_*`, `NPM_CONFIG_*`, `PYTHON*`, `UV_*`, …). A name that fails is dropped at launch without an error.
-- **The test checks these** (`test_auto_discover_templates_are_well_formed`): `default_auth_mode` is in `supported_auth_modes`; an HTTP entry has `default_url`; a STDIO entry has `command`; an entry whose default is `API_TOKEN` lists `required_env`; an OAuth entry has `authorization_url` and `token_url`.
+- **The test checks these** (`test_auto_discover_templates_are_well_formed`): `default_auth_mode` is in `supported_auth_modes`; an HTTP entry has `default_url`; a STDIO entry has `command`; a STDIO entry whose default is `API_TOKEN` lists `required_env`; an OAuth entry has `authorization_url` and `token_url`.
 - **Say where each fact came from**, in a comment such as "Confirmed live via …", as the existing templates do, so a later reader can check it again.
 - **No per-server code.** Routes, the client and sign-in never branch on a `type_id`. Anything specific to one server is a template field. If a server needs something no field covers, that is a change to the framework (`models.py` and everything that reads it): raise it in the issue before writing it.
 
@@ -275,7 +275,7 @@ The UI finds logos in two ways, so there are two places to update:
 
 ## Re-enabling a disabled entry
 
-Fifteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `docusign`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow`, `stripe` and `zoom`.
+Fourteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `docusign`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow` and `zoom`.
 
 To bring one back, uncomment it and run the discovery from step 1 again. Vendors change their servers, and the "Confirmed live" comments are only as current as the day they were written. Fix whatever changed, then do steps 3 and 4. Two things to watch for:
 

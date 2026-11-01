@@ -239,7 +239,8 @@ def _run_with_spy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hash_in_wi
         (tmp_path / f"n{i}.md").write_text("# t")
         files.append(Entry(f"n{i}.md", "md", "md", MIME["md"], 3, "0" * 64))
     args = argparse.Namespace(pdf_parser="pdfplumber", ocr_latency=0.0, mem_limit_gb=None, cpus=None,
-                              concurrency=2, gate_timeout=30.0, cgroup="")
+                              concurrency=2, gate_timeout=30.0, cgroup="", reserve_embedding=False, scan_route="ocr",
+                              no_probe=False, probe_only=0)
     sampler = driver.TreeSampler(mem_limit=None, host_limit_pct=101.0)
     raw = asyncio.run(driver.run(args, files, tmp_path, sampler))
     assert raw["ok"] == n_files

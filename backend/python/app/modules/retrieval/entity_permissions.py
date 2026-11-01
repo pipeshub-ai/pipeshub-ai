@@ -684,7 +684,12 @@ async def readable_spellings(
     stored name."""
     if not entity_ids or not record_ids:
         return {}
-    rows = await graph_provider.get_named_entity_mentions_in_records(org_id, entity_ids, record_ids)
+    return spellings_on(await graph_provider.get_named_entity_mentions_in_records(org_id, entity_ids, record_ids))
+
+
+def spellings_on(rows: Iterable[dict[str, Any]]) -> dict[str, str]:
+    """Each entity's most frequent spelling on the mention edges ``rows`` (of records
+    the caller can read); a tie goes to the fuller one, then alphabetically."""
     counts: dict[str, dict[str, int]] = {}
     for row in rows or []:
         for spelling in row.get("extractedNames") or []:

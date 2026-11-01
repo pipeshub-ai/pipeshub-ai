@@ -18,6 +18,9 @@ import type {
   OrgAuthConfigDto,
   OrgAuthConfigRepository,
 } from './types';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importAuthConfigDocs } from './pg-import';
 
 interface ConfigRow {
   id: string;
@@ -67,7 +70,17 @@ function checkedSteps(steps: AuthStepDto[]): AuthStepDto[] {
   }));
 }
 
-export class PgOrgAuthConfigRepository implements OrgAuthConfigRepository {
+export class PgOrgAuthConfigRepository
+  implements OrgAuthConfigRepository, Importable
+{
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importAuthConfigDocs(kernelTx(tx), collection, docs);
+  }
   private one(orgId: string, live: boolean): Promise<OrgAuthConfigDto | null> {
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);

@@ -1,11 +1,16 @@
 import mongoose from 'mongoose';
 import { DocumentModel } from '../../../modules/storage/schema/document.schema';
-import type { StorageVendor } from '../../../modules/storage/types/storage.service.types';
+import type {
+  FingerprintState,
+  StorageVendor,
+} from '../../../modules/storage/types/storage.service.types';
 import { ConflictError } from '../errors';
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
+  DocumentBusy,
   ENVELOPE_PREFIXES,
+  ServerClockUnavailable,
   type ArtifactFence,
   type ConnectorScope,
   type DocumentPatch,
@@ -23,6 +28,27 @@ const row = (doc: unknown): DocumentRow =>
 // Ids are passed as strings: Mongoose casts them to the stored type.
 
 const MONGO_DUPLICATE_KEY = 11000;
+
+/** The bounds of a write-state call: a token call that hangs would hold up a write or a response. */
+const TOKEN_MAX_TIME_MS = 1000;
+/** Writers in flight on one document (a 65th gets `DocumentBusy`). */
+const MAX_WRITERS = 64;
+/** How long the offset between the pod's clock and the server's clock is trusted. */
+const CLOCK_OFFSET_TTL_MS = 5000;
+
+/** Per repository: the offset between the pod's clock and the server's, and when it was measured (a field would make the class differ structurally from the PostgreSQL one). */
+const clockOffsets = new WeakMap<object, { offsetMs: number; at: number }>();
+
+/** A row without the hidden write state (`select('+writeSeq')` returns it on the document, never on the row). */
+function rowWithoutState(doc: unknown): DocumentRow {
+  const plain = row(doc) as DocumentRow & Record<string, unknown>;
+  delete plain.writeSeq;
+  delete plain.writers;
+  return plain;
+}
+
+const seqOf = (doc: unknown): number =>
+  (doc as { writeSeq?: number } | null)?.writeSeq ?? 0;
 
 // A virtual record's envelope documents wherever they are filed, plus anything
 // at the flat path older records used, and (with `withRevisions`) every content
@@ -100,6 +126,188 @@ async function touchArtifactSet(
 }
 
 export class MongoDocumentRepository implements DocumentRepository {
+  /**
+   * The server's clock: `localTime` of `hello` (`isMaster` where `hello` is unknown). The offset to the pod's own clock is kept
+   * for 5 s. A reply without a finite time throws `ServerClockUnavailable`: the callers fail closed.
+   */
+  async serverClockMs(): Promise<number> {
+    const nowLocal = Date.now();
+    const cached = clockOffsets.get(this);
+    if (cached && nowLocal - cached.at <= CLOCK_OFFSET_TTL_MS)
+      return nowLocal + cached.offsetMs;
+    try {
+      const admin = DocumentModel.db.db?.admin();
+      if (!admin) throw new Error('no database connection');
+      let reply: { localTime?: unknown };
+      try {
+        reply = await admin.command({ hello: 1 });
+      } catch {
+        reply = await admin.command({ isMaster: 1 });
+      }
+      const t =
+        reply.localTime instanceof Date
+          ? reply.localTime.getTime()
+          : Number(reply.localTime);
+      if (!Number.isFinite(t) || reply.localTime === undefined)
+        throw new Error('the server reported no local time');
+      clockOffsets.set(this, { offsetMs: t - nowLocal, at: nowLocal });
+      return t;
+    } catch {
+      clockOffsets.delete(this);
+      throw new ServerClockUnavailable();
+    }
+  }
+
+  async beginWrite(
+    orgId: string,
+    id: string,
+    token: string,
+    windowMs: number,
+  ): Promise<{ writeSeq: number } | null> {
+    const now = await this.serverClockMs();
+    // Only expired tokens go; a live token of another writer stays.
+    await DocumentModel.updateOne(
+      { _id: id, orgId },
+      { $pull: { writers: { until: { $lt: now } } } },
+      { timestamps: false },
+    ).maxTimeMS(TOKEN_MAX_TIME_MS);
+    const begun = await DocumentModel.findOneAndUpdate(
+      {
+        _id: id,
+        orgId,
+        [`writers.${String(MAX_WRITERS - 1)}`]: { $exists: false },
+      },
+      {
+        $inc: { writeSeq: 1 },
+        $push: { writers: { t: token, until: now + windowMs } },
+      },
+      { new: true, timestamps: false },
+    )
+      .select('+writeSeq')
+      .maxTimeMS(TOKEN_MAX_TIME_MS);
+    if (begun) return { writeSeq: seqOf(begun) };
+    if (await DocumentModel.exists({ _id: id, orgId }))
+      throw new DocumentBusy();
+    return null;
+  }
+
+  async renewWrite(
+    orgId: string,
+    id: string,
+    token: string,
+    windowMs: number,
+  ): Promise<void> {
+    const now = await this.serverClockMs();
+    // `$max`: a delayed older renew cannot shorten a token. The filter needs the token: an ended one is not brought back.
+    await DocumentModel.updateOne(
+      { _id: id, orgId, 'writers.t': token },
+      { $max: { 'writers.$.until': now + windowMs } },
+      { timestamps: false },
+    ).maxTimeMS(TOKEN_MAX_TIME_MS);
+  }
+
+  async endWrite(orgId: string, id: string, token: string): Promise<void> {
+    await DocumentModel.updateOne(
+      { _id: id, orgId },
+      { $pull: { writers: { t: token } }, $inc: { writeSeq: 1 } },
+      { timestamps: false },
+    ).maxTimeMS(TOKEN_MAX_TIME_MS);
+  }
+
+  async bumpSeq(
+    orgId: string,
+    id: string,
+  ): Promise<{ writeSeq: number } | null> {
+    const bumped = await DocumentModel.findOneAndUpdate(
+      { _id: id, orgId },
+      { $inc: { writeSeq: 1 } },
+      { new: true, timestamps: false },
+    )
+      .select('+writeSeq')
+      .maxTimeMS(TOKEN_MAX_TIME_MS);
+    return bumped ? { writeSeq: seqOf(bumped) } : null;
+  }
+
+  async adoptDirectUpload(
+    orgId: string,
+    id: string,
+    size: number,
+  ): Promise<boolean> {
+    const adopted = await DocumentModel.findOneAndUpdate(
+      { _id: id, orgId, awaitingDirectUpload: true },
+      {
+        $unset: { awaitingDirectUpload: '' },
+        $set: { sizeInBytes: size },
+        $inc: { writeSeq: 1 },
+      },
+      { timestamps: false },
+    );
+    return Boolean(adopted);
+  }
+
+  async correctSize(
+    orgId: string,
+    id: string,
+    from: number | null | undefined,
+    to: number,
+  ): Promise<void> {
+    await DocumentModel.updateOne(
+      { _id: id, orgId, sizeInBytes: from ?? null },
+      { $set: { sizeInBytes: to } },
+      { timestamps: false },
+    );
+  }
+
+  async markAwaitingDirectUpload(
+    orgId: string,
+    id: string,
+    patch: DocumentPatch,
+  ): Promise<{ row: DocumentRow; writeSeq: number } | null> {
+    const marked = await DocumentModel.findOneAndUpdate(
+      { _id: id, orgId },
+      { $set: patch, $inc: { writeSeq: 1 } },
+      { new: true },
+    ).select('+writeSeq');
+    return marked
+      ? { row: rowWithoutState(marked), writeSeq: seqOf(marked) }
+      : null;
+  }
+
+  async getWithFingerprintState(
+    orgId: string,
+    id: string,
+  ): Promise<
+    ({ row: DocumentRow; serverNow: number } & FingerprintState) | null
+  > {
+    const serverNow = await this.serverClockMs();
+    const doc = await DocumentModel.findOne({ _id: id, orgId }).select(
+      '+writeSeq +writers',
+    );
+    if (!doc) return null;
+    const state = doc as unknown as Partial<FingerprintState>;
+    return {
+      row: rowWithoutState(doc),
+      serverNow,
+      writeSeq: state.writeSeq ?? 0,
+      writers: (state.writers ?? []).map((w) => ({ t: w.t, until: w.until })),
+    };
+  }
+
+  async peekWriteState(
+    orgId: string,
+    id: string,
+  ): Promise<FingerprintState | null> {
+    const doc = await DocumentModel.findOne({ _id: id, orgId })
+      .select('writeSeq writers')
+      .lean();
+    if (!doc) return null;
+    const state = doc as unknown as Partial<FingerprintState>;
+    return {
+      writeSeq: state.writeSeq ?? 0,
+      writers: (state.writers ?? []).map((w) => ({ t: w.t, until: w.until })),
+    };
+  }
+
   async get(orgId: string, id: string): Promise<DocumentRow | null> {
     const doc = await DocumentModel.findOne({ _id: id, orgId: orgId });
     return doc ? row(doc) : null;
