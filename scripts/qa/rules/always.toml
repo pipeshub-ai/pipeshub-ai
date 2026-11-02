@@ -115,6 +115,10 @@ modules = ["auth", "oauth", "user-management"]
 
 # Test files no suite runs, with what runs them instead ("not run" is a valid answer).
 [[unowned]]
+paths = ["frontend/tests/e2e/responsive/**/*visual.spec.ts"]
+reason = "run by the nightly visual diff with E2E_VISUAL=true; the e2e suite's project does not exist without it"
+
+[[unowned]]
 paths = ["backend/db/tests/**"]
 reason = "run by the db-migrations workflow"
 

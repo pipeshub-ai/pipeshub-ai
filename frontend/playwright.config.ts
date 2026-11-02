@@ -12,6 +12,10 @@ const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /chat\/chat-link-labels\.
 // when asked for, before CI creates the org every other test signs in to.
 const FIRST_RUN = process.env.E2E_FIRST_RUN === 'true';
 
+// Screenshots cost minutes and only mean something against a baseline, so the
+// `visual` project exists only when asked for (E2E_VISUAL=true or a baseline dir).
+const VISUAL = process.env.E2E_VISUAL === 'true' || !!process.env.VISUAL_BASELINE_DIR;
+
 const defaultReporter: any[] = [['html', { open: 'never' }]];
 const ciReporter: any[] = process.env.CI
   ? [['junit', { outputFile: 'test-results/playwright-junit.xml' }]]
@@ -105,19 +109,21 @@ export default defineConfig({
     // Screenshots of the audited screens at 375px and 1440px, light and dark.
     // With VISUAL_BASELINE_DIR set they are compared with that folder's PNGs;
     // otherwise they are only saved to EVIDENCE_DIR.
-    {
-      name: 'visual',
-      testMatch: /responsive\/.*visual\.spec\.ts/,
-      dependencies: ['setup', 'embedding-model'],
-      snapshotPathTemplate: process.env.VISUAL_BASELINE_DIR
-        ? `${process.env.VISUAL_BASELINE_DIR}/{arg}{ext}`
-        : undefined,
-      use: {
-        storageState: '.auth/user.json',
-        screenshot: 'off',
-        trace: 'off',
-      },
-    },
+    ...(VISUAL
+      ? [{
+          name: 'visual',
+          testMatch: /responsive\/.*visual\.spec\.ts/,
+          dependencies: ['setup', 'embedding-model'],
+          snapshotPathTemplate: process.env.VISUAL_BASELINE_DIR
+            ? `${process.env.VISUAL_BASELINE_DIR}/{arg}{ext}`
+            : undefined,
+          use: {
+            storageState: '.auth/user.json',
+            screenshot: 'off' as const,
+            trace: 'off' as const,
+          },
+        }]
+      : []),
 
     // The answering tests' embedding model, added before any project that
     // uploads files: once the built-in model has embedded a record, the backend

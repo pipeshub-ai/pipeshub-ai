@@ -122,7 +122,7 @@ Playwright is configured with these projects:
 
 ## Visual snapshots
 
-`--project=visual` screenshots every screen of the responsive audit at 375x812 and 1440x900, in light and dark (the theme is set through `localStorage['pipeshub-theme-preference']`). Without `VISUAL_BASELINE_DIR` it only saves PNGs to `EVIDENCE_DIR`. With it, each screenshot is compared with the PNG of the same name in that folder (`maxDiffPixelRatio` 0.01), and a missing baseline is written. Pixels depend on the browser build, so take baselines and comparisons from the same Playwright image (`mcr.microsoft.com/playwright:v<version in package-lock.json>-noble`).
+`--project=visual` (it exists only with `E2E_VISUAL=true` or `VISUAL_BASELINE_DIR` set) screenshots every screen of the responsive audit at 375x812 and 1440x900, in light and dark (the theme is set through `localStorage['pipeshub-theme-preference']`). Without `VISUAL_BASELINE_DIR` it only saves PNGs to `EVIDENCE_DIR`. With it, each screenshot is compared with the PNG of the same name in that folder (`maxDiffPixelRatio` 0.01), and a missing baseline is written only when you pass `--update-snapshots=missing` (the default mode fails on it). Shots are the size of the viewport, so a page whose data count changes does not change the image size. Pixels depend on the browser build, so take baselines and comparisons from the same Playwright image (`mcr.microsoft.com/playwright:v<version in package-lock.json>-noble`).
 
 ## Directory Structure
 

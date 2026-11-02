@@ -88,6 +88,8 @@ cwd = "frontend"
 grain = "file"
 stack = true
 tests = ["frontend/tests/e2e/**/*.spec.ts"]
+# The visual project exists only with E2E_VISUAL=true, so a file run finds no project.
+exclude = ["frontend/tests/e2e/**/*visual.spec.ts"]
 
 [[suite]]
 id = "it-helpers"

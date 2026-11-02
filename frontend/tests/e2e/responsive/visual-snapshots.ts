@@ -48,14 +48,15 @@ export function runVisualSnapshots(routes: AuditRoute[]): void {
             // Dialog routes open their dialog first, so the shot shows it.
             await route.action?.(page);
             await page.waitForTimeout(SETTLE_MS);
+            await iconFontsLoaded(page);
 
             const name = `${route.id}--${vp.name}--${theme}.png`;
             if (process.env.VISUAL_BASELINE_DIR) {
               await expect(page).toHaveScreenshot(name, {
-                fullPage: true,
+                // Viewport-sized: a full-page height follows the data count and fails the size compare outright.
                 animations: 'disabled',
                 maxDiffPixelRatio: 0.01,
-                mask: [page.locator('time, [data-relative-time]')],
+                mask: [page.locator('time, [data-relative-time], [class*=avatar i], [data-testid*=avatar i], [data-testid*=timestamp i]')],
               });
             } else {
               const dir = process.env.EVIDENCE_DIR ?? testInfo.outputDir;
