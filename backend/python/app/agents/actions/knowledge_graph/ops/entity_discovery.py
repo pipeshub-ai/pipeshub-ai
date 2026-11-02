@@ -14,15 +14,18 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
     load_entity_access_context,
     remember_entities,
 )
 from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
+from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
     VECTOR_KINDS,
     EntityKind,
+    kind_family,
 )
 from app.modules.retrieval.entity_permissions import (
     RECORD_ENTITY_TYPE,
@@ -145,7 +148,7 @@ async def execute_search_entities(
             context,
             query,
             entity_types=valid_types or None,
-            kinds=kinds or None,
+            kinds=_with_related_kinds(kinds) or None,
             top_k=bounded_top_k,
             include_named=enabled,
         )
@@ -166,6 +169,8 @@ async def execute_search_entities(
             "message": "No accessible entities matched",
             "results": [],
         }
+        if note := limited_scope_note(context):
+            payload["scopeNote"] = note
         if ignored:
             payload["ignoredEntityTypes"] = ignored
         if kind_notes:
@@ -239,6 +244,19 @@ async def _search_many(
     if len(queries) > MAX_QUERIES:
         result["note"] = f"Only the first {MAX_QUERIES} queries were searched."
     return True, json.dumps(result)
+
+
+def _with_related_kinds(kinds: list[str]) -> list[str]:
+    """``kinds`` and the kinds the extractor files the same names under, so a
+    product filed as its company is still found."""
+    widened: list[str] = []
+    for value in kinds:
+        try:
+            family = kind_family(EntityKind(value))
+        except ValueError:
+            family = ()
+        widened.extend([value, *(kind.value for kind in family if kind in VECTOR_KINDS)])
+    return list(dict.fromkeys(widened))
 
 
 def _searchable_kinds(requested: list[str]) -> tuple[list[str], list[str]]:
@@ -316,9 +334,9 @@ def _preview_row(
     app = context.app_names.get(row.get("connectorId"))
     if app:
         preview["app"] = app
-    modified = _compact_date(row.get("sourceLastModifiedTimestamp") or row.get("updatedAtTimestamp"))
-    if modified:
-        preview["modified"] = modified
+    dated = RecordDates.from_graph(row).listing_date(row.get("updatedAtTimestamp"))
+    if dated:
+        preview[dated[0]] = _compact_date(dated[1])
     return preview
 
 

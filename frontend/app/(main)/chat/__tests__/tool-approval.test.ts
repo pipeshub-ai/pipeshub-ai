@@ -5,6 +5,7 @@ import {
   findToolApproval,
   hasApprovedCall,
   isToolApprovalResumeQuery,
+  settledToolApprovals,
   toolApprovalDetails,
   toolApprovalResumeQuery,
 } from '../tool-approval';
@@ -104,16 +105,59 @@ describe('the answer query', () => {
 });
 
 describe('approvalArgumentLines', () => {
-  it('shows text as is, other values as JSON, and cuts long ones', () => {
+  it('shows text as is, plain lists as a comma list, and cuts long ones', () => {
     expect(approvalArgumentLines({ title: 'Bug', labels: ['a', 'b'], n: 3, body: 'x'.repeat(400) })).toEqual([
       { name: 'title', value: 'Bug', cut: false },
-      { name: 'labels', value: '["a","b"]', cut: false },
+      { name: 'labels', value: 'a, b', cut: false },
       { name: 'n', value: '3', cut: false },
       { name: 'body', value: `${'x'.repeat(300)}…`, cut: true },
     ]);
   });
 
+  it('keeps list items apart and typed: a comma, a blank, a number or an empty list shows as JSON', () => {
+    expect(approvalArgumentLines({ to: ['admins, owners'] })[0]!.value).toBe('["admins, owners"]');
+    expect(approvalArgumentLines({ to: ['admins', 'owners'] })[0]!.value).toBe('admins, owners');
+    expect(approvalArgumentLines({ to: ['a', ''] })[0]!.value).toBe('["a",""]');
+    expect(approvalArgumentLines({ to: ['a', null] })[0]!.value).toBe('["a",null]');
+    expect(approvalArgumentLines({ to: [] })[0]!.value).toBe('[]');
+    expect(approvalArgumentLines({ to: [1, true] })[0]!.value).toBe('[1,true]');
+    expect(approvalArgumentLines({ to: ['1', 'true'] })[0]!.value).toBe('1, true');
+  });
+
+  it('indents nested values as JSON', () => {
+    const [line] = approvalArgumentLines({ columns: [{ name: 'Status', type: 'select' }] });
+    expect(line!.value).toBe(JSON.stringify([{ name: 'Status', type: 'select' }], null, 2));
+  });
+
+  it('shows a Unix time under a time-like name as a local date', () => {
+    const local = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const lines = approvalArgumentLines({ post_at: 1793000000, sentAt: '1793000000000', count: 1793000000, channel: 'C1' });
+    expect(lines).toEqual([
+      { name: 'post_at', value: local(1793000000 * 1000), cut: false },
+      { name: 'sentAt', value: local(1793000000000), cut: false },
+      { name: 'count', value: '1793000000', cut: false },
+      { name: 'channel', value: 'C1', cut: false },
+    ]);
+  });
+
   it('shows every value in full when asked', () => {
     expect(approvalArgumentLines({ body: 'x'.repeat(400) }, { full: true })).toEqual([{ name: 'body', value: 'x'.repeat(400), cut: false }]);
+  });
+});
+
+describe('a card the fork settled as expired', () => {
+  const forked = (): MessagePart[] => [
+    { type: 'sub_agent', runId: 'child', parts: [waiting(WIRE, { status: 'blocked', approvalAnswer: 'expired', resultPreview: 'The approval request expired.' })] },
+  ];
+
+  it('is no longer a card to answer, and counts as answered', () => {
+    expect(findToolApproval(forked())).toBeNull();
+    expect(answeredToolApproval(forked())).toBe(true);
+  });
+
+  it('shows up as an expired receipt for its tool', () => {
+    expect(settledToolApprovals(forked())).toEqual([
+      { key: 'c', tool: 'Create an issue', server: 'Jira', answer: 'expired' },
+    ]);
   });
 });

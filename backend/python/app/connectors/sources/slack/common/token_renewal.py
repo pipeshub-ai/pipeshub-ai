@@ -16,19 +16,26 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Executor
 from datetime import timedelta
 from typing import Any
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.core.base.error.stream_errors import sanitize_retry_after
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
+from app.sources.client.resilience import ResiliencePolicy
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 
 # What Slack answers when an access token has expired or was replaced.
 RENEWABLE_ERRORS = frozenset({"token_expired", "invalid_auth"})
+
+# Slack throttles with a real HTTP 429 whose body says "ratelimited".
+_RATE_LIMITED_ERRORS = frozenset({"ratelimited", "rate_limited"})
+_HTTP_TOO_MANY_REQUESTS = 429
 
 # Shorter than the refresh service's own 10-minute lead, so the schedule normally
 # wins and this only runs when the schedule was missed.
@@ -59,15 +66,37 @@ PASTED_ROTATING_TOKEN_MESSAGE = (
 TokenSource = Callable[[], Awaitable[tuple[dict[str, Any], str]]]
 
 
-def _datasource_for(external_client: SlackClient, token: str) -> SlackDataSource:
+def _datasource_for(
+    external_client: SlackClient, token: str, executor: Executor | None = None,
+) -> SlackDataSource:
     client = external_client.get_client()
     if getattr(client, "get_token", lambda: None)() != token and hasattr(client, "set_token"):
         client.set_token(token)
-    return SlackDataSource(external_client)
+    return SlackDataSource(external_client, executor=executor)
+
+
+def _rate_limited(response: Any) -> bool:  # noqa: ANN401 - any SlackResponse-like
+    return (
+        getattr(response, "success", True) is False
+        and (
+            getattr(response, "error", None) in _RATE_LIMITED_ERRORS
+            or getattr(response, "status_code", None) == _HTTP_TOO_MANY_REQUESTS
+        )
+    )
+
+
+def _retry_after_seconds(response: Any) -> float | None:  # noqa: ANN401 - any SlackResponse-like
+    value = sanitize_retry_after(getattr(response, "retry_after", None))
+    return float(value) if value is not None else None
 
 
 class RenewingSlackDataSource:
-    """A ``SlackDataSource`` that renews the token and retries once when Slack refuses it."""
+    """A ``SlackDataSource`` that renews the token and retries once when Slack refuses it.
+
+    With a ``resilience`` policy it also waits out Slack's rate limiting: a 429 is
+    retried after its ``Retry-After`` (capped by the policy's ``max_delay``), up to
+    the policy's ``max_retries``. Every call takes a slot of the policy's limiter.
+    """
 
     def __init__(
         self,
@@ -75,11 +104,15 @@ class RenewingSlackDataSource:
         token: str,
         renewal: "SlackTokenRenewal",
         rebuild: Callable[[str], SlackDataSource],
+        resilience: ResiliencePolicy | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._datasource = datasource
         self._token = token
         self._renewal = renewal
         self._rebuild = rebuild
+        self._resilience = resilience
+        self._logger = logger
 
     @property
     def access_token(self) -> str:
@@ -96,20 +129,38 @@ class RenewingSlackDataSource:
             return member
 
         async def call(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-            response = await member(*args, **kwargs)
-            if getattr(response, "success", True) is not False:
-                return response
-            error = getattr(response, "error", None)
-            if error not in RENEWABLE_ERRORS:
-                return response
-            renewed_token = await self._renewal.renew(self._token, error)
-            if renewed_token is None:
-                return response
-            self._datasource = self._rebuild(renewed_token)
-            self._token = renewed_token
-            return await getattr(self._datasource, name)(*args, **kwargs)
+            policy = self._resilience
+            attempt = 0
+            while True:
+                if policy is not None:
+                    await policy.acquire()
+                response = await self._call_renewing(name, *args, **kwargs)
+                if policy is None or not _rate_limited(response) or attempt >= policy.max_retries:
+                    return response
+                delay = policy.backoff(attempt, _retry_after_seconds(response))
+                if self._logger:
+                    self._logger.warning(
+                        "Slack rate-limited %s (Retry-After: %s); retrying in %.1fs (attempt %d of %d)",
+                        name, getattr(response, "retry_after", None), delay, attempt + 1, policy.max_retries,
+                    )
+                await asyncio.sleep(delay)
+                attempt += 1
 
         return call
+
+    async def _call_renewing(self, name: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        response = await getattr(self._datasource, name)(*args, **kwargs)
+        if getattr(response, "success", True) is not False:
+            return response
+        error = getattr(response, "error", None)
+        if error not in RENEWABLE_ERRORS:
+            return response
+        renewed_token = await self._renewal.renew(self._token, error)
+        if renewed_token is None:
+            return response
+        self._datasource = self._rebuild(renewed_token)
+        self._token = renewed_token
+        return await getattr(self._datasource, name)(*args, **kwargs)
 
 
 class SlackTokenRenewal:
@@ -121,7 +172,12 @@ class SlackTokenRenewal:
         connector_type: str,
         config_service: ConfigurationService,
         logger: logging.Logger,
+        *,
+        executor: Executor | None = None,
+        resilience: ResiliencePolicy | None = None,
     ) -> None:
+        self._executor = executor
+        self._resilience = resilience
         self._connector_id = connector_id
         self._connector_type = connector_type
         self._config_service = config_service
@@ -140,17 +196,26 @@ class SlackTokenRenewal:
         # from putting a spent token back on the shared Slack client.
         self._replaced_by: dict[str, str] = {}
 
-    async def datasource(self, external_client: SlackClient, current_token: TokenSource) -> RenewingSlackDataSource:
-        """A datasource for the connector's current token, renewed first if it is about to expire."""
+    async def datasource(
+        self, external_client: SlackClient, current_token: TokenSource, *, retry_rate_limits: bool = True,
+    ) -> RenewingSlackDataSource:
+        """A datasource for the connector's current token, renewed first if it is about to expire.
+
+        ``retry_rate_limits=False`` hands a 429 straight back, for a caller that passes
+        Retry-After on instead of waiting it out.
+        """
         config, token = await current_token()
         token = self._newest(token)
         if self._expiring(config, token):
             token = await self.renew(token, "token_expiring") or token
 
         def rebuild(renewed_token: str) -> SlackDataSource:
-            return _datasource_for(external_client, renewed_token)
+            return _datasource_for(external_client, renewed_token, self._executor)
 
-        return RenewingSlackDataSource(_datasource_for(external_client, token), token, self, rebuild)
+        return RenewingSlackDataSource(
+            _datasource_for(external_client, token, self._executor), token, self, rebuild,
+            resilience=self._resilience if retry_rate_limits else None, logger=self._logger,
+        )
 
     def _newest(self, token: str) -> str:
         for _ in range(_SUPERSEDED_TOKENS_KEPT):

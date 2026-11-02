@@ -61,8 +61,8 @@ class TestBatchLookup:
         graph_batch.get_document = AsyncMock()
 
         graph_single = MagicMock()
-        graph_single.get_nodes_by_filters = AsyncMock(return_value=[node])
-        graph_single.get_document = AsyncMock()
+        graph_single.get_document = AsyncMock(return_value=node)
+        graph_single.get_nodes_by_filters = AsyncMock()
 
         batched = await _make_blob_storage(graph_batch).get_document_ids_by_virtual_record_ids(["vr-1"])
         single = await _make_blob_storage(graph_single).get_document_id_by_virtual_record_id("vr-1")

@@ -341,3 +341,27 @@ class TestShownBlocks:
         _render(record, budget)
 
         assert budget.outcome("rec-1").shown_blocks == frozenset()
+
+
+class TestTableCaptions:
+    """A record indexed before captions reached the summary keeps them in
+    ``table_metadata`` only; the header its rows render under must show them."""
+
+    def test_fetched_rows_render_under_their_table_caption(self) -> None:
+        record = _table_record("rec-t", rows=3)
+        record["block_containers"]["block_groups"][0]["table_metadata"]["captions"] = ["Fees in 2024"]
+
+        text = _render(record, RenderBudget(max_chars=200_000))
+
+        assert "[Table #0: Fees in 2024\na wide table]" in text
+
+    def test_a_caption_already_in_the_summary_is_not_repeated(self) -> None:
+        record = _table_record("rec-t", rows=3)
+        group = record["block_containers"]["block_groups"][0]
+        group["data"]["table_summary"] = "Fees in 2024\na wide table"
+        group["table_metadata"]["captions"] = ["Fees in 2024"]
+
+        text = _render(record, RenderBudget(max_chars=200_000))
+
+        assert "[Table #0: Fees in 2024\na wide table]" in text
+        assert text.count("Fees in 2024") == 1

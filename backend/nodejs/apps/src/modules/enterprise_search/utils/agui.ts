@@ -62,7 +62,9 @@ export const aguiErrorCodeFromPayload = (
   errorData: Record<string, unknown>,
 ): string => {
   const code = errorData.code;
-  return typeof code === 'string' && code.trim() ? code.trim() : 'streaming_error';
+  return typeof code === 'string' && code.trim()
+    ? code.trim()
+    : 'streaming_error';
 };
 
 /** Same `type` + `code` Node sends on the wire, stored on `conversationErrors.metadata`. */

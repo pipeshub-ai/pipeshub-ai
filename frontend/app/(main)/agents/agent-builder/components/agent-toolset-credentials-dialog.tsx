@@ -35,6 +35,7 @@ import {
   toolsetDialogPrimaryActionsStyle,
 } from './toolset-config-dialog-styles';
 import { useToolsetOauthPopupFlow } from '../hooks/use-toolset-oauth-popup-flow';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 export interface AgentToolsetCredentialsDialogProps {
   toolset: BuilderSidebarToolset;
@@ -236,7 +237,7 @@ export function AgentToolsetCredentialsDialog({
         const result = await ToolsetsApi.getAgentToolsetOAuthUrl(
           agentKey,
           instanceId,
-          typeof window !== 'undefined' ? window.location.origin : undefined
+          browserOAuthBaseUrl()
         );
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));

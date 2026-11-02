@@ -4,10 +4,17 @@ Reconciliation Service
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 import hashlib
-from app.models.blocks import BlocksContainer
+from app.models.blocks import BlocksContainer, BlockType
+from app.modules.parsers.table_titles import table_titles
 from app.utils.logger import create_logger
 
 logger = create_logger("reconciliation_service")
+
+
+def _content_hash(data: Any, title: str | None) -> str:  # noqa: ANN401 - block data is any JSON value
+    """A block's data hash; with a title, of the data and the title together."""
+    payload = json.dumps(data if title is None else {"data": data, "title": title}, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
 
 
 class ReconciliationMetadata:
@@ -67,17 +74,23 @@ class ReconciliationService:
         """
         hash_to_block_ids: Dict[str, List[str]] = {}
         block_id_to_index: Dict[str, int] = {}
+        # A table's rows and summary are embedded under its title, so a new title
+        # must re-embed them even when their own data is unchanged.
+        titles = table_titles(block_containers.blocks, block_containers.block_groups)
 
         for i, block_group in enumerate(block_containers.block_groups):
-            if block_group.content_hash is None:
-                block_group.content_hash = hashlib.sha256(json.dumps(block_group.data, sort_keys=True).encode('utf-8')).hexdigest() + ":" + hashlib.md5(json.dumps(block_group.data, sort_keys=True).encode('utf-8')).hexdigest()
+            title = titles.get(block_group.index)
+            # A parser's own hash (JSON, SQL) knows nothing of the title.
+            if title is not None or block_group.content_hash is None:
+                block_group.content_hash = _content_hash(block_group.data, title)
             if block_group.content_hash:
                 hash_to_block_ids.setdefault(block_group.content_hash, []).append(block_group.id)
                 block_id_to_index[block_group.id] = i
 
         for i, block in enumerate(block_containers.blocks):
-            if block.content_hash is None:
-                block.content_hash = hashlib.sha256(json.dumps(block.data, sort_keys=True).encode('utf-8')).hexdigest() + ":" + hashlib.md5(json.dumps(block.data, sort_keys=True).encode('utf-8')).hexdigest()
+            title = titles.get(block.parent_index) if block.type == BlockType.TABLE_ROW else None
+            if title is not None or block.content_hash is None:
+                block.content_hash = _content_hash(block.data, title)
             if block.content_hash:
                 hash_to_block_ids.setdefault(block.content_hash, []).append(block.id)
                 block_id_to_index[block.id] = i

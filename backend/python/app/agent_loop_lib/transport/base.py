@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.agent_loop_lib.core.messages import Message
 from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
 from app.agent_loop_lib.core.streaming import StreamEvent
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 
 
 class RetryConfig(BaseModel):
@@ -72,6 +72,8 @@ class LLMTransport(ABC):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         """Single-shot completion. Returns the full `ModelResponse`
         (assembled message + usage + stop reason).
@@ -86,6 +88,10 @@ class LLMTransport(ABC):
         `system_blocks` is an optional stable/volatile split of the system
         prompt. Anthropic attaches `cache_control` to the stable block only;
         other transports may ignore it and use the joined `system` string.
+
+        `tool_choice="none"` asks for a reply without tool calls while `tools`
+        is still sent. A provider with no way to say so (Bedrock Converse,
+        Ollama) gets the request it would get without it.
         """
         ...
 
@@ -114,6 +120,8 @@ class LLMTransport(ABC):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Streaming completion. Yields zero or more delta events
         (`TextDeltaEvent`/`ThinkingDeltaEvent`/`ToolCallDeltaEvent`) as they
@@ -126,6 +134,6 @@ class LLMTransport(ABC):
         best-effort-ignore-if-unsupported contract. Implementations should
         apply the same prompt-cache breakpoints to the request as
         `complete()` does, for streaming/non-streaming call-cost parity.
-        `system_blocks` mirrors `complete()`.
+        `system_blocks` and `tool_choice` mirror `complete()`.
         """
         ...

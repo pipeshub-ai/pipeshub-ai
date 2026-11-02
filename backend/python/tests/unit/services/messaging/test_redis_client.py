@@ -139,7 +139,7 @@ class TestCleanup:
         bad = AsyncMock()
         bad.aclose = AsyncMock(side_effect=RuntimeError("loop is closed"))
         good = AsyncMock()
-        registry._clients._clients = {1: (bad, None), 2: (good, None)}
+        registry._clients._items = {("thread", 1): bad, ("thread", 2): good}
 
         await registry.aclose()
 

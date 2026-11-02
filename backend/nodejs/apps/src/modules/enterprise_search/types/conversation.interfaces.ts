@@ -2,6 +2,11 @@ import { Document, Types, Model } from 'mongoose';
 import { ConfidenceLevel, ReasoningEffort } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
 
+export interface AiSearchResponse {
+  searchResults: ICitation[];
+  records: Record<string, unknown>;
+}
+
 export interface IFollowUpQuestion {
   question: string;
   confidence: string;
@@ -298,6 +303,8 @@ export interface IChatSession {
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
   lastActivityAt?: Number;
+  /** Owner's pin. `true` when pinned, absent otherwise (never stored as `false`). */
+  isPinned?: boolean;
   activeRunId?: string;
   tags?: Types.ObjectId[];
   createdAt?: Date;
@@ -413,4 +420,6 @@ export interface IAIModel {
   modelFriendlyName?: string;
   /** Forwarded to the Python LLM factory. */
   reasoningEffort?: ReasoningEffort;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }

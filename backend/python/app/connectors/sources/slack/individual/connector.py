@@ -1214,11 +1214,8 @@ class SlackIndividualConnector(BaseConnector):
         channel_data: dict[str, Any],
     ) -> list[Permission]:
         """
-        Return HAS_PERMISSION list for the authenticated user only.
-
-        In the individual connector every visible channel (public, private,
-        IM, MPIM) gets a single direct USER edge for the authenticated user.
-        No AppRole indirection is needed.
+        Return no grant: every visible channel inherits the app, and only the
+        authenticated user is linked to the app.
         """
         if not self.authenticated_user_email:
             self.logger.warning(
@@ -2058,10 +2055,8 @@ class SlackIndividualConnector(BaseConnector):
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(first_ts)}",
                 record_type=RecordType.MESSAGE,
                 external_record_id=burst_id,
-                external_record_group_id=ctx.channel_id,
-                parent_external_record_id=thread_ts,
-                parent_record_type=RecordType.MESSAGE,
-                record_group_id=ctx.channel_groups_map.get(ctx.channel_id) or thread_rg_id,
+                external_record_group_id=f"thread_{ctx.channel_id}_{thread_ts}",
+                record_group_id=thread_rg_id,
                 root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
@@ -2073,7 +2068,11 @@ class SlackIndividualConnector(BaseConnector):
                 source_updated_at=last_ts_ms,
                 content=aggregated_text,
                 thread_id=thread_ts,
-                has_replies=False,
+                # The thread's first burst holds its parent message.
+                has_replies=any(
+                    m.get("ts") == thread_ts and m.get("reply_count", 0) > 0
+                    for m in burst.messages
+                ),
                 is_reply=True,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
@@ -2154,18 +2153,18 @@ class SlackIndividualConnector(BaseConnector):
         )
 
         # -- Collect file records keyed by message ts --------------------------
+        thread_ext_group_id = f"thread_{ctx.channel_id}_{ts}"
         file_children_by_ts: dict[str, list[ChildRecord]] = {}
         file_recs_by_ts: dict[str, list[FileRecord]] = {}
-        channel_rg_id = ctx.channel_groups_map.get(ctx.channel_id) or thread_rg_id
         for msg in all_msgs:
             mts = msg.get("ts", "")
             for fd in msg.get("files", []):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
-                    fr.record_group_id = channel_rg_id
+                    fr.record_group_id = thread_rg_id
                     fr.root_record_group_id       = self._root_rg_id(ctx)
-                    fr.external_record_group_id = ctx.channel_id
-                    fr.record_group_type = RecordGroupType.SLACK_CHANNEL
+                    fr.external_record_group_id = thread_ext_group_id
+                    fr.record_group_type = RecordGroupType.SLACK_THREAD
                     file_recs_by_ts.setdefault(mts, []).append(fr)
                     cr = ChildRecord(
                         child_type=ChildType.RECORD,
@@ -2275,18 +2274,18 @@ class SlackIndividualConnector(BaseConnector):
         )
 
         # -- Collect file records for new replies -----------------------------
+        thread_ext_group_id = f"thread_{ctx.channel_id}_{thread_ts}"
         file_children_by_ts: dict[str, list[ChildRecord]] = {}
         file_recs_by_ts: dict[str, list[FileRecord]] = {}
-        channel_rg_id = ctx.channel_groups_map.get(ctx.channel_id) or thread_rg_id
         for msg in new_replies:
             mts = msg.get("ts", "")
             for fd in msg.get("files", []):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
-                    fr.record_group_id = channel_rg_id
+                    fr.record_group_id = thread_rg_id
                     fr.root_record_group_id       = self._root_rg_id(ctx)
-                    fr.external_record_group_id = ctx.channel_id
-                    fr.record_group_type = RecordGroupType.SLACK_CHANNEL
+                    fr.external_record_group_id = thread_ext_group_id
+                    fr.record_group_type = RecordGroupType.SLACK_THREAD
                     file_recs_by_ts.setdefault(mts, []).append(fr)
                     cr = ChildRecord(
                         child_type=ChildType.RECORD,
@@ -2446,6 +2445,12 @@ class SlackIndividualConnector(BaseConnector):
                 content=aggregated_text,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
+                # True when any message in the burst started a thread, as the
+                # deferred-thread loop below decides it.
+                has_replies=any(
+                    m.get("reply_count", 0) > 0 and m.get("thread_ts") == m.get("ts")
+                    for m in burst.messages
+                ),
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
@@ -2776,15 +2781,15 @@ class SlackIndividualConnector(BaseConnector):
     ) -> Optional[LinkRecord]:
         try:
             unfurl       = self._unfurl_data(url, msg)
-            rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
 
             return LinkRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=unfurl.get("title") or url[:100],
                 record_type=RecordType.LINK,
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
-                external_record_group_id=ctx.channel_id,
-                record_group_id=rg_id,
+                # A link in a thread reply sits in the thread group with its message.
+                external_record_group_id=parent.external_record_group_id or ctx.channel_id,
+                record_group_id=parent.record_group_id or ctx.channel_groups_map.get(ctx.channel_id),
                 root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,

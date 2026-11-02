@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 import builtins
 import logging
 import os
@@ -28,7 +29,9 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
-from app.utils.jinja_templates import compiled_template
+from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
+from app.utils.jinja_templates import compiled_template, one_line
 from app.utils.time_conversion import (
     format_day_for_llm,
     format_epoch_ms_for_llm,
@@ -172,6 +175,7 @@ class RecordType(str, Enum):
     ARTIFACT = "ARTIFACT"
     CODE_FILE = "CODE_FILE"
     SQL_TABLE = "SQL_TABLE"
+    SQL_COLUMN = "SQL_COLUMN"
     SQL_VIEW = "SQL_VIEW"
     OTHERS = "OTHERS"
 
@@ -221,6 +225,8 @@ class ItemType(str, Enum):
     FEATURE = "FEATURE"
     SUBTASK = "SUBTASK"
     INCIDENT = "INCIDENT"
+    # The root cause that incidents are linked to (Zendesk's "problem" ticket type).
+    PROBLEM = "PROBLEM"
     IMPROVEMENT = "IMPROVEMENT"
     QUESTION = "QUESTION"
     DOCUMENTATION = "DOCUMENTATION"
@@ -296,7 +302,6 @@ class Record(BaseModel):
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Write-time only. Set when a record's parent is not its permission parent.
-    # Jira does not set this: a story inherits its epic.
     inherit_permissions_from_group: bool = Field(default=False)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)
@@ -315,6 +320,7 @@ class Record(BaseModel):
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
 
@@ -332,6 +338,7 @@ class Record(BaseModel):
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
     is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")
+    push_origin: bool = Field(default=False, description="Created by an API push; indexing never fetches a remote image for it")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -378,6 +385,18 @@ class Record(BaseModel):
         # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
         return format_epoch_ms_for_llm(epoch_ms)
 
+    def source_dates(self) -> RecordDates:
+        return RecordDates.resolve(
+            connector_name=self.connector_name,
+            origin=self.origin,
+            stored_origin=self.source_timestamp_origin,
+            created_ms=self.source_created_at,
+            modified_ms=self.source_updated_at,
+            # A record built without its stored createdAtTimestamp has the
+            # time it was built there, which is no upload time.
+            uploaded_ms=self.created_at if "created_at" in self.model_fields_set else None,
+        )
+
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
         if name and email:
@@ -401,8 +420,7 @@ class Record(BaseModel):
             f"Connector: {self.connector_name.value}",
             f"Type: {self.record_type.value}",
             f"External ID: {self.external_record_id}",
-            f"Created At: {self._format_timestamp(self.source_created_at)}",
-            f"Last Updated At: {self._format_timestamp(self.source_updated_at)}",
+            *self.source_dates().header_lines(self._format_timestamp),
             f"Connector ID: {self.connector_id if self.connector_id else 'N/A'}",
             f"External Parent ID: {self.parent_external_record_id if self.parent_external_record_id else 'N/A'}",
         ]
@@ -488,7 +506,23 @@ class Record(BaseModel):
         base.update({k: v for k, v in delete_state.items() if v is not None})
         if self.uploaded_by:
             base["uploadedBy"] = self.uploaded_by
+        if self.source_timestamp_origin:
+            base[SOURCE_TIMESTAMP_ORIGIN_FIELD] = self.source_timestamp_origin
+        # Written only when set: an older Arango schema rejects the key, even as false.
+        if self.push_origin:
+            base[PUSH_ORIGIN_FIELD] = True
         return base
+
+    @staticmethod
+    def progress_state_from_arango(
+        record_doc: dict, indexing_default: str = ProgressStatus.QUEUED.value,
+    ) -> dict[str, Any]:
+        """Constructor kwargs for the indexing and extraction status of a stored record. Without them a typed record
+        kept the field defaults, so an indexed record read by id reported itself QUEUED ("not indexed")."""
+        return {
+            "indexing_status": record_doc.get("indexingStatus", indexing_default),
+            "extraction_status": record_doc.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+        }
 
     @staticmethod
     def delete_state_from_arango(record_doc: dict) -> dict[str, Any]:
@@ -547,8 +581,7 @@ class Record(BaseModel):
             processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+            **Record.progress_state_from_arango(arango_base_record),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -566,6 +599,8 @@ class Record(BaseModel):
             # narrowing it.
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
+            source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
+            push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -806,9 +841,13 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            virtual_record_id=arango_base_record.get("virtualRecordId"),
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
+            source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
+            push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
+            **Record.progress_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -963,7 +1002,9 @@ class MessageRecord(Record):
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict[str, Any]:
@@ -1091,7 +1132,9 @@ class MailRecord(Record):
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
             label_ids=mail_doc.get("labelIds", []),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class WebpageRecord(Record):
@@ -1153,7 +1196,9 @@ class WebpageRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class LinkRecord(Record):
@@ -1241,6 +1286,8 @@ class LinkRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1260,7 +1307,9 @@ class LinkRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class CommentRecord(Record):
@@ -1351,7 +1400,9 @@ class CommentRecord(Record):
             author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 # How a ticket's source is named beside its own status name ("Status: NEW
@@ -1362,6 +1413,7 @@ _SOURCE_STATUS_LABELS: dict[Connectors, str] = {
     Connectors.JIRA_CLOUD_PERSONAL: "Jira",
     Connectors.JIRA_DATA_CENTER: "Jira",
     Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+    Connectors.ZENDESK: "Zendesk",
 }
 
 
@@ -1384,6 +1436,8 @@ class TicketRecord(Record):
     creator_source_timestamp: int | None = None
     reporter_source_timestamp: int | None = None
     labels: list[str] | None = Field(default_factory=list)
+    # The source's milestone (GitHub), by its title: often the release an item is aimed at.
+    milestone: str | None = None
     is_email_hidden: bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
@@ -1462,6 +1516,9 @@ class TicketRecord(Record):
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
 
+        if self.milestone:
+            specific_lines.append(f"* Milestone: {self.milestone}")
+
         if specific_lines:
             lines.append("Ticket Information:")
             lines.extend(specific_lines)
@@ -1492,8 +1549,12 @@ class TicketRecord(Record):
         self,
         frontend_url: str | None = None,
         config_service: Any = None,
+        readable_issue_ids: Callable[[str, set[str]], Awaitable[set[str]]] | None = None,
     ) -> str:
-        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC."""
+        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC.
+
+        ``readable_issue_ids(connector_id, issue_ids)`` gives the issues the viewer may read.
+        """
         base = self.to_llm_context(frontend_url=frontend_url)
         if not config_service:
             return base
@@ -1504,7 +1565,7 @@ class TicketRecord(Record):
             )
             if not is_jira_connector(self.connector_name):
                 return base
-            return await enrich_ticket_llm_context(base, self, config_service)
+            return await enrich_ticket_llm_context(base, self, config_service, readable_issue_ids)
         except Exception:
             return base
 
@@ -1535,6 +1596,7 @@ class TicketRecord(Record):
             "creatorSourceTimestamp": self.creator_source_timestamp,
             "reporterSourceTimestamp": self.reporter_source_timestamp,
             "labels":self.labels ,
+            "milestone": self.milestone,
             "assignee_source_id": self.assignee_source_id ,
             "reporter_source_id": self.reporter_source_id,
             "is_email_hidden": self.is_email_hidden,
@@ -1608,9 +1670,14 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            milestone=ticket_doc.get("milestone"),
+            # With it lost, the email fields (then the source's user ids) read as emails.
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1693,6 +1760,8 @@ class ProjectRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1714,7 +1783,9 @@ class ProjectRecord(Record):
             lead_id=project_doc.get("leadId"),
             lead_name=project_doc.get("leadName"),
             lead_email=project_doc.get("leadEmail"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1796,7 +1867,9 @@ class ProductRecord(Record):
             is_active=product_doc.get("isActive"),
             sku=product_doc.get("sku"),
             list_price=product_doc.get("listPrice"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2120,7 +2193,9 @@ class DealRecord(Record):
             is_closed=deal_doc.get("isClosed"),
             created_date=deal_doc.get("createdDate"),
             close_date=deal_doc.get("closeDate"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2258,6 +2333,7 @@ class SQLViewRecord(Record):
     source_tables: Optional[List[str]] = Field(default_factory=list, description="Tables referenced by this view")
     is_secure: bool = Field(default=False, description="Whether this is a secure view")
     comment: Optional[str] = Field(default=None, description="View description/comment")
+    ddl: str | None = Field(default=None, description="CREATE VIEW DDL, or synthetic column-based DDL when unavailable")
 
     def to_arango_record(self) -> Dict:
         return {
@@ -2271,6 +2347,7 @@ class SQLViewRecord(Record):
             "sourceTables": self.source_tables,
             "isSecure": self.is_secure,
             "comment": self.comment,
+            "ddl": self.ddl,
         }
 
     @staticmethod
@@ -2314,7 +2391,10 @@ class SQLViewRecord(Record):
             source_tables=view_doc.get("sourceTables") or [],
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
+            access_rule=read_access_rule(record_doc),
+            ddl=view_doc.get("ddl"),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2346,6 +2426,8 @@ class SQLTableRecord(Record):
     schema_name: Optional[str] = Field(default=None, description="Schema containing the table")
     fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.table")
     row_count: Optional[int] = Field(default=None, description="Number of rows in the table")
+    db_row_count: int | None = Field(default=None, description="Exact row count from COUNT(*) in the database")
+    indexed_row_count: int | None = Field(default=None, description="Number of rows indexed (capped by max rows per table)")
     size_bytes: Optional[int] = Field(default=None, description="Size of the table in bytes")
     column_count: Optional[int] = Field(default=None, description="Number of columns in the table")
     ddl: Optional[str] = Field(default=None, description="CREATE TABLE DDL statement")
@@ -2362,6 +2444,8 @@ class SQLTableRecord(Record):
             "schemaName": self.schema_name,
             "fqn": self.fqn,
             "rowCount": self.row_count,
+            "dbRowCount": self.db_row_count,
+            "indexedRowCount": self.indexed_row_count,
             "sizeInBytes": self.size_bytes,
             "columnCount": self.column_count,
             "ddl": self.ddl,
@@ -2408,13 +2492,17 @@ class SQLTableRecord(Record):
             schema_name=table_doc.get("schemaName"),
             fqn=table_doc.get("fqn"),
             row_count=table_doc.get("rowCount"),
+            db_row_count=table_doc.get("dbRowCount"),
+            indexed_row_count=table_doc.get("indexedRowCount"),
             size_bytes=table_doc.get("sizeInBytes"),
             column_count=table_doc.get("columnCount"),
             ddl=table_doc.get("ddl"),
             primary_keys=table_doc.get("primaryKeys") or [],
             foreign_keys=table_doc.get("foreignKeys") or [],
             comment=table_doc.get("comment"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2439,6 +2527,136 @@ class SQLTableRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+
+class SQLColumnRecord(Record):
+    """Record for a column on a synced SQL table."""
+
+    fqn: str | None = Field(default=None, description="Fully qualified name: table_fqn.column_name")
+    table_fqn: str | None = Field(default=None, description="Parent table FQN")
+    data_type: str | None = Field(default=None)
+    nullable: bool = Field(default=False)
+    is_primary_key: bool = Field(default=False)
+    is_unique: bool = Field(default=False)
+    is_part_of_composite_primary_key: bool = Field(default=False)
+    is_part_of_composite_unique: bool = Field(default=False)
+    default: str | None = Field(default=None)
+    ordinal_position: int | None = Field(default=None)
+    distinct_count: int | None = Field(default=None)
+    null_count: int | None = Field(default=None)
+    cardinality_ratio: float | None = Field(default=None)
+    confidence_score: str | None = Field(default=None)
+    # Value profile. Values and frequencies are parallel lists because Neo4j
+    # cannot store a list of maps as a property.
+    top_values: list[str] | None = Field(default=None, description="Most common values, descending")
+    top_value_frequencies: list[float] | None = Field(
+        default=None, description="Fraction of non-null rows for each of top_values, same order"
+    )
+    min_value: str | None = Field(default=None)
+    max_value: str | None = Field(default=None)
+    numeric_text: bool | None = Field(
+        default=None, description="Text column whose observed values all parse as numbers"
+    )
+    profiled_at: int | None = Field(default=None, description="Epoch ms of the value profile")
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "fqn": self.fqn,
+            "tableFqn": self.table_fqn,
+            "dataType": self.data_type,
+            "nullable": self.nullable,
+            "isPrimaryKey": self.is_primary_key,
+            "isUnique": self.is_unique,
+            "isPartOfCompositePrimaryKey": self.is_part_of_composite_primary_key,
+            "isPartOfCompositeUnique": self.is_part_of_composite_unique,
+            "default": self.default,
+            "ordinalPosition": self.ordinal_position,
+            "distinctCount": self.distinct_count,
+            "nullCount": self.null_count,
+            "cardinalityRatio": self.cardinality_ratio,
+            "confidenceScore": self.confidence_score,
+            "topValues": self.top_values,
+            "topValueFrequencies": self.top_value_frequencies,
+            "minValue": self.min_value,
+            "maxValue": self.max_value,
+            "numericText": self.numeric_text,
+            "profiledAt": self.profiled_at,
+        }
+
+    @staticmethod
+    def from_arango_record(column_doc: dict, record_doc: dict) -> "SQLColumnRecord":
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLColumnRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            is_internal=record_doc.get("isInternal", False),
+            **Record.progress_state_from_arango(record_doc, indexing_default=ProgressStatus.AUTO_INDEX_OFF.value),
+            fqn=column_doc.get("fqn"),
+            table_fqn=column_doc.get("tableFqn"),
+            data_type=column_doc.get("dataType"),
+            nullable=column_doc.get("nullable", False),
+            is_primary_key=column_doc.get("isPrimaryKey", False),
+            is_unique=column_doc.get("isUnique", False),
+            is_part_of_composite_primary_key=column_doc.get("isPartOfCompositePrimaryKey", False),
+            is_part_of_composite_unique=column_doc.get("isPartOfCompositeUnique", False),
+            default=column_doc.get("default"),
+            ordinal_position=column_doc.get("ordinalPosition"),
+            distinct_count=column_doc.get("distinctCount"),
+            null_count=column_doc.get("nullCount"),
+            cardinality_ratio=column_doc.get("cardinalityRatio"),
+            confidence_score=column_doc.get("confidenceScore"),
+            top_values=column_doc.get("topValues"),
+            top_value_frequencies=column_doc.get("topValueFrequencies"),
+            min_value=column_doc.get("minValue"),
+            max_value=column_doc.get("maxValue"),
+            numeric_text=column_doc.get("numericText"),
+            profiled_at=column_doc.get("profiledAt"),
+            access_rule=read_access_rule(record_doc),
+            **Record.delete_state_from_arango(record_doc),
+        )
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+
 # What the GitHub connector stores as a pull request's status, spelled out.
 # `_status_from_pr` (connectors/sources/github_teams/pull_requests.py) writes
 # DONE for a merged PR, CANCELLED for one closed without merging, and OPEN for
@@ -2459,6 +2677,7 @@ _REQUESTED_REVIEWER_CONNECTORS: frozenset[Connectors] = frozenset({
 })
 
 
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -2471,6 +2690,8 @@ class PullRequestRecord(Record):
     mergeable: str | None = None
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
+    # The source's milestone (GitHub), by its title: often the release a PR is aimed at.
+    milestone: str | None = None
     last_commit_sha: str | None = Field(default=None)
     # Epoch ms the source merged the PR, or closed it unmerged; None while open.
     merged_at: int | None = None
@@ -2533,6 +2754,9 @@ class PullRequestRecord(Record):
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
 
+        if self.milestone:
+            specific_lines.append(f"* Milestone: {self.milestone}")
+
         if specific_lines:
             lines.append("Pull Request Information:")
             lines.extend(specific_lines)
@@ -2570,6 +2794,7 @@ class PullRequestRecord(Record):
             "mergeable": self.mergeable,
             "mergedBy": self.merged_by,
             "labels":self.labels ,
+            "milestone": self.milestone,
             "lastCommitSha": self.last_commit_sha,
             "mergedAtTimestamp": self.merged_at,
             "closedAtTimestamp": self.closed_at,
@@ -2619,10 +2844,13 @@ class PullRequestRecord(Record):
             mergeable=pr_doc.get("mergeable"),
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
+            milestone=pr_doc.get("milestone"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
             merged_at=pr_doc.get("mergedAtTimestamp"),
             closed_at=pr_doc.get("closedAtTimestamp"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class LifecycleStatus(str, Enum):
@@ -2819,7 +3047,9 @@ class ArtifactRecord(Record):
             content_hash=artifact_doc.get("contentHash"),
             result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
         
@@ -2930,6 +3160,24 @@ class CodeFileRecord(Record):
     # generated. Classified by the connector from the path alone; the resolver
     # reads it instead of re-deriving "is this a test?" from the path.
     file_role: str | None = None
+    # The commit this version of the file was synced at (P-8).
+    commit_sha: str | None = None
+
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Adds the repo-relative path the code-graph tools address files by.
+
+        `Name` is a bare basename and `External ID` is a connector-specific URL,
+        so without this line a search hit carries no argument `get_neighbour`/
+        `read_code` accept — the only way left to obtain one is a
+        `query_code_graph` listing, which is why traces show every traversal
+        preceded by one.
+        """
+        base = super().to_llm_context(
+            frontend_url=frontend_url, include_full_semantic=include_full_semantic,
+        )
+        if not self.file_path:
+            return base
+        return f"{base}\nPath: {one_line(self.file_path)}"
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2951,6 +3199,7 @@ class CodeFileRecord(Record):
             "fileHash": self.file_hash,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     def to_arango_record(self) -> dict:
@@ -2963,6 +3212,7 @@ class CodeFileRecord(Record):
             "extension": self.extension,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     @staticmethod
@@ -3007,8 +3257,7 @@ class CodeFileRecord(Record):
             processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+            **Record.progress_state_from_arango(arango_base_record),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -3025,6 +3274,8 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            commit_sha=arango_base_code_file_record.get("commitSha"),
+            access_rule=read_access_rule(arango_base_record),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -3265,6 +3516,7 @@ class AppUser(BaseModel):
     is_active: bool = Field(default=False, description="Whether the user is active")
     title: str | None = Field(default=None, description="Title of the user")
     is_guest: bool = Field(default=False, description="Whether the source directory lists the user as a guest; a synced guest is not made an org member")
+    source_role: str | None = Field(default=None, description="The user's administrative role in the source (e.g. team admin); not a job title and not stored")
 
     def to_arango_base_user(self) -> dict:
         return {
@@ -3276,6 +3528,8 @@ class AppUser(BaseModel):
             "isActive": self.is_active,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            # "designation" is the graph user field the schema already allows; it rejects null.
+            **({"designation": self.title} if self.title else {}),
         }
 
     @staticmethod
@@ -3287,6 +3541,7 @@ class AppUser(BaseModel):
             user_id=data.get("userId"),
             is_active=data.get("isActive", False),
             full_name=data.get("fullName"),
+            title=data.get("designation") or data.get("title"),
             source_user_id=data.get("sourceUserId", ""),
             app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()),
             connector_id=data.get("connectorId", ""),
@@ -3556,7 +3811,9 @@ class MeetingRecord(Record):
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
             recording_url=meeting_doc.get("recordingUrl"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:

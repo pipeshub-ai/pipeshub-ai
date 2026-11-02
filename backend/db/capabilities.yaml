@@ -1,0 +1,23 @@
+# What the database must offer, as data. Bumping "tested_up_to" is a CI change, not code.
+# The Python runtime embeds the same table (app/core/db/capabilities.py DEFAULT_TABLE); a unit test keeps them identical.
+# required: always | on_request (the profile names the extension) | optional
+postgres: {floor: 17, tested_up_to: 18}
+extensions:
+  vector:
+    required: on_request
+    floor: "0.8.0"
+    tested_up_to: "0.8.7"
+    # Below 0.8.4 HNSW vacuum is not safe; the flag keeps the safe mode.
+    flags:
+      - {below: "0.8.4", set: {hnsw_vacuum_safe: false}, default: {hnsw_vacuum_safe: true}}
+  pg_trgm: {required: always, floor: "1.6", tested_up_to: "1.6"}
+  pg_textsearch:
+    required: optional
+    floor: "1.0"
+    tested_up_to: "1.5.1"
+    flags:
+      - {installed: true, set: {bm25: true}, default: {bm25: false}}
+  pg_search: {required: optional}
+  pg_stat_statements: {required: optional}
+flags:
+  fused_vector: {all_of: [vector]}

@@ -496,7 +496,15 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": null,
+      "data": {
+        "dpi": 72,
+        "mimetype": "image/png",
+        "size": {
+          "height": 800.0,
+          "width": 800.0
+        },
+        "uri": "data:PLACEHOLDER;base64,PLACEHOLDER"
+      },
       "file_metadata": null,
       "format": "base64",
       "image_metadata": {
@@ -530,7 +538,15 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": null,
+      "data": {
+        "dpi": 72,
+        "mimetype": "image/png",
+        "size": {
+          "height": 10.0,
+          "width": 1200.0
+        },
+        "uri": "data:PLACEHOLDER;base64,PLACEHOLDER"
+      },
       "file_metadata": null,
       "format": "base64",
       "image_metadata": {
@@ -544,6 +560,90 @@
         "image_type": null
       },
       "index": 18,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": null,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "image"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": {
+        "dpi": 72,
+        "mimetype": "image/png",
+        "size": {
+          "height": 279.0,
+          "width": 2029.0
+        },
+        "uri": "data:PLACEHOLDER;base64,PLACEHOLDER"
+      },
+      "file_metadata": null,
+      "format": "base64",
+      "image_metadata": {
+        "annotations": [],
+        "captions": [],
+        "footnotes": [],
+        "image_dpi": null,
+        "image_format": null,
+        "image_resolution": null,
+        "image_size": null,
+        "image_type": null
+      },
+      "index": 19,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": null,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "image"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": {
+        "dpi": 72,
+        "mimetype": "image/png",
+        "size": {
+          "height": 279.0,
+          "width": 2029.0
+        },
+        "uri": "data:PLACEHOLDER;base64,PLACEHOLDER"
+      },
+      "file_metadata": null,
+      "format": "base64",
+      "image_metadata": {
+        "annotations": [],
+        "captions": [],
+        "footnotes": [],
+        "image_dpi": null,
+        "image_format": null,
+        "image_resolution": null,
+        "image_size": null,
+        "image_type": null
+      },
+      "index": 20,
       "link_metadata": null,
       "links": null,
       "list_metadata": null,

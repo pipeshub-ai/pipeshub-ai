@@ -24,7 +24,7 @@ from app.models.entities import ArtifactType, ArtifactVisibility, deserialize_ar
 
 from .access import AccessDeniedError, AccessPolicy, ArtifactNotFoundError
 from .lineage import LineageTracker
-from .models import Actor, ArtifactMetadata, ArtifactVersion, UploadGrant
+from .models import Actor, ArtifactCopy, ArtifactMetadata, ArtifactVersion, UploadGrant
 from .signed_urls import GrantVerificationError, SignedUrlBroker
 from .versioning import (
     VersionConflictError,
@@ -298,6 +298,73 @@ class ArtifactRegistryService:
             actor=actor, artifact_id=artifact_id, content=content, mime_type=mime_type,
             expected_version=expected_version,
         )
+
+    async def copy_to_conversation(
+        self, *, actor: Actor, artifact_id: str, up_to_version: int, conversation_id: str,
+    ) -> ArtifactCopy:
+        """Copy versions 1..`up_to_version` of `artifact_id` into a NEW
+        artifact owned by `conversation_id`.
+
+        Used when a chat is forked: an artifact is reachable by anyone with
+        a permission edge to its record, so a fork that kept pointing at the
+        original's record would see the original's later versions and write
+        its own edits into the original. The copy shares no record and no
+        blob with the source. Versions after `up_to_version` are left behind
+        on purpose — the fork must not see work that happened after it
+        branched.
+
+        An older version whose bytes can no longer be read is skipped; the
+        requested last version must be readable or the whole copy fails and
+        the half-built record is discarded."""
+        source = await self.resolve(actor=actor, ref=artifact_id)
+        last = max(1, min(up_to_version, source.version))
+        copy: ArtifactMetadata | None = None
+        versions: dict[int, int] = {}
+        try:
+            for version in range(1, last + 1):
+                try:
+                    content = await self.get_content(actor=actor, artifact_id=artifact_id, version=version)
+                except ArtifactNotFoundError:
+                    if version == last:
+                        raise
+                    continue
+                if copy is None:
+                    copy = await self.register(
+                        actor=actor, name=source.name, artifact_type=source.artifact_type,
+                        mime_type=source.mime_type, content=content, conversation_id=conversation_id,
+                        description=source.description, source_tool=source.source_tool,
+                        is_temporary=source.is_temporary, visibility=source.visibility,
+                        result_schema=source.result_schema,
+                    )
+                    versions[version] = copy.version
+                else:
+                    added, copy = await self.add_version(
+                        actor=actor, artifact_id=copy.artifact_id, content=content,
+                        mime_type=source.mime_type, expected_version=copy.version,
+                    )
+                    versions[version] = added.version
+        except Exception:
+            if copy is not None:
+                await self._discard_copy(copy.artifact_id)
+            raise
+
+        if copy is None:
+            raise ArtifactNotFoundError(f"Artifact {artifact_id} has no readable version to copy")
+        return ArtifactCopy(
+            source_artifact_id=artifact_id, source_document_id=source.document_id,
+            artifact_id=copy.artifact_id, document_id=copy.document_id, versions=versions,
+        )
+
+    async def _discard_copy(self, artifact_id: str) -> None:
+        try:
+            await self._graph_provider.update_node(
+                artifact_id, CollectionNames.RECORDS.value,
+                {"isDeleted": True, "reason": "ARTIFACT_COPY_FAILED"},
+            )
+        except Exception:
+            logger.warning(
+                "copy_to_conversation: could not mark partial copy %s deleted", artifact_id, exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Two-phase upload (large content the caller can't pass inline)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -22,8 +21,13 @@ from app.modules.named_entities.strategies.base import (
     StrategyResult,
 )
 from app.modules.named_entities.wire import EntitySubmission, WireEntity
+from app.services.llm_gateway.gateway import (
+    ProviderUnavailableError,
+    get_llm_gateway,
+    provider_key,
+)
 from app.telemetry.modules.named_entity_metrics import record_step_down
-from app.utils.concurrency import indexing_llm_slot
+from app.utils.llm import is_provider_unavailable
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -182,7 +186,7 @@ class SingleCallExtractionStrategy:
         if not windows:
             return StrategyResult(termination_reason="single_call")
         kinds = ", ".join(sorted(kind.value for kind in ctx.enabled))
-        failed = 0
+        failed = unavailable = 0
         for window in windows:
             prompt = (
                 f"Enabled kinds: {kinds}.\n"
@@ -194,6 +198,12 @@ class SingleCallExtractionStrategy:
             except Exception as exc:
                 logger.warning("Named-entity single call failed: %s", type(exc).__name__)
                 failed += 1
+                # The gateway turns a provider's timeout into ProviderUnavailableError; a bare
+                # TimeoutError is this call's own budget, which a slow document can hit every time.
+                if isinstance(exc, ProviderUnavailableError) or (
+                    not isinstance(exc, TimeoutError) and is_provider_unavailable(exc)
+                ):
+                    unavailable += 1
                 continue
             items = raw.entities if isinstance(raw, EntitySubmission) else parse_submission_text(str(raw or ""))
             await session.staged(lambda items=items[:_MAX_ITEMS_PER_WINDOW]: [
@@ -204,6 +214,7 @@ class SingleCallExtractionStrategy:
             "windows_total": len(all_windows),
             "windows_run": len(windows),
             "windows_failed": failed,
+            "windows_unavailable": unavailable,
         }
         if failed and not session.staging:
             return StrategyResult(termination_reason="llm_error", failed_before_first_turn=True, **coverage)
@@ -232,9 +243,11 @@ class SingleCallExtractionStrategy:
                 result = await runners[mode](llm, prompt)
             except Exception as exc:
                 error, result = exc, None
-                # A call that ran out of time says nothing about the schema: the
-                # next mode is only a retry, and must not become the start mode.
-                if isinstance(exc, TimeoutError):
+                # A call that ran out of time, or that the provider could not
+                # serve (an open circuit, an outage), says nothing about the
+                # schema: the next mode is only a retry, and must not become the
+                # start mode.
+                if isinstance(exc, (TimeoutError, ProviderUnavailableError)):
                     continue
             if result is None:
                 failed.append(mode)
@@ -274,8 +287,9 @@ async def _strict(llm: BaseChatModel, prompt: str) -> EntitySubmission | None:
 
 async def _function_call(llm: BaseChatModel, prompt: str) -> EntitySubmission | str:
     bound = llm.with_structured_output(EntitySubmission, method="function_calling")
-    async with indexing_llm_slot():
-        result = await asyncio.wait_for(bound.ainvoke(_messages(prompt)), timeout=_CALL_TIMEOUT)
+    result = await get_llm_gateway().invoke(
+        bound, _messages(prompt), provider=provider_key(llm), call_site="named_entities", timeout=_CALL_TIMEOUT
+    )
     if isinstance(result, EntitySubmission):
         return result
     if isinstance(result, dict):
@@ -284,8 +298,9 @@ async def _function_call(llm: BaseChatModel, prompt: str) -> EntitySubmission | 
 
 
 async def _prompted_json(llm: BaseChatModel, prompt: str) -> str:
-    async with indexing_llm_slot():
-        response = await asyncio.wait_for(llm.ainvoke(_messages(prompt)), timeout=_CALL_TIMEOUT)
+    response = await get_llm_gateway().invoke(
+        llm, _messages(prompt), provider=provider_key(llm), call_site="named_entities", timeout=_CALL_TIMEOUT
+    )
     content = getattr(response, "content", response)
     if isinstance(content, list):
         return "".join(str(getattr(part, "text", part)) for part in content)

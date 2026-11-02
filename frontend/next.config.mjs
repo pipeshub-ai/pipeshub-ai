@@ -6,6 +6,9 @@ const electronStaticExport =
 const nextConfig = {
     ...(electronStaticExport ? { output: 'export' } : {}),
     trailingSlash: true,
+    // app/global-not-found.tsx: the app has two root layouts, so unmatched URLs
+    // would otherwise get Next's unbranded default 404.
+    experimental: { globalNotFound: true },
     /**
      * Static export does not emit per-slug callback HTML. Rewrites map
      * `/toolsets/oauth/callback/:slug` and `/connectors/oauth/callback/:slug` → the

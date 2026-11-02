@@ -65,9 +65,9 @@ describe('knowledge_base/types/record', () => {
       const validStatuses: import('../../../../src/modules/knowledge_base/types/record').IndexingStatus[] = [
         'NOT_STARTED', 'PAUSED', 'IN_PROGRESS', 'COMPLETED', 'FAILED',
         'FILE_TYPE_NOT_SUPPORTED', 'AUTO_INDEX_OFF', 'EMPTY',
-        'ENABLE_MULTIMODAL_MODELS', 'QUEUED',
+        'ENABLE_MULTIMODAL_MODELS', 'QUEUED', 'SKIPPED', 'PASSWORD_PROTECTED',
       ]
-      expect(validStatuses).to.have.lengthOf(10)
+      expect(validStatuses).to.have.lengthOf(12)
     })
 
     it('should allow optional flags with defaults description', () => {

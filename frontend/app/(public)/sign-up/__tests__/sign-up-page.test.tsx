@@ -98,7 +98,7 @@ async function signUpThroughTheForm() {
   fill('signup-password', PASSWORD);
   fill('signup-confirm-password', PASSWORD);
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Sign Up' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Sign up' }));
 }
 
 describe('SignUpPage', () => {

@@ -97,6 +97,7 @@ def _hub(documents: dict[str, dict] | None = None) -> KnowledgeHubService:
 
     graph = MagicMock()
     graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+    graph.get_hidden_app_ids = AsyncMock(return_value=[])
     graph.get_knowledge_hub_access_context_v2 = AsyncMock(return_value=_GATE)
     graph.get_knowledge_hub_access_v3 = AsyncMock(return_value={**_GATE, "by_connector": _GRANTS})
     graph.get_knowledge_hub_root_nodes_v2 = AsyncMock(side_effect=root_listing)
@@ -172,10 +173,7 @@ async def test_lookup_record_drops_a_demo_match() -> None:
         graph_provider=graph, catalog=MagicMock(), org_id="org", user_id="u1", user_key="k",
         folder_mime_types=[], excluded_app_ids=OFF,
     )
-    resolver._fetch_candidates = AsyncMock(return_value=(
-        [_match("d", "PR #211"), _match("j", "Real")],
-        ["weburl"],
-    ))
+    resolver._execute_strategy = AsyncMock(return_value=[_match("d", "PR #211"), _match("j", "Real")])
     matches, _ = await resolver._resolve_one("https://github.acme-demo.example/svc-export/pull/211")
     assert [m.id for m in matches] == ["j"]
 
@@ -226,7 +224,8 @@ async def test_the_record_page_hides_a_switched_off_demo_record(excluded, expect
             assert err.value.status_code == 404
         else:
             result = await connector_router.get_record_by_id(record_id="rec-1", request=_http_request(), graph_provider=graph)
-            assert result == {"record": {"id": "rec-1"}}
+            # Shown, with the stage track the record page reads (empty: no revision yet).
+            assert result == {"record": {"id": "rec-1"}, "stageStates": []}
 
 
 @pytest.mark.asyncio

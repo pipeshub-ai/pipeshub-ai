@@ -473,7 +473,7 @@ class TestTryRequests:
 
 
 class TestSsrfValidation:
-    """Host validation runs before fetch strategies (initial URL only)."""
+    """Host validation runs before fetch strategies and on every redirect hop."""
 
     def test_blocks_literal_loopback_ipv4(self) -> None:
         with pytest.raises(FetchError, match="Blocked unsafe URL"):
@@ -507,6 +507,42 @@ class TestSsrfValidation:
     def test_rejects_non_http_scheme(self) -> None:
         with pytest.raises(FetchError, match="Only HTTP/HTTPS"):
             fetch_url("file:///etc/passwd")
+
+    # Every hop goes through fetch_url's pinned per-hop loop.
+    @staticmethod
+    def _redirect_then_ok(location: str) -> list[FetchResult]:
+        return [
+            _fetch_result(302, "https://example.com/page", {"Location": location}),
+            _fetch_result(200, location),
+        ]
+
+    @staticmethod
+    def _dns(private_host: str):  # noqa: ANN205
+        def fake_getaddrinfo(
+            host: str, port: object, *_args: object, **_kwargs: object
+        ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+            addr = "10.0.0.1" if host == private_host else "8.8.8.8"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, 0))]
+
+        return fake_getaddrinfo
+
+    @pytest.mark.parametrize(
+        "location",
+        ["http://127.0.0.1/secret", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.8/logo.png"],
+    )
+    def test_blocks_redirect_to_loopback_metadata_or_private_literal(self, location: str) -> None:
+        with patch("app.utils.url_fetcher._try_requests", side_effect=self._redirect_then_ok(location)) as mock:
+            with pytest.raises(FetchError, match="Blocked"):
+                fetch_url("https://example.com/page", strategy="requests")
+        assert mock.call_count == 1
+
+    def test_blocks_redirect_to_hostname_that_resolves_private(self) -> None:
+        responses = self._redirect_then_ok("http://internal.corp/")
+        with patch("socket.getaddrinfo", side_effect=self._dns("internal.corp")), \
+             patch("app.utils.url_fetcher._try_requests", side_effect=responses) as mock:
+            with pytest.raises(FetchError, match="Blocked"):
+                fetch_url("https://example.com/page", strategy="requests")
+        assert mock.call_count == 1
 
 
 class TestFetchUrl:

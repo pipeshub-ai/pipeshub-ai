@@ -9,6 +9,7 @@ import pytest
 
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_prompt_cache_param_conflict,
+    refused_cache_params,
 )
 
 SENT = {"prompt_cache_key", "prompt_cache_retention"}
@@ -24,6 +25,20 @@ def _response(status: int) -> httpx.Response:
 ])
 def test_an_openai_400_naming_a_sent_parameter(message: str) -> None:
     assert is_prompt_cache_param_conflict(openai.BadRequestError(message, response=_response(400), body=None), SENT)
+
+
+def test_only_the_parameters_the_400_names_are_refused() -> None:
+    sent = {"prompt_cache_key", "prompt_cache_retention", "prompt_cache_breakpoint"}
+    # Azure's answer when a model before GPT-5.6 gets a breakpoint.
+    exc = openai.BadRequestError(
+        "Error code: 400 - {'error': {'message': 'prompt_cache_breakpoint is not supported on this model', "
+        "'type': 'invalid_request_error', 'param': 'prompt_cache_breakpoint', 'code': 'invalid_parameter'}}",
+        response=_response(400), body=None,
+    )
+    assert refused_cache_params(exc, sent) == {"prompt_cache_breakpoint"}
+    retention = openai.BadRequestError("Error code: 400 - Unrecognized request argument supplied: prompt_cache_retention",
+                                       response=_response(400), body=None)
+    assert refused_cache_params(retention, sent) == {"prompt_cache_retention"}
 
 
 def test_an_anthropic_400_naming_cache_control() -> None:

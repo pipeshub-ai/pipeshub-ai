@@ -440,4 +440,18 @@ describe('SchemaFormField: labels, ranges and options', () => {
     const trigger = screen.getByLabelText(/Crawl/);
     expect(trigger.textContent).toBe('Only this page');
   });
+
+  it('shows yes/no options as translated words, not raw lower-case values', () => {
+    renderField(
+      {
+        name: 'grantAccess',
+        displayName: 'Grant access',
+        fieldType: 'SELECT',
+        required: true,
+        options: ['yes', 'no'],
+      } as AuthSchemaField,
+      { value: true }
+    );
+    expect(screen.getByLabelText(/Grant access/).textContent).toBe('Yes');
+  });
 });

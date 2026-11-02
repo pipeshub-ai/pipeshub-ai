@@ -366,6 +366,67 @@ class ConnectorAssertions:
             f"got {actual}"
         )
     
+    async def find_permission_edges(
+        self,
+        *,
+        from_collection: str,
+        from_key: str,
+        to_collection: str,
+        to_key: str,
+    ) -> list[dict[str, Any]]:
+        """Return raw ``permission`` edge docs between two specific nodes (may be empty)."""
+        return await self.graph.find_edges_between(
+            from_collection, from_key, to_collection, to_key, "permission"
+        )
+
+    async def assert_permission_role(
+        self,
+        *,
+        from_collection: str,
+        from_key: str,
+        to_collection: str,
+        to_key: str,
+        expected_role: str,
+        expected_type: str | None = None,
+    ) -> Dict[str, Any]:
+        """Assert a ``permission`` edge exists with the expected role (and optional entity type).
+
+        The connector serialises ``Permission`` as an edge whose ``role`` is
+        ``PermissionType.value`` (e.g. ``OWNER`` / ``READER``) and whose ``type`` is
+        ``EntityType.value`` (e.g. ``USER`` / ``GROUP``) — see ``app/models/permission.py``
+        ``to_arango_permission``. This is the only assertion that inspects the edge's role;
+        the generic edge validator checks structure/cardinality but not the role attribute.
+
+        Args:
+            from_collection/from_key: source node (e.g. ``users``/<user _key>, ``groups``/<group _key>)
+            to_collection/to_key: target node (``records``/<rec _key> or ``recordGroups``/<rg _key>)
+            expected_role: expected ``role`` value (``PermissionType.*.value``)
+            expected_type: optional expected ``type`` value (``EntityType.*.value``)
+
+        Returns:
+            The matching edge document.
+        """
+        edges = await self.find_permission_edges(
+            from_collection=from_collection, from_key=from_key,
+            to_collection=to_collection, to_key=to_key,
+        )
+        assert edges, (
+            f"No permission edge {from_collection}/{from_key} -> {to_collection}/{to_key}"
+        )
+        matches = [
+            e for e in edges
+            if e.get("role") == expected_role
+            and (expected_type is None or e.get("type") == expected_type)
+        ]
+        assert matches, (
+            f"No permission edge {from_collection}/{from_key} -> {to_collection}/{to_key} "
+            f"with role={expected_role!r}"
+            + (f", type={expected_type!r}" if expected_type is not None else "")
+            + f"; found roles={[e.get('role') for e in edges]!r} "
+            f"types={[e.get('type') for e in edges]!r}"
+        )
+        return matches[0]
+
     # =========================================================================
     # Batch Assertions
     # =========================================================================

@@ -66,12 +66,17 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
+from app.connectors.sources.atlassian.core.html_utils import (
+    has_unknown_macro_placeholder,
+    inline_images_as_markdown,
+)
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
     is_inconclusive_status,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -396,6 +401,12 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
 )
 class JiraDataCenterConnector(BaseConnector):
     """Jira Data Center connector: sync orchestration aligned with Jira Cloud"""
+
+    user_link_steps = ("_link_users_and_groups",)
+    _SYNC_STATE = (
+        "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
+        "_dc_name_to_source_id",
+    )
 
     def __init__(
         self,
@@ -1429,6 +1440,18 @@ class JiraDataCenterConnector(BaseConnector):
     # User & Group Management
     # ============================================================================
 
+    async def _link_users_and_groups(self) -> None:
+        """The sync's user and group steps. Project roles, grants and issue edges wait for the next full sync."""
+        if not self.data_source:
+            return
+        with self._keep_sync_state(*self._SYNC_STATE):
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
+            jira_users = await self._fetch_users()
+            if jira_users:
+                await self.data_entities_processor.on_new_app_users(jira_users)
+            await self._sync_user_groups(jira_users)
+
     async def _fetch_users(self) -> list[AppUser]:
         """
         Fetch and resolve active Jira DC users:
@@ -2079,7 +2102,8 @@ class JiraDataCenterConnector(BaseConnector):
                 return None
 
             scheme_id = scheme_response.json().get("id")
-            if not scheme_id:
+            # Jira's built-in "Default Permission Scheme" has id 0, so only a missing id counts.
+            if scheme_id is None:
                 self.logger.warning(
                     "⚠️ Permission scheme for %s has no id — cannot fetch grants",
                     project_key,
@@ -4512,6 +4536,28 @@ class JiraDataCenterConnector(BaseConnector):
         )
 
 
+    def _markdown_from_raw_wiki(self, raw_body: object, inlined_html: str) -> str | None:
+        """Rebuild a description or comment body from its raw wiki markup.
+
+        Used when Jira's rendered HTML dropped text (see ``has_unknown_macro_placeholder``).
+        On Data Center, REST v2 returns ``fields.description`` and a comment's ``body`` as
+        wiki-markup strings (there is no ADF), so the raw text is indexed as is: it still holds
+        everything the renderer dropped, and it already names its images (``!shot.png!``).
+        Images that were inlined into the rendered HTML are appended. Images that were not
+        inlined are left out, since their attachment URLs need the connector's credentials.
+        Returns ``None`` when the raw value has no text, so the caller keeps the rendered HTML.
+        """
+        text = raw_body.strip() if isinstance(raw_body, str) else ""
+        if not text:
+            return None
+        images = [
+            line for line in inline_images_as_markdown(inlined_html)
+            if "](data:" in line or not self._RENDERED_ATTACHMENT_URL_RE.search(line)
+        ]
+        if images:
+            text = f"{text}\n\n" + "\n\n".join(images)
+        return text
+
     async def _parse_issue_to_blocks(
         self,
         issue_data: dict[str, Any],
@@ -4527,6 +4573,11 @@ class JiraDataCenterConnector(BaseConnector):
         Uses rendered HTML from ``renderedFields`` (via ``?expand=renderedFields``)
         for description and comments. Images are fetched via authenticated API and
         inlined as base64 data URIs before storing.
+
+        Fallback: Jira's wiki renderer reads plain text containing ``{`` (a pasted JSON
+        payload, for example) as a macro and replaces it with an "Unknown macro" error, so
+        that text is missing from the rendered HTML. When the description or a comment shows
+        that placeholder, its raw wiki markup is indexed instead (as markdown).
 
         This creates:
         - Description BlockGroup (index=0) with:
@@ -4580,6 +4631,8 @@ class JiraDataCenterConnector(BaseConnector):
         comments_data = issue_data.get("comments", [])
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
+        # A comment restricted to a role or group would reach everyone who can open the issue.
+        comments_data = [c for c in comments_data or [] if not c.get("visibility")]
 
         # 1. Description BlockGroup (index=0) — rendered HTML
         if isinstance(rendered_description_html, str) and rendered_description_html.strip():
@@ -4589,7 +4642,21 @@ class JiraDataCenterConnector(BaseConnector):
         else:
             description_content = ""
 
-        if not description_content:
+        description_format = DataFormat.HTML
+        fallback = None
+        if isinstance(rendered_description_html, str) and has_unknown_macro_placeholder(
+            rendered_description_html
+        ):
+            fallback = self._markdown_from_raw_wiki(fields.get("description"), description_content)
+        if fallback is not None:
+            self.logger.info(
+                "Jira issue %s: rendered description lost text to an unknown-macro "
+                "placeholder; indexing the raw description instead",
+                resolved_issue_key or issue_id,
+            )
+            description_content = f"# {issue_name}\n\n{fallback}"
+            description_format = DataFormat.MARKDOWN
+        elif not description_content:
             description_content = f"<h1>{issue_name}</h1>"
         else:
             description_content = f"<h1>{issue_name}</h1>\n{description_content}"
@@ -4603,7 +4670,7 @@ class JiraDataCenterConnector(BaseConnector):
             description=f"Description for issue {issue_key}" if issue_key else "Issue description",
             source_group_id=f"{issue_id}_description",
             data=description_content,
-            format=DataFormat.HTML,
+            format=description_format,
             weburl=weburl,
             requires_processing=True,
         )
@@ -4658,6 +4725,18 @@ class JiraDataCenterConnector(BaseConnector):
                     if not comment_body:
                         continue
 
+                    comment_format = DataFormat.HTML
+                    if has_unknown_macro_placeholder(comment_html):
+                        fallback = self._markdown_from_raw_wiki(comment.get("body"), comment_body)
+                        if fallback is not None:
+                            self.logger.info(
+                                "Jira issue %s: rendered comment %s lost text to an unknown-macro "
+                                "placeholder; indexing the raw comment instead",
+                                resolved_issue_key or issue_id, comment_id,
+                            )
+                            comment_body = fallback
+                            comment_format = DataFormat.MARKDOWN
+
                     # Build comment weburl
                     if self.site_url and issue_key and comment_id:
                         comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
@@ -4688,7 +4767,7 @@ class JiraDataCenterConnector(BaseConnector):
                         description=f"Comment by {author_name}",
                         source_group_id=comment_id,
                         data=comment_body,
-                        format=DataFormat.HTML,
+                        format=comment_format,
                         weburl=comment_weburl,
                         requires_processing=True,
                         children_records=comment_children if comment_children else None,
@@ -5303,7 +5382,7 @@ class JiraDataCenterConnector(BaseConnector):
         external_record_id = f"{external_id_prefix}{attachment_id}"
 
         file_record = FileRecord(
-            id=record_id or str(uuid4()),
+            id=record_id or new_record_id(self.connector_id, external_record_id),
             org_id=self.data_entities_processor.org_id,
             record_name=filename,
             record_type=RecordType.FILE,

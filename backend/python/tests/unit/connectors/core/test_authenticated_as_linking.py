@@ -226,3 +226,97 @@ class TestRegisterAuthenticatedSourceUser:
         conn.data_entities_processor.link_authenticator_to_source_user.side_effect = RuntimeError("graph down")
         await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
         conn.logger.warning.assert_called_once()
+
+
+class TestAuthenticatorUser:
+    async def test_the_user_who_authenticated_is_read_not_the_creator(self) -> None:
+        tx = _tx_store(authenticated_by="admin-user-id")
+        tx.get_user_by_user_id = AsyncMock(return_value={"_key": "admin-key", "email": "admin@x.com"})
+        proc = _processor(tx)
+
+        user = await proc.get_app_authenticator_user(CONNECTOR, CREATED_BY)
+
+        assert user["email"] == "admin@x.com"
+        tx.get_user_by_user_id.assert_awaited_once_with("admin-user-id")
+
+    async def test_instances_without_the_field_fall_back_to_the_creator(self) -> None:
+        tx = _tx_store()
+        proc = _processor(tx)
+
+        await proc.get_app_authenticator_user(CONNECTOR, CREATED_BY)
+
+        tx.get_user_by_user_id.assert_awaited_once_with(CREATED_BY)
+
+    async def test_nobody_to_read_answers_an_empty_user(self) -> None:
+        tx = _tx_store()
+        tx.get_app_by_id = AsyncMock(return_value=None)
+        proc = _processor(tx)
+
+        assert await proc.get_app_authenticator_user(CONNECTOR, None) == {}
+        tx.get_user_by_user_id.assert_not_called()
+
+
+class TestAuthenticatorEmail:
+    def _connector(self, user=None, error=None) -> MagicMock:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = MagicMock(spec=BaseConnector)
+        conn.logger = MagicMock()
+        conn.connector_id = CONNECTOR
+        conn.created_by = CREATED_BY
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_app_authenticator_user = AsyncMock(return_value=user, side_effect=error)
+        return conn
+
+    async def test_answers_the_authenticators_email(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector({"email": " admin@x.com "})
+
+        assert await BaseConnector.authenticator_email(conn) == "admin@x.com"
+        conn.data_entities_processor.get_app_authenticator_user.assert_awaited_once_with(CONNECTOR, CREATED_BY)
+
+    @pytest.mark.parametrize("user", [None, {}, {"email": None}, {"email": "  "}])
+    async def test_no_email_answers_none(self, user) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        assert await BaseConnector.authenticator_email(self._connector(user)) is None
+
+    async def test_a_failed_read_is_logged_not_raised(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector(error=RuntimeError("graph down"))
+
+        assert await BaseConnector.authenticator_email(conn) is None
+        conn.logger.warning.assert_called_once()
+
+
+class TestUnlinkAuthenticator:
+    def _patch_notify(self, monkeypatch) -> AsyncMock:
+        notify = AsyncMock()
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.notify_connector_sync_completed",
+            notify,
+        )
+        return notify
+
+    async def test_a_removed_link_drops_the_connectors_cached_maps(self, monkeypatch) -> None:
+        notify = self._patch_notify(monkeypatch)
+        tx = _tx_store()
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        proc = _processor(tx)
+
+        await proc.unlink_authenticator(CONNECTOR)
+
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+        notify.assert_awaited_once_with(CONNECTOR, "org-1")
+
+    async def test_no_link_to_remove_leaves_the_cache_alone(self, monkeypatch) -> None:
+        notify = self._patch_notify(monkeypatch)
+        tx = _tx_store()
+        tx.remove_authenticated_as = AsyncMock(return_value=False)
+        proc = _processor(tx)
+
+        await proc.unlink_authenticator(CONNECTOR)
+
+        notify.assert_not_called()

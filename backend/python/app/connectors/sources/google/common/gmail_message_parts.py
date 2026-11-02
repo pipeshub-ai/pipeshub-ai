@@ -1,7 +1,8 @@
-"""Find a Gmail message part by its ``partId``."""
+"""Gmail message parts: find one by its ``partId``, and decode a part's body data."""
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 
@@ -20,3 +21,12 @@ def find_message_part(parts: object, part_id: str) -> dict[str, Any] | None:
         if found is not None:
             return found
     return None
+
+
+def decode_body_data(data: str | None) -> bytes:
+    """A part body's ``data``: base64url, with or without its ``=`` padding (the reference does not say which
+    Gmail sends; ``urlsafe_b64decode`` refuses unpadded text)."""
+    if not data:
+        return b""
+    text = data.strip()
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))

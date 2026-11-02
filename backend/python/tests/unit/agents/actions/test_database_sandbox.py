@@ -322,6 +322,27 @@ class TestScheduleCSVExport:
         assert kwargs["source_tool"] == "database_sandbox.sqlite"
 
     @pytest.mark.asyncio
+    async def test_csv_export_belongs_to_the_artifact_owner(self) -> None:
+        """A service-account agent's run: the export is the chatting user's, not the creator's."""
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        mock_blob = MagicMock()
+        mock_blob.save_versioned_artifact_to_storage = AsyncMock(return_value={
+            "documentId": "doc-db-1", "fileName": "sqlite_result_xxx.csv",
+        })
+        state = _make_state(blob_store=mock_blob, user_id="u-alice", artifact_owner_user_id="u-bob")
+        sandbox = mod.DatabaseSandbox(state)
+        captured_tasks: list = []
+
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="record-123"),
+        ) as create, patch.object(mod, "register_task", lambda conv_id, task: captured_tasks.append(task)):
+            sandbox._schedule_csv_export([{"id": "1"}], "sqlite_result")
+            await captured_tasks[0]
+
+        assert create.await_args.kwargs["user_id"] == "u-bob"
+
+    @pytest.mark.asyncio
     async def test_record_creation_failure_still_returns_upload(self):
         import asyncio
 

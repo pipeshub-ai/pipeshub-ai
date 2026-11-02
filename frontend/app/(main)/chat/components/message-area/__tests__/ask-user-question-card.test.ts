@@ -4,10 +4,12 @@ import {
   buildAnswerMessage,
   buildResumeMessage,
   hasUnansweredQuestions,
+  isAskUserQuestionExpired,
   isAskUserQuestionResumeQuery,
   mergeAskUserQuestionPayloads,
   normalizeAskUserQuestionPayload,
   parseAnswerMessage,
+  showsStoppedMarker,
 } from '../ask-user-question-card';
 import type { AskUserQuestionPayload, PendingAskUserQuestion } from '../../../types';
 
@@ -24,6 +26,61 @@ describe('normalizeAskUserQuestionPayload', () => {
     expect(normalized.questions[0].uuid).toBeTruthy();
     expect(normalized.questions[0].options.map((o) => o.label)).toEqual(['EU', 'US']);
     expect(normalized.questions[0].options.every((o) => o.id)).toBe(true);
+  });
+
+  it('keeps the header, descriptions and the expiry, and drops a recommended mark from an older card', () => {
+    const normalized = normalizeAskUserQuestionPayload({
+      name: 'ask_user_question',
+      expiresAt: '2026-10-19T10:00:00Z',
+      questions: [{
+        uuid: 'q', question: 'Which region?', multiSelect: false, header: ' Region ',
+        options: [
+          { id: 'eu', label: 'EU', isUserInput: false, description: ' Frankfurt ', recommended: true },
+          { id: 'us', label: 'US', isUserInput: false },
+        ],
+      }],
+    });
+
+    expect(normalized.expiresAt).toBe('2026-10-19T10:00:00Z');
+    expect(normalized.questions[0].header).toBe('Region');
+    expect(normalized.questions[0].options[0]).toEqual({
+      id: 'eu', label: 'EU', isUserInput: false, description: 'Frankfurt',
+    });
+    expect(normalized.questions[0].options[1]).toEqual({ id: 'us', label: 'US', isUserInput: false });
+  });
+
+  it('leaves a card without the new fields in the shape older cards had', () => {
+    const normalized = normalizeAskUserQuestionPayload({
+      name: 'ask_user_question',
+      questions: [{ uuid: 'q', question: 'Which region?', multiSelect: false, options: [{ id: 'eu', label: 'EU', isUserInput: false }] }],
+    });
+
+    expect(normalized).toEqual({
+      name: 'ask_user_question',
+      questions: [{ uuid: 'q', question: 'Which region?', multiSelect: false, options: [{ id: 'eu', label: 'EU', isUserInput: false }] }],
+    });
+  });
+});
+
+describe('isAskUserQuestionExpired', () => {
+  const at = (expiresAt?: string): AskUserQuestionPayload => ({
+    name: 'ask_user_question', questions: [], ...(expiresAt ? { expiresAt } : {}),
+  });
+
+  it('is true once the expiry has passed', () => {
+    expect(isAskUserQuestionExpired(at('2026-10-18T10:00:00Z'), Date.parse('2026-10-18T10:00:01Z'))).toBe(true);
+  });
+
+  it('is false before the expiry, and for a card that has none', () => {
+    expect(isAskUserQuestionExpired(at('2026-10-18T10:00:00Z'), Date.parse('2026-10-18T09:59:59Z'))).toBe(false);
+    expect(isAskUserQuestionExpired(at())).toBe(false);
+    expect(isAskUserQuestionExpired(at('not a date'))).toBe(false);
+  });
+
+  it('a merged card keeps the newer expiry', () => {
+    const older = { ...at('2026-10-18T10:00:00Z'), questions: [{ uuid: 'a', question: 'A?', multiSelect: false, options: [] }] };
+    const newer = { ...at('2026-10-19T10:00:00Z'), questions: [{ uuid: 'b', question: 'B?', multiSelect: false, options: [] }] };
+    expect(mergeAskUserQuestionPayloads(older, newer).expiresAt).toBe('2026-10-19T10:00:00Z');
   });
 });
 
@@ -607,5 +664,39 @@ describe('what a submit sends when earlier answers already went', () => {
     const full = payloadOf(1, 2, 3);
 
     expect(parseAnswerMessage(buildResumeMessage(full, answers, sent), full)).toEqual(pick(3, 'b'));
+  });
+});
+describe('showsStoppedMarker', () => {
+  const stopped = {
+    status: 'stopped',
+    isStreaming: false,
+    hasQuestionCard: false,
+    hasAnswerText: true,
+    repliedInChat: false,
+  };
+
+  it('marks a settled reply that Stop cut short', () => {
+    expect(showsStoppedMarker(stopped)).toBe(true);
+  });
+
+  it('leaves out a stopped ask turn whose card is its whole output, waiting or answered', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true, hasAnswerText: false })).toBe(false);
+  });
+
+  it('leaves out an ask turn closed by chatting, whatever text came before the card', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true, repliedInChat: true })).toBe(false);
+  });
+
+  it('marks a stopped resume merged onto the card row with its partial answer', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true })).toBe(true);
+  });
+
+  it('waits until the reply has settled', () => {
+    expect(showsStoppedMarker({ ...stopped, isStreaming: true })).toBe(false);
+  });
+
+  it('leaves out a reply that was not stopped', () => {
+    expect(showsStoppedMarker({ ...stopped, status: 'complete' })).toBe(false);
+    expect(showsStoppedMarker({ ...stopped, status: undefined })).toBe(false);
   });
 });

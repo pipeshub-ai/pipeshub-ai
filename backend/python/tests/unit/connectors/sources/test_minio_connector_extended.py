@@ -13,6 +13,13 @@ from app.connectors.sources.s3.base_connector import parse_parent_external_id
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address rule has its own tests (test_connector_address_rule.py, test_minio_endpoint_and_links.py);
+    # these endpoints are made up.
+    monkeypatch.setattr("app.sources.client.minio.minio.check_url_allowed", lambda *_a, **_k: None)
+
+
 @pytest.fixture()
 def minio_connector():
     from app.models.entities import AppMetadata
@@ -57,13 +64,13 @@ def minio_connector():
 
 class TestParseConsoleUrl:
     def test_http_localhost(self):
-        assert MinIOConnector._parse_console_url("http://localhost:9000") == "http://localhost:9000"
+        assert MinIOConnector._parse_console_url("http://localhost:9000") == "http://localhost:9001"
 
     def test_https_domain(self):
-        assert MinIOConnector._parse_console_url("https://minio.example.com:9000") == "https://minio.example.com:9000"
+        assert MinIOConnector._parse_console_url("https://minio.example.com:9000") == "https://minio.example.com:9001"
 
     def test_with_path(self):
-        assert MinIOConnector._parse_console_url("http://localhost:9000/path") == "http://localhost:9000"
+        assert MinIOConnector._parse_console_url("http://localhost:9000/path") == "http://localhost:9001"
 
     def test_minimal_url(self):
         assert MinIOConnector._parse_console_url("http://host") == "http://host"
@@ -76,7 +83,7 @@ class TestParseConsoleUrl:
 class TestURLGeneration:
     def test_generate_web_url(self, minio_connector):
         url = minio_connector._generate_web_url("my-bucket", "path/to/file.txt")
-        assert url == "http://localhost:9000/browser/my-bucket/path/to/file.txt"
+        assert url == "http://localhost:9001/browser/my-bucket/path%2Fto%2Ffile.txt"
 
     def test_generate_parent_web_url_with_path(self, minio_connector):
         url = minio_connector._generate_parent_web_url("my-bucket/path/to/")
@@ -84,7 +91,7 @@ class TestURLGeneration:
 
     def test_generate_parent_web_url_bucket_only(self, minio_connector):
         url = minio_connector._generate_parent_web_url("my-bucket")
-        assert url == "http://localhost:9000/browser/my-bucket"
+        assert url == "http://localhost:9001/browser/my-bucket"
 
 
 # ===========================================================================

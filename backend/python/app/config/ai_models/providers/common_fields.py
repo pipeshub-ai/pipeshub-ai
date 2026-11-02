@@ -1,6 +1,9 @@
 """Reusable field definitions shared across many AI model providers."""
 
-from app.config.ai_models.types import AIModelField
+from collections.abc import Iterable
+from typing import Any
+
+from app.config.ai_models.types import AIModelField, ModelCapability
 
 # ---------------------------------------------------------------------------
 # Authentication / credential fields
@@ -214,3 +217,83 @@ CUSTOM_PROVIDER = AIModelField(
 
 LLM_COMMON_TAIL = [FRIENDLY_NAME, CONTEXT_LENGTH, IS_MULTIMODAL_LLM, IS_REASONING]
 EMBEDDING_COMMON_TAIL = [FRIENDLY_NAME, DIMENSIONS, IS_MULTIMODAL_EMBEDDING]
+
+
+# ---------------------------------------------------------------------------
+# Identity forwarding (gateway providers)
+#
+# Flat keys, so the dialog renders them with the field types it already has.
+# ``app.services.model_identity.transport.instrument.settings_from_config``
+# reads them (or a nested ``identityForwarding`` object sent through the API).
+# ---------------------------------------------------------------------------
+
+# Every capability a gateway provider can serve takes its calls through the gateway.
+GATEWAY_CAPABILITIES = [
+    ModelCapability.TEXT_GENERATION,
+    ModelCapability.EMBEDDING,
+    ModelCapability.IMAGE_GENERATION,
+    ModelCapability.TTS,
+    ModelCapability.STT,
+]
+
+IDENTITY_FORWARDING_FIELDS = [
+    AIModelField(
+        name="identityForwardingEnabled",
+        display_name="Forward user identity to the gateway",
+        field_type="BOOLEAN",
+        required=False,
+        default_value=False,
+        description=(
+            "Send who is asking (and, if the organisation policy allows, their groups) with each "
+            "request, so the gateway can apply per-user budgets, rate limits and model access. "
+            "What is sent is set under Identity forwarding policy."
+        ),
+    ),
+    AIModelField(
+        name="identityForwardingMode",
+        display_name="Identity forwarding format",
+        field_type="SELECT",
+        required=False,
+        default_value="headers",
+        options=[
+            {"value": "headers", "label": "LiteLLM headers"},
+            {"value": "template", "label": "Header template (Portkey, Helicone, Cloudflare, Azure APIM)"},
+        ],
+    ),
+    AIModelField(
+        name="identityForwardingPreset",
+        display_name="Gateway preset",
+        field_type="SELECT",
+        required=False,
+        default_value="litellm",
+        options=[
+            {"value": "litellm", "label": "LiteLLM"},
+            {"value": "portkey", "label": "Portkey"},
+            {"value": "helicone", "label": "Helicone"},
+            {"value": "cloudflare", "label": "Cloudflare AI Gateway"},
+            {"value": "apim", "label": "Azure API Management"},
+            {"value": "custom", "label": "Custom headers"},
+        ],
+        description="Used with the header template format.",
+    ),
+    AIModelField(
+        name="identityForwardingServiceApiKey",
+        display_name="Service API key for background work (Optional)",
+        field_type="PASSWORD",
+        required=False,
+        placeholder="A separate gateway key for indexing and extraction",
+        description=(
+            "Background work (indexing, extraction) has no signed-in user. Give it its own gateway "
+            "key and team so its spend is budgeted apart from people's."
+        ),
+        is_secret=True,
+    ),
+]
+
+
+def add_identity_forwarding(builder: Any, capabilities: Iterable[Any]) -> Any:  # noqa: ANN401 - the builder and capability types are defined by the registry that calls this
+    """Add the identity forwarding fields to ``builder`` for each capability."""
+    for capability in capabilities:
+        for identity_field in IDENTITY_FORWARDING_FIELDS:
+            builder.add_field(identity_field, capability)
+    return builder

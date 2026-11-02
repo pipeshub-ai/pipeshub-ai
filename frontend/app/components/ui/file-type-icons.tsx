@@ -507,6 +507,39 @@ function XlsIcon({ size = 16 }: FileTypeIconProps) {
   );
 }
 
+// --- YAML ---
+// No other icon has a Y, so it is drawn here at the cap height of the
+// three-letter badges (FIG, ZIP). M: the DMG icon's M glyph scaled 1.1765× to
+// that height. L: the XLS icon's L glyph moved up to it.
+function YamlIcon({ size = 16 }: FileTypeIconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+      <g clipPath="url(#yaml_c0)">
+        <g clipPath="url(#yaml_c1)">
+          <path d="M6.13379 0.400391H10.834L15.5996 5.16602V13.8662C15.5996 14.8235 14.8235 15.5996 13.8662 15.5996H6.13379C5.1765 15.5996 4.40039 14.8235 4.40039 13.8662V2.13379C4.40039 1.1765 5.1765 0.400391 6.13379 0.400391Z" fill="var(--file-icon-fill)" stroke="#777B84" strokeWidth="0.8"/>
+          <path d="M10.7997 0.400669V3.60067C10.7997 4.48432 11.516 5.20067 12.3997 5.20067H15.5997" stroke="#777B84" strokeWidth="0.8" strokeLinecap="round"/>
+        </g>
+        <rect y="7" width="13" height="9" rx="1.45455" fill="#B4B4B4"/>
+        <path d="M1.12 9.5165H2.073L2.72 10.7247L3.367 9.5165H4.32L3.14 11.72V13.4835H2.3V11.72L1.12 9.5165Z" fill="var(--file-icon-fill)"/>
+        <path
+          transform="matrix(1.1765,0,0,1.1765,-0.843,-2.559)"
+          d="M4.69453 10.264H5.57373L6.50232 12.5295H6.54183L7.47042 10.264H8.34962V13.6359H7.65812V11.4412H7.63013L6.75752 13.6195H6.28664L5.41402 11.433H5.38604V13.6359H4.69453V10.264Z"
+          fill="var(--file-icon-fill)"
+        />
+        <path
+          transform="translate(3.849,-0.449)"
+          d="M5.49107 13.9325V9.96555H6.32978V13.241H8.03045V13.9325H5.49107Z"
+          fill="var(--file-icon-fill)"
+        />
+      </g>
+      <defs>
+        <clipPath id="yaml_c0"><rect width="16" height="16" fill="white"/></clipPath>
+        <clipPath id="yaml_c1"><rect width="12" height="16" fill="white" transform="translate(4)"/></clipPath>
+      </defs>
+    </svg>
+  );
+}
+
 // --- ZIP ---
 function ZipIcon({ size = 16 }: FileTypeIconProps) {
   return (
@@ -563,6 +596,10 @@ export const FILE_TYPE_ICON_MAP: Record<string, React.FC<FileTypeIconProps>> = {
   webp: WebpIcon,
   xls: XlsIcon,
   xlsx: XlsIcon,
+  yaml: YamlIcon,
+  yml: YamlIcon,
+  // MIME subtype of application/x-yaml: All records falls back to it when a record has no extension.
+  'x-yaml': YamlIcon,
   zip: ZipIcon,
 };
 

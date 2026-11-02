@@ -36,6 +36,13 @@ from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
 )
 
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.cifs.cifs.dial_address", lambda server, **_: server)
+
+
 NOW = datetime(2024, 6, 1, tzinfo=timezone.utc)
 SHARE = "public"
 
@@ -351,6 +358,28 @@ class TestCifsDialectGuard:
                 client.list_directory(SHARE, "")
             assert conn.connect.call_count >= 2
 
+    def test_a_folder_access_denied_is_a_listing_error_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Access denied: private")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "private")
+
+    def test_a_folder_named_logon_is_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Failed to list /logon on public: Unable to open directory")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "logon")
+
     def test_reconnect_succeeds_on_second_attempt(self):
         with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
             conn = MagicMock()
@@ -520,14 +549,28 @@ class TestCifsConnectorSync:
         assert written["last_sync_time"] == int(NOW.timestamp() * 1000)
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_incomplete_listing_skips_prune(self, mock_filters, cifs_connector, mock_processor):
+    async def test_a_failed_share_root_removes_nothing(self, mock_filters, cifs_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         ds = _ds(fail_dirs={(SHARE, "")})
         cifs_connector.data_source = ds
         cifs_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
         await cifs_connector.run_sync()
-        mock_processor.get_records_by_record_type.assert_not_awaited()
+        mock_processor.on_record_deleted.assert_not_awaited()
         cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_refused_sign_in_notifies_and_fails_the_run(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(refused_dirs={(SHARE, "")})
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        with pytest.raises(NetworkShareAuthError):
+            await cifs_connector.run_sync()
+        title = cifs_connector.notify.await_args.kwargs["title"]
+        assert "Sign-in refused" in title
+        mock_processor.on_record_deleted.assert_not_awaited()
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_id(self, mock_filters, cifs_connector, mock_processor):
@@ -584,10 +627,12 @@ class TestCifsConnectorSync:
         await cifs_connector.run_sync()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
-        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
-        assert perms[0].type == PermissionType.OWNER
-        assert perms[0].entity_type == EntityType.USER
-        assert perms[0].email == "user@test.com"
+        record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms == [] and record.inherit_permissions is True and record.rewrite_permissions is True
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
+        ]
 
         mock_processor.on_new_app_users.reset_mock()
         team = _connector(
@@ -598,10 +643,12 @@ class TestCifsConnectorSync:
         await team.run_sync()
         mock_processor.ensure_team_app_edge.assert_awaited_with("cifs-1")
         mock_processor.on_new_app_users.assert_not_awaited()
-        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.ORG
-        assert perms[0].external_id == "org-1"
+        record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms == [] and record.inherit_permissions is True
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
+            (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_incremental_sync_lists_directories_older_than_the_checkpoint(
@@ -720,8 +767,7 @@ class TestCifsConnectorStreamAndFilters:
         assert mock_processor.reindex_existing_records.await_args.args[0][0].id == "same"
         assert mock_processor.on_new_records.await_args.args[0][0][0].id == "upd"
 
-    @patch("app.connectors.sources.cifs.connector.NetworkShareEntitiesProcessor.initialize", new_callable=AsyncMock)
-    async def test_create_connector(self, mock_init, mock_logger, mock_data_store_provider, mock_config_service, mock_processor):
+    async def test_create_connector(self, mock_logger, mock_data_store_provider, mock_config_service, mock_processor):
         created = await CifsConnector.create_connector(
             mock_logger,
             mock_data_store_provider,
@@ -732,4 +778,5 @@ class TestCifsConnectorStreamAndFilters:
             created_by="user-1",
         )
         assert isinstance(created, CifsConnector)
-        mock_init.assert_awaited()
+        # The factory's processor, not a second one with its own Redis connection.
+        assert created.data_entities_processor is mock_processor

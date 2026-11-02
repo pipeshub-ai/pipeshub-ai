@@ -138,83 +138,69 @@ async def test_init_does_not_block_event_loop():
     assert called_in_thread, "Model construction must be dispatched via asyncio.to_thread"
 
 
-def test_build_model_tries_cache_before_download(monkeypatch):
-    """Offline cache load first; Hub download only if cache miss and not HF_HUB_OFFLINE."""
-    import os
-    import sys
-
-    calls = []
-
+def _fake_fastembed(calls: list[bool], *, cached: bool) -> MagicMock:
     class FakeSparse:
-        def __init__(self, model_name):
-            calls.append(os.environ.get("HF_HUB_OFFLINE"))
-            if len(calls) == 1:
+        def __init__(self, model_name, **kwargs):
+            calls.append(kwargs.get("local_files_only", False))
+            if kwargs.get("local_files_only") and not cached:
                 raise RuntimeError("not in cache")
             self.model_name = model_name
 
     fake_module = MagicMock()
     fake_module.SparseTextEmbedding = FakeSparse
+    return fake_module
+
+
+def test_build_model_tries_cache_before_download(monkeypatch) -> None:
+    """A cache-only load first (local_files_only=True); the Hub only on a cache miss."""
+    import sys
+
+    calls: list[bool] = []
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    with patch.dict(sys.modules, {"fastembed": fake_module}):
-        embedder = SparseEmbedder()
-        model = embedder._build_model()
-    assert calls == ["1", None]
+    with patch.dict(sys.modules, {"fastembed": _fake_fastembed(calls, cached=False)}):
+        model = SparseEmbedder()._build_model()
+    assert calls == [True, False]
     assert model.model_name == "Qdrant/bm25"
 
 
-def test_build_model_does_not_download_when_explicitly_offline(monkeypatch):
-    import os
+def test_build_model_uses_the_cache_without_asking_the_hub(monkeypatch) -> None:
     import sys
 
-    calls = []
+    calls: list[bool] = []
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    with patch.dict(sys.modules, {"fastembed": _fake_fastembed(calls, cached=True)}):
+        SparseEmbedder()._build_model()
+    assert calls == [True]
 
-    class FakeSparse:
-        def __init__(self, model_name):
-            calls.append(os.environ.get("HF_HUB_OFFLINE"))
-            raise RuntimeError("not in cache")
 
-    fake_module = MagicMock()
-    fake_module.SparseTextEmbedding = FakeSparse
+def test_build_model_does_not_download_when_explicitly_offline(monkeypatch) -> None:
+    import sys
+
+    calls: list[bool] = []
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    with patch.dict(sys.modules, {"fastembed": fake_module}):
-        embedder = SparseEmbedder()
+    with patch.dict(sys.modules, {"fastembed": _fake_fastembed(calls, cached=False)}):
         with pytest.raises(RuntimeError, match="not in cache"):
-            embedder._build_model()
-    assert calls == ["1"]
-    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+            SparseEmbedder()._build_model()
+    assert calls == [True]
 
 
-def test_concurrent_build_does_not_leave_hub_offline_set(monkeypatch):
+def test_build_model_leaves_hf_hub_offline_alone(monkeypatch) -> None:
+    # huggingface_hub reads HF_HUB_OFFLINE once, at import, so the old runtime toggle did nothing.
     import os
     import sys
-    import threading
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    seen: list[str | None] = []
 
     class FakeSparse:
-        def __init__(self, model_name):
-            if os.environ.get("HF_HUB_OFFLINE") == "1":
-                raise RuntimeError("not in cache")
-            self.model_name = model_name
+        def __init__(self, model_name, **kwargs):
+            seen.append(os.environ.get("HF_HUB_OFFLINE"))
 
     fake_module = MagicMock()
     fake_module.SparseTextEmbedding = FakeSparse
-    errors: list[BaseException] = []
-
-    def worker():
-        try:
-            SparseEmbedder()._build_model()
-        except BaseException as exc:
-            errors.append(exc)
-
     with patch.dict(sys.modules, {"fastembed": fake_module}):
-        threads = [threading.Thread(target=worker) for _ in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-    assert errors == []
+        SparseEmbedder()._build_model()
+    assert seen == [None]
     assert os.environ.get("HF_HUB_OFFLINE") is None
 
 

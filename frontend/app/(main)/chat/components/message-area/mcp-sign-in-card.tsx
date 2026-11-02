@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 import {
   mcpOAuthFailureMessage,
   useMcpOAuthPopup,
@@ -66,7 +67,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
       target.before = (await signedInAt(target.server)) ?? 0;
       return target.server.agentKey
         ? McpServersApi.getAgentOAuthAuthorizationUrl(target.server.agentKey, instanceId)
-        : McpServersApi.getOAuthAuthorizationUrl(instanceId, window.location.origin);
+        : McpServersApi.getOAuthAuthorizationUrl(instanceId, browserOAuthBaseUrl());
     },
     verifyAuthenticated: async () => {
       const target = targetRef.current;

@@ -1,4 +1,5 @@
 """Comprehensive coverage tests for Notion connector - additional untested methods."""
+from app.connectors.sources.notion.connector import _DatabaseUnavailable
 
 import logging
 from datetime import datetime, timezone
@@ -385,8 +386,8 @@ class TestTransformToFileRecord:
         assert result is not None
         assert result.extension == "jpg"
 
-    def test_pdf_default_name(self, connector):
-        """PDF block with no name gets default name document.pdf."""
+    def test_pdf_name_from_url(self, connector):
+        """A PDF block with no name is named after its URL's last path segment."""
         block = {
             "id": "block-10",
             "type": "pdf",
@@ -398,7 +399,10 @@ class TestTransformToFileRecord:
         }
         result = connector._transform_to_file_record(block, "page-1")
         assert result is not None
-        assert result.record_name == "document.pdf"
+        assert result.record_name == "file"
+        hosted = {"id": "block-11", "type": "pdf", "pdf": {
+            "type": "file", "file": {"url": "https://prod-files.s3.aws/ws/f1/Q3%20plan.pdf?X-Amz-Signature=s"}}}
+        assert connector._transform_to_file_record(hosted, "page-1").record_name == "Q3 plan.pdf"
 
     def test_named_file(self, connector):
         block = {
@@ -471,8 +475,8 @@ class TestResolveBlockParentRecursive:
         mock_ds.retrieve_block = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        parent_id, parent_type = await connector._resolve_block_parent_recursive("block-5")
-        assert parent_id is None
+        with pytest.raises(_DatabaseUnavailable):
+            await connector._resolve_block_parent_recursive("block-5")
 
     async def test_workspace_parent(self, connector):
         mock_ds = MagicMock()
@@ -489,8 +493,8 @@ class TestResolveBlockParentRecursive:
 
     async def test_exception_returns_none(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("Error"))
-        parent_id, parent_type = await connector._resolve_block_parent_recursive("block-7")
-        assert parent_id is None
+        with pytest.raises(_DatabaseUnavailable):
+            await connector._resolve_block_parent_recursive("block-7")
 
 
 # ===========================================================================

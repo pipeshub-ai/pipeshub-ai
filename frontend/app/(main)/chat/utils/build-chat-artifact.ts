@@ -46,7 +46,7 @@ export interface ChatArtifactInput {
 /** Single place that turns a partial artifact description into the
  * `ChatArtifact` shape the chat UI renders — used by both the live SSE
  * `artifact` event handler (`streaming.ts::onArtifact`) and the persisted
- * `::artifact` marker parser (`parse-download-markers.ts::parseArtifactMarkers`),
+ * `::artifact` marker parser (`parse-download-markers.ts::extractAnswerMarkers`),
  * which previously each hand-built this object with subtly different
  * defaulting rules. */
 export function buildChatArtifact(input: ChatArtifactInput): ChatArtifact {

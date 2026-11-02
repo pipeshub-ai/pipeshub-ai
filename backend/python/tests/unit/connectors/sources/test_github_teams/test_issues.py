@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.models.entities import TicketRecord
@@ -62,10 +63,13 @@ def _issue(
     field_priority: str | None = None,
     blocked_by: int | None = None,
     blocking: int | None = None,
+    milestone: dict | None = None,
 ) -> SimpleNamespace:
     # type, parent_issue_url and issue_field_values ride the listing payload but
     # are not parsed by PyGithub 2.8, so they are read off _rawData directly.
     raw_data: dict = {}
+    if milestone is not None:
+        raw_data["milestone"] = milestone
     if issue_type:
         raw_data["type"] = {"name": issue_type}
     if parent_issue_url:
@@ -145,12 +149,12 @@ class TestFetchIssuesBatched:
         c.data_entities_processor.on_new_records = AsyncMock(side_effect=[Exception("boom"), None])
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
 
         await sync.fetch_issues_batched(repo)
 
-        sync._update_sync_checkpoint.assert_not_awaited()
+        sync._write_checkpoint.assert_not_awaited()
 
     async def test_checkpoint_advances_once_when_all_batches_succeed(self) -> None:
         c = make_mock_connector()
@@ -163,13 +167,13 @@ class TestFetchIssuesBatched:
         c.indexing_filters = None
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
 
         await sync.fetch_issues_batched(repo)
 
         # One commit per record group, at the end — not one per batch.
-        sync._update_sync_checkpoint.assert_awaited_once()
+        sync._write_checkpoint.assert_awaited_once()
 
     async def test_pages_and_persists_each_page_as_one_batch(self) -> None:
         """The page IS the batch: one build, one persist call, one transaction.
@@ -186,8 +190,8 @@ class TestFetchIssuesBatched:
         c.indexing_filters = None
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
         # Second page short -> listing exhausted.
         pages = [ok_response(full_page), ok_response([_issue(number=999)])]
         c.runtime.ds_call.side_effect = lambda m, *a, **k: pages.pop(0) if not pages == [] else None
@@ -198,6 +202,115 @@ class TestFetchIssuesBatched:
         first_call = c.data_entities_processor.on_new_records.call_args_list[0]
         assert len(first_call.args[0]) == 100
 
+    async def test_follows_the_listing_cursor_past_the_first_page(self) -> None:
+        """GitHub refuses page numbers past 10,000 items on the issues listing, and
+        pull requests count towards them. The sync must read on with the cursor
+        GitHub hands out, not with a page number GitHub would refuse."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        second = ok_response([_issue(number=500)])
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                return [first, second][len(calls) - 1]
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        await sync.fetch_issues_batched(repo)
+
+        assert [k.get("after") for k in calls] == [None, "cursor-2"]
+        sync._write_checkpoint.assert_awaited_once()
+
+    async def test_a_full_cursor_page_without_a_next_link_ends_the_listing(self) -> None:
+        """GitHub sends no next link on the cursor page that holds the rest of the
+        listing, even when that page is full. Asking for a page number then would
+        be refused past the limit, and the checkpoint would never be written."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        last = ok_response([_issue(number=n) for n in range(100, 200)])  # full, no next link
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                return [first, last][len(calls) - 1]
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        assert await sync.fetch_issues_batched(repo) is True
+
+        assert len(calls) == 2
+        sync._write_checkpoint.assert_awaited_once()
+
+    async def test_a_repeated_cursor_stops_without_advancing_the_checkpoint(self) -> None:
+        """A cursor that does not move would page forever."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        page = ok_response([_issue(number=n) for n in range(100)])
+        page.next_cursor = "stuck"
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                assert len(calls) <= 3, "the listing kept paging on a cursor that never moved"
+                return page
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        assert await sync.fetch_issues_batched(repo) is False
+
+        assert len(calls) == 2
+        sync._write_checkpoint.assert_not_awaited()
+
+    async def test_without_a_cursor_the_next_page_number_is_read(self) -> None:
+        """A server that offers no cursor is still read to the end, by page number."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        pages = [ok_response([_issue(number=n) for n in range(100)]), ok_response([])]
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                return pages[len(calls) - 1]
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        await sync.fetch_issues_batched(repo)
+
+        assert [(k.get("page"), k.get("after")) for k in calls] == [(1, None), (2, None)]
+
     async def test_page_failure_does_not_advance_the_checkpoint(self) -> None:
         """Committing past a failed page would skip those issues permanently."""
         c = make_mock_connector()
@@ -207,12 +320,12 @@ class TestFetchIssuesBatched:
         })
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
 
         await sync.fetch_issues_batched(repo)
 
-        sync._update_sync_checkpoint.assert_not_awaited()
+        sync._write_checkpoint.assert_not_awaited()
 
     async def test_no_issues_is_noop(self) -> None:
         c = make_mock_connector()
@@ -235,6 +348,212 @@ class TestFetchIssuesBatched:
         c.data_entities_processor.on_new_records.assert_not_awaited()
 
 
+_RESUME = {
+    "listing_resume_page": 2,
+    "listing_resume_cursor": "cursor-2",
+    "listing_resume_since": None,
+    "listing_resume_watermark": 1_800_000_000_000,
+    "listing_resume_created": 100,
+    "listing_resume_window": None,
+}
+
+
+def _rolling(operator: str) -> FilterCollection:
+    return FilterCollection(filters=[Filter(
+        key=SyncFilterKey.MODIFIED.value, type="datetime", operator=operator, value=None,
+    )])
+
+
+class TestResumeInterruptedListing:
+    """A listing longer than one hour's rate limit used to start again from the
+    first page every sync, and so never finished: Apache Arrow's reached page
+    454 of about 490 and began again. It now reads on from where it stopped."""
+
+    @staticmethod
+    def _sync(c: object, checkpoint: dict) -> IssuesSync:
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value=dict(checkpoint))
+        sync._write_checkpoint = AsyncMock()
+        sync._reconcile_removed_issues = AsyncMock(return_value=(True, 5))
+        return sync
+
+    async def test_a_failure_past_the_first_page_saves_where_it_stopped(self) -> None:
+        c = make_mock_connector()
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, failed_response("rate limited", status_code=429)])
+        sync = self._sync(c, {})
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_once_with("1-work-items", {
+            "listing_resume_page": 2,
+            "listing_resume_cursor": "cursor-2",
+            "listing_resume_since": None,
+            "listing_resume_watermark": epoch_ms_or_now(datetime(2024, 1, 2, tzinfo=timezone.utc)),
+            "listing_resume_created": 100,
+            "listing_resume_window": None,
+        })
+
+    async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, _RESUME)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (2, "cursor-2")
+        # Issues created on the pages read before count towards the total check.
+        assert sync._reconcile_removed_issues.await_args.args[3] == 101
+        (group, written), _ = sync._write_checkpoint.await_args
+        # The watermark is the newest issue of the whole listing, read before the stop.
+        assert written["last_sync_time"] == _RESUME["listing_resume_watermark"]
+        assert all(written[k] is None for k in _RESUME)
+
+    async def test_a_place_read_back_without_its_null_fields_reads_on(self) -> None:
+        """Neo4j drops a property set to null, so a place saved with no window comes back
+        without its start."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        place = {k: v for k, v in _RESUME.items() if v is not None}
+        sync = self._sync(c, place)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"], kwargs["since"]) == (2, "cursor-2", None)
+
+    async def test_a_saved_place_from_another_window_is_not_used(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_since": 1_600_000_000_000})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (1, None)
+
+    async def test_a_saved_place_github_refuses_is_forgotten(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("bad cursor", status_code=422))
+        sync = self._sync(c, _RESUME)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_once_with("1-work-items", dict.fromkeys(_RESUME))
+
+    async def test_a_place_without_a_cursor_reads_the_page_before_again(self) -> None:
+        """A page number is an offset. An issue removed from a page already read moves a
+        later one onto it, so reading on starts a page early."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_page": 4, "listing_resume_cursor": None})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (3, None)
+
+    async def test_a_failed_removal_check_keeps_the_place(self) -> None:
+        """The watermark is not committed when the check fails, so the next sync must read
+        on from the place again rather than start from page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, _RESUME)
+        sync._reconcile_removed_issues = AsyncMock(return_value=(False, None))
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_not_awaited()
+
+    async def test_turning_issues_off_forgets_the_place(self) -> None:
+        c = make_mock_connector()
+        c.issue_reconciler.remove_all = AsyncMock()
+        repo = make_repo(repo_id=1)
+        repo.has_issues = False
+        sync = self._sync(c, {**_RESUME, "issue_total": 40})
+
+        await sync.fetch_issues_batched(repo)
+
+        sync._write_checkpoint.assert_awaited_once_with(
+            "1-work-items", {"issue_total": 0, **dict.fromkeys(_RESUME)},
+        )
+
+    async def test_a_rate_limit_at_the_saved_place_keeps_it(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        sync = self._sync(c, _RESUME)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == _RESUME
+
+    async def test_a_rate_limit_on_the_page_before_keeps_the_saved_place(self) -> None:
+        """Reading on without a cursor starts a page early. A failure there must not store
+        that earlier page, or each failed sync would step the place back towards page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        place = {**_RESUME, "listing_resume_page": 4, "listing_resume_cursor": None}
+        sync = self._sync(c, place)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 3
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == place
+
+    async def test_a_rolling_window_saves_its_name_with_the_place(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        recent = [_issue(number=n) for n in range(100)]
+        for issue in recent:  # inside the window
+            issue.updated_at = issue.created_at = datetime.now(timezone.utc)
+        first = ok_response(recent)
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, failed_response("rate limited", status_code=429)])
+        sync = self._sync(c, {})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written["listing_resume_window"] == "last_90_days"
+        assert written["listing_resume_since"] is not None
+
+    async def test_a_rolling_window_that_moved_on_reads_on_with_its_saved_start(self) -> None:
+        """"Last 90 days" starts later on every sync. The interrupted listing reads on
+        with the start it began with, or it would begin again from page 1 every sync."""
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        saved_since = 1_780_000_000_000
+        place = {**_RESUME, "listing_resume_since": saved_since, "listing_resume_window": "last_90_days"}
+        sync = self._sync(c, place)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (2, "cursor-2")
+        assert kwargs["since"] == datetime.fromtimestamp(saved_since / 1000, tz=timezone.utc)
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == place
+
+    async def test_a_place_saved_for_another_rolling_window_is_not_used(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_since": 1_780_000_000_000,
+                              "listing_resume_window": "last_30_days"})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (1, None)
+
+
 class TestProcessIssueToTicket:
     async def test_maps_fields_and_marks_new(self) -> None:
         c = make_mock_connector()
@@ -251,6 +570,28 @@ class TestProcessIssueToTicket:
         assert ru.record.labels == ["bug"]
         assert ru.record.assignee_source_id == ["801"]
         assert ru.record.status == "OPEN"
+        assert ru.record.milestone is None
+
+    async def test_milestone_title_is_read_off_the_listing_payload(self) -> None:
+        """The /issues listing carries the milestone object, so no extra call."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=42)
+        issue = _issue(number=7, milestone={"title": "Airflow 3.5.0", "state": "open"})
+
+        ru = await IssuesSync(c)._process_issue_to_ticket(repo, issue)
+
+        assert ru is not None
+        assert ru.record.milestone == "Airflow 3.5.0"
+
+    async def test_a_malformed_milestone_is_left_out(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=42)
+        issue = _issue(number=7, milestone={"title": "   "})
+
+        ru = await IssuesSync(c)._process_issue_to_ticket(repo, issue)
+
+        assert ru is not None
+        assert ru.record.milestone is None
 
     async def test_a_closed_issue_keeps_its_close_date(self) -> None:
         c = make_mock_connector()
@@ -477,6 +818,24 @@ class TestProcessIssueToTicket:
         link = ru.record.related_external_records[0]
         assert link.external_record_id == "777/issues/9"
         assert link.relation_type.value == "BLOCKS"
+        assert link.record_name is None  # another repository's title is not copied
+
+    async def test_blocking_link_in_same_repo_keeps_the_title(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_blocking": ok_response([
+                {"number": 9, "title": "Downstream", "repository": {"id": 42}},
+                {"number": 10, "title": "By url", "repository_url": "https://api.github.com/repos/acme/widgets"},
+                {"number": 11, "title": "Other url", "repository_url": "https://api.github.com/repos/acme/other"},
+                {"number": 12, "title": "Unknown repository"},
+            ]),
+        })
+
+        ru = await IssuesSync(c)._process_issue_to_ticket(
+            make_repo(repo_id=42), _issue(number=2, blocked_by=0, blocking=1),
+        )
+
+        assert [r.record_name for r in ru.record.related_external_records] == ["Downstream", "By url", None, None]
 
     async def test_dependency_fetch_failure_does_not_fail_the_ticket(self) -> None:
         c = make_mock_connector()

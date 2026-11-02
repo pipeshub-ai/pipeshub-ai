@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.modules.parsers import parse_pool
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
@@ -415,9 +416,12 @@ class TestLifespan:
                 async with lifespan(mock_app):
                     # Inside lifespan — app should have container set
                     assert mock_app.container is mock_container
+                    # Chat attachment PDFs parse in killable worker processes.
+                    assert parse_pool.parse_pool_workers() > 0
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
+            assert parse_pool.parse_pool_workers() == 0
 
     async def test_startup_no_orgs(self):
         """When no orgs found, retrieval_service is NOT invoked."""
@@ -790,6 +794,38 @@ class TestValidationExceptionHandler:
         assert "Request validation failed" in caplog.text
         assert "fake-token-value" not in caplog.text
         assert "page=2" in caplog.text
+
+    async def test_logged_errors_do_not_echo_the_rejected_input(self, caplog) -> None:
+        """Each error carries the rejected value as ``input``, which for a
+        password field is the password; the log keeps only where and why."""
+        import logging
+
+        from app.query_main import validation_exception_handler
+        from app.utils.logger import RedactingFormatter
+
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.url = "http://test/api/v1/connect"
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [{
+            "type": "string_too_long",
+            "loc": ["body", "password"],
+            "msg": "String should have at most 4 characters",
+            "input": "SENTINEL-422-pw",
+            "ctx": {"max_length": 4, "value": "SENTINEL-422-ctx"},
+        }]
+
+        with caplog.at_level(logging.WARNING, logger="app.query_main"):
+            result = await validation_exception_handler(mock_request, mock_exc)
+
+        assert result.status_code == 422
+        records = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
+        assert records
+        formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
+        for text in (records[0].getMessage(), formatter.format(records[0])):
+            assert "SENTINEL-422" not in text
+            assert "password" in text
+            assert "string_too_long" in text
 
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""

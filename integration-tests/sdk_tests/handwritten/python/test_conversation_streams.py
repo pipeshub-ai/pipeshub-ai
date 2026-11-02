@@ -1,4 +1,4 @@
-"""Streaming chat, follow-up, regenerate and feedback on a conversation."""
+"""Streaming chat, follow-up, regenerate, feedback and fork on a conversation."""
 
 from pipeshub_sdk import Pipeshub
 
@@ -43,6 +43,13 @@ def test_handwritten_conversation_streams(pipeshub: Pipeshub):
         )
         assert feedback.message_id == answer_id
         assert feedback.feedback.is_helpful is True
+
+        fork = pipeshub.conversations.fork_conversation(
+            conversation_id=conversation_id, message_id=answer_id
+        )
+        pipeshub.conversations.delete_conversation_by_id(conversation_id=fork.id)
+        assert fork.forked_from.conversation_id == conversation_id
+        assert fork.forked_from.message_id == answer_id
     finally:
         pipeshub.conversations.delete_conversation_by_id(
             conversation_id=conversation_id

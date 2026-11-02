@@ -19,18 +19,26 @@ detection actually finds two columns.
 """
 
 import io
+import logging
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Tuple, Optional, Dict, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
 from pdfminer.pdfdevice import PDFDevice
 from pdfminer.pdfinterp import PDFPageInterpreter
+from pdfplumber import utils as pdfplumber_utils
+from PIL import Image
 
+if TYPE_CHECKING:
+    from pdfplumber.page import Page
+    from pdfplumber.table import Row, Table
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Data model
@@ -54,6 +62,12 @@ class LayoutRegion:
     image_ext: str = "png"
     table_grid: Optional[List[List[str]]] = None
     list_items: List[str] = field(default_factory=list)
+    # Box from the layout model; it already spans the figure, so it is not merged or grown.
+    from_model: bool = False
+    # IMAGE only: the caption printed next to the figure (its TEXT region stays too).
+    caption: str = ""
+    # TEXT only: a heading line split off the paragraph it was set on.
+    heading: bool = False
 
 
 @dataclass
@@ -83,6 +97,13 @@ class ColumnDetectionResult:
 # --------------------------------------------------------------------------- #
 
 _DPI = 150
+
+# Pages rasterized per DocumentRasterCache window (~6 MB per letter page at _DPI).
+_RASTER_WINDOW_PAGES = 16
+# The layout model's input: 480-640 px, so 72 DPI suffices. Its pages are small
+# (~1.5 MB each), so a wider window means fewer whole-document opens per render.
+MODEL_DPI = 72
+MODEL_RASTER_WINDOW_PAGES = 32
 
 # A page carrying more vector primitives than this is a CAD/GIS drawing sheet
 # rather than a document page, and has no document layout to recover: the
@@ -134,7 +155,7 @@ def _gutter_relax_merge_pair(
 # two near-touching non-tables, are unaffected by this gate. Applies to
 # the proximity branch of ``_resolve_overlaps``; the overlap branch
 # applies the same area gate but only when the overlap is sub-threshold
-# (see ``_TABLE_OVERLAP_MIN_RATIO`` /
+# (see ``_TABLE_OVERLAP_MIN_CONTAINED`` /
 # ``_table_overlap_with_large_neighbor_allowed``) so genuine duplicate
 # detections (one region mostly inside the other) still merge.
 _TABLE_PROXIMITY_NEIGHBOR_MAX_AREA = 2000.0
@@ -165,17 +186,11 @@ def _table_proximity_neighbor_allowed(
     return area <= _TABLE_PROXIMITY_NEIGHBOR_MAX_AREA
 
 
-# Minimum mutual overlap ratio required for a TABLE to merge with a
-# substantial non-TABLE neighbour via the overlap branch of
-# ``_resolve_overlaps``. Below this floor the overlap is treated as bbox
-# jitter at a shared edge -- e.g. a column of body text whose y1 dips a
-# couple of points past the top of the table below it across the table's
-# full horizontal span, yielding an overlap ratio of ~1-2% from either
-# perspective -- rather than as a duplicate detection. Genuine duplicate
-# detections (one region mostly inside the other) sit well above this
-# threshold and continue to merge. The check is symmetric: it is enough
-# for either side's ratio to cross the floor.
-_TABLE_OVERLAP_MIN_RATIO = 0.1
+# Share of a substantial non-TABLE neighbour that must lie inside a TABLE
+# for the overlap branch of ``_resolve_overlaps`` to merge them. Less is
+# layout adjacency (body text whose bbox dips into the table), not a
+# duplicate detection.
+_TABLE_OVERLAP_MIN_CONTAINED = 0.5
 
 
 def _table_overlap_with_large_neighbor_allowed(
@@ -186,10 +201,9 @@ def _table_overlap_with_large_neighbor_allowed(
 
     Returns ``False`` only when exactly one of ``r``/``a`` is a TABLE,
     the other's bbox area exceeds ``_TABLE_PROXIMITY_NEIGHBOR_MAX_AREA``,
-    and the mutual overlap is below ``_TABLE_OVERLAP_MIN_RATIO`` from
-    both perspectives. In that case the overlap is treated as bbox
-    jitter at a shared edge rather than a duplicate detection, and the
-    regions are kept as siblings.
+    less than ``_TABLE_OVERLAP_MIN_CONTAINED`` of it lies inside the
+    table, and the table is not enclosed by it. The regions are then kept
+    as siblings.
 
     All other pairings (table+table, non-table+non-table, table+small
     non-table) and pairings with substantial mutual overlap return
@@ -214,10 +228,43 @@ def _table_overlap_with_large_neighbor_allowed(
     area = max(0.0, nx1 - nx0) * max(0.0, ny1 - ny0)
     if area <= _TABLE_PROXIMITY_NEIGHBOR_MAX_AREA:
         return True
-    return max(
-        _overlap_ratio(r.bbox, a.bbox),
-        _overlap_ratio(a.bbox, r.bbox),
-    ) >= _TABLE_OVERLAP_MIN_RATIO
+    table = r if r_is_table else a
+    # The merge takes the union bbox, so a large block lying mostly outside
+    # the table would stretch the table over it (and over whatever else the
+    # union then overlaps). Merge only a duplicate (text mostly inside the
+    # table) or a false table enclosed by text (see _table_contained_in_text).
+    return (
+        _overlap_ratio(non_table.bbox, table.bbox) >= _TABLE_OVERLAP_MIN_CONTAINED
+        or _table_contained_in_text(table, non_table)
+    )
+
+
+# Share of a TEXT/LIST region's bbox that must lie inside an IMAGE for the
+# image to absorb it. Text that only brushes an image's bbox (a paragraph
+# beside a photo or a decorative corner graphic) stays a sibling.
+_IMAGE_TEXT_CONTAINMENT_RATIO = 0.5
+_TABLE_IN_IMAGE_CONTAINMENT_RATIO = 0.9
+
+
+def _image_text_merge_allowed(r: LayoutRegion, a: LayoutRegion) -> bool:
+    """Gate merges between an IMAGE and a TEXT/LIST/TABLE region.
+
+    An IMAGE block carries only pixels, so anything folded into it is lost
+    from the output. Only label-sized text lying mostly inside the image
+    (in-figure annotations, chart labels) may merge, and a TABLE only when
+    it sits almost wholly inside (a false grid detected on chart gridlines).
+    """
+    if r.type == LayoutRegionType.IMAGE and a.type != LayoutRegionType.IMAGE:
+        image, text = r, a
+    elif a.type == LayoutRegionType.IMAGE and r.type != LayoutRegionType.IMAGE:
+        image, text = a, r
+    else:
+        return not (r.type == LayoutRegionType.IMAGE and (r.from_model or a.from_model))
+    if text.type == LayoutRegionType.TABLE:
+        return _overlap_ratio(text.bbox, image.bbox) >= _TABLE_IN_IMAGE_CONTAINMENT_RATIO
+    if len((text.text or "").split()) > _IMAGE_LABEL_MAX_WORDS:
+        return False
+    return _overlap_ratio(text.bbox, image.bbox) >= _IMAGE_TEXT_CONTAINMENT_RATIO
 
 
 # Minimum fraction of a TABLE that must lie inside a TEXT region for the
@@ -260,7 +307,7 @@ def _table_contained_in_text(
 # back into the table even though the area-based gates would otherwise
 # reject the merge: the header's bbox area typically exceeds
 # ``_TABLE_PROXIMITY_NEIGHBOR_MAX_AREA`` while its overlap with the
-# table is only bbox-jitter (sub ``_TABLE_OVERLAP_MIN_RATIO``).
+# table is only bbox-jitter (sub ``_TABLE_OVERLAP_MIN_CONTAINED``).
 #
 # The relaxation is intentionally narrow -- it bypasses only the
 # area+overlap gates, only for (TABLE, TEXT) pairs, and only when the
@@ -1382,16 +1429,39 @@ def _find_vector_bullets(
 # --------------------------------------------------------------------------- #
 
 class DocumentRasterCache:
-    """Lazy per-document raster cache; one pdfplumber render pass for all pages."""
+    """Lazy per-document raster cache.
 
-    def __init__(self, pdf_path: str, dpi: int = _DPI) -> None:
+    With ``num_pages`` it holds one window of ``window`` consecutive pages and
+    renders the next window on a miss, so memory stays flat however long the
+    document is (a full render of a 500-page filing at 150 DPI is ~3.5 GB of
+    arrays, built in the raster worker and copied to this process). Without
+    ``num_pages`` it renders every page on first use.
+    """
+
+    def __init__(
+        self,
+        pdf_path: str,
+        dpi: int = _DPI,
+        num_pages: Optional[int] = None,
+        window: int = _RASTER_WINDOW_PAGES,
+    ) -> None:
         self._pdf_path = pdf_path
         self._dpi = dpi
+        self._num_pages = num_pages
+        self._window = max(1, window)
         self._cache: Optional[Dict[int, Tuple[np.ndarray, float]]] = None
 
     def get(self, page_number: int) -> Tuple[np.ndarray, float]:
-        if self._cache is None:
-            self._cache = _render_all_pages(self._pdf_path, self._dpi)
+        if self._num_pages is None:
+            if self._cache is None:
+                self._cache = _render_all_pages(self._pdf_path, self._dpi)
+        elif self._cache is None or page_number not in self._cache:
+            last = min(page_number + self._window - 1, self._num_pages)
+            # Drop the old window before rendering, so two are never held at once.
+            self._cache = None
+            self._cache = _render_page_batch(
+                self._pdf_path, list(range(page_number, last + 1)), self._dpi
+            )
         return self._cache[page_number]
 
 
@@ -1441,17 +1511,16 @@ def _full_page_image_region(
         page, _DPI, pdf_path=pdf_path, raster_cache=raster_cache
     )
     full_bbox = (0.0, 0.0, page_w, page_h)
-    return LayoutRegion(
-        type=LayoutRegionType.IMAGE,
-        bbox=full_bbox,
-        image_data=_crop_image_bytes(img_rgb, full_bbox, scale),
-    )
+    region = LayoutRegion(type=LayoutRegionType.IMAGE, bbox=full_bbox)
+    region.image_data, region.image_ext = _crop_image(img_rgb, full_bbox, scale)
+    return region
 
 
 def extract_layout_regions(
     page,
     pdf_path: Optional[str] = None,
     raster_cache: Optional[DocumentRasterCache] = None,
+    model_raster_cache: Optional[DocumentRasterCache] = None,
 ) -> List[LayoutRegion]:
     page_w = float(page.width)
     page_h = float(page.height)
@@ -1504,6 +1573,11 @@ def extract_layout_regions(
         page, page_w, page_h, all_words,
         stripe_frames=stripe_frames,
     )
+    model_boxes = _detect_model_boxes(page, pdf_path, model_raster_cache) if all_words else None
+    if model_boxes:
+        table_regions = _prefer_model_tables(
+            page, page_w, page_h, table_regions, all_words, model_boxes["table"],
+        )
 
     # Lazy raster cache: rasterization is expensive, so we set up the
     # getter once and let consumers pull on demand. Column detection
@@ -1555,7 +1629,16 @@ def extract_layout_regions(
         existing=table_regions,
         all_words=all_words,
     )
+    if model_boxes:
+        image_regions, table_regions = _prefer_model_pictures(
+            image_regions, table_regions, model_boxes["picture"], page_w, page_h,
+            table_boxes=model_boxes["table"],
+        )
 
+    table_regions = table_regions + _detect_aligned_tables(
+        page, page_w, page_h, all_words,
+        existing=table_regions + image_regions, gutter_x=gutter_x,
+    )
     higher_priority = image_regions + table_regions
 
     text_list_regions = _classify_text_blocks(
@@ -1589,6 +1672,8 @@ def extract_layout_regions(
         page_w=page_w, page_h=page_h, gutter_x=gutter_x,
     )
 
+    resolved = _demote_lossy_tables(resolved, all_words, gutter_x=gutter_x)
+
     needs_raster = any(
         r.type == LayoutRegionType.IMAGE and r.image_data is None
         for r in resolved
@@ -1597,7 +1682,7 @@ def extract_layout_regions(
         img_rgb, scale = _get_raster()
         for r in resolved:
             if r.type == LayoutRegionType.IMAGE and r.image_data is None:
-                r.image_data = _crop_image_bytes(img_rgb, r.bbox, scale)
+                r.image_data, r.image_ext = _crop_image(img_rgb, r.bbox, scale)
 
     ordered = _reading_order(
         resolved, page_w, page_h, gutter_x=gutter_x, all_words=all_words,
@@ -1617,7 +1702,78 @@ def extract_layout_regions(
     ordered = _reading_order(
         merged, page_w, page_h, gutter_x=gutter_x, all_words=all_words,
     )
+    _attach_image_text(ordered, all_words)
+    _link_captions(ordered, page_h, [
+        (fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h)
+        for (fx0, fy0, fx1, fy1), _s in (model_boxes or {}).get("caption", [])
+    ])
     return _inject_hyperlinks_into_regions(ordered, page, all_words)
+
+
+# "Figure 3", "Fig. 2a", "图 6-3-1", "Chart 4": how a figure caption opens.
+_CAPTION_START = re.compile(
+    r"^\s*(?:fig(?:ure)?s?|chart|graph|exhibit|plate|photo|diagram|illustration|scheme|map|图|圖)"
+    r"\s*\.?\s*[\dIVXivx一二三四五六七八九十(（]",
+    re.IGNORECASE,
+)
+# A caption sits within this share of the page height above or below its figure.
+_CAPTION_MAX_GAP = 0.06
+
+
+def _link_captions(
+    regions: list[LayoutRegion],
+    page_h: float,
+    caption_boxes: list[tuple[float, float, float, float]],
+) -> None:
+    """Set each IMAGE region's caption to the nearest caption text above or below it.
+
+    A TEXT region is a caption when the layout model boxed it as one or it opens
+    like one ("Figure 3"). Pairs are taken closest first, one caption per figure.
+    """
+    def is_caption(r: LayoutRegion) -> bool:
+        return r.type == LayoutRegionType.TEXT and bool(r.text.strip()) and (
+            bool(_CAPTION_START.match(r.text))
+            or any(_overlap_ratio(r.bbox, b) >= 0.5 for b in caption_boxes)
+        )
+
+    images = [r for r in regions if r.type == LayoutRegionType.IMAGE]
+    captions = [r for r in regions if is_caption(r)]
+    pairs = []
+    for img in images:
+        for cap in captions:
+            h_overlap = min(img.bbox[2], cap.bbox[2]) - max(img.bbox[0], cap.bbox[0])
+            narrower = min(img.bbox[2] - img.bbox[0], cap.bbox[2] - cap.bbox[0])
+            gap = max(cap.bbox[1] - img.bbox[3], img.bbox[1] - cap.bbox[3])
+            if h_overlap >= 0.3 * narrower and gap <= _CAPTION_MAX_GAP * page_h:
+                pairs.append((gap, id(img), id(cap), img, cap))
+    used: set = set()
+    for _gap, img_id, cap_id, img, cap in sorted(pairs, key=lambda p: p[0]):
+        if img_id not in used and cap_id not in used:
+            img.caption = cap.text.strip()
+            used.update((img_id, cap_id))
+
+
+def _attach_image_text(
+    regions: list[LayoutRegion], all_words: list[dict[str, Any]],
+) -> None:
+    """Set each IMAGE region's text to the page words inside it that no other
+    region holds: chart labels and values, text printed over a photo.
+
+    The image crop keeps them only as pixels, so the processor emits this text
+    alongside the image to keep it searchable.
+    """
+    others = [r.bbox for r in regions if r.type != LayoutRegionType.IMAGE]
+    for r in regions:
+        if r.type != LayoutRegionType.IMAGE:
+            continue
+        words = [
+            w for w in all_words
+            if _word_center_in_bbox(w, r.bbox)
+            and not any(_word_center_in_bbox(w, b) for b in others)
+            and str(w.get("fontname", "")) != "_synthetic_bullet"
+        ]
+        lines, _ = _group_words_into_lines(words)
+        r.text = "\n".join(" ".join(w["text"] for w in ln) for ln in lines).strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -2280,10 +2436,19 @@ def _detect_tables(
         if not _valid_bbox(bbox):
             continue
         try:
-            grid = t.extract()
+            grid = _table_grid_by_words(t)
         except Exception:
             grid = None
-        pp_candidates.append((bbox, grid))
+        pieces = []
+        if grid and len(grid) == len(t.rows):
+            try:
+                pieces = _split_stacked_table(t, grid)
+            except Exception:
+                pieces = []
+        if len(pieces) > 1:
+            pp_candidates.extend(pieces)
+        else:
+            pp_candidates.append((bbox, grid))
 
     pp_candidates = _merge_row_tables(pp_candidates, page, page_w, page_h)
 
@@ -2315,7 +2480,7 @@ def _detect_tables(
             continue
         try:
             sub = page.within_bbox(_clamp_bbox(box, page_w, page_h))
-            grid = sub.extract_table()
+            grid = _extract_table_by_words(sub)
         except Exception:
             grid = None
         if not _is_plausible_table(box, grid, page_w, page_h, image_bboxes):
@@ -2342,6 +2507,19 @@ def _detect_tables(
     except Exception:
         pass
 
+    try:
+        # Rules are often drawn as thin filled rects, which page.lines misses.
+        n_hor_edges = sum(
+            1 for e in page.horizontal_edges
+            if float(e["x1"]) - float(e["x0"]) > 10.0
+        )
+    except Exception:
+        n_hor_edges = n_hor_rules
+    if n_hor_edges >= _RULED_ROWS_MIN_RULES:
+        regions.extend(_detect_ruled_row_tables(
+            page, page_w, page_h, regions, image_bboxes, _inside_stripe_frame,
+        ))
+
     # Borderless detection is a last-resort fallback for pages where
     # pdfplumber's primary table detection found NO candidates at all.
     # The earlier gate of ``not regions`` was too permissive: it fired
@@ -2364,9 +2542,538 @@ def _detect_tables(
         borderless = _detect_borderless_tables(
             page, page_w, page_h, all_words, image_bboxes,
         )
-        regions.extend(borderless)
+        regions.extend(
+            b for b in borderless
+            if not any(_overlap_ratio(b.bbox, r.bbox) > 0.5 for r in regions)
+        )
 
     return regions
+
+
+# Tables ruled only horizontally (top/header/bottom rules, no column lines)
+# are invisible to the lines strategy; columns come from text alignment.
+_RULED_ROWS_MIN_RULES = 2
+_RULED_ROWS_SETTINGS = {
+    "vertical_strategy": "text",
+    "horizontal_strategy": "lines",
+    "intersection_tolerance": 5,
+}
+# Median words per filled cell above which a candidate is prose that text
+# alignment split into columns, not a table.
+_RULED_ROWS_MAX_CELL_WORDS = 6
+_RULED_ROWS_MIN_ROWS = 3
+# A row is prose (a caption or footnote between stacked tables) when its lines
+# run across this share of the table with only word spacing (gaps up to this
+# multiple of the line height); table rows have column gaps.
+_PROSE_ROW_MIN_SPAN = 0.5
+_PROSE_ROW_MAX_GAP = 1.0
+
+
+def _split_stacked_table(table: "Table", grid: list[list[Optional[str]]]) -> list[Any]:
+    """Split a find_tables candidate at prose rows and wide vertical gaps.
+
+    With columns taken from text alignment, every horizontal rule on the page
+    joins one grid, so tables stacked down a page come back as a single
+    candidate, with the captions and footnotes between them read as rows.
+    """
+    rows = list(table.rows)
+    heights = sorted(r.bbox[3] - r.bbox[1] for r in rows) or [0.0]
+    max_gap = 2.0 * heights[len(heights) // 2]
+    width = max(1.0, table.bbox[2] - table.bbox[0])
+
+    def _is_prose_row(row: "Row") -> bool:
+        try:
+            words = table.page.crop(row.bbox, strict=False).extract_words()
+        except Exception:
+            return False
+        lines, _ = _group_words_into_lines(words)
+        prose = total = 0
+        for line in lines:
+            n = sum(len(w["text"]) for w in line)
+            total += n
+            ln = sorted(line, key=lambda w: float(w["x0"]))
+            size = float(ln[0]["bottom"]) - float(ln[0]["top"])
+            gaps = [float(b["x0"]) - float(a["x1"]) for a, b in zip(ln, ln[1:])]
+            spans = float(ln[-1]["x1"]) - float(ln[0]["x0"]) >= _PROSE_ROW_MIN_SPAN * width
+            if spans and len(ln) >= 4 and max(gaps) <= _PROSE_ROW_MAX_GAP * size:
+                prose += n
+        return total > 0 and prose >= 0.5 * total
+
+    groups: list[list[int]] = [[]]
+    for i, row in enumerate(rows):
+        if _is_prose_row(row):
+            groups.append([])
+            continue
+        if groups[-1] and row.bbox[1] - rows[groups[-1][-1]].bbox[3] > max_gap:
+            groups.append([])
+        groups[-1].append(i)
+    out = []
+    for g in groups:
+        if not g:
+            continue
+        x0 = min(rows[i].bbox[0] for i in g)
+        x1 = max(rows[i].bbox[2] for i in g)
+        out.append(((x0, rows[g[0]].bbox[1], x1, rows[g[-1]].bbox[3]), [grid[i] for i in g]))
+    return out
+
+
+def _detect_ruled_row_tables(
+    page: "Page",
+    page_w: float,
+    page_h: float,
+    existing: list[LayoutRegion],
+    image_bboxes: list[tuple[float, float, float, float]],
+    inside_stripe_frame: Callable[[tuple[float, float, float, float]], bool],
+) -> list[LayoutRegion]:
+    try:
+        tables = page.find_tables(_RULED_ROWS_SETTINGS)
+    except Exception:
+        return []
+    out: list[LayoutRegion] = []
+    pieces: list[tuple[tuple[float, float, float, float], list[list[Optional[str]]]]] = []
+    for t in tables:
+        try:
+            pieces.extend(_split_stacked_table(t, _table_grid_by_words(t)))
+        except Exception:
+            continue
+    for bbox, grid in pieces:
+        if not _valid_bbox(bbox) or inside_stripe_frame(bbox):
+            continue
+        if any(
+            _iou(bbox, r.bbox) > 0.3 or _overlap_ratio(bbox, r.bbox) > 0.5
+            or _overlap_ratio(r.bbox, bbox) > 0.5
+            for r in existing + out
+        ):
+            continue
+        if not _is_plausible_table(bbox, grid, page_w, page_h, image_bboxes):
+            continue
+        clean = _trim_empty_rows_cols(grid)
+        if len(clean) < _RULED_ROWS_MIN_ROWS:
+            continue
+        cell_words = sorted(len(c.split()) for row in clean for c in row if c and c.strip())
+        if not cell_words or cell_words[len(cell_words) // 2] > _RULED_ROWS_MAX_CELL_WORDS:
+            continue
+        out.append(LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=bbox,
+            text=_grid_to_text(clean),
+            table_grid=clean,
+        ))
+    return out
+
+
+# Unruled tables no find_tables strategy reports: runs of lines whose words
+# break into aligned columns. A column break is a gap wider than this many
+# character heights; a column is a segment start shared by enough lines.
+_ALIGNED_GAP_CHAR_HEIGHTS = 1.5
+_ALIGNED_COL_SNAP = 6.0
+_ALIGNED_MIN_LINES = 3
+_ALIGNED_MIN_COLS = 3
+_ALIGNED_MIN_SPLIT_SHARE = 0.5
+_ALIGNED_MAX_SEG_WORDS = 6
+# Lines further apart than this many line heights start a new block.
+_ALIGNED_MAX_LINE_GAP = 2.5
+_ALIGNED_SETTINGS = {"vertical_strategy": "text", "horizontal_strategy": "text"}
+
+
+def _aligned_blocks(words: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
+    """Yield word lists of line runs that read as an unruled table."""
+    bands: list[list[dict[str, Any]]] = []
+    for w in sorted(words, key=lambda w: (float(w["top"]), float(w["x0"]))):
+        if bands and abs(float(bands[-1][0]["top"]) - float(w["top"])) < 3.0:
+            bands[-1].append(w)
+        else:
+            bands.append([w])
+
+    def _segments(ln: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        ln = sorted(ln, key=lambda w: float(w["x0"]))
+        h = sorted(float(w["bottom"]) - float(w["top"]) for w in ln)[len(ln) // 2]
+        segs = [[ln[0]]]
+        for a, b in zip(ln, ln[1:]):
+            if float(b["x0"]) - float(a["x1"]) > _ALIGNED_GAP_CHAR_HEIGHTS * h:
+                segs.append([])
+            segs[-1].append(b)
+        return segs
+
+    def _is_table(lines: list[list[dict[str, Any]]]) -> bool:
+        if len(lines) < _ALIGNED_MIN_LINES:
+            return False
+        segs = [_segments(ln) for ln in lines]
+        if sum(len(s) > 1 for s in segs) < _ALIGNED_MIN_SPLIT_SHARE * len(lines):
+            return False
+        def _edges(x_of: Callable[[dict[str, Any]], float]) -> int:
+            votes: Counter = Counter()
+            for ss in segs:
+                votes.update({round(x_of(s) / _ALIGNED_COL_SNAP) for s in ss})
+            # Neighbouring buckets are one edge (ragged digits, e.g. "9" vs "10").
+            runs: list[int] = []
+            prev = None
+            for b in sorted(votes):
+                if prev is not None and b == prev + 1:
+                    runs[-1] += votes[b]
+                else:
+                    runs.append(votes[b])
+                prev = b
+            return sum(1 for c in runs if c >= max(3, 0.3 * len(lines)))
+
+        # Text columns share a left edge, number columns a right edge (Nurminen).
+        # Counted per edge type: justified two-column prose has two of each.
+        cols = max(_edges(lambda s: float(s[0]["x0"])), _edges(lambda s: float(s[-1]["x1"])))
+        sizes = sorted(len(s) for ss in segs for s in ss)
+        return cols >= _ALIGNED_MIN_COLS and sizes[len(sizes) // 2] <= _ALIGNED_MAX_SEG_WORDS
+
+    block: list[list[dict[str, Any]]] = []
+
+    def _flush() -> Iterator[list[dict[str, Any]]]:
+        # Prose lines above or below the table join its block; trim them.
+        lines = list(block)
+        while lines and len(_segments(lines[0])) < 2:
+            lines.pop(0)
+        while lines and len(_segments(lines[-1])) < 2:
+            lines.pop()
+        if _is_table(lines):
+            yield [w for ln in lines for w in ln]
+
+    for ln in bands:
+        if block:
+            prev = block[-1]
+            h = max(1.0, float(prev[0]["bottom"]) - float(prev[0]["top"]))
+            if float(ln[0]["top"]) - float(prev[0]["bottom"]) > _ALIGNED_MAX_LINE_GAP * h:
+                yield from _flush()
+                block = []
+        block.append(ln)
+    if block:
+        yield from _flush()
+
+
+def _detect_aligned_tables(
+    page: "Page",
+    page_w: float,
+    page_h: float,
+    all_words: list[dict[str, Any]],
+    existing: list[LayoutRegion],
+    gutter_x: Optional[float] = None,
+) -> list[LayoutRegion]:
+    free = [
+        w for w in all_words
+        if str(w.get("fontname", "")) != "_synthetic_bullet"
+        and not any(_word_center_in_bbox(w, r.bbox) for r in existing)
+    ]
+    if gutter_x is not None:
+        # Two body columns would otherwise read as a two-column table.
+        sides = [
+            [w for w in free if (float(w["x0"]) + float(w["x1"])) / 2 < gutter_x],
+            [w for w in free if (float(w["x0"]) + float(w["x1"])) / 2 >= gutter_x],
+        ]
+    else:
+        sides = [free]
+    image_bboxes = [r.bbox for r in existing if r.type == LayoutRegionType.IMAGE]
+    out: list[LayoutRegion] = []
+    for side in sides:
+        for words in _aligned_blocks(side):
+            bbox = (
+                min(float(w["x0"]) for w in words), min(float(w["top"]) for w in words),
+                max(float(w["x1"]) for w in words), max(float(w["bottom"]) for w in words),
+            )
+            try:
+                sub = page.within_bbox(_clamp_bbox(bbox, page_w, page_h))
+                grid = _extract_table_by_words(sub, _ALIGNED_SETTINGS)
+            except Exception:
+                continue
+            clean = _trim_empty_rows_cols(grid)
+            if not clean or len(clean) < _ALIGNED_MIN_LINES or len(clean[0]) < 2:
+                continue
+            if _grid_char_coverage(clean, words) < _GRID_MIN_WORD_COVERAGE:
+                continue
+            if not _is_plausible_table(bbox, clean, page_w, page_h, image_bboxes):
+                continue
+            out.append(LayoutRegion(
+                type=LayoutRegionType.TABLE, bbox=bbox,
+                text=_grid_to_text(clean), table_grid=clean,
+            ))
+    return out
+
+
+def _boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    """Same table: IoU above 0.2, or either holds half of the other."""
+    return _iou(a, b) > 0.2 or max(_overlap_ratio(a, b), _overlap_ratio(b, a)) > 0.5
+
+
+# A column separator is an x-run at least this wide (pt) that at most this share
+# of the rows put ink on (headers and spanning cells may cross it).
+_PROJ_MIN_GAP = 4.0
+_PROJ_MAX_CROSSING = 0.15
+
+
+def _grid_by_projection(words: list[dict[str, Any]]) -> Optional[list[list[str]]]:
+    """Grid that keeps every word: rows are text lines, columns are split at
+    vertical whitespace channels most rows share."""
+    if not words:
+        return None
+    rows: list[list[dict[str, Any]]] = []
+    for w in sorted(words, key=lambda w: (float(w["top"]) + float(w["bottom"])) / 2):
+        cy = (float(w["top"]) + float(w["bottom"])) / 2
+        if rows and cy - (float(rows[-1][0]["top"]) + float(rows[-1][0]["bottom"])) / 2 < 0.5 * (
+            float(rows[-1][0]["bottom"]) - float(rows[-1][0]["top"])
+        ):
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+    x0 = int(min(float(w["x0"]) for w in words))
+    ink = np.zeros(int(max(float(w["x1"]) for w in words)) - x0 + 2, dtype=np.int32)
+    for row in rows:
+        hit = np.zeros_like(ink, dtype=bool)
+        for w in row:
+            hit[int(float(w["x0"])) - x0: int(float(w["x1"])) - x0 + 1] = True
+        ink += hit
+    # One spanning row (a header) may cross a separator once there are body rows.
+    free = ink <= max(1 if len(rows) >= 3 else 0, _PROJ_MAX_CROSSING * len(rows))
+    cuts, start = [], None
+    for i, f in enumerate(free):
+        if f and start is None:
+            start = i
+        elif not f and start is not None:
+            if i - start >= _PROJ_MIN_GAP and start > 0:
+                cuts.append(x0 + (start + i) / 2)
+            start = None
+    grid = []
+    for row in rows:
+        cells = [[] for _ in range(len(cuts) + 1)]
+        for w in sorted(row, key=lambda w: float(w["x0"])):
+            cx = (float(w["x0"]) + float(w["x1"])) / 2
+            cells[sum(1 for c in cuts if cx > c)].append(str(w["text"]))
+        grid.append([" ".join(c) for c in cells])
+    return grid
+
+
+def _detect_model_boxes(
+    page: "Page", pdf_path: str | None = None, raster_cache: Optional[DocumentRasterCache] = None,
+) -> Optional[dict[str, list[Any]]]:
+    """Layout-model table and picture boxes (page fractions), or None without a model."""
+    from app.modules.parsers.pdf.table_detector import detect_layout_boxes
+
+    try:
+        # A 72 DPI render, much cheaper than the shared _DPI raster. It goes
+        # through the raster pool: pdfium is not thread-safe, and concurrent
+        # in-thread renders corrupt it for the life of the process. Without a
+        # cache each page reopens the whole PDF in the worker, which is
+        # quadratic in its length (a 1,216-page PDF: 205 s -> 656 s).
+        img, _ = _rasterize_page(page, MODEL_DPI, pdf_path=pdf_path, raster_cache=raster_cache)
+        return detect_layout_boxes(img)
+    except Exception as e:
+        logger.warning("Page render for the table model failed, using rule-based tables: %s", e)
+        return None
+
+
+def _prefer_model_tables(
+    page: "Page",
+    page_w: float,
+    page_h: float,
+    rule_tables: list[LayoutRegion],
+    all_words: list[dict[str, Any]],
+    boxes: list[Any],
+) -> list[LayoutRegion]:
+    """Learned table boxes win over the rule-based tables they overlap: the
+    rules find tables by pdfplumber's line and text heuristics and often get the
+    extent wrong, while the model sees the page. Rule tables the model doesn't
+    cover stay; cells always come from the PDF text layer."""
+    if not boxes:
+        return rule_tables
+    boxes = sorted(boxes, key=lambda b: -b[1])
+    # The model also boxes a whole group of stacked or side-by-side tables;
+    # keep the tables, not the group.
+    boxes = [
+        b for b in boxes
+        if sum(1 for o in boxes if o is not b and _overlap_ratio(o[0], b[0]) >= 0.9) < 2
+    ]
+    model: list[LayoutRegion] = []
+    for (fx0, fy0, fx1, fy1), _score in boxes:
+        bbox = _clamp_bbox((fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h), page_w, page_h)
+        if not _valid_bbox(bbox) or any(_boxes_overlap(bbox, m.bbox) for m in model):
+            continue
+        grid = _reextract_grid_for_bbox(page, bbox, page_w, page_h)
+        words = [w for w in all_words if _word_center_in_bbox(w, bbox)]
+        if (not grid or max(len(r) for r in grid) < 2
+                or _grid_char_coverage(grid, words) < _GRID_MIN_WORD_COVERAGE):
+            # pdfplumber's finders cover only part of the box, or find one column
+            # in an unruled table; split it by whitespace instead.
+            grid = _trim_empty_rows_cols(_grid_by_projection(words))
+        if not grid or len(grid) < 2 or max(len(r) for r in grid) < 2:
+            continue
+        model.append(LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=bbox, text=_grid_to_text(grid), table_grid=grid,
+        ))
+    kept = [r for r in rule_tables if not any(_boxes_overlap(r.bbox, m.bbox) for m in model)]
+    return kept + model
+
+
+def _prefer_model_pictures(
+    rule_images: list[LayoutRegion],
+    tables: list[LayoutRegion],
+    boxes: list[Any],
+    page_w: float,
+    page_h: float,
+    table_boxes: list[Any] = (),
+) -> tuple[list[LayoutRegion], list[LayoutRegion]]:
+    """Learned picture boxes win over the rule-based images they overlap: the
+    rules miss vector charts, mis-size figures and merge neighbouring ones. Rule
+    images the model doesn't cover stay.
+
+    A rule-based table lying inside a learned picture that the model did not also
+    box as a table is a chart whose gridlines read as a grid; the picture replaces
+    it (its labels stay searchable as the image's text). Returns (images, tables).
+    """
+    def points(f: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        return _clamp_bbox((f[0] * page_w, f[1] * page_h, f[2] * page_w, f[3] * page_h), page_w, page_h)
+
+    model_tables = [points(f) for f, _score in table_boxes]
+
+    def confirmed(t: LayoutRegion) -> bool:
+        return any(_boxes_overlap(t.bbox, m) for m in model_tables)
+
+    model: list[LayoutRegion] = []
+    replaced: set = set()
+    for f, _score in sorted(boxes, key=lambda b: -b[1]):
+        bbox = points(f)
+        if not _valid_bbox(bbox) or any(_boxes_overlap(bbox, r.bbox) for r in model):
+            continue
+        if any(_boxes_overlap(bbox, m) for m in model_tables):
+            continue
+        clashing = [t for t in tables if _boxes_overlap(bbox, t.bbox)]
+        if any(confirmed(t) or _overlap_ratio(t.bbox, bbox) < 0.5 for t in clashing):
+            continue
+        replaced.update(id(t) for t in clashing)
+        model.append(LayoutRegion(type=LayoutRegionType.IMAGE, bbox=bbox, from_model=True))
+    kept = [r for r in rule_images if not any(_boxes_overlap(r.bbox, m.bbox) for m in model)]
+    return kept + model, [t for t in tables if id(t) not in replaced]
+
+
+# Characters closer than this (pt) are one word for cell assignment. Below a
+# space at any common font size, so adjacent cells' values stay separate words.
+_CELL_WORD_X_TOLERANCE = 1.0
+
+
+def _table_grid_by_words(
+    table: "Table", region: Optional["Page"] = None,
+) -> list[list[Optional[str]]]:
+    """``Table.extract()``, but with whole words assigned to the cell holding
+    their centre.
+
+    ``extract()`` places each character by its own centre, so a word straddling
+    a column boundary (a header spanning columns, a label wider than its cell)
+    is cut into fragments across cells ("Digital Medi | a").
+
+    ``region`` (default: the table's bbox) is the area whose words the grid must
+    hold; pass the cropped page when re-extracting a region whose bbox is wider
+    than the grid pdfplumber finds in it, e.g. after a header was merged in.
+    """
+    try:
+        if region is None:
+            region = table.page.crop(table.bbox, strict=False)
+        words = region.extract_words(
+            x_tolerance=_CELL_WORD_X_TOLERANCE, return_chars=True,
+        )
+        # extract_words drops explicit space glyphs, which extract_text needs
+        # to space words that are set tighter than its tolerance.
+        words += [
+            {**c, "chars": [c]} for c in region.chars if not c["text"].strip()
+        ]
+        page_order = {id(c): i for i, c in enumerate(region.chars)}
+    except Exception:
+        return table.extract()
+
+    rows = list(table.rows)
+    buckets = [[[] for _ in row.cells] for row in rows]
+
+    def _gap(lo: float, hi: float, v: float) -> float:
+        return 0.0 if lo <= v <= hi else min(abs(v - lo), abs(v - hi))
+
+    # Words in no cell (inside a spanning header's missing cells, or between
+    # cell boxes) go to the nearest cell: Table.extract() drops them.
+    cells = [
+        (cell, ri, ci)
+        for ri, row in enumerate(rows)
+        for ci, cell in enumerate(row.cells)
+        if cell is not None
+    ]
+    if not cells:
+        return table.extract()
+    for w in words:
+        cx = (float(w["x0"]) + float(w["x1"])) / 2.0
+        cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+        home = next(
+            ((ri, ci) for cell, ri, ci in cells
+             if cell[0] <= cx < cell[2] and cell[1] <= cy < cell[3]),
+            None,
+        )
+        if home is None:
+            _, _, *home = min(
+                (_gap(cell[1], cell[3], cy), _gap(cell[0], cell[2], cx), ri, ci)
+                for cell, ri, ci in cells
+            )
+        buckets[home[0]][home[1]].extend(w["chars"])
+
+    grid: list[list[Optional[str]]] = []
+    for row, row_buckets in zip(rows, buckets):
+        cells = list(row.cells)
+        grid.append([
+            None if cell is None else (
+                pdfplumber_utils.extract_text(
+                    sorted(chars, key=lambda c: page_order.get(id(c), 0))
+                ) if chars else ""
+            )
+            for cell, chars in zip(cells, row_buckets)
+        ])
+    return grid
+
+
+def _extract_table_by_words(
+    page: "Page", settings: Optional[dict[str, Any]] = None,
+) -> Optional[list[list[Optional[str]]]]:
+    """``page.extract_table(settings)`` built on ``_table_grid_by_words``."""
+    tables = page.find_tables(settings) if settings else page.find_tables()
+    if not tables:
+        return None
+    # Same pick as pdfplumber's extract_table: most cells, then topmost, leftmost.
+    largest = min(tables, key=lambda t: (-len(t.cells), t.bbox[1], t.bbox[0]))
+    return _table_grid_by_words(largest, region=page)
+
+
+# Share of the characters inside a table's bbox its grid must keep. Below it the
+# grid is lossy (typically a chart's value labels read as a table) and the
+# region is better emitted as text.
+_GRID_MIN_WORD_COVERAGE = 0.9
+
+
+def _grid_char_coverage(grid: list[list[Optional[str]]], words: list[dict[str, Any]]) -> float:
+    """Share of the words' non-space characters that the grid's cells hold.
+    Characters rather than tokens, so differences in word splitting don't count."""
+    ref = Counter(ch for w in words for ch in str(w.get("text", "")) if not ch.isspace())
+    if not ref:
+        return 1.0
+    got = Counter(
+        ch for row in (grid or []) for c in row if c for ch in c if not ch.isspace()
+    )
+    return sum((got & ref).values()) / sum(ref.values())
+
+
+def _demote_lossy_tables(
+    regions: list[LayoutRegion],
+    all_words: list[dict[str, Any]],
+    gutter_x: Optional[float] = None,
+) -> list[LayoutRegion]:
+    """Re-emit as text any TABLE whose grid drops part of the text inside it."""
+    out: list[LayoutRegion] = []
+    for r in regions:
+        if r.type != LayoutRegionType.TABLE or not r.table_grid:
+            out.append(r)
+            continue
+        words = [w for w in all_words if _word_center_in_bbox(w, r.bbox)]
+        if _grid_char_coverage(r.table_grid, words) >= _GRID_MIN_WORD_COVERAGE:
+            out.append(r)
+            continue
+        out.extend(_text_regions_from_words(words, gutter_x) or [r])
+    return out
 
 
 def _reextract_grid_for_bbox(
@@ -2391,19 +3098,29 @@ def _reextract_grid_for_bbox(
          "horizontal_strategy": "text",
          "intersection_tolerance": 5},
     ]
+    try:
+        bbox_words = sub.extract_words()
+    except Exception:
+        bbox_words = []
+
+    # Most columns wins, but only among grids that keep the table's words: the
+    # text strategies can split a chart's value labels into more columns while
+    # silently dropping some of them.
     best: Optional[List[List[Optional[str]]]] = None
-    best_cols = 0
+    best_key: tuple[bool, float] = (False, -1.0)
     for s in strategies:
         try:
-            grid = sub.extract_table(s) if s else sub.extract_table()
+            grid = _extract_table_by_words(sub, s)
         except Exception:
             grid = None
         clean = _trim_empty_rows_cols(grid)
         if not clean or len(clean) < 2 or not clean[0]:
             continue
-        n_cols = len(clean[0])
-        if n_cols > best_cols:
-            best_cols = n_cols
+        coverage = _grid_char_coverage(clean, bbox_words)
+        keeps_words = coverage >= _GRID_MIN_WORD_COVERAGE
+        key = (keeps_words, float(len(clean[0])) if keeps_words else coverage)
+        if key > best_key:
+            best_key = key
             best = clean
     return best
 
@@ -2609,7 +3326,7 @@ def _detect_borderless_tables(
         if sub is not None:
             for s in (settings_text, settings_lines):
                 try:
-                    grid = sub.extract_table(s)
+                    grid = _extract_table_by_words(sub, s)
                 except Exception:
                     grid = None
                 clean = _trim_empty_rows_cols(grid)
@@ -2885,7 +3602,7 @@ def _merge_row_tables(
                         for at in alt_tables:
                             try:
                                 at_bbox = tuple(float(v) for v in at.bbox)
-                                at_grid = at.extract()
+                                at_grid = _table_grid_by_words(at)
                             except Exception:
                                 continue
                             if not _valid_bbox(at_bbox) or not at_grid:
@@ -2953,7 +3670,7 @@ def _rescue_columns_if_single(
     def _try(settings):
         try:
             sub = page.within_bbox(_clamp_bbox(bbox, page_w, page_h))
-            return sub.extract_table(settings)
+            return _extract_table_by_words(sub, settings)
         except Exception:
             return None
 
@@ -3246,6 +3963,32 @@ def _tighten_to_content(img_rgb, scale, bbox):
     return (nx0, ny0, nx1, ny1)
 
 
+# Charts carry a few dozen labels at most; a sparse, rect-heavy block with
+# more words than this is an unruled table or a form.
+_FIGURE_MAX_WORDS = 60
+_PROSE_LINE_MIN_CHARS = 20
+_PROSE_MIN_LINES = 3
+_PROSE_MIN_SHARE = 0.6
+
+
+def _is_framed_prose(words: list[dict[str, Any]]) -> bool:
+    """True when most of a block's text is in prose-length lines.
+
+    A bordered text box is sparse and full of rects, so it passes the vector
+    figure tests; chart text, by contrast, is short runs (ticks, legend keys)
+    split apart by wide gaps. Measured in characters so unspaced CJK lines count.
+    """
+    if not words:
+        return False
+    lines, _ = _group_words_into_lines(words)
+    sizes = [sum(len(str(w.get("text", ""))) for w in ln) for ln in lines]
+    long_lines = [n for n in sizes if n >= _PROSE_LINE_MIN_CHARS]
+    return (
+        len(long_lines) >= _PROSE_MIN_LINES
+        and sum(long_lines) >= _PROSE_MIN_SHARE * sum(sizes)
+    )
+
+
 def _detect_images(page, raster_getter, block_boxes, existing, all_words):
     regions = []
 
@@ -3368,10 +4111,25 @@ def _detect_images(page, raster_getter, block_boxes, existing, all_words):
     for box in block_boxes:
         if any(_overlap_ratio(box, r.bbox) > 0.5 for r in regions + existing):
             continue
+        # A text block that also spans a detected table must be judged on what lies
+        # outside the table: the table's sparse cells and row-shading rects otherwise
+        # make the block look like a chart, and the IMAGE then swallows text and table.
+        tables_in = [
+            r.bbox for r in existing
+            if r.type == LayoutRegionType.TABLE and _overlap_ratio(r.bbox, box) > 0.5
+        ]
+
+        def _in_table(obj: dict[str, Any], tables_in: list[Any] = tables_in) -> bool:
+            return any(_word_center_in_bbox(obj, t) for t in tables_in)
+
         area = (box[2] - box[0]) * (box[3] - box[1])
+        area -= sum(_overlap_ratio(t, box) * (t[2] - t[0]) * (t[3] - t[1]) for t in tables_in)
         if area < 4000:
             continue
-        words_in = [w for w in all_words if _word_center_in_bbox(w, box)]
+        words_in = [
+            w for w in all_words
+            if _word_center_in_bbox(w, box) and not _in_table(w)
+        ]
         total_word_area = 0.0
         for w in words_in:
             try:
@@ -3382,12 +4140,13 @@ def _detect_images(page, raster_getter, block_boxes, existing, all_words):
                 continue
         word_density = total_word_area / area
 
-        if word_density > 0.30:
+        if (word_density > 0.30 or len(words_in) >= _FIGURE_MAX_WORDS
+                or _is_framed_prose(words_in)):
             continue
 
         n_vectors = 0
         for v in vector_objects:
-            if not _word_center_in_bbox(v, box):
+            if not _word_center_in_bbox(v, box) or _in_table(v):
                 continue
             try:
                 vw = float(v["x1"]) - float(v["x0"])
@@ -3432,66 +4191,233 @@ def _classify_text_blocks(
     regions = []
 
     for box in block_boxes:
-        if any(_overlap_ratio(box, r.bbox) > 0.5 for r in higher_priority):
-            continue
-
+        covered_by = [r for r in higher_priority if _overlap_ratio(box, r.bbox) > 0.5]
         words = [w for w in all_words if _word_center_in_bbox(w, box)]
         if not words:
             continue
-
-        lines, _ = _group_words_into_lines(words, gutter_x=gutter_x)
-        if not lines:
+        # Text printed over a picture survives as its own region; only
+        # label-sized text may be left to the image (see _image_text_merge_allowed).
+        if any(
+            r.type != LayoutRegionType.IMAGE or len(words) <= _IMAGE_LABEL_MAX_WORDS
+            for r in covered_by
+        ):
             continue
 
-        runs = _split_lines_into_runs(lines)
-
-        for run_type, run_lines in runs:
-            if not run_lines:
-                continue
-            run_words = [w for ln in run_lines for w in ln]
-            tight = _tight_bbox_from_words(run_words, pad=2.0)
-            if tight is None:
-                continue
-            text = "\n".join(
-                " ".join(w["text"] for w in ln) for ln in run_lines
-            ).strip()
-            if not text:
-                continue
-
-            sizes = [
-                float(w["size"]) for w in run_words
-                if w.get("size") is not None
-                and str(w.get("fontname", "")) != "_synthetic_bullet"
-            ]
-            avg_size = sum(sizes) / len(sizes) if sizes else 0.0
-
-            bold_count = sum(
-                1 for w in run_words
-                if "bold" in str(w.get("fontname", "")).lower()
-            )
-            is_bold = bold_count > len(run_words) / 2
-
-            if run_type == "list":
-                items = _extract_list_items(run_lines)
-                if len(items) >= 2:
-                    regions.append(LayoutRegion(
-                        type=LayoutRegionType.LIST,
-                        bbox=tight,
-                        text=text,
-                        font_size=avg_size,
-                        is_bold=is_bold,
-                        list_items=items,
-                    ))
-                    continue
-            regions.append(LayoutRegion(
-                type=LayoutRegionType.TEXT,
-                bbox=tight,
-                text=text,
-                font_size=avg_size,
-                is_bold=is_bold,
-            ))
+        tables = [
+            r.bbox for r in higher_priority
+            if r.type == LayoutRegionType.TABLE and _overlap_ratio(r.bbox, box) > 0
+        ]
+        for part in _split_words_around_tables(words, tables):
+            regions.extend(_text_regions_from_words(part, gutter_x))
 
     return regions
+
+
+def _split_words_around_tables(
+    words: list[dict[str, Any]],
+    tables: list[tuple[float, float, float, float]],
+) -> list[list[dict[str, Any]]]:
+    """Drop words inside detected tables and split the rest into the bands
+    above, beside and below them.
+
+    A native text block is built from every word on the page, so one that
+    spans a table would otherwise enclose it, and ``_resolve_overlaps`` would
+    then discard the table as a false positive inside prose.
+    """
+    if not tables:
+        return [words]
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for w in words:
+        if any(_word_center_in_bbox(w, t) for t in tables):
+            continue
+        cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+        cx = (float(w["x0"]) + float(w["x1"])) / 2.0
+        band = sum(cy > t[3] for t in tables)
+        beside = tuple(
+            (i, cx < t[0]) for i, t in enumerate(tables) if t[1] <= cy <= t[3]
+        )
+        groups.setdefault((band, beside), []).append(w)
+    return list(groups.values())
+
+
+def _text_regions_from_words(
+    words: list[dict[str, Any]], gutter_x: Optional[float] = None,
+) -> list[LayoutRegion]:
+    regions: list[LayoutRegion] = []
+    lines, _ = _group_words_into_lines(words, gutter_x=gutter_x)
+    if not lines:
+        return regions
+
+    runs = [
+        (run_type, piece)
+        for run_type, run_lines in _split_lines_into_runs(lines)
+        for piece in (_split_at_inner_headings(run_lines) if run_type != "list" else [run_lines])
+    ]
+
+    for run_type, run in runs:
+        run_lines = run
+        trailing: list[list[dict[str, Any]]] = []
+        if run_type != "list":
+            head, run_lines, trailing = _split_headings(run)
+            if head:
+                region = _text_region([head], heading=True)
+                if region is not None:
+                    regions.append(region)
+        if not run_lines:
+            regions.extend(r for r in (_text_region(trailing, heading=True),) if trailing and r)
+            continue
+        if run_type == "list":
+            items = _extract_list_items(run_lines)
+            if len(items) >= 2:
+                region = _text_region(run_lines)
+                if region is not None:
+                    region.type = LayoutRegionType.LIST
+                    region.list_items = items
+                    regions.append(region)
+                continue
+        region = _text_region(run_lines, heading=_is_numbered_heading_line(run_lines))
+        if region is not None:
+            regions.append(region)
+        if trailing:
+            region = _text_region(trailing, heading=True)
+            if region is not None:
+                regions.append(region)
+    return regions
+
+
+# A section heading set on the first line of a paragraph: filings number their
+# parts, items and notes, and set other headings bold or larger than the text below.
+_NUMBERED_HEADING_RE = re.compile(
+    r"^(?:PART\s+[IVX]+\b|ITEM\s+\d+[A-Z]?\b|NOTE\s+\d+\b)", re.IGNORECASE
+)
+_HEADING_LINE_MAX_CHARS = 160
+
+
+def _line_text(line: list[dict[str, Any]]) -> str:
+    return " ".join(w["text"] for w in line).strip()
+
+
+def _is_bold_word(word: dict[str, Any]) -> bool:
+    return "bold" in str(word.get("fontname", "")).lower()
+
+
+def _mean_size(words: list[dict[str, Any]]) -> float:
+    sizes = [float(w["size"]) for w in words if w.get("size") is not None]
+    return sum(sizes) / len(sizes) if sizes else 0.0
+
+
+# What may close the line before a heading: a sentence end, a list or a parenthesis.
+_SENTENCE_END = (".", ":", ";", ")", "”", '"')
+
+
+def _split_at_inner_headings(run_lines: list[list[dict[str, Any]]]) -> list[list[list[dict[str, Any]]]]:
+    """Cut a run before each numbered heading set on one of its middle lines.
+
+    A 10-K's "Item 8. Financial Statements and Supplementary Data." can sit between two
+    paragraphs of one text run; left there, the item never opens a section. A middle
+    line counts only when the line before it ends a sentence and its title starts with
+    a capital, so a reference that wraps ("... discussed in\nItem 7 of this report")
+    stays in its paragraph.
+    """
+    pieces: list[list[list[dict[str, Any]]]] = [[]]
+    for i, line in enumerate(run_lines):
+        if i > 0 and pieces[-1] and _is_inner_heading(line, run_lines[i - 1]):
+            pieces.append([])
+        pieces[-1].append(line)
+    return [p for p in pieces if p]
+
+
+def _is_numbered_title(text: str) -> bool:
+    """A numbered title, not a reference to one: "Item 7. Management's ...",
+    "NOTE 5 DEBT" or a bare "PART II", but not "Note 5 shows that ..."."""
+    match = _NUMBERED_HEADING_RE.match(text)
+    if not match or len(text) > _HEADING_LINE_MAX_CHARS:
+        return False
+    rest = text[match.end():].strip()
+    title = rest.lstrip(".:-–— ")
+    if not title:
+        return True
+    if title != rest:  # set off by a separator; "Item 6. [Reserved]" is a title too
+        return title.lstrip("[(\"'“‘")[:1].isupper()
+    return title.isupper()  # run straight on: only an all-caps title
+
+
+def _is_inner_heading(line: list[dict[str, Any]], previous: list[dict[str, Any]]) -> bool:
+    return _is_numbered_title(_line_text(line)) and _line_text(previous).endswith(_SENTENCE_END)
+
+
+def _is_numbered_heading_line(run_lines: list[list[dict[str, Any]]]) -> bool:
+    if len(run_lines) != 1:
+        return False
+    return _is_numbered_title(_line_text(run_lines[0]))
+
+
+_RUN_IN_TITLE_MAX_WORDS = 16
+_SHORT_BLOCK_LINES = 4
+
+
+def _split_headings(
+    run_lines: list[list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+    """Split a text run into (heading words, body lines, trailing heading line).
+
+    The heading is the run's first line when it stands as one, or the numbered
+    title a paragraph runs on from ("Item 1. Business. 3M Company was ...").
+    The trailing heading is a numbered line closing a short block ("... PART I").
+    """
+    lines = list(run_lines)
+    trailing: list[list[dict[str, Any]]] = []
+    if 1 < len(lines) <= _SHORT_BLOCK_LINES and _is_numbered_heading_line(lines[-1:]):
+        trailing = [lines.pop()]
+    title = _run_in_title_length(lines[0]) if lines else 0
+    if title:
+        return lines[0][:title], [lines[0][title:], *lines[1:]], trailing
+    if _opens_with_heading(lines):
+        return lines[0], lines[1:], trailing
+    return [], lines, trailing
+
+
+def _run_in_title_length(line: list[dict[str, Any]]) -> int:
+    """Words in a numbered title that the paragraph text continues on the same line."""
+    if not _is_numbered_title(_line_text(line)):
+        return 0
+    # Skip the number itself ("Item 1." ends with a period too).
+    for i, word in enumerate(line[2 : _RUN_IN_TITLE_MAX_WORDS], start=2):
+        if str(word["text"]).endswith(".") and i + 1 < len(line):
+            return i + 1
+    return 0
+
+
+def _opens_with_heading(run_lines: list[list[dict[str, Any]]]) -> bool:
+    """Whether the first line of a multi-line run is a numbered heading of its own.
+
+    Only numbered titles are split off: a bold or larger first line is as often a
+    figure caption or a chart title, and splitting it moved captions away from their
+    figures and let a grown paragraph swallow a table (OmniDocBench eval).
+    """
+    return len(run_lines) >= 2 and _is_numbered_title(_line_text(run_lines[0]))
+
+
+def _text_region(
+    run_lines: list[list[dict[str, Any]]], *, heading: bool = False
+) -> Optional[LayoutRegion]:
+    run_words = [w for ln in run_lines for w in ln]
+    tight = _tight_bbox_from_words(run_words, pad=2.0)
+    if tight is None:
+        return None
+    text = "\n".join(" ".join(w["text"] for w in ln) for ln in run_lines).strip()
+    if not text:
+        return None
+    sized = [w for w in run_words if str(w.get("fontname", "")) != "_synthetic_bullet"]
+    bold_count = sum(1 for w in run_words if _is_bold_word(w))
+    return LayoutRegion(
+        type=LayoutRegionType.TEXT,
+        bbox=tight,
+        text=text,
+        font_size=_mean_size(sized),
+        is_bold=bold_count > len(run_words) / 2,
+        heading=heading,
+    )
 
 
 def _split_lines_into_runs(lines):
@@ -3691,6 +4617,9 @@ def _resolve_overlaps(
         # the list_items structure. This LIST type gate is never relaxed.
         if (r.type == LayoutRegionType.LIST) != (a.type == LayoutRegionType.LIST):
             return False
+        # A heading split off its paragraph opens a section; folding it back loses that.
+        if r.heading or a.heading:
+            return False
         # Same-column-side (gutter) gate; relaxed only for TABLE+TEXT
         # pairs within _GUTTER_RELAX_GAP (see _gutter_relax_merge_pair).
         if _gutter_relax_merge_pair(r, a, gap):
@@ -3719,10 +4648,28 @@ def _resolve_overlaps(
             # non-table+non-table pairs are unaffected.
             if not _table_proximity_neighbor_allowed(r, a):
                 continue
+            if not _image_text_merge_allowed(r, a):
+                continue
+            if _union_swallows_table(r, a, accepted):
+                continue
             if best_gap is None or gap < best_gap:
                 best_gap = gap
                 best_idx = i
         return best_idx
+
+    def _union_swallows_table(r: LayoutRegion, a: LayoutRegion, accepted: list[LayoutRegion]) -> bool:
+        # Two text pieces beside a table can union into a box that encloses it,
+        # and the enclosed table would then be dropped as a false positive.
+        if LayoutRegionType.TABLE in (r.type, a.type):
+            return False
+        u = (min(r.bbox[0], a.bbox[0]), min(r.bbox[1], a.bbox[1]),
+             max(r.bbox[2], a.bbox[2]), max(r.bbox[3], a.bbox[3]))
+        return any(
+            t.type == LayoutRegionType.TABLE
+            and _overlap_ratio(t.bbox, u) >= 0.5
+            and max(_overlap_ratio(t.bbox, r.bbox), _overlap_ratio(t.bbox, a.bbox)) < 0.5
+            for t in accepted
+        )
 
     dirty = set()  # id()s of regions produced or affected by a merge
 
@@ -3750,6 +4697,10 @@ def _resolve_overlaps(
                 if not _compatible(r, a, gap=0.0):
                     continue
                 if not _table_overlap_with_large_neighbor_allowed(r, a):
+                    continue
+                if not _image_text_merge_allowed(r, a):
+                    continue
+                if _union_swallows_table(r, a, accepted):
                     continue
                 ov = _overlap_ratio(r.bbox, a.bbox)
                 if ov > best_ratio:
@@ -3838,6 +4789,7 @@ def _merge_regions(primary: LayoutRegion, other: LayoutRegion) -> LayoutRegion:
         image_ext=primary.image_ext,
         table_grid=primary.table_grid,
         list_items=new_list_items,
+        from_model=primary.from_model,
     )
 
 
@@ -3898,18 +4850,27 @@ def _reextract_region_payload(
 
 _IMAGE_LABEL_GAP = 14.0          # max gap (pt) between a label and the image
 _IMAGE_LABEL_MAX_AREA_RATIO = 0.25  # a satellite must not dwarf its image
+# Axis titles, tick runs and legends are short; a longer block is body text
+# that merely sits next to the image, and folding it in would drop it from
+# the output (IMAGE blocks carry only pixels).
+_IMAGE_LABEL_MAX_WORDS = 30
 
 
 def _is_chart_satellite(
     label: LayoutRegion,
     image: LayoutRegion,
     gap_tol: float = _IMAGE_LABEL_GAP,
+    image_area: Optional[float] = None,
 ) -> bool:
     if label.type not in (LayoutRegionType.TEXT, LayoutRegionType.LIST):
+        return False
+    if len((label.text or "").split()) > _IMAGE_LABEL_MAX_WORDS:
         return False
 
     a_lab = max(0.0, label.bbox[2] - label.bbox[0]) * max(0.0, label.bbox[3] - label.bbox[1])
     a_img = max(0.0, image.bbox[2] - image.bbox[0]) * max(0.0, image.bbox[3] - image.bbox[1])
+    if image_area is not None:
+        a_img = min(a_img, image_area)
     if a_img <= 0 or a_lab > _IMAGE_LABEL_MAX_AREA_RATIO * a_img:
         return False
 
@@ -3948,7 +4909,7 @@ def _absorb_labels_into_images(
     ``_region_side`` (line-based for TEXT/LIST, bbox-based for IMAGE).
     """
     image_idx = [i for i, r in enumerate(regions)
-                 if r.type == LayoutRegionType.IMAGE]
+                 if r.type == LayoutRegionType.IMAGE and not r.from_model]
     if not image_idx:
         return regions
 
@@ -3972,13 +4933,17 @@ def _absorb_labels_into_images(
     for ii in image_idx:
         if ii in consumed:
             continue
+        # Size satellites against the image as detected, not as grown by earlier
+        # absorptions; otherwise each merge admits a larger neighbour and the
+        # image snowballs over the surrounding paragraphs.
+        own_area = _area(regions[ii].bbox)
         changed = True
         while changed:
             changed = False
             for ti, t in enumerate(regions):
                 if ti == ii or ti in consumed:
                     continue
-                if not _is_chart_satellite(t, regions[ii], gap_tol):
+                if not _is_chart_satellite(t, regions[ii], gap_tol, own_area):
                     continue
                 if not _label_side_compatible(t, regions[ii]):
                     continue
@@ -4087,6 +5052,37 @@ def _reading_order(
     gutter_x: Optional[float] = None,
     all_words: Optional[List[Dict[str, Any]]] = None,
 ):
+    return _left_before_right(_reading_order_by_columns(regions, page_w, page_h, gutter_x, all_words))
+
+
+def _left_before_right(regions: list[LayoutRegion]) -> list[LayoutRegion]:
+    """Read side-by-side regions left first. A column block whose top is pulled
+    up by a running header it absorbed otherwise sorts ahead of the column to
+    its left, e.g. when column detection found no gutter."""
+    out = list(regions)
+    for _ in range(len(out)):
+        swapped = False
+        for k in range(len(out) - 1):
+            a, b = out[k].bbox, out[k + 1].bbox
+            v_overlap = min(a[3], b[3]) - max(a[1], b[1])
+            h_overlap = min(a[2], b[2]) - max(a[0], b[0])
+            if (b[0] < a[0]
+                    and v_overlap >= 0.5 * min(a[3] - a[1], b[3] - b[1])
+                    and h_overlap <= 0.25 * min(a[2] - a[0], b[2] - b[0])):
+                out[k], out[k + 1] = out[k + 1], out[k]
+                swapped = True
+        if not swapped:
+            break
+    return out
+
+
+def _reading_order_by_columns(
+    regions: list[LayoutRegion],
+    page_w: float,
+    page_h: float,
+    gutter_x: Optional[float] = None,
+    all_words: Optional[list[dict[str, Any]]] = None,
+) -> list[LayoutRegion]:
     """Sort regions into natural reading order.
 
     Single column (no `gutter_x`): simple top-to-bottom, ties broken
@@ -4252,7 +5248,8 @@ def _merge_small_text_regions(
     i = 0
     while i < len(out):
         r = out[i]
-        if r.type != LayoutRegionType.TEXT:
+        # A heading split off its paragraph stays apart: neither absorbed nor absorbing.
+        if r.type != LayoutRegionType.TEXT or r.heading:
             i += 1
             continue
         if _word_count(r.text) >= max_small_words:
@@ -4263,12 +5260,12 @@ def _merge_small_text_regions(
         prev_idx: Optional[int] = None
         for j in range(i - 1, -1, -1):
             if out[j].type == LayoutRegionType.TEXT:
-                prev_idx = j
+                prev_idx = None if out[j].heading else j
                 break
         next_idx: Optional[int] = None
         for j in range(i + 1, len(out)):
             if out[j].type == LayoutRegionType.TEXT:
-                next_idx = j
+                next_idx = None if out[j].heading else j
                 break
 
         if prev_idx is None and next_idx is None:
@@ -4335,6 +5332,14 @@ def _render_all_pages(pdf_path: str, dpi: int) -> Dict[int, Tuple[np.ndarray, fl
     from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_from_path_sync
 
     return render_all_pages_from_path_sync(pdf_path, dpi)
+
+
+def _render_page_batch(
+    pdf_path: str, page_numbers: list[int], dpi: int
+) -> dict[int, tuple[np.ndarray, float]]:
+    from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
+
+    return render_batch_from_path_sync(pdf_path, page_numbers, dpi)
 
 
 def _rasterize_page(
@@ -4481,20 +5486,34 @@ def _ink_density(img_rgb: np.ndarray, bbox, scale: float) -> float:
     return float((gray < 245).mean())
 
 
-def _crop_image_bytes(img_rgb: np.ndarray, bbox, scale: float) -> Optional[bytes]:
+def _crop_image(
+    img_rgb: np.ndarray, bbox: tuple[float, float, float, float], scale: float,
+) -> tuple[Optional[bytes], str]:
+    """The region's pixels as (bytes, "png" | "jpeg"), whichever encodes smaller.
+
+    Photos as PNG run to megabytes each, and a record's blocks (images inline)
+    must fit the storage service's 30 MB per-file limit; charts and line art stay
+    lossless because PNG wins for them.
+    """
     if img_rgb is None:
-        return None
+        return None, "png"
     H, W = img_rgb.shape[:2]
     x0 = max(0, int(round(bbox[0] * scale)))
     y0 = max(0, int(round(bbox[1] * scale)))
     x1 = min(W, int(round(bbox[2] * scale)))
     y1 = min(H, int(round(bbox[3] * scale)))
     if x1 - x0 < 1 or y1 - y0 < 1:
-        return None
-    crop = img_rgb[y0:y1, x0:x1]
-    buf = io.BytesIO()
-    Image.fromarray(crop).save(buf, format="PNG")
-    return buf.getvalue()
+        return None, "png"
+    crop = Image.fromarray(img_rgb[y0:y1, x0:x1])
+    png, jpeg = io.BytesIO(), io.BytesIO()
+    crop.save(png, format="PNG")
+    crop.convert("RGB").save(jpeg, format="JPEG", quality=_JPEG_QUALITY)
+    if jpeg.tell() < png.tell():
+        return jpeg.getvalue(), "jpeg"
+    return png.getvalue(), "png"
+
+
+_JPEG_QUALITY = 85
 
 
 def _safe_text_in_bbox(page, bbox) -> str:

@@ -2,7 +2,7 @@ import { expect } from "vitest";
 
 type ChatEvent = {
   event?: string | undefined;
-  data?: { [k: string]: unknown } | undefined;
+  data?: string | undefined;
 };
 
 type Message = {
@@ -11,6 +11,11 @@ type Message = {
 };
 
 const BOT_RESPONSE = "bot_response";
+
+/** An event's `data`, which the SDK gives as the JSON text of the SSE frame. */
+export function eventData(event: ChatEvent): { [k: string]: unknown } | undefined {
+  return event.data === undefined ? undefined : JSON.parse(event.data);
+}
 
 export async function readAll<T>(stream: AsyncIterable<T>): Promise<T[]> {
   const events: T[] = [];
@@ -22,7 +27,7 @@ export async function readAll<T>(stream: AsyncIterable<T>): Promise<T[]> {
 
 /** Check that a chat stream that was read to its end produced an answer. */
 export function expectFinishedRun(events: ChatEvent[]): void {
-  const errors = events.filter((e) => e.event === "RUN_ERROR").map((e) => e.data);
+  const errors = events.filter((e) => e.event === "RUN_ERROR").map(eventData);
   expect(errors, "stream reported an error").toEqual([]);
   const names = events.map((e) => e.event);
   expect(names, "no answer text in the stream").toContain("TEXT_MESSAGE_CONTENT");
@@ -30,10 +35,11 @@ export function expectFinishedRun(events: ChatEvent[]): void {
 }
 
 export function createdConversationId(events: ChatEvent[]): string {
-  const created = events.find(
-    (e) => e.event === "CUSTOM" && e.data?.["name"] === "conversation_created",
-  );
-  const value = created?.data?.["value"] as { conversationId?: string } | undefined;
+  const created = events
+    .filter((e) => e.event === "CUSTOM")
+    .map(eventData)
+    .find((data) => data?.["name"] === "conversation_created");
+  const value = created?.["value"] as { conversationId?: string } | undefined;
   if (!value?.conversationId) {
     throw new Error("the stream did not announce a new conversation");
   }

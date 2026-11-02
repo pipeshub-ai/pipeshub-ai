@@ -66,11 +66,26 @@ export class StoragePermissionError extends StorageError {
 
 // Validation errors
 export class StorageValidationError extends StorageError {
-  constructor(message: string, metadata?: ErrorMetadata) {
-    super('VALIDATION_ERROR', message, 400, {
+  constructor(
+    message: string,
+    metadata?: ErrorMetadata,
+    code = 'VALIDATION_ERROR',
+  ) {
+    super(code, message, 400, {
       ...metadata,
       hint: 'Verify that the input parameters meet the required validation rules.',
     });
+  }
+}
+
+/**
+ * A stored S3 URL the provider cannot turn into an object key (a path-style endpoint override, a wrong bucket or region in the
+ * configuration). A configuration limit, not an outage: the verified document read answers it as "cannot be verified" instead of
+ * failing. Still a `StorageValidationError` for every caller that already handles one.
+ */
+export class StorageUrlParseError extends StorageValidationError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super(message, metadata, 'STORAGE_URL_UNPARSEABLE');
   }
 }
 

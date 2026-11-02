@@ -6,6 +6,7 @@
 
 export { isElectron } from './is-electron';
 export { applyElectronOverrides } from './apply-electron-overrides';
+export { canGoBackInApp } from './in-app-back';
 export {
   setSessionApiBaseUrl,
   getElectronApiBaseUrl,
@@ -20,3 +21,9 @@ export {
   DesktopOAuthError,
   type DesktopOAuthFlow,
 } from './oauth-deep-link';
+export {
+  runDesktopIntegrationOAuth,
+  desktopAuthorizeParams,
+  desktopIntegrationErrorMessage,
+  type DesktopIntegrationOAuthFlow,
+} from './desktop-oauth-return';

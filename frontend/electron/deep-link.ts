@@ -5,7 +5,8 @@
  * `app://.`, which no provider will accept as a redirect target. Instead the
  * authorize URL opens in the default browser, the provider redirects to the
  * ordinary web callback page on the server origin, and that page forwards the
- * result here as `pipeshub://auth/<provider>/callback`.
+ * result here as `pipeshub://auth/<provider>/callback` (sign-in) or
+ * `pipeshub://integration/<family>/callback` (connector, toolset or MCP OAuth).
  *
  * The OS hands us whatever any local caller passes, so parsing is a trust
  * boundary. Nothing here decides that a link is authentic — the renderer does
@@ -14,23 +15,33 @@
 
 export const DEEP_LINK_SCHEME = 'pipeshub';
 
-const SUPPORTED_PROVIDERS = ['google', 'microsoft', 'github', 'saml', 'oauth'] as const;
+const SUPPORTED_ROUTES = {
+  auth: ['google', 'microsoft', 'github', 'saml', 'oauth'],
+  integration: ['connector', 'toolset', 'mcp'],
+} as const;
 
-export type DeepLinkProvider = (typeof SUPPORTED_PROVIDERS)[number];
+export type DeepLinkKind = keyof typeof SUPPORTED_ROUTES;
+export type DeepLinkProvider = (typeof SUPPORTED_ROUTES)[DeepLinkKind][number];
 
 export interface OAuthDeepLink {
+  kind: DeepLinkKind;
+  /** The sign-in provider, or the integration family for `integration` links. */
   provider: DeepLinkProvider;
   /** Merged query and fragment params: providers use one or the other. */
   params: Record<string, string>;
 }
 
-function isSupportedProvider(value: string): value is DeepLinkProvider {
-  return (SUPPORTED_PROVIDERS as readonly string[]).includes(value);
+function isSupportedKind(value: string): value is DeepLinkKind {
+  return Object.prototype.hasOwnProperty.call(SUPPORTED_ROUTES, value);
+}
+
+function isSupportedProvider(kind: DeepLinkKind, value: string): value is DeepLinkProvider {
+  return (SUPPORTED_ROUTES[kind] as readonly string[]).includes(value);
 }
 
 /**
- * Parse `pipeshub://auth/<provider>/callback`, returning null for anything
- * that is not one of ours.
+ * Parse `pipeshub://<auth|integration>/<provider>/callback`, returning null for
+ * anything that is not one of ours.
  */
 export function parseOAuthDeepLink(rawUrl: string): OAuthDeepLink | null {
   if (typeof rawUrl !== 'string') return null;
@@ -48,10 +59,9 @@ export function parseOAuthDeepLink(rawUrl: string): OAuthDeepLink | null {
   // '/google/callback', so fold the authority back in before matching.
   const segments = [url.host, ...url.pathname.split('/')].filter(Boolean);
   if (segments.length !== 3) return null;
-  if (segments[0] !== 'auth' || segments[2] !== 'callback') return null;
-
-  const provider = segments[1];
-  if (!isSupportedProvider(provider)) return null;
+  const [kind, provider, tail] = segments;
+  if (tail !== 'callback' || !isSupportedKind(kind)) return null;
+  if (!isSupportedProvider(kind, provider)) return null;
 
   const params: Record<string, string> = {};
   url.searchParams.forEach((value, key) => {
@@ -62,7 +72,7 @@ export function parseOAuthDeepLink(rawUrl: string): OAuthDeepLink | null {
     params[key] = value;
   });
 
-  return { provider, params };
+  return { kind, provider, params };
 }
 
 /**

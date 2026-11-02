@@ -57,6 +57,8 @@ export interface LocalFsPullResult {
   hasMore: boolean;
   events: LocalFsFileEvent[];
   rootPath?: string | null;
+  /** Empty page sent while the desktop is still walking the folder; not a stall. */
+  preparing?: boolean;
 }
 
 /** Desktop ack: either a page, or a failure it wants the server to see. */

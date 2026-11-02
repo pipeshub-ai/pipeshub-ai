@@ -8,8 +8,9 @@
 # code) next to it.
 # The suites share one app and one set of data; the tests are written to check
 # only what they created, so they can run at the same time.
-# Reads PIPESHUB_API_URL, PIPESHUB_TOKEN_URL, PIPESHUB_CLIENT_ID and
-# PIPESHUB_CLIENT_SECRET from the environment. Exits non-zero if a suite failed.
+# Reads PIPESHUB_API_URL, PIPESHUB_TOKEN_URL, PIPESHUB_CLIENT_ID, PIPESHUB_CLIENT_SECRET,
+# PIPESHUB_SESSION_TOKEN and the PIPESHUB_TEST_USER_* login from the environment. Exits non-zero
+# if a suite failed.
 set -uo pipefail
 
 RUN_NAME=$1
@@ -34,7 +35,9 @@ run_typescript() {
 
 run_python() {
   python3 -m venv .venv-sdk-tests || return 1
-  .venv-sdk-tests/bin/pip install --quiet -e . pytest pytest-asyncio pytest-xdist pytest-timeout || return 1
+  # The retriever tests import the extras and skip without them; the report counts a skip as a
+  # failure. pip only warns when an older SDK lacks an extra.
+  .venv-sdk-tests/bin/pip install --quiet -e ".[langchain,llamaindex]" pytest pytest-asyncio pytest-xdist pytest-timeout || return 1
   .venv-sdk-tests/bin/pytest tests/ -n 4 --timeout="$TEST_TIMEOUT_SECONDS" --junitxml="$1"
 }
 
@@ -49,6 +52,8 @@ for lang in "${LANGS[@]}"; do
   base="$REPORTS_DIR/$RUN_NAME-$lang"
   rm -f "$base.xml" "$base.exit"
   (
+    # Some names are unique in an org (connectors, OAuth configurations); each suite gets its own.
+    export PIPESHUB_SDK_TEST_NAME="sdk-test-$RUN_NAME-$lang"
     cd "$SDKS_DIR/pipeshub-sdk-$lang" && "run_$lang" "$base.xml"
     status=$?
     echo "$status" > "$base.exit"

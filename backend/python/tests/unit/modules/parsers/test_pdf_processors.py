@@ -468,10 +468,10 @@ class TestPyMuPDFOpenCVProcessor:
         mock_cm.__exit__.return_value = None
 
         with patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            "app.modules.parsers.pdf.layout_pages.pdfplumber.open",
             return_value=mock_cm,
         ), patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            "app.modules.parsers.pdf.layout_pages.extract_layout_regions",
             return_value=[],
         ):
             result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
@@ -666,6 +666,7 @@ class TestVLMOCRStrategy:
             strategy.logger = _mock_logger()
             strategy.config = _mock_config()
             strategy.doc = None
+            strategy._page_images = {}
             strategy.llm = None
             strategy.llm_config = None
             strategy.document_analysis_result = None

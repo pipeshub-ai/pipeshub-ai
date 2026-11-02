@@ -36,6 +36,7 @@ import pytest
 from app.config.constants.arangodb import RecordRelations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from tests.integration import test_soft_delete_chat_fk_e2e as chat_fk
+from tests.support.edition_defaults import FK_CHILD_FIELD, FK_PARENT_FIELD
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
@@ -66,12 +67,12 @@ def _named(w: _World, relations: list[dict[str, Any]]) -> set[str]:
 async def test_the_full_record_tool_lists_live_neighbours(world: _World) -> None:
     opened = await _open(world, "orders", "products")
 
-    assert _named(world, opened["orders"]["fk_parent_record_ids"]) == {"customers", "products"}
-    assert _named(world, opened["orders"]["fk_child_record_ids"]) == set()
-    assert _named(world, opened["products"]["fk_parent_record_ids"]) == {"suppliers"}
-    assert _named(world, opened["products"]["fk_child_record_ids"]) == {"orders"}
+    assert _named(world, opened["orders"][FK_PARENT_FIELD]) == {"customers", "products"}
+    assert _named(world, opened["orders"][FK_CHILD_FIELD]) == set()
+    assert _named(world, opened["products"][FK_PARENT_FIELD]) == {"suppliers"}
+    assert _named(world, opened["products"][FK_CHILD_FIELD]) == {"orders"}
     customers = next(
-        r for r in opened["orders"]["fk_parent_record_ids"] if r["record_id"] == world.ids["customers"]
+        r for r in opened["orders"][FK_PARENT_FIELD] if r["record_id"] == world.ids["customers"]
     )
     assert customers["parentTable"] == "public.customers"
     assert customers["sourceColumn"] == "customers_id"
@@ -89,9 +90,9 @@ async def test_the_full_record_tool_leaves_out_neighbours_in_the_trash(world: _W
 
     opened = await _open(world, "orders", "products")
 
-    assert _named(world, opened["orders"]["fk_parent_record_ids"]) == {"products"}
-    assert _named(world, opened["products"]["fk_parent_record_ids"]) == set()
-    assert _named(world, opened["products"]["fk_child_record_ids"]) == {"orders"}
+    assert _named(world, opened["orders"][FK_PARENT_FIELD]) == {"products"}
+    assert _named(world, opened["products"][FK_PARENT_FIELD]) == set()
+    assert _named(world, opened["products"][FK_CHILD_FIELD]) == {"orders"}
     everything_said = repr(opened)
     for dropped in ("customers", "suppliers"):
         assert world.ids[dropped] not in everything_said

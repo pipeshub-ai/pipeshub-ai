@@ -2754,12 +2754,7 @@ class TestConvertToPermissions:
         perm.roles = []
 
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        # An organization link reaches the tenant's members, not every PipesHub user;
-        # with no roles listed, the link's own "edit" type decides.
-        assert result[0].entity_type == EntityType.GROUP
-        assert result[0].external_id == "tenant-members"
-        assert result[0].type == PermissionType.WRITE
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_permission_conversion_error_skipped(self):

@@ -27,6 +27,7 @@ import os
 import pickle
 import queue
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -41,13 +42,19 @@ from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parsers import parse_worker
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParseError, ParseErrorCode
+from app.services.resource_governor.lanes import parse_lanes_mode
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
 from app.utils.env_config import env_int
-from app.utils.user_errors import PARSE_WORKER_OUT_OF_MEMORY, PROCESSING_TIMED_OUT
+from app.utils.user_errors import (
+    PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_UNAVAILABLE,
+    PROCESSING_TIMED_OUT,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from app.modules.parsers.parse_pool_lanes import LanePool
     from app.services.resource_governor import ResourceGovernor
 
 T = TypeVar("T")
@@ -55,6 +62,8 @@ T = TypeVar("T")
 __all__ = [
     "ParseWorkerError",
     "parse_pool_workers",
+    "pool_stats",
+    "run_blocking",
     "set_resource_governor",
     "should_offload",
     "shutdown_parse_pool",
@@ -101,16 +110,18 @@ class _PoolClosed(Exception):
 
 class _State:
     governor: ResourceGovernor | None = None
-    pool: _ParsePool | None = None
+    pool: _ParsePool | LanePool | None = None
+    # Chat attachments under PARSE_LANES=on: a pool of their own, outside the budget.
+    interactive_pool: LanePool | None = None
     lock = threading.Lock()
 
 
 def set_resource_governor(governor: ResourceGovernor | None) -> None:
     """Turn the pool on for this process, sized from *governor*.
 
-    Called from the lifespan of the services that parse under admission
-    control (indexing, parsing). A process that never calls it keeps parsing
-    in threads, which is what the query service and the tests want.
+    Called from the lifespan of the services that parse (indexing, parsing,
+    and query for chat attachments). A process that never calls it keeps
+    parsing in threads, which is what the tests want.
     """
     _State.governor = governor
 
@@ -127,6 +138,10 @@ def parse_pool_workers() -> int:
     if governor is None or os.name != "posix":
         return 0
     cpu_bound_ceiling = max(1, governor.ceilings.heavy)
+    if parse_lanes_mode() == "on":
+        from app.modules.parsers import parse_pool_lanes
+
+        return parse_pool_lanes.pool_width(governor, cpu_bound_ceiling)
     configured = env_int(WORKERS_ENV, -1)
     if configured < 0:
         return max(1, min(DEFAULT_MAX_WORKERS, cpu_bound_ceiling // 2))
@@ -144,6 +159,10 @@ class _Job:
     args: tuple
     label: str
     size: int
+    timeout: float | None = None
+    # Never run in the calling thread when no worker can be started: the job is
+    # here because it must not allocate in this process.
+    require_worker: bool = False
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -151,10 +170,12 @@ class _Job:
 class _Worker:
     """One parse worker process and the two pipes to it."""
 
-    def __init__(self) -> None:
+    def __init__(self, extra_env: dict[str, str] | None = None) -> None:
         request_r, request_w = os.pipe()
         reply_r, reply_w = os.pipe()
         env = dict(os.environ)
+        if extra_env:
+            env.update(extra_env)
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (_PYTHON_ROOT, env.get("PYTHONPATH")) if p
         )
@@ -164,6 +185,9 @@ class _Worker:
                 pass_fds=(request_r, reply_w),
                 stdin=subprocess.DEVNULL,
                 env=env,
+                # Its own process group, so stop() can kill it together with
+                # the processes a parse starts (the PDF rasteriser's pool).
+                start_new_session=True,
             )
         except OSError as exc:
             for fd in (request_r, request_w, reply_r, reply_w):
@@ -194,6 +218,11 @@ class _Worker:
         return self.process.poll() is None
 
     def stop(self) -> None:
+        # SIGKILL skips the worker's atexit, so a process pool it started would
+        # live on orphaned, holding its memory. The group outlives a worker that
+        # already died, so this also reaches the children of a crashed one.
+        with suppress(OSError):
+            os.killpg(self.process.pid, signal.SIGKILL)
         with suppress(OSError):
             self.process.kill()
         for stream in (self._requests, self._replies):
@@ -235,8 +264,11 @@ class _Lane:
         if worker is not None:
             worker.stop()
 
+    def _new_worker(self) -> _Worker:
+        return _Worker()
+
     def _start_worker(self, job: _Job) -> _Worker:
-        worker = _Worker()
+        worker = self._new_worker()
         deadline = time.monotonic() + WORKER_START_SECONDS
         try:
             while not worker.reply_ready(_POLL_SECONDS):
@@ -281,6 +313,9 @@ class _Lane:
         try:
             worker = self._send(job)
         except _WorkerUnavailable as exc:
+            if job.require_worker:
+                _logger.error("Could not start a parse worker (%s) for %s", exc, job.label)
+                raise ParseWorkerError(PARSE_WORKER_UNAVAILABLE, "unavailable") from exc
             _logger.error(
                 "Could not start a parse worker (%s); parsing %s in a thread instead",
                 exc, job.label,
@@ -289,7 +324,7 @@ class _Lane:
         except OSError as exc:
             raise self._crashed(job) from exc
 
-        timeout = messaging_env.record_processing_timeout
+        timeout = job.timeout if job.timeout is not None else messaging_env.record_processing_timeout
         deadline = time.monotonic() + timeout
         while not worker.reply_ready(_POLL_SECONDS):
             if self._abandoned(job):
@@ -298,8 +333,7 @@ class _Lane:
             if time.monotonic() >= deadline:
                 self._drop_worker()
                 _logger.warning(
-                    "Parsing %s (%d bytes) was stopped after %.0fs "
-                    "(RECORD_PROCESSING_TIMEOUT); its worker was replaced",
+                    "Parsing %s (%d bytes) was stopped after %.0fs; its worker was replaced",
                     job.label, job.size, timeout,
                 )
                 raise ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
@@ -341,11 +375,14 @@ class _ParsePool:
         for thread in self._threads:
             thread.start()
 
-    async def submit(self, job: _Job) -> object:
+    def enqueue(self, job: _Job) -> None:
         with self._submit_lock:
             if self.closed.is_set():
                 raise _PoolClosed
             self.jobs.put(job)
+
+    async def submit(self, job: _Job) -> object:
+        self.enqueue(job)
         try:
             return await asyncio.wrap_future(job.future)
         except asyncio.CancelledError:
@@ -363,10 +400,15 @@ class _ParsePool:
             thread.join(timeout=5)
 
 
-def _pool() -> _ParsePool | None:
+def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
     workers = parse_pool_workers()
     if workers <= 0:
         return None
+    governor = _State.governor
+    if governor is not None and parse_lanes_mode() == "on":
+        from app.modules.parsers import parse_pool_lanes
+
+        return parse_pool_lanes.get_pool(governor, interactive=interactive)
     with _State.lock:
         if _State.pool is None:
             _State.pool = _ParsePool(workers)
@@ -374,33 +416,105 @@ def _pool() -> _ParsePool | None:
         return _State.pool
 
 
-async def submit(fn: Callable[..., T], *args: object, label: str = "", size: int = 0) -> T:
+async def submit(
+    fn: Callable[..., T],
+    *args: object,
+    label: str = "",
+    size: int = 0,
+    timeout: float | None = None,
+    interactive: bool = False,
+) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
     *fn* must be a module-level function, and it, its arguments and its result
     must pickle. Callers check ``should_offload`` first; without a pool this
     runs in a thread, so it is always safe to call.
 
-    Raises ``ParseWorkerError`` when the worker died or ran past
-    ``RECORD_PROCESSING_TIMEOUT``. Only this job fails.
+    Raises ``ParseWorkerError`` when the worker died or ran past *timeout*
+    seconds (``RECORD_PROCESSING_TIMEOUT`` when not given). Only this job
+    fails. A thread cannot be stopped, so without a pool *timeout* is not
+    enforced.
+
+    *interactive* (a chat attachment a person is waiting on) runs on a pool of
+    its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
+    it is ignored otherwise.
     """
-    pool = _pool()
+    pool = _pool(interactive=interactive)
     if pool is not None:
         try:
-            return await pool.submit(_Job(fn, args, label, size))
+            return await pool.submit(_Job(fn, args, label, size, timeout))
         except _PoolClosed:
             pass
     return await asyncio.to_thread(fn, *args)
+
+
+class _OneShotPool:
+    """Stands in for a pool so a lane can run a single job on a worker of its own."""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+
+_ONE_SHOT_SLOTS = threading.BoundedSemaphore(max(1, env_int("PARSE_ONE_SHOT_WORKERS", 2)))
+
+
+def run_blocking(
+    fn: Callable[..., T],
+    *args: object,
+    label: str = "",
+    size: int = 0,
+    timeout: float | None = None,
+) -> T:
+    """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
+
+    For work that must not allocate in this process: it uses a pool lane when
+    this process owns a pool, and otherwise a worker started for this one job
+    and killed with its process group afterwards (at most
+    ``PARSE_ONE_SHOT_WORKERS`` at once). It never falls back to running in the
+    calling thread when POSIX workers exist; if none can start it raises
+    ``ParseWorkerError``. Without POSIX (no ``pass_fds``) there are no workers
+    and *fn* runs in the calling thread.
+    """
+    if os.name != "posix":
+        return fn(*args)
+    job = _Job(fn, args, label, size, timeout, require_worker=True)
+    pool = _pool()
+    if pool is not None:
+        try:
+            pool.enqueue(job)
+        except _PoolClosed:
+            pass
+        else:
+            return job.future.result()
+    with _ONE_SHOT_SLOTS:
+        lane = _Lane(_OneShotPool())  # type: ignore[arg-type]
+        job.future.set_running_or_notify_cancel()
+        try:
+            return lane._run(job)
+        finally:
+            lane._drop_worker()
 
 
 def shutdown_parse_pool() -> bool:
     """Stop the workers, killing any job still running. True if a pool existed."""
     with _State.lock:
         pool, _State.pool = _State.pool, None
+        interactive, _State.interactive_pool = _State.interactive_pool, None
+    if interactive is not None:
+        interactive.shutdown()
     if pool is None:
-        return False
+        return interactive is not None
     pool.shutdown()
     return True
+
+
+def pool_stats() -> dict[str, object]:
+    """The pool gauges of ``/health`` under ``PARSE_LANES=on``; empty otherwise."""
+    if parse_lanes_mode() != "on":
+        return {}
+    from app.modules.parsers import parse_pool_lanes
+
+    return parse_pool_lanes.pool_stats()
 
 
 atexit.register(shutdown_parse_pool)

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse, TokenUsage
     from app.agent_loop_lib.core.streaming import StreamEvent
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,12 @@ class UsageReportingTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         response = await self._inner.complete(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         )
         self._report(response.usage)
         return response
@@ -91,9 +94,12 @@ class UsageReportingTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         async for event in self._inner.stream(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         ):
             if isinstance(event, StreamCompleteEvent):
                 self._report(event.response.usage)

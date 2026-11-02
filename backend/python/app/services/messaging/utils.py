@@ -58,7 +58,9 @@ class MessagingUtils:
 
     @staticmethod
     async def _get_redis_config(app_container: AppContainer) -> RedisConfig:
-        """Get Redis config from the configuration service."""
+        """Get Redis config from the configuration service (the defaults when the broker is PostgreSQL: no Redis server is read)."""
+        if get_message_broker_type() == MessageBrokerType.POSTGRES:
+            return RedisConfig()
         config_service = app_container.config_service()
         return await config_service.get_redis_config()
 
@@ -86,6 +88,7 @@ class MessagingUtils:
             "port": redis_config.port,
             "password": redis_config.password,
             "db": redis_config.db,
+            "retention_mode": messaging_env.redis_streams_retention_mode,
             "max_len": messaging_env.redis_streams_maxlen,
             "client_id": client_id,
             "group_id": group_id,
@@ -271,6 +274,17 @@ class MessagingUtils:
         return config
 
     @staticmethod
+    async def create_code_graph_consumer_config(
+        app_container: ConnectorAppContainer,
+    ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        return await MessagingUtils.create_consumer_config(
+            app_container,
+            "code_graph_consumer_client",
+            "code_graph_consumer_group",
+            [Topic.CODE_GRAPH_EVENTS.value],
+        )
+
+    @staticmethod
     async def create_record_consumer_config(
         app_container: IndexingAppContainer,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
@@ -291,7 +305,11 @@ class MessagingUtils:
             app_container,
             "records_consumer_client",
             "records_consumer_group",
-            lane_topics_for(Topic.RECORD_EVENTS.value, broker_type),
+            lane_topics_for(
+                Topic.RECORD_EVENTS.value,
+                broker_type,
+                messaging_env.indexing_consume_lanes,
+            ),
             is_indexing=True,  # Use indexing batch size
         )
 

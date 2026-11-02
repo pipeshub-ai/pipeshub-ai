@@ -2,15 +2,19 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Theme, Flex, Box, Text } from '@radix-ui/themes';
+import { Theme, Box } from '@radix-ui/themes';
 import { logoutFromWorkspaceMenu, SettingsSection } from '@/config';
-import { UserAvatar } from '@/app/components/ui/user-avatar';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { OrgInfo } from './types';
+import { overlayWidth } from '@/app/components/ui/responsive';
 import { POPUP_WIDTH } from './types';
 import { Divider } from './menu-item';
 import { ExternalLinksSection } from './external-links-section';
 import { LanguagePanel } from './language-panel';
 import { AppearancePanel } from './appearance-panel';
+
+/** Matches the .workspace-menu-card.is-closing animation in globals.css */
+const MENU_EXIT_MS = 120;
 
 // ============================================
 // Types
@@ -37,12 +41,24 @@ interface WorkspaceMenuProps {
 /**
  * Floating popup triggered from the sidebar footer button.
  *
- * Composed of discrete sections (settings, external links, org),
- * with the organisation badge rendered directly here.
+ * Composed of discrete sections (settings, external links). The
+ * organisation is already shown on the trigger, so it is not repeated here.
  */
-export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMenuProps) {
+export function WorkspaceMenu({ isOpen, onClose, triggerRef }: WorkspaceMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
   const [activePanel, setActivePanel] = useState<ActiveSubPanel>(null);
+  // Stays mounted for the exit animation after isOpen turns false
+  const [isMounted, setIsMounted] = useState(isOpen);
+
+  useEffect(() => {
+    if (isOpen) {
+      setIsMounted(true);
+      return;
+    }
+    const timer = setTimeout(() => setIsMounted(false), MENU_EXIT_MS);
+    return () => clearTimeout(timer);
+  }, [isOpen]);
 
   // ── Close on click outside ──
   useEffect(() => {
@@ -51,6 +67,8 @@ export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMen
       if (
         menuRef.current &&
         !menuRef.current.contains(e.target as Node) &&
+        // The mobile sub-panel sheet is portaled outside the menu
+        !(e.target as Element).closest?.('[role="dialog"]') &&
         !triggerRef?.current?.contains(e.target as Node)
       ) {
         onClose();
@@ -81,36 +99,46 @@ export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMen
     if (!isOpen) setActivePanel(null);
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
-  const orgLogoUrl = org?.logoUrl ?? null;
+  if (!isMounted) return null;
 
   const togglePanel = (panel: 'appearance' | 'language') => {
     setActivePanel((prev) => (prev === panel ? null : panel));
   };
 
+  const subPanels = (
+    <>
+      <AppearancePanel isOpen={activePanel === 'appearance'} onBack={() => setActivePanel(null)} />
+      <LanguagePanel isOpen={activePanel === 'language'} onBack={() => setActivePanel(null)} />
+    </>
+  );
+
   return createPortal(
     <Theme>
+      {/* On phones a sub-panel is a bottom sheet portaled into the root theme,
+          which paints below this portal, so the menu card steps aside. */}
+      {isMobile && activePanel ? subPanels : (
       <Box
         ref={menuRef}
+        className={isOpen ? 'workspace-menu-card' : 'workspace-menu-card is-closing'}
         style={{
           position: 'absolute',
-          bottom: 60, // above the footer button
+          bottom: 58, // 8px above the 42px footer button (8px footer inset)
           left: 8,
-          width: POPUP_WIDTH,
+          width: overlayWidth(POPUP_WIDTH),
           borderRadius: 'var(--radius-1)',
           border: '1px solid var(--olive-3)',
-          backgroundColor: 'var(--effects-translucent)',
-          backdropFilter: 'blur(25px)',
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
           boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
-          padding: '16px 8px',
+          padding: 8,
           // The portal is a sibling of the root theme's stacking context
           // (z-index: 0), so any positive value paints above the app.
           zIndex: 50,
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 8,
           fontFamily: 'Manrope, sans-serif',
+          pointerEvents: isOpen ? undefined : 'none',
         }}
       >
         {/* ── Section 1: Settings ── */}
@@ -131,52 +159,10 @@ export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMen
         {/* ── Section 2: External Links ── */}
         <ExternalLinksSection />
 
-        <Divider />
-
-        {/* ── Section 3: Current Organisation ── */}
-        {org && (
-          <Flex direction="column" gap="3">
-            {/* Org badge */}
-            <Flex
-              align="center"
-              gap="2"
-              style={{
-                height: 40,
-                padding: '0 8px',
-                borderRadius: 'var(--radius-1)',
-                flexShrink: 0,
-              }}
-            >
-              {/* Org avatar badge */}
-              <UserAvatar
-                fullName={org?.shortName || org?.registeredName}
-                src={orgLogoUrl}
-                size={24}
-                radius="small"
-              />
-
-              {/* Org name */}
-              <Text
-                size="2"
-                weight="medium"
-                style={{
-                  flex: 1,
-                  color: 'var(--accent-12)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {org?.shortName || org?.registeredName}
-              </Text>
-            </Flex>
-          </Flex>
-        )}
-
         {/* ── Sub-panels — float to the right, top-aligned ── */}
-        <AppearancePanel isOpen={activePanel === 'appearance'} />
-        <LanguagePanel isOpen={activePanel === 'language'} />
+        {subPanels}
       </Box>
+      )}
     </Theme>,
     document.body
   );

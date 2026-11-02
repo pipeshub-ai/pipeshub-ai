@@ -29,10 +29,16 @@ const matchValue = (value: any, want: any): boolean => {
   return String(value) === String(want)
 }
 
+const valueAt = (row: Row, key: string): unknown =>
+  key.split('.').reduce<any>((v, k) => (v == null ? undefined : v[k]), row)
+
 const matches = (row: Row, filter: Filter): boolean =>
   Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((branch) => matches(row, branch))
     if (key === '$nor') return !(want as Filter[]).some((branch) => matches(row, branch))
+    if (want !== null && typeof want === 'object' && '$exists' in want) {
+      return (valueAt(row, key) !== undefined) === want.$exists
+    }
     return matchValue(row[key], want)
   })
 
@@ -182,6 +188,22 @@ describe('StorageController shared-content handover', () => {
       ])
       expect(adapter.deleteTree.calledWith(`${from}/${record._id}`)).to.be.true
       expect(find(mine._id).documentPath).to.equal(from)
+    })
+
+    it("leaves the record's artifact sets alone: they are keyed by virtual record, not connector", async () => {
+      const from = `${base()}/records/conn-a/x`
+      const record = doc({ documentName: 'record_v1', documentPath: from, customMetadata: tagged('conn-a') })
+      const set = doc({
+        documentName: 'revision_abcdef12',
+        documentPath: `${base()}/record-revisions/v1`,
+        artifactSet: { virtualRecordId: 'v1', rev: 'abcdef12', root: `${base()}/record-revisions/v1/abcdef12` },
+      })
+
+      await relocate([{ virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }])
+
+      expect(find(record._id).documentPath).to.equal(`${base()}/records/conn-b/y`)
+      expect(find(set._id).documentPath).to.equal(`${base()}/record-revisions/v1`)
+      expect(find(set._id).customMetadata).to.equal(undefined)
     })
 
     it('answers a repeated handover as moved without touching storage again', async () => {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from app.agent_loop_lib.core.finish_moves import TASK_COMPLETE, can_call
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.core.types import UserMessage
@@ -17,6 +19,8 @@ middleware can express by itself.
 """
 
 __all__ = ["default_truncation_recovery"]
+
+logger = logging.getLogger(__name__)
 
 _TOOL_CALL_TRUNCATION_NOTE = (
     "[Tool call not executed: your response was cut off at the "
@@ -79,8 +83,14 @@ def default_truncation_recovery():
                     CoreToolResult(tool_call_id=c.id, name=c.name, content=note, is_error=True)
                     for c in ctx.tool_calls
                 ]
+                outcome = f"{len(ctx.tool_calls)} tool call(s) not run"
             else:
                 ctx.recovery_message = UserMessage(content=_TEXT_ONLY_CONTINUATION_NOTE, injected=True)
+                outcome = "asked to continue"
+            logger.info(
+                "truncation_recovery: reply cut off at the output-token limit, %s (consecutive=%d, turn=%d)",
+                outcome, consecutive_truncations, ctx.turn_index,
+            )
         else:
             consecutive_truncations = 0
         await next_fn()

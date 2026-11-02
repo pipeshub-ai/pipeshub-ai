@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.messages import AssistantMessage, Message, ToolCall
 from app.agent_loop_lib.core.responses import (
@@ -32,6 +33,9 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.tool_schema import ToolChoice
 
 
 @dataclass
@@ -79,9 +83,13 @@ class ScriptedTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         del system_blocks  # accepted for LLMTransport parity; unused by scripted
-        self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
+        self.calls.append({
+            "messages": messages, "tools": tools, "system": system, "model": model, "tool_choice": tool_choice,
+        })
         step = self._next_step()
         if step is None:
             return ModelResponse(message=AssistantMessage(content="done"), usage=TokenUsage(), model=self._model)
@@ -119,10 +127,12 @@ class ScriptedTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         peeked = self._script[self._index] if self._index < len(self._script) else None
         response = await self.complete(
-            messages, tools=tools, system=system, model=model, system_blocks=system_blocks,
+            messages, tools=tools, system=system, model=model, system_blocks=system_blocks, tool_choice=tool_choice,
         )
         if peeked is not None and peeked.text_chunks:
             for chunk in peeked.text_chunks:

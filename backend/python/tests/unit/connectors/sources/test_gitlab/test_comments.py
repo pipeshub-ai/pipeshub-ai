@@ -478,6 +478,29 @@ class TestMrCommentAdditionalPaths:
         assert len(blocks) == 1
         assert "[New file]" in blocks[0].data
 
+    async def test_secrets_in_file_content_and_diff_are_redacted(self) -> None:
+        c, helper = self._make_mr_helper()
+        key = "AKIAIOSFODNN7EXAMPLA"
+        base = {"deleted_file": False, "generated_file": False, "renamed_file": False, "collapsed": False}
+        changes = [
+            {**base, "new_path": "cfg.py", "diff": f"+AWS_KEY = '{key}'", "new_file": True, "too_large": False},
+            # No diff: the file's text at the head is fetched and inlined instead.
+            {**base, "new_path": "big.py", "diff": "", "new_file": False, "too_large": True},
+        ]
+        file_obj = MagicMock()
+        file_obj.content = base64.b64encode(f"AWS_KEY = '{key}'\n".encode()).decode()
+        file_obj.size = 40
+        c.runtime.ds_call = AsyncMock(side_effect=[
+            _ok_res([]), _ok_res({"changes": changes}), _ok_res(MagicMock(sha="abc")), _ok_res(file_obj),
+        ])
+
+        blocks, _ = await helper.build_merge_request_comment_blocks(
+            "https://gitlab.com/ns/proj/-/merge_requests/1", 0, _make_record()
+        )
+        text = "".join(b.data for b in blocks)
+        assert key not in text
+        assert text.count("«REDACTED:aws-access-key»") == 2
+
 
 # ===========================================================================
 # build_merge_request_comment_blocks — what a changed file's group holds
@@ -559,7 +582,7 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert groups["src/a.py"] == "Existing file\n\nDiff content\n\n@@ -1 +1 @@\n-a\n+b"
+        assert groups["src/a.py"] == "Existing file\n\nDiff content\n\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
         assert [name for name, _ in calls] == ["notes", "changes"]
 
     async def test_new_file_with_a_diff_is_not_fetched(self) -> None:
@@ -567,7 +590,7 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert groups["src/new.py"] == "[New file]\n\nDiff content\n\n@@ -0,0 +1 @@\n+x"
+        assert groups["src/new.py"] == "[New file]\n\nDiff content\n\n```diff\n@@ -0,0 +1 @@\n+x\n```"
         assert "file" not in [name for name, _ in calls]
 
     async def test_one_content_call_per_file_without_a_diff(self) -> None:
@@ -582,7 +605,7 @@ class TestMrFileChangeContent:
         ]
         assert next(kw for name, kw in calls if name == "file")["ref"] == "abc"
         assert groups["package-lock.json"] == (
-            'Existing file\n\nFull file content:\n\n{"lockfileVersion": 3}\n\nDiff content\n\n\n\n[TRUNCATED] Diff'
+            'Existing file\n\nFull file content:\n\n```\n{"lockfileVersion": 3}\n```\n\nDiff content\n\n\n\n[TRUNCATED] Diff'
         )
         assert all("Full file content" not in groups[p] for p in ("a.py", "b.py", "c.py"))
 
@@ -611,8 +634,8 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert "Full file content:\n\nc = 1" in groups["collapsed.py"]
-        assert "Full file content:\n\ne = 1" in groups["empty.py"]
+        assert "Full file content:\n\n```python\nc = 1\n```" in groups["collapsed.py"]
+        assert "Full file content:\n\n```python\ne = 1\n```" in groups["empty.py"]
 
     async def test_deleted_file_without_a_diff_is_not_fetched(self) -> None:
         _, helper, calls = self._run([_change("gone.py", diff="", deleted_file=True, too_large=True, b_mode="0")])
@@ -635,7 +658,7 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert groups["b.py"] == "Existing file\n\nRenamed from a.py.\n\nDiff content\n\n@@ -1 +1 @@\n-a\n+b"
+        assert groups["b.py"] == "Existing file\n\nRenamed from a.py.\n\nDiff content\n\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
 
     async def test_too_large_rename_is_still_fetched(self) -> None:
         _, helper, calls = self._run(

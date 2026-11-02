@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { mergeConfigWithSchema, initializeFormData } from './utils/config-merge';
 import { evaluateConditionalDisplay } from './utils/conditional-display';
+import { authSchemaForInstance } from './utils/auth-schema-for-instance';
 import {
   isNoneAuthType,
   isOAuthType,
@@ -575,6 +576,14 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.selectedAuthType = authType;
           const formData = initializeFormData(merged, authType);
           s.formData = formData;
+          // Which fields this instance shows and requires depends on what it has saved; decided
+          // once here, so the form's rendering and validation read a plain schema.
+          if (schema.auth) {
+            s.connectorSchema = {
+              ...schema,
+              auth: authSchemaForInstance(schema.auth, config ? formData.auth : null) ?? schema.auth,
+            };
+          }
 
           // Evaluate conditional display for auth
           const conditionalDisplay = evaluateConditionalDisplay(

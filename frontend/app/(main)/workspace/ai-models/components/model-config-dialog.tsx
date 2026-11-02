@@ -15,10 +15,11 @@ import { toast } from '@/lib/store/toast-store';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useBrand } from '@/lib/branding';
+import { aiModelFormOptions } from '@/config';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel, PickedModel } from '../types';
-import { CAPABILITY_TO_MODEL_TYPE } from '../types';
+import { CAPABILITY_TO_MODEL_TYPE, IDENTITY_FORWARDING_FIELD_PREFIX } from '../types';
 import { AIModelsApi } from '../api';
 import { canFetchModels, useModelDiscovery } from '../hooks/use-model-discovery';
 import { useBatchAddModels } from '../hooks/use-batch-add-models';
@@ -45,13 +46,6 @@ const PER_MODEL_FIELD_NAMES = new Set([
   'contextLength',
   ...PER_MODEL_FLAGS,
 ]);
-
-/** Hidden from the shared form once several models are picked; each row sets its own. */
-const PER_MODEL_FORM_FIELDS: ReadonlySet<string> = new Set(
-  [...PER_MODEL_FIELD_NAMES].filter((name) => name !== 'model'),
-);
-
-const PER_MODEL_FORM_FIELDS_LIST = [...PER_MODEL_FORM_FIELDS];
 
 const NO_HIDDEN_FIELDS: ReadonlySet<string> = new Set();
 
@@ -187,7 +181,11 @@ function findHiddenCredentialFields(
   if (editModel.configuredFields) {
     return new Set(
       editModel.configuredFields.filter(
-        (name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !PUBLIC_CONFIG_KEYS.has(name),
+        (name) =>
+          !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !PUBLIC_CONFIG_KEYS.has(name) &&
+          !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX) &&
+          !aiModelFormOptions.publicConfigKeys.includes(name),
       ),
     );
   }
@@ -195,7 +193,13 @@ function findHiddenCredentialFields(
   return new Set(
     fields
       .map((f) => f.name)
-      .filter((name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !(name in configured))
+      .filter(
+        (name) =>
+          !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !PUBLIC_CONFIG_KEYS.has(name) &&
+          !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX) &&
+          !(name in configured),
+      )
   );
 }
 
@@ -301,6 +305,15 @@ export function ModelConfigDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<PickedModel[]>([]);
+  const perModelFieldNames = useMemo<ReadonlySet<string>>(
+    () => new Set([...PER_MODEL_FIELD_NAMES, ...aiModelFormOptions.perModelConfigKeys]),
+    [],
+  );
+  /** Hidden from the shared form once several models are picked; each row sets its own. */
+  const perModelFormFields = useMemo<ReadonlySet<string>>(
+    () => new Set([...perModelFieldNames].filter((name) => name !== 'model')),
+    [perModelFieldNames],
+  );
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const discovery = useModelDiscovery();
   const batch = useBatchAddModels();
@@ -314,6 +327,8 @@ export function ModelConfigDialog({
   } | null>(null);
   const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
   const touchedFieldsRef = useRef<Set<string>>(new Set());
+  /** The deployment name filled in from the picked model; any edit by the user makes it theirs. */
+  const autoDeploymentRef = useRef<string | null>(null);
   /** Ids typed before the provider described them; they take its metadata once it does. */
   const provisionalIdsRef = useRef<Set<string>>(new Set());
   const [revealState, setRevealState] = useState<'hidden' | 'loading' | 'shown'>('hidden');
@@ -330,17 +345,23 @@ export function ModelConfigDialog({
       resetDiscoveryState();
       resetBatch();
       touchedFieldsRef.current = new Set();
+      autoDeploymentRef.current = null;
       provisionalIdsRef.current = new Set();
       return;
     }
 
-    const capFields = provider.fields[capability] ?? [];
+    // Identity forwarding is set per connection in its own dialog. Editing one model here
+    // would let a connection's models disagree.
+    const capFields = (provider.fields[capability] ?? []).filter(
+      (f) => !f.name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX),
+    );
     setFields(capFields as AIModelProviderField[]);
     setPicked([]);
     setDefaultModelId(null);
     resetDiscoveryState();
     resetBatch();
     touchedFieldsRef.current = new Set();
+    autoDeploymentRef.current = null;
     provisionalIdsRef.current = new Set();
 
     if (mode === 'edit' && editModel) {
@@ -404,8 +425,9 @@ export function ModelConfigDialog({
           ? sanitizeAzureOpenAiCommaFreeValue(value)
           : value;
       touchedFieldsRef.current.add(name);
+      if (name === 'deploymentName') autoDeploymentRef.current = null;
       // Editing the single model's own settings makes them the user's, not the provider's.
-      if (PER_MODEL_FIELD_NAMES.has(name) && name !== 'model') provisionalIdsRef.current.clear();
+      if (perModelFieldNames.has(name) && name !== 'model') provisionalIdsRef.current.clear();
       setValues((prev) => ({ ...prev, [name]: next }));
     },
     [provider?.providerId]
@@ -727,11 +749,11 @@ export function ModelConfigDialog({
       fields.length === 0
         ? true
         : allRequiredFieldsValid(
-            perModelMode ? fields.filter((field) => !PER_MODEL_FIELD_NAMES.has(field.name)) : fields,
+            perModelMode ? fields.filter((field) => !perModelFieldNames.has(field.name)) : fields,
             values,
             hiddenCredentials,
           ),
-    [fields, values, hiddenCredentials, perModelMode]
+    [fields, values, hiddenCredentials, perModelMode, perModelFieldNames]
   );
 
   const flagFields = useMemo<PerModelFlagField[]>(
@@ -743,6 +765,7 @@ export function ModelConfigDialog({
     [fields]
   );
   const contextLengthLabel = fields.find((f) => f.name === 'contextLength')?.displayName;
+  const fieldNames = useMemo(() => fields.map((f) => f.name), [fields]);
   const pickerDefaults = useMemo<PickedDefaults>(
     () => ({
       isReasoning: flagFields.some((f) => f.name === 'isReasoning') && boolValue(values.isReasoning),
@@ -752,12 +775,23 @@ export function ModelConfigDialog({
     [flagFields, values.isReasoning, values.isMultimodal, values.contextLength]
   );
 
+  /** Edition settings the provider has that each picked model sets for itself. */
+  const perModelConfigFields = fields.filter((f) => aiModelFormOptions.perModelConfigKeys.includes(f.name));
+
   /** The single-model form, read back as a picked row. */
-  const pickedFromForm = (id: string): PickedModel => ({
-    id,
-    modelFriendlyName: String(values.modelFriendlyName ?? '').trim() || undefined,
-    ...pickerDefaults,
-  });
+  const pickedFromForm = (id: string): PickedModel => {
+    const configuration = Object.fromEntries(
+      perModelConfigFields
+        .filter((f) => values[f.name] !== undefined && values[f.name] !== '')
+        .map((f) => [f.name, values[f.name]]),
+    );
+    return {
+      id,
+      modelFriendlyName: String(values.modelFriendlyName ?? '').trim() || undefined,
+      ...pickerDefaults,
+      ...(Object.keys(configuration).length > 0 ? { configuration } : {}),
+    };
+  };
 
   /**
    * One selected model is edited in the regular form; several get a row each.
@@ -774,19 +808,26 @@ export function ModelConfigDialog({
       setDefaultModelId(settled[0]?.id ?? null);
     }
     // Deployments are usually named after their model; follow it until the user types their own.
-    // Edit already has a stored deployment — do not overwrite it when the model chip changes.
+    // A stored deployment belongs to the stored model, so edit follows too and keeps it only for that model.
+    const deployment = String(values.deploymentName ?? '').trim();
     const deploymentFollowsModel =
-      mode === 'add' &&
       fields.some((f) => f.name === 'deploymentName') &&
-      (!touchedFieldsRef.current.has('deploymentName') || String(values.deploymentName ?? '').trim() === '');
+      (!touchedFieldsRef.current.has('deploymentName') || deployment === '' || deployment === autoDeploymentRef.current);
     if (settled.length === 1 && (picked.length !== 1 || picked[0].id !== settled[0].id)) {
       const only = settled[0];
       const typedName = String(values.modelFriendlyName ?? '').trim();
-      if (deploymentFollowsModel) touchedFieldsRef.current.delete('deploymentName');
+      const storedModel = String(sanitizeAzureOpenAiCommaFreeValue(editModel?.configuration?.model) ?? '').trim();
+      const keepStored = mode === 'edit' && only.id === storedModel;
+      if (deploymentFollowsModel) {
+        autoDeploymentRef.current = keepStored ? null : only.id;
+        // Edit omits an untouched saved field on save; mark it so the new deployment is sent.
+        if (mode === 'edit' && !keepStored) touchedFieldsRef.current.add('deploymentName');
+        else touchedFieldsRef.current.delete('deploymentName');
+      }
       setValues((prev) => ({
         ...prev,
         ...singleModelFormValues(only),
-        ...(deploymentFollowsModel ? { deploymentName: only.id } : {}),
+        ...(deploymentFollowsModel ? { deploymentName: keepStored ? '' : only.id } : {}),
         modelFriendlyName: picked.length === 0 && typedName ? typedName : (only.modelFriendlyName ?? ''),
       }));
     } else if (settled.length === 0) {
@@ -801,6 +842,9 @@ export function ModelConfigDialog({
     ...(fields.some((f) => f.name === 'contextLength') ? { contextLength: item.contextLength ?? '' } : {}),
     ...(flagFields.some((f) => f.name === 'isReasoning') ? { isReasoning: item.isReasoning } : {}),
     ...(flagFields.some((f) => f.name === 'isMultimodal') ? { isMultimodal: item.isMultimodal } : {}),
+    ...Object.fromEntries(
+      perModelConfigFields.map((f) => [f.name, item.configuration?.[f.name] ?? f.defaultValue ?? '']),
+    ),
   });
 
   const handleModelIdsChange = (ids: string[]) => {
@@ -815,7 +859,7 @@ export function ModelConfigDialog({
           return pickedFromDiscovered(found, pickerDefaults);
         }
         // Settings the user already set in the form are theirs; the list must not overwrite them.
-        if (!PER_MODEL_FORM_FIELDS_LIST.some((name) => touchedFieldsRef.current.has(name))) {
+        if (![...perModelFormFields].some((name) => touchedFieldsRef.current.has(name))) {
           provisionalIdsRef.current.add(id);
         }
         return customPicked(id, pickerDefaults);
@@ -891,7 +935,7 @@ export function ModelConfigDialog({
     const timer = window.setTimeout(() => {
       const configuration: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(valuesRef.current)) {
-        if (PER_MODEL_FIELD_NAMES.has(key) || TOP_LEVEL_FIELD_NAMES.has(key)) continue;
+        if (perModelFieldNames.has(key) || TOP_LEVEL_FIELD_NAMES.has(key)) continue;
         if (val === undefined || val === '') continue;
         configuration[key] = val;
       }
@@ -910,7 +954,7 @@ export function ModelConfigDialog({
   const sharedBatchConfiguration = (): Record<string, unknown> => {
     const configuration: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(values)) {
-      if (PER_MODEL_FIELD_NAMES.has(key) || TOP_LEVEL_FIELD_NAMES.has(key)) continue;
+      if (perModelFieldNames.has(key) || TOP_LEVEL_FIELD_NAMES.has(key)) continue;
       if (hiddenCredentials.has(key) && !touchedFieldsRef.current.has(key)) continue;
       if (val === undefined) continue;
       configuration[key] = provider?.providerId === 'azureOpenAI' && key === 'deploymentName'
@@ -1046,6 +1090,7 @@ export function ModelConfigDialog({
           onDefaultChange={setDefaultModelId}
           flagFields={flagFields}
           contextLengthLabel={contextLengthLabel}
+          fieldNames={fieldNames}
           disabled={saving || batch.running}
         />
       ) : null}
@@ -1103,7 +1148,7 @@ export function ModelConfigDialog({
         saving={saving}
         error={error}
         hiddenCredentials={hiddenCredentials}
-        hiddenFieldNames={perModelMode ? PER_MODEL_FORM_FIELDS : NO_HIDDEN_FIELDS}
+        hiddenFieldNames={perModelMode ? perModelFormFields : NO_HIDDEN_FIELDS}
         onFieldChange={handleFieldChange}
         onReveal={canReveal ? () => void handleReveal() : undefined}
         revealing={revealState === 'loading'}

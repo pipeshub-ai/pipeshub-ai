@@ -751,6 +751,20 @@ class DockerCodingSandbox(CodingSandboxBackend):
         try:
             await self._provider.pull_image(self._image)
         except Exception as exc:
+            # A failed pull says nothing about the image when the daemon
+            # never answered at all: an endpoint nothing is listening on
+            # fails `images.get` too, so `ensure_image` returning False
+            # cannot tell the two apart. Blaming the image sends the reader
+            # hunting for something that is usually already present — the
+            # socket proxy simply was not running.
+            if not await self._provider.ping():
+                raise CodingSandboxError(
+                    f"The coding sandbox cannot run: Docker is unreachable at "
+                    f"{self._provider.docker_host()} ({exc}). The sandbox reaches the "
+                    f"daemon through a proxy that has to be running: under Compose "
+                    f"that is docker-socket-proxy, started by the 'sandbox' profile; "
+                    f"on Helm it is the docker-proxy sidecar."
+                ) from exc
             raise CodingSandboxError(
                 f"Sandbox image {self._image!r} is not available locally and "
                 f"could not be pulled: {exc}"

@@ -185,26 +185,44 @@ function useHubRoots(enabled: boolean) {
 interface SearchState {
   items: KnowledgeHubNode[];
   status: 'idle' | 'loading' | 'ready' | 'error';
+  /** Next page of the nested search; the search of the level alone is one page. */
+  nextCursor: string | null;
+  loadingMore: boolean;
+}
+
+const IDLE_SEARCH: SearchState = { items: [], status: 'idle', nextCursor: null, loadingMore: false };
+
+function appendNamed(kept: KnowledgeHubNode[], more: KnowledgeHubNode[]): KnowledgeHubNode[] {
+  const seen = new Set(kept.map((item) => item.id));
+  const items = [...kept];
+  for (const item of more) {
+    if (!item.name || seen.has(item.id)) continue;
+    seen.add(item.id);
+    items.push(item);
+  }
+  return items;
 }
 
 function useMentionSearch(query: string, level: { id: string; nodeType: string } | null) {
-  const [state, setState] = useState<SearchState>({ items: [], status: 'idle' });
+  const [state, setState] = useState<SearchState>(IDLE_SEARCH);
   const levelId = level?.id;
   const levelType = level?.nodeType;
+  // A page still in flight for an earlier query or level must not land in this one.
+  const generation = useRef(0);
 
   useEffect(() => {
+    generation.current += 1;
     if (query.length < KB_MIN_SEARCH_QUERY_LENGTH) {
-      setState({ items: [], status: 'idle' });
+      setState(IDLE_SEARCH);
       return;
     }
     const controller = new AbortController();
-    setState((s) => ({ items: s.items, status: 'loading' }));
+    setState((s) => ({ items: s.items, status: 'loading', nextCursor: null, loadingMore: false }));
     const parent = levelId && levelType ? { id: levelId, nodeType: levelType } : undefined;
     const timer = window.setTimeout(() => {
       // One branch failing still shows what the other found; only both failing is an error.
       const search = (flattened: boolean) =>
         KnowledgeHubApi.searchNodes({ q: query, parent, limit: SEARCH_LIMIT, signal: controller.signal, flattened })
-          .then((data) => data.items ?? [])
           .catch((error: unknown) => {
             if (controller.signal.aborted) throw error;
             return null;
@@ -214,20 +232,18 @@ function useMentionSearch(query: string, level: { id: string; nodeType: string }
         .then(([here, nested]) => {
           if (controller.signal.aborted) return;
           if (here === null && nested === null) {
-            setState({ items: [], status: 'error' });
+            setState({ ...IDLE_SEARCH, status: 'error' });
             return;
           }
-          const seen = new Set<string>();
-          const items: KnowledgeHubNode[] = [];
-          for (const item of [...(here ?? []), ...(nested ?? [])]) {
-            if (!item.name || seen.has(item.id)) continue;
-            seen.add(item.id);
-            items.push(item);
-          }
-          setState({ items, status: 'ready' });
+          setState({
+            items: appendNamed(appendNamed([], here?.items ?? []), nested?.items ?? []),
+            status: 'ready',
+            nextCursor: nested?.pagination?.nextCursor ?? null,
+            loadingMore: false,
+          });
         })
         .catch(() => {
-          if (!controller.signal.aborted) setState({ items: [], status: 'error' });
+          if (!controller.signal.aborted) setState({ ...IDLE_SEARCH, status: 'error' });
         });
     }, 180);
     return () => {
@@ -236,7 +252,28 @@ function useMentionSearch(query: string, level: { id: string; nodeType: string }
     };
   }, [query, levelId, levelType]);
 
-  return state;
+  const { nextCursor, loadingMore, status } = state;
+  const loadMore = useCallback(() => {
+    if (!nextCursor || loadingMore || status !== 'ready') return;
+    const pageOf = generation.current;
+    const parent = levelId && levelType ? { id: levelId, nodeType: levelType } : undefined;
+    setState((s) => ({ ...s, loadingMore: true }));
+    KnowledgeHubApi.searchNodes({ q: query, parent, limit: SEARCH_LIMIT, cursor: nextCursor, flattened: true })
+      .then((data) => {
+        if (pageOf !== generation.current) return;
+        setState((s) => ({
+          ...s,
+          items: appendNamed(s.items, data.items ?? []),
+          nextCursor: data.pagination?.nextCursor ?? null,
+          loadingMore: false,
+        }));
+      })
+      .catch(() => {
+        if (pageOf === generation.current) setState((s) => ({ ...s, loadingMore: false }));
+      });
+  }, [nextCursor, loadingMore, status, query, levelId, levelType]);
+
+  return { ...state, loadMore };
 }
 
 // ── Rows ──
@@ -449,6 +486,8 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
 
   if (searching) {
     status = search.status === 'error' ? 'error' : search.status === 'ready' ? 'ready' : 'loading';
+    hasMore = Boolean(search.nextCursor);
+    loadMore = search.loadMore;
     sections = [
       {
         key: 'search',
@@ -780,7 +819,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
             </React.Fragment>
           ))
         )}
-        {(roots.loadingMore || children.loadingMore) && !searching ? (
+        {(searching ? search.loadingMore : roots.loadingMore || children.loadingMore) ? (
           <Box style={{ padding: '0 10px' }}>
             <TreeLoadShimmer />
           </Box>

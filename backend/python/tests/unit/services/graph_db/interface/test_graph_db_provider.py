@@ -183,6 +183,7 @@ class TestAbstractMethodInventory:
         "connect",
         "disconnect",
         "ensure_schema",
+        "ensure_pipeline_schema",
         # Transaction management
         "begin_transaction",
         "commit_transaction",
@@ -195,6 +196,19 @@ class TestAbstractMethodInventory:
         "get_all_documents",
         "get_documents_paginated",
         "batch_upsert_nodes",
+        "ensure_nodes",
+        "stage_state_get",
+        "stage_states_for_revision",
+        "stage_state_create",
+        "stage_state_compare_and_set",
+        "stage_states_stale",
+        "stage_states_delete_for_virtual_records",
+        "get_stage_states_with_records",
+        "stage_states_unheld_revisions",
+        "stage_states_delete_unheld_revisions",
+        "get_revision_pointers",
+        "get_record_content_revs",
+        "compare_and_set_record_fields",
         "delete_nodes",
         "update_node",
         "update_node_if_match",
@@ -216,11 +230,24 @@ class TestAbstractMethodInventory:
         "get_edges_to_node",
         "get_edges_from_node",
         "get_edges_from_node_with_target_name",
+        "get_neighbors_by_relationship_types",
+        "get_neighbors_for_nodes_by_relationship_types",
         "get_related_node_field",
         # Query operations
         "execute_query",
         "get_nodes_by_filters",
+        "filter_linked_record_ids",
         "get_nodes_by_field_in",
+        "get_nodes_by_field_prefix",
+        "search_nodes_by_field_terms",
+        "delete_edges_touching_nodes",
+        "get_edge_rollup_by_file_prefix",
+        "get_file_paths_for_records",
+        "get_edges_by_target_keys",
+        "delete_edges_by_source_keys",
+        "count_nodes_by_filters",
+        "has_nodes_by_filters",
+        "get_nodes_updated_since",
         # Record operations
         "get_record_by_path",
         "get_records_by_file_path",
@@ -236,6 +263,8 @@ class TestAbstractMethodInventory:
         "move_taxonomy_edges",
         "find_legacy_taxonomy_nodes",
         "update_node_fields_if_match",
+        "create_node_if_absent",
+        "get_switch_pointers",
         "get_entity_index_candidate",
         "page_entity_index_source",
         "page_records_for_vector_membership_backfill",
@@ -244,7 +273,10 @@ class TestAbstractMethodInventory:
         "update_indexing_status_for_record_ids",
         "reset_indexing_status_for_connector",
         "compare_and_set_indexing_status",
+        "claim_push_record",
+        "retag_push_record",
         "get_existing_record_keys",
+        "get_existing_keys",
         "get_documents_by_status",
         "get_record_by_conversation_index",
         "get_record_by_issue_key",
@@ -264,12 +296,14 @@ class TestAbstractMethodInventory:
         "get_record_path",
         "get_record_path_segments",
         "get_descendant_virtual_record_ids",
+        "get_record_group_virtual_record_ids",
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
         "get_record_taxonomy_links",
         "get_entity_candidate_records",
         "get_permitted_entity_records",
+        "find_users",
         "get_taxonomy_entity_membership",
         "get_unreached_taxonomy_entities",
         "find_taxonomy_nodes",
@@ -353,9 +387,11 @@ class TestAbstractMethodInventory:
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
         "get_virtual_record_ids_in_use",
+        "has_records_indexed_since",
         "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
+        "batch_upsert_node_relations",
         "get_first_user_with_permission_to_node",
         "get_users_with_permission_to_node",
         "get_groups_with_permission_to_node",
@@ -365,6 +401,8 @@ class TestAbstractMethodInventory:
         # Sync point operations
         "get_sync_point",
         "upsert_sync_point",
+        "update_sync_point_if",
+        "backfill_block_name_folded",
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",
@@ -397,6 +435,7 @@ class TestAbstractMethodInventory:
         "record_purge_failure",
         "get_trash_purge_stats",
         "purge_trash_kept_record_groups",
+        "delete_blocks_for_records",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",
@@ -416,6 +455,7 @@ class TestAbstractMethodInventory:
         "check_edge_exists",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
+        "check_api_toolset_in_use",
         "check_mcp_instance_in_use",
         "check_connector_in_use",
         # Knowledge hub operations. The three inventory tests below fail if one
@@ -441,6 +481,7 @@ class TestAbstractMethodInventory:
         # Team operations
         "get_team_with_users",
         "get_user_teams",
+        "find_team_by_name",
         "get_team_users",
         "delete_team_member_edges",
         "batch_update_team_member_roles",
@@ -468,8 +509,13 @@ class TestAbstractMethodInventory:
         "create_named_entities_if_absent",
         "find_named_entities",
         "get_named_entities_by_ids",
+        "find_named_entities_by_alias",
+        "schedule_named_entity_reproject",
         "find_named_entities_by_key_prefix",
         "get_named_entity_mentions_in_records",
+        "get_named_entity_date_spans",
+        "get_named_entity_values_in_records",
+        "get_named_entity_mentions_from_records",
         "add_named_entity_aliases",
         "query_named_entities",
         "get_records_for_named_entities",
@@ -806,14 +852,14 @@ class TestRecordLinkDefaults:
     @pytest.mark.asyncio
     async def test_a_move_counts_only_the_inherit_edges_it_removed(self) -> None:
         instance = _make_concrete_class()()
-        instance.batch_delete_edges.side_effect = [1, 1, 1]
+        instance.batch_delete_edges.side_effect = [1, 1, 1, 1]
 
         removed = await instance.link_record_to_group(
             "r1", "new", inherit=False, leaving_group_id="old", transaction="tx"
         )
 
         assert [call.args[1] for call in instance.batch_delete_edges.await_args_list] == [
-            "belongsTo", "inheritPermissions", "inheritPermissions"
+            "belongsTo", "inheritPermissions", "nodeRelations", "inheritPermissions"
         ]
         assert removed == 2
 

@@ -42,6 +42,7 @@ import asyncio
 import contextlib
 import re
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
@@ -88,9 +89,11 @@ from app.services.vector_db.redis.utils import (
     within_values_count,
 )
 from app.utils.logger import create_logger
+from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
+    from app.services.redis.connection_provider import RedisClient
 
 logger = create_logger("redis_vector_service")
 
@@ -104,6 +107,15 @@ _REDIS_CAPABILITIES = VectorDBCapabilities(
 
 # RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.
 _MAX_SEARCH_RESULTS = 10000
+
+# Scans that select points to act on (delete, payload write, scroll) must see
+# every match. RediSearch's default ON_TIMEOUT is RETURN: a query past its
+# timeout (500 ms by default) answers with the rows it had, and a RESP2 reply
+# carries no flag saying so, so a delete or payload write would quietly miss
+# points. ``TIMEOUT 0`` lifts the limit for these page-bounded queries. Newer
+# servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
+# want a hard guarantee can also set ``search-on-timeout FAIL``.
+_NO_TIMEOUT = ("TIMEOUT", "0")
 
 # Page size for paged deletes and aggregate-cursor reads.
 _DELETE_PAGE_SIZE = 500
@@ -150,7 +162,11 @@ class RedisVectorService(IVectorDBService):
         config_service: ConfigurationService | RedisVectorConfig,
     ) -> None:
         self.config_service = config_service
-        self.client: aioredis.Redis | None = None
+        # A redis.asyncio pool binds to the loop that first uses it, and this service is shared
+        # by the server loop and every consumer's worker loop. Set by connect().
+        self._clients: LoopLocal[RedisClient] | None = None
+        # Assigned through `client` (tests); served to every loop as-is.
+        self._client_override: RedisClient | None = None
         # Cached collection metadata: name → CollectionConfig used at creation
         self._collection_configs: dict[str, CollectionConfig] = {}
         # Dense vector dtype applied to all indexes; set from config on connect().
@@ -196,29 +212,57 @@ class RedisVectorService(IVectorDBService):
                 ),
                 mode="standalone",
             )
-            self.client = provider.create_client(
-                ClientOptions(
-                    decode_responses=False,  # we handle bytes ourselves for vectors
-                    socket_timeout_seconds=cfg.timeout,
-                    socket_connect_timeout_seconds=cfg.timeout,
+            clients: LoopLocal[RedisClient] = LoopLocal(
+                partial(
+                    provider.create_client,
+                    ClientOptions(
+                        decode_responses=False,  # we handle bytes ourselves for vectors
+                        socket_timeout_seconds=cfg.timeout,
+                        socket_connect_timeout_seconds=cfg.timeout,
+                    ),
                 )
             )
-            # Verify connectivity
-            await self.client.ping()
+            # Verified on the calling loop; other loops build their client on first use.
+            try:
+                await clients.get().ping()
+            except Exception:
+                # Caller-owned client: a failed ping must not leak its connection.
+                _ = await clients.aclose_all(lambda client: client.aclose())
+                raise
+            self._clients = clients
             logger.info(f"Connected to Redis vector store at {cfg.host}:{cfg.port}")
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {e}")
             raise
 
+    @property
+    def client(self) -> RedisClient | None:
+        """The running loop's client, or None before connect()."""
+        if self._client_override is not None:
+            return self._client_override
+        if self._clients is None:
+            return None
+        return self._clients.get()
+
+    @client.setter
+    def client(self, value: RedisClient | None) -> None:
+        self._client_override = value
+
     async def disconnect(self) -> None:
-        if self.client is not None:
+        """Close every loop's client, each on the loop that owns it."""
+        override, self._client_override = self._client_override, None
+        clients, self._clients = self._clients, None
+        if override is None and clients is None:
+            return
+        errors = [] if clients is None else await clients.aclose_all(lambda client: client.aclose())
+        if override is not None:
             try:
-                await self.client.aclose()
-                logger.info("Disconnected from Redis vector store")
+                await override.aclose()
             except Exception as e:
-                logger.warning(f"Error during Redis disconnect: {e}")
-            finally:
-                self.client = None
+                errors.append(e)
+        for error in errors:
+            logger.warning(f"Error during Redis disconnect: {error}")
+        logger.info("Disconnected from Redis vector store")
 
     async def _load_config(self) -> RedisVectorConfig:
         if isinstance(self.config_service, ConfigurationService):
@@ -645,6 +689,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", "0", str(_DELETE_PAGE_SIZE),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 # Do not swallow: callers treat a returned delete as complete and
@@ -666,8 +711,7 @@ class RedisVectorService(IVectorDBService):
 
             await self.client.delete(*page_keys)  # type: ignore
             total_deleted += len(page_keys)
-            if len(page_keys) < _DELETE_PAGE_SIZE:
-                break
+            # No short-page exit: only an empty re-query proves nothing is left.
         return total_deleted
 
     async def _delete_filtered(
@@ -687,6 +731,7 @@ class RedisVectorService(IVectorDBService):
             raw = await self.client.execute_command(  # type: ignore
                 "FT.AGGREGATE", idx, query,
                 "LOAD", str(len(load)), *load,
+                *_NO_TIMEOUT,
                 "WITHCURSOR", "COUNT", str(_DELETE_PAGE_SIZE),
                 "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
             )
@@ -765,6 +810,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "RETURN", str(len(return_fields)), *return_fields,
                     "LIMIT", str(offset), str(_DELETE_PAGE_SIZE),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 raise RuntimeError(
@@ -937,11 +983,13 @@ class RedisVectorService(IVectorDBService):
                 "FT.SEARCH", idx, query,
                 "RETURN", str(len(return_fields)), *return_fields,
                 "LIMIT", str(int_offset), str(limit),
+                *_NO_TIMEOUT,
             )
         else:
             raw = await self.client.execute_command(  # type: ignore
                 "FT.SEARCH", idx, query,
                 "LIMIT", str(int_offset), str(limit),
+                *_NO_TIMEOUT,
             )
 
         points: list[VectorPoint] = []
@@ -1174,6 +1222,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", str(offset), str(page_size),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 # A partial key list would silently update only some of a VRID's

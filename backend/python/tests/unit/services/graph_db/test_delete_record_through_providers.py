@@ -157,6 +157,9 @@ class _Driver:
         # (record id, taxonomy collection, node id): the record's belongsTo* edges.
         self.links: list[tuple[str, str, str]] = []
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self.transactions.append(("begin", "txn-1"))
         return "txn-1"

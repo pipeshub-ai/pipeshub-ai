@@ -69,6 +69,8 @@ Call sites in Python:
 
 `citations._page_of`, `fetch_url_tool._resolve_tiny_ref_url` and the Slack bot (`stripFragmentDirective` in `slack-bot/src/utils/citations.ts`) all strip with the same rule: split on the first `:~:` and drop a trailing `#`, keeping any anchor before it.
 
+The answer's citation badges (`[N](url)`, written by `citations._renumber_citation_links`) carry the URL with `(` and `)` encoded as `%28` and `%29`, so a reader that ends a link at the first `)` keeps the whole URL, as for `/wiki/Python_(programming_language)`. The citation's `webUrl` keeps the URL as built. The frontend and the Slack bot also accept one level of balanced parentheses, for answers stored before this.
+
 ## Design
 
 ```mermaid
@@ -128,6 +130,8 @@ Selection starts from rendered blocks, not from the raw string.
 - **Markdown** (markdown-it, commonmark with tables and strikethrough): one block per paragraph, heading, list item, table cell and code-fence line. Link text and inline code are kept; link targets, emphasis markers, `#`, bullets and `|` are not text. Soft breaks become spaces; hard breaks and `<br>` start a new block. Images contribute no text and **end the block** (see below). Raw HTML blocks go through the HTML extractor.
 - **HTML** (selectolax): block-level tags separate blocks. `script`, `style`, `head`, `noscript`, `template` and hidden elements (`hidden`, `display:none`, `visibility:hidden`) are skipped. Replaced and form-control elements (`img`, `svg`, `video`, `iframe`, `input`, `button`, ...) end the block.
 - **Plain**: split on line breaks and on an ellipsis (`...` or `…`), which search snippets use to join separate passages.
+
+Pages read by `fetch_url` are cut into text blocks by `app/utils/html_to_blocks.py` before any of this runs, and each block is cited on its own. That reader drops `<template>` content, `hidden` and `aria-hidden` elements, and screen-reader-only classes (`sr-only`, `visually-hidden`, `screen-reader-text`), so a skip link cannot become the start of a range. It keeps inline `display:none` and `visibility:hidden` content: pages hide formulas, tabs and even the whole body that way while the text still matters, so such a block may be cited without a highlight. It also puts a line break where an inline image sits, so a term never spans the image. `test_blocks_from_the_web_fetcher_are_highlightable_on_their_own_page` checks every fixture page end to end.
 
 Unknown formats are treated as markdown because most stored block text is markdown.
 

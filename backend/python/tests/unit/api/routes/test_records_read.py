@@ -41,7 +41,12 @@ def _record(record_id: str, *texts: str, created: int = 0) -> dict:
 
 def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": "r"} if access else None)
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
+            node_ids=set(node_ids) if access else set()
+        )
+    )
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})
     retrieval = MagicMock()
     retrieval.search_with_filters = AsyncMock(return_value={"searchResults": []})
@@ -57,8 +62,21 @@ def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicM
 
 
 async def _read(request: SimpleNamespace, record_id: str = "r-1", **params: object) -> dict:
-    defaults = {"mode": "record", "query": None, "start_block": None, "start_record": 0, "max_chars": 40_000}
+    defaults = {
+        "mode": "record", "query": None, "start_block": None, "start_record": 0, "max_chars": 40_000, "extract": False,
+    }
     return await route.read_record_content(record_id, request, **{**defaults, **params})
+
+
+class _no_scope:
+    def __init__(self, *_args: object, **_kw: object) -> None:
+        pass
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +93,14 @@ class TestAccess:
             await _read(request)
         assert err.value.status_code == 403
         fetch.assert_not_awaited()
+
+    async def test_one_access_check_is_made_and_the_fetch_reuses_it(self) -> None:
+        request, graph, _ = _request()
+        fetch = AsyncMock(return_value={"ok": False})
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            await _read(request)
+        graph.check_access.assert_awaited_once()
+        assert fetch.await_args.kwargs["accessible"] == {"r-1"}
 
     async def test_no_access_to_the_thread_record_is_a_403_too(self) -> None:
         request, _, _ = _request(access=False)
@@ -120,6 +146,72 @@ class TestRecordMode:
         assert body["order"] == "relevance"
         assert "block 150 " in body["content"]
         assert retrieval.search_with_filters.await_args.kwargs["virtual_record_ids_from_tool"] == ["v-r-1"]
+
+    async def test_extract_hands_the_record_and_query_to_the_reader(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "The ASF had 65 sponsors.")
+        extract = AsyncMock(return_value={"content": "65 sponsors", "order": "extract"})
+
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record", extract), \
+                patch.object(route, "call_scope", _no_scope):
+            body = await _read(request, query=" sponsors ", extract=True, max_chars=5_000)
+
+        assert body == {"content": "65 sponsors", "order": "extract"}
+        assert extract.await_args.args[0] is record
+        assert extract.await_args.kwargs["query"] == "sponsors"
+        assert extract.await_args.kwargs["fallback_chars"] == 5_000
+        assert extract.await_args.kwargs["user_id"] == "u-1"
+
+    async def test_the_reader_runs_on_the_users_identity(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "The ASF had 65 sponsors.")
+        scopes: list[tuple] = []
+
+        class _Scope:
+            def __init__(self, principal: object, workload: object, **_kw: object) -> None:
+                scopes.append((principal, workload))
+
+            async def __aenter__(self) -> None:
+                return None
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record", AsyncMock(return_value={"order": "extract"})), \
+                patch.object(route, "principal_from_request_user", lambda user: ("principal", user["userId"])), \
+                patch.object(route, "call_scope", _Scope):
+            await _read(request, query="sponsors", extract=True)
+
+        assert scopes == [(("principal", "u-1"), route.Workload.SEARCH)]
+
+    async def test_a_refusal_inside_the_extract_keeps_its_status(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "text")
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record",
+                             AsyncMock(side_effect=HTTPException(status_code=403, detail="no identity"))), \
+                patch.object(route, "call_scope", _no_scope), \
+                pytest.raises(HTTPException) as err:
+            await _read(request, query="sponsors", extract=True)
+        assert err.value.status_code == 403
+
+    @pytest.mark.parametrize("params", [
+        {"query": None},
+        {"query": "  "},
+        {"query": "sponsors", "start_block": 3},
+        {"query": "sponsors", "mode": "thread"},
+    ])
+    async def test_extract_without_one_record_and_a_query_is_a_422(self, params: dict) -> None:
+        request, graph, _ = _request()
+        with pytest.raises(HTTPException) as err:
+            await _read(request, extract=True, **params)
+        assert err.value.status_code == 422
+        graph.check_access.assert_not_awaited()
 
     async def test_a_record_without_indexed_content_is_described(self) -> None:
         request, _, _ = _request()
@@ -181,13 +273,77 @@ class TestThreadMode:
         assert err.value.status_code == 500
         assert resolve.await_args.kwargs["raise_on_error"] is True
 
-    async def test_a_record_outside_any_thread_is_a_422_that_says_why(self) -> None:
+    async def test_a_record_not_from_slack_is_a_422_that_says_why(self) -> None:
         request, _, _ = _request()
         with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value=None)), \
                 pytest.raises(HTTPException) as err:
             await _read(request, mode="thread")
         assert err.value.status_code == 422
         assert "not part of a Slack thread" in err.value.detail
+        assert "Slack records only" in err.value.detail
+
+    async def test_a_failed_channel_lookup_is_a_500(self) -> None:
+        request, _, _ = _request()
+        channel = AsyncMock(side_effect=RuntimeError("graph down"))
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", channel), \
+                pytest.raises(HTTPException) as err:
+            await _read(request, mode="thread")
+        assert err.value.status_code == 500
+        assert channel.await_args.kwargs["raise_on_error"] is True
+
+    async def test_a_channel_record_reads_with_its_threads_and_says_so_first(self) -> None:
+        """A run of channel messages reads as itself, then its threads' replies,
+        with the note leading the first page and inside the budget."""
+        request, _, _ = _request()
+        records = [
+            _record("burst", "parent: deploy failing\n\nReply Count: 2", created=1),
+            _record("t-1", "reply: cache", "reply: fixed", created=2),
+        ]
+        note = "This record holds 3 Slack messages; 1 of them started a thread."
+        thread = AsyncMock(return_value={
+            "ok": True, "records": records, "skipped_record_ids": [], "note": note,
+            "threads": [{"thread_record_group_id": "g-1", "record_count": 1}], "threads_not_read": 0,
+        })
+        channel = {"connector_id": "c", "org_id": "o-1", "channel_id": "C1", "is_message": True, "timestamps": []}
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value=channel)), \
+                patch.object(route, "_fetch_thread_records_impl", thread):
+            body = await _read(request, record_id="burst", mode="thread", max_chars=2_000)
+
+        assert body["mode"] == "thread"
+        assert body["content"].startswith(f"[{note}]")
+        assert body["content"].index("deploy failing") < body["content"].index("reply: fixed")
+        assert body["chars"] <= 2_000 and body["maxChars"] == 2_000
+        assert body["threads"] == [{"threadRecordGroupId": "g-1", "recordCount": 1}]
+        assert body["threadsNotRead"] == 0
+
+    async def test_the_note_is_not_repeated_on_later_pages(self) -> None:
+        request, _, _ = _request()
+        records = [_record("burst", "parent", created=1), _record("t-1", "reply", created=2)]
+        thread = AsyncMock(return_value={"ok": True, "records": records, "note": "Note.", "threads": []})
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value={"org_id": "o-1"})), \
+                patch.object(route, "_fetch_thread_records_impl", thread):
+            body = await _read(request, mode="thread", start_record=1)
+        assert "Note." not in body["content"]
+        assert "reply" in body["content"]
+
+    async def test_a_message_without_replies_reads_as_itself(self) -> None:
+        request, _, _ = _request()
+        records = [_record("msg", "just one message", created=1)]
+        thread = AsyncMock(return_value={
+            "ok": True, "records": records, "note": "No replies: returned on its own.", "threads": [],
+        })
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value={"org_id": "o-1"})), \
+                patch.object(route, "_fetch_thread_records_impl", thread):
+            body = await _read(request, record_id="msg", mode="thread")
+        assert "just one message" in body["content"]
+        assert body["content"].startswith("[No replies")
+        assert body["threadRecordCount"] == 1 and body["complete"] is True
+        assert body["threads"] == [] and body["threadsNotRead"] == 0
 
 
 class TestOverHttp:

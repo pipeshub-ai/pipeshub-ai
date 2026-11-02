@@ -1,3 +1,4 @@
+import type { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -10,8 +11,6 @@ import { redisConnectionConfigFromHostPort } from '../../../libs/services/redis/
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 import { SessionService } from '../services/session.service';
-import { SamlDesktopHandoffService } from '../services/samlDesktopHandoff.service';
-import { SamlController } from '../controller/saml.controller';
 import { UserAccountController } from '../controller/userAccount.controller';
 import { ConfigurationManagerService } from '../services/cm.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
@@ -26,6 +25,10 @@ import {
   resolveMessageBrokerConfig,
   createMessageProducer,
 } from '../../../libs/services/message-broker.factory';
+
+/** Applies reloaded settings to the auth service; see the updateAppConfig route. */
+export type AuthAppConfigReloader = (config: AppConfig) => void;
+export const AUTH_APP_CONFIG_RELOADER = 'AuthAppConfigReloader';
 
 const loggerConfig = {
   service: 'Auth Service Container',
@@ -66,7 +69,7 @@ export class AuthServiceContainer {
         container.get('Logger'),
       );
       container
-        .bind<RedisService>('RedisService')
+        .bind<ICacheService>('RedisService')
         .toConstantValue(redisService);
 
       // Same fingerprint `RedisService` just resolved internally (Phase 5,
@@ -111,9 +114,6 @@ export class AuthServiceContainer {
       container
         .bind<SessionService>('SessionService')
         .toConstantValue(sessionService);
-      container
-        .bind<SamlDesktopHandoffService>('SamlDesktopHandoffService')
-        .toConstantValue(new SamlDesktopHandoffService(redisService));
 
       const configurationService = new ConfigurationManagerService();
       container
@@ -146,25 +146,34 @@ export class AuthServiceContainer {
         .bind<JitProvisioningService>('JitProvisioningService')
         .toConstantValue(jitProvisioningService);
 
-      container.bind<SamlController>('SamlController').toDynamicValue(() => {
-        return new SamlController(appConfig, logger);
-      });
-
+      const createUserAccountController = (
+        config: AppConfig,
+      ): UserAccountController =>
+        new UserAccountController(
+          config,
+          iamService,
+          mailService,
+          sessionService,
+          configurationService,
+          logger,
+          jitProvisioningService,
+          entityEventsService,
+        );
       container
         .bind<UserAccountController>('UserAccountController')
-        .toDynamicValue(() => {
-          return new UserAccountController(
-            appConfig,
-            iamService,
-            mailService,
-            sessionService,
-            configurationService,
-            logger,
-            jitProvisioningService,
-            entityEventsService,
-          );
-        })
+        .toDynamicValue(() => createUserAccountController(appConfig))
         .inSingletonScope();
+
+      // A settings reload rebuilds whatever was built from the old AppConfig.
+      container
+        .bind<AuthAppConfigReloader>(AUTH_APP_CONFIG_RELOADER)
+        .toConstantValue((config) => {
+          container.rebind<AppConfig>('AppConfig').toConstantValue(config);
+          container
+            .rebind<UserAccountController>('UserAccountController')
+            .toDynamicValue(() => createUserAccountController(config))
+            .inSingletonScope();
+        });
     } catch (error) {
       const logger = container.get<Logger>('Logger');
       logger.error('Failed to initialize services', {

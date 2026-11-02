@@ -106,9 +106,9 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 ## PipesHub Cloud
 
-Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+Prefer a fully managed PipesHub without running your own infrastructure? Sign up for **[PipesHub Cloud](https://app.pipeshub.com)**: the same connectors, permission-aware search, and APIs, with nothing to install.
 
-👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
 
 ## Connectors
 

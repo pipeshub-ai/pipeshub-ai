@@ -120,6 +120,17 @@ class TestFactory:
         assert agent.spec.model.model == "claude-opus-5-5"
         assert agent.spec.model.context_window == 400_000
 
+    @pytest.mark.parametrize("model_name", ["gpt-6.1-sol", "gpt-7-preview"])
+    async def test_a_window_entered_as_text_sizes_the_root_agent(self, model_name: str) -> None:
+        context = make_context(llm=FakeChatModel(), context_length=128_000, configured_context_window="300000")
+
+        with patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None):
+            agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+                context, context.llm, "quick", query="hello", model_name=model_name,
+            )
+
+        assert agent.spec.model.context_window == 300_000
+
     async def test_without_one_the_root_agent_uses_the_table(self) -> None:
         context = make_context(llm=FakeChatModel())
 

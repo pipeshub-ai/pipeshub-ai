@@ -53,6 +53,11 @@ class DuplicateMatch:
     waited on."""
 
 
+# IN_PROGRESS: an enrichment inline in an older release's handler. QUEUED: the classify
+# stage owns it (the indexed write marks it so), and releases the copies when it ends.
+_ENRICHMENT_RUNNING = frozenset({ProgressStatus.IN_PROGRESS.value, ProgressStatus.QUEUED.value})
+
+
 def _indexed_while_enriching(record: Mapping[str, Any]) -> bool:
     """Searchable already, but its handler is still running enrichment.
 
@@ -64,7 +69,7 @@ def _indexed_while_enriching(record: Mapping[str, Any]) -> bool:
     return (
         record.get("indexingStatus") == ProgressStatus.COMPLETED.value
         and bool(record.get("virtualRecordId"))
-        and record.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+        and record.get("extractionStatus") in _ENRICHMENT_RUNNING
     )
 
 
@@ -87,6 +92,10 @@ def _is_in_progress(record: Mapping[str, Any], enrichment_live_after_ms: int | N
     if not _indexed_while_enriching(record):
         return False
     if enrichment_live_after_ms is None:
+        return True
+    if record.get("extractionStatus") == ProgressStatus.QUEUED.value:
+        # The stage runtime re-publishes and reclaims its jobs, and a paused one waits out
+        # a provider outage of any length: never abandoned, so never aged.
         return True
     # processingStartedAt is kept through enrichment, and stale recovery resumes
     # an enrichment older than the same window. Rows from before that, with no

@@ -18,7 +18,8 @@ def ms(ts: str) -> int:
 
 
 def issue_listings(gitlab: FakeGitLab) -> list[SeenRequest]:
-    return gitlab.calls("GET", r"^/api/v4/projects/11/issues$")
+    """The issue listing requests, not the one-item count the deletion check asks for."""
+    return [r for r in gitlab.calls("GET", r"^/api/v4/projects/11/issues$") if r.params.get("order_by") == "updated_at"]
 
 
 def written_since(db: FakeRecordsDb, mark: int) -> set[str]:
@@ -37,7 +38,11 @@ async def test_every_issue_and_merge_request_is_read_across_all_pages(harness, g
 
     assert set(db.by_type("TICKET")) == web_issue_ids(1, 2, 3, 4, 5)
     assert set(db.by_type("PULL_REQUEST")) == web_mr_ids(1, 2, 3)
-    assert [r.params.get("page", "1") for r in issue_listings(gitlab)] == ["1", "2", "3"]
+    # Each request reads on from the last update time already read, never "page N": an
+    # issue edited or deleted mid-listing cannot shift another past the reader.
+    afters = [r.params.get("updated_after") for r in issue_listings(gitlab)]
+    assert afters[0] is None and len(afters) > 1
+    assert [parse_time(a) for a in afters[1:]] == sorted(parse_time(a) for a in afters[1:])
     assert checkpoints.issues_checkpoint(WEB) == ms("2026-09-05T10:00:00Z")
     assert checkpoints.mrs_checkpoint(WEB) == ms("2026-09-03T11:00:00Z")
 
@@ -75,9 +80,10 @@ async def test_second_sync_reads_only_changes_since_the_checkpoint_without_dupli
 
     gitlab.add_issue(WEB, 2, "Issue 2, retitled", "2026-09-10T10:00:00Z")
     mark = len(db.record_writes)
+    first_listing = len(issue_listings(gitlab))
     await harness.sync()
 
-    since = parse_time(issue_listings(gitlab)[-1].params["updated_after"])
+    since = parse_time(issue_listings(gitlab)[first_listing].params["updated_after"])
     assert int(since.timestamp() * 1000) == ms("2026-09-03T10:00:00Z")
     assert "11002" in written_since(db, mark)
     assert "11001" not in written_since(db, mark)
@@ -92,7 +98,7 @@ async def test_a_failed_write_keeps_the_checkpoint_and_the_next_sync_catches_up(
         gitlab.add_issue(WEB, iid, f"Issue {iid}", f"2026-09-0{iid}T10:00:00Z")
     db.fail_writes_for = {"11006"}
 
-    await harness.sync()
+    await harness.sync_incomplete()
     assert set(db.by_type("TICKET")) == web_issue_ids(1, 2, 3, 4, 5)
     assert checkpoints.issues_checkpoint(WEB) is None
 
@@ -108,7 +114,7 @@ async def test_a_listing_page_that_fails_never_advances_the_checkpoint(harness, 
         gitlab.add_issue(WEB, iid, f"Issue {iid}", f"2026-09-0{iid}T10:00:00Z")
     gitlab.fail("GET", r"^/api/v4/projects/11/issues$", 403, skip=1)
 
-    await harness.sync()
+    await harness.sync_incomplete()
     assert db.by_type("TICKET") == {}
     assert checkpoints.issues_checkpoint(WEB) is None
 
@@ -200,7 +206,7 @@ async def test_an_issue_whose_comments_cannot_be_read_does_not_stop_the_others(h
         gitlab.add_issue(WEB, iid, f"Issue {iid}", f"2026-09-0{iid}T10:00:00Z")
     gitlab.fail("GET", r"^/api/v4/projects/11/issues/2/notes$", 403)
 
-    await harness.sync()
+    await harness.sync_incomplete()
 
     assert set(db.by_type("TICKET")) == web_issue_ids(1, 2, 3, 4)
     assert checkpoints.issues_checkpoint(WEB) < ms("2026-09-02T10:00:00Z")
@@ -218,7 +224,7 @@ async def test_an_issue_that_fails_to_save_is_retried_rather_than_skipped_foreve
         gitlab.add_issue(WEB, iid, f"Issue {iid}", f"2026-09-0{iid}T10:00:00Z")
     db.fail_lookup_for = {"11002"}
 
-    await harness.sync()
+    await harness.sync_incomplete()
     assert set(db.by_type("TICKET")) == web_issue_ids(1, 3, 4)
 
     db.fail_lookup_for = set()
@@ -233,7 +239,7 @@ async def test_a_merge_request_whose_comments_cannot_be_read_does_not_stop_the_o
         gitlab.add_merge_request(WEB, iid, f"MR {iid}", f"2026-09-0{iid}T11:00:00Z")
     gitlab.fail("GET", r"^/api/v4/projects/11/merge_requests/1/notes$", 403)
 
-    await harness.sync()
+    await harness.sync_incomplete()
 
     assert set(db.by_type("PULL_REQUEST")) == web_mr_ids(1, 2, 3)
     assert checkpoints.mrs_checkpoint(WEB) < ms("2026-09-01T11:00:00Z")
@@ -249,7 +255,7 @@ async def test_a_merge_request_that_fails_to_save_is_retried_on_the_next_sync(ha
         gitlab.add_merge_request(WEB, iid, f"MR {iid}", f"2026-09-0{iid}T11:00:00Z")
     db.fail_lookup_for = set(web_mr_ids(2))
 
-    await harness.sync()
+    await harness.sync_incomplete()
     assert set(db.by_type("PULL_REQUEST")) == web_mr_ids(1, 3)
 
     db.fail_lookup_for = set()

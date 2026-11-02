@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
@@ -38,6 +39,7 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.cifs.common.apps import CifsApp
 from app.connectors.sources.network_share.entities_processor import (
     NetworkShareEntitiesProcessor,
@@ -182,6 +184,9 @@ if TYPE_CHECKING:
     )\
     .build_decorator()
 class CifsConnector(BaseConnector):
+    # ConnectorFactory builds this connector's processor from this class.
+    processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
+
     def __init__(
         self,
         logger: Logger,
@@ -236,7 +241,7 @@ class CifsConnector(BaseConnector):
     async def init(self) -> bool:
         try:
             config = await self.config_service.get_config(
-                ConfigPaths.CONNECTOR_CONFIG.format(connector_id=self.connector_id)
+                ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=self.connector_id)
             )
             if not config:
                 await self._auth_error("Configuration not found", "CIFS configuration not found.")
@@ -251,6 +256,7 @@ class CifsConnector(BaseConnector):
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
+                public_only=public_only_for_scope(self.scope),
             )
             self.data_source = CifsDataSource(client)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -295,7 +301,12 @@ class CifsConnector(BaseConnector):
         )
 
     async def run_sync(self) -> None:
-        await self._sync(prune=True)
+        try:
+            await self._sync(prune=True)
+        except NetworkShareAuthError as exc:
+            # The walk stops on a refused sign-in and removes nothing; say so, then fail the run.
+            await self._auth_error("Sign-in refused", str(exc))
+            raise
 
     async def run_incremental_sync(self) -> None:
         # The scheduler calls run_sync. There is no change journal, and a
@@ -323,7 +334,8 @@ class CifsConnector(BaseConnector):
             creator_email=self.creator_email,
             description_prefix="CIFS share",
         )
-        unreadable = await walk_shares(
+        self._last_walk = None
+        report = await walk_shares(
             data_source=self.data_source,
             processor=self.data_entities_processor,
             mapper=self.mapper,
@@ -340,6 +352,8 @@ class CifsConnector(BaseConnector):
             record_sync_point=self.record_sync_point,
             prune=prune,
         )
+        self._last_walk = report
+        unreadable = report.unreadable
         if unreadable:
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
@@ -351,6 +365,11 @@ class CifsConnector(BaseConnector):
                 ),
                 payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
             )
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """Only a walk that read everything may let a full sync unlink what it did not see."""
+        report = getattr(self, "_last_walk", None)
+        return report.coverage() if report is not None else FullSyncCoverage(complete=False)
 
     def handle_webhook_notification(self, notification: dict) -> None:
         raise NotImplementedError("CIFS change notify is not a webhook strategy")
@@ -422,14 +441,11 @@ class CifsConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         **kwargs: object,
     ) -> CifsConnector:
-        processor = NetworkShareEntitiesProcessor(logger, data_store_provider, config_service)
-        org_id = kwargs.get("org_id")
-        if org_id:
-            processor.org_id = org_id
-        await processor.initialize()
+        # ConnectorFactory builds and initializes the processor from processor_cls.
+        # Building a second one here orphaned the factory's, and its Redis connection.
         return cls(
             logger,
-            processor,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

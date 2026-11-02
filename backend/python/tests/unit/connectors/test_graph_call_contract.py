@@ -48,7 +48,6 @@ TX_STORE = "GraphTransactionStore"
 KNOWN_INTERFACE_GAPS = frozenset({
     "_create_reindex_event_payload",
     "_get_kb_context_for_record",
-    "batch_upsert_node_relations",
     "clone_agent_template",
     "delete_all_edges_for_node",
     "delete_inherit_permissions_relation_record_group",

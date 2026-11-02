@@ -119,9 +119,8 @@ UserActivitySchema.index(
 );
 
 // 🔹 Ensure Validation Runs on `findOneAndUpdate`
-UserActivitySchema.pre('findOneAndUpdate', function (next) {
+UserActivitySchema.pre('findOneAndUpdate', function () {
   this.setOptions({ runValidators: true });
-  next();
 });
 
 // 🔹 Create and Export Mongoose Model

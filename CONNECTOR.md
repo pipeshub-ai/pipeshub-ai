@@ -26,8 +26,8 @@ In Claude Code, the `add-connector` skill (`.claude/skills/add-connector/SKILL.m
 2. **Never bypass the abstractions.** Write through `DataSourceEntitiesProcessor`, read config through `ConfigurationService`, keep checkpoints in `SyncPoint`. No graph, vector, broker or config-store client in connector code.
 3. **Never block the event loop.** Every connector's sync shares one asyncio loop with the service's API.
 4. **Log the source's real error, never a secret.** [07-errors-and-logging.md](./docs/connectors/07-errors-and-logging.md)
-5. **Unknown is not empty.** A failed read of users, groups, ACLs or items is never written as "there are none".
-6. **Ask before changing shared framework code** under `app/connectors/core/`, `app/models/` or the graph providers.
+5. **Unknown is not empty.** A failed read of users, groups, ACLs, items, properties or links is never written as "there are none". An empty `related_external_records` list replaces stored links only after a successful read, and only for the record types in [02-low-level-design.md](./docs/connectors/02-low-level-design.md). A failed read keeps what is stored.
+6. **Ask before changing shared framework code** under `app/connectors/core/`, `app/models/` or the graph providers. A new `RecordType` or `RecordGroupType` is one of those changes. `RecordType` (`app/models/entities.py`) and `RecordTypes` (`app/config/constants/arangodb.py`) are both live and have already drifted; [03-decisions.md](./docs/connectors/03-decisions.md) lists every place a new value has to land.
 
 ## When to stop and ask the human
 

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
     from app.agent_loop_lib.core.streaming import StreamEvent
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 
 __all__ = ["SupportsComplete", "SupportsStructuredComplete", "SupportsStreaming", "Model"]
 
@@ -40,6 +40,8 @@ class SupportsComplete(Protocol):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse": ...
 
 
@@ -65,6 +67,8 @@ class SupportsStreaming(Protocol):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> AsyncIterator["StreamEvent"]: ...
 
 
@@ -89,6 +93,8 @@ class Model(SupportsComplete, SupportsStructuredComplete, SupportsStreaming, ABC
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse": ...
 
     @abstractmethod
@@ -110,4 +116,6 @@ class Model(SupportsComplete, SupportsStructuredComplete, SupportsStreaming, ABC
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> AsyncIterator["StreamEvent"]: ...

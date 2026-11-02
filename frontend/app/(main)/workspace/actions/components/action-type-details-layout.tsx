@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslation } from 'react-i18next';
-import { Box, Button, Callout, Flex, Heading, SegmentedControl, Spinner, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Callout, Flex, Heading, Spinner, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -11,6 +11,10 @@ import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/c
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
 import { ToolsetInstanceRowCard } from './toolset-instance-row-card';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 export type ActionInstanceAuthTab = 'all' | 'authenticated' | 'not_authenticated';
 
@@ -41,14 +45,18 @@ export interface ActionTypeDetailsLayoutProps {
   /** In-place update (e.g. after OAuth): keep list visible with a light busy state instead of a full loading swap. */
   listRefreshing?: boolean;
   onBack: () => void;
-  /** When omitted (e.g. personal browse), the add button is hidden. */
+  /** When omitted, the add button is hidden. */
   onAddInstance?: () => void;
+  /** The add button's label (default: "Add instance"). */
+  addInstanceLabel?: string;
   onOpenDocs?: () => void;
   onAuthenticateInstance: (instance: BuilderSidebarToolset) => void;
   /** Opens user credential / sign-in panel (personal). */
   onConfigureInstance: (instance: BuilderSidebarToolset) => void;
-  /** Admin: OAuth app / instance management (gear). */
+  /** Admin: OAuth app / instance management (gear); personal: the owner's own actions. */
   onManageInstance?: (instance: BuilderSidebarToolset) => void;
+  /** Which rows get the manage gear (default: every row). */
+  canManageInstance?: (instance: BuilderSidebarToolset) => boolean;
   /** When set, shows instance tabs, search, refresh, and optional banner (admin team detail). */
   instanceFilter?: ActionTypeInstanceFilter | null;
   /** Server-paginated instance list (type detail). */
@@ -63,13 +71,16 @@ export function ActionTypeDetailsLayout({
   listRefreshing = false,
   onBack,
   onAddInstance,
+  addInstanceLabel,
   onOpenDocs,
   onAuthenticateInstance,
   onConfigureInstance,
   onManageInstance,
+  canManageInstance,
   instanceFilter,
   pagination = null,
 }: ActionTypeDetailsLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const brand = useBrand();
   const scopeBackLabel =
@@ -107,10 +118,9 @@ export function ActionTypeDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >
@@ -245,7 +255,7 @@ export function ActionTypeDetailsLayout({
           {onAddInstance ? (
             <Button variant="solid" size="2" onClick={onAddInstance} style={{ cursor: 'pointer' }}>
               <MaterialIcon name="add" size={16} color="white" />
-              {t('workspace.actions.typeDetail.addInstance')}
+              {addInstanceLabel ?? t('workspace.actions.typeDetail.addInstance')}
             </Button>
           ) : null}
         </Flex>
@@ -253,18 +263,11 @@ export function ActionTypeDetailsLayout({
 
       {instanceFilter ? (
         <Flex align="center" justify="between" gap="4" wrap="wrap" style={{ width: '100%' }}>
-          <SegmentedControl.Root
-            size="2"
+          <SegmentedTabs
             value={instanceFilter.tab}
-            disabled={listRefreshing}
-            onValueChange={(v) => instanceFilter.onTabChange(v as ActionInstanceAuthTab)}
-          >
-            {tabItems.map((item) => (
-              <SegmentedControl.Item key={item.value} value={item.value}>
-                {item.label}
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
+            onValueChange={(v) => instanceFilter.onTabChange(v)}
+            items={tabItems.map((item) => ({ value: item.value, label: item.label, disabled: listRefreshing }))}
+          />
           <TextField.Root
             placeholder={t('workspace.actions.typeDetail.searchInstances')}
             value={instanceFilter.search}
@@ -324,7 +327,9 @@ export function ActionTypeDetailsLayout({
                 instance={inst}
                 onAuthenticate={() => onAuthenticateInstance(inst)}
                 onConfigure={() => onConfigureInstance(inst)}
-                onManage={onManageInstance ? () => onManageInstance(inst) : undefined}
+                onManage={
+                  onManageInstance && (canManageInstance?.(inst) ?? true) ? () => onManageInstance(inst) : undefined
+                }
               />
             ))}
             {pagination && pagination.totalPages > 1 ? (

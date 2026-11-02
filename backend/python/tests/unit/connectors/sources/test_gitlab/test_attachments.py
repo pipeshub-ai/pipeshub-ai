@@ -129,6 +129,14 @@ class TestParseGitlabUploads:
 
 
 class TestEmbedImagesAsBase64:
+    async def test_secrets_in_the_body_are_redacted(self) -> None:
+        _, helper = _make_attachment_helper()
+
+        result = await helper.embed_images_as_base64(
+            "key AKIAIOSFODNN7EXAMPLA", "https://gitlab.com/api/v4/projects/1"
+        )
+        assert result == "key «REDACTED:aws-access-key»"
+
     async def test_image_embedded_when_under_size_limit(self) -> None:
         c, helper = _make_attachment_helper()
         text = f"![img](/uploads/{_HASH32}/img.png)"
@@ -391,6 +399,59 @@ class TestMakeFilesRecordsFromNotes:
 # ===========================================================================
 
 
+class TestUploadLinksStayInUploads:
+    async def test_a_filename_with_dot_segments_is_not_an_attachment(self) -> None:
+        """``..`` would resolve to another API path, fetched with the connector's token."""
+        _, helper = _make_attachment_helper()
+        text = f"[x](/uploads/{_HASH32}/../../../../projects/7/repository/files/s.yml/raw?ref=main)"
+        attachments, _ = await helper.parse_gitlab_uploads(text)
+        assert attachments == []
+
+    async def test_a_stored_record_that_leaves_uploads_is_refused_before_any_request(self) -> None:
+        c, helper = _make_attachment_helper()
+        record = MagicMock()
+        record.id = "rec-1"
+        record.weburl = (f"{c._gitlab_base_url}/api/v4/projects/42/uploads/{_HASH32}"
+                         "/../../../../projects/7/repository/files/s.yml/raw")
+        record.external_record_id = record.weburl
+        c.data_source.get_attachment_files_content = MagicMock()
+        with pytest.raises(HTTPException):
+            async for _ in helper.fetch_attachment_content(record):
+                pass
+        c.data_source.get_attachment_files_content.assert_not_called()
+
+    def test_is_upload_url(self) -> None:
+        from app.connectors.sources.gitlab.attachments import is_upload_url
+
+        base = "https://gitlab.example.com"
+        good = f"{base}/api/v4/projects/1/uploads/{_HASH32}/r%C3%A9sum%C3%A9.pdf"
+        assert is_upload_url(good, base)
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../2/variables", base)
+        assert not is_upload_url(f"https://evil.example/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+
+    def test_is_upload_url_under_a_relative_url_install(self) -> None:
+        from app.connectors.sources.gitlab.attachments import is_upload_url
+
+        base = "https://example.com/gitlab"
+        assert is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf", f"{base}/")
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../2/variables", base)
+        # Climbing out of the prefix lands outside the instance's API.
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../../../../api/v4/user", base)
+        assert not is_upload_url(f"https://example.com/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert not is_upload_url(f"{base}.evil.example/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf?x=1", base)
+
+
+class TestInternalNotes:
+    async def test_attachments_of_an_internal_note_are_not_filed_under_the_issue(self) -> None:
+        c, helper = _make_attachment_helper()
+        issue = MagicMock(project_id=42, iid=1, title="t")
+        note = MagicMock(body=f"[doc.pdf](/uploads/{_HASH32}/doc.pdf)", internal=True)
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=[note], error=None))
+        assert await helper.make_files_records_from_notes(issue, _record()) == []
+
+
 class TestMakeFilesRecordsFromNotesMr:
     async def test_happy_path_returns_file_records(self) -> None:
         """MR notes with attachments produce FileRecord updates."""
@@ -439,8 +500,8 @@ class TestFetchAttachmentContent:
 
         record = MagicMock()
         record.id = "rec-1"
-        record.external_record_id = "https://gitlab.com/uploads/abc/file.pdf"
-        record.weburl = "https://gitlab.com/uploads/abc/file.pdf"
+        record.external_record_id = f"{c._gitlab_base_url}/api/v4/projects/42/uploads/{_HASH32}/file.pdf"
+        record.weburl = record.external_record_id
 
         async def _gen():
             yield b"chunk1"
@@ -463,8 +524,8 @@ class TestFetchAttachmentContent:
 
         record = MagicMock()
         record.id = "rec-1"
-        record.external_record_id = "https://gitlab.com/uploads/abc/file.pdf"
-        record.weburl = "https://gitlab.com/uploads/abc/file.pdf"
+        record.external_record_id = f"{c._gitlab_base_url}/api/v4/projects/42/uploads/{_HASH32}/file.pdf"
+        record.weburl = record.external_record_id
 
         request = httpx.Request("GET", record.weburl)
         response = httpx.Response(HttpStatusCode.NOT_FOUND.value, request=request)
@@ -492,3 +553,65 @@ class TestFetchAttachmentContent:
             async for _ in helper.fetch_attachment_content(record):
                 pass
         assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+
+# ===========================================================================
+# One record per attachment when the sync and the stream both create it
+# ===========================================================================
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """The issue sync and the stream of the issue (indexing reads the issue while the
+    sync goes on) can each look for an attachment before either has stored it. Each
+    then created its own record, so the graph held two records for one upload. The
+    next full sync rewrote the one its lookup found and unlinked the other, which lost
+    its parent issue and the access it inherits."""
+
+    BODY = f"See [spec.pdf](/uploads/{_HASH32}/spec.pdf)"
+    URL = f"https://gitlab.com/api/v4/projects/42/uploads/{_HASH32}/spec.pdf"
+
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        from app.connectors.sources.gitlab.issues import IssuesSync
+
+        c, helper = _make_attachment_helper()
+        c.attachments = helper
+        # Both writers look before either has stored the attachment.
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=[], error=None))
+        issue = MagicMock(project_id=42, iid=1, title="Bug", description=self.BODY)
+        record = _record()
+
+        synced = await IssuesSync(c)._issue_attachment_records(issue, record)
+        children, streamed = await helper.make_child_records_of_attachments(self.BODY, record)
+        stored = {update.record.id: update.record for update in [*synced, *streamed]}
+
+        assert [r.external_record_id for r in stored.values()] == [self.URL], (
+            f"one attachment stored as {len(stored)} records: {sorted(stored)}")
+        assert [child.child_id for child in children] == list(stored)
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self) -> None:
+        from app.connectors.sources.gitlab.models import FileAttachment
+
+        attachment = FileAttachment(
+            href=f"/uploads/{_HASH32}/spec.pdf", filename="spec.pdf", filetype="pdf", category="attachment")
+        record = _record()
+
+        async def ids(helper: AttachmentsHelper) -> list[str]:
+            listed = await helper.make_file_records_from_list([attachment], record)
+            _, from_body = await helper.make_child_records_of_attachments(self.BODY, record)
+            _, from_review = await helper.make_block_comment_of_attachments(self.BODY, record)
+            return [u.record.id for u in [*listed, *from_body, *from_review]]
+
+        first, second = await ids(_make_attachment_helper()[1]), await ids(_make_attachment_helper()[1])
+        assert first == second
+        assert len(set(first)) == 1
+
+    async def test_a_stored_attachment_keeps_its_id(self) -> None:
+        c, helper = _make_attachment_helper()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="stored-node", record_name="spec.pdf"))
+
+        children, created = await helper.make_child_records_of_attachments(self.BODY, _record())
+
+        assert created == []
+        assert [child.child_id for child in children] == ["stored-node"]

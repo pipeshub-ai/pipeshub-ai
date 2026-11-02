@@ -7,6 +7,7 @@ through the real ``StorageCleanupHelper`` holder logic.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 from typing import Any
@@ -103,6 +104,8 @@ class FakeBlobStore:
         self.mapping: dict[str, str] = {}
         self.lookups: list[list[str]] = []
         self.unreadable = False
+        # The mapping a write moves to after the first read of it.
+        self.replaced_after_first_read: dict[str, str] = {}
 
     async def get_document_ids_by_virtual_record_ids(self, vrids, *, raise_on_error=False) -> dict[str, dict]:
         self.lookups.append(list(vrids))
@@ -111,6 +114,10 @@ class FakeBlobStore:
             if raise_on_error:
                 raise RuntimeError("graph did not answer")
             return {}
+        seen_before = {v for earlier in self.lookups[:-1] for v in earlier}
+        for vrid, doc in self.replaced_after_first_read.items():
+            if vrid in seen_before:
+                self.mapping[vrid] = doc
         return {v: {"record_doc_id": self.mapping[v]} for v in vrids if v in self.mapping}
 
 
@@ -187,6 +194,92 @@ def world() -> World:
     w.app("conn-a")
     w.app("conn-b")
     return w
+
+
+class TestAReplacedDocumentIsNotLostContent:
+    async def test_a_document_replaced_since_the_mapping_was_read_is_not_re_indexed(self, world) -> None:
+        # The mapping named d-old when read; a write has since re-pointed it at d-new.
+        world.record("a1", "conn-a", "v-moved", doc="d-old", exists=False)
+        world.existing.add("d-new")
+        world.blob.replaced_after_first_read["v-moved"] = "d-new"
+
+        await _run_until_idle(world.heal())
+
+        assert world.events == []
+        assert world.graph.apps["conn-a"][StoredContentHealState.HEALED] == 0
+        assert world.graph.apps["conn-a"][StoredContentHealState.MISSING] == 0
+        assert world.lookups == [(ORG, ["d-old"]), (ORG, ["d-new"])]
+
+    async def test_control_a_replacement_that_is_missing_too_is_re_indexed(self, world) -> None:
+        world.record("a1", "conn-a", "v-moved", doc="d-old", exists=False)
+        world.blob.replaced_after_first_read["v-moved"] = "d-new"
+
+        await _run_until_idle(world.heal())
+
+        assert world.reindexed() == ["a1"]
+
+    async def test_control_an_unchanged_mapping_is_re_indexed(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+
+        await _run_until_idle(world.heal())
+
+        assert world.reindexed() == ["a1"]
+        assert world.lookups == [(ORG, ["d-lost"])]
+
+    async def test_a_failed_second_read_of_the_mapping_re_indexes_nothing(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+        heal = world.heal()
+        real = world.blob.get_document_ids_by_virtual_record_ids
+        calls = 0
+
+        async def flaky(vrids, *, raise_on_error=False) -> dict[str, dict]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("graph did not answer")
+            return await real(vrids, raise_on_error=raise_on_error)
+
+        world.blob.get_document_ids_by_virtual_record_ids = flaky
+
+        with pytest.raises(RuntimeError):
+            await heal.tick()
+
+        assert world.events == []
+        assert world.graph.apps["conn-a"].get(StoredContentHealState.AFTER_KEY) is None
+        world.blob.get_document_ids_by_virtual_record_ids = real
+        await _run_until_idle(world.heal())
+        assert world.reindexed() == ["a1"]
+
+
+    @pytest.mark.parametrize("fault", ["exception", "route_unavailable"])
+    async def test_a_failed_second_missing_check_re_indexes_nothing_and_the_page_is_retried(
+        self, world, fault: str
+    ) -> None:
+        world.record("a1", "conn-a", "v-moved", doc="d-old", exists=False)
+        world.existing.add("d-new")
+        world.blob.replaced_after_first_read["v-moved"] = "d-new"
+        heal = world.heal()
+        real = world.helper.find_missing_documents
+        calls = 0
+
+        async def flaky(org_id, ids) -> list[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                if fault == "exception":
+                    raise RuntimeError("storage 503")
+                raise MissingDocumentsRouteUnavailable(404)
+            return await real(org_id, ids)
+
+        world.helper.find_missing_documents = flaky
+        with contextlib.suppress(RuntimeError):
+            await heal.tick()
+
+        assert world.events == [], "re-index published on a transient failure"
+        assert world.graph.apps["conn-a"].get(StoredContentHealState.AFTER_KEY) is None
+        world.helper.find_missing_documents = real
+        await _run_until_idle(world.heal())
+        assert world.events == []
 
 
 class TestMissingContentIsRebuilt:

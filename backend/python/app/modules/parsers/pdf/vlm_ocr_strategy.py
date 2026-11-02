@@ -1,30 +1,95 @@
 import asyncio
 import base64
+import contextlib
+import logging
 import os
 import re
 import tempfile
+import threading
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import pdfplumber
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
 from PIL import Image
 
-from app.config.constants.service import config_node_constants
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.core.org_context import spawn_in_request
+from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
+from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.utils.aimodels import (
     LLMProvider,
     coerce_message_content_to_text,
     get_generator_model,
     is_multimodal_llm,
 )
-from app.utils.llm import get_llm_for_role
+from app.utils.env_config import env_int
+from app.utils.llm import LLMUnavailableError, get_llm_for_role, load_ai_models
 from app.utils.opik import get_llm_invoke_config
 
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+
+# Every page is one model call, so a longer scan is refused rather than read at any cost.
+MAX_PAGES_ENV = "VLM_OCR_MAX_PAGES"
+DEFAULT_MAX_PAGES = 500
+
+
+def vlm_ocr_max_pages() -> int:
+    return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
+
+
+
+def _without_frames(error: BaseException) -> BaseException:
+    """Drop the tracebacks of *error* and of every exception chained to it.
+
+    A traceback keeps the frames of the failed call alive, and those frames hold
+    the page image; ``with_traceback(None)`` alone leaves ``__cause__`` and
+    ``__context__`` holding theirs.
+    """
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        current.__traceback__ = None
+        pending.extend(e for e in (current.__cause__, current.__context__) if e is not None)
+    return error
+
+
+class _RenderSink:
+    """Where a pool thread hands over rendered pages.
+
+    The thread keeps its job and arguments until it next runs, which can be after
+    the awaiting coroutine has moved on or been cancelled; a render can even finish
+    after that. Images passed back as a result or kept in a plain dict would stay
+    alive there. Once closed, the sink holds nothing and takes nothing.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pages: dict[int, str] = {}
+        self._closed = False
+
+    def put(self, pages: dict[int, str]) -> None:
+        with self._lock:
+            if not self._closed:
+                self._pages.update(pages)
+
+    def close(self) -> dict[int, str]:
+        with self._lock:
+            self._closed = True
+            pages, self._pages = self._pages, {}
+        return pages
 
 class VLMOCRStrategy(OCRStrategy):
     """OCR strategy that uses Vision Language Models to convert PDF pages to markdown"""
@@ -97,7 +162,7 @@ You are a precise document OCR specialist. Convert the provided document image t
 # Output
 Return ONLY the extracted markdown. No preamble, no explanations, no commentary."""
 
-    def __init__(self, logger, config) -> None:
+    def __init__(self, logger: logging.Logger, config: "ConfigurationService") -> None:
         """
         Initialize VLM OCR strategy
 
@@ -139,7 +204,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             BaseChatModel: Multimodal LLM instance
 
         Raises:
-            ValueError: If no multimodal LLM is found in configuration
+            MultimodalModelNotConfiguredError: If no multimodal LLM is configured
+            DocumentProcessingError: If the configuration could not be read
         """
         self.logger.info("🔍 Getting multimodal LLM for VLM OCR")
 
@@ -156,14 +222,26 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 pass
 
             # 2. Scan all LLM configs for the best multimodal candidate
-            ai_models = await self.config.get_config(
-                config_node_constants.AI_MODELS.value,
-                use_cache=False
+            # `{}` until an admin saves AI settings. A store that cannot be read
+            # raises instead: an outage, retried, never "no model is set up".
+            try:
+                ai_models = await load_ai_models(self.config, raise_on_error=True)
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    details={"error": str(e)},
+                ) from e
+            raw_configs = ai_models.get("llm")
+            llm_configs: list[dict[str, Any]] = (
+                [cast("dict[str, Any]", c) for c in cast("list[object]", raw_configs) if isinstance(c, dict)]
+                if isinstance(raw_configs, list)
+                else []
             )
-            llm_configs = ai_models.get("llm", [])
 
             if not llm_configs:
-                raise DocumentProcessingError(
+                # The settings were read and hold no model at all (a new org):
+                # the same fact as holding no multimodal one.
+                raise MultimodalModelNotConfiguredError(
                     "No LLM configurations found",
                     details={"required": "multimodal LLM"},
                 )
@@ -202,12 +280,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "VLM OCR requires a multimodal LLM. Please configure at least one multimodal LLM."
             )
             self.logger.error(error_msg)
-            raise DocumentProcessingError(
+            raise MultimodalModelNotConfiguredError(
                 error_msg,
                 details={"required": "multimodal LLM"},
             )
 
-        except DocumentProcessingError:
+        except (DocumentProcessingError, AISettingsUnavailableError):
             raise
         except Exception as e:
             self.logger.error(f"❌ Error getting multimodal LLM: {str(e)}")
@@ -240,21 +318,30 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             page_images[page_number] = f"data:image/png;base64,{img_base64}"
         return page_images
 
-    async def _preload_page_images(self) -> None:
-        """Rasterise pages in batches to avoid OOM in the process-pool worker."""
-        total = len(self.doc.pages)
-        all_page_numbers = list(range(1, total + 1))
-        batch_size = self.PAGE_RENDER_BATCH_SIZE
+    async def _preload_page_images(self, page_numbers: Optional[list[int]] = None) -> None:
+        """Rasterise pages in batches to avoid OOM in the process-pool worker.
 
-        for start in range(0, len(all_page_numbers), batch_size):
-            batch = all_page_numbers[start : start + batch_size]
+        With *page_numbers* only those pages are rendered and added to
+        ``_page_images``; without it every page is rendered and kept.
+        """
+        total = len(self.doc.pages)
+        wanted = page_numbers if page_numbers is not None else list(range(1, total + 1))
+        batch_size = max(1, self.PAGE_RENDER_BATCH_SIZE)
+
+        for start in range(0, len(wanted), batch_size):
+            batch = wanted[start : start + batch_size]
             self.logger.debug(
                 "Rendering page batch %d–%d of %d", batch[0], batch[-1], total
             )
-            batch_images = await asyncio.to_thread(
-                self._render_page_batch_to_base64, batch
-            )
-            self._page_images.update(batch_images)
+            sink = _RenderSink()
+            try:
+                await asyncio.to_thread(self._render_into, batch, sink)
+                self._page_images.update(sink.close())
+            finally:
+                sink.close()
+
+    def _render_into(self, page_numbers: list[int], sink: "_RenderSink") -> None:
+        sink.put(self._render_page_batch_to_base64(page_numbers))
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 
@@ -300,8 +387,16 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                         "chat_template_kwargs": {"enable_thinking": False},
                     }
 
-            response = await self.llm.ainvoke(
-                [message], config=get_llm_invoke_config(self.llm), **invoke_kwargs
+            llm = self.llm
+            if llm is None:
+                raise DocumentProcessingError("VLM OCR has no model loaded")
+            response = await get_llm_gateway().invoke(
+                llm,
+                [message],
+                provider=provider_key(llm),
+                call_site="vlm_ocr",
+                config=get_llm_invoke_config(llm),
+                **invoke_kwargs,
             )
 
             response_metadata = getattr(response, "response_metadata", {}) or {}
@@ -379,18 +474,26 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         pages = self.doc.pages
         self.logger.info(f"🚀 Processing {len(pages)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
 
-        await self._preload_page_images()
-
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
+        # Pages that failed after every retry were indexed empty. Only a count and the
+        # last error, without its frames, are kept, so failed pages keep no images.
+        unreadable_count = 0
+        last_unreadable: Exception | None = None
 
-        async def process_page_with_retry(page, page_number: int) -> Dict[str, Any]:
+        async def process_page_with_retry(page: object, page_number: int) -> Dict[str, Any]:
             """Process page with retry logic (3 total attempts)"""
+            nonlocal unreadable_count, last_unreadable
             async with semaphore:
                 last_error = None
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
-                        return await self.process_page(page, page_number)
-                    except NonRetryableError:
+                        result = await self.process_page(page, page_number)
+                        # The page is done: free its image now, not when the batch ends.
+                        self._page_images.pop(page_number, None)
+                        return result
+                    except (NonRetryableError, LLMUnavailableError):
+                        # A provider that is down, or a call that must not be retried: blank pages
+                        # would index an empty document, so the record fails as a whole.
                         raise
                     except Exception as e:
                         last_error = e
@@ -399,25 +502,82 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                                 f"⚠️ Retry {attempt + 1}/2 for page {page_number}: {str(e)}"
                             )
                         else:
-                            self.logger.error(
-                                f"❌ All retries failed for page {page_number}"
+                            # One page the model cannot read must not cost the document.
+                            self.logger.warning(
+                                "Page %s could not be read after %d attempts (%s); indexing it empty",
+                                page_number, attempt + 1, last_error,
                             )
-                            raise last_error
+                            unreadable_count += 1
+                            _without_frames(e)
+                            last_unreadable = e
+                            return {
+                                "page_number": page_number,
+                                "markdown": "",
+                                "width": getattr(page, "width", None),
+                                "height": getattr(page, "height", None),
+                            }
+                raise AssertionError("unreachable: the last attempt returns")
 
-        tasks = [
-            asyncio.create_task(process_page_with_retry(page, page_num + 1))
-            for page_num, page in enumerate(pages)
-        ]
+        # Rolling window: at most `window` rendered page images are alive at once
+        # (PAGE_RENDER_BATCH_SIZE). A producer renders pages in order as window slots
+        # free up; CONCURRENCY_LIMIT workers take pages as soon as they are rendered, so
+        # a slow page never holds up the others. A slot is freed when the page's image is
+        # dropped (its call succeeded or it was given up).
+        window = max(1, self.PAGE_RENDER_BATCH_SIZE)
+        render_chunk = max(1, window // 4)
+        slots = asyncio.Semaphore(window)
+        ready: asyncio.Queue[Optional[int]] = asyncio.Queue()
+        n_workers = max(1, min(self.CONCURRENCY_LIMIT, len(pages)))
+        results: dict[int, dict[str, Any]] = {}
 
+        async def produce() -> None:
+            next_page = 1
+            total = len(pages)
+            while next_page <= total:
+                want = min(render_chunk, total - next_page + 1)
+                for _ in range(want):
+                    await slots.acquire()
+                numbers = list(range(next_page, next_page + want))
+                next_page += want
+                await self._preload_page_images(numbers)
+                for number in numbers:
+                    ready.put_nowait(number)
+            for _ in range(n_workers):
+                ready.put_nowait(None)
+
+        async def work() -> None:
+            while (number := await ready.get()) is not None:
+                try:
+                    results[number] = await process_page_with_retry(pages[number - 1], number)
+                finally:
+                    self._page_images.pop(number, None)
+                    slots.release()
+
+        tasks = [spawn_in_request(produce())]
+        tasks += [spawn_in_request(work()) for _ in range(n_workers)]
         try:
-            pages_results = await asyncio.gather(*tasks)
-        except Exception:
+            await asyncio.gather(*tasks)
+        except BaseException:
             self.logger.error("❌ Cancelling all remaining tasks due to failure")
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Each stopped worker keeps its error, and that error's frames hold the
+            # image of the page it was reading.
+            for outcome in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(outcome, BaseException):
+                    _without_frames(outcome)
             raise
+        finally:
+            del tasks
+            self._page_images = {}
+        pages_results = [results[n] for n in range(1, len(pages) + 1)]
+
+        if pages and last_unreadable is not None and unreadable_count == len(pages):
+            # Every page failing alike (no rendered images, output always truncated) is
+            # systemic: an empty document would be indexed as a success. Fail the record.
+            self.logger.error("❌ VLM OCR could not read any of the %d pages", len(pages))
+            raise last_unreadable
 
         doc_markdown = "\n\n---\n\n".join([page["markdown"] for page in pages_results])
         result = {
@@ -428,6 +588,78 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         self.logger.info(f"✅ Completed processing {len(pages)} pages")
         return result
+
+    @staticmethod
+    def _open_pdf_sync(content: bytes) -> "tuple[str, Any, int]":
+        """Write *content* to a temp file and open it. Returns (path, doc, page count).
+
+        Cleans up after itself when it fails, so a caller only owns what it gets back.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
+        )
+        doc = None
+        try:
+            try:
+                tmp.write(content)
+                tmp.flush()
+            finally:
+                tmp.close()
+            doc = pdfplumber.open(tmp.name)
+            return tmp.name, doc, len(doc.pages)
+        except BaseException:
+            if doc is not None:
+                doc.close()
+            with contextlib.suppress(OSError):
+                os.unlink(tmp.name)
+            raise
+
+    @staticmethod
+    def _release_pdf_sync(path: Optional[str], doc: object) -> None:
+        if doc is not None:
+            with contextlib.suppress(Exception):
+                doc.close()
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    async def _open_pdf_off_loop(self, content: bytes) -> "tuple[str, Any, int]":
+        """Run ``_open_pdf_sync`` in a thread without leaking its file on cancellation.
+
+        The side that finishes second releases the file: the thread when the caller has
+        already given up, the caller when the thread handed it over first. Neither relies
+        on a loop callback, so the file is released even if the loop closes mid-open.
+        """
+        lock = threading.Lock()
+        abandoned = False
+        handed_over: "Optional[tuple[str, Any, int]]" = None
+
+        def open_and_hand_over() -> "Optional[tuple[str, Any, int]]":
+            nonlocal handed_over
+            opened = self._open_pdf_sync(content)
+            with lock:
+                if not abandoned:
+                    handed_over = opened
+                    return opened
+            self._release_pdf_sync(opened[0], opened[1])
+            return None
+
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(None, open_and_hand_over)
+        try:
+            opened = await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            with lock:
+                abandoned = True
+                orphan, handed_over = handed_over, None
+            if orphan is not None:
+                # Closing and unlinking can be slow; keep them off the loop.
+                try:
+                    loop.run_in_executor(None, self._release_pdf_sync, orphan[0], orphan[1])
+                except RuntimeError:  # the executor is already shut down
+                    self._release_pdf_sync(orphan[0], orphan[1])
+            raise
+        return cast("tuple[str, Any, int]", opened)
 
     async def load_document(self, content: bytes) -> None:
         """
@@ -440,17 +672,16 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         try:
             self.logger.debug("📄 Loading PDF with pdfplumber")
-            tmp = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
-            )
-            try:
-                tmp.write(content)
-                tmp.flush()
-            finally:
-                tmp.close()
-            self._pdf_path = tmp.name
-            self.doc = pdfplumber.open(self._pdf_path)
-            self.logger.info(f"📚 Loaded PDF with {len(self.doc.pages)} pages")
+            # Writing the file and parsing its page tree is blocking work that grows
+            # with the PDF; scanned and damaged files make it the slowest part.
+            self._pdf_path, self.doc, page_count = await self._open_pdf_off_loop(content)
+            self.logger.info(f"📚 Loaded PDF with {page_count} pages")
+            max_pages = vlm_ocr_max_pages()
+            if page_count > max_pages:
+                raise DocumentProcessingError(
+                    f"The file is too large for OCR: {page_count} pages, more than the "
+                    f"{max_pages} read with OCR ({MAX_PAGES_ENV})"
+                )
 
             self.logger.debug("🤖 Getting multimodal LLM")
             self.llm = await self._get_multimodal_llm()
@@ -463,13 +694,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.error(f"❌ Error loading document: {str(e)}")
             raise
         finally:
-            if self.doc:
-                self.doc.close()
-                self.doc = None
-            if self._pdf_path:
-                try:
-                    os.unlink(self._pdf_path)
-                except OSError:
-                    pass
-                self._pdf_path = None
-            self._page_images = {}
+            doc, path = self.doc, self._pdf_path
+            self.doc = None
+            self._pdf_path = None
+            if doc is not None or path:
+                await asyncio.shield(
+                    asyncio.get_running_loop().run_in_executor(
+                        None, self._release_pdf_sync, path, doc
+                    )
+                )

@@ -1,9 +1,9 @@
+import secrets
 from typing import Optional
 
 import httpx  # type: ignore
 
 from app.sources.client.http.http_request import HTTPRequest
-from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy
@@ -33,22 +33,33 @@ class HTTPClient(IClient):
         self.follow_redirects = follow_redirects
         self.resilience = resilience
         self.client: Optional[httpx.AsyncClient] = None
+        self._public_only = False
 
     def get_client(self) -> "HTTPClient":
         """Get the client"""
         return self
 
+    def require_public_addresses(self) -> None:
+        """Send requests only to public addresses, not private ones either (see `address_guard`).
+        For an address a user chose that the deployment's network must not see, such as a
+        personal action's; call before the first request."""
+        if self.client is not None:
+            raise RuntimeError("require_public_addresses() must be called before the first request")
+        self._public_only = True
+
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Ensure client is created and available"""
         if self.client is None:
-            kwargs = {
-                "timeout": self.timeout,
-                "follow_redirects": self.follow_redirects,
-                "headers": self.headers,
-            }
-            if self.resilience is not None:
-                kwargs["transport"] = ResilientHTTPTransport(self.resilience)
-            self.client = httpx.AsyncClient(**kwargs)
+            from app.sources.client.http.address_guard import guarded_async_client
+
+            # getattr: a subclass that skips HTTPClient.__init__ has no flag, and isn't public-only.
+            self.client = guarded_async_client(
+                allow_private=False if getattr(self, "_public_only", False) else None,
+                resilience=self.resilience,
+                timeout=self.timeout,
+                follow_redirects=self.follow_redirects,
+                headers=self.headers,
+            )
         return self.client
 
     async def execute(self, request: HTTPRequest, **kwargs) -> HTTPResponse:
@@ -70,7 +81,19 @@ class HTTPClient(IClient):
             **kwargs
         }
 
-        if isinstance(request.body, dict):
+        if request.files:
+            # httpx only writes its multipart Content-Type when none is set, and a default
+            # the client was built with (often "application/json") counts as set. Naming the
+            # boundary here wins over both that default and a caller's bare "multipart/form-data";
+            # httpx encodes the body with the boundary it finds in this header.
+            request_kwargs["headers"] = {
+                **{k: v for k, v in merged_headers.items() if k.lower() != "content-type"},
+                "Content-Type": f"multipart/form-data; boundary={secrets.token_hex(16)}",
+            }
+            request_kwargs["files"] = request.files
+            if isinstance(request.body, dict):
+                request_kwargs["data"] = request.body
+        elif isinstance(request.body, dict):
             # Check if Content-Type indicates form data
             content_type = request.headers.get("Content-Type", "").lower()
             if "application/x-www-form-urlencoded" in content_type:

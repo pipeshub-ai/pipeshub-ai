@@ -238,6 +238,97 @@ class TestLiveApiApps:
         s = _resolve(["retrieval.search_internal_knowledge"])
         assert s.has_service_tools is False
 
+    @pytest.mark.parametrize("name", [
+        "retrieval__search_internal_knowledge",
+        "knowledgegraph__navigate",
+        "codegraph__query_code_graph",
+        "internaltools__ask_user_question",
+        # Real prefixes keep underscores, and the Artifact Manager's tools sit
+        # under `artifacts`, which no registry key normalises to.
+        "date_calculator__get_exclusion_dates",
+        "coding_sandbox__execute_python",
+        "database_sandbox__execute_sqlite",
+        "image_generator__generate_image",
+        "artifacts__save_artifact",
+    ])
+    def test_internal_toolsets_are_not_live_apps_in_prefix_form(self, name: str) -> None:
+        """Source 3 splits on `__`, so an internal toolset reaches it as a prefix.
+
+        Misclassifying one here tells the model an internal tool is a live
+        connector *and* inflates the surface count, which switches on the
+        call-in-parallel instruction for a single surface.
+        """
+        s = _resolve([name])
+        assert s.live_api_apps == ()
+        assert s.has_service_tools is False
+
+
+class TestInternalToolsetKeys:
+
+    def test_fallback_matches_the_registry(self) -> None:
+        """The fallback is only consulted before discovery runs, so nothing else
+        would notice it drifting from the registry it stands in for."""
+        from app.agents.registry.toolset_registry import get_toolset_registry
+        from app.modules.agents.context.tool_surface import _FALLBACK_INTERNAL_KEYS
+
+        registry = get_toolset_registry()
+        # The registry is a process-wide singleton; discovery here must not
+        # decide what a later test sees.
+        snapshot = dict(registry._toolsets)
+        try:
+            registry.auto_discover_toolsets()
+            internal = {n for n, m in registry.get_all_toolsets().items()
+                        if m.get("isInternal")}
+        finally:
+            registry._toolsets.clear()
+            registry._toolsets.update(snapshot)
+        assert internal, "discovery registered nothing — the comparison is vacuous"
+        assert _FALLBACK_INTERNAL_KEYS == internal
+
+    def test_no_real_internal_tool_reads_as_a_live_service(self) -> None:
+        """Every tool path an internal toolset declares, as the agent names it."""
+        from app.agents.registry.toolset_registry import get_toolset_registry
+        from app.modules.agents.context.tool_surface import (
+            _FALLBACK_INTERNAL_PREFIXES,
+            _tool_prefixes,
+        )
+
+        registry = get_toolset_registry()
+        snapshot = dict(registry._toolsets)
+        try:
+            registry.auto_discover_toolsets()
+            internal = {n: m for n, m in registry.get_all_toolsets().items() if m.get("isInternal")}
+            names = []
+            for meta in internal.values():
+                for attr in vars(meta["class"]).values():
+                    tool_meta = getattr(getattr(attr, "__func__", attr), "_agent_tool_meta", None)
+                    if tool_meta is not None:
+                        app, tool_name = tool_meta.path.rsplit("/", 2)[-2:]
+                        names.append(f"{app}__{tool_name}")
+            unnormalisable = set().union(*(_tool_prefixes(m["class"]) for m in internal.values())) - set(internal)
+            s = _resolve(names)
+        finally:
+            registry._toolsets.clear()
+            registry._toolsets.update(snapshot)
+
+        assert len(names) > 10, "found too few internal tools; the check is vacuous"
+        assert s.live_api_apps == ()
+        assert _FALLBACK_INTERNAL_PREFIXES == unnormalisable
+
+    def test_connector_prefixes_with_underscores_stay_live(self) -> None:
+        s = _resolve(["jira_data_center__get_issue", "azure_blob__list_blobs"])
+        assert set(s.live_api_apps) == {"jira_data_center", "azure_blob"}
+
+    def test_an_empty_registry_does_not_mean_nothing_is_internal(self) -> None:
+        from app.modules.agents.context import tool_surface
+
+        with patch.object(tool_surface, "get_toolset_registry", create=True):
+            with patch(
+                "app.agents.registry.toolset_registry.ToolsetRegistry.get_all_toolsets",
+                return_value={},
+            ):
+                assert "retrieval" in tool_surface._internal_toolset_keys()
+
 
 # ---------------------------------------------------------------------------
 # User-interaction tools

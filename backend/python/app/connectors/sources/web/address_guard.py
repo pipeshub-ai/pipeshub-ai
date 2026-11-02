@@ -106,13 +106,17 @@ async def is_unsafe_url(url: str) -> bool:
     return False
 
 
-def _check(host: str, address: str) -> None:
+def _check(host: str, address: str, *, allow_private: bool = False) -> None:
     try:
         ip = ipaddress.ip_address(address)
     except ValueError as e:
         raise UnsafeAddressError(f"{host!r} resolves to an unusable address") from e
     if _host_allowed(host):
         _refuse_never_allowed(host, ip)
+        return
+    if allow_private:
+        if _hostname_is_blocked(host, allow_private=True) or _ip_is_blocked(ip, allow_private=True):
+            raise UnsafeAddressError(f"{host!r} is this server, a link-local or a cloud metadata address")
         return
     if _hostname_is_blocked(host) or _ip_is_blocked(ip):
         raise UnsafeAddressError(f"{host!r} is not a public address")
@@ -122,20 +126,23 @@ class GuardedResolver(AbstractResolver):
     """aiohttp resolver that refuses a host resolving to a blocked address. The connection is made
     to the addresses returned here, so the check and the connect see the same answer."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, allow_private: bool = False) -> None:
         self._resolver = DefaultResolver()
+        self._allow_private = allow_private
 
     async def resolve(self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET) -> list[ResolveResult]:
         results = await self._resolver.resolve(host, port, family)
         for result in results:
-            _check(host, result["host"])
+            _check(host, result["host"], allow_private=self._allow_private)
         return results
 
     async def close(self) -> None:
         await self._resolver.close()
 
 
-async def _guard_request(request: ClientRequest, handler: ClientHandlerType) -> ClientResponse:
+async def _guard_request(
+    request: ClientRequest, handler: ClientHandlerType, *, allow_private: bool = False,
+) -> ClientResponse:
     """Runs for every request the session sends, redirects included. aiohttp connects to an IP
     literal without asking the resolver, so literals are checked here."""
     parts = urlsplit(str(request.url))
@@ -145,17 +152,27 @@ async def _guard_request(request: ClientRequest, handler: ClientHandlerType) -> 
         ipaddress.ip_address(parts.hostname)
     except ValueError:
         return await handler(request)
-    _check(parts.hostname, parts.hostname)
+    _check(parts.hostname, parts.hostname, allow_private=allow_private)
     return await handler(request)
 
 
-def create_guarded_session(**kwargs: object) -> aiohttp.ClientSession:
-    """An aiohttp session whose requests, and the redirects it follows, reach only public addresses."""
-    return aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(resolver=GuardedResolver()),
-        middlewares=(_guard_request,),
-        **kwargs,  # type: ignore[arg-type]
-    )
+def guarded_session_kwargs(*, allow_private: bool = False) -> dict[str, object]:
+    """The ``aiohttp.ClientSession`` arguments that keep its requests, and the redirects it
+    follows, on public addresses.
+
+    ``allow_private`` relaxes that to the deployment's rule for hosts users type (see
+    ``app.utils.url_fetcher.private_addresses_blocked``): the deployment's network is allowed,
+    this server, link-local and cloud metadata addresses never.
+    """
+    return {
+        "connector": aiohttp.TCPConnector(resolver=GuardedResolver(allow_private=allow_private)),
+        "middlewares": (functools.partial(_guard_request, allow_private=allow_private),),
+    }
+
+
+def create_guarded_session(*, allow_private: bool = False, **kwargs: object) -> aiohttp.ClientSession:
+    """An aiohttp session built with ``guarded_session_kwargs``."""
+    return aiohttp.ClientSession(**guarded_session_kwargs(allow_private=allow_private), **kwargs)  # type: ignore[arg-type]
 
 
 _PROXY_HEAD_LIMIT = 64 * 1024

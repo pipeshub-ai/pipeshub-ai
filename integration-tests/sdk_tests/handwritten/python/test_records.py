@@ -25,6 +25,12 @@ def test_handwritten_record_lifecycle(pipeshub: Pipeshub):
         ]
         assert summary == {"total": 1, "succeeded": 1, "failed": 0}
 
+        record = pipeshub.knowledge_base.get_record_by_id(record_id=record_id)
+        assert record.record.id == record_id
+
+        content = pipeshub.connector.get_record_content(record_id=record_id)
+        assert record_id in content.content
+
         buffer = pipeshub.knowledge_base.stream_record_buffer(record_id=record_id)
         assert buffer.read() == FILE_CONTENT
 

@@ -28,6 +28,13 @@ UNENCRYPTED_KEYS = (
     config_node_constants.MIGRATIONS.value,
     config_node_constants.DEPLOYMENT.value,
 )
+# Directories whose keys are all plaintext: Node reads them without the Python encryption
+# (the artifact-rollout membership entries, which hold no secret).
+UNENCRYPTED_PREFIXES = ("/services/platform/artifactRollout/membership/",)
+
+
+def is_unencrypted_key(key: str) -> bool:
+    return key in UNENCRYPTED_KEYS or key.startswith(UNENCRYPTED_PREFIXES)
 
 T = TypeVar("T")
 
@@ -99,16 +106,16 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         )
 
         def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
-            self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
                 return b""
             if isinstance(value, (str, int, float, bool)):
                 serialized = json.dumps(value).encode("utf-8")
-                self.logger.debug("✅ Serialized primitive value: %s", serialized)
-                return serialized
-            serialized = json.dumps(value, default=str).encode("utf-8")
-            self.logger.debug("✅ Serialized complex value: %s", serialized)
+            else:
+                serialized = json.dumps(value, default=str).encode("utf-8")
+            self.logger.debug(
+                "✅ Serialized %s value (%d bytes)", type(value).__name__, len(serialized)
+            )
             return serialized
 
         def deserialize(value: bytes) -> Union[str, int, float, bool, dict, list, None]:
@@ -155,7 +162,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             # Convert value to JSON string
             value_json = json.dumps(value)
 
-            encrypt_value = key not in UNENCRYPTED_KEYS
+            encrypt_value = not is_unencrypted_key(key)
 
             if encrypt_value:
                 # Encrypt the value
@@ -216,7 +223,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     return self._decode_value(key, encrypted_value)
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to process value for key {key}: {str(e)}"
+                        "❌ Failed to process value for key %s: %s", key, type(e).__name__
                     )
                     # A value came back and could not be read: not the same as
                     # no value, so a caller that asked must not see None.
@@ -228,15 +235,14 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return None
 
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
-            self.logger.exception("Detailed error:")
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             return None
 
     def _decode_value(self, key: str, stored: object) -> T | None:
         """Turn what the inner store returned for ``key`` into the caller's value."""
-        needs_decryption = key not in UNENCRYPTED_KEYS
+        needs_decryption = not is_unencrypted_key(key)
 
         value = (
             self.encryption_service.decrypt(stored)

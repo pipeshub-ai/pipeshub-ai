@@ -122,6 +122,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable MCP Servers',
     description:
       'Allow agents to use MCP (Model Context Protocol) servers and show MCP server management in the UI. Disable to hide MCP everywhere and stop agents from loading MCP tools.',
+    defaultEnabled: true,
+  },
+  {
+    key: 'ENABLE_API_TOOLSETS',
+    label: 'Enable API actions',
+    description:
+      'Allow admins to add actions from the OpenAPI spec of an internal REST API, and agents to call them. Disable to hide API actions everywhere and stop agents from loading them.',
     defaultEnabled: false,
   },
   {
@@ -166,6 +173,38 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Extract Named Entities',
     description:
       'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off. Always on when the deployment sets HIGH_ACCURACY_MODE=true.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_CLASSIFY_ON_FIRST_USE',
+    label: 'Classify Records When First Used',
+    description:
+      'Make records searchable without classifying them, and classify a record (summary, categories, topics, departments) the first time a search returns it. Saves the classification model calls for records nobody searches for; until then a record has no summary and does not match category or department filters. Disable to classify every record right after it is indexed; records already waiting then stay unclassified until they are reindexed.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_WRITE',
+    label: 'Store Content Revisions as Files',
+    description:
+      "While indexing, also store each new version of a record's processed content as a set of files (blocks, text, images, metadata) beside the stored record. Search and chat read them only when Read Content Revisions from Files is on; it uses extra storage. Disable to stop writing them; files already written are kept until the record is deleted.",
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_READ_SHADOW',
+    label: 'Compare Content Revision Files on Read',
+    description:
+      'When chat, agents and the code graph read a record, also read its content revision files and compare them with the stored record. Answers still come from the stored record; differences are counted in metrics and logged without content. Adds storage reads. Needs Store Content Revisions as Files. Ignored while Read Content Revisions from Files is on.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_READ',
+    label: 'Read Content Revisions from Files',
+    description:
+      'When chat, agents and the code graph read a record, read its content revision files instead of the stored record. A record without files, or whose files cannot be read or fail their checks, is read from the stored record as before. Needs Store Content Revisions as Files. Disable to read only the stored record.',
     defaultEnabled: false,
     advanced: true,
   },

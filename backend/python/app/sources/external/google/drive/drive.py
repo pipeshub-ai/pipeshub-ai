@@ -1811,7 +1811,8 @@ class GoogleDriveDataSource:
         self,
         fileId: str,
         pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
+        pageToken: Optional[str] = None,
+        fields: str | None = None,
     ) -> Dict[str, Any]:
         """Google Drive API: Lists a file's revisions. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions).
 
@@ -1832,6 +1833,9 @@ class GoogleDriveDataSource:
             kwargs['pageSize'] = pageSize
         if pageToken is not None:
             kwargs['pageToken'] = pageToken
+
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.revisions().list(**kwargs) # type: ignore
         return await self._execute(request)

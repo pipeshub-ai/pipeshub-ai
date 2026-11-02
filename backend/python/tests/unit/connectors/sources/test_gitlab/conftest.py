@@ -57,6 +57,7 @@ def make_mock_connector() -> MagicMock:
     dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
+    dep.has_stored_permissions = AsyncMock(return_value=False)
     c.data_entities_processor = dep
 
     # runtime helper (used by sync helpers)
@@ -68,6 +69,19 @@ def make_mock_connector() -> MagicMock:
     runtime.call_with_auth_retry = AsyncMock()
     runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
     c.runtime = runtime
+
+    # The issue and merge request listing reads through runtime.ds_call, so a test
+    # stubbing that one call controls what the listing returns.
+    async def _listing(method, **kwargs) -> object:
+        return await runtime.ds_call(method, **kwargs)
+
+    c.listing = MagicMock()
+    c.listing.list = AsyncMock(side_effect=_listing)
+    c.deleted_issues = MagicMock(reconcile=AsyncMock())
+    c.deleted_merge_requests = MagicMock(reconcile=AsyncMock())
+    c.removed_projects = MagicMock(remember=AsyncMock(), moved_or_remove=AsyncMock(return_value=None))
+    c.note_sync_problem = MagicMock()
+    c.sync_problems = []
 
     # record_sync_point
     rsp = MagicMock()

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Sequence, TypedDict
 from uuid import uuid4
@@ -29,8 +30,8 @@ from app.config.constants.arangodb import CollectionNames
 from connector_lifecycle import source_unavailable
 from helper.clients.connectors_client import ConnectorOAuthConfigsClient, ConnectorsClient
 from helper.clients.kb_client import KBClient
-from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient
 from helper.http.session_client import SessionClient
+from helper.mcp_oauth import authorization_code_token, create_oauth_app, delete_oauth_app
 from helper.web_fixtures import WebFixtures
 from messaging.test_e2e_record_pipeline import (
     TERMINAL_STATUSES,
@@ -60,44 +61,19 @@ signed off by the on-call lead before the runbook is marked current.
 
 
 @pytest.fixture(scope="module")
-def token_without_connector_read(
-    pipeshub_client: PipeshubClient, user_session_client: SessionClient
-) -> Iterator[str]:
+def token_without_connector_read(user_session_client: SessionClient) -> Iterator[str]:
     """Access token from an OAuth app that deliberately omits `connector:read`.
 
     Minting a scope-restricted token for the *same* user isolates the scope check
     itself, and keeps this off the second-user path — that one seeds a password
     straight into MongoDB and needs TEST_MONGO_URI/TEST_MONGO_DB_NAME to match the
-    running stack, which the config defaults do not. Registering the app needs the
-    user's login session: OAuth client routes refuse OAuth tokens (#3626).
+    running stack, which the config defaults do not. Registering the app and
+    consenting need the user's login session: OAuth client routes refuse OAuth
+    tokens (#3626). Authorization code rather than client_credentials, because a
+    client_credentials app acts as a service account, not as this user.
     """
-    apps = OAuthAppsClient(user_session_client)
-    resp = apps.create_app(
-        name=f"connector-content-it-noscope-{uuid4().hex[:8]}",
-        allowedGrantTypes=["client_credentials"],
-        allowedScopes=["openid", "profile", "kb:read"],
-    )
-    assert resp.status_code < 300, f"OAuth app create failed: {resp.status_code} {resp.text}"
-    app = resp.json()["app"]
-
-    try:
-        token_resp = OAuthProviderClient(pipeshub_client).token(
-            grant_type="client_credentials",
-            client_id=app["clientId"],
-            client_secret=app["clientSecret"],
-        )
-        assert token_resp.status_code < 300, (
-            f"token fetch failed: {token_resp.status_code} {token_resp.text}"
-        )
-        access_token = token_resp.json().get("access_token")
-        assert access_token, f"token response had no access_token: {token_resp.text}"
-
-        yield str(access_token)
-    finally:
-        try:
-            apps.delete_app(str(app["id"]))
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to delete OAuth app %s: %s", app.get("id"), e)
+    with _user_scoped_tokens(user_session_client) as mint:
+        yield mint(["kb:read"])
 
 
 class IndexedTextRecord(TypedDict):
@@ -430,17 +406,24 @@ def _delete_oauth_app(
 
 
 @pytest.fixture(scope="module")
-def scoped_token(
-    pipeshub_client: PipeshubClient, user_session_client: SessionClient
-) -> Iterator[Callable[[Sequence[str]], str]]:
-    """Mint a client-credentials token that carries exactly the given scopes.
+def scoped_token(user_session_client: SessionClient) -> Iterator[Callable[[Sequence[str]], str]]:
+    """Mint a token for the test user that carries exactly the given scopes.
 
     Lets a test call a route with only the scopes the spec declares for it. The
     OAuth apps are registered with the user's login session (#3626) and deleted
     on teardown.
     """
-    apps = OAuthAppsClient(user_session_client)
-    provider = OAuthProviderClient(pipeshub_client)
+    with _user_scoped_tokens(user_session_client) as mint:
+        yield mint
+
+
+@contextmanager
+def _user_scoped_tokens(
+    user_session_client: SessionClient,
+) -> Iterator[Callable[[Sequence[str]], str]]:
+    """Authorization-code tokens for the test user, one OAuth app per scope set."""
+    base_url = user_session_client.base_url
+    user_jwt = user_session_client.token
     tokens: dict[tuple[str, ...], str] = {}
     app_ids: list[str] = []
 
@@ -448,23 +431,15 @@ def scoped_token(
         key = tuple(sorted(set(scopes)))
         if key in tokens:
             return tokens[key]
-        resp = apps.create_app(
+        app = create_oauth_app(
+            base_url,
+            user_jwt,
             name=f"connector-spec-it-{uuid4().hex[:8]}",
-            allowedGrantTypes=["client_credentials"],
-            allowedScopes=["openid", "profile", *key],
+            scopes=["openid", "profile", *key],
+            grant_types=["authorization_code"],
         )
-        assert resp.status_code < 300, f"OAuth app create failed: {resp.status_code} {resp.text}"
-        app = resp.json()["app"]
-        app_ids.append(str(app["id"]))
-        token_resp = provider.token(
-            grant_type="client_credentials",
-            client_id=app["clientId"],
-            client_secret=app["clientSecret"],
-        )
-        assert token_resp.status_code < 300, (
-            f"token fetch failed: {token_resp.status_code} {token_resp.text}"
-        )
-        tokens[key] = str(token_resp.json()["access_token"])
+        app_ids.append(app.id)
+        tokens[key] = str(authorization_code_token(base_url, user_jwt, app)["access_token"])
         return tokens[key]
 
     try:
@@ -472,7 +447,7 @@ def scoped_token(
     finally:
         for app_id in app_ids:
             try:
-                apps.delete_app(app_id)
+                delete_oauth_app(base_url, user_jwt, app_id)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to delete OAuth app %s: %s", app_id, e)
 

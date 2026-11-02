@@ -94,6 +94,57 @@ class TestGetConfig:
         store.get_key.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_max_age_rereads_a_cached_value_older_than_the_bound(self) -> None:
+        """The invalidation subscription can die silently: a key that is acted on bounds its staleness."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=["first", "second"])
+        svc = _build_service(store)
+        clock = [1000.0]
+
+        with patch("app.config.configuration_service.time.monotonic", side_effect=lambda: clock[0]):
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "first"
+            clock[0] += 29
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "first"
+            assert store.get_key.await_count == 1
+            clock[0] += 2
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "second"
+            assert store.get_key.await_count == 2
+            # The re-read restarts the clock; a caller without a bound still takes the cached value.
+            clock[0] += 29
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "second"
+            clock[0] += 1000
+            assert await svc.get_config("/k", use_cache=True) == "second"
+
+    @pytest.mark.asyncio
+    async def test_max_age_with_a_dropped_invalidation_is_seen_within_the_bound(self) -> None:
+        """Control for the bound: with no bound a stale value stays for ever."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=["flag-off", "flag-on"])
+        svc = _build_service(store)
+        clock = [0.0]
+
+        with patch("app.config.configuration_service.time.monotonic", side_effect=lambda: clock[0]):
+            await svc.get_config("/settings", use_cache=True, max_age_seconds=30)
+            clock[0] = 31.0
+            assert await svc.get_config("/settings", use_cache=True, max_age_seconds=30) == "flag-on"
+
+        store.get_key = AsyncMock(side_effect=["flag-off", "flag-on"])
+        unbounded = _build_service(store)
+        await unbounded.get_config("/settings", use_cache=True)
+        assert await unbounded.get_config("/settings", use_cache=True) == "flag-off"
+
+    @pytest.mark.asyncio
+    async def test_an_invalidation_drops_the_entry_at_once(self) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=["old", "new"])
+        svc = _build_service(store)
+        await svc.get_config("/k", use_cache=True, max_age_seconds=30)
+
+        svc.cache.pop("/k")
+
+        assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "new"
+
+    @pytest.mark.asyncio
     async def test_a_value_read_without_keeping_it_stays_out_of_the_cache(self) -> None:
         store = AsyncMock()
         store.get_key = AsyncMock(return_value={"tools": []})
@@ -342,6 +393,15 @@ class TestGetEnvFallback:
 
         assert result["grpcPort"] == 6334
         assert result["apiKey"] == "qdrant"
+
+    def test_qdrant_fallback_blank_grpc_port_is_unset(self) -> None:
+        svc = _build_service()
+
+        env = {"QDRANT_HOST": "q", "QDRANT_GRPC_PORT": ""}
+        with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            result = svc._get_env_fallback("/services/qdrant")
+
+        assert result["grpcPort"] == 6334
 
     def test_qdrant_fallback_no_host_returns_none(self):
         svc = _build_service()
@@ -630,6 +690,79 @@ class TestInvalidationCallback:
 
         # Should not raise
         svc._invalidation_callback("/a")
+
+
+class TestCacheLock:
+    """The LRU cache is shared by every event loop's thread and the watch thread, and even
+    a read reorders it, so every access must hold ``_cache_lock``."""
+
+    @staticmethod
+    def _spy_cache(svc, items) -> tuple[list[str], list[str]]:
+        from cachetools import LRUCache
+
+        lock = svc._cache_lock
+        seen: list[str] = []
+        unguarded: list[str] = []
+
+        class _Spy(LRUCache):
+            armed = False
+
+            def _check(self, op) -> None:
+                if self.armed:
+                    seen.append(op)
+                    if not lock.locked():
+                        unguarded.append(op)
+
+            def __contains__(self, key) -> bool:
+                self._check("contains")
+                return super().__contains__(key)
+
+            def __getitem__(self, key) -> object:
+                self._check("get")
+                return super().__getitem__(key)
+
+            def __setitem__(self, key, value) -> None:
+                self._check("set")
+                super().__setitem__(key, value)
+
+            def __delitem__(self, key) -> None:
+                self._check("del")
+                super().__delitem__(key)
+
+        spy = _Spy(maxsize=10)
+        for key, value in items.items():
+            spy[key] = value
+        spy.armed = True
+        svc.cache = spy
+        return seen, unguarded
+
+    @pytest.mark.asyncio
+    async def test_every_cache_access_holds_the_lock(self) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(return_value="stored")
+        store.create_key = AsyncMock(return_value=True)
+        store.delete_key = AsyncMock(return_value=True)
+        svc = _build_service(store)
+        seen, unguarded = self._spy_cache(svc, {"/hit": "cached"})
+
+        assert await svc.get_config("/hit", use_cache=True) == "cached"
+        assert await svc.get_config("/miss", use_cache=True) == "stored"
+        store.get_key.return_value = None
+        with patch.object(svc, "_get_env_fallback", return_value={"from": "env"}):
+            assert await svc.get_config("/env") == {"from": "env"}
+        store.get_key.return_value = "old"
+        assert await svc.set_config("/a", 1)
+        assert await svc.update_config("/a", 2)
+        assert await svc.delete_config("/a")
+        assert await svc.create_config_if_absent("/b", 1)
+        store.create_key.return_value = False
+        assert not await svc.create_config_if_absent("/b", 1)
+        svc._invalidation_callback("/hit")
+        svc._invalidation_callback("__CLEAR_ALL__")
+        svc.clear_cache()
+
+        assert {"contains", "get", "set", "del"} <= set(seen)
+        assert unguarded == []
 
 
 # =========================================================================

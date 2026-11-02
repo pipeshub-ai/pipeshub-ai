@@ -206,4 +206,4 @@ class TestBlockCitationUrl:
     def test_text_block_generates_fragment_url(self):
         block = {"type": "text", "content": "important text"}
         result = _block_citation_url("https://example.com", block)
-        assert "example.com" in result
+        assert result == "https://example.com#:~:text=important%20text"

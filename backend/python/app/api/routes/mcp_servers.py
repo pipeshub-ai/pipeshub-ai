@@ -42,8 +42,12 @@ from app.agents.mcp import service as mcp_service
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.client import MCPConnectionError
 from app.agents.mcp.discovery import cached_tools_for_owner, discover_tools_for_owner
-from app.agents.mcp.errors import MCPUrlBlockedError
-from app.agents.mcp.failure import classify_mcp_failure
+from app.agents.mcp.errors import MCPUrlBlockedError, insufficient_scope
+from app.agents.mcp.failure import (
+    SIGN_IN_FAILURES,
+    MCPFailureReason,
+    classify_mcp_failure,
+)
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
@@ -75,6 +79,10 @@ from app.edition_config import (
     mask_mcp_instance_for_response,
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
+)
+from app.utils.desktop_state import (
+    mark_desktop_state,
+    strip_desktop_state,
 )
 from app.utils.env_utils import env_int
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -380,6 +388,8 @@ def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPReg
             )
         if template.supported_auth_modes and payload.auth_mode not in template.supported_auth_modes:
             raise _bad_request(f"{template.display_name} does not support the {payload.auth_mode.value} auth mode.")
+        if template.url_editable is True and not (payload.url or "").strip():
+            raise _bad_request(f"{template.display_name} needs your server URL.")
         return
 
     # Custom server — validate transport-specific required fields.
@@ -451,7 +461,11 @@ def _build_instance_record(
     if template:
         # A catalog server's launch and OAuth settings are fixed by its template: taking
         # them from the request would let a "GitHub" instance run any command or URL.
-        record.update(template_connection_fields(template))
+        # `url_editable` is the exception: the admin supplies that one address.
+        fields = template_connection_fields(template)
+        if template.url_editable is True:
+            fields["url"] = payload.url
+        record.update(fields)
     else:
         record.update({
             "command": payload.command,
@@ -1181,6 +1195,7 @@ async def _build_oauth_authorization_url(
     initiated_by: str,
     owner_type: str,
     registry: Optional[MCPRegistry] = None,
+    desktop: bool = False,
 ) -> dict[str, Any]:
     """Core DCR-or-static-client OAuth authorize flow, shared by the per-user and
     agent-key (`/agents/{agent_key}/...`) routes. `owner_id` is a plain user for the
@@ -1284,7 +1299,7 @@ async def _build_oauth_authorization_url(
             authorization_url=authorization_url,
             client_id=client_id,
             redirect_uri=redirect_uri,
-            state=state,
+            state=mark_desktop_state(state, desktop=desktop),
             scopes=scopes,
             code_challenge=code_challenge,
             extra_params=template.authorization_params if template else None,
@@ -1308,6 +1323,8 @@ async def get_oauth_authorization_url(
     request: Request,
     instance_id: str,
     base_url: Optional[str] = Query(default=None, alias="baseUrl"),
+    *,
+    desktop: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -1319,7 +1336,7 @@ async def get_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, user_id, org_id, base_url,
-        initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request),
+        initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request), desktop=desktop,
     )
 
 
@@ -1486,6 +1503,7 @@ async def handle_oauth_callback(
     # caller identity"), matching every other error branch below.
     caller_user = getattr(request.state, "user", {}) or {}
     caller_id = caller_user.get("userId")
+    state = strip_desktop_state(state)
 
     if error:
         await _note_a_refused_client_document(config_service, state, error, caller_id)
@@ -1755,6 +1773,26 @@ async def update_oauth_config(
 
 
 _REAUTH_REQUIRED = "Authentication with this MCP server has expired. Reconnect it to continue."
+# No token can fix this one: only whoever can edit the instance (an administrator, or a personal
+# server's owner) choosing the auth mode the server needs.
+_SIGN_IN_WITHOUT_AUTH = "This server asks for a sign-in, but it's set to No authentication."
+
+
+def _failure_reason(instance: dict[str, Any], error: Exception) -> MCPFailureReason:
+    """`classify_mcp_failure`, except for a server set to No authentication that answers 403
+    `insufficient_scope`: with a sign-in, a new one can't fix that refusal, but here nothing is
+    signed in, so only an auth mode that signs in can carry the scope it wants."""
+    reason = classify_mcp_failure(error)
+    if (
+        reason is MCPFailureReason.UNREACHABLE and instance.get("authMode") == MCPAuthMode.NONE.value
+        and insufficient_scope(error) is not None
+    ):
+        return MCPFailureReason.NEEDS_PERMISSION
+    return reason
+
+
+def _asks_for_sign_in_without_auth(instance: dict[str, Any], error: Exception) -> bool:
+    return instance.get("authMode") == MCPAuthMode.NONE.value and _failure_reason(instance, error) in SIGN_IN_FAILURES
 
 
 def _connection_error_text(error: Exception, *, is_admin: bool) -> str:
@@ -1830,8 +1868,11 @@ async def _discover_listing_tools(
         except asyncio.TimeoutError:
             _report_listing_timeout(entry, cut_by_deadline=budget < LISTING_DISCOVERY_BUDGET_SECONDS)
         except MCPConnectionError as e:
-            entry["toolsErrorCode"] = classify_mcp_failure(e).value
-            entry["toolsError"] = _connection_error_text(e, is_admin=is_admin)
+            entry["toolsErrorCode"] = _failure_reason(instance, e).value
+            entry["toolsError"] = (
+                _SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e)
+                else _connection_error_text(e, is_admin=is_admin)
+            )
         except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
             logger.warning(f"MCP token refresh during discovery failed for instance {instance['_id']}: {e}")
             entry["toolsErrorCode"] = "auth_expired"
@@ -1951,6 +1992,13 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         # Live (Refresh, or nothing cached), and what it finds replaces the cached tools.
         tools, _ = await discover_tools_for_owner(instance, effective_auth, owner_id, config_service, namespace=namespace)
     except MCPConnectionError as e:
+        if _failure_reason(instance, e) in SIGN_IN_FAILURES:
+            logger.info("MCP instance %s asks for a sign-in (auth mode %s): %s", instance_id, instance.get("authMode"), e)
+            # 409, not 502: the gateway passes a 409's reason on, so the panel can say what fixes it.
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=_SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e) else _REAUTH_REQUIRED,
+            ) from e
         logger.warning("Tool discovery failed for MCP instance %s: %s", instance_id, e, exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
@@ -2130,6 +2178,8 @@ async def get_agent_oauth_authorization_url(
     agent_key: str,
     instance_id: str,
     base_url: Optional[str] = Query(default=None, alias="baseUrl"),
+    *,
+    desktop: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """OAuth authorize for a service-account agent — the resulting state record's
     `userId` field carries `agent_key`, so `/oauth/callback` persists tokens at
@@ -2148,7 +2198,7 @@ async def get_agent_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, agent_key, org_id, base_url,
-        initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request),
+        initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request), desktop=desktop,
     )
 
 

@@ -137,6 +137,12 @@ COPY --chown=1000:1000 --from=python-deps /root/.cache/huggingface /root/.cache/
 COPY --chown=1000:1000 --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
 COPY --chown=1000:1000 --from=python-deps /root/nltk_data /root/nltk_data
 
+# Layout model for the pdfplumber PDF parser (tables, figures), so it needs no
+# download at runtime. Only its own cache dir is handed over: a chown of the
+# whole cache would copy every baked model into this layer.
+RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')" && \
+    chown -R 1000:1000 /root/.cache/huggingface/hub/models--docling-project--docling-layout-heron-onnx
+
 # Copy Playwright browser binaries
 COPY --chown=1000:1000 --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 

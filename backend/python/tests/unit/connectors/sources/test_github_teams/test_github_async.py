@@ -182,6 +182,72 @@ class TestListing:
         assert (seen["per_page"], seen["page"]) == ("100", "3")
         assert res.data[0].id == 1
 
+    async def test_issue_listing_returns_the_cursor_from_the_next_link(self) -> None:
+        """GitHub refuses page numbers past 10,000 issues; its Link header carries an
+        ``after`` cursor that keeps working, and the page hands it back."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[{"id": 1}], headers={"link": (
+                '<https://api.github.com/repositories/9/issues?state=all&per_page=100'
+                '&after=Y3Vyc29yOnYyOpLP%3D&page=2>; rel="next"'
+            )})
+
+        ds = _data_source(handler)
+        res = await ds.list_issues("acme", "widgets", state="all", per_page=100, page=1)
+
+        assert res.success is True
+        assert res.next_cursor == "Y3Vyc29yOnYyOpLP="
+
+    async def test_issue_listing_with_a_cursor_sends_it_instead_of_the_page(self) -> None:
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(request.url.params)
+            return httpx.Response(200, json=[{"id": 1}])
+
+        ds = _data_source(handler)
+        res = await ds.list_issues(
+            "acme", "widgets", state="all", per_page=100, page=101, after="Y3Vy",
+        )
+
+        assert res.success is True
+        assert seen["after"] == "Y3Vy"
+        assert "page" not in seen
+        assert res.next_cursor is None  # last page: no next link
+
+    async def test_a_next_link_without_a_cursor_gives_none(self) -> None:
+        """Numbered links only (other listings, or a server without cursors):
+        the caller keeps counting pages."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[{"id": 1}], headers={"link": (
+                '<https://api.github.com/repos/acme/widgets/issues?page=1>; rel="prev", '
+                '<https://api.github.com/repos/acme/widgets/issues?page=3>; rel="next", '
+                '<https://api.github.com/repos/acme/widgets/issues?page=9>; rel="last"'
+            )})
+
+        ds = _data_source(handler)
+        res = await ds.list_issues("acme", "widgets", per_page=100, page=2)
+
+        assert res.next_cursor is None
+
+    async def test_only_the_cursor_is_taken_from_the_next_link(self) -> None:
+        """The next request goes to the configured host, whatever host the link names."""
+        hosts: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hosts.append(request.url.host)
+            if len(hosts) == 1:
+                return httpx.Response(200, json=[{"id": 1}], headers={
+                    "link": '<https://elsewhere.example/steal?after=abc>; rel="next"',
+                })
+            return httpx.Response(200, json=[])
+
+        ds = _data_source(handler)
+        first = await ds.list_issues("acme", "widgets", per_page=100, page=1)
+        await ds.list_issues("acme", "widgets", per_page=100, page=2, after=first.next_cursor)
+
+        assert first.next_cursor == "abc"
+        assert hosts[0] == hosts[1] != "elsewhere.example"
+
     async def test_search_repositories_unwraps_items(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.params.get("q") == "widgets in:name"

@@ -17,9 +17,11 @@ type ElectronStreamCallbacks = {
   onError: (err: { name: string; message: string }) => void;
 };
 
+type ElectronStreamBody = string | Uint8Array;
+
 type ElectronStreamFetch = (
   url: string,
-  init: { method?: string; headers?: Record<string, string>; body?: string },
+  init: { method?: string; headers?: Record<string, string>; body?: ElectronStreamBody },
   callbacks: ElectronStreamCallbacks
 ) => () => void;
 
@@ -34,17 +36,49 @@ function getElectronStreamFetch(): ElectronStreamFetch | null {
   );
 }
 
+function plainHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  if (!headers) return {};
+  return Object.fromEntries(new Headers(headers).entries());
+}
+
+/**
+ * IPC structured-clone cannot carry FormData, Blob or stream bodies (a FormData
+ * arrives in the main process as `{}`, so multipart uploads lose every file).
+ * Encode such bodies to bytes here, keeping the Content-Type that carries the
+ * multipart boundary.
+ */
+async function serializeBody(
+  body: BodyInit | null | undefined,
+  headers: Record<string, string>
+): Promise<ElectronStreamBody | undefined> {
+  if (body == null) return undefined;
+  if (typeof body === 'string') return body;
+
+  const encoded = new Response(body);
+  const contentType = encoded.headers.get('content-type');
+  // The bytes use the encoder's multipart boundary, so its header wins over a
+  // caller's (e.g. a bare `multipart/form-data` with no boundary).
+  const isMultipart = contentType?.startsWith('multipart/form-data') ?? false;
+  if (contentType && (isMultipart || !('content-type' in headers))) {
+    headers['content-type'] = contentType;
+  }
+  return new Uint8Array(await encoded.arrayBuffer());
+}
+
 /**
  * Drop-in replacement for `fetch` that routes streaming requests through
  * Electron's main-process proxy when running under Electron, and falls back
  * to native `fetch` everywhere else.
  */
-export function streamingFetch(url: string, init: RequestInit): Promise<Response> {
+export async function streamingFetch(url: string, init: RequestInit): Promise<Response> {
   const electronStreamFetch = getElectronStreamFetch();
 
   if (!electronStreamFetch) {
     return fetch(url, init);
   }
+
+  const headers = plainHeaders(init.headers);
+  const requestBody = await serializeBody(init.body, headers);
 
   return new Promise<Response>((resolve, reject) => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -63,8 +97,8 @@ export function streamingFetch(url: string, init: RequestInit): Promise<Response
       url,
       {
         method: init.method,
-        headers: init.headers as Record<string, string> | undefined,
-        body: init.body as string | undefined,
+        headers,
+        body: requestBody,
       },
       {
         onHeaders: (h) => {

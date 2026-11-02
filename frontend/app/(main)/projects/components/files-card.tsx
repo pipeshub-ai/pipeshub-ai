@@ -22,6 +22,21 @@ const INDEX_STATUS_COLOR: Record<string, string> = {
   QUEUED: 'var(--blue-9)',
   FAILED: 'var(--red-9)',
   FILE_TYPE_NOT_SUPPORTED: 'var(--red-9)',
+  PASSWORD_PROTECTED: 'var(--amber-11)',
+};
+
+const INDEX_STATUS_LABEL_KEY: Record<string, string> = {
+  COMPLETED: 'kb.indexingStatus.completed',
+  IN_PROGRESS: 'kb.indexingStatus.inProgress',
+  QUEUED: 'kb.indexingStatus.queued',
+  NOT_STARTED: 'kb.indexingStatus.notStarted',
+  FAILED: 'kb.indexingStatus.failed',
+  FILE_TYPE_NOT_SUPPORTED: 'kb.indexingStatus.fileTypeNotSupported',
+  AUTO_INDEX_OFF: 'kb.indexingStatus.manualIndexing',
+  PAUSED: 'kb.indexingStatus.paused',
+  EMPTY: 'kb.indexingStatus.empty',
+  ENABLE_MULTIMODAL_MODELS: 'kb.indexingStatus.needsMultimodalModel',
+  SKIPPED: 'kb.indexingStatus.skipped',
 };
 
 interface FilesCardProps {
@@ -32,6 +47,29 @@ interface FilesCardProps {
   onKbCreated: (kbId: string) => void;
   /** Reports the current file count + total size so the parent's "Project setup" row can show them without a second fetch. */
   onSummaryChange?: (summary: { count: number; totalBytes: number }) => void;
+}
+
+/** The file row's indexing icon, named for screen readers and explained on hover/focus. */
+function IndexStatusMark({ status }: { status: string }) {
+  const { t } = useTranslation();
+  const statusText = INDEX_STATUS_LABEL_KEY[status] ? t(INDEX_STATUS_LABEL_KEY[status]) : status;
+  const label = t('chat.projects.workspace.indexingStatusLabel', { status: statusText });
+  return (
+    <Tooltip content={label}>
+      <span
+        role="img"
+        aria-label={label}
+        tabIndex={0}
+        style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}
+      >
+        <MaterialIcon
+          name={getIndexStatusIcon(status)}
+          size={14}
+          color={INDEX_STATUS_COLOR[status] ?? 'var(--slate-10)'}
+        />
+      </span>
+    </Tooltip>
+  );
 }
 
 /**
@@ -204,11 +242,7 @@ export function FilesCard({
                   {item.name}
                 </Text>
                 {item.indexingStatus && (
-                  <MaterialIcon
-                    name={getIndexStatusIcon(item.indexingStatus)}
-                    size={14}
-                    color={INDEX_STATUS_COLOR[item.indexingStatus] ?? 'var(--slate-10)'}
-                  />
+                  <IndexStatusMark status={item.indexingStatus} />
                 )}
                 {typeof item.sizeInBytes === 'number' && (
                   <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
@@ -219,6 +253,7 @@ export function FilesCard({
               {canEdit && (
                 <button
                   type="button"
+                  className="touch-hit"
                   aria-label={t('chat.projects.workspace.removeFile')}
                   disabled={deletingId === item.id}
                   onClick={() => setPendingRemove({ id: item.id, name: item.name })}

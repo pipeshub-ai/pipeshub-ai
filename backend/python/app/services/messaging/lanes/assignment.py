@@ -54,6 +54,7 @@ from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed,
     choose_connector_lane,
     is_large_class,
+    lane_pool_for_org,
 )
 from app.services.messaging.lanes.hash_router import RedisLaneRouter, stable_lane
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneHint
@@ -62,7 +63,7 @@ from app.services.redis.loop_clients import LoopBoundClients
 from app.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
     from logging import Logger
 
     from app.services.messaging.lanes.assignment_policy import LaneChoice
@@ -549,6 +550,7 @@ class LaneAssignments:
         cache_seconds: float = 60.0,
         choose: Callable[[LaneRequest, LaneSnapshot], LaneChoice] | None = None,
         admin_move_allowed: Callable[[str | None, str], bool] | None = None,
+        pool_for: Callable[[RedisClient, str | None], Awaitable[str | None]] | None = None,
         operation_timeout_seconds: float = 2.0,
         max_connections: int = 8,
     ) -> None:
@@ -559,6 +561,7 @@ class LaneAssignments:
         self._cache_seconds = max(0.0, cache_seconds)
         self._choose = choose or choose_connector_lane
         self._admin_move_allowed = admin_move_allowed or admin_lane_move_allowed
+        self._pool_for = pool_for or lane_pool_for_org
         self._map = lane_map_key(topic)
         self._meta = lane_meta_key(topic)
         timeout = max(0.1, operation_timeout_seconds)
@@ -688,6 +691,7 @@ class LaneAssignments:
             reason=reason,
             org_id=org_id,
             current_lane=entry.lane if entry.lane < lane_count else None,
+            pool=await self._lane_pool(org_id),
         )
         status, value, occupancy = await self._commit_loop(
             request,
@@ -878,6 +882,7 @@ class LaneAssignments:
                 reason=reason,
                 org_id=hint.org_id,
                 connector_type=hint.connector_type,
+                pool=await self._lane_pool(hint.org_id),
             )
             legacy_lane = None if is_new else request.hash_lane
             status, value, occupancy = await self._commit_loop(
@@ -1002,6 +1007,15 @@ class LaneAssignments:
 
     def _client(self) -> RedisClient:
         return self._clients.get()
+
+    async def _lane_pool(self, org_id: str | None) -> str | None:
+        # A pool that cannot be read is no reason to leave a connector without
+        # a lane; it is placed as if in the shared pool.
+        try:
+            return await self._pool_for(self._client(), org_id)
+        except Exception as e:
+            self.logger.warning("Lane pool for org %s unavailable: %s", org_id, e)
+            return None
 
     async def _sha(self, body: str, *, reload: bool = False) -> str:
         sha = None if reload else self._shas.get(body)
@@ -1135,6 +1149,7 @@ def shared_lane_assignments(
             cache_seconds=cache_seconds,
             choose=edition_services.choose_connector_lane,
             admin_move_allowed=edition_services.admin_lane_move_allowed,
+            pool_for=edition_services.lane_pool_for_org,
         )
         _shared[key] = assignments
         return assignments

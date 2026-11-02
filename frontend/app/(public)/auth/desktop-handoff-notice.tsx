@@ -11,7 +11,14 @@ import { useTranslation } from 'react-i18next';
  * the navigation entirely when it is not driven by a user gesture. The link
  * here is the guaranteed path, so it is never hidden behind a delay.
  */
-export default function DesktopHandoffNotice({ deepLink }: { deepLink: string }) {
+export default function DesktopHandoffNotice({
+  deepLink,
+  titleKey = 'auth.desktopHandoff.title',
+}: {
+  deepLink: string;
+  /** i18n key for the heading; sign-in by default, integration callbacks pass their own. */
+  titleKey?: string;
+}) {
   const { t } = useTranslation();
 
   return (
@@ -22,7 +29,7 @@ export default function DesktopHandoffNotice({ deepLink }: { deepLink: string })
       gap="3"
       style={{ height: '100vh', padding: 'var(--space-4)', textAlign: 'center' }}
     >
-      <Heading size="4">{t('auth.desktopHandoff.title')}</Heading>
+      <Heading size="4">{t(titleKey)}</Heading>
       <Text size="2" color="gray">
         {t('auth.desktopHandoff.description')}
       </Text>

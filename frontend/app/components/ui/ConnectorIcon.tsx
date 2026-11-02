@@ -58,6 +58,7 @@ export type ConnectorType =
   | 'google-slides'
   | 'google-forms'
   | 'ms-onenote'
+  | 'microsoft-learn'
   // Project & Issue Tracking
   | 'jira'
   | 'linear'
@@ -88,12 +89,19 @@ export type ConnectorType =
   | 'lumos'
   // MCP / AI tools
   | 'exa'
+  | 'context7'
+  | 'huggingface'
   | 'atlassian'
   | 'discord'
   | 'posthog'
   | 'brave'
+  | 'stripe'
+  | 'vercel'
+  | 'docusign'
+  | 'okta'
   // Generic / Fallback
   | 'web'
+  | 'api'
   | 'generic';
 
 interface ConnectorIconProps {
@@ -151,6 +159,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-slides': { svg: svg('slides'), fallback: 'slideshow' },
   'google-forms': { svg: svg('forms'), fallback: 'quiz' },
   'ms-onenote': { svg: svg('ms-onenote'), fallback: 'note' },
+  'microsoft-learn': { svg: svg('microsoft-learn'), fallback: 'menu_book' },
   'kb': { svg: svg('kb'), fallback: 'folder' },
   'knowledge-base': { svg: svg('kb'), fallback: 'folder' },
   // Project & Issue Tracking (keys sorted A–Z)
@@ -183,12 +192,20 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'lumos': { svg: svg('lumos'), fallback: 'manage_accounts' },
   // MCP / AI tools
   'exa': { svg: svg('exa'), fallback: 'travel_explore' },
+  'context7': { svg: svg('context7'), fallback: 'menu_book' },
+  'huggingface': { svg: svg('huggingface'), fallback: 'smart_toy' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: null, fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
+  'stripe': { svg: svg('stripe'), fallback: 'payments' },
+  'vercel': { svg: svg('vercel'), fallback: 'code' },
+  'docusign': { svg: svg('docusign'), fallback: 'draw' },
+  'okta': { svg: svg('okta'), fallback: 'badge' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
+  // API toolsets (admin-uploaded OpenAPI specs)
+  'api': { svg: null, fallback: 'api' },
   'generic': { svg: svg('default'), fallback: 'extension' },
 };
 
@@ -198,6 +215,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
  * Patterns are matched via .includes() against normalized input.
  */
 const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
+  // Chat groups of API actions (`api_action:<instanceId>`).
+  ['api-action:', 'api'],
   // Google suite — specific first (google-cloud-storage before google-cloud)
   ['google-cloud-storage', 'gcs'],
   ['google-drive', 'google-drive'], ['gdrive', 'google-drive'],
@@ -244,8 +263,14 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   // MCP / AI tools
   ['atlassian', 'atlassian'], ['rovo', 'atlassian'],
   ['exa', 'exa'], ['discord', 'discord'], ['posthog', 'posthog'],
+  ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
   ['brave', 'brave'],
+  ['stripe', 'stripe'],
+  ['vercel', 'vercel'],
+  ['docusign', 'docusign'], ['okta', 'okta'],
   // Broad fallbacks (last — only match if nothing specific matched)
+  // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
+  ['docs', 'google-docs'], ['sheets', 'google-sheets'],
   ['google', 'google-drive'], ['microsoft', 'sharepoint'], ['365', 'sharepoint'],
   ['azure', 'azure-blob'], ['drive', 'google-drive'],
   ['calendar', 'google-calendar'],

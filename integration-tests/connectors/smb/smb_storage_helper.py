@@ -31,13 +31,21 @@ class SmbStorageHelper:
         self.server = server
         self.port = port
         self._cache: dict = {}
-        user = f"{domain}\\{username}" if domain else username
+        self._user = f"{domain}\\{username}" if domain else username
+        self._password = password
         smbclient.register_session(
             server,
-            username=user,
+            username=self._user,
             password=password,
             port=port,
             connection_cache=self._cache,
+        )
+
+    def reconnect(self) -> None:
+        """Drop every cached connection and sign in again, after the server closed them (a share closed or renamed)."""
+        smbclient.reset_connection_cache(fail_on_error=False, connection_cache=self._cache)
+        smbclient.register_session(
+            self.server, username=self._user, password=self._password, port=self.port, connection_cache=self._cache
         )
 
     def _unc(self, share: str, rel: str = "") -> str:
@@ -47,7 +55,9 @@ class SmbStorageHelper:
         return rf"\\{self.server}\{share}"
 
     def _kwargs(self) -> dict:
-        return {"connection_cache": self._cache, "port": self.port}
+        # The credentials go with every call: when the server restarts, smbclient opens a new connection and
+        # signs in again with them, instead of trying with none.
+        return {"connection_cache": self._cache, "port": self.port, "username": self._user, "password": self._password}
 
     def list_objects(self, share: str, prefix: str = "") -> list[str]:
         keys: list[str] = []
@@ -120,6 +130,9 @@ class SmbStorageHelper:
         if new_dir:
             self._ensure_dir(share, new_dir)
         smbclient.rename(self._unc(share, old_path), self._unc(share, new_path), **self._kwargs())
+
+    def rename_directory(self, share: str, old_dir: str, new_dir: str) -> None:
+        smbclient.rename(self._unc(share, old_dir), self._unc(share, new_dir), **self._kwargs())
 
     def clear_objects(self, share: str, prefix: str) -> None:
         folder = require_run_folder(prefix).rstrip("/")

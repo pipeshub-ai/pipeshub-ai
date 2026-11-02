@@ -1,14 +1,16 @@
+
 """Tests for BaseServiceClient shared retry / timeout logic."""
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
 import jwt
+import pytest
 
 from app.config.constants.service import TokenScopes
 from app.services.base_client import (
@@ -19,7 +21,6 @@ from app.services.base_client import (
     ServiceCallError,
     ServiceUnavailableError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -446,3 +447,22 @@ async def test_refused_token_raises_auth_refused_with_detail_and_leaves_breaker_
     assert mock_httpx.request.await_count == 1
     assert not client.circuit_open
     assert client.circuit_breaker._consecutive_failures == 0
+
+
+def test_only_one_thread_claims_the_half_open_probe() -> None:
+    """The indexing worker loop and the server loop call the breaker from different threads."""
+    breaker = CircuitBreaker("svc", failure_threshold=1, cooldown_seconds=0.0)
+    breaker.record_failure()
+    barrier = threading.Barrier(16)
+    claims: list[bool] = []
+
+    def claim() -> None:
+        barrier.wait()
+        claims.append(breaker.should_attempt_probe())
+
+    threads = [threading.Thread(target=claim) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert claims.count(True) == 1

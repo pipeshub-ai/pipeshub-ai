@@ -209,6 +209,16 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
     }
     return route.continue();
   });
+
+  // Real backend 400s a made-up user id; that toast covers the card's buttons.
+  await page.route('**/api/v1/users/by-ids', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
 }
 
 async function mockAgentApis(page: import('@playwright/test').Page) {
@@ -231,6 +241,32 @@ async function mockAgentApis(page: import('@playwright/test').Page) {
       body: JSON.stringify(MOCK_AGENT_CONVERSATIONS_EMPTY),
     });
   });
+
+  // The header reads the new conversation for its share avatars. The real backend
+  // 400s the made-up id, and that toast covers the card's buttons too.
+  const conversationPath = `/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}`;
+  await page.route(
+    (url) => url.pathname.replace(/\/$/, '') === conversationPath,
+    (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          conversation: {
+            _id: AGENT_CONV_ID,
+            id: AGENT_CONV_ID,
+            title: 'E2E Ask Question Test',
+            messages: [],
+            sharedWith: [],
+            access: { isOwner: true, accessLevel: 'OWNER' },
+          },
+          filters: {},
+          meta: {},
+        }),
+      });
+    },
+  );
 }
 
 /**

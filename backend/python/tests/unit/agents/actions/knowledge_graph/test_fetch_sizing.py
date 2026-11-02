@@ -19,11 +19,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agent_loop_lib.core.messages import ToolMessage
+from app.agent_loop_lib.context.base import ContextBudget
+from app.agent_loop_lib.core.messages import ImagePart, ToolMessage, image_data_url
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
     shape_budget_reduction,
 )
+from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
 from app.models.blocks import BlockType, GroupType
 from app.utils.render_budget import resolve_render_budget
@@ -100,6 +102,12 @@ def _context(**overrides: object) -> SimpleNamespace:
 
 
 async def _fetch(context: SimpleNamespace, records: list[dict[str, Any]], **kwargs: object) -> str:
+    parts = await _fetch_parts(context, records, **kwargs)
+    return "".join(getattr(part, "text", part if isinstance(part, str) else "") or "" for part in parts)
+
+
+async def _fetch_parts(context: SimpleNamespace, records: list[dict[str, Any]], **kwargs: object) -> list:
+    """The fetch's output as a list: its text and any images it returned."""
     structured = MagicMock()
     structured.coroutine = AsyncMock(return_value={"ok": True, "records": records, "not_available_ids": []})
     with patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=structured):
@@ -110,9 +118,7 @@ async def _fetch(context: SimpleNamespace, records: list[dict[str, Any]], **kwar
         )
     context.tool_state["citation_ref_mapper"] = mapper
     data = output.data
-    if isinstance(data, list):
-        return "".join(getattr(part, "text", "") or "" for part in data)
-    return str(data)
+    return list(data) if isinstance(data, list) else [str(data)]
 
 
 def _shown(text: str, name: str) -> set[int]:
@@ -288,7 +294,10 @@ class TestTheResultFitsTheToolResultCap:
         context = _context(context_length=window, query="")
         text = await _fetch(context, [_text_record("g", 100, 1_200)])
 
-        message = SimpleNamespace(messages=[ToolMessage(content=text, tool_call_id="c1")], budget=None)
+        # A budget that cannot bind: what is under test is the shared cap.
+        message = ModelCallContext(
+            messages=[ToolMessage(content=text, tool_call_id="c1")], budget=ContextBudget(max_tokens=1_000_000),
+        )
 
         async def _next() -> None:
             return None
@@ -453,13 +462,14 @@ class TestWindowsAndModalities:
         record = _text_record("im", 0, 0)
         record["block_containers"] = {"blocks": blocks, "block_groups": []}
         context = _context(is_multimodal_llm=multimodal, query="")
-        context.tool_state["supports_multipart_tool_result"] = False
 
-        text = await _fetch(context, [record])
+        parts = await _fetch_parts(context, [record])
+        text = "".join(part if isinstance(part, str) else getattr(part, "text", "") for part in parts)
 
         shown = set(_outcome(context, "rec-im")["shownBlocks"])
         assert 0 < len(shown) < 40
-        delivered = {img["block_index"] for img in context.tool_state.get("pending_tool_images", [])}
+        sent = {image_data_url(part.source) for part in parts if isinstance(part, ImagePart)}
+        delivered = {2 * i + 1 for i in range(20) if _png(i) in sent}
         if multimodal:
             assert delivered and delivered <= shown
             assert context.tool_state["image_budget"].used == len(delivered)
@@ -519,12 +529,12 @@ class TestAFirstUnitThatDoesNotFitStillMakesProgress:
             {"index": 1, "type": BlockType.TEXT.value, "data": "im para 1 after the figure"},
         ], "block_groups": []}
         context = _context(query="", is_multimodal_llm=True)
-        context.tool_state["supports_multipart_tool_result"] = False
 
-        text = await _fetch(context, [record])
+        parts = await _fetch_parts(context, [record])
+        text = "".join(part if isinstance(part, str) else getattr(part, "text", "") for part in parts)
 
         assert "start_block=1" in text
-        assert context.tool_state.get("pending_tool_images", []) == []
+        assert not any(isinstance(part, ImagePart) for part in parts)
         second = await _fetch(context, [record], start_block=1, start_block_sent=True)
         assert _shown(second, "im") == {1}
 
@@ -640,7 +650,6 @@ class TestImageFormsAreCharged:
     @pytest.mark.asyncio
     async def test_a_group_with_an_image_stays_inside_the_budget(self) -> None:
         context = _context(query="", is_multimodal_llm=True)
-        context.tool_state["supports_multipart_tool_result"] = True
 
         text = await _fetch(context, [self._list_with_an_image(items=60, chars=1_500)])
 
@@ -651,7 +660,6 @@ class TestImageFormsAreCharged:
     @pytest.mark.asyncio
     async def test_a_group_with_an_image_that_fits_is_read_whole(self) -> None:
         context = _context(query="", is_multimodal_llm=True)
-        context.tool_state["supports_multipart_tool_result"] = True
 
         text = await _fetch(context, [self._list_with_an_image(items=6, chars=100)])
 
@@ -677,7 +685,6 @@ class TestImageFormsAreCharged:
             "children": {"block_ranges": [{"start": 0, "end": 399}]},
         }]}
         context = _context(query="", is_multimodal_llm=True)
-        context.tool_state["supports_multipart_tool_result"] = True
 
         text = await _fetch(context, [record])
 
@@ -739,7 +746,6 @@ class TestAGroupContinues:
     @pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
     async def test_the_continuation_reads_on_from_the_hint(self, image: bool) -> None:
         context = _context(query="", is_multimodal_llm=image)
-        context.tool_state["supports_multipart_tool_result"] = True
         first = await _fetch(context, [self._list(image=image)])
         start = int(re.search(r"start_block=(\d+) — one record", first).group(1))
 
@@ -753,7 +759,6 @@ class TestAGroupContinues:
     @pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
     async def test_following_the_hints_reaches_the_last_item(self, image: bool) -> None:
         context = _context(query="", is_multimodal_llm=image)
-        context.tool_state["supports_multipart_tool_result"] = True
         seen: set[int] = set()
         start = 0
         for _ in range(10):
@@ -819,7 +824,6 @@ class TestAFigureInAGroup:
             "children": {"block_ranges": [{"start": 0, "end": 2}]},
         }]}
         context = _context(query="", is_multimodal_llm=multimodal)
-        context.tool_state["supports_multipart_tool_result"] = True
 
         text = await _fetch(context, [record])
 

@@ -121,6 +121,9 @@ class InMemoryGraph:
             CollectionNames.PERMISSION.value,
         )
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         return "txn-1"
 

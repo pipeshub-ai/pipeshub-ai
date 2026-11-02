@@ -53,6 +53,7 @@ async def acquire_gate_with_backpressure(
     log_prefix: str,
     queue_wait_warn_seconds: float = DEFAULT_QUEUE_WAIT_WARN_SECONDS,
     gate_timeout_seconds: float = DEFAULT_GATE_TIMEOUT_SECONDS,
+    cap: int | None = None,
 ) -> bool:
     """Acquire *cost* permits from *gate*, logging when the wait indicates
     saturation.
@@ -63,7 +64,7 @@ async def acquire_gate_with_backpressure(
     client's own longer-horizon retry/back-off takes over instead of the
     request queuing here forever.
     """
-    max_slots = gate.limit
+    max_slots = gate.limit if cap is None else cap
     SemaphoreLogger.log_semaphore_acquire_attempt(
         f"{log_prefix}:{tier.value}", message_id, max_slots - gate.in_use, max_slots, 0, 0
     )
@@ -73,7 +74,7 @@ async def acquire_gate_with_backpressure(
     # admission in place — so shielding here only protects the in-flight
     # acquire from the *warn* timeout below, letting it keep running to its
     # own deadline instead of being cancelled and losing accrued wait time.
-    acquire_task = asyncio.ensure_future(gate.acquire(cost=cost, timeout=gate_timeout_seconds))
+    acquire_task = asyncio.ensure_future(gate.acquire(cost=cost, timeout=gate_timeout_seconds, cap=cap))
     try:
         admitted = await asyncio.wait_for(
             asyncio.shield(acquire_task), timeout=queue_wait_warn_seconds

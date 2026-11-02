@@ -24,3 +24,22 @@ export function isExternalWebUrl(rawUrl: string): boolean {
     return false;
   }
 }
+
+export type WindowOpenTarget = 'in-app' | 'external' | 'blocked';
+
+const EXTERNAL_OPEN_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+/**
+ * Where a `window.open` / `target="_blank"` request goes. The desktop app has a
+ * single window, so an in-app link the web UI opens in a new tab (a relative
+ * `/record/<id>`, for instance) loads in the main window instead of being
+ * dropped. Web and mail links go to the OS; anything else is refused.
+ */
+export function classifyWindowOpen(rawUrl: string, scheme: string): WindowOpenTarget {
+  if (isAppUrl(rawUrl, scheme)) return 'in-app';
+  try {
+    return EXTERNAL_OPEN_PROTOCOLS.has(new URL(rawUrl).protocol) ? 'external' : 'blocked';
+  } catch {
+    return 'blocked';
+  }
+}

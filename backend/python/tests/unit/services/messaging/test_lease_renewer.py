@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from unittest.mock import AsyncMock
 
@@ -207,6 +208,61 @@ class TestLeaseRenewer:
 
         for call in manager.renew_many.await_args_list:
             assert call.args[0] == []
+
+    @pytest.mark.asyncio
+    async def test_a_renew_that_swallows_cancellation_does_not_outlive_stop(self, logger) -> None:
+        started = asyncio.Event()
+        calls = 0
+
+        async def swallowing(_leases: object, _seconds: float) -> dict[tuple[str, str], bool]:
+            nonlocal calls
+            calls += 1
+            started.set()
+            if calls == 1:
+                # What a client that eats the cancellation does; only once, so a regression
+                # fails the assertion below instead of hanging the test.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(3600)
+                return {}
+            await asyncio.sleep(3600)
+            return {}
+
+        renewer = _renewer(logger, _manager(side_effect=swallowing), _Clock())
+        renewer.add("owner-1", "pool")
+        renewer.start()
+        await asyncio.wait_for(started.wait(), 1)
+
+        at_stop = calls
+        await asyncio.wait_for(renewer.stop(), 1)
+        # stop() returned only once the loop ended, so no later round can start: had it
+        # renewed again, that round's sleep would have kept stop() from returning.
+        assert calls == at_stop
+
+    @pytest.mark.asyncio
+    async def test_stop_gives_up_on_a_renew_that_never_ends(self, logger, monkeypatch) -> None:
+        monkeypatch.setattr(LeaseRenewer, "STOP_TIMEOUT_S", 0.05)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def ignoring(_leases: object, _seconds: float) -> dict[tuple[str, str], bool]:
+            started.set()
+            while not release.is_set():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await release.wait()
+            return {}
+
+        manager = _manager(side_effect=ignoring)
+        renewer = _renewer(logger, manager, _Clock())
+        renewer.add("owner-1", "pool")
+        renewer.start()
+        await asyncio.wait_for(started.wait(), 1)
+
+        await asyncio.wait_for(renewer.stop(), 1)
+        release.set()
+        await asyncio.sleep(INTERVAL * 3)
+        # The stuck call finished after stop() gave up on it; the generation guard kept
+        # its loop from starting another round.
+        assert manager.renew_many.await_count == 1
 
     @pytest.mark.asyncio
     async def test_stop_is_safe_before_start(self, logger) -> None:

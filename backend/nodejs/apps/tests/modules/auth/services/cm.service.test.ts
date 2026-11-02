@@ -4,10 +4,7 @@ import sinon from 'sinon';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
-  AZURE_AD_AUTH_CONFIG_PATH,
   MICROSOFT_AUTH_CONFIG_PATH,
-  OAUTH_AUTH_CONFIG_PATH,
-  SSO_AUTH_CONFIG_PATH,
 } from '../../../../src/modules/auth/services/cm.service';
 import axios, { AxiosError } from 'axios'
 import { InternalServerError } from '../../../../src/libs/errors/http.errors'
@@ -30,27 +27,9 @@ describe('ConfigurationManagerService', () => {
       );
     });
 
-    it('should export AZURE_AD_AUTH_CONFIG_PATH', () => {
-      expect(AZURE_AD_AUTH_CONFIG_PATH).to.equal(
-        'api/v1/configurationManager/internal/authConfig/azureAd',
-      );
-    });
-
     it('should export MICROSOFT_AUTH_CONFIG_PATH', () => {
       expect(MICROSOFT_AUTH_CONFIG_PATH).to.equal(
         'api/v1/configurationManager/internal/authConfig/microsoft',
-      );
-    });
-
-    it('should export OAUTH_AUTH_CONFIG_PATH', () => {
-      expect(OAUTH_AUTH_CONFIG_PATH).to.equal(
-        'api/v1/configurationManager/internal/authConfig/oauth',
-      );
-    });
-
-    it('should export SSO_AUTH_CONFIG_PATH', () => {
-      expect(SSO_AUTH_CONFIG_PATH).to.equal(
-        'api/v1/configurationManager/internal/authConfig/sso',
       );
     });
   });

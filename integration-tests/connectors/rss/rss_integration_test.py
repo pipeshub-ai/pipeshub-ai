@@ -32,11 +32,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from connectors.rss.conftest import (  # type: ignore[import-not-found]
-    EXPECTED_GUIDS,
     NEWS_FEED,
     NEWS_ITEMS,
-    PAST_LIMIT_GUID,
+    PAST_LIMIT_ITEM,
     FeedItem,
+    expected_record_ids,
     news_feed,
 )
 from helper.graph_provider import GraphProviderProtocol
@@ -62,10 +62,10 @@ async def _streamed_text(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
     connector_id: str,
-    guid: str,
+    record_id: str,
 ) -> str:
-    record = await graph_provider.get_record_by_external_id(connector_id, guid)
-    assert record is not None, f"no record for feed item {guid}"
+    record = await graph_provider.get_record_by_external_id(connector_id, record_id)
+    assert record is not None, f"no record for feed item {record_id}"
     return pipeshub_client.stream_record(record.id).content.decode("utf-8", errors="replace")
 
 
@@ -84,12 +84,12 @@ class TestRSSConnector:
         """TC-SYNC-001: Every item within the limit, from RSS and Atom, is a record."""
         connector_id = rss_connector["connector_id"]
 
-        for guid in EXPECTED_GUIDS:
-            assert await graph_provider.get_record_by_external_id(connector_id, guid) is not None, (
-                f"TC-SYNC-001: feed item {guid} was not synced"
+        for record_id in expected_record_ids():
+            assert await graph_provider.get_record_by_external_id(connector_id, record_id) is not None, (
+                f"TC-SYNC-001: feed item {record_id} was not synced"
             )
-        assert await graph_provider.get_record_by_external_id(connector_id, PAST_LIMIT_GUID) is None, (
-            f"TC-SYNC-001: {PAST_LIMIT_GUID} is past the per-feed limit but was synced"
+        assert await graph_provider.get_record_by_external_id(connector_id, PAST_LIMIT_ITEM.record_id) is None, (
+            f"TC-SYNC-001: {PAST_LIMIT_ITEM.guid} is past the per-feed limit but was synced"
         )
         logger.info(
             "TC-SYNC-001 passed: %d records from %s (connector %s)",
@@ -107,7 +107,7 @@ class TestRSSConnector:
     ) -> None:
         """TC-STREAM-001: With full content on, an item's text is its article page's."""
         text = await _streamed_text(
-            pipeshub_client, graph_provider, rss_connector["connector_id"], ROADMAP.guid
+            pipeshub_client, graph_provider, rss_connector["connector_id"], ROADMAP.record_id
         )
         assert "news-roadmap" in text, f"TC-STREAM-001: article text missing from the stream: {text[:300]!r}"
 
@@ -143,7 +143,7 @@ class TestRSSConnector:
             f"TC-UPDATE-001: record count moved from {before_count} to {after_count}; "
             "an edited article must update its item, not add one"
         )
-        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, ROADMAP.guid)
+        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, ROADMAP.record_id)
         assert "news-roadmap-revised" in text, f"TC-UPDATE-001: stream has the old text: {text[:300]!r}"
 
     @pytest.mark.order(4)
@@ -180,10 +180,10 @@ class TestRSSConnector:
         assert after_count == before_count + 1, (
             f"TC-FEED-001: expected one new record, count went {before_count} -> {after_count}"
         )
-        assert await graph_provider.get_record_by_external_id(connector_id, OFFICE_MOVE.guid) is not None, (
+        assert await graph_provider.get_record_by_external_id(connector_id, OFFICE_MOVE.record_id) is not None, (
             f"TC-FEED-001: {OFFICE_MOVE.guid} was removed when it left the feed"
         )
-        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, OFFICE_MOVE.guid)
+        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, OFFICE_MOVE.record_id)
         assert "news-office" in text, (
             f"TC-FEED-001: an item no longer in the feed should stream its article: {text[:300]!r}"
         )

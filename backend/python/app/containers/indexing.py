@@ -129,6 +129,30 @@ class IndexingAppContainer(BaseAppContainer):
 
 
 
+    # HTTP clients for the standalone Parsing and Extraction services.
+    # These are only used when USE_PARSING_SERVICE=true is set in the environment.
+    parsing_client = providers.Resource(
+        container_utils.create_parsing_client,
+        config_service=config_service,
+    )
+
+    extraction_client = providers.Resource(
+        container_utils.create_extraction_client,
+        config_service=config_service,
+    )
+
+    # Pipeline stages: classification and named entities run side by side once a record is
+    # searchable, on their own permits. Both enrich through the sink (resolver, entity points).
+    pipeline_runtime = providers.Resource(
+        container_utils.create_pipeline_runtime,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+        sink_orchestrator=sink_orchestrator,
+        document_extractor=document_extractor,
+        extraction_client=extraction_client,
+    )
+
     # Parsers
     parsers = providers.Resource(
         container_utils.create_parsers,
@@ -146,18 +170,7 @@ class IndexingAppContainer(BaseAppContainer):
         parsers=parsers,
         document_extractor=document_extractor,
         sink_orchestrator=sink_orchestrator,
-    )
-
-    # HTTP clients for the standalone Parsing and Extraction services.
-    # These are only used when USE_PARSING_SERVICE=true is set in the environment.
-    parsing_client = providers.Resource(
-        container_utils.create_parsing_client,
-        config_service=config_service,
-    )
-
-    extraction_client = providers.Resource(
-        container_utils.create_extraction_client,
-        config_service=config_service,
+        pipeline_runtime=pipeline_runtime,
     )
 
     event_processor = providers.Resource(
@@ -170,6 +183,7 @@ class IndexingAppContainer(BaseAppContainer):
         parsing_client=parsing_client,
         extraction_client=extraction_client,
         sink_orchestrator=sink_orchestrator,
+        pipeline_runtime=pipeline_runtime,
     )
 
     # Settles queued events of turned-off or removed connectors as the

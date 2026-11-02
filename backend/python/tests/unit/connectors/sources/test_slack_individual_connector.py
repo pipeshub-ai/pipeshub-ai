@@ -802,8 +802,7 @@ class TestChannelHelpers:
         assert await c._channel_permissions({}) == []
 
         c.authenticated_user_email = "a@b.com"
-        perms = await c._channel_permissions({"id": "C1"})
-        assert len(perms) == 1
+        assert await c._channel_permissions({"id": "C1"}) == [], "channels inherit the app; no per-channel grant"
 
         mock_ds = MagicMock()
         mock_ds.conversations_members = AsyncMock(
@@ -1125,6 +1124,8 @@ class TestProcessFileAndLink:
         parent = MagicMock(spec=MessageRecord)
         parent.id = "p"
         parent.external_record_id = "1.0"
+        parent.external_record_group_id = "C1"
+        parent.record_group_id = "rg-int"
         lr = await c._process_link("https://x.atlassian.net/browse/ABC-9", parent, ctx, {})
         assert lr.related_external_records == []
 
@@ -1135,6 +1136,8 @@ class TestProcessFileAndLink:
         parent = MagicMock(spec=MessageRecord)
         parent.id = "p"
         parent.external_record_id = "1.0"
+        parent.external_record_group_id = "C1"
+        parent.record_group_id = "rg-int"
         lr = await c._process_link(
             "https://x.atlassian.net/browse/ABC-9", parent, ctx, {"attachments": []}
         )
@@ -1246,6 +1249,8 @@ class TestThreadBurstRecord:
         )
         rec = await c._build_thread_burst_record(burst, "1.0", "rg", ctx)
         assert rec is not None
+        # In the thread's group: a full sync keeps a windowed thread group's records it did not read.
+        assert (rec.external_record_group_id, rec.record_group_id) == ("thread_C1_1.0", "rg")
 
         burst2 = ConversationalBurst(
             messages=[{"ts": "", "user": "U1"}],
@@ -1259,6 +1264,42 @@ class TestThreadBurstRecord:
             side_effect=ValueError,
         ):
             assert await c._build_thread_burst_record(burst, "1.0", "rg", ctx) is None
+
+
+class TestLinkPlacement:
+    @pytest.mark.asyncio
+    async def test_a_link_in_a_thread_reply_sits_in_the_thread_group(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        burst = ConversationalBurst(messages=[{"ts": "1.5", "user": "U1", "text": "z"}], start_ts=1.5, end_ts=1.5)
+        reply = await c._build_thread_burst_record(burst, "1.0", "rg-thread", ctx)
+
+        link = await c._process_link("https://example.com/doc", reply, ctx, {})
+
+        assert (link.external_record_group_id, link.record_group_id) == ("thread_C1_1.0", "rg-thread")
+        assert link.parent_external_record_id == reply.external_record_id
+
+    @pytest.mark.asyncio
+    async def test_a_link_in_a_channel_message_sits_in_the_channel_group(self) -> None:
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        parent = MessageRecord(
+            org_id="org-test", record_name="p", record_type=RecordType.MESSAGE,
+            external_record_id="2.0", external_record_group_id="C1", record_group_id="rg-int",
+            version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.SLACK,
+            connector_id="conn", mime_type=MimeTypes.BLOCKS.value,
+        )
+
+        link = await c._process_link("https://example.com/doc", parent, ctx, {})
+
+        assert (link.external_record_group_id, link.record_group_id) == ("C1", "rg-int")
 
 
 class TestFetchThreadReplies:
@@ -4050,3 +4091,56 @@ class TestFullSyncCoverage:
             await c._sync_channels()
 
         assert c.full_sync_coverage().complete is False
+
+
+class TestHasRepliesOnBurstRecords:
+    """A record's hasReplies says whether any message it holds started a thread."""
+
+    @pytest.mark.asyncio
+    async def test_channel_burst_with_a_thread_parent_has_replies(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        with_parent = ConversationalBurst(
+            messages=[
+                {"ts": "10.0", "user": "U1", "text": "a"},
+                {"ts": "11.0", "user": "U1", "text": "b", "thread_ts": "11.0", "reply_count": 3},
+            ],
+            start_ts=10.0,
+            end_ts=11.0,
+        )
+        recs, _ = await c._process_burst(with_parent, _ctx(c))
+        assert recs[0][0].has_replies is True
+
+        quiet = ConversationalBurst(
+            messages=[{"ts": "12.0", "user": "U1", "text": "a"}, {"ts": "13.0", "user": "U1", "text": "b"}],
+            start_ts=12.0,
+            end_ts=13.0,
+        )
+        recs, _ = await c._process_burst(quiet, _ctx(c))
+        assert recs[0][0].has_replies is False
+
+    @pytest.mark.asyncio
+    async def test_thread_burst_has_replies_only_when_it_holds_the_parent(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        first = ConversationalBurst(
+            messages=[
+                {"ts": "1.0", "user": "U1", "text": "root", "thread_ts": "1.0", "reply_count": 4},
+                {"ts": "2.0", "user": "U1", "text": "r1", "thread_ts": "1.0"},
+            ],
+            start_ts=1.0,
+            end_ts=2.0,
+        )
+        later = ConversationalBurst(
+            messages=[{"ts": "9.0", "user": "U1", "text": "r4", "thread_ts": "1.0"}],
+            start_ts=9.0,
+            end_ts=9.0,
+        )
+        assert (await c._build_thread_burst_record(first, "1.0", "rg", _ctx(c))).has_replies is True
+        assert (await c._build_thread_burst_record(later, "1.0", "rg", _ctx(c))).has_replies is False

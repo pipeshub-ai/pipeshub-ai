@@ -113,6 +113,17 @@ export const ProfileApi = {
   // Change Password — used by the profile change-password UI flow
   // ─────────────────────────────────────────────────────────────────────────
 
+  /** GET /api/v1/userAccount/password/status */
+  async getPasswordStatus(): Promise<{ hasPassword: boolean }> {
+    const { data } = await apiClient.get<{ hasPassword: boolean }>(`${AUTH_URL}/password/status`);
+    return data;
+  },
+
+  /** POST /api/v1/userAccount/password/setup/email — mails the link for a first password */
+  async sendPasswordSetupEmail(): Promise<void> {
+    await apiClient.post(`${AUTH_URL}/password/setup/email`);
+  },
+
   /** POST /api/v1/userAccount/password/reset */
   async changePassword(payload: ChangePasswordPayload): Promise<void> {
     await apiClient.post(`${AUTH_URL}/password/reset`, payload);

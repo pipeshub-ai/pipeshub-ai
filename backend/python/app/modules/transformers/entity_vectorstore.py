@@ -87,6 +87,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
     import logging
@@ -1963,12 +1964,14 @@ class EntityVectorStore:
     async def _query_vectors(self, query: str) -> tuple[list[float], Any]:
         """Dense and sparse vectors for ``query``, cached: one entity search
         runs up to three passes over the same query."""
-        cached = self._query_vector_cache.get(query)
+        # Keyed by the text the dense model sees, so toggling the instruction can't serve a stale vector.
+        text = instruct_query(self._dense_embeddings, query)
+        cached = self._query_vector_cache.get(text)
         if cached is not None:
-            self._query_vector_cache.move_to_end(query)
+            self._query_vector_cache.move_to_end(text)
             return cached
         generation = self._generation
-        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, query)
+        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, text)
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
@@ -1977,7 +1980,7 @@ class EntityVectorStore:
             # The store reset while this was in flight: the vector is the old
             # model's, and cached it would fail every later search for the text.
             return dense_vec, sparse_vec
-        self._query_vector_cache[query] = (dense_vec, sparse_vec)
+        self._query_vector_cache[text] = (dense_vec, sparse_vec)
         if len(self._query_vector_cache) > _QUERY_VECTOR_CACHE_SIZE:
             self._query_vector_cache.popitem(last=False)
         return dense_vec, sparse_vec

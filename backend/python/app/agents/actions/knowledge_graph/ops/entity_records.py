@@ -12,19 +12,27 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.entity_discovery import _named_entities_enabled
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    _named_entities_enabled,
+)
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
+    limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.views import (
+    CITE_NOTE,
     _compact_date,
     _read_hint,
     _short,
     _trunc,
 )
 from app.models.entities import resolve_weburl
+from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.config import load_named_entity_config
+from app.modules.named_entities.linking.candidates import alias_family
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
     SEARCH_SCOPE_MAX_ENTITIES,
@@ -42,10 +50,14 @@ from app.utils.chat_helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.modules.agents.qna.chat_state import ChatState
     from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
+
+NAMED_ENTITY_TYPE = "named_entity"
 
 _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
@@ -128,7 +140,10 @@ async def execute_find_records_by_entity(
             return True, _empty_window_message(raw_id, resolved_type, page.next_cursor)
         # After a page of results, "none found" reads as "this entity is empty"
         # and contradicts what the caller was just shown.
-        return True, NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG
+        if cursor:
+            return True, NO_FURTHER_RECORDS_MSG
+        empty = " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
+        return True, empty + await _alias_note(state, context, resolved_id, resolved_type)
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(
@@ -136,7 +151,15 @@ async def execute_find_records_by_entity(
     )
     note_retrieved_by(state, "entity", graph_record_refs(page.records))
     name = indexed.get("name") if indexed.get("type") == resolved_type else None
-    return True, _render_page(
+    # Quoted outside the chat too, where "this topic" would point at nothing.
+    said = f"{_preposition(resolved_type)} " + (f'{resolved_type} "{_trunc(name)}"' if name else f"a {resolved_type}")
+    cite_refs = await cite_listed_records(
+        state, state["graph_provider"], context.org_id,
+        {r["_key"]: listing_facts(r, said) for r in page.records if r.get("_key")},
+    )
+    # The first page names the same entity's other nodes, so a count or listing covers them too.
+    note = "" if cursor else await _alias_note(state, context, resolved_id, resolved_type)
+    return True, note.strip() + ("\n" if note else "") + _render_page(
         page.records,
         context,
         entity_ref=raw_id,
@@ -145,7 +168,34 @@ async def execute_find_records_by_entity(
         next_cursor=page.next_cursor,
         capped=page.capped,
         shortener=shortener,
+        cite_refs=cite_refs,
         frontend_url=await resolve_frontend_url(state.get("config_service")),
+    )
+
+
+async def _alias_note(state: "ChatState", context: EntityAccessContext, entity_id: str, entity_type: str) -> str:
+    """The same company or product's other nodes, under a learned short or full name,
+    with the call that lists each; empty when it has none or alias linking is off."""
+    if entity_type != NAMED_ENTITY_TYPE:
+        return ""
+    try:
+        if not (await load_named_entity_config(state.get("config_service"))).link_aliases:
+            return ""
+        family = await alias_family(state["graph_provider"], context, entity_id)
+    except Exception:
+        # Only a pointer to more records: the listing stands without it.
+        logger.warning("find_records_by_entity: alias lookup failed", exc_info=True)
+        return ""
+    if not family:
+        return ""
+    calls = "; ".join(
+        f'{_trunc(node.get("name") or "")} ({node.get("kind")}): '
+        f'knowledgegraph__find_records_by_entity(entity_id="{node["id"]}", entity_type="{NAMED_ENTITY_TYPE}")'
+        for node in family
+    )
+    return (
+        f"\nThe same entity is also stored under a learned alias; list these too for every record "
+        f"(and add them to a count): {calls}."
     )
 
 
@@ -174,29 +224,16 @@ def _render_page(
     capped: bool = False,
     shortener: "RecordIdShortener | None",
     frontend_url: str | None = None,
+    cite_refs: "Mapping[str, str] | None" = None,
 ) -> str:
-    preposition = "in" if entity_type == RECORD_GROUP_ENTITY_TYPE else "connected to"
+    cite_refs = cite_refs or {}
     subject = f'{entity_type} "{_trunc(entity_name)}"' if entity_name else f"this {entity_type}"
     order = "newest of a sample" if capped else "newest first"
-    lines = [f"Records {preposition} {subject}, {order} ({len(records)} shown):"]
-    for record in records:
-        parts = [
-            f"- [{record.get('recordType') or 'RECORD'}] {_trunc(record.get('recordName') or record['_key'])}",
-            f"record_id={_short(record['_key'], shortener)}",
-        ]
-        app = context.app_names.get(record.get("connectorId"))
-        if app:
-            parts.append(f"app: {app}")
-        modified = _compact_date(
-            record.get("sourceLastModifiedTimestamp") or record.get("updatedAtTimestamp")
-        )
-        if modified:
-            parts.append(f"modified: {modified}")
-        url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
-        if url:
-            parts.append(f"url={url}")
-        lines.append(" | ".join(parts))
-
+    lines = [f"Records {_preposition(entity_type)} {subject}, {order} ({len(records)} shown):"]
+    lines.extend(cite_note(records, cite_refs))
+    lines.extend(
+        record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"])) for record in records
+    )
     lines.append("")
     if next_cursor is not None:
         lines.append(f"More records may exist: {_continue_call(entity_ref, entity_type, next_cursor)}")
@@ -208,6 +245,53 @@ def _render_page(
         "to see where a record sits."
     )
     return "\n".join(lines)
+
+
+def _preposition(entity_type: str) -> str:
+    return "in" if entity_type == RECORD_GROUP_ENTITY_TYPE else "connected to"
+
+
+def _listing_date(record: dict[str, Any]) -> tuple[str, int] | None:
+    return RecordDates.from_graph(record).listing_date(record.get("updatedAtTimestamp"))
+
+
+def listing_facts(record: dict[str, Any], stated: str) -> str:
+    """What an entity listing states about one record, as a citation of it quotes:
+    the listing's own words and the date its row shows, never the record's content."""
+    dated = _listing_date(record)
+    return " · ".join(part for part in (stated, f"{dated[0]} {_compact_date(dated[1])}" if dated else "") if part)
+
+
+def cite_note(records: list[dict[str, Any]], cite_refs: "Mapping[str, str]") -> list[str]:
+    """The line telling the model how to cite a row, when any row can be cited."""
+    cited = [cite_refs[r["_key"]] for r in records if r.get("_key") in cite_refs]
+    return [CITE_NOTE.format(ref=cited[0])] if cited else []
+
+
+def record_line(
+    record: dict[str, Any],
+    context: EntityAccessContext,
+    shortener: "RecordIdShortener | None",
+    frontend_url: str | None,
+    cite: str | None = None,
+) -> str:
+    """One listed record: type, name, id, its Citation ID when it has one, app, date and url."""
+    parts = [
+        f"- [{record.get('recordType') or 'RECORD'}] {_trunc(record.get('recordName') or record['_key'])}",
+        f"record_id={_short(record['_key'], shortener)}",
+    ]
+    if cite:
+        parts.append(f"cite={cite}")
+    app = context.app_names.get(record.get("connectorId"))
+    if app:
+        parts.append(f"app: {app}")
+    dated = _listing_date(record)
+    if dated:
+        parts.append(f"{dated[0]}: {_compact_date(dated[1])}")
+    url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
+    if url:
+        parts.append(f"url={url}")
+    return " | ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -267,5 +351,6 @@ __all__ = [
     "NO_FURTHER_RECORDS_MSG",
     "execute_find_records_by_entity",
     "EntitySearchScope",
+    "record_line",
     "resolve_entity_virtual_ids",
 ]

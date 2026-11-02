@@ -3,11 +3,22 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
 import type { Response } from 'express'
-import {
-  handleRegenerationError,
-  handleRegenerationStreamData,
-  handleRegenerationSuccess,
-} from '../../../../src/modules/enterprise_search/utils/utils'
+import * as utilsModule from '../../../../src/modules/enterprise_search/utils/utils'
+import { handleRegenerationStreamData } from '../../../../src/modules/enterprise_search/utils/utils'
+import { useDocumentAsSession } from './doc-backed-repo'
+import { setConversationRepository } from '../../../../src/libs/repositories/conversation'
+
+// The helpers write the session through the repository; these run them with the test's
+// document-like conversation standing in for the stored row (its own `save` stub is the write).
+// The default repository is put back in afterEach.
+const handleRegenerationSuccess = (...args: any[]): Promise<any> => {
+  useDocumentAsSession(args[1])
+  return (utilsModule.handleRegenerationSuccess as any)(...args)
+}
+const handleRegenerationError = (...args: any[]): Promise<any> => {
+  useDocumentAsSession(args[2])
+  return (utilsModule.handleRegenerationError as any)(...args)
+}
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { AGUI_PROTOCOL, frameAGUI } from '../../../../src/modules/enterprise_search/utils/agui'
 import { StreamedContentAccumulator } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
@@ -118,8 +129,9 @@ interface StreamCall {
   onAskUserQuestion?: (payload: unknown) => void
 }
 
-const feed = (res: FakeResponse, call: StreamCall): string =>
-  handleRegenerationStreamData(
+const feed = (res: FakeResponse, call: StreamCall): string => {
+  if (call.conversation) useDocumentAsSession(call.conversation)
+  return handleRegenerationStreamData(
     Buffer.from(call.chunk),
     call.buffer ?? '',
     call.conversation ? asDoc(call.conversation) : null,
@@ -133,10 +145,12 @@ const feed = (res: FakeResponse, call: StreamCall): string =>
     undefined,
     call.onAskUserQuestion,
   )
+}
 
 describe('Regenerating an answer (enterprise search utils)', () => {
   afterEach(() => {
     sinon.restore()
+    setConversationRepository()
   })
 
   describe('handleRegenerationStreamData on the AG-UI stream', () => {
@@ -202,7 +216,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       const existing = { _id: messageId, sessionId: conversation._id, orgId: conversation.orgId, seq: 4 }
-      sinon.stub(ChatSessionMessage, 'findById').resolves(existing)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(existing)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves(existing)
       const frame = frameAGUI('RUN_ERROR', { message: 'The AI model is not configured.', code: 'llm_config' })
 
@@ -212,7 +226,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(written(res)).to.equal(frame)
       expect(replace.calledOnce).to.equal(true)
       const [filter, replacement] = replace.firstCall.args as [{ _id: mongoose.Types.ObjectId }, ReplacedMessage]
-      expect(filter._id).to.equal(messageId)
+      expect(String(filter._id)).to.equal(String(messageId))
       expect(replacement.messageType).to.equal('error')
       expect(replacement.content).to.equal('The AI model is not configured.')
       expect(replacement.seq).to.equal(4)
@@ -226,7 +240,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
 
       feed(res, { chunk: frameAGUI('RUN_ERROR', { code: 'boom' }), conversation, messageId })
@@ -241,7 +255,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation({ save: sinon.stub().rejects(new Error('mongo down')) })
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
       const frame = frameAGUI('RUN_ERROR', { message: 'Rate limited' })
       const unhandled = sinon.spy()
@@ -261,7 +275,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
     it('does not touch any message when RUN_ERROR arrives without a message to replace', async () => {
       const res = makeRes()
       const conversation = makeConversation()
-      const findById = sinon.stub(ChatSessionMessage, 'findById')
+      const findById = sinon.stub(ChatSessionMessage, 'findOne')
       const frame = frameAGUI('RUN_ERROR', { message: 'nope' })
 
       feed(res, { chunk: frame, conversation, messageId: null })
@@ -358,7 +372,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       const existing = { _id: messageId, sessionId: conversation._id, orgId: conversation.orgId, seq: 6 }
-      sinon.stub(ChatSessionMessage, 'findById').resolves(existing)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(existing)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').callsFake(
         (_filter: unknown, replacement: unknown) =>
           Promise.resolve({ toObject: () => ({ _id: messageId, ...(replacement as object) }) }) as never,
@@ -400,7 +414,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(saved.metadata.recordId).to.equal('rec-1')
 
       const [filter, replacement] = replace.firstCall.args as [{ _id: mongoose.Types.ObjectId }, ReplacedMessage]
-      expect(filter._id).to.equal(messageId)
+      expect(String(filter._id)).to.equal(String(messageId))
       expect(replacement.content).to.equal('Revenue grew 12% quarter on quarter.')
       expect(replacement.messageType).to.equal('bot_response')
       expect(replacement.seq).to.equal(6)
@@ -423,7 +437,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
     it('stamps ask_user_question onto the replaced bot so a reload can restore the card', async () => {
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({
         _id: messageId,
         sessionId: conversation._id,
         orgId: conversation.orgId,
@@ -459,7 +473,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       const mongoSession = { id: 'txn' } as unknown as mongoose.ClientSession
-      const findById = sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+      const findById = sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({ _id: messageId }) })
       const citationSave = stubCitationSave()
 
@@ -468,7 +482,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
         asDoc(conversation),
         messageId.toString(),
         new mongoose.Types.ObjectId().toString(),
-        mongoSession,
+        { store: 'mongo', session: mongoSession },
       )
 
       expect(citationSave.firstCall.args[0]).to.deep.equal({ session: mongoSession })
@@ -478,7 +492,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
     it('fails without saving the conversation when the message to replace is gone', async () => {
       const conversation = makeConversation()
-      sinon.stub(ChatSessionMessage, 'findById').resolves(null)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
 
       let caught: unknown
@@ -496,7 +510,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
     it('fails when the conversation cannot be saved', async () => {
       const conversation = makeConversation({ save: sinon.stub().resolves(null) })
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) })
 
       let caught: unknown
@@ -513,7 +527,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
     it('marks the conversation failed when the regenerated answer is a classified failure', async () => {
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) })
       const failure = completeAnswer({
         answer: 'Your AI provider rejected the API key. Ask your admin to update it.',
@@ -531,7 +545,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
     it('keeps a stopped regeneration as a stopped answer', async () => {
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) })
 
       await handleRegenerationSuccess(
@@ -567,9 +581,9 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 2 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
-      const reloaded = { _id: conversation._id, toObject: () => ({ _id: conversation._id, title: 'Reloaded', nextSeq: 3 }) }
+      const reloaded = { _id: conversation._id, toObject: () => ({ _id: conversation._id, initiator: 'author-1', title: 'Reloaded', nextSeq: 3 }) }
       const findConversation = sinon.stub(ChatSession, 'findById').resolves(reloaded)
       stubMessagesQuery([{ _id: messageId, messageType: 'error', content: CHAT_ERROR_MESSAGES.unavailable, seq: 2, orgId: 'o' }])
       const error = Object.assign(new Error('connect ECONNREFUSED 10.0.0.7:8000'), { code: 'ECONNREFUSED' })
@@ -595,7 +609,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 2 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
       sinon.stub(ChatSession, 'findById').resolves(null)
 
@@ -612,7 +626,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation({ save: sinon.stub().rejects(new Error('write conflict')) })
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 2 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
       const reload = sinon.stub(ChatSession, 'findById')
 

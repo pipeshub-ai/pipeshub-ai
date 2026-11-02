@@ -66,7 +66,7 @@ export function EntityEmptyState({
         </Text>
       </Flex>
 
-      <Button size="2" onClick={onCtaClick} style={{ marginTop: 'var(--space-2)' }}>
+      <Button size="2" className="touch-hit" onClick={onCtaClick} style={{ marginTop: 'var(--space-2)' }}>
         <MaterialIcon name={ctaIcon} size={16} color="currentColor" />
         {ctaLabel}
       </Button>

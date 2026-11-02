@@ -278,3 +278,38 @@ class TestRedisDimensionMismatch:
             assert info.dense_dimension == DIM
         finally:
             await redis_service.delete_collection(col)
+
+
+# ---------------------------------------------------------------------------
+# Wire protocol
+# ---------------------------------------------------------------------------
+
+class TestRedisRespShapes:
+    """The vector store parses RESP2 arrays out of raw FT.* replies.
+
+    redis-py 6+ defaults to RESP3, where the same commands return maps; the
+    parsers then fail on every call. The providers pin protocol 2.
+    """
+
+    async def test_service_client_is_pinned_to_resp2(self, redis_service) -> None:
+        client = redis_service.get_service_client()
+        assert client.connection_pool.connection_kwargs.get("protocol") == 2
+
+    async def test_ft_info_and_ft_search_replies_are_arrays(self, redis_service) -> None:
+        col = make_collection("redis_resp2")
+        pts = sample_points("org1")
+        idx = f"{col}_idx"
+        try:
+            await redis_service.create_collection(col, make_collection_config())
+            await redis_service.upsert_points(col, pts)
+            await _wait_index_ready(redis_service, col, expected_docs=len(pts))
+
+            client = redis_service.get_service_client()
+            info = await client.execute_command("FT.INFO", idx)
+            assert isinstance(info, list), type(info)
+
+            found = await client.execute_command("FT.SEARCH", idx, "*", "NOCONTENT")
+            assert isinstance(found, list), type(found)
+            assert found[0] == len(pts)
+        finally:
+            await redis_service.delete_collection(col)

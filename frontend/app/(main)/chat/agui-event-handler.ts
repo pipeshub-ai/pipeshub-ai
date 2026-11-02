@@ -39,8 +39,10 @@ interface AGUIStreamState {
   rawLength: number;
 }
 
-// Mirrors the server-side caps in `transcript_collector.py` — defensive
-// only, since the server already truncates before these deltas are sent.
+// Mirrors the server-side caps in `transcript_collector.py`. A result arrives
+// already truncated, but a TOOL_CALL_ARGS `delta` is the call's whole JSON:
+// `args` takes the frame's `argsPreview`, and cuts `delta` only from a server
+// that does not send one.
 const MAX_TOOL_ARGS_CHARS = 2000;
 const MAX_TOOL_RESULT_CHARS = 2000;
 
@@ -78,6 +80,9 @@ class LivePartsBuilder {
    * own `RUN_STARTED` (see `AGUIEventEmitter._translate`) — stash the role
    * name here, keyed by the parent's runId, until that `RUN_STARTED` lands. */
   private pendingRoleByParent = new Map<string, string>();
+
+  /** messageId -> where that text message's model call starts in its container. */
+  private modelCallStarts = new Map<string, { container: MessagePart[]; index: number }>();
 
   private containerFor(runId: string | undefined): MessagePart[] {
     if (!runId) return this.parts;
@@ -199,7 +204,7 @@ class LivePartsBuilder {
     const part = this.openToolCalls.get(toolCallId);
     if (!part) return;
     const delta = typeof data.delta === 'string' ? data.delta : '';
-    part.args = delta.slice(0, MAX_TOOL_ARGS_CHARS);
+    part.args = typeof data.argsPreview === 'string' ? data.argsPreview : delta.slice(0, MAX_TOOL_ARGS_CHARS);
     if (typeof data.argsSummary === 'string') {
       part.argsSummary = data.argsSummary;
     }
@@ -241,8 +246,21 @@ class LivePartsBuilder {
     }
     const runId = typeof data.runId === 'string' ? data.runId : undefined;
     const part: MessagePart = { type: 'text', content: '', runId };
-    this.containerFor(runId).push(part);
+    const container = this.containerFor(runId);
+    if (messageId) this.modelCallStarts.set(messageId, { container, index: container.length });
+    container.push(part);
     this.openTurnParts.set(`${runId ?? ''}:text`, part);
+  }
+
+  /** Mirrors `TranscriptCollector`: a model call that failed mid-stream is
+   * dropped whole — its text message and the reasoning streamed after it. */
+  discardMessage(messageId: string | undefined, runId: string | undefined): void {
+    if (!messageId) return;
+    const start = this.modelCallStarts.get(messageId);
+    this.modelCallStarts.delete(messageId);
+    this.openTurnParts.delete(`${runId ?? ''}:text`);
+    this.openTurnParts.delete(`${runId ?? ''}:reasoning`);
+    if (start) start.container.splice(start.index);
   }
 
   handleTextContent(data: AGUIEventEnvelope): void {
@@ -334,6 +352,7 @@ export function createAGUIEventHandler(
 ): (event: SSEEvent) => void {
   let textBuffer = '';
   let rawTextReceived = 0;
+  let awaitingRetryAfterDiscard = false;
   let state: AGUIStreamState = { citations: [], normalizedAnswer: '', rawLength: 0 };
   const partsBuilder = new LivePartsBuilder();
   const emitParts = () => callbacks.onParts?.(partsBuilder.snapshot());
@@ -386,6 +405,7 @@ export function createAGUIEventHandler(
         if (isNewRootTurn) {
           textBuffer = '';
           rawTextReceived = 0;
+          awaitingRetryAfterDiscard = false;
         }
         if (data) partsBuilder.handleTextStart(data);
         emitParts();
@@ -514,13 +534,24 @@ export function createAGUIEventHandler(
         const textOps: AGUIJsonPatchOp[] = [];
         for (const op of ops) {
           if (op.op === 'add' && op.path === '/artifacts/-') {
-            callbacks.onArtifact?.(op.value as SSEArtifactEvent);
+            if (op.value) callbacks.onArtifact?.(op.value as SSEArtifactEvent);
           } else {
             textOps.push(op);
           }
         }
         if (textOps.length === 0) break;
+        // The answer streamer runs behind these frames, so snapshots of the
+        // discarded attempt can follow `message_discarded`; the one marked
+        // `/discarded` is the first written after it.
+        const endsDiscard = textOps.some((op) => op.path === '/discarded');
+        if (awaitingRetryAfterDiscard && !endsDiscard) break;
         state = applyStatePatch(state, textOps);
+        if (endsDiscard) {
+          awaitingRetryAfterDiscard = false;
+          textBuffer = state.normalizedAnswer;
+          callbacks.onChunk?.({ chunk: '', accumulated: textBuffer, citations: state.citations });
+          break;
+        }
         const normalizationCurrent =
           state.rawLength > 0
             ? state.rawLength >= rawTextReceived
@@ -545,7 +576,22 @@ export function createAGUIEventHandler(
         } else if (name === 'ask_user_question') {
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
         } else if (name === 'artifact') {
-          callbacks.onArtifact?.(value as SSEArtifactEvent);
+          if (value) callbacks.onArtifact?.(value as SSEArtifactEvent);
+        } else if (name === 'message_discarded') {
+          const runId = typeof data?.runId === 'string' ? data.runId : undefined;
+          const discarded = (value ?? {}) as { messageId?: unknown };
+          partsBuilder.discardMessage(
+            typeof discarded.messageId === 'string' ? discarded.messageId : undefined,
+            runId,
+          );
+          if (partsBuilder.isRootRun(runId)) {
+            textBuffer = '';
+            rawTextReceived = 0;
+            awaitingRetryAfterDiscard = true;
+            state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+          }
+          emitParts();
         }
         break;
       }

@@ -60,6 +60,10 @@ const VALID_INDEXING_STATUS = new Set<string>([
   'AUTO_INDEX_OFF',
   'QUEUED',
   'EMPTY',
+  'PAUSED',
+  'ENABLE_MULTIMODAL_MODELS',
+  'SKIPPED',
+  'PASSWORD_PROTECTED',
 ]);
 const VALID_SIZE_RANGES = new Set<string>(['lt1mb', '1to10mb', '10to100mb']);
 const VALID_ORIGINS = new Set<string>(['COLLECTION', 'CONNECTOR']);

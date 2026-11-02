@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
-import { mapApiConversationToConversation } from '@/chat/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
 
@@ -175,6 +176,8 @@ export interface AgentChatToolGroupRow {
   /** Stable id for UI keys — same toolset type may appear multiple times as instances. */
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
 }
@@ -251,6 +254,7 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
       label: (server.displayName || server.name || 'MCP Server').trim(),
       toolsetSlug: 'mcp',
       ...(instanceId ? { instanceId } : {}),
+      typeId: server.typeId?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
     });
@@ -466,7 +470,10 @@ function emptyPagination(): AgentsListPagination {
 }
 
 export const AgentsApi = {
-  async getAgents(params?: AgentsListParams): Promise<AgentsListResult> {
+  async getAgents(
+    params?: AgentsListParams,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentsListResult> {
     const query: Record<string, string | number> = {};
     if (params?.page != null) query.page = params.page;
     if (params?.limit != null) query.limit = params.limit;
@@ -474,15 +481,25 @@ export const AgentsApi = {
     if (params?.sort) query.sort_by = params.sort;
     if (params?.order) query.sort_order = params.order;
 
-    const { data } = await apiClient.get<AgentsListApiResponse>(AGENTS_BASE_URL, { params: query });
+    const { data } = await apiClient.get<AgentsListApiResponse>(AGENTS_BASE_URL, {
+      params: query,
+      suppressErrorToast: options?.suppressErrorToast,
+    });
     return {
       agents: data?.agents ?? [],
       pagination: data?.pagination ?? emptyPagination(),
     };
   },
 
-  async getAgent(agentKey: string): Promise<GetAgentResult> {
-    const { data } = await apiClient.get<GetAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`);
+  /**
+   * `quiet` keeps a failed lookup from raising the global error toast, for callers that already cope
+   * with it: someone a chat was shared with may not be allowed to open the agent it belongs to.
+   */
+  async getAgent(agentKey: string, options?: { quiet?: boolean }): Promise<GetAgentResult> {
+    const { data } = await apiClient.get<GetAgentApiResponse>(
+      `${AGENTS_BASE_URL}/${agentKey}`,
+      options?.quiet ? { suppressErrorToast: true } : undefined,
+    );
     const agent = data?.agent;
     if (!agent || typeof agent !== 'object') {
       return { agent: null, toolFullNames: [] };
@@ -567,6 +584,21 @@ export const AgentsApi = {
    */
   async deleteAgentConversation(agentId: string, conversationId: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`);
+  },
+
+  /**
+   * Copy an agent conversation into a new chat, including every message up to `messageId`.
+   * POST /api/v1/agents/:agentId/conversations/:conversationId/message/:messageId/fork
+   */
+  async forkAgentConversation(
+    agentId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<ForkConversationResult> {
+    const { data } = await apiClient.post<ForkConversationResult>(
+      `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}/message/${messageId}/fork`,
+    );
+    return data;
   },
 
   /**
@@ -689,6 +721,8 @@ export const AgentsApi = {
   /** POST /api/v1/agents/create */
   async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
     const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
+    // The request succeeded, so the agent may exist even if the body lacks it.
+    revalidateSwrNamespace(SWR_NS.agentLists);
     if (!data?.agent) throw new Error('Create agent failed');
     return data.agent;
   },
@@ -700,6 +734,7 @@ export const AgentsApi = {
   async updateAgent(agentKey: string, payload: Partial<AgentFormPayload>): Promise<AgentDetail> {
     const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
 
+    revalidateSwrNamespace(SWR_NS.agentLists);
     if (data?.agent && typeof data.agent === 'object') {
       return data.agent;
     }
@@ -716,6 +751,7 @@ export const AgentsApi = {
   /** DELETE /api/v1/agents/:agentKey */
   async deleteAgent(agentKey: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
+    revalidateSwrNamespace(SWR_NS.agentLists);
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */

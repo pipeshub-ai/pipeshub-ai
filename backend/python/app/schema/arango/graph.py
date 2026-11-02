@@ -86,6 +86,7 @@ EDGE_DEFINITIONS = [
             CollectionNames.MEETINGS.value,
             CollectionNames.ARTIFACTS.value,
             CollectionNames.SQL_TABLES.value,
+            CollectionNames.SQL_COLUMNS.value,
             CollectionNames.SQL_VIEWS.value,
         ],
     },
@@ -107,8 +108,9 @@ EDGE_DEFINITIONS = [
     {
         # Links between records, apart from the hierarchy.
         "edge_collection": CollectionNames.RECORD_LINKS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value],
+        # Code-graph edges are links too (record->block CONTAINS, block->block CALLS).
+        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.BLOCKS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.BLOCKS.value],
     },
     {
         "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,

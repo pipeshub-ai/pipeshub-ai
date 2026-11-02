@@ -34,6 +34,7 @@ from helper.admin_route_conditional_table import (
     fill,
 )
 from helper.admin_route_conditional_world import Reply, World, oauth_state, send
+from helper.admin_route_table import ORG_TOOL_RULES_OFF, TOOL_RULES_HANDLERS
 from helper.http.session_client import SessionClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user
@@ -132,6 +133,8 @@ def test_the_route_enforces_its_rule(
     route: ConditionalRoute, case: Case, world: World, no_leftovers: None
 ) -> None:
     reply, used = _ask(world, route, case)
+    if route.handler in TOOL_RULES_HANDLERS and reply.status == 404 and ORG_TOOL_RULES_OFF in reply.text:
+        pytest.skip("Organization tool rules are off in this edition, so there is no rule to check")
 
     def value_of(text: str) -> str:
         return fill(text, used.__getitem__)

@@ -30,7 +30,6 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.agui_sse import (
-    decode_sse_envelope,
     is_root_error,
     is_root_finished,
     iter_sse_envelopes,
@@ -1044,7 +1043,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             content_type = (resp.headers.get("Content-Type") or "").lower()
             for envelope in iter_sse_envelopes(resp):
                 assert_matches_component_schema(
-                    decode_sse_envelope(envelope),
+                    envelope,
                     "AgentRegenerateSSEEvent",
                 )
                 parsed_data: Any

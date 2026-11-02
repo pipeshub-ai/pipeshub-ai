@@ -150,6 +150,13 @@ describe('OIDCProviderController', () => {
       expect(meta.pipeshub_device_client_id).to.equal('pipeshub-agent')
     })
 
+    it('should list only the MCP_SCOPES the MCP tools use', async () => {
+      mockAppConfig.mcpScopes = ['openid', 'email', 'offline_access', 'semantic:write', 'conversation:write', 'kb:read']
+      await controller.oauthProtectedResource({} as any, mockRes, mockNext)
+      const meta = mockRes.json.firstCall.args[0]
+      expect(meta.scopes_supported).to.deep.equal(['offline_access', 'semantic:write', 'kb:read'])
+    })
+
     it('should omit pipeshub_device_client_id when the device grant is disabled', async () => {
       process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
       await controller.oauthProtectedResource({} as any, mockRes, mockNext)

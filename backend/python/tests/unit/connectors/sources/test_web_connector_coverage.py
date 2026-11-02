@@ -421,7 +421,7 @@ class TestNormalizeUrl:
     def test_lowercases_netloc(self):
         c = _make_connector()
         result = c._normalize_url("https://EXAMPLE.COM/path")
-        assert "example.com" in result
+        assert result == "https://example.com/path"
 
     def test_root_path_preserved(self):
         c = _make_connector()

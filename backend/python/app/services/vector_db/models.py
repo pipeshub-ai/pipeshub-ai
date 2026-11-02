@@ -144,6 +144,9 @@ class VectorChunkMetadata:
         bytes) rather than a text embedding of a description. Absent/None on
         VLM-description-fallback image points, which are text embeddings and
         should be treated like any other text point for search purposes.
+    isBlock / isBlockGroup: whether the point embeds one block or a block group.
+    isRecordSummary: True on the point holding the record's summary.
+    blockGroupIndex: the group's index, on table and SQL group points.
     """
     orgId: str | None = None
     virtualRecordId: str | None = None
@@ -151,6 +154,10 @@ class VectorChunkMetadata:
     blockIndex: int | None = None
     blockType: str | None = None
     isImage: bool | None = None
+    isBlock: bool | None = None
+    isBlockGroup: bool | None = None
+    isRecordSummary: bool | None = None
+    blockGroupIndex: int | None = None
 
 
 @dataclass
@@ -187,6 +194,10 @@ class VectorChunkPayload:
             blockIndex=meta_raw.get("blockIndex"),
             blockType=meta_raw.get("blockType"),
             isImage=meta_raw.get("isImage"),
+            isBlock=meta_raw.get("isBlock"),
+            isBlockGroup=meta_raw.get("isBlockGroup"),
+            isRecordSummary=meta_raw.get("isRecordSummary"),
+            blockGroupIndex=meta_raw.get("blockGroupIndex"),
         )
         return cls(
             page_content=data.get("page_content", ""),

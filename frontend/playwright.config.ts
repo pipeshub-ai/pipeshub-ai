@@ -6,7 +6,7 @@ dotenv.config({ path: '.env.test' });
 const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
 
 // Tests that need a real AI model; they run in the `ai` project below.
-const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /agents\/.*\.spec\.ts/];
+const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /chat\/chat-link-labels\.spec\.ts/, /agents\/.*\.spec\.ts/];
 
 // Sign-up and onboarding need a stack with no organization, so they run only
 // when asked for, before CI creates the org every other test signs in to.
@@ -68,7 +68,7 @@ export default defineConfig({
     {
       name: 'seed',
       testMatch: /seed\/.*\.spec\.ts/,
-      dependencies: ['setup'],
+      dependencies: ['setup', 'embedding-model'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
@@ -79,12 +79,40 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, ...AI_SPECS],
-      dependencies: ['setup'],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, /responsive\//, ...AI_SPECS],
+      dependencies: ['setup', 'embedding-model'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
       },
+    },
+
+    // Every screen at phone, tablet and desktop sizes. Each test sets its own
+    // viewport, so no device preset here.
+    {
+      name: 'responsive',
+      testMatch: /responsive\/.*\.spec\.ts/,
+      dependencies: ['setup', 'embedding-model'],
+      use: {
+        storageState: '.auth/user.json',
+        // Its own screenshots go to EVIDENCE_DIR.
+        screenshot: 'off',
+        trace: 'off',
+      },
+    },
+
+    // The answering tests' embedding model, added before any project that
+    // uploads files: once the built-in model has embedded a record, the backend
+    // refuses to switch embedding models.
+    {
+      name: 'embedding-model',
+      testMatch: /setup\/embedding-model\.provision\.ts/,
+      dependencies: ['setup'],
+      teardown: 'embedding-model-cleanup',
+    },
+    {
+      name: 'embedding-model-cleanup',
+      testMatch: /setup\/embedding-model\.cleanup\.ts/,
     },
 
     // Adds the AI models the answering tests need once, and removes them once
@@ -92,7 +120,7 @@ export default defineConfig({
     {
       name: 'ai-models',
       testMatch: /setup\/ai-models\.provision\.ts/,
-      dependencies: ['setup'],
+      dependencies: ['setup', 'embedding-model'],
       teardown: 'ai-models-cleanup',
     },
     {
@@ -102,7 +130,7 @@ export default defineConfig({
     {
       name: 'ai',
       testMatch: AI_SPECS,
-      dependencies: ['setup', 'ai-models'],
+      dependencies: ['setup', 'embedding-model', 'ai-models'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',

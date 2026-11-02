@@ -10,6 +10,7 @@ import {
   redactQueryForLog,
   redactSecretsInText,
 } from '../utils/log-redaction.utils';
+import { getProvider } from './structured-logging';
 
 const redactMetadata = winston.format((info) => {
   if (info.metadata !== undefined) {
@@ -166,12 +167,10 @@ export class Logger {
       })
     );
 
-    return winston.createLogger({
-      levels: customLevels.levels,
-      level: config?.level || getLogLevel(),
-      format: logFormat,
-      defaultMeta: this.defaultMeta,
-      transports: [
+    const provider = getProvider();
+    const transports: winston.transport[] = [];
+    if (provider.fileLoggingEnabled()) {
+      transports.push(
         new winston.transports.File({
           filename: 'error.log',
           level: LogLevel.Error,
@@ -181,10 +180,20 @@ export class Logger {
           filename: 'combined.log',
           format: winston.format.combine(logFormat, winston.format.json())
         }),
-        new winston.transports.Console({
-          format: logFormat,
-        }),
-      ],
+      );
+    }
+    transports.push(
+      new winston.transports.Console({
+        format: provider.consoleFormat(logFormat),
+      }),
+    );
+
+    return winston.createLogger({
+      levels: customLevels.levels,
+      level: config?.level || getLogLevel(),
+      format: logFormat,
+      defaultMeta: this.defaultMeta,
+      transports,
     });
   }
 
@@ -241,7 +250,9 @@ export class Logger {
 
   static getInstance(config?: LoggerConfig): Logger {
     if (!Logger.instance) {
-      Logger.instance = new Logger(config || { service: 'default-service', level: LogLevel.Info });
+      Logger.instance = new Logger(
+        config ?? { service: 'default-service', level: getLogLevel() },
+      );
     } else if (config) {
       Logger.instance.updateDefaultMeta({
         service: config.service,
@@ -308,9 +319,14 @@ export class Logger {
     }
     const callerInfo = this.getCallerInfo();
     // Read at emit time; omitted entirely when there is no context.
-    const traceMeta = getRequestContext()
+    const store = getRequestContext();
+    const traceMeta: Record<string, unknown> = store
       ? { request_id: currentDisplayId(), thread_id: threadId }
       : {};
+    if (store?.orgId) {
+      const orgHash = getProvider().hashOrgId(store.orgId);
+      if (orgHash) traceMeta.organization_id_hash = orgHash;
+    }
     // Redact here, not in the printf format: the file transports append
     // winston's json() after it, and json() re-serialises `info` from scratch,
     // so anything only cleaned inside printf still reaches the log file raw.

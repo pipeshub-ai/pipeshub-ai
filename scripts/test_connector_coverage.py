@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import connector_coverage as cov  # noqa: E402
 
-PLACEHOLDERS = {"airtable", "calendar", "docs", "forms", "meet", "slides", "zendesk"}
+PLACEHOLDERS = {"airtable", "calendar", "docs", "forms", "meet", "slides"}
 
 
 class TestRegisteredConnectorsInThisRepo(unittest.TestCase):
@@ -77,6 +77,16 @@ class TestRegisteredConnectorsFollowTheImport(unittest.TestCase):
         with mock.patch.object(cov, "REPO", self.repo), mock.patch.object(cov, "FACTORY", factory):
             self.assertEqual(cov.registered_connectors(), {"real": "RealConnector"})
 
+
+
+class TestHeldOutSuites(unittest.TestCase):
+    def test_a_suite_no_ci_job_runs_is_not_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("snowflake", "postgres"):
+                (Path(tmp) / name).mkdir()
+                (Path(tmp) / name / f"{name}_integration_test.py").write_text("")
+            with mock.patch.object(cov, "INTEGRATION", Path(tmp)):
+                self.assertEqual(cov.tested_connectors(), {"postgres"})
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,8 +21,9 @@ Test cases:
   TC-DEL-001    — Deleting a file removes its record
   TC-FILTER-001 — A file type the sync filter excludes is not indexed
 
-Not covered, because the connector does not do it: narrowing the sync filter
-leaves files indexed earlier that the filter now excludes.
+Narrowing the sync filter removes files indexed earlier that it now excludes
+(the full sync's reconcile); the scenario matrix's filter_change covers that,
+and nextcloud_review_cases_test.py the review cases.
 """
 
 import logging

@@ -11,15 +11,17 @@ import { AppConfig } from '../../tokens_manager/config/config';
 const logger = Logger.getInstance({ service: 'ProjectTeamMembership' });
 
 /**
- * Generously large so one page covers virtually every org — team
- * membership resolution here is a best-effort access-check input, not a
- * paginated listing UI, so silently missing a team beyond this page only
- * risks under-granting access, never over-granting it.
+ * The connector service caps `limit` at 100 and answers 422 above it, which
+ * this module used to read as "no teams", so every team row granted nothing.
  */
-const TEAM_MEMBERSHIP_FETCH_LIMIT = 500;
+const TEAM_MEMBERSHIP_PAGE_SIZE = 100;
+
+/** Bounds the page walk; a caller in more teams than this is under-granted, never over-granted. */
+const TEAM_MEMBERSHIP_MAX_PAGES = 20;
 
 interface TeamsListResponseShape {
   teams?: Array<{ id?: string; _id?: string }>;
+  pagination?: { pages?: number };
 }
 
 /**
@@ -65,25 +67,39 @@ async function fetchCallerTeamIds(
   appConfig: AppConfig,
 ): Promise<string[]> {
   try {
-    const commandOptions: AICommandOptions = {
-      uri: `${appConfig.connectorBackend}/api/v1/entity/user/teams?limit=${TEAM_MEMBERSHIP_FETCH_LIMIT}`,
-      method: HttpMethod.GET,
-      headers: {
-        ...(req.headers as Record<string, string>),
-        'Content-Type': 'application/json',
-      },
-    };
-    const response =
-      await new AIServiceCommand<TeamsListResponseShape>(
+    const teamIds: string[] = [];
+    for (let page = 1; page <= TEAM_MEMBERSHIP_MAX_PAGES; page += 1) {
+      const commandOptions: AICommandOptions = {
+        uri: `${appConfig.connectorBackend}/api/v1/entity/user/teams?page=${String(page)}&limit=${String(TEAM_MEMBERSHIP_PAGE_SIZE)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const response = await new AIServiceCommand<TeamsListResponseShape>(
         commandOptions,
       ).execute();
-    if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
-      return [];
+      if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
+        logger.warn('Team lookup for project access did not succeed', {
+          statusCode: response.statusCode,
+          page,
+        });
+        return teamIds;
+      }
+      const teams = response.data.teams ?? [];
+      for (const team of teams) {
+        const id = team.id ?? team._id;
+        if (id !== undefined && id !== '') teamIds.push(id);
+      }
+      const pages = response.data.pagination?.pages;
+      const lastPage =
+        typeof pages === 'number'
+          ? page >= pages
+          : teams.length < TEAM_MEMBERSHIP_PAGE_SIZE;
+      if (lastPage) break;
     }
-    const teams = response.data.teams ?? [];
-    return teams
-      .map((team) => team.id ?? team._id)
-      .filter((id): id is string => Boolean(id));
+    return teamIds;
   } catch (error) {
     logger.warn('Failed to resolve caller team memberships for project access', {
       error: error instanceof Error ? error.message : String(error),

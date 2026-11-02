@@ -1,6 +1,5 @@
 """Comprehensive coverage tests for Gmail Individual connector."""
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,11 +18,6 @@ from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
 from app.models.entities import (
-    AppUser,
-    MailRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -770,30 +764,6 @@ class TestCreatePersonalRecordGroup:
 # Tests: _merge_history_changes
 # ---------------------------------------------------------------------------
 
-class TestMergeHistoryChanges:
-    def test_merge_dedup(self):
-        connector = _make_connector()
-        inbox = {"history": [{"id": "1"}, {"id": "2"}]}
-        sent = {"history": [{"id": "2"}, {"id": "3"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        assert len(result["history"]) == 3
-
-    def test_empty_histories(self):
-        connector = _make_connector()
-        inbox = {"history": []}
-        sent = {"history": []}
-        result = connector._merge_history_changes(inbox, sent)
-        assert len(result["history"]) == 0
-
-    def test_sorted_by_id(self):
-        connector = _make_connector()
-        inbox = {"history": [{"id": "3"}, {"id": "1"}]}
-        sent = {"history": [{"id": "2"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        ids = [h["id"] for h in result["history"]]
-        assert ids == ["1", "2", "3"]
-
-
 # ---------------------------------------------------------------------------
 # Tests: test_connection_and_access
 # ---------------------------------------------------------------------------
@@ -805,6 +775,8 @@ class TestTestConnectionAndAccess:
         connector.gmail_data_source = MagicMock()
         connector.gmail_client = MagicMock()
         connector.gmail_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(return_value={"emailAddress": "u@test.com"})
         result = await connector.test_connection_and_access()
         assert result is True
 

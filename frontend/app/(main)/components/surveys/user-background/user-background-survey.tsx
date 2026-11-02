@@ -91,7 +91,7 @@ export function UserBackgroundSurvey() {
           borderRadius: 'var(--radius-2)',
           width: '460px',
           maxWidth: 'calc(100vw - 32px)',
-          maxHeight: 'calc(100vh - 48px)',
+          maxHeight: 'calc(100dvh - 48px)',
           boxShadow: '0 4px 24px 0 rgba(0,0,0,0.32)',
           overflow: 'hidden',
         }}

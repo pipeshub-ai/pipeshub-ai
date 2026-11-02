@@ -1,10 +1,14 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import http from 'http'
+import type { AddressInfo } from 'net'
+import axios from 'axios'
 import { Container } from 'inversify'
 import {
   createConnectorRouter,
   requireVectorStoreRebuild,
+  reindexConnectorSchema,
 } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
@@ -48,6 +52,8 @@ describe('Connector Routes', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     mockCrawlingContainer = {
@@ -1042,6 +1048,43 @@ describe('Connector Routes', () => {
       expect(next.firstCall.args[0]).to.be.instanceOf(Error)
     })
   })
+
+  describe('reindexConnectorSchema stages', () => {
+    const params = { connectorId: 'conn-1' }
+
+    it('accepts stages: ["classify"] and keeps it in the parsed body', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['classify'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['classify'])
+    })
+
+    it('accepts stages: ["entities"], which has no record status of its own', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['entities'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['entities'])
+    })
+
+    it('accepts a body without stages', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { statusFilters: ['FAILED'] } })
+      expect(result.success).to.be.true
+    })
+
+    it('rejects an unknown stage name', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: ['embed'] } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an empty stages array', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: [] } })
+      expect(result.success).to.be.false
+    })
+  })
 })
 
 describe('Connector Routes - handler coverage', () => {
@@ -1078,6 +1121,8 @@ describe('Connector Routes - handler coverage', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     const mockCrawlingContainer = {
@@ -1814,6 +1859,18 @@ describe('Connector Routes - handler coverage', () => {
         expect(url).to.include('start_block=5')
       })
 
+      it('sends an extract request on to the query service', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ query: 'how many sponsors', extract: 'true' })
+
+        const url: string = exec.firstCall.args[0]
+        expect(url).to.include('/api/v1/records/rec-1/read?')
+        expect(url).to.include('extract=true')
+      })
+
       it('keeps a startBlock of 0, which means "read in order from the top"', async () => {
         const exec = sinon
           .stub(connectorUtils, 'executeConnectorCommand')
@@ -1829,6 +1886,7 @@ describe('Connector Routes - handler coverage', () => {
         ['a budget above 140000 characters', { maxChars: '500000' }],
         ['a negative startBlock', { startBlock: '-1' }],
         ['an unknown mode', { mode: 'channel' }],
+        ['an extract that is not true or false', { query: 'x', extract: 'yes' }],
       ]
       for (const [name, query] of invalid) {
         it(`rejects ${name} without reaching a backend`, async () => {
@@ -1843,5 +1901,36 @@ describe('Connector Routes - handler coverage', () => {
         })
       }
     })
+  })
+})
+
+// Loading the routes module sets the retry policy of the process-wide axios client.
+describe('axios retry policy set by the connector routes', () => {
+  const countRequests = async (headers: Record<string, string>): Promise<number> => {
+    let count = 0
+    const server = http.createServer((_req, res) => {
+      count += 1
+      res.writeHead(429, headers).end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = server.address() as AddressInfo
+      const status = await axios.get(`http://127.0.0.1:${port}/`).then(
+        () => 200,
+        (e) => e.response?.status,
+      )
+      expect(status).to.equal(429)
+      return count
+    } finally {
+      server.close()
+    }
+  }
+
+  it('passes a 429 with a long Retry-After straight back', async () => {
+    expect(await countRequests({ 'Retry-After': '2351' })).to.equal(1)
+  })
+
+  it('still retries a 429 with no Retry-After', async () => {
+    expect(await countRequests({})).to.equal(4)
   })
 })

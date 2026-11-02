@@ -1,4 +1,5 @@
-"""Named-entity stage wiring: never raises, gated by the flag, safe on failure."""
+"""Named-entity wiring: its own pipeline stage beside classification, never raises, gated
+by the flag, safe on failure."""
 
 import asyncio
 import logging
@@ -8,15 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.blocks import BlocksContainer
 from app.models.entities import EntityType
-from app.modules.named_entities import stage
+from app.modules.named_entities import extractor, stage
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.models import (
     Mention,
     NamedEntity,
     NamedEntityExtraction,
 )
-from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
 _SECRET_NAME = "Zebulon Quartermaine"
@@ -60,79 +61,130 @@ def _sink(graph=None) -> SinkOrchestrator:
     return sink
 
 
-async def test_pipeline_runs_extraction_concurrently_with_classify():
-    order: list[str] = []
-    released = asyncio.Event()
+def _view_job(stage_name: str = "entities"):
+    from app.modules.pipeline.models import Priority, StageJob
+    from app.services.resource_governor.models import ParseTier
 
-    async def extract(ctx):
-        order.append("ner-start")
-        released.set()
-        return _extraction()
-
-    async def classify(ctx):
-        await asyncio.wait_for(released.wait(), timeout=1)
-        order.append("classify-done")
-        ctx.record.semantic_metadata = MagicMock(summary="")
-
-    doc_extraction = MagicMock(apply=AsyncMock(side_effect=classify))
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(side_effect=extract)
-    sink.resolve_entities = AsyncMock()
-    sink.attach_named_entities = MagicMock(side_effect=lambda *a: order.append("attach"))
-    sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
-    sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
-    sink.persist_named_entities = AsyncMock(side_effect=lambda *a: order.append("persist"))
-    ctx = MagicMock()
-    await IndexingPipeline(doc_extraction, sink)._enrich(ctx)
-    assert order == ["ner-start", "classify-done", "attach", "blob", "enrich", "persist"]
+    return StageJob.model_validate({
+        "stage": stage_name, "stage_version": 1, "org_id": "org-1", "virtual_record_id": "vr-1",
+        "rev": "rev-a", "record_ids": ("rec-1",), "connector_id": "conn-1", "tier": ParseTier.LIGHT,
+        "priority": Priority.BULK, "trigger": "embed", "text_digest": "t", "blocks_digest": "b",
+        "text_chars": 10, "has_tables": False, "has_images": False,
+    })
 
 
-async def test_pipeline_cancels_extraction_when_classify_fails():
-    started = asyncio.Event()
-    cancelled = asyncio.Event()
+async def test_extraction_is_dispatched_beside_classification_not_after_it():
+    """Named entities run in parallel with classification: both stages are dispatched the
+    moment the record is searchable, and only classification owns extractionStatus."""
+    from app.modules.pipeline.coordinator import Coordinator
+    from app.modules.pipeline.models import HeadlineField, Priority
+    from app.modules.pipeline.policy import DEFAULT_POLICY
+    from app.modules.pipeline.registry import StageRegistry
+    from app.modules.pipeline.stages.classify import ClassifyStage
+    from app.modules.pipeline.stages.entities import EntitiesStage
+    from tests.unit.modules.pipeline.fakes import (
+        Clock,
+        InMemoryStageStateStore,
+        RecordingHeadlines,
+        RecordingProducer,
+    )
 
-    async def extract(ctx):
-        started.set()
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(ClassifyStage())
+    registry.register(EntitiesStage())
+    clock = Clock()
+    headlines, producer = RecordingHeadlines(), RecordingProducer()
+    coordinator = Coordinator(
+        registry, InMemoryStageStateStore(clock), headlines, producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=clock,
+    )
 
-    async def classify(ctx):
-        await started.wait()
-        raise RuntimeError("classify down")
+    published = await coordinator.on_external_done(
+        "embed", _view_job("embed").view, priority=Priority.BULK, trigger="index"
+    )
 
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(side_effect=extract)
-    pipeline = IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)
-    with pytest.raises(RuntimeError):
-        await pipeline._enrich(MagicMock())
-    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    assert sorted(job_id.rsplit(":", 1)[1] for job_id in published) == ["classify@1", "entities@1"]
+    assert len(producer.jobs("pipeline.classify")) == 1
+    assert len(producer.jobs("pipeline.entities")) == 1
+    assert [write[1] for write in headlines.writes] == [HeadlineField.EXTRACTION]
 
 
-async def test_the_cancelled_extraction_has_finished_when_enrich_raises() -> None:
-    """Awaited, not just cancelled: a task left pending is destroyed with a warning."""
-    started = asyncio.Event()
-    unwound = []
+class _SlowEntitiesIO:
+    def __init__(self, unwound: list[bool]) -> None:
+        self.unwound = unwound
 
-    async def extract(ctx: object) -> None:
-        started.set()
+    @property
+    def policy(self):
+        from app.modules.pipeline.policy import DEFAULT_POLICY
+
+        return DEFAULT_POLICY
+
+    @property
+    def deadline(self):
+        from app.modules.pipeline.stage import Deadline
+
+        return Deadline(60)
+
+    async def entities_config(self, job) -> dict:
+        return {}
+
+    async def current_record_ids(self, job) -> list[str]:
+        return ["rec-1"]
+
+    async def load_blocks(self, job):
+        from app.models.blocks import BlocksContainer
+
+        return BlocksContainer(blocks=[], block_groups=[])
+
+    async def extract(self, job, blocks):
         try:
             await asyncio.sleep(10)
         finally:
-            unwound.append(True)
+            self.unwound.append(True)
 
-    async def classify(ctx: object) -> None:
-        await started.wait()
-        raise RuntimeError("classify down")
 
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(side_effect=extract)
-    pipeline = IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)
-    with pytest.raises(RuntimeError, match="classify down"):
-        await pipeline._enrich(MagicMock())
+async def test_an_extraction_past_its_budget_is_cancelled_and_finished_before_the_retry():
+    """Awaited, not just cancelled: a task left pending is destroyed with a warning. The
+    stage's budget is what cuts it short now; classification is not involved."""
+    from app.modules.pipeline.coordinator import Coordinator
+    from app.modules.pipeline.policy import DEFAULT_POLICY
+    from app.modules.pipeline.registry import StageRegistry
+    from app.modules.pipeline.stages.entities import EntitiesStage
+    from app.modules.pipeline.worker import StageJobHandler, StageRetry
+    from app.services.messaging.config import StreamMessage
+    from tests.unit.modules.pipeline.fakes import (
+        Clock,
+        InMemoryStageStateStore,
+        RecordingHeadlines,
+        RecordingProducer,
+    )
+
+    class _Quick(EntitiesStage):
+        budget_s = 0.05
+
+    unwound: list[bool] = []
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_Quick())
+    clock = Clock()
+    states, headlines = InMemoryStageStateStore(clock), RecordingHeadlines()
+    coordinator = Coordinator(
+        registry, states, headlines, RecordingProducer(),  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=clock,
+    )
+    handler = StageJobHandler(
+        registry, states, headlines, coordinator, lambda job, deadline: _SlowEntitiesIO(unwound),
+        logger=logging.getLogger("t"), clock_ms=clock,
+    )
+    message = StreamMessage(eventType="stageJob", payload=_view_job().model_dump(mode="json", by_alias=True))
+
+    with pytest.raises(StageRetry):
+        async for _event in handler(message):
+            pass
+
     assert unwound == [True]
+    assert headlines.writes == []
 
 
 async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
@@ -160,7 +212,7 @@ async def test_a_malformed_config_blob_runs_with_the_defaults(config):
     with patch(
         "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
         AsyncMock(return_value=True),
-    ), patch.object(stage, "indexing_llm", AsyncMock(side_effect=RuntimeError("no model"))):
+    ), patch.object(extractor, "indexing_llm", AsyncMock(side_effect=RuntimeError("no model"))):
         result = await sink.extract_named_entities(SimpleNamespace(record=record))
     assert (result.status, result.termination_reason) == ("SKIPPED", "empty")
 
@@ -373,64 +425,98 @@ def test_no_module_writes_entity_extraction_status():
     assert writers == allowed
 
 
-async def test_an_extraction_without_classification_still_reaches_the_blob():
-    """The blob is what the graph and vectors are rebuilt from, so it must hold the
-    extraction even when classification gave no metadata; the graph writer must
-    still see no metadata, which it records as a failed classification."""
-    seen: dict = {}
+async def test_an_extraction_never_touches_the_stored_record() -> None:
+    """The extraction is kept as the stage's output; the stored record stays classification's
+    alone, and still reads as unclassified to the classify stage."""
+    from app.events.processor import convert_record_dict_to_record
+    from app.modules.pipeline.leases import RecordLeases
+    from app.modules.pipeline.policy import DEFAULT_POLICY
+    from app.modules.pipeline.stage import Deadline
+    from app.modules.pipeline.stages.classify_io import GraphClassifyIO
+    from app.modules.pipeline.stages.entities_io import GraphEntitiesIO
 
-    async def classify(ctx):
-        ctx.record.semantic_metadata = None
+    stored = {"block_containers": {"blocks": [], "block_groups": []}, "semantic_metadata": None}
 
-    async def blob(ctx):
-        seen["stored"] = ctx.record.semantic_metadata.named_entities
+    async def get(_vrid, _org):
+        return dict(stored)
 
-    async def enrich(ctx):
-        seen["graph_saw"] = ctx.record.semantic_metadata
+    async def save(_org, _record, _vrid, metadata):
+        stored["semantic_metadata"] = metadata
 
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(return_value=_extraction())
-    sink.blob_storage.apply = AsyncMock(side_effect=blob)
-    sink.enrich = AsyncMock(side_effect=enrich)
-    sink.persist_named_entities = AsyncMock()
-    ctx = SimpleNamespace(record=SimpleNamespace(semantic_metadata=None))
+    graph = MagicMock()
+    graph.get_document = AsyncMock(return_value={
+        "_key": "rec-1", "orgId": "org-1", "contentRev": "rev-a", "recordName": "a.txt",
+        "externalRecordId": "x", "connectorId": "conn-1", "mimeType": "text/plain",
+    })
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    blob = MagicMock(get_record_from_storage=AsyncMock(side_effect=get), save_semantic_metadata=AsyncMock(side_effect=save))
+    sink = MagicMock(persist_named_entities=AsyncMock(return_value="written"))
+    common = {
+        "policy": DEFAULT_POLICY, "graph": graph, "blob_storage": blob, "sink": sink, "config_service": MagicMock(),
+        "record_from_document": convert_record_dict_to_record, "record_leases": RecordLeases(),
+    }
 
-    await IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)._enrich(ctx)
+    io = GraphEntitiesIO(_view_job(), Deadline(30), **common)
+    await io.current_record_ids(_view_job())
+    blocks = BlocksContainer(blocks=[], block_groups=[])
+    assert await io.save(_view_job(), ["rec-1"], _extraction(), blocks) == "written"
+    # The persist also dates a knowledge-base upload by its text, so it gets the blocks.
+    assert sink.persist_named_entities.await_args.args[0].record.block_containers is blocks
 
-    assert seen["graph_saw"] is None
-    assert [entity["display_name"] for entity in seen["stored"]["entities"]] == [_SECRET_NAME]
-    assert ctx.record.semantic_metadata is None
-    sink.blob_storage.apply.assert_awaited_once()
-
-
-@pytest.mark.parametrize(
-    ("metadata", "extraction", "holds"),
-    [
-        (None, NamedEntityExtraction(status="SKIPPED", termination_reason="empty"), False),
-        ("classified", _extraction(), False),
-        (None, None, False),
-        (None, _extraction(), True),
-    ],
-)
-def test_the_blob_holder_is_set_only_when_it_carries_something(metadata, extraction, holds):
-    record = SimpleNamespace(semantic_metadata=metadata)
-    with stage.extraction_blob_holder(record, extraction) as held:
-        assert held is holds
-    assert record.semantic_metadata == metadata
+    blob.save_semantic_metadata.assert_not_awaited()
+    assert stored["semantic_metadata"] is None
+    sink.persist_named_entities.assert_awaited_once()
+    classify_io = GraphClassifyIO(_view_job("classify"), Deadline(30), classifier=AsyncMock(), **common)
+    assert not await classify_io.stored_metadata_present(_view_job("classify"))
 
 
-async def test_a_stored_extraction_is_written_again_without_a_model():
-    sink = _sink()
+def _reproject_ctx(legacy: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        record=SimpleNamespace(
+            virtual_record_id="vr-1",
+            semantic_metadata=SimpleNamespace(named_entities=legacy) if legacy is not None else None,
+        )
+    )
+
+
+async def test_the_kept_extraction_is_written_again_without_a_model() -> None:
+    graph = MagicMock()
+    graph.stage_state_get = AsyncMock(return_value={"status": "COMPLETED", "output": _extraction().model_dump_json()})
+    sink = _sink(graph)
     sink.persist_named_entities = AsyncMock(return_value="written")
-    stored = _extraction().model_dump(mode="json")
-    ctx = SimpleNamespace(record=SimpleNamespace(semantic_metadata=SimpleNamespace(named_entities=stored)))
 
-    assert await sink.reproject_named_entities(ctx) == "written"
+    assert await sink.reproject_named_entities(_reproject_ctx(None), content_rev="rev-a") == "written"
+
+    graph.stage_state_get.assert_awaited_once_with("vr-1:rev-a:entities")
     (_, extraction), _ = sink.persist_named_entities.await_args
     assert [entity.display_name for entity in extraction.entities] == [_SECRET_NAME]
 
-    ctx.record.semantic_metadata = None
-    assert await sink.reproject_named_entities(ctx) is None
+
+async def test_a_revision_the_stage_kept_nothing_for_reprojects_nothing() -> None:
+    """Skipped or turned off: the legacy section may hold an older revision's entities."""
+    graph = MagicMock()
+    graph.stage_state_get = AsyncMock(return_value={"status": "SKIPPED", "output": None})
+    sink = _sink(graph)
+    sink.persist_named_entities = AsyncMock()
+
+    legacy = _extraction().model_dump(mode="json")
+    assert await sink.reproject_named_entities(_reproject_ctx(legacy), content_rev="rev-a") is None
+    sink.persist_named_entities.assert_not_awaited()
+
+
+async def test_a_record_from_before_the_stage_reprojects_its_legacy_section() -> None:
+    graph = MagicMock()
+    graph.stage_state_get = AsyncMock(return_value=None)
+    sink = _sink(graph)
+    sink.persist_named_entities = AsyncMock(return_value="written")
+
+    legacy = _extraction().model_dump(mode="json")
+    assert await sink.reproject_named_entities(_reproject_ctx(legacy), content_rev="rev-a") == "written"
+    assert await sink.reproject_named_entities(_reproject_ctx(None), content_rev="rev-a") is None
+    # No revision (never indexed by a build with stages): only the legacy section is read.
+    graph.stage_state_get.reset_mock()
+    assert await sink.reproject_named_entities(_reproject_ctx(legacy), content_rev=None) == "written"
+    graph.stage_state_get.assert_not_awaited()
 
 
 async def test_an_extraction_records_what_it_was_normalized_against():
@@ -461,6 +547,16 @@ async def test_a_failed_persist_is_queued_for_retry_and_never_fails_indexing(sta
         graph.schedule_named_entity_persist_retry.assert_not_awaited()
 
 
+@pytest.mark.parametrize(("stage_outcome", "dated"), [("written", True), ("failed", True), ("superseded", False)])
+async def test_a_superseded_persist_leaves_the_dates_to_the_newer_write(stage_outcome: str, dated: bool) -> None:
+    sink = _sink(MagicMock(schedule_named_entity_persist_retry=AsyncMock(return_value=1)))
+    with patch.object(stage, "persist_named_entities", AsyncMock(return_value=stage_outcome)), \
+            patch("app.services.featureflag.platform_settings.is_named_entity_extraction_enabled", AsyncMock(return_value=True)), \
+            patch.object(SinkOrchestrator, "_apply_content_dates", AsyncMock()) as apply_dates:
+        await sink.persist_named_entities(SimpleNamespace(record=_record()), _extraction())
+    assert apply_dates.await_count == (1 if dated else 0)
+
+
 async def test_a_retry_that_cannot_be_recorded_still_does_not_raise():
     graph = MagicMock(schedule_named_entity_persist_retry=AsyncMock(side_effect=RuntimeError("graph down")))
     sink = _sink(graph)
@@ -479,3 +575,67 @@ async def test_a_retry_that_fails_again_keeps_its_count() -> None:
         await sink.persist_named_entities(SimpleNamespace(record=_record()), _extraction(), retry_due=100, retry_attempts=3)
     graph.schedule_named_entity_persist_retry.assert_awaited_once_with("org-1", "rec-1", "persist_failed", 3)
 
+
+
+async def test_writing_a_kept_extraction_again_folds_its_short_forms_and_learns_them() -> None:
+    # Stored before "Hospitality" was a designator: the short form is its own entity.
+    def org(name: str, block: int) -> NamedEntity:
+        return NamedEntity(
+            kind=EntityKind.ORGANIZATION, display_name=name, norm_key=f"name:organization:{name.casefold()}",
+            mentions=[Mention(block_index=block, char_start=0, char_end=len(name), surface=name, extractor="agent")],
+        )
+
+    kept = NamedEntityExtraction(
+        strategy="agent", termination_reason="finish_ok", status="COMPLETED",
+        entities=[org("Pinecrest Hospitality", 0), org("Pinecrest", 1)],
+    )
+    graph = MagicMock(
+        get_named_entities_for_record=AsyncMock(return_value=[]),
+        find_named_entities=AsyncMock(return_value=[]),
+        create_named_entities_if_absent=AsyncMock(),
+        add_named_entity_aliases=AsyncMock(),
+        replace_named_entity_values=AsyncMock(),
+        clear_named_entity_persist_retry=AsyncMock(return_value=True),
+    )
+    with patch("app.modules.named_entities.graph_writer.EdgeReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock()
+        assert await stage.persist_named_entities(
+            SimpleNamespace(record=_record()), kept, graph_provider=graph, graph_data_store=_store(), enabled=True,
+        ) == "written"
+
+    (docs,) = graph.create_named_entities_if_absent.await_args.args
+    assert [doc["name"] for doc in docs] == ["Pinecrest Hospitality"]
+    _org, kind, _key, displays, keys = graph.add_named_entity_aliases.await_args.args
+    assert (kind, displays, keys) == ("organization", ["Pinecrest"], ["name:organization:pinecrest"])
+    # The stored extraction itself is left as it was.
+    assert [e.display_name for e in kept.entities] == ["Pinecrest Hospitality", "Pinecrest"]
+
+
+async def test_a_year_less_date_is_written_in_the_year_nearest_the_records_creation() -> None:
+    from app.modules.named_entities.merge import entity_identity
+    from app.modules.named_entities.normalizers.dates import NormalizationContext
+
+    display, key, value = entity_identity(EntityKind.DATE, "Sep 10", NormalizationContext())
+    year_less = NamedEntity(
+        kind=EntityKind.DATE, display_name=display, norm_key=key, value=value,
+        mentions=[Mention(block_index=0, char_start=0, char_end=6, surface="Sep 10", extractor="value")],
+    )
+    kept = NamedEntityExtraction(strategy="agent", termination_reason="finish_ok", status="COMPLETED", entities=[year_less])
+    record = SimpleNamespace(**vars(_record()), source_created_at=1_759_320_000_000, connector_name="CONFLUENCE", origin="CONNECTOR")
+    graph = MagicMock(
+        get_named_entities_for_record=AsyncMock(return_value=[]),
+        find_named_entities=AsyncMock(return_value=[]),
+        create_named_entities_if_absent=AsyncMock(),
+        replace_named_entity_values=AsyncMock(),
+        clear_named_entity_persist_retry=AsyncMock(return_value=True),
+    )
+    with patch("app.modules.named_entities.graph_writer.EdgeReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock()
+        await stage.persist_named_entities(
+            SimpleNamespace(record=record), kept, graph_provider=graph, graph_data_store=_store(), enabled=True,
+        )
+
+    _record_id, values, _ = graph.replace_named_entity_values.await_args.args
+    # Created 2025-10-01: September 10 is 2025, and now has a start a date query can match.
+    assert [(v["timex"], v["startMs"] is not None) for v in values] == [("2025-09-10", True)]
+    assert kept.entities[0].value.ambiguous

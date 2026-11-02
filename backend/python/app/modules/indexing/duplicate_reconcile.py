@@ -33,6 +33,9 @@ MAX_RECONCILE_ATTEMPTS = 5
 
 _RECORDS = CollectionNames.RECORDS.value
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+# FAILED is left out: the copy stays NOT_STARTED and takes the outcome of a later
+# successful redrive, which a FAILED copy would never be offered.
+_FINAL_EXTRACTION = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.SKIPPED.value})
 
 
 class DuplicateReconciler:
@@ -60,19 +63,24 @@ class DuplicateReconciler:
             return True
         try:
             sibling_keys = [
-                key for key in (await self.graph.get_records_by_virtual_record_id(virtual_record_id) or [])
+                key for key in (
+                    await self.graph.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True)
+                    or []
+                )
                 if key and key != record_id
             ]
             if not sibling_keys:
                 return True
-            source_doc = await self.graph.get_document(record_id, _RECORDS)
+            # A read that fails must fail the reconcile, so the pending flag stays
+            # for the retry sweep; None is a record that is gone.
+            source_doc = await self.graph.get_document(record_id, _RECORDS, raise_on_error=True)
             org_id = (source_doc or {}).get("orgId")
             if not org_id:
                 return True
 
             complete = True
             for sibling_key in sibling_keys:
-                sibling_doc = await self.graph.get_document(sibling_key, _RECORDS)
+                sibling_doc = await self.graph.get_document(sibling_key, _RECORDS, raise_on_error=True)
                 # get_records_by_virtual_record_id is not org-scoped; a
                 # virtualRecordId shared across orgs must not carry this
                 # org's taxonomy to another tenant's record.
@@ -90,6 +98,29 @@ class DuplicateReconciler:
                     )
                     complete = False
                     continue
+                # A copy indexed while the primary waited for classification on first
+                # use took its NOT_STARTED; it shares the primary's outcome, set once
+                # the taxonomy is there so the status never claims what is missing.
+                outcome = source_doc.get("extractionStatus")
+                if (
+                    outcome in _FINAL_EXTRACTION
+                    and sibling_doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                    and sibling_doc.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+                    # Fenced: a copy whose revision moved since the read is that revision's own.
+                    and not await self.graph.update_node_fields_if_match(
+                        sibling_key,
+                        _RECORDS,
+                        {"extractionStatus": outcome},
+                        {
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                            "contentRev": sibling_doc.get("contentRev"),
+                        },
+                    )
+                ):
+                    self.logger.warning(
+                        "Extraction status of duplicate %s of record %s not written", sibling_key, record_id,
+                    )
+                    complete = False
                 # Separate from the taxonomy copy, which skips mentionsEntity. A
                 # failure still lets the entity sync run, and keeps the reconcile
                 # pending so a retry copies the mentions; the copy is an upsert.

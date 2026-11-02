@@ -187,7 +187,7 @@ async def test_set_default_embedding_other_failures_stay_a_500_without_their_tex
     request, embeddings = _embedding_request(RuntimeError("boom at secret-host"))
 
     with patch(f"{MODULE}.get_embedding_model", return_value=embeddings):
-        resp = await embedding_health_check(request, [{"provider": "openAI", "configuration": {"model": "m"}}])
+        resp = await embedding_health_check(request, [{"provider": "openAI", "configuration": {"model": "m", "apiKey": "k"}}])
 
     assert resp.status_code == 500
     assert "secret-host" not in resp.body.decode()

@@ -127,6 +127,15 @@ class TestAGUIFormatter:
         ops = {op["path"]: op["value"] for op in frames[0]["data"]["delta"]}
         assert ops["/rawLength"] == 12
         assert ops["/normalizedAnswer"] == "Hello"
+        assert "/discarded" not in ops
+
+    def test_answer_delta_after_a_discard_is_marked(self) -> None:
+        frames = self.formatter.answer_delta(
+            self.context, chunk="", accumulated="", citations=[], discarded=True,
+        )
+
+        ops = {op["path"]: op["value"] for op in frames[0]["data"]["delta"]}
+        assert ops["/discarded"] is True
 
     def test_answer_delta_includes_confidence_when_given(self) -> None:
         frames = self.formatter.answer_delta(

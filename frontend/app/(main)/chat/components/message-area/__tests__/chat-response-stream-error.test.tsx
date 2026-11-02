@@ -4,6 +4,7 @@ import { cleanup, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));

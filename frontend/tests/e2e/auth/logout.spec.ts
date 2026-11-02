@@ -9,6 +9,9 @@ test.describe('Logout', () => {
     await page.evaluate(() => {
       localStorage.removeItem('jwt_access_token');
       localStorage.removeItem('jwt_refresh_token');
+      // A token store that keeps a map of pairs uses these instead.
+      localStorage.removeItem('pipeshub_org_tokens');
+      sessionStorage.removeItem('pipeshub_current_org_id');
     });
 
     // Reload to trigger auth guard

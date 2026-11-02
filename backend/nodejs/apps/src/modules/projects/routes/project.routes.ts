@@ -30,11 +30,14 @@ import {
   updateProject,
   upsertProjectMembers,
 } from '../controller/project.controller';
+import { requireProjectsEnabled } from '../utils/projects-feature';
 
 export function createProjectsRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
+
+  router.use(requireProjectsEnabled);
 
   router.post(
     '/',
@@ -92,10 +95,11 @@ export function createProjectsRouter(container: Container): Router {
     unarchiveProject(appConfig),
   );
 
+  // A pin changes only the caller's own list, so read access is enough.
   router.post(
     '/:projectId/pin',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.PROJECT_WRITE),
+    requireScopes(OAuthScopeNames.PROJECT_READ, OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     pinProject(appConfig),
   );
@@ -103,7 +107,7 @@ export function createProjectsRouter(container: Container): Router {
   router.post(
     '/:projectId/unpin',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.PROJECT_WRITE),
+    requireScopes(OAuthScopeNames.PROJECT_READ, OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     unpinProject(appConfig),
   );
@@ -140,10 +144,13 @@ export function createProjectsRouter(container: Container): Router {
     removeProjectMember(appConfig),
   );
 
+  // The files collection is a Collection like any other, so an OAuth token
+  // needs kb:write as well; asked for here so the refusal names both scopes.
   router.post(
     '/:projectId/knowledge-base',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     ensureProjectKnowledgeBase(appConfig),
   );

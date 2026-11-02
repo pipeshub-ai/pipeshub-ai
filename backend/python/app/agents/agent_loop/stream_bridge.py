@@ -37,20 +37,25 @@ from app.agent_loop_lib.events.base import EventType
 from app.agents.agent_loop import parked_turn, tool_approvals
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
-from app.agents.agent_loop.clarification import emit_pre_run_clarification
+from app.agents.agent_loop.clarification import (
+    emit_already_answered,
+    emit_pre_run_clarification,
+)
 from app.agents.agent_loop.confidence import normalize as normalize_confidence
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.error_classification import classify_exception
-from app.agents.agent_loop.factory import PipesHubAgentFactory
+from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_answered
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.core.org_context import spawn_in_request
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
     exclude_from_state,
     note_org_real_data,
 )
+from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -77,8 +82,9 @@ class _AgentRunTiming:
     A model turn runs from TURN_START until its reply has finished streaming
     (TEXT_MESSAGE_END), so it excludes the tool calls that follow; a turn
     that never streams falls back to TURN_COMPLETE. A turn whose model call
-    raised, or a tool still running when the client disconnects, never gets
-    its end event; `RunTimer.emit` logs it as ``(open)``. Turns are numbered
+    raised (its TEXT_MESSAGE_END says `discarded`, and a retry may follow),
+    or a tool still running when the client disconnects, never gets its end
+    event; `RunTimer.emit` logs it as ``(open)``. Turns are numbered
     from 1 in the order they start (``llm_turn_1``, ``llm_turn_2``, ...).
     A tool span runs from TOOL_CALL to TOOL_RESULT or TOOL_BLOCKED, matched
     on ``tool_call_id`` and named ``tool:<name>``. A sub-agent's events are
@@ -105,7 +111,8 @@ class _AgentRunTiming:
             self.turns += 1
             self._timer.start(("turn", payload.get("turn_index")), f"llm_turn_{self.turns}")
         elif event_type in (EventType.TEXT_MESSAGE_END, EventType.TURN_COMPLETE):
-            self._timer.stop(("turn", payload.get("turn_index")))
+            if not payload.get("discarded"):
+                self._timer.stop(("turn", payload.get("turn_index")))
         elif event_type == EventType.TOOL_CALL:
             self.tool_calls += 1
             self._timer.start(
@@ -160,6 +167,24 @@ async def _cancel_orphaned_agent_tasks(agent: Any) -> None:
     await asyncio.gather(*pending, return_exceptions=True)
 
 
+async def _await_tasks_draining(queue: "asyncio.Queue[Any]", tasks: list[asyncio.Task]) -> None:
+    """Wait for *tasks* after the client has gone, emptying *queue* meanwhile.
+
+    Nobody reads the SSE queue once the consumer stops, and it is bounded:
+    the producer's final flush and `_DONE` would otherwise wait for space
+    forever, and its cleanup would never finish.
+    """
+    async def _discard() -> None:
+        while True:
+            await queue.get()
+
+    drain = spawn_in_request(_discard(), name="sse-queue-drain")
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        drain.cancel()
+
+
 def sse_queue_maxsize() -> int:
     raw = os.getenv("PIPESHUB_SSE_QUEUE_MAXSIZE", "1000")
     try:
@@ -200,14 +225,16 @@ def _coalesce_key(event: dict[str, Any]) -> tuple[str, str] | None:
     merging is correct) and `artifact()`'s `add` op on `/artifacts/-` (an
     APPEND to a list — merging or dropping one would lose an artifact the
     client never sees again). So any `STATE_DELTA` carrying an `add` op
-    must never coalesce with anything, including another `add`."""
+    must never coalesce with anything, including another `add`. Neither may
+    the snapshot marked `/discarded`: the client drops snapshots until it
+    sees that marker, so merging it into the next one would lose it."""
     name = event.get("event")
     if name in _COALESCABLE_DELTA_FIELD:
         data = event.get("data") or {}
         return (name, data.get("messageId", ""))
     if name in _COALESCABLE_SNAPSHOT_EVENTS:
         delta = (event.get("data") or {}).get("delta") or []
-        if any(op.get("op") == "add" for op in delta):
+        if any(op.get("op") == "add" or op.get("path") == "/discarded" for op in delta):
             return None
         return (name, "")
     return None
@@ -329,6 +356,7 @@ async def run_agent_loop_stream(
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
     from app.modules.agents.qna.chat_state import build_initial_state
+    from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.connector_instances import fetch_user_connector_instances
     from app.utils.execute_query import (
         agent_knowledge_sql_connector_ids,
@@ -361,12 +389,13 @@ async def run_agent_loop_stream(
         await cancellation_registry.register(run_id, cancellation_token, run_owner)
 
     try:
-        # One query feeds both flags; they used to be two identical lookups.
+        # One query feeds every flag; they used to be one identical lookup each.
         connector_instances = await fetch_user_connector_instances(
             graph_provider, user_info["userId"], user_info["orgId"], log,
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
+        has_code_connector = connector_instances_have_code(connector_instances)
         if stage_timer:
             stage_timer.mark("connector_flags")
         demo_excluded = await demo_exclusions_for_run(graph_provider, config_service, user_info, log)
@@ -375,7 +404,8 @@ async def run_agent_loop_stream(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name, model_key, org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
-            has_slack_connector=has_slack_connector, client_name=client_name,
+            has_slack_connector=has_slack_connector,
+            has_code_connector=has_code_connector, client_name=client_name,
             entity_vector_store=entity_vector_store,
         )
         exclude_from_state(chat_state, demo_excluded)
@@ -423,10 +453,15 @@ async def run_agent_loop_stream(
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        begin_run()
         agent: Any = None
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False
         try:
+            if card_already_answered(context.previous_conversations, query_info.get("query", "")):
+                await emit_already_answered(context, event_sink=context.event_sink)
+                run_finished = True
+                return
             factory = PipesHubAgentFactory()
             agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, query_info.get("chatMode", "quick"),
@@ -516,6 +551,9 @@ async def run_agent_loop_stream(
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # First, and without awaiting: a disconnect can cancel the awaits
+            # below, and this must still run.
+            discard_tasks(query_info.get("conversationId"))
             # Logged before _DONE so the line is written even when the
             # consumer stops waiting on this task after the last event.
             run_timer.emit(
@@ -599,7 +637,7 @@ async def run_agent_loop_stream(
             tasks = [producer]
             if heartbeat:
                 tasks.append(heartbeat)
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await _await_tasks_draining(queue, tasks)
         else:
             # Normal exit: _DONE was received, but the producer's
             # cleanup tail (orphan cancellation, sandbox teardown) is

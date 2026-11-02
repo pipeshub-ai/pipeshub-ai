@@ -88,13 +88,19 @@ def bound_socket() -> Iterator[socket.socket]:
         sock.close()
 
 
-def _redaction_filters() -> list[logging.Filter]:
-    # By name: test_logger reloads app.utils.logger, and each reload registers an
+def _is_ours(log_filter: object) -> bool:
+    # By module name: test_logger reloads app.utils.logger, and each reload registers an
     # instance of a new class object that isinstance() against ours would miss.
+    return type(log_filter).__module__ == AccessLogRedactionFilter.__module__
+
+
+def _redaction_filters() -> list[logging.Filter]:
+    # The module as well as the class name: litellm (1.106+) adds a filter of the same
+    # class name to uvicorn.access when it is imported.
     return [
         f
         for f in logging.getLogger("uvicorn.access").filters
-        if type(f).__name__ == AccessLogRedactionFilter.__name__
+        if _is_ours(f) and type(f).__name__ == AccessLogRedactionFilter.__name__
     ]
 
 
@@ -123,14 +129,20 @@ async def _stop(server: uvicorn.Server, serving: asyncio.Task[None]) -> None:
         await asyncio.wait({serving}, timeout=_SHUTDOWN_TIMEOUT_SECONDS)
 
 
-async def _access_lines_for_one_request(http: str, sock: socket.socket, *, redact: bool) -> list[str]:
-    """Serve one ``GET /x?token=…&keep=1`` and return what uvicorn.access logged for it."""
+async def _access_lines_for_one_request(
+    http: str, sock: socket.socket, *, redact: bool, foreign_filters: bool = False,
+) -> list[str]:
+    """Serve one ``GET /x?token=…&keep=1`` and return what uvicorn.access logged for it.
+
+    Filters other libraries put on uvicorn.access are removed unless ``foreign_filters``,
+    so what is logged shows what our filter alone does.
+    """
     with _logging_restored():
         config = _config(http)
         access_logger = logging.getLogger("uvicorn.access")
-        if not redact:
-            for redaction_filter in _redaction_filters():
-                access_logger.removeFilter(redaction_filter)
+        for log_filter in list(access_logger.filters):
+            if (not foreign_filters and not _is_ours(log_filter)) or (not redact and log_filter in _redaction_filters()):
+                access_logger.removeFilter(log_filter)
         collector = _Collector()
         access_logger.addHandler(collector)
 
@@ -170,6 +182,16 @@ async def test_real_request_token_not_in_access_log(http: str, bound_socket: soc
     assert "/x" in lines[0]
     assert "keep=1" in lines[0]
     assert "token=[REDACTED]" in lines[0]
+
+
+async def test_token_not_in_access_log_with_every_installed_filter(bound_socket: socket.socket) -> None:
+    """As the service runs: our filter alongside whatever other libraries attached (litellm
+    adds its own redaction, which rewrites the line differently)."""
+    lines = await _access_lines_for_one_request("h11", bound_socket, redact=True, foreign_filters=True)
+
+    assert len(lines) == 1
+    assert SENTINEL not in lines[0]
+    assert "/x" in lines[0]
 
 
 async def test_control_without_filter_logs_the_token(bound_socket: socket.socket) -> None:

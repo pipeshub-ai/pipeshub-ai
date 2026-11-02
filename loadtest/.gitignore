@@ -9,3 +9,6 @@ __pycache__/
 .env.*
 # ...except the template, which is the documentation for all of the above.
 !.env.example
+
+# Written by make_queries.py from the deployment's own records.
+queries_unique.txt

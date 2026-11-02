@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { createClient } from "./client.js";
+import { expectStatus } from "./errors.js";
 import {
   createdConversationId,
   expectFinishedRun,
@@ -61,6 +62,37 @@ test("Handwritten Agent Conversation Streams", async () => {
     });
     expect(feedback.messageId).toEqual(answerId);
     expect(feedback.feedback.isHelpful).toBe(true);
+
+    const fork = await pipeshub.agents.forkAgentConversation({
+      agentKey,
+      conversationId,
+      messageId: answerId,
+    });
+    expect(fork.forkedFrom).toEqual({ conversationId, messageId: answerId });
+
+    const upload = await pipeshub.agents.uploadAgentConversationChatAttachments({
+      agentKey,
+      body: {
+        conversationId,
+        files: [
+          {
+            fileName: "sdk-test-attachment.txt",
+            content: new TextEncoder().encode("PipesHub SDK test attachment.\n"),
+          },
+        ],
+      },
+    });
+    expect(upload.conversationId).toEqual(conversationId);
+    const recordId = upload.attachments[0]?.recordId;
+    expect(recordId, "upload returned no attachment").toBeDefined();
+    await pipeshub.agents.deleteAgentConversationChatAttachment({
+      agentKey,
+      recordId: recordId!,
+    });
+    await expectStatus(
+      pipeshub.agents.deleteAgentConversationChatAttachment({ agentKey, recordId: recordId! }),
+      404,
+    );
   } finally {
     // Deleting the agent removes its conversations with it.
     await pipeshub.agents.deleteAgent({ agentKey });

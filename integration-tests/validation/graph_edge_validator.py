@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
+
+from helper import suite_extensions
 
 if TYPE_CHECKING:
     from helper.graph_provider import GraphProviderProtocol
@@ -25,6 +27,7 @@ if str(_RV_HELPER) not in sys.path:
     sys.path.insert(0, str(_RV_HELPER))
 
 from response_validator import (  # noqa: E402
+    ResponseSchema,
     assert_response_matches_schema,
     load_yaml_schema,
 )
@@ -65,6 +68,40 @@ _EDGE_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
 _ARANGO_SYSTEM_KEYS: Final[frozenset[str]] = frozenset({
     "_key", "_id", "_rev", "_from", "_to",
 })
+
+
+
+def load_edge_schema(
+    yaml_file: str, *, schema_dir: Path = _EDGE_SCHEMA_DIR, root: Path = suite_extensions.ROOT,
+) -> ResponseSchema:
+    """``schema_dir/yaml_file`` with the fields each extension's
+    ``schemas/edges/<yaml_file>`` adds (helper/suite_extensions.py).
+
+    An extension may add a field, or add enum values to a field it repeats
+    with the same type, ``required`` and everything else. Any other change to
+    a field is an error, so no check made here can be dropped or loosened.
+    """
+    schema = load_yaml_schema(schema_dir / yaml_file)
+    for directory in suite_extensions.extension_dirs(root):
+        extra = directory / "schemas" / "edges" / yaml_file
+        if extra.is_file():
+            _add_fields(schema, load_yaml_schema(extra), extra)
+    return schema
+
+
+def _add_fields(schema: ResponseSchema, extra: ResponseSchema, source: Path) -> None:
+    for name, added in extra.fields.items():
+        current = schema.fields.get(name)
+        if current is None:
+            schema.fields[name] = added
+            continue
+        if not (current.enum and added.enum):
+            raise ValueError(f"{source} redefines {name!r}; it may only add enum values to it")
+        widened = replace(current, enum=[*current.enum, *(v for v in added.enum if v not in current.enum)])
+        if replace(added, enum=widened.enum) != widened:
+            raise ValueError(f"{source} changes more than the enum of {name!r}")
+        schema.fields[name] = widened
+
 
 NodeKind = Literal[
     "user", "group", "role", "org", "record", "record_group", "app",
@@ -244,9 +281,8 @@ async def assert_graph_edges(
 
         yaml_file = _EDGE_COLLECTION_TO_YAML.get(exp.collection)
         if yaml_file:
-            schema_path = _EDGE_SCHEMA_DIR / yaml_file
-            if schema_path.exists():
-                schema = load_yaml_schema(schema_path)
+            if (_EDGE_SCHEMA_DIR / yaml_file).exists():
+                schema = load_edge_schema(yaml_file)
                 try:
                     assert_response_matches_schema(edge, schema)
                 except AssertionError as exc:

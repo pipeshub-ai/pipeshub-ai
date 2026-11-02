@@ -1,12 +1,13 @@
 import asyncio
+import contextvars
 import functools
 import logging
 import random
 import re
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from logging import Logger
-from typing import AsyncContextManager, Optional, TypeVar
+from typing import Any, AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -66,7 +67,8 @@ def ensure_written(result: bool | None, what: str) -> None:
         raise GraphWriteError(f"The graph database did not save {what}")
 
 
-_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b')
+# "[1200]" is how a batch reports one, e.g. "[1200] timeout waiting to lock key".
+_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b|\[1200\]')
 
 
 def is_write_conflict(exception: Exception) -> bool:
@@ -75,16 +77,17 @@ def is_write_conflict(exception: Exception) -> bool:
     return bool(_WRITE_CONFLICT.search(str(exception)))
 
 
+# The Neo4j conflicts with a concurrent writer that a re-run resolves.
+_NEO4J_CONFLICTS = ("DeadlockDetected", "LockAcquisitionTimeout")
+
+
 def _names_deadlock(exception: BaseException) -> bool:
-    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
-        return "DeadlockDetected" in str(exception)
-
     exception_str = str(exception)
-    exception_type = type(exception).__name__
+    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
+        return any(conflict in exception_str for conflict in _NEO4J_CONFLICTS)
 
-    return (
-        "TransientError" in exception_type and
-        "DeadlockDetected" in exception_str
+    return "TransientError" in type(exception).__name__ and any(
+        conflict in exception_str for conflict in _NEO4J_CONFLICTS
     )
 
 
@@ -125,6 +128,19 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+# False while retry_on_deadlock still has an attempt left after the current one.
+_ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "retry_on_deadlock_on_last_attempt", default=True
+)
+
+
+def will_retry(instance: object, exception: Exception) -> bool:
+    """Whether the retry_on_deadlock call this runs in will run again after this
+    failure. A handler inside one logs such a failure as a warning: the decorator
+    reports each retry, and an error there alerted on syncs that then succeeded."""
+    return not _ON_LAST_ATTEMPT.get() and _is_retryable(instance, exception)
+
+
 def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
     Decorator that retries an async function on deadlocks and write conflicts.
@@ -154,6 +170,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
             logger = logging.getLogger(func.__module__)
             last_exception = None
             for attempt in range(max_retries):
+                last_attempt = _ON_LAST_ATTEMPT.set(attempt == max_retries - 1)
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
@@ -176,6 +193,8 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
+                finally:
+                    _ON_LAST_ATTEMPT.reset(last_attempt)
 
             raise last_exception
         return wrapper
@@ -197,7 +216,7 @@ class GraphTransactionStore(TransactionStore):
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.graph_provider = graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
-        self.explicit = explicit  # the caller asked for one real transaction
+        self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -266,7 +285,8 @@ class GraphTransactionStore(TransactionStore):
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(
-        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
+        *, raise_on_error: bool = False,
     ) -> Optional[Record]:
         # Sync decides create-or-update on this answer; hiding a trashed record
         # would mint a second record for the same source item.
@@ -278,7 +298,8 @@ class GraphTransactionStore(TransactionStore):
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
         value = await self.graph_provider.get_record_by_external_id(
-            connector_id, external_id, transaction=self.txn, visibility=visibility
+            connector_id, external_id, transaction=self.txn, visibility=visibility,
+            **({"raise_on_error": True} if raise_on_error else {}),
         )
         self._memo_put(key, value)
         return value
@@ -386,19 +407,24 @@ class GraphTransactionStore(TransactionStore):
             record_id, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
-        return await self.graph_provider.get_user_by_user_id(user_id)
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Optional[User]:
+        return await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
 
     async def delete_record_by_key(self, key: str) -> None:
         self._memo_forget_record(key)
         # The node with its edges: on Neo4j that is the same single DETACH DELETE,
         # and on ArangoDB the edges no longer dangle after the record is gone.
-        return await self.graph_provider.delete_nodes_and_edges(
+        result = await self.graph_provider.delete_nodes_and_edges(
             [key],
             CollectionNames.RECORDS.value,
             graph_name="knowledgeGraph",
             transaction=self.txn,
         )
+        # A code file's blocks hang off it by recordId, not by an edge, so removing
+        # the record vertex alone strands the whole file's symbol projection. After
+        # the record, so a write that fails here cannot leave the record live.
+        await self.graph_provider.delete_blocks_for_records([key], transaction=self.txn)
+        return result
 
     async def delete_record_by_external_id(
         self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
@@ -410,6 +436,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
+        return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
@@ -539,6 +568,13 @@ class GraphTransactionStore(TransactionStore):
             connector_id=connector_id, require_live_parent=require_live_parent,
         )
 
+    async def claim_push_record(self, **claim: object) -> object:
+        """The conditional write that arbitrates concurrent pushes, within the active transaction."""
+        return await self.graph_provider.claim_push_record(transaction=self.txn, **claim)
+
+    async def retag_push_record(self, **retag: object) -> bool:
+        return await self.graph_provider.retag_push_record(transaction=self.txn, **retag)
+
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
         self._memo_forget_record(record_id)
@@ -567,7 +603,13 @@ class GraphTransactionStore(TransactionStore):
         app_users_dict = await self.graph_provider.get_app_users(
             org_id, connector_id, raise_on_error=raise_on_error
         )
-        return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
+        # A membership the source names no user for, as an external collaborator's
+        # (on_external_app_users), is no app user: AppUser cannot be built without the
+        # source's id, and one such row would fail the whole list.
+        return [
+            AppUser.from_arango_user(user_dict) for user_dict in app_users_dict
+            if user_dict is not None and user_dict.get("sourceUserId")
+        ]
 
     async def get_user_groups(
         self, connector_id: str, org_id: str, *, raise_on_error: bool = False
@@ -711,6 +753,8 @@ class GraphTransactionStore(TransactionStore):
             return True
 
         except Exception as e:
+            if self.graph_provider.is_transient_error(e) is True:
+                raise  # the transaction is aborted; its owner runs it again
             self.logger.error(
                 f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
                 exc_info=True
@@ -743,7 +787,7 @@ class GraphTransactionStore(TransactionStore):
         collection: str,
         *,
         raise_on_error: bool = False,
-    ) -> Optional[dict]:
+    ) -> Optional[dict[str, Any]]:
         return await self.graph_provider.get_edge(
             from_id, from_collection, to_id, to_collection, collection,
             transaction=self.txn, raise_on_error=raise_on_error,
@@ -1123,7 +1167,7 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
@@ -1173,6 +1217,10 @@ class GraphTransactionStore(TransactionStore):
         """Delete a record and all its relations"""
         self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
+
+    async def filter_linked_record_ids(self, record_ids: list[str]) -> list[str]:
+        """The ids among ``record_ids`` still in the hierarchy (see the graph provider)."""
+        return await self.graph_provider.filter_linked_record_ids(record_ids, transaction=self.txn)
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list, return_fields: list[str] = None
@@ -1270,19 +1318,22 @@ class GraphDataStore(DataStoreProvider):
         - All operations pass txn_id in HTTP headers
         - commit/rollback are fully async HTTP calls
 
-        explicit=True makes the block all-or-nothing on Neo4j too, where each
-        statement otherwise commits on its own while NEO4J_EXPLICIT_TRANSACTIONS
-        is off. It holds its locks until commit, so keep such a block to a few
+        Neo4j blocks are all-or-nothing unless NEO4J_EXPLICIT_TRANSACTIONS is false,
+        where each statement commits on its own; explicit=True still asks for a
+        real transaction then. It holds its locks until commit, so keep such a block to a few
         writes, with no slow calls inside.
         """
+        options = {} if explicit is None else {"explicit": explicit}
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections,
-            explicit=explicit,
+            **options,
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
-        tx_store = GraphTransactionStore(self.graph_provider, txn, explicit=explicit is True)
+        tx_store = GraphTransactionStore(
+            self.graph_provider, txn, explicit=self.graph_provider.opens_explicit_transaction(explicit) is True,
+        )
 
         try:
             yield tx_store
@@ -1317,6 +1368,10 @@ class GraphDataStore(DataStoreProvider):
                 # its locks until the server's idle timeout, so abort it. Neo4j has
                 # already closed the session and answers the abort with ValueError.
                 self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
+                # The store may still have applied it: callers that created something outside the
+                # transaction (a pushed record's storage document) must not undo it on this error.
+                with suppress(Exception):
+                    e.commit_outcome_unknown = True  # type: ignore[attr-defined]
                 try:
                     await tx_store.rollback()
                 except ValueError:

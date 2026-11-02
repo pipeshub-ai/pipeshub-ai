@@ -17,6 +17,8 @@ import type { PDFRendererProps, PreviewCitation } from '../types';
 const PDF_PAGE_WIDTH = 967;
 const PDF_PAGE_HEIGHT = 747.2272727272727;
 const SCROLL_DELAY_MS = 300;
+// One array, so an empty highlight list never looks like a change to PdfHighlighter.
+const NO_HIGHLIGHTS: IHighlight[] = [];
 const NAVIGATION_SETTLE_MS = 500;
 
 // PdfLoader passes its props straight to pdf.js getDocument(), but its prop
@@ -157,6 +159,8 @@ export function PDFRenderer({
     [],
   );
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
+  // The same readiness as isViewerReady, as state so render can read it.
+  const [viewerReady, setViewerReady] = useState(false);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
   const paginationRef = useRef(pagination);
@@ -170,6 +174,7 @@ export function PDFRenderer({
   // Holds a citation highlight to scroll to once the viewer becomes ready.
   const pendingCitationScroll = useRef<IHighlight | null>(null);
   const navigatingTimeoutRef = useRef<number | null>(null);
+  const pendingScrollTimeoutRef = useRef<number | null>(null);
 
   const clearNavigatingSoon = useCallback(() => {
     if (navigatingTimeoutRef.current !== null) {
@@ -185,6 +190,9 @@ export function PDFRenderer({
     () => () => {
       if (navigatingTimeoutRef.current !== null) {
         window.clearTimeout(navigatingTimeoutRef.current);
+      }
+      if (pendingScrollTimeoutRef.current !== null) {
+        window.clearTimeout(pendingScrollTimeoutRef.current);
       }
     },
     [],
@@ -236,6 +244,18 @@ export function PDFRenderer({
       .map(citationToHighlight)
       .filter((h): h is IHighlight => h !== null);
   }, [citations]);
+
+  // react-pdf-highlighter 7 builds its viewer after an async import, and draws highlights on
+  // every change of this prop: a change before the viewer exists throws reading getPageView.
+  const shownHighlights = useMemo(
+    () =>
+      viewerReady && activeCitationId
+        ? highlights.filter((h) => h.id === activeCitationId)
+        : NO_HIGHLIGHTS,
+    // citationClickVersion: a repeat click on the same citation must hand over a new array,
+    // since the library redraws the layer (and replays the pulse) only when the identity changes.
+    [activeCitationId, highlights, viewerReady, citationClickVersion],
+  );
 
   // Inject custom highlight CSS
   useEffect(() => {
@@ -346,6 +366,7 @@ export function PDFRenderer({
   useEffect(() => {
     lastReportedPage.current = 0;
     isViewerReady.current = false;
+    setViewerReady(false);
     setViewerReadyEpoch((n) => n + 1);
   }, [fileUrl]);
 
@@ -518,6 +539,7 @@ export function PDFRenderer({
                 scrollViewerTo.current = scrollTo;
                 if (!isViewerReady.current) {
                   isViewerReady.current = true;
+                  setViewerReady(true);
                   setViewerReadyEpoch((n) => n + 1);
                 }
 
@@ -525,7 +547,11 @@ export function PDFRenderer({
                 if (pendingCitationScroll.current) {
                   const highlight = pendingCitationScroll.current;
                   pendingCitationScroll.current = null;
-                  setTimeout(() => {
+                  if (pendingScrollTimeoutRef.current !== null) {
+                    window.clearTimeout(pendingScrollTimeoutRef.current);
+                  }
+                  pendingScrollTimeoutRef.current = window.setTimeout(() => {
+                    pendingScrollTimeoutRef.current = null;
                     navigateToHighlightSafely(scrollTo, highlight);
                   }, 100);
                 }
@@ -580,11 +606,7 @@ export function PDFRenderer({
                   </Popup>
                 );
               }}
-              highlights={
-                activeCitationId
-                  ? highlights.filter((h) => h.id === activeCitationId)
-                  : []
-              }
+              highlights={shownHighlights}
             />
           </>
         )}

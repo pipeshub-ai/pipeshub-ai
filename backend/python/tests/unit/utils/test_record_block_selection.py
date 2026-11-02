@@ -306,3 +306,33 @@ class TestEstimation:
             },
         }
         assert estimate_record_chars(record) < 1_000
+
+
+class TestGroupedRowHits:
+    BLOCKS = [{"id": f"row-{i}", "index": i} for i in range(6)]
+
+    @staticmethod
+    def _response(*metas: dict) -> dict:
+        return {"searchResults": [{"metadata": {"virtualRecordId": "v1", **m}} for m in metas]}
+
+    def test_a_grouped_point_hits_every_row_it_lists(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        response = self._response(
+            {"blockIndex": 1, "rowBlockIds": ["row-1", "row-2", "row-3"]}, {"blockIndex": 5},
+        )
+        assert _hits_from_search(response, "v1", self.BLOCKS) == [1, 2, 3, 5]
+
+    def test_rows_are_not_repeated_and_unknown_ids_are_dropped(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        response = self._response(
+            {"blockIndex": 2, "rowBlockIds": ["row-2", "gone", "row-3"]},
+            {"blockIndex": 3, "rowBlockIds": ["row-3", "row-4"]},
+        )
+        assert _hits_from_search(response, "v1", self.BLOCKS) == [2, 3, 4]
+
+    def test_without_blocks_a_grouped_point_is_its_first_row(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        assert _hits_from_search(self._response({"blockIndex": 1, "rowBlockIds": ["row-1", "row-2"]}), "v1") == [1]

@@ -17,6 +17,7 @@ import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middlewa
 import { INVALID_PATH_SEGMENT_MESSAGE } from '../../../../src/libs/middlewares/safe-path-params.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
@@ -215,6 +216,8 @@ describe('Crawling manager over HTTP', () => {
         ) ?? null,
       )) as unknown as typeof Users.findOne)
     sinon.stub(UserActivities, 'findOne').callsFake((() => query(null)) as unknown as typeof UserActivities.findOne)
+    // the worker binds a job's org only while the org exists and is active
+    sinon.stub(Org, 'findOne').callsFake((() => query({ _id: 'org' })) as unknown as typeof Org.findOne)
     backend.reset()
     stubConnectorService()
     store = new FakeQueueStore()

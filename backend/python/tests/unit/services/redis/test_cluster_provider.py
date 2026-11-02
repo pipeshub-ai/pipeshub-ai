@@ -64,7 +64,16 @@ class TestCreateClient:
         # indexing worker's concurrent config reads into hard failures.
         provider = ClusterRedisProvider(_config())
         provider.create_client(ClientOptions(blocking=blocking, max_connections=10))
-        assert "max_connections" not in mock_cluster_cls.call_args.kwargs
+        assert mock_cluster_cls.call_args.kwargs["max_connections"] >= 2**31
+
+    def test_the_real_cluster_client_has_no_practical_per_node_cap(self) -> None:
+        # redis-py 6+ defaults RedisCluster to 100 connections per node, below
+        # the indexing worker's fan-out; the provider must not inherit that.
+        from redis.asyncio.cluster import RedisCluster
+
+        kwargs = ClusterRedisProvider(_config())._client_kwargs(ClientOptions(max_connections=10))
+        client = RedisCluster(**kwargs)
+        assert client.connection_kwargs["max_connections"] >= 2**31
 
     def test_the_requested_retry_attempts_reach_the_client(self, mock_cluster_cls) -> None:
         provider = ClusterRedisProvider(_config())
@@ -300,8 +309,9 @@ class TestLoadScriptUsesTheClientsOwnScriptLoad:
 
 
 class TestPublish:
-    """redis-py 5.x's async `RedisCluster` has no `publish()` (the sync one
-    does), and `PUBLISH` is keyless, so `execute_command` has no slot to route
+    """redis-py 5.x's async `RedisCluster` had no `publish()` (6+ added one,
+    and the pinned version no longer needs the workaround, but it still works
+    on both), and `PUBLISH` is keyless, so `execute_command` has no slot to route
     by unless told a target. Both facts are what made
     `RedisDistributedKeyValueStore.publish_cache_invalidation` fail with
     `'RedisCluster' object has no attribute 'publish'` against MemoryDB."""
@@ -323,12 +333,20 @@ class TestPublish:
             "PUBLISH", "chan", "payload", target_nodes=RedisCluster.DEFAULT_NODE
         )
 
-    def test_the_real_async_cluster_client_still_lacks_publish(self):
-        """If this starts failing, redis-py grew `publish()` on the async
-        cluster client and the `execute_command` workaround can be revisited."""
-        from redis.asyncio.cluster import RedisCluster
 
-        assert not hasattr(RedisCluster, "publish")
+class TestRespProtocol:
+    """redis-py 6+ defaults to RESP3, which returns FT.SEARCH / FT.INFO /
+    XREAD replies as maps. The vector store and streams code parse the RESP2
+    arrays, so every client the providers build must ask for protocol 2."""
+
+    def test_the_cluster_client_asks_for_resp2(self, mock_cluster_cls: MagicMock) -> None:
+        ClusterRedisProvider(_config()).create_client()
+        assert mock_cluster_cls.call_args.kwargs["protocol"] == 2
+
+    def test_the_pubsub_client_asks_for_resp2(self) -> None:
+        provider = ClusterRedisProvider(_config())
+        client = provider.create_pubsub_client()
+        assert client.connection_pool.connection_kwargs["protocol"] == 2
 
 
 class TestKeySlot:

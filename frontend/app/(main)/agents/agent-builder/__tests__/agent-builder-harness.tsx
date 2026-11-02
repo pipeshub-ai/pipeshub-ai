@@ -16,7 +16,7 @@ export function installBrowserShims() {
   class ImmediateResizeObserver {
     constructor(private readonly callback: ResizeObserverCallback) {}
     observe(target: Element) {
-      this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      this.callback([{ target, contentRect: { width: 100, height: 100 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
     }
     unobserve() {}
     disconnect() {}

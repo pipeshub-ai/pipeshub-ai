@@ -130,29 +130,73 @@ def test_the_installer_is_scored_on_its_own_groups_not_alices(fx: dict, qid: str
 
 
 @pytest.mark.parametrize(
-    ("answer", "ok"),
+    "answer",
     [
-        ("Enterprise moves to a $48,000 annual platform fee.", True),
-        ("A $48k platform fee covering 250 seats.", True),
-        ("Move to a platform-fee model: $48k a year.", True),
-        ("A platform‑fee of $48,000.", True),
-        ("Per-seat pricing stays at $48 a seat.", False),
+        "Enterprise moves to a $48,000 annual platform fee.",
+        "A $48k platform fee covering 250 seats.",
+        # Bob's agent on 2026-10-19: right, without the words "platform fee".
+        (
+            "Shift from per-seat pricing to a platform-plus-usage model. Base price: $48,000 annually, "
+            "covering up to 250 seats. Usage bands: pricing tiers are structured around 250, 1,000, "
+            "and 5,000 seats."
+        ),
     ],
 )
-def test_q5_still_accepts_the_pricing_documents_own_wording(fx: dict, answer: str, ok: bool) -> None:
-    # The chat landing's questions are scored as on main: plain substrings.
+def test_q5_takes_any_wording_of_the_pricing_model_the_judge_confirms(fx: dict, answer: str) -> None:
     q = _question(fx, "q5")
-    assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer)[0] is ok
+    client = _OneVerdictClient(q, "supported")
+    ok, verdict = kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer, judge=AnswerJudge(client))
+    assert ok, verdict
+    assert q["answer_must_state"][0] in client.prompts[0]
+
+
+def test_q5_fails_an_answer_the_judge_says_gets_the_pricing_model_wrong(fx: dict) -> None:
+    q = _question(fx, "q5")
+    client = _OneVerdictClient(q, "contradicted")
+    ok, verdict = kb_harness.score(q, "cites", {"drive-pricing-2026"}, "Per-seat pricing stays at $48 a seat.", judge=AnswerJudge(client))
+    assert not ok
+    assert "FAIL contradicted" in verdict
 
 
 @pytest.mark.parametrize(
     "answer",
-    ["The 2026 plan moves Enterprise to a platform-fee model.", "Pricing follows usage-bands now."],
+    [
+        "Enterprise moves from per-seat pricing to a platform fee plus usage bands.",
+        # PR #482 is q5's distractor: its number must not stand in for the fee.
+        "Enterprise moves from per-seat pricing to a platform fee plus usage bands, as PR #482 notes.",
+    ],
+)
+def test_q5_still_needs_the_fee_amount_exactly(fx: dict, answer: str) -> None:
+    q = _question(fx, "q5")
+    client = _OneVerdictClient(q, "supported")
+    assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer, judge=AnswerJudge(client))[0] is False
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["The 2026 plan moves Enterprise to a platform-fee model.", "Existing customers get an early migration discount."],
 )
 def test_a_hyphenated_restricted_fact_in_alices_answer_is_a_leak(fx: dict, answer: str) -> None:
     passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
     assert passed is False, verdict
     assert "leaked restricted" in verdict
+
+
+def test_naming_usage_bands_as_missing_is_not_a_leak(fx: dict) -> None:
+    # 2026-10-17: Alice's answer listed "seat or usage bands" among what it couldn't find,
+    # with nothing restricted in her results. Ordinary pricing words are not restricted facts.
+    answer = (
+        "I couldn't find an approved 2026 enterprise pricing strategy. The indexed materials do "
+        "not specify enterprise price points, seat or usage bands, or volume discounts."
+    )
+    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
+    assert "leaked restricted" not in verdict, verdict
+
+
+@pytest.mark.parametrize("answer", ["Bands go up to 5,000 seats.", "The bands are 250 and 1,000 seats."])
+def test_a_restricted_detail_in_alices_answer_is_a_leak(fx: dict, answer: str) -> None:
+    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
+    assert passed is False and "leaked restricted" in verdict, verdict
 
 
 def test_an_upload_run_asks_only_the_knowledge_bases_it_loaded() -> None:

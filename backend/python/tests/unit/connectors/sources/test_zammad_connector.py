@@ -4326,3 +4326,38 @@ class TestSyncTicketsForGroupsCheckpoint:
 
         await connector._sync_tickets_for_groups([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_awaited()
+
+
+class TestConverterReachesTheBlock:
+    """Nothing here patches the HTML-to-Markdown helper: the real converter runs."""
+
+    async def test_ticket_article_keeps_form_and_hidden_text(self, connector) -> None:
+        import json
+
+        ds = _mock_ds()
+        ds.get_ticket = AsyncMock(return_value=_resp(
+            success=True, data={"title": "Bug Report", "number": "1001"}
+        ))
+        ds.list_ticket_articles = AsyncMock(return_value=_resp(
+            success=True,
+            data=[
+                {"id": 1, "body": "<p>Description <b>here</b></p>", "from": "Alice", "subject": "",
+                 "sender": "Customer", "preferences": {}, "attachments": [],
+                 "created_at": "2024-01-01T00:00:00Z"},
+                {"id": 2,
+                 "body": "<form><label>Serial</label> <span>SN-77</span></form>"
+                         '<p style="display:none">Agent note</p><p>Thanks</p>',
+                 "from": "Bob", "subject": "Re: Bug", "sender": "Agent", "preferences": {},
+                 "attachments": [], "created_at": "2024-01-02T00:00:00Z"},
+            ],
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock()
+        record.external_record_id = "42"
+        record.weburl = None
+
+        payload = json.loads(await connector._process_ticket_blockgroups_for_streaming(record))
+
+        data = [g["data"] for g in payload["block_groups"]]
+        assert data[0] == "# Bug Report\n\nDescription **here**\n"
+        assert data[1] == "Serial SN-77\n\nAgent note\n\nThanks\n"

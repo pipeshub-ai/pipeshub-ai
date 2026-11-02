@@ -7,7 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { McpServersApi } from '../api';
-import { ownRulesToSave, startingRule, toolDisplayName, toolRuleRows, type McpRuleTool } from '../tool-rules';
+import { ownRulesToSave, startingRule, toolDisplayName, toolRuleRows, type McpRuleTool, type ToolRuleSource } from '../tool-rules';
 import type { McpToolKind, McpToolRule, McpToolRules } from '../types';
 
 const RULES: McpToolRule[] = ['allow', 'ask', 'block'];
@@ -50,6 +50,8 @@ export interface ToolRulesEditorOptions {
   /** Only the listed tools have rules. An MCP server's list can change, so a rule for a tool it
    * doesn't offer now is kept and shown; a toolset's list is its own, so such a rule is dropped. */
   listedOnly?: boolean;
+  /** Where the tools come from, which decides the rule a tool starts at. */
+  source?: ToolRuleSource;
 }
 
 export interface McpToolRulesEditor {
@@ -74,7 +76,7 @@ export function useToolRulesEditor(
   instanceId: string,
   tools: McpRuleTool[],
   enabled = true,
-  { api = MCP_RULES_API, listedOnly = false }: ToolRulesEditorOptions = {}
+  { api = MCP_RULES_API, listedOnly = false, source = 'mcp' }: ToolRulesEditorOptions = {}
 ): McpToolRulesEditor {
   const { t } = useTranslation();
   const [savedRules, setSavedRules] = useState<Record<string, McpToolRule>>({});
@@ -113,15 +115,15 @@ export function useToolRulesEditor(
   const rows = useMemo(() => (listedOnly ? tools : toolRuleRows(tools, Object.keys(rules))), [listedOnly, tools, rules]);
 
   const changes = useMemo(() => {
-    const before = ownRulesToSave(rows, savedRules).tools;
-    const after = ownRulesToSave(rows, rules).tools;
+    const before = ownRulesToSave(rows, savedRules, source).tools;
+    const after = ownRulesToSave(rows, rules, source).tools;
     return [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((name) => before[name] !== after[name]).length;
-  }, [rows, savedRules, rules]);
+  }, [rows, savedRules, rules, source]);
 
   const save = async (): Promise<boolean> => {
     setSaving(true);
     try {
-      await api.save(instanceId, ownRulesToSave(rows, rules));
+      await api.save(instanceId, ownRulesToSave(rows, rules, source));
       setSavedRules(rules);
       toast.success(t('workspace.mcpServers.toolRules.saved'));
       return true;
@@ -140,7 +142,7 @@ export function useToolRulesEditor(
     saving,
     canEdit,
     rows,
-    rule: (row) => rules[row.name] ?? startingRule(row.kind),
+    rule: (row) => rules[row.name] ?? startingRule(row.kind, source),
     setRule: (name, rule) => setRules((prev) => ({ ...prev, [name]: rule })),
     changes,
     discard: () => setRules(savedRules),

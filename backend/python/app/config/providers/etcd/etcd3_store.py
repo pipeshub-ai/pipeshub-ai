@@ -319,7 +319,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 value_str = value
             else:
                 value_str = json.dumps(value, default=str)
-            logger.debug("📋 Serialized value: %s", value_str)
+            logger.debug("📋 Serialized value (%d chars)", len(value_str))
 
             if not overwrite:
                 # One transaction, not get-then-put: with a separate read, every
@@ -418,7 +418,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return deserialized
             except json.JSONDecodeError as e:
                 logger.error("❌ Failed to deserialize value: %s", str(e))
-                logger.error("📋 Value that failed: %s", value_bytes)
+                logger.error("📋 Value that failed: %d bytes", len(value_bytes))
                 # A stored value that cannot be read is not an absent one.
                 # Surfaces as ConnectionError via the handler below, as every
                 # failed read from this store does.

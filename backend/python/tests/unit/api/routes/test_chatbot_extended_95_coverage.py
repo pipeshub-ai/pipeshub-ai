@@ -78,194 +78,14 @@ async def test_build_text_blocks_parses_markdown():
     )
 
 
-@pytest.mark.parametrize("needs_ocr_per_page,len_pages,expect", [
-    (True, 1, True),
-    (False, 2, False),
-])
-def test_pdf_has_any_ocr_page_mocked_doc(needs_ocr_per_page, len_pages, expect):
-    """ocr_count / total >= 0.5 when all scanned pages."""
-    from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-    mock_pages = [MagicMock() for _ in range(len_pages)]
-    mock_pdf = MagicMock()
-    mock_pdf.pages = mock_pages
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
-        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
-        return_value=[120] * len_pages,
-    ):
-        with patch(
-            "app.api.routes.chatbot.OCRStrategy.needs_ocr",
-            return_value=needs_ocr_per_page,
-        ):
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is expect
-
-
-def test_pdf_has_any_empty_doc():
-    from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-    mock_pdf = MagicMock()
-    mock_pdf.pages = []
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
-        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[],
-    ):
-        assert _pdf_has_any_ocr_page(b"%PDF-empty") is False
-
-
-def _fake_pdfplumber_open(page_count: int) -> type:
-    mock_pdf = MagicMock()
-    mock_pdf.pages = [MagicMock() for _ in range(page_count)]
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self) -> MagicMock:
-            return mock_pdf
-
-        def __exit__(self, *_) -> None:
-            pass
-
-    return FakePDFOpen
-
-
-class TestPdfOcrDecisionUsesTheTextLayer:
-    """PP-256: pdfplumber spent over a minute deciding that a report whose glyphs
-    were drawn as vector paths had no text. pdfium's per-page character counts
-    settle textless pages first; pdfplumber's heuristic sees only pages with text."""
-
-    def test_pages_without_a_text_layer_never_reach_pdfplumber(self) -> None:
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[0, 0, 0],
-        ), patch("app.api.routes.chatbot.OCRStrategy.needs_ocr") as needs_ocr:
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is True
-
-        needs_ocr.assert_not_called()
-
-    @pytest.mark.parametrize("pages_needing_ocr,expect", [(0, False), (1, True)])
-    def test_pages_with_text_keep_the_existing_heuristic(
-        self, pages_needing_ocr: int, expect: bool,
-    ) -> None:
-        """One textless page of four plus the heuristic's verdict on the other three."""
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-        verdicts = [True] * pages_needing_ocr + [False] * (3 - pages_needing_ocr)
-        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(4)), patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
-            return_value=[0, 40, 300, 12],
-        ), patch(
-            "app.api.routes.chatbot.OCRStrategy.needs_ocr", side_effect=verdicts,
-        ) as needs_ocr:
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is expect
-
-        assert needs_ocr.call_count == 3
-
-    @pytest.mark.parametrize(
-        "char_counts",
-        [RuntimeError("pdfium could not open it"), [[0]]],
-        ids=["pdfium-error", "page-count-mismatch"],
-    )
-    def test_every_page_gets_the_heuristic_when_pdfium_cannot_help(
-        self, char_counts: object,
-    ) -> None:
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", side_effect=char_counts,
-        ), patch(
-            "app.api.routes.chatbot.OCRStrategy.needs_ocr", return_value=False,
-        ) as needs_ocr:
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is False
-
-        assert needs_ocr.call_count == 3
-
-    def test_a_real_pdf_of_vector_shapes_is_sent_to_ocr(self) -> None:
-        pytest.importorskip("reportlab")
-        from io import BytesIO
-
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-        from app.modules.parsers.pdf import pdf_rasterizer
-        from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-
-        buf = BytesIO()
-        c = canvas.Canvas(buf, pagesize=letter)
-        for _ in range(2):
-            c.rect(72, 600, 200, 100, fill=1)
-            c.showPage()
-        c.drawString(72, 700, "A page with a real text layer")
-        c.showPage()
-        c.save()
-
-        # The worker runs in-process here; the pool only adds process isolation.
-        with patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
-            side_effect=pdf_rasterizer._worker_count_chars_from_bytes,
-        ), patch.object(OCRStrategy, "needs_ocr", wraps=OCRStrategy.needs_ocr) as needs_ocr:
-            assert _pdf_has_any_ocr_page(buf.getvalue()) is True
-
-        assert needs_ocr.call_count == 1
-
-
-def test_pdf_page_count_fixture():
-    from app.api.routes.chatbot import _pdf_page_count
-
-    mock_pdf = MagicMock()
-    mock_pdf.pages = [MagicMock() for _ in range(5)]
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
-        assert _pdf_page_count(b"%PDF-x") == 5
-
-
 def test_build_pdf_image_blocks_one_page():
     from app.api.routes.chatbot import _build_pdf_image_blocks
 
-    mock_image = MagicMock()
-
-    with patch(
-        "app.api.routes.chatbot.render_all_pages_as_pil_from_bytes_sync",
-        return_value=[mock_image],
-    ) as mock_render:
-        bc = _build_pdf_image_blocks(b"%PDF-sample")
-        assert len(bc.blocks) == 1
-        assert bc.blocks[0].type == BlockType.IMAGE
-        mock_render.assert_called_once_with(b"%PDF-sample", resolution=144)
-        mock_image.save.assert_called_once()
+    bc = _build_pdf_image_blocks([b"\x89PNG"])
+    assert len(bc.blocks) == 1
+    assert bc.blocks[0].type == BlockType.IMAGE
+    assert bc.blocks[0].data == {"uri": "data:image/png;base64,iVBORw=="}
+    assert bc.blocks[0].citation_metadata.page_number == 1
 
 
 @pytest.mark.asyncio
@@ -1210,7 +1030,7 @@ async def test_upload_pdf_regular_and_scan_cap():
             with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=False):
+                with patch("app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, 1)):
 
 
                     with patch(
@@ -1400,33 +1220,29 @@ async def test_upload_pdf_regular_and_scan_cap():
 
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=True):
-
-
-
-
-                    with patch(
-
-                        "app.api.routes.chatbot._pdf_page_count",
-
-                        return_value=OCR_IMAGE_PAGE_CAP + 1,
-
-                    ):
-
-
-                        with pytest.raises(HTTPException) as exc:
+                with patch(
+                    "app.api.routes.chatbot.needs_ocr_and_page_count",
+                    return_value=(True, OCR_IMAGE_PAGE_CAP + 1),
+                ):
 
 
 
 
 
-                            await upload_chat_attachments(rr_bad, gp_bad, AsyncMock())
+
+                    with pytest.raises(HTTPException) as exc:
 
 
 
 
 
-                        assert "too many scanned pages" in str(exc.value.detail)
+                        await upload_chat_attachments(rr_bad, gp_bad, AsyncMock())
+
+
+
+
+
+                    assert "too many scanned pages" in str(exc.value.detail)
 
 
 
@@ -1906,49 +1722,48 @@ async def test_upload_pdf_ocr_success_small_doc():
             with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=True):
-
-
-                    with patch("app.api.routes.chatbot._pdf_page_count", return_value=5):
-
-
-                        with patch(
-
-
-                            "app.api.routes.chatbot._build_pdf_image_blocks",
+                with patch("app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(True, 5)):
 
 
 
 
+                    with patch(
 
 
-                            return_value=BlocksContainer(blocks=[], block_groups=[]),
+                        "app.api.routes.chatbot.render_all_pages_as_png",
 
 
 
 
 
-                        ):
+
+                        return_value=[],
 
 
-                            with patch("app.api.routes.chatbot.convert_record_dict_to_record",
-
-                                      return_value=fakerec):
 
 
-                                with patch("app.api.routes.chatbot.TransformContext",
+
+                    ):
 
 
-                                           MagicMock(side_effect=lambda **_: MagicMock())):
+                        with patch("app.api.routes.chatbot.convert_record_dict_to_record",
+
+                                  return_value=fakerec):
 
 
-                                    with patch("app.api.routes.chatbot.SinkOrchestrator",
+                            with patch("app.api.routes.chatbot.TransformContext",
 
 
-                                               return_value=orch):
+                                       MagicMock(side_effect=lambda **_: MagicMock())):
 
 
-                                        await upload_chat_attachments(rr, gp, AsyncMock())
+                                with patch("app.api.routes.chatbot.SinkOrchestrator",
+
+
+                                           return_value=orch):
+
+
+                                    await upload_chat_attachments(rr, gp, AsyncMock())
 
 
     orch.index.assert_awaited()
@@ -2067,7 +1882,7 @@ async def test_upload_pdf_parse_generic_failure():
             with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=False):
+                with patch("app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, 1)):
 
 
                     with pytest.raises(HTTPException) as ex:

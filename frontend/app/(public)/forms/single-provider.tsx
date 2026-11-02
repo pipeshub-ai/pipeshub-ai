@@ -1,20 +1,14 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { Box, Flex, Text, Button, Callout } from '@radix-ui/themes';
+import { Box, Flex, Text, Callout } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { isValidEmail } from '@/lib/utils/validators';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import AuthTitleSection from '../components/auth-title-section';
-import {
-  EmailField,
-  PasswordField,
-  ProviderButton,
-  getSamlProviderNameFromAuthProviders,
-} from './form-components';
+import { EmailField, PasswordField } from './form-components';
 import GoogleSignInButton from './form-components/google-sign-in-button';
 import MicrosoftSignInButton from './form-components/microsoft-sign-in-button';
-import OAuthSignInButton from './form-components/oauth-sign-in-button';
 import { useAuthActions } from '../hooks/use-auth-actions';
 import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
 import type { AuthMethod } from '../api';
@@ -45,10 +39,8 @@ export interface SingleProviderProps {
  * |----------|-----------------------------------------------------------|
  * | otp      | Title → Email → Send OTP → Verify code → Sign In (same layout as email step) |
  * | password | Title → Email → Password → Forgot → Sign In              |
- * | samlSso  | "Single Sign-On" → Email → SSO button → Go Back          |
  * | google   | Title → Google button → Go Back                          |
  * | microsoft| Title → Microsoft button → Go Back                       |
- * | oauth    | Title → "Continue with {providerName}" button             |
  */
 export default function SingleProvider({
   method,
@@ -102,7 +94,7 @@ export default function SingleProvider({
 
   const handleMicrosoftLoginSuccess = async (credentials: { accessToken: string; idToken: string }) => {
     try {
-      await auth.signInWithMicrosoft(credentials, method === 'azureAd' ? 'azureAd' : 'microsoft');
+      await auth.signInWithMicrosoft(credentials);
     } catch {
       setProviderError(t('auth.common.authFailed'));
     }
@@ -212,31 +204,6 @@ export default function SingleProvider({
     );
   }
 
-  // ── SSO only ──────────────────────────────────────────────────────────────
-
-  if (method === 'samlSso') {
-    return (
-      <Box style={{ width: '100%', maxWidth: '440px' }}>
-        {!hideTitle && <AuthTitleSection />}
-
-        <Flex direction="column" gap="4">
-          <Flex gap="2">
-
-            <Box style={{ flex: 1 }}>
-              <ProviderButton
-                provider="sso"
-                samlProviderName={getSamlProviderNameFromAuthProviders(authProviders)}
-                onClick={auth.redirectToSSO}
-                loading={auth.ssoLoading}
-                primary
-              />
-            </Box>
-          </Flex>
-        </Flex>
-      </Box>
-    );
-  }
-
   // ── Google only ────────────────────────────────────────────────────────────
 
   if (method === 'google') {
@@ -275,13 +242,11 @@ export default function SingleProvider({
     );
   }
 
-  // ── Microsoft / Azure AD only ───────────────────────────────────────────
+  // ── Microsoft only ─────────────────────────────────────────────────────
 
-  if (method === 'microsoft' || method === 'azureAd') {
-    const msClientId = (authProviders?.microsoft?.clientId ||
-      authProviders?.azureAd?.clientId) as string | undefined;
-    const msAuthority: string | undefined =
-      authProviders?.microsoft?.authority || authProviders?.azureAd?.authority;
+  if (method === 'microsoft') {
+    const msClientId = authProviders?.microsoft?.clientId as string | undefined;
+    const msAuthority: string | undefined = authProviders?.microsoft?.authority;
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
         {!hideTitle && <AuthTitleSection />}
@@ -307,61 +272,6 @@ export default function SingleProvider({
                 />
               ) : (
                 <Text size="2" color="gray">{t('auth.common.microsoftNotConfigured')}</Text>
-              )}
-            </Box>
-          </Flex>
-        </Flex>
-      </Box>
-    );
-  }
-
-  // ── Generic OAuth only ──────────────────────────────────────────────────
-
-  if (method === 'oauth') {
-    const oauthConfig = authProviders?.oauth as
-      | { clientId?: string; authorizationUrl?: string; providerName?: string; scope?: string; redirectUri?: string }
-      | undefined;
-    const oauthClientId = oauthConfig?.clientId;
-    const oauthAuthUrl = oauthConfig?.authorizationUrl;
-    const oauthProviderName = oauthConfig?.providerName ?? 'OAuth';
-
-    return (
-      <Box style={{ width: '100%', maxWidth: '440px' }}>
-        {!hideTitle && <AuthTitleSection />}
-        <Flex direction="column" gap="4">
-          {providerError && (
-            <Callout.Root color="red" size="1" variant="surface">
-              <Callout.Text>
-                <Text size="2">{providerError}</Text>
-              </Callout.Text>
-            </Callout.Root>
-          )}
-          {auth.error?.type === 'generic' && auth.error.message && (
-            <Callout.Root color="red" size="1" variant="surface">
-              <Callout.Text>
-                <Text size="2">{auth.error.message}</Text>
-              </Callout.Text>
-            </Callout.Root>
-          )}
-          <Flex gap="2">
-            <Box style={{ flex: 1 }}>
-              {oauthClientId && oauthAuthUrl ? (
-                <OAuthSignInButton
-                  providerName={oauthProviderName}
-                  clientId={oauthClientId}
-                  authorizationUrl={oauthAuthUrl}
-                  scope={oauthConfig?.scope}
-                  redirectUri={oauthConfig?.redirectUri}
-                  onSuccess={(accessToken) => {
-                    setProviderError('');
-                    auth.signInWithOAuth(accessToken);
-                  }}
-                  onError={setProviderError}
-                  loading={auth.oauthLoading}
-                  primary
-                />
-              ) : (
-                <Text size="2" color="gray">{t('auth.common.oauthNotConfigured')}</Text>
               )}
             </Box>
           </Flex>

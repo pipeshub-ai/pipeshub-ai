@@ -52,6 +52,52 @@ def _make_mock_data_store_provider(existing_record=None):
     return provider
 
 
+def _memory_sync_point() -> MagicMock:
+    """An in-memory stand-in for SyncPoint: what is written is what is read back."""
+    store = {}
+
+    async def read(key) -> dict:
+        return dict(store.get(key) or {})
+
+    async def update(key, data) -> None:
+        store[key] = dict(data)
+
+    sync_point = MagicMock()
+    sync_point.store = store
+    sync_point.read_sync_point = AsyncMock(side_effect=read)
+    sync_point.update_sync_point = AsyncMock(side_effect=update)
+    return sync_point
+
+
+def _use_memory_state(connector) -> None:
+    """Checkpoints live in memory, retries do not really sleep, and the processor
+    calls made when records are removed or refreshed can be awaited."""
+    for name in (
+        "issues_sync_point", "attachments_sync_point", "documents_sync_point",
+        "projects_sync_point", "deletion_sync_point", "reconcile_sync_point",
+    ):
+        setattr(connector, name, _memory_sync_point())
+    connector._reconciler._sync_point = connector.reconcile_sync_point
+    connector._sleep = AsyncMock()
+    connector._api._sleep = connector._sleep
+    # The cheap "did anything change" probe is tested on its own.
+    connector._team_has_changes = AsyncMock(return_value=True)
+    processor = connector.data_entities_processor
+    for name, value in (
+        ("get_records_by_parent", []),
+        ("get_records_by_record_type", []),
+        ("get_records_in_record_group", []),
+        ("get_nodes_by_filters", []),
+        ("on_records_deleted_cascade", None),
+        ("on_records_detached_from_parent", None),
+        ("on_record_content_update", None),
+        ("on_record_group_deleted", None),
+        ("on_user_group_deleted", None),
+    ):
+        if not isinstance(getattr(processor, name), AsyncMock):
+            setattr(processor, name, AsyncMock(return_value=value))
+
+
 def _make_connector():
     """Build a LinearConnector with all dependencies mocked."""
     logger = logging.getLogger("test.linear")
@@ -77,6 +123,7 @@ def _make_connector():
     connector.organization_id = "org-linear-1"
     connector.organization_name = "Test Org"
     connector.organization_url_key = "test-org"
+    _use_memory_state(connector)
     return connector
 
 
@@ -604,89 +651,6 @@ class TestApplyDateFiltersToLinearFilter:
         connector._apply_date_filters_to_linear_filter(linear_filter, last_sync_time=2000)
         # Should use max(1000, 2000) = 2000
         assert "updatedAt" in linear_filter
-
-
-# ---------------------------------------------------------------------------
-# Tests: Sync checkpoint helpers
-# ---------------------------------------------------------------------------
-
-class TestSyncCheckpoints:
-    @pytest.mark.asyncio
-    async def test_get_team_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.issues_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 12345})
-        result = await connector._get_team_sync_checkpoint("ENG")
-        assert result == 12345
-
-    @pytest.mark.asyncio
-    async def test_get_team_sync_checkpoint_none(self):
-        connector = _make_connector()
-        connector.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
-        result = await connector._get_team_sync_checkpoint("ENG")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_update_team_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.issues_sync_point.update_sync_point = AsyncMock()
-        await connector._update_team_sync_checkpoint("ENG", 99999)
-        connector.issues_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_attachments_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.attachments_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 77777})
-        result = await connector._get_attachments_sync_checkpoint()
-        assert result == 77777
-
-    @pytest.mark.asyncio
-    async def test_update_attachments_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.attachments_sync_point.update_sync_point = AsyncMock()
-        await connector._update_attachments_sync_checkpoint(88888)
-        connector.attachments_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_documents_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.documents_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 55555})
-        result = await connector._get_documents_sync_checkpoint()
-        assert result == 55555
-
-    @pytest.mark.asyncio
-    async def test_update_documents_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.documents_sync_point.update_sync_point = AsyncMock()
-        await connector._update_documents_sync_checkpoint(66666)
-        connector.documents_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_team_project_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.projects_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 33333})
-        result = await connector._get_team_project_sync_checkpoint("ENG")
-        assert result == 33333
-
-    @pytest.mark.asyncio
-    async def test_update_team_project_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.projects_sync_point.update_sync_point = AsyncMock()
-        await connector._update_team_project_sync_checkpoint("ENG", 44444)
-        connector.projects_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_deletion_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 11111})
-        result = await connector._get_deletion_sync_checkpoint("issues")
-        assert result == 11111
-
-    @pytest.mark.asyncio
-    async def test_update_deletion_sync_checkpoint(self):
-        connector = _make_connector()
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
-        await connector._update_deletion_sync_checkpoint("issues", 22222)
-        connector.deletion_sync_point.update_sync_point.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,60 @@
+name: node-pg-runtime
+
+# Integration tests of the Node PostgreSQL runtime against real PostgreSQL 17 and 18 and PgBouncer, and the generated-types drift check.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/nodejs/apps/src/libs/db/**'
+      - 'backend/nodejs/apps/tests/libs/db/**'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/db/**'
+      - '.github/workflows/node-pg-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pg-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PostgreSQL 17 and 18, PgBouncer and the migration tool
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-17 postgresql-18 pgbouncer
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Integration tests (includes the generated-types drift check)
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/17/bin,/usr/lib/postgresql/18/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          PG_TEST_WORK: ${{ runner.temp }}
+        run: npm run test:pg

@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 
 const BASE_URL = '/api/v1/org';
 const METRICS_BASE_URL = '/api/v1/configurationManager/metricsCollection';
@@ -62,7 +63,7 @@ export const OrgApi = {
     return data;
   },
 
-  /** GET /api/v1/org/logo — download logo and return a local blob URL (null when the org has no logo, i.e. 204). */
+  /** GET /api/v1/org/logo — download logo and return a data URL (null when the org has no logo, i.e. 204). */
   async getLogoUrl(): Promise<string | null> {
     try {
       const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
@@ -71,7 +72,7 @@ export const OrgApi = {
       if (response.status === 204) {
         return null;
       }
-      return response.data instanceof Blob ? URL.createObjectURL(response.data) : null;
+      return response.data instanceof Blob ? await blobToDataUrl(response.data) : null;
     } catch {
       return null;
     }

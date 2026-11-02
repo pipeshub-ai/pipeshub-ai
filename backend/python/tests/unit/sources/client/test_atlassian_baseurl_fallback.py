@@ -549,3 +549,17 @@ class TestResolvePreferredSiteFallback:
             await resolve_preferred_site_with_fallback(
                 "", "tok", get_resources, logger, "Confluence",
             )
+
+
+class TestConfluenceBuildFromToolsetApiTokenWikiUrl:
+    @pytest.mark.asyncio
+    async def test_site_url_ending_in_wiki_is_not_doubled(self, logger: logging.Logger) -> None:
+        instance = {"auth": {"baseUrl": "https://acme.atlassian.net/wiki/"}}
+        toolset_cfg = {
+            "authType": "API_TOKEN",
+            "instanceId": "i1",
+            "auth": {"email": "a@acme.com", "apiToken": "tok"},
+        }
+        with patch("app.edition_config.get_toolset_by_id", new=AsyncMock(return_value=instance)):
+            client = await ConfluenceClient.build_from_toolset(toolset_cfg, logger, config_service=AsyncMock())
+        assert client.get_client().get_base_url() == "https://acme.atlassian.net/wiki/api/v2"

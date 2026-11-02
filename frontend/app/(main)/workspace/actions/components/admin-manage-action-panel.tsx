@@ -36,14 +36,16 @@ import {
   stableStringifyRecord,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
-import { ToolsetToolRulesDialog } from './toolset-tool-rules-dialog';
+import { ToolsetToolRulesDialog } from '@/config';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
+import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
 import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';
 import {
   useWorkspaceDrawerNestedModalHost,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 /** Pick the OAuth app row for this instance when id is missing or stale. */
 function resolveLinkedOauthConfig(
@@ -156,10 +158,11 @@ export function AdminManageActionPanel({
     );
   }, [oauth, authType, authConfigSchema]);
 
+  const frontendPublicUrl = useFrontendPublicUrl();
   const redirectUri = useMemo(() => {
-    if (typeof window === 'undefined') return '';
-    return toolsetRedirectUri(window.location.origin, toolsetType);
-  }, [toolsetType]);
+    if (!frontendPublicUrl) return '';
+    return toolsetRedirectUri(frontendPublicUrl, toolsetType);
+  }, [frontendPublicUrl, toolsetType]);
 
   // Reset selected OAuth app when the panel switches to a different instance.
   useEffect(() => {
@@ -681,7 +684,7 @@ export function AdminManageActionPanel({
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
           instanceId,
-          typeof window !== 'undefined' ? window.location.origin : undefined
+          browserOAuthBaseUrl()
         );
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));

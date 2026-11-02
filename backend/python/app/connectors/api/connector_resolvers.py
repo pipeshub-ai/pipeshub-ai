@@ -25,8 +25,6 @@ from app.utils.user_messages import not_found
 
 logger = logging.getLogger(__name__)
 
-_CONNECTOR_SECRET_FIELDS = frozenset({"clientSecret", "client_secret", "clientsecret"})
-
 
 def resolve_config_service(container: Any, org_id: Optional[str]) -> Any:
     """Return the container config service (no org wrapping on OSS)."""

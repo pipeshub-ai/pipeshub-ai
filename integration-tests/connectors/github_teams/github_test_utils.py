@@ -491,10 +491,9 @@ async def delete_issue(
     job and needs admin on the repo. It takes the issue's GraphQL node id rather than
     its number, so the issue is fetched first.
 
-    Safe here even though the connector has no tombstone for a deleted issue: every
-    mutation test owns a throw-away connector destroyed immediately after cleanup, so
-    no later sync of that connector can observe the deletion, and the next run starts
-    from a fresh checkpoint. Falls back to closing when the delete is refused, so an
+    Safe here: every mutation test owns a throw-away connector destroyed immediately
+    after cleanup, and the next run starts from a fresh checkpoint. (A later sync of
+    the same connector would remove the deleted issue; TC-DEL-ISSUE-001 asserts that.) Falls back to closing when the delete is refused, so an
     under-privileged token degrades instead of leaving the artifact behind entirely.
     """
     try:

@@ -123,3 +123,14 @@ class TestAcquireGateWithBackpressure:
             await outer_task
 
         assert gate.in_use == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cap_reaches_the_gate() -> None:
+    gate = _gate(limit=1)
+    assert await gate.acquire(cost=1)
+    admitted = await acquire_gate_with_backpressure(
+        gate, 1, ParseTier.HEAVY, "m1", logger=logging.getLogger("test"), log_prefix="test",
+        queue_wait_warn_seconds=0.01, gate_timeout_seconds=0.05, cap=2,
+    )
+    assert admitted and gate.in_use == 2

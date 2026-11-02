@@ -129,7 +129,7 @@ UPLOAD_PATTERN = re.compile(
         (?P<href>
             /uploads/
             [a-f0-9]{32}/         # 32-char GitLab upload hash
-            (?P<filename>[^)\s]+) # filename (no closing paren or whitespace)
+            (?P<filename>[^)\s/\\?#]+) # one path segment: a "/" or "\" would climb out of /uploads/
         )
         \)
     )

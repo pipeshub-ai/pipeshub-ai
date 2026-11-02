@@ -106,3 +106,22 @@ describe('AgentsApi.getAllKnowledgeHubAppNodes', () => {
     expect(nodes.map((n) => n.id)).toEqual(['a1']);
   });
 });
+
+describe('AgentsApi.getAgent', () => {
+  beforeEach(() => {
+    mockedGet.mockReset();
+    mockedGet.mockResolvedValue({ data: { agent: { _key: 'agent-7', name: 'Support Bot', toolsets: [] } } });
+  });
+
+  it('lets a failed lookup raise the global error toast by default', async () => {
+    await AgentsApi.getAgent('agent-7');
+
+    expect(mockedGet).toHaveBeenCalledWith('/api/v1/agents/agent-7', undefined);
+  });
+
+  it('keeps a failed lookup from raising that toast when the caller asks for quiet', async () => {
+    await AgentsApi.getAgent('agent-7', { quiet: true });
+
+    expect(mockedGet).toHaveBeenCalledWith('/api/v1/agents/agent-7', { suppressErrorToast: true });
+  });
+});

@@ -30,6 +30,11 @@ from app.config.constants.ai_models import (
     REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
 )
+from app.services.model_identity.transport.client_paths import (
+    OPENAI_RESOURCE_CLIENTS,
+    OPENAI_ROOT_CLIENTS,
+    OWN_CLIENTS,
+)
 from app.utils.embedding_server_client import get_embedding_server_embeddings
 from app.utils.env_utils import env_int
 from app.utils.llm_api_mode_store import (
@@ -64,14 +69,17 @@ def _decorate_chat_model(model, provider, model_name, config):  # noqa: ANN001, 
     # Imported here: edition_services pulls in connector and graph code that
     # every service using this module should not have to load.
     from app.edition_services import decorate_chat_model
+    from app.services.model_identity.transport.instrument import instrument_model
 
-    return decorate_chat_model(model, provider, model_name, config)
+    # Before the edition decorators, so they wrap a model that already carries identity.
+    return decorate_chat_model(instrument_model(model, provider, config), provider, model_name, config)
 
 
 def _decorate_embeddings(embeddings, provider, model_name, config):  # noqa: ANN001, ANN202
     from app.edition_services import decorate_embeddings
+    from app.services.model_identity.transport.instrument import instrument_model
 
-    return decorate_embeddings(embeddings, provider, model_name, config)
+    return decorate_embeddings(instrument_model(embeddings, provider, config), provider, model_name, config)
 
 def coerce_message_content_to_text(content: Any) -> str:
     """Normalize a LangChain message ``content`` value to plain text.
@@ -282,22 +290,53 @@ async def require_public_endpoint(endpoint: str | None) -> None:
         raise ValueError(f"Model endpoint {endpoint!r} resolves to {reason}.")
 
 
-def _endpoint_client_kwargs(base_url: str) -> dict[str, Any]:
+def _endpoint_client_kwargs(base_url: str, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """``AsyncOpenAI`` arguments for a configured endpoint, on a client that checks what the
-    name resolves to as it connects and answers a redirect instead of following it."""
-    from openai import DefaultAsyncHttpxClient
+    name resolves to as it connects and answers a redirect instead of following it, and that
+    carries the connection's identity forwarding when it is enabled."""
+    from app.services.model_identity.transport.instrument import model_http_client
 
     require_allowed_endpoint(base_url)
-    http_client = DefaultAsyncHttpxClient()
-    guard_httpx_client(http_client, base_url)
-    return {"base_url": base_url, "http_client": http_client}
+    return {"base_url": base_url, "http_client": model_http_client(base_url, config)}
 
 
-# Where each kind of model keeps its SDK clients (openai.OpenAI, anthropic.Anthropic,
-# ollama.Client and their async twins). Every one of those holds its httpx client in ``_client``.
-_OPENAI_ROOT_CLIENTS = ("root_client", "root_async_client")
-_OPENAI_RESOURCE_CLIENTS = ("client._client", "async_client._client")
-_OWN_CLIENTS = ("_client", "_async_client")
+def _forwarding_configuration(configuration: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The identity-forwarding part of a connection's configuration.
+
+    The admin dialog saves flat ``identityForwarding*`` fields and the API may send one
+    nested ``identityForwarding`` object; ``settings_from_config`` reads both, so both are kept.
+    """
+    return {
+        key: value
+        for key, value in (configuration or {}).items()
+        if key == "identityForwarding" or key.startswith("identityForwarding")
+    }
+
+
+def _media_client_kwargs(base_url: str | None, identity_forwarding: Mapping[str, Any] | None) -> dict[str, Any]:
+    """HTTP arguments for an image, TTS or STT client.
+
+    ``identity_forwarding`` is the connection's forwarding configuration (see
+    ``_forwarding_configuration``). A connection with no custom endpoint is only given a
+    client of its own when forwarding is on, so the default path is unchanged.
+    """
+    from app.services.model_identity.transport.instrument import (
+        model_http_client,
+        settings_from_config,
+    )
+
+    config = {"configuration": dict(identity_forwarding or {})}
+    if base_url:
+        return _endpoint_client_kwargs(base_url, config)
+    if settings_from_config(config).enabled:
+        return {"http_client": model_http_client("", config)}
+    return {}
+
+
+# Where each kind of model keeps its SDK clients; shared with identity forwarding.
+_OPENAI_ROOT_CLIENTS = OPENAI_ROOT_CLIENTS
+_OPENAI_RESOURCE_CLIENTS = OPENAI_RESOURCE_CLIENTS
+_OWN_CLIENTS = OWN_CLIENTS
 
 
 def _guard_clients(model: _SdkModel, sdk_clients: tuple[str, ...], endpoint: str | None) -> _SdkModel:
@@ -391,6 +430,8 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
     """
     if not embedding_configs:
         return "default"
+    from app.services.model_identity.transport.instrument import settings_from_config
+
     serialisable = []
     for cfg in embedding_configs:
         configuration = cfg.get("configuration") or {}
@@ -410,6 +451,7 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
             "serviceAccountJson": configuration.get("serviceAccountJson"),
             "project": configuration.get("project"),
             "location": configuration.get("location"),
+            "identityForwarding": settings_from_config({"configuration": configuration}).fingerprint,
         })
     return hashlib.sha256(
         json.dumps(serialisable, sort_keys=True, default=str).encode()
@@ -644,7 +686,7 @@ def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, An
     if isinstance(endpoint, str):
         endpoint = endpoint.strip() or None
     if endpoint:
-        kwargs.update(_endpoint_client_kwargs(endpoint))
+        kwargs.update(_endpoint_client_kwargs(endpoint, {"configuration": configuration}))
     return kwargs
 
 
@@ -1452,11 +1494,21 @@ def _reasoning_effort_kwargs(
         return {}
 
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
         # REASONING_MANDATORY fact happens to be learned for this model.
+        # allowDisabledReasoning is for internal calls that want no reasoning at all.
         effort_input = REASONING_MANDATORY_FALLBACK_EFFORT
+
+    if effort_input == "none" and provider == LLMProvider.ANTHROPIC.value:
+        off = _claude_thinking_off(model_name)
+        if off == "omit":
+            # Any effort value would ask this model to think.
+            return {}
+        if off != "lowest":
+            return {"thinking": {"type": off}}
+        effort_input = "low"
 
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
@@ -1521,7 +1573,7 @@ def _reasoning_effort_kwargs(
 
 # Bedrock Converse: gpt-oss only accepts low/medium/high for
 # additionalModelRequestFields.reasoning_effort (no none/max/xhigh).
-# GPT-5.6 Sol/Terra/Luna accept a wider set (including max); do not clamp.
+# GPT-5.x / GPT-6 take reasoning.effort with none..max; do not clamp.
 _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
     "none": "low",
     "low": "low",
@@ -1576,14 +1628,33 @@ def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
     return bool(model_name) and "gpt-oss" in model_name.lower()
 
 
-def _bedrock_is_openai_gpt(model_name: str | None) -> bool:
-    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss."""
+def bedrock_is_openai_gpt(model_name: str | None) -> bool:
+    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss.
+
+    On Converse these take ``reasoning.effort``, reject temperature, reject an
+    ``image`` block inside ``toolResult``, and need ``bedrock:InvokeModel`` on
+    the account's default project as well as on the inference profile.
+    """
     if not model_name:
         return False
     lowered = model_name.lower()
     if "gpt-oss" in lowered:
         return False
     return bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
+
+
+def bedrock_inference_profile_hint(model_name: str | None) -> str | None:
+    """The inference-profile IDs to use instead of a bare ``openai.gpt-*`` id.
+
+    GPT-5.x / GPT-6 have no in-Region throughput on bedrock-runtime, so
+    Converse only accepts the ``us.`` / ``global.`` profile, never the base id.
+    """
+    if not model_name or not bedrock_is_openai_gpt(model_name):
+        return None
+    name = model_name.strip()
+    if not name.lower().startswith("openai."):
+        return None
+    return f"us.{name} or global.{name}"
 
 
 def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
@@ -1636,6 +1707,33 @@ def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
     return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
 
 
+def _claude_thinking_off(model_name: str | None) -> str:
+    """How to ask a Claude model for no thinking.
+
+    ``omit``: it only thinks when asked (Claude 4.8 and older), so send no
+    thinking fields. ``disabled``: Claude 5 and Haiku 5.5 think adaptively when
+    the field is left out but accept ``thinking.type=disabled``.
+    ``between_tools``: Sonnet 5.5 rejects ``disabled`` and takes this instead.
+    ``lowest``: Opus 5.5 and later, Fable and Mythos always think; the lowest
+    effort is the closest they come.
+    """
+    lowered = (model_name or "").lower()
+    if any(token in lowered for token in ("fable", "mythos")):
+        return "lowest"
+    parsed = _parse_claude_version(model_name)
+    if parsed is None:
+        return "omit"
+    tier, major, minor = parsed
+    if major < 5:
+        return "omit"
+    at_least_5_5 = major > 5 or (minor or 0) >= 5
+    if tier == "opus" and at_least_5_5:
+        return "lowest"
+    if tier == "sonnet" and at_least_5_5:
+        return "between_tools"
+    return "disabled"
+
+
 def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str, Any]) -> str:
     """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
 
@@ -1645,7 +1743,7 @@ def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str
     model is flagged ``isReasoning``.
     """
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         return REASONING_MANDATORY_FALLBACK_EFFORT
     return effort_input
 
@@ -1675,15 +1773,21 @@ def _bedrock_additional_model_request_fields(
     if _bedrock_is_openai(provider, model_name):
         if _bedrock_is_gpt_oss(model_name):
             effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
-        else:
-            # GPT-5.6 / GPT-6 Converse models: pass UI effort through.
-            # ``none`` is already floored to low above.
-            effort = effort_input
-        return {"reasoning_effort": effort}
+            return {"reasoning_effort": effort}
+        # GPT-5.x / GPT-6 take the Responses-style nested object and reject a
+        # flat ``reasoning_effort`` with 400 unknown_parameter.
+        return {"reasoning": {"effort": effort_input}}
 
     if provider == LLMProvider.ANTHROPIC.value or (
         model_name and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     ):
+        if effort_input == "none":
+            off = _claude_thinking_off(model_name)
+            if off == "omit":
+                return {}
+            if off != "lowest":
+                return {"thinking": {"type": off}}
+            effort_input = "low"
         if _bedrock_anthropic_uses_adaptive_thinking(model_name):
             effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
             return {
@@ -1702,6 +1806,8 @@ def _bedrock_additional_model_request_fields(
         }
 
     if _bedrock_is_nova_2(model_name):
+        if effort_input == "none":
+            return {}
         effort = _BEDROCK_NOVA_EFFORT_MAP.get(effort_input, effort_input)
         return {
             "reasoningConfig": {
@@ -1762,7 +1868,7 @@ def _bedrock_temperature(
         and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     )
 
-    if _bedrock_is_openai_gpt(model_name):
+    if bedrock_is_openai_gpt(model_name):
         return None
 
     if is_anthropic and not _anthropic_supports_sampling_params(model_name):
@@ -2419,6 +2525,8 @@ class ImageGenerationAdapter:
     handle obtained from :func:`get_image_generation_model`.
     """
 
+    identity_forwarding: Mapping[str, Any] | None = None
+
     provider: str
     model: str
 
@@ -2480,8 +2588,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
         client = AsyncOpenAI(**client_kwargs)
 
         # The ``response_format`` parameter is **only** accepted by DALL-E
@@ -2546,8 +2653,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
         client = AsyncOpenAI(**client_kwargs)
 
         image_file = io.BytesIO(input_image)
@@ -2853,7 +2959,9 @@ def get_image_generation_model(
     builder = _IMAGE_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported image generation provider: {provider}")
-    return builder(configuration, model_name)
+    adapter = builder(configuration, model_name)
+    adapter.identity_forwarding = _forwarding_configuration(configuration)
+    return adapter
 
 
 # ---------------------------------------------------------------------------
@@ -2881,6 +2989,7 @@ def tts_format_mime(response_format: str) -> str:
 class TTSAdapter:
     """Thin wrapper around a TTS provider SDK that returns raw audio bytes."""
 
+    identity_forwarding: Mapping[str, Any] | None = None
     provider: str
     model: str
     default_voice: str = _OPENAI_TTS_DEFAULT_VOICE
@@ -2935,8 +3044,7 @@ class _OpenAITTSAdapter(TTSAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
 
         client = AsyncOpenAI(**client_kwargs)
         try:
@@ -3235,7 +3343,9 @@ def get_tts_model(
     builder = _TTS_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported TTS provider: {provider}")
-    return builder(configuration, model_name)
+    adapter = builder(configuration, model_name)
+    adapter.identity_forwarding = _forwarding_configuration(configuration)
+    return adapter
 
 
 # ---------------------------------------------------------------------------
@@ -3246,6 +3356,7 @@ def get_tts_model(
 class STTAdapter:
     """Thin wrapper around an STT provider SDK that returns a transcript."""
 
+    identity_forwarding: Mapping[str, Any] | None = None
     provider: str
     model: str
 
@@ -3306,8 +3417,7 @@ class _OpenAISTTAdapter(STTAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
         client = AsyncOpenAI(**client_kwargs)
         file_tuple = (
             _stt_filename_for_mime(mime, filename),
@@ -3904,4 +4014,6 @@ def get_stt_model(
     builder = _STT_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported STT provider: {provider}")
-    return builder(configuration, model_name)
+    adapter = builder(configuration, model_name)
+    adapter.identity_forwarding = _forwarding_configuration(configuration)
+    return adapter

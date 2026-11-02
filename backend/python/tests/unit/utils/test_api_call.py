@@ -81,6 +81,21 @@ class TestMakeApiCall:
         assert result["data"] == {"key": "value"}
 
     @pytest.mark.asyncio
+    async def test_a_file_served_as_json_that_does_not_parse_comes_back_as_bytes(self) -> None:
+        """A JSON file with // comments (Kafka's protocol schemas, tsconfig.json) failed the record."""
+        import json
+
+        body = b"// Licensed to the Apache Software Foundation\n{\"apiKey\": 25}\n"
+        response = _make_mock_response(status=200, content_type="application/json", binary_data=body)
+        response.json = AsyncMock(side_effect=json.JSONDecodeError("Expecting value", "//", 0))
+        session = _make_mock_session(response)
+
+        with patch("app.utils.api_call.aiohttp.ClientSession", return_value=session):
+            result = await _no_retry_call("http://api/stream/record/r1", "test-token")
+
+        assert result == {"is_json": False, "data": body}
+
+    @pytest.mark.asyncio
     async def test_successful_binary_response(self):
         """200 + non-JSON content type -> returns {is_json: False, data: bytes}."""
         binary_data = b"\x89PNG\r\n"

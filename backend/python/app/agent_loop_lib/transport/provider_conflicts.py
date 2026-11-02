@@ -83,20 +83,26 @@ def wants_responses_api(exc: Exception) -> bool:
 
 def is_prompt_cache_param_conflict(exc: Exception, sent: Iterable[str]) -> bool:
     """True when the provider refused the request over a prompt-cache parameter
-    this request actually carried (a 400 naming it: "Unrecognized request
-    argument supplied: prompt_cache_retention", "cache_control: Extra inputs are
-    not permitted", ...). Recovering means resending without the cache
-    parameters, never changing the model's configuration."""
+    this request actually carried. Recovering means resending without it, never
+    changing the model's configuration."""
+    return bool(refused_cache_params(exc, sent))
+
+
+def refused_cache_params(exc: Exception, sent: Iterable[str]) -> frozenset[str]:
+    """The prompt-cache parameters this request carried that a 400 names
+    ("Unrecognized request argument supplied: prompt_cache_retention",
+    "prompt_cache_breakpoint is not supported on this model", "cache_control:
+    Extra inputs are not permitted", ...); empty for any other error."""
     names = {name.lower() for name in sent if name}
     if not names:
-        return False
+        return frozenset()
     status = _http_status(exc)
     message = str(exc).lower()
     if status is not None and status != 400:
-        return False
+        return frozenset()
     if status is None and not any(hint in message for hint in ("400", "bad request", "invalid", "validation")):
-        return False
-    return any(name in message for name in names)
+        return frozenset()
+    return frozenset(name for name in names if name in message)
 
 
 def _http_status(exc: Exception) -> int | None:

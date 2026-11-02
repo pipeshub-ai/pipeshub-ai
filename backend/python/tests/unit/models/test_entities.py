@@ -619,6 +619,24 @@ class TestTicketRecord:
         ctx = rec.to_llm_context()
         assert "* Labels: bug, backend" in ctx
 
+    def test_to_llm_context_includes_milestone(self) -> None:
+        """The milestone is often the release an issue is aimed at; without it
+        an agent asked "which release?" guessed from comments."""
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.GITHUB,
+            milestone="Airflow 3.5.0",
+        ))
+        assert "* Milestone: Airflow 3.5.0" in rec.to_llm_context()
+
+    def test_to_llm_context_without_milestone_has_no_line(self) -> None:
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.GITHUB,
+            labels=["bug"],
+        ))
+        assert "Milestone" not in rec.to_llm_context()
+
     @pytest.mark.asyncio
     async def test_to_llm_context_with_live_fields_delegates_to_enrichment(self):
         rec = TicketRecord(**_record_kwargs(
@@ -634,6 +652,23 @@ class TestTicketRecord:
 
         assert ctx == "merged context"
         mock_enrich.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_to_llm_context_with_live_fields_passes_the_access_callback(self) -> None:
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+        ))
+        check = AsyncMock()
+        config_service = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
+            new=AsyncMock(return_value="x"),
+        ) as mock_enrich:
+            await rec.to_llm_context_with_live_fields(config_service=config_service, readable_issue_ids=check)
+
+        assert mock_enrich.await_args.args[2:] == (config_service, check)
 
     @pytest.mark.asyncio
     async def test_to_llm_context_with_live_fields_falls_back_on_error(self):
@@ -833,8 +868,7 @@ class TestLinkRecord:
             linked_record_id="rec-linked-1",
         ))
         ctx = rec.to_llm_context()
-        assert "URL" in ctx
-        assert "https://example.com" in ctx
+        assert "* URL: https://example.com" in ctx.splitlines()
         assert "Title" in ctx
         assert "Example Link" in ctx
         assert "Public Access" in ctx
@@ -1116,6 +1150,18 @@ class TestWebpageRecord:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
+    def test_from_arango_record_reads_the_stored_access_rule(self) -> None:
+        """A page read back as OPEN when it is stored RESTRICTED is never re-checked when its restriction is lifted."""
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord.from_arango_record({}, self._record_doc(accessRule="RESTRICTED"))
+        assert rec.access_rule == AccessRule.RESTRICTED
+
+    def test_from_arango_record_without_an_access_rule_is_open(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import WebpageRecord
+        assert WebpageRecord.from_arango_record({}, self._record_doc()).access_rule == AccessRule.OPEN
+
 
 # ============================================================================
 # LinkRecord.from_arango_record tests (lines 703-709)
@@ -1174,6 +1220,15 @@ class TestLinkRecordFromArango:
         del link_doc["isPublic"]
         rec = LinkRecord.from_arango_record(link_doc, self._record_doc())
         assert rec.is_public == LinkPublicStatus.UNKNOWN
+
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        # The storage path and access checks read the group; a link read back
+        # without it was filed and checked as if it belonged to no group.
+        rec = LinkRecord.from_arango_record(
+            self._link_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
 
 
 # ============================================================================
@@ -1342,12 +1397,33 @@ class TestTicketRecordFromArango:
         assert rec.reporter_email == "jane@test.com"
         assert rec.labels == ["critical"]
 
+    def test_milestone_survives_the_round_trip(self) -> None:
+        rec = TicketRecord.from_arango_record(
+            self._ticket_doc(milestone="Airflow 3.5.0"), self._record_doc()
+        )
+        assert rec.milestone == "Airflow 3.5.0"
+        back = TicketRecord.from_arango_record(rec.to_arango_record(), self._record_doc())
+        assert back.milestone == "Airflow 3.5.0"
+
     def test_from_arango_record_unknown_connector(self):
         rec = TicketRecord.from_arango_record(
             self._ticket_doc(),
             self._record_doc(connectorName="NONEXISTENT"),
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    @pytest.mark.parametrize("hidden", [True, False])
+    def test_hidden_emails_survive_the_round_trip(self, hidden: bool) -> None:
+        """With the flag lost, the email fields (the source's user ids) would read as emails."""
+        rec = TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc())
+        rec.is_email_hidden = hidden
+
+        back = TicketRecord.from_arango_record(rec.to_arango_record(), self._record_doc())
+
+        assert back.is_email_hidden is hidden
+
+    def test_a_ticket_doc_without_the_flag_reads_as_not_hidden(self) -> None:
+        assert TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc()).is_email_hidden is False
 
 
 # ============================================================================
@@ -1400,6 +1476,13 @@ class TestProjectRecordFromArango:
             self._record_doc(connectorName="NONEXISTENT"),
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        rec = ProjectRecord.from_arango_record(
+            self._project_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
 
 
 # ============================================================================
@@ -1567,6 +1650,18 @@ class TestPullRequestRecordToLlmContext:
         ctx = self._pr(status=stored).to_llm_context()
         assert "Pull Request Information:" in ctx
         assert f"* Status: {shown}" in ctx
+
+    def test_milestone_is_shown(self) -> None:
+        ctx = self._pr(status="DONE", milestone="Airflow 3.5.0").to_llm_context()
+        assert "* Milestone: Airflow 3.5.0" in ctx
+
+    def test_milestone_survives_the_graph_document(self) -> None:
+        from app.models.entities import PullRequestRecord
+        rec = self._pr(status="OPEN", milestone="Airflow 3.5.0")
+        doc = rec.to_arango_record()
+        assert doc["milestone"] == "Airflow 3.5.0"
+        back = PullRequestRecord.from_arango_record(doc, rec.to_arango_base_record())
+        assert back.milestone == "Airflow 3.5.0"
 
     def test_unknown_status_is_shown_as_stored(self):
         """GitLab stores its own state words; they pass through unchanged."""
@@ -1831,6 +1926,31 @@ class TestAppUser:
         assert arango["email"] == "user@test.com"
         assert arango["fullName"] == "App User"
         assert arango["userId"] == "src-1"
+
+    def test_title_round_trips_through_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", title="Staff Engineer")
+        doc = au.to_arango_base_user()
+        assert doc["designation"] == "Staff Engineer"
+        assert AppUser.from_arango_user(doc).title == "Staff Engineer"
+
+    def test_missing_title_is_omitted_from_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U")
+        assert "designation" not in au.to_arango_base_user()
+
+    def test_title_falls_back_to_legacy_field(self) -> None:
+        from app.models.entities import AppUser
+        doc = {"_key": "k", "email": "u@test.com", "fullName": "U", "userId": "s", "title": "Analyst"}
+        assert AppUser.from_arango_user(doc).title == "Analyst"
+
+    def test_source_role_is_not_stored_as_title(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.DROPBOX, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", source_role="team_admin")
+        assert "designation" not in au.to_arango_base_user()
 
     def test_from_arango_user(self):
         from app.models.entities import AppUser

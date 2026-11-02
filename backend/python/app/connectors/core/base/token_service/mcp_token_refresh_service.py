@@ -20,6 +20,7 @@ from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.models import OAuthTokens
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import spawn_detached
 from app.utils.request_context import new_system_root, reset_context, set_context
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -72,10 +73,10 @@ class MCPTokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            self._background_tasks.append(asyncio.create_task(self._refresh_all_tokens()))
+            self._background_tasks.append(spawn_detached(self._refresh_all_tokens()))
 
-        self._background_tasks.append(asyncio.create_task(self._periodic_refresh_check()))
-        self._background_tasks.append(asyncio.create_task(self._periodic_state_sweep()))
+        self._background_tasks.append(spawn_detached(self._periodic_refresh_check()))
+        self._background_tasks.append(spawn_detached(self._periodic_state_sweep()))
 
     async def stop(self) -> None:
         self._running = False

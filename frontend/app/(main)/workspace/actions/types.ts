@@ -124,6 +124,48 @@ export function mergedMyToolsetsCatalogFromIncludeRegistry(rows: BuilderSidebarT
   return out;
 }
 
+/**
+ * The registry row for a toolset type's page, from one of its listed instances, else the type's
+ * registry entry: a filter can hide every instance, and adding your own still needs the type's
+ * sign-in types.
+ */
+export function typeDetailRegistryRow(
+  toolsetType: string,
+  primary: BuilderSidebarToolset | undefined,
+  registryEntry: RegistryToolsetRow | null,
+): RegistryToolsetRow {
+  if (!primary) {
+    return (
+      registryEntry ?? {
+        name: toolsetType,
+        displayName: toolsetType,
+        description: '',
+        category: 'app',
+        appGroup: '',
+        iconPath: '',
+        supportedAuthTypes: ['NONE'],
+        toolCount: 0,
+      }
+    );
+  }
+  const name = primary.toolsetType || primary.normalized_name || primary.name || toolsetType;
+  const authUpper = primary.authType ? String(primary.authType).toUpperCase() : '';
+  // Every auth type the toolset offers, for adding one of your own.
+  const offered = (primary.supportedAuthTypes?.length ? primary.supportedAuthTypes : registryEntry?.supportedAuthTypes ?? [])
+    .map((a) => String(a).toUpperCase());
+  return {
+    name,
+    displayName: primary.displayName || name,
+    description: primary.description || '',
+    category: primary.category || 'app',
+    appGroup: '',
+    iconPath: primary.iconPath || '',
+    supportedAuthTypes: offered.length ? offered : authUpper ? [authUpper] : ['NONE'],
+    toolCount: primary.toolCount ?? 0,
+    ...(primary.documentationLinks?.length ? { documentationLinks: primary.documentationLinks } : {}),
+  };
+}
+
 /** Registry row for setup flows when the catalog item was built from my-toolsets merge only. */
 export function actionCatalogItemToRegistryRow(item: ActionCatalogItem): RegistryToolsetRow {
   const primary = item.primaryInstance ?? item.instances[0];

@@ -46,13 +46,11 @@ class TestAskUserQuestionSSE:
         )
 
         assert len(sink.events) == 1
-        assert sink.events[0] == {
-            "event": "ask_user_question",
-            "data": {
-                "status": "success",
-                "toolData": {"question": "Which one?", "options": ["a", "b"]},
-            },
-        }
+        tool_data = sink.events[0]["data"].pop("toolData")
+        assert sink.events[0] == {"event": "ask_user_question", "data": {"status": "success"}}
+        # The card says when it stops being answerable; the rest is the tool's payload as it was.
+        assert tool_data.pop("expiresAt").endswith("Z")
+        assert tool_data == {"question": "Which one?", "options": ["a", "b"]}
         assert context.tool_state["ask_user_question_emitted"] is True
 
     async def test_non_json_payload_passed_through_as_raw_string(self) -> None:

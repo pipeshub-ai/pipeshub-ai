@@ -17,14 +17,8 @@ interface ConfigManagerResponse {
 
 export const GOOGLE_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/google';
-export const AZURE_AD_AUTH_CONFIG_PATH =
-  'api/v1/configurationManager/internal/authConfig/azureAd';
 export const MICROSOFT_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/microsoft';
-export const OAUTH_AUTH_CONFIG_PATH =
-  'api/v1/configurationManager/internal/authConfig/oauth';
-export const SSO_AUTH_CONFIG_PATH =
-  'api/v1/configurationManager/internal/authConfig/sso';
 
 const logger = Logger.getInstance({
   service: 'Auth Config Service',

@@ -82,9 +82,13 @@ export function ruleToolsFromInfo(
   });
 }
 
+/** Whose tools the rules are for: an MCP server's, or a PipesHub toolset's. They start differently. */
+export type ToolRuleSource = 'mcp' | 'toolset';
+
 /** Matches the server (`tool_approvals.starting_rule`); an unknown kind shows as a tool that changes data. */
-export function startingRule(kind: McpToolKind | undefined): McpToolRule {
+export function startingRule(kind: McpToolKind | undefined, source: ToolRuleSource = 'mcp'): McpToolRule {
   if (kind === 'read') return 'allow';
+  if (source === 'toolset') return kind === 'destructive' ? 'ask' : 'allow';
   if (kind === 'destructive') return 'block';
   return 'ask';
 }
@@ -101,11 +105,15 @@ export function toolRuleRows(tools: McpRuleTool[], namesWithRules: string[]): Mc
 
 /** Keeps the rules that differ from a tool's starting rule. A tool whose kind isn't known keeps
  * its rule: its starting rule can't be told here. */
-export function ownRulesToSave(rows: McpRuleTool[], rules: Record<string, McpToolRule>): McpToolRules {
+export function ownRulesToSave(
+  rows: McpRuleTool[],
+  rules: Record<string, McpToolRule>,
+  source: ToolRuleSource = 'mcp'
+): McpToolRules {
   const tools: Record<string, McpToolRule> = {};
   for (const row of rows) {
     const rule = rules[row.name];
-    if (rule && (row.kind === undefined || rule !== startingRule(row.kind))) tools[row.name] = rule;
+    if (rule && (row.kind === undefined || rule !== startingRule(row.kind, source))) tools[row.name] = rule;
   }
   return { tools };
 }

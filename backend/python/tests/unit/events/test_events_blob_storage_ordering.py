@@ -1,7 +1,8 @@
-"""Tests for the post-enrichment blob_storage.apply() in _orchestrate_via_services.
+"""The stored record on the service path is written once, by the index step.
 
-It runs after the enrichment step, so the stored record carries enrichment
-output, and a failure there must not stop the record from completing.
+Enrichment used to rewrite it after classification; the classify and entities stages
+now write their sections of it under the record lease (``app/modules/pipeline``), so
+the record path neither rewrites it nor runs classification or named entities.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.events.events import EventProcessor
-from app.models.blocks import SemanticMetadata
+from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,9 @@ def _make_event_processor():
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
+    stage_ingress = MagicMock()
+    stage_ingress.on_indexed = AsyncMock(return_value=[])
+
     ep = EventProcessor(
         logger=logger,
         processor=processor,
@@ -58,17 +62,19 @@ def _make_event_processor():
         parsing_client=parsing_client,
         extraction_client=extraction_client,
         sink_orchestrator=sink_orchestrator,
+        stage_ingress=stage_ingress,
     )
     return ep
 
 
 def _setup_parse_result(ep):
     """Configure parsing_client to return a valid block container."""
-    mock_block_container = MagicMock()
-    mock_block_container.blocks = [MagicMock()]
-    mock_block_container.block_groups = []
+    # A real container: the service path validates it before any write.
+    block_container = BlocksContainer(
+        blocks=[Block(index=0, type=BlockType.TEXT, data="hello", format=DataFormat.TXT)], block_groups=[]
+    )
     ep.parsing_client.parse = AsyncMock(return_value=MagicMock(
-        block_container=mock_block_container,
+        block_container=block_container,
         provider_used=MagicMock(value="test"),
     ))
 
@@ -118,111 +124,39 @@ async def _collect_events(ep, **kwargs):
     return events
 
 
-class TestPostEnrichmentBlobRewrite:
-    """blob_storage.apply() runs after the enrichment step."""
-
+class TestServicePathBlobWrites:
     @pytest.mark.asyncio
-    async def test_blob_apply_called_when_enrichment_produces_metadata(self):
+    async def test_the_record_path_hands_off_without_rewriting_the_blob(self):
         ep = _make_event_processor()
         _setup_parse_result(ep)
-        ep.extraction_client.classify = AsyncMock(
-            return_value=SemanticMetadata(categories=["Finance"])
-        )
 
         patches = _build_patches()
-        with patch.dict("os.environ", {
-            "USE_PARSING_SERVICE": "true",
-            "DEFER_EXTRACTION": "false",
-        }), patches["convert"], patches["transform_ctx"] as transform_ctx, patches["pipeline"]:
-            # A bare MagicMock context would report defer_extraction as truthy.
-            transform_ctx.return_value.settings = {}
-            await _collect_events(ep)
-
-        ep.extraction_client.classify.assert_awaited_once()
-        ep.sink_orchestrator.blob_storage.apply.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_post_enrichment_blob_apply_failure_does_not_block_indexing_complete(self):
-        """If the post-enrichment blob_storage.apply() raises, the pipeline
-        should still yield INDEXING_COMPLETE (index() is mocked here, so only
-        that later call can fail)."""
-        ep = _make_event_processor()
-        _setup_parse_result(ep)
-        ep.extraction_client.classify = AsyncMock(
-            return_value=SemanticMetadata(categories=["Finance"])
-        )
-        ep.sink_orchestrator.blob_storage.apply = AsyncMock(
-            side_effect=RuntimeError("blob storage failed")
-        )
-
-        patches = _build_patches()
-        with patch.dict("os.environ", {
-            "USE_PARSING_SERVICE": "true",
-            "DEFER_EXTRACTION": "false",
-        }), patches["convert"], patches["transform_ctx"] as transform_ctx, patches["pipeline"]:
+        with patch.dict("os.environ", {"USE_PARSING_SERVICE": "true"}), \
+                patches["convert"], patches["transform_ctx"] as transform_ctx, patches["pipeline"]:
             transform_ctx.return_value.settings = {}
             events = await _collect_events(ep)
 
-        ep.sink_orchestrator.blob_storage.apply.assert_called_once()
+        ep.sink_orchestrator.index.assert_awaited_once()
+        ep.sink_orchestrator.blob_storage.apply.assert_not_called()
+        ep.extraction_client.classify.assert_not_awaited()
+        ep.sink_orchestrator.extract_named_entities.assert_not_awaited()
+        ep.stage_ingress.on_indexed.assert_awaited_once()
         event_names = [str(getattr(e, "event", e)) for e in events]
         assert any("INDEXING_COMPLETE" in name for name in event_names)
 
     @pytest.mark.asyncio
     async def test_blob_failure_during_indexing_fails_the_pipeline(self):
-        """A blob write failure inside sink_orchestrator.index() is not the
-        post-enrichment status update: it must surface, not report
-        INDEXING_COMPLETE."""
+        """A blob write failure inside sink_orchestrator.index() must surface,
+        not report INDEXING_COMPLETE, and nothing is handed to the stages."""
         ep = _make_event_processor()
         _setup_parse_result(ep)
         ep.sink_orchestrator.index = AsyncMock(side_effect=RuntimeError("blob write failed"))
 
         patches = _build_patches()
-        with patch.dict("os.environ", {
-            "USE_PARSING_SERVICE": "true",
-            "DEFER_EXTRACTION": "true",
-        }), patches["convert"], patches["transform_ctx"], patches["pipeline"]:
+        with patch.dict("os.environ", {"USE_PARSING_SERVICE": "true"}), \
+                patches["convert"], patches["transform_ctx"], patches["pipeline"]:
             with pytest.raises(RuntimeError, match="blob write failed"):
                 await _collect_events(ep)
 
         ep.sink_orchestrator.blob_storage.apply.assert_not_called()
-
-
-class TestNamedEntityTaskOwnership:
-    @pytest.mark.asyncio
-    async def test_a_cancelled_handler_cancels_its_named_entity_run(self):
-        """A record timeout or lost lease lands while classify is awaited."""
-        import asyncio
-
-        ep = _make_event_processor()
-        _setup_parse_result(ep)
-        ner_started, ner_cancelled, classifying = asyncio.Event(), asyncio.Event(), asyncio.Event()
-
-        async def extract(ctx, client=None):
-            ner_started.set()
-            try:
-                await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                ner_cancelled.set()
-                raise
-
-        async def classify(**_):
-            classifying.set()
-            await asyncio.sleep(60)
-
-        ep.sink_orchestrator.extract_named_entities = AsyncMock(side_effect=extract)
-        ep.extraction_client.classify = AsyncMock(side_effect=classify)
-
-        patches = _build_patches()
-        with patch.dict("os.environ", {
-            "USE_PARSING_SERVICE": "true",
-            "DEFER_EXTRACTION": "false",
-        }), patches["convert"], patches["transform_ctx"] as transform_ctx, patches["pipeline"]:
-            transform_ctx.return_value.settings = {}
-            handler = asyncio.create_task(_collect_events(ep))
-            await asyncio.wait_for(classifying.wait(), timeout=5)
-            await asyncio.wait_for(ner_started.wait(), timeout=5)
-            handler.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await handler
-
-        await asyncio.wait_for(ner_cancelled.wait(), timeout=1)
+        ep.stage_ingress.on_indexed.assert_not_awaited()

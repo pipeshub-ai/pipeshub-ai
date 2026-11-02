@@ -12,7 +12,7 @@ import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
-import axiosRetry from 'axios-retry';
+import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
@@ -67,7 +67,7 @@ import {
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
-import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
+import { getConnectorsConfigRepository } from '../../../libs/repositories/connectors-config';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
 import {
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
@@ -88,6 +88,7 @@ import {
   EventType,
   Event,
 } from '../services/entity_event.service';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -97,11 +98,22 @@ const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
 
+// A 429 whose Retry-After is longer than this goes straight back to the caller
+// with its Retry-After: waiting it out would hold the request open (a preview
+// would hang for the length of a source's rate limit).
+const MAX_RETRY_AFTER_MS = 5000;
+
 // Configure axios retry logic
 axiosRetry(axios, {
   retries: 3,
   retryDelay: axiosRetry.exponentialDelay,
   retryCondition: (error) => {
+    if (
+      error.response?.status === 429 &&
+      retryAfter(error) > MAX_RETRY_AFTER_MS
+    ) {
+      return false;
+    }
     return !!(
       axiosRetry.isNetworkOrIdempotentRequestError(error) ||
       (error.response && error.response.status >= 500)
@@ -170,7 +182,7 @@ const updateConnectorInstanceConfigSchema = z.object({
  */
 const updateConnectorInstanceAuthConfigSchema = z.object({
   body: z.object({
-    auth: z.any(),
+    auth: z.any().optional(),
     baseUrl: z.string().optional(),
   }),
   params: z.object({
@@ -200,6 +212,7 @@ const getOAuthAuthorizationUrlSchema = z.object({
   }),
   query: z.object({
     baseUrl: z.string().optional(),
+    desktop: z.string().optional(),
   }),
 });
 
@@ -220,7 +233,7 @@ const handleOAuthCallbackSchema = z.object({
  */
 const saveConnectorInstanceFilterOptionsSchema = z.object({
   body: z.object({
-    filters: z.any(),
+    filters: z.any().optional(),
   }),
   params: z.object({
     connectorId: z.string().min(1, 'Connector ID is required'),
@@ -240,10 +253,10 @@ const getFilterFieldOptionsSchema = z.object({
   }),
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1, FILTER_OPTIONS_LIMIT_MESSAGE).max(100, FILTER_OPTIONS_LIMIT_MESSAGE))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1, FILTER_OPTIONS_LIMIT_MESSAGE).max(100, FILTER_OPTIONS_LIMIT_MESSAGE))
       .optional(),
     search: z.string().optional(),
     cursor: z.string().optional(),
@@ -303,10 +316,10 @@ const connectorListSchema = z.object({
       })
       .default('team'),
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
     /** Filter instances by authentication status (instances endpoint only). */
@@ -351,10 +364,13 @@ const resyncConnectorSchema = z.object({
 /**
  * Schema for reindexing connector records
  */
+export const REINDEX_STAGES = ['classify', 'entities'] as const;
+
 export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
   body: z.object({
       statusFilters: z.array(z.string()).optional(),
+      stages: z.array(z.enum(REINDEX_STAGES)).min(1).optional(),
     })
     .optional(),
 });
@@ -380,21 +396,23 @@ const getRecordContentSchema = z.object({
     startBlock: z
       .preprocess(
         (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
-        z.number().int().min(0),
+        z.number().check(integerCheck()).min(0),
       )
       .optional(),
     startRecord: z
       .preprocess(
         (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
-        z.number().int().min(0),
+        z.number().check(integerCheck()).min(0),
       )
       .optional(),
     maxChars: z
       .preprocess(
         (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
-        z.number().int().min(2000).max(140000),
+        z.number().check(integerCheck()).min(2000).max(140000),
       )
       .optional(),
+    // With `query`: only the passages that answer it, picked out by a model.
+    extract: z.enum(['true', 'false']).optional(),
   }),
 });
 
@@ -407,15 +425,15 @@ const navigateKnowledgeGraphSchema = z.object({
     // to its record before navigating, so those must be accepted here.
     nodeId: z.string().min(1).max(2048).optional(),
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     // Floor of 50 matches GraphNavigator._MIN_LIMIT — anything lower would be
     // silently raised, so reject it here rather than ignore it.
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(50).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(50).max(200))
       .optional(),
     depth: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(3))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(3))
       .optional(),
     nodeTypes: z
       .union([z.string(), z.array(z.string())])
@@ -451,7 +469,9 @@ const testConnectorConnectionSchema = z.object({
     connectorType: z.string().min(1, 'Connector type is required'),
   }),
   body: z.object({
-    auth: z.record(z.unknown()),
+    auth: z.record(z.string(), z.unknown()),
+    // The chosen form when a connector offers several: `auth` holds only its fields.
+    authType: z.string().min(1).max(64).optional(),
     connectorId: z
       .string()
       .regex(
@@ -1104,10 +1124,12 @@ export function createConnectorRouter(
         }
 
         // Find or create connector in database
-        let connector = await ConnectorsConfig.findOne({
-          name: ConnectorIdToNameMap[connectorId],
-          orgId: req.user.orgId,
-        });
+        const connectorsConfig = getConnectorsConfigRepository();
+        const connectorName = ConnectorIdToNameMap[connectorId];
+        let connector = await connectorsConfig.find(
+          req.user.orgId as string,
+          connectorName,
+        );
 
         // Extract received scopes and filter enabled apps
         const receivedScopes = tokenData.scope.split(' ');
@@ -1120,17 +1142,14 @@ export function createConnectorRouter(
         let event: Event;
 
         if (connector) {
-          // Update existing connector
-          connector.isEnabled = true;
-          connector.lastUpdatedBy = req.user.userId;
-
+          // Update existing connector (written after the event is queued)
           event = {
             eventType: EventType.AppEnabledEvent,
             timestamp: Date.now(),
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id.toString(),
+              appGroupId: connector._id,
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: enabledApps,
@@ -1140,7 +1159,12 @@ export function createConnectorRouter(
 
           await eventService.publishEvent(event);
           await eventService.stop();
-          await connector.save();
+          connector =
+            (await connectorsConfig.enable(
+              req.user.orgId as string,
+              connectorName,
+              req.user.userId as string,
+            )) ?? connector;
 
           logger.info('Google Workspace connector enabled', {
             connectorId: connector._id,
@@ -1153,19 +1177,11 @@ export function createConnectorRouter(
           });
         } else {
           // Create new connector
-          connector = new ConnectorsConfig({
-            orgId: req.user.orgId,
-            name: ConnectorIdToNameMap[connectorId],
-            lastUpdatedBy: req.user.userId,
-            isEnabled: true,
-          });
-
-          await connector.save();
-
-          connector = await ConnectorsConfig.findOne({
-            name: ConnectorIdToNameMap[connectorId],
-            orgId: req.user.orgId,
-          });
+          connector = await connectorsConfig.createEnabled(
+            req.user.orgId as string,
+            connectorName,
+            req.user.userId as string,
+          );
 
           if (!connector) {
             throw new InternalServerError('Error creating connector');
@@ -1177,7 +1193,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id.toString(),
+              appGroupId: connector._id,
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: [

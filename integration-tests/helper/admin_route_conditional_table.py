@@ -42,6 +42,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from helper import suite_extensions
+
 ADMIN = "admin"
 # The member who created the target.
 CREATOR = "creator"
@@ -73,6 +75,8 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
         "toolset", "toolset_name", "toolset_key",
         "toolset_oauth_name", "toolset_client_id", "toolset_secret",
     ),
+    # The creator's personal toolset.
+    "personal_toolsets": ("personal_toolset", "personal_toolset_name"),
     # A note in the admin's private knowledge base, and one in a member's.
     "records": ("admin_record", "admin_record_text", "member_record", "member_record_text", "member_kb"),
     # A download link for the admin's note, made out to the admin.
@@ -83,14 +87,23 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # credential on and one each user signs in to themselves, and the creator's
     # personal one. All at MCP_SERVER_URL.
     "mcp": ("shared_mcp", "own_mcp", "personal_mcp"),
-    # An agent of the admin's, which nobody else can see.
-    "agents": ("admin_agent",),
+    # An agent of the admin's, which nobody else can see, and one a member
+    # made and may edit.
+    "agents": ("admin_agent", "member_agent"),
+    # A service account, waited for until it reaches the graph the directory
+    # reads. Its address is what a listing is searched for, and `all_team` is
+    # the organisation's All team, which it joins on the way in.
+    "service_accounts": ("service_account", "service_account_email", "all_team"),
+    # A team the creator made and owns; the other member has no role on it.
+    "teams": ("creator_team",),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
-FRESH_KEYS = frozenset({"fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp", "unique_name"})
+FRESH_KEYS = frozenset({
+    "fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp",
+    "fresh_toolset", "fresh_personal_toolset", "fresh_creator_team", "unique_name",
+})
 DERIVED_KEYS = frozenset({"target", "target_name", "target_state"})
-WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -261,6 +274,16 @@ _SKILLS = "/api/v1/skills"
 _MCP_ROOT = "/api/v1/mcp-servers"
 _MCP = f"{_MCP_ROOT}/instances"
 _TOOLSETS = "/api/v1/toolsets"
+_TOOLSET_NOT_FOUND = "This toolset was removed, or you no longer have access"
+_TOOLSET_UPDATED = "Toolset instance updated successfully"
+_AGENTS = "/api/v1/agents"
+# A well-formed userId no account has, so the admin's request is stopped by the
+# lookup instead of binding anything. A member never gets that far.
+ABSENT_SERVICE_ACCOUNT = "65f0c0ffee00000000000001"
+_NOT_YOURS_TO_BIND = "Only an administrator can choose the service account"
+_NO_SUCH_ACCOUNT = "was not found in this organisation"
+_NOT_A_SERVICE_AGENT = "Only a service agent searches as a service account"
+_TOOLSET_DELETED = "Toolset instance deleted successfully"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
 
 
@@ -345,9 +368,9 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     ),
     _on_a_connector("get_connector_instance", "GET", "/{target}", 200),
     _on_a_connector("get_connector_instance_config", "GET", "/{target}/config", 200),
-    # The plain connector has no sign-in, which this route cannot list filters for.
+    # The plain connector has no saved settings, which this route lists filters from.
     _on_a_connector("get_connector_instance_filters", "GET", "/{target}/filters", 400,
-                    "Unsupported authentication type"),
+                    "Configuration not found"),
     _on_a_connector("get_filter_field_options", "GET",
                     "/{target}/filters/it-no-such-filter/options", 404,
                     "Filter field 'it-no-such-filter' not found"),
@@ -426,10 +449,13 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              admin_hidden=("{toolset_secret}",) if _HIDE_SECRETS else (),
              admin_also=() if _HIDE_SECRETS else ("{toolset_secret}",)),
     ConditionalRoute(
-        "api/routes/toolsets.py::get_toolset_tool_rules", "GET", f"{_TOOLSETS}/instances/{{toolset}}/tool-rules",
+        "api/routes/toolsets.py::get_toolset_tool_rules", "GET", f"{_TOOLSETS}/instances/{{target}}/tool-rules",
         cases=(
             Case("toolset", MEMBER, False, 200, words='"canEdit":false', absent=('"canEdit":true',)),
             Case("toolset", ADMIN, True, 200, words='"canEdit":true', absent=('"canEdit":false',)),
+            Case("personal_toolset", CREATOR, True, 200, words='"canEdit":true'),
+            Case("personal_toolset", MEMBER, False, 404, _TOOLSET_NOT_FOUND),
+            Case("personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
         ),
     ),
     # The knowledge hub lists what the caller may open; the admin flag only labels the
@@ -453,6 +479,55 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("member_kb", ADMIN, False, 404, "Node not found"),
         ),
         params={"limit": "50"},
+    ),
+    # A member gets no org toolset: theirs is personal, which keeps only its setup fields, so a sign-in
+    # endpoint is refused for it. The admin's is the org's, refused for the name the org's own
+    # toolset already has. Nothing is made either way.
+    ConditionalRoute(
+        "api/routes/toolsets.py::create_toolset_instance", "POST", f"{_TOOLSETS}/instances",
+        cases=(
+            Case("toolset", MEMBER, False, 400, "Unexpected settings for this action", absent=("already exists",)),
+            Case("toolset", ADMIN, True, 409, "already exists"),
+        ),
+        body={
+            "instanceName": "{toolset_name}", "toolsetType": KEYED_TOOLSET_TYPE, "authType": "API_TOKEN",
+            "authConfig": {"tokenUrl": "http://127.0.0.1:1/token"},
+        },
+    ),
+    # Renamed to the name it has, so nothing changes once past the check.
+    ConditionalRoute(
+        "api/routes/toolsets.py::update_toolset_instance", "PUT", f"{_TOOLSETS}/instances/{{target}}",
+        cases=(
+            Case("toolset", MEMBER, False, 403, "Only administrators can update toolset instances"),
+            Case("toolset", ADMIN, True, 200, _TOOLSET_UPDATED),
+            Case("personal_toolset", CREATOR, True, 200, _TOOLSET_UPDATED),
+            Case("personal_toolset", MEMBER, False, 403, "Only administrators can update toolset instances"),
+            Case("personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
+        ),
+        body={"instanceName": "{target_name}"},
+    ),
+    # Each case deletes a toolset made for it; an admin doesn't find a user's personal one.
+    ConditionalRoute(
+        "api/routes/toolsets.py::delete_toolset_instance", "DELETE", f"{_TOOLSETS}/instances/{{target}}",
+        cases=(
+            Case("fresh_toolset", MEMBER, False, 403, "Only administrators can delete toolset instances"),
+            Case("fresh_toolset", ADMIN, True, 200, _TOOLSET_DELETED),
+            Case("fresh_personal_toolset", CREATOR, True, 200, _TOOLSET_DELETED),
+            Case("fresh_personal_toolset", MEMBER, False, 403, "Only administrators can delete toolset instances"),
+            Case("fresh_personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
+        ),
+    ),
+    # No rules: saving that changes nothing anyone sees.
+    ConditionalRoute(
+        "api/routes/toolsets.py::update_toolset_tool_rules", "PUT", f"{_TOOLSETS}/instances/{{target}}/tool-rules",
+        cases=(
+            Case("toolset", MEMBER, False, 403, "Only administrators can change a toolset's tool approvals"),
+            Case("toolset", ADMIN, True, 200, '"canEdit":true'),
+            Case("personal_toolset", CREATOR, True, 200, '"canEdit":true'),
+            Case("personal_toolset", MEMBER, False, 404, _TOOLSET_NOT_FOUND),
+            Case("personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
+        ),
+        body={"tools": {}},
     ),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.
@@ -575,6 +650,117 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     # Nobody else can see the admin's agent; the member side of the rule is the listing above.
     _mcp_listing("get_agent_mcp_servers", f"{_MCP_ROOT}/agents/{{target}}", "admin_agent",
                  Case("admin_agent", MEMBER, False, 404, "not found")),
+    # Making and editing an agent needs only a session. Naming the service
+    # account it searches as needs an administrator, because that spends the
+    # access an administrator granted the account — so these two routes refuse
+    # a member on one field and on nothing else.
+    #
+    # Both allowed cases are stopped by the next check instead of writing
+    # anything: the admin's create names an account that is not there, and the
+    # admin's agent is not a service agent, so it cannot carry a binding. A
+    # member never reaches either message, which is the point.
+    ConditionalRoute(
+        "api/routes/agent.py::create_agent", "POST", f"{_AGENTS}/create",
+        cases=(
+            Case("org", MEMBER, False, 403, _NOT_YOURS_TO_BIND, absent=(_NO_SUCH_ACCOUNT,)),
+            Case("org", ADMIN, True, 400, _NO_SUCH_ACCOUNT, absent=(_NOT_YOURS_TO_BIND,)),
+        ),
+        body={
+            "name": "it-admin-probe", "isServiceAccount": True,
+            "serviceAccountUserId": ABSENT_SERVICE_ACCOUNT,
+        },
+    ),
+    ConditionalRoute(
+        "api/routes/agent.py::update_agent", "PUT", f"{_AGENTS}/{{target}}",
+        cases=(
+            # The member owns this one, so nothing but the binding can refuse them.
+            Case("member_agent", CREATOR, False, 403, _NOT_YOURS_TO_BIND, absent=(_NOT_A_SERVICE_AGENT,)),
+            Case("admin_agent", ADMIN, True, 400, _NOT_A_SERVICE_AGENT, absent=(_NOT_YOURS_TO_BIND,)),
+        ),
+        body={"serviceAccountUserId": ABSENT_SERVICE_ACCOUNT},
+    ),
+    # The directory behind the people screen. Every row carries the `userId`
+    # that binds an agent to a service account, and the gateway attaches the
+    # groups each one belongs to, so a member asking for machine identities is
+    # answered as though they had not asked. Nobody is refused: asking is
+    # allowed, it just does not widen the listing.
+    # Called where it is served. The gateway's `GET /users/graph/list` proxies
+    # here and only forwards the flag; the rule itself lives on this route.
+    ConditionalRoute(
+        "api/routes/entity.py::get_users", "GET", "/api/v1/entity/user/list",
+        cases=(
+            Case("service_account", MEMBER, False, 200, "",
+                 absent=("{service_account_email}",)),
+            Case("service_account", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        # Searched for by address, not just asked for: the listing is paged,
+        # and a new account sorts by name among everyone else, so on a busy org
+        # it would not be on the first page either way round.
+        params={
+            "includeServiceAccounts": "true", "limit": "100",
+            "search": "{service_account_email}",
+        },
+        service=CONNECTOR_SERVICE,
+    ),
+    # The All team is the second copy of the same membership: every account is
+    # put in it when it is created, and a member row carries the `userId` that
+    # binds an agent to a service account, next to the address that gives it
+    # away. `GET /team/{id}` has no membership check of its own, and
+    # `GET /user/teams` embeds the same list per team. Nobody is refused; the
+    # list is simply shorter for a member.
+    ConditionalRoute(
+        "api/routes/entity.py::get_team", "GET", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        service=CONNECTOR_SERVICE,
+    ),
+    # The member page the team screen actually loads.
+    ConditionalRoute(
+        "api/routes/entity.py::get_team_users", "GET", "/api/v1/entity/team/{target}/users",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        # Searched for, because the page is cut at 100 and sorted by nobody in
+        # particular; and the filter runs before the cut, so a member's page
+        # for this search is empty rather than short.
+        params={"limit": "100", "search": "{service_account_email}"},
+        service=CONNECTOR_SERVICE,
+    ),
+    ConditionalRoute(
+        "api/routes/entity.py::get_user_teams", "GET", "/api/v1/entity/user/teams",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        params={"limit": "100"},
+        service=CONNECTOR_SERVICE,
+    ),
+    # A team's OWNER may change or delete it, and so may any org admin; a member
+    # with no role on the team gets the same 404 a missing team gets. The update
+    # sends a blank name, so a caller who passes the check is stopped by the
+    # name rule and nothing changes.
+    ConditionalRoute(
+        "api/routes/entity.py::update_team", "PUT", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("creator_team", MEMBER, False, 404, "This team was removed"),
+            Case("creator_team", CREATOR, True, 400, "Give the team a name."),
+            Case("creator_team", ADMIN, True, 400, "Give the team a name."),
+        ),
+        body={"name": ""},
+        service=CONNECTOR_SERVICE,
+    ),
+    ConditionalRoute(
+        "api/routes/entity.py::delete_team", "DELETE", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("fresh_creator_team", MEMBER, False, 404, "This team was removed"),
+            Case("fresh_creator_team", CREATOR, True, 200, "Team deleted successfully"),
+            Case("fresh_creator_team", ADMIN, True, 200, "Team deleted successfully"),
+        ),
+        service=CONNECTOR_SERVICE,
+    ),
 )
 
 # The (target, caller, allowed) cases a connector rule must cover, by the rule's
@@ -601,3 +787,13 @@ REQUIRED_CASES: dict[str, frozenset[tuple[str, str, bool]]] = {
 
 def whose(target: str) -> str:
     return target.removeprefix("fresh_").removeprefix("listed_")
+
+
+# Rows and groups a downstream build adds (helper/suite_extensions.py). Last, so
+# the extension can build its rows with everything above.
+_extensions = suite_extensions.modules("admin_route_conditional_table")
+CONDITIONAL_ROUTES = suite_extensions.add_rows(
+    CONDITIONAL_ROUTES, "CONDITIONAL_ROUTES", _extensions, key=lambda route: route.handler)
+WORLD_GROUPS = suite_extensions.add_groups(
+    WORLD_GROUPS, "WORLD_GROUPS", _extensions, reserved=FRESH_KEYS | DERIVED_KEYS)
+WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)

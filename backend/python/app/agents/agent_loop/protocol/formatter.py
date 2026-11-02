@@ -80,8 +80,10 @@ class ProtocolFormatter(ABC):
     def answer_delta(
         self, context: "AgentContext", *, chunk: str, accumulated: str,
         citations: list[Any], confidence: str | None = None,
-        raw_length: int = 0,
-    ) -> list[dict[str, Any]]: ...
+        raw_length: int = 0, discarded: bool = False,
+    ) -> list[dict[str, Any]]:
+        """`discarded`: the answer as it stands after a model call that
+        failed mid-stream was taken back; it supersedes every earlier delta."""
 
     @abstractmethod
     def answer_final(self, context: "AgentContext", *, completion_data: dict[str, Any]) -> list[dict[str, Any]]: ...
@@ -124,7 +126,7 @@ class LegacyFormatter(ProtocolFormatter):
     """Byte-identical to today's hand-built dict literals — the default
     for every request that doesn't explicitly negotiate `agui`."""
 
-    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0):
+    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0, discarded: bool = False):
         data: dict[str, Any] = {"chunk": chunk, "accumulated": accumulated, "citations": citations}
         if confidence is not None:
             data["confidence"] = confidence
@@ -181,10 +183,14 @@ class AGUIFormatter(ProtocolFormatter):
     exactly mirroring how `complete` supersedes `answer_chunk` today.
     """
 
-    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0):
+    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0, discarded: bool = False):
         value: dict[str, Any] = {"citations": citations, "normalizedAnswer": accumulated, "rawLength": raw_length}
         if confidence is not None:
             value["confidence"] = confidence
+        if discarded:
+            # Snapshots computed before the discard can reach the client after
+            # its `message_discarded` frame; this marks the one that ends them.
+            value["discarded"] = True
         return [frame(
             AGUIEventType.STATE_DELTA,
             runId=context.run_id,

@@ -1,11 +1,15 @@
 """Unit tests for ``ops/entity_records.py`` (``find_records_by_entity`` and
 record-group scoping for ``search(entity_ids)``)."""
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agents.actions.knowledge_graph.ops import entity_filters, entity_records
-from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_CACHE_KEY
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_INDEX_CACHE_KEY,
+    LIMITED_SCOPE_NOTE,
+)
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
     NO_ACCESSIBLE_RECORDS_MSG,
@@ -19,6 +23,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     EntityRecordPage,
 )
+from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -82,6 +87,12 @@ class TestFindRecordsByEntity:
         assert (ok, text) == (True, NO_ACCESSIBLE_RECORDS_MSG)
 
     @pytest.mark.asyncio
+    async def test_no_rows_inside_a_selection_says_only_the_selection_was_searched(self, patched) -> None:
+        patched[0].return_value = replace(CONTEXT, row_scopes=(SelectionScope(groups={"g": "conf-1"}),))
+        ok, text = await execute_find_records_by_entity(_state(), "rg-x", entity_type="record_group")
+        assert (ok, text) == (True, f"{NO_ACCESSIBLE_RECORDS_MSG} {LIMITED_SCOPE_NOTE}")
+
+    @pytest.mark.asyncio
     async def test_empty_page_past_the_end_does_not_claim_the_entity_is_empty(
         self, patched
     ) -> None:
@@ -125,6 +136,75 @@ class TestFindRecordsByEntity:
         _, kwargs = patched[1].call_args
         assert kwargs["record_types"] == ["FILE"]
         assert kwargs["limit"] == 50
+
+    @pytest.mark.asyncio
+    async def test_the_first_page_names_the_same_entity_under_a_learned_alias(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        family = AsyncMock(return_value=[{"id": "short-1", "kind": "organization", "name": "Pinecrest"}])
+        monkeypatch.setattr(entity_records, "alias_family", family)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="20")
+        state = _state(**{ENTITY_INDEX_CACHE_KEY: {"full-1": {"type": "named_entity", "name": "Pinecrest Hospitality"}}})
+
+        ok, first = await execute_find_records_by_entity(state, "full-1")
+        ok_next, later = await execute_find_records_by_entity(state, "full-1", cursor="20")
+
+        assert ok and 'Pinecrest (organization): knowledgegraph__find_records_by_entity(entity_id="short-1"' in first
+        assert "add them to a count" in first
+        assert ok_next and "learned alias" not in later
+
+    @pytest.mark.asyncio
+    async def test_no_alias_note_for_other_entity_types_or_when_turned_off(self, patched, monkeypatch) -> None:
+        from app.modules.named_entities.domain.config import NamedEntityConfig
+
+        family = AsyncMock(return_value=[{"id": "x", "kind": "organization", "name": "X"}])
+        monkeypatch.setattr(entity_records, "alias_family", family)
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, topic = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        monkeypatch.setattr(
+            entity_records, "load_named_entity_config", AsyncMock(return_value=NamedEntityConfig(link_aliases=False)),
+        )
+        _, off = await execute_find_records_by_entity(_state(), "e1", entity_type="named_entity")
+        assert "learned alias" not in topic and "learned alias" not in off
+        family.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_each_row_can_be_cited_for_what_the_listing_says(self, patched, monkeypatch) -> None:
+        cite = AsyncMock(return_value={"r1": "ref1"})
+        monkeypatch.setattr(entity_records, "cite_listed_records", cite)
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", sourceLastModifiedTimestamp=1_767_225_600_000)], next_cursor=None,
+        )
+        state = _state(**{ENTITY_INDEX_CACHE_KEY: {"t1": {"type": "named_entity", "name": "Pinecrest"}}})
+
+        ok, text = await execute_find_records_by_entity(state, "t1")
+
+        assert ok and "| record_id=r1 | cite=ref1 |" in text and "Cite a fact this listing states" in text
+        facts = cite.await_args.args[3]
+        assert facts == {"r1": 'connected to named_entity "Pinecrest" · modified 2026-01-01'}
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_entity_is_cited_in_the_listings_own_words(self, patched, monkeypatch) -> None:
+        cite = AsyncMock(return_value={})
+        monkeypatch.setattr(entity_records, "cite_listed_records", cite)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok and "cite=" not in text
+        assert cite.await_args.args[3] == {"r1": "connected to a topic"}
+
+    @pytest.mark.asyncio
+    async def test_a_record_group_listing_cites_its_rows_as_in_the_group(self, patched, monkeypatch) -> None:
+        cite = AsyncMock(return_value={})
+        monkeypatch.setattr(entity_records, "cite_listed_records", cite)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        state = _state(**{ENTITY_INDEX_CACHE_KEY: {"g1": {"type": "record_group", "name": "Finance"}}})
+
+        ok, _ = await execute_find_records_by_entity(state, "g1")
+
+        assert ok and cite.await_args.args[3] == {"r1": 'in record_group "Finance"'}
 
     @pytest.mark.asyncio
     async def test_listed_records_are_noted_as_found_by_entity(self, patched) -> None:
@@ -282,3 +362,23 @@ class TestEmptyWindow:
 def test_candidate_rows_carry_the_hide_url_flag() -> None:
     assert "hideWeburl" in Neo4jProvider._ENTITY_CANDIDATE_RECORD_PROJECTION
     assert "hideWeburl" in ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS
+
+
+class TestUploadDates:
+    @pytest.mark.asyncio
+    async def test_a_knowledge_base_upload_is_listed_by_its_upload_time(self, patched) -> None:
+        uploaded = 1_792_090_099_000  # 2026-10-15
+        patched[1].return_value = EntityRecordPage(
+            records=[_row(
+                "r1", connectorId="kb-1", connectorName="KB", origin="UPLOAD",
+                createdAtTimestamp=uploaded, sourceCreatedAtTimestamp=uploaded - 30,
+                sourceLastModifiedTimestamp=uploaded - 30,
+            )],
+            next_cursor=None,
+        )
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok is True
+        assert "uploaded: 2026-10-15" in text
+        assert "modified:" not in text

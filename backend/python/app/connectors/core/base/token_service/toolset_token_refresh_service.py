@@ -18,7 +18,8 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
-from app.utils.oauth_config import get_oauth_config
+from app.core.org_context import spawn_detached
+from app.utils.oauth_config import apply_tenant_to_microsoft_oauth_url, get_oauth_config
 from app.utils.request_context import (
     new_system_root,
     reset_context,
@@ -98,13 +99,13 @@ class ToolsetTokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            spawn_detached(self._refresh_all_tokens())
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        spawn_detached(self._periodic_refresh_check())
 
         # Start periodic lock cleanup
-        asyncio.create_task(self._cleanup_old_locks())
+        spawn_detached(self._cleanup_old_locks())
 
     async def stop(self) -> None:
         """Stop the toolset token refresh service"""
@@ -438,8 +439,8 @@ class ToolsetTokenRefreshService:
             if not toolset_registry:
                 return None
 
-            # Get toolset metadata by type (lowercase)
-            metadata = toolset_registry.get_toolset_metadata(toolset_type)
+            # Serialized metadata turns the OAuthConfig into a dict, which the check below rejects.
+            metadata = toolset_registry.get_toolset_metadata(toolset_type, serialize=False)
             if not metadata:
                 return None
 
@@ -490,7 +491,8 @@ class ToolsetTokenRefreshService:
                 if "additionalParams" not in oauth_flow_config:
                     additional_params = getattr(oauth_config_obj, 'additional_params', None)
                     if additional_params:
-                        oauth_flow_config["additionalParams"] = additional_params
+                        # A copy: get_oauth_config writes into it, and the registry's is shared process-wide.
+                        oauth_flow_config["additionalParams"] = dict(additional_params)
 
                 # Add scope_parameter_name if not already set and different from default
                 if "scopeParameterName" not in oauth_flow_config:
@@ -651,7 +653,7 @@ class ToolsetTokenRefreshService:
         elif oauth_config_obj and hasattr(oauth_config_obj, 'scopes'):
             from app.connectors.core.registry.auth_builder import OAuthScopeType
             registry_scopes = oauth_config_obj.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
-            oauth_flow_config["scopes"] = registry_scopes if registry_scopes else []
+            oauth_flow_config["scopes"] = list(registry_scopes) if registry_scopes else []
         else:
             oauth_flow_config["scopes"] = []
 
@@ -664,7 +666,8 @@ class ToolsetTokenRefreshService:
         if "additionalParams" in auth_config:
             oauth_flow_config["additionalParams"] = auth_config["additionalParams"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'additional_params') and oauth_config_obj.additional_params:
-            oauth_flow_config["additionalParams"] = oauth_config_obj.additional_params
+            # A copy: get_oauth_config writes into it, and the registry's is shared process-wide.
+            oauth_flow_config["additionalParams"] = dict(oauth_config_obj.additional_params)
 
         if "scopeParameterName" in auth_config:
             oauth_flow_config["scopeParameterName"] = auth_config["scopeParameterName"]
@@ -685,6 +688,12 @@ class ToolsetTokenRefreshService:
         for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl", "loginUrl"]:
             if field_name in auth_config:
                 oauth_flow_config[field_name] = auth_config[field_name]
+
+        # Sign-in sends a single-tenant Microsoft app to its tenant's endpoints, and a personal
+        # action keeps only the tenant, so the registry's /common URLs must be moved here too.
+        tenant_id = oauth_flow_config.get("tenantId")
+        for url_field in ("authorizeUrl", "tokenUrl"):
+            oauth_flow_config[url_field] = apply_tenant_to_microsoft_oauth_url(oauth_flow_config[url_field], tenant_id)
 
         # Enrich from registry if fields are still missing
         self._enrich_from_toolset_registry(oauth_flow_config, toolset_type)

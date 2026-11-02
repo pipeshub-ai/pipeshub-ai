@@ -39,6 +39,14 @@ def _parent_when_synced(full_path: str, group_paths: list[str]) -> str | None:
     return parent_path
 
 
+def member_has_access(member: object) -> bool:
+    """GitLab gives nothing to a blocked, deactivated or banned user, nor to a member still
+    awaiting a seat; members listings include all of them."""
+    state = getattr(member, "state", None)
+    membership = getattr(member, "membership_state", None)
+    return (state if isinstance(state, str) else "active") == "active" and membership != "awaiting"
+
+
 def _filter_op_val(f: Any) -> str:
     """Lower-cased string value of a Filter's operator."""
     op = f.operator
@@ -103,6 +111,7 @@ class ProjectsSync:
                         "Unhandled error syncing %s for project %s (%s); continuing: %s",
                         step_name, project_id, project_path, e, exc_info=True,
                     )
+                    self.c.note_sync_problem(f"{step_name} of project {project_path}: {e}")
 
     # ------------------------------------------------------------------
     # Project resolution
@@ -143,10 +152,16 @@ class ProjectsSync:
         if proj_in:
             for pth in proj_in:
                 res = await c.runtime.ds_call(c.data_source.get_project, pth)
-                if not res.success or not res.data:
+                project = res.data if res.success else None
+                if not project and res.status_code == 404:
+                    project = await c.removed_projects.moved_or_remove(pth)
+                if not project:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
+                    if res.status_code != 404:
+                        c.note_failed_read(f"project {pth}", res)
                     continue
-                by_id[int(res.data.id)] = res.data
+                by_id[int(project.id)] = project
+                await c.removed_projects.remember(pth, int(project.id))
         elif grp_in:
             for gp in grp_in:
                 gres = await c.runtime.paged_list(
@@ -156,6 +171,7 @@ class ProjectsSync:
                 )
                 if not gres.success:
                     self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
+                    c.note_failed_read(f"projects of group {gp}", gres)
                     continue
                 for p in gres.data or []:
                     by_id[int(p.id)] = p
@@ -254,6 +270,13 @@ class ProjectsSync:
         self.logger.info("Ensuring GitLab group record groups for %s", group_paths)
         for group_path in sorted(group_paths, key=lambda path: str(path).count("/")):
             group_res = await c.runtime.ds_call(c.data_source.get_group, group_path)
+            if not group_res.success and group_res.status_code != 404:
+                c.note_failed_read(f"group {group_path}", group_res)
+                if await c.data_entities_processor.has_stored_permissions(
+                    "record_group", c.connector_id, group_path, keep=True,
+                ):
+                    # Unreadable for now is not gone: the stored group and its grants stay.
+                    continue
             if not group_res.success or not group_res.data:
                 creator_permission = c.creator_user_permission()
                 if creator_permission is None:
@@ -291,11 +314,12 @@ class ProjectsSync:
                     "Could not list members for GitLab group %s: %s. Keeping its stored access.",
                     group_path, members_res.error,
                 )
+                c.note_failed_read(f"members of group {group_path}", members_res)
             else:
                 group_permissions = []
                 for member in members_res.data or []:
                     # Minimal Access (5) cannot see the group's projects. Guest is 10.
-                    if (getattr(member, "access_level", 0) or 0) < 10:
+                    if (getattr(member, "access_level", 0) or 0) < 10 or not member_has_access(member):
                         continue
                     permission = await self._transform_restrictions_to_permissions(member)
                     if permission:
@@ -344,6 +368,21 @@ class ProjectsSync:
         listing_failed = not members_res.success
         listing_empty = members_res.success and not (members_res.data or [])
 
+        if listing_failed:
+            c.note_failed_read(f"members of project {project.path_with_namespace}", members_res)
+        if (listing_failed or listing_empty) and await c.data_entities_processor.has_stored_permissions(
+            "record_group", c.connector_id, str(project_id), keep=True,
+        ):
+            # A list that could not be read, or came back empty, is not "nobody": the
+            # stored grants stay until a real list replaces them.
+            self.logger.warning(
+                "Members of project %s (%s) unreadable or empty; keeping its stored access.",
+                project_id, project_name,
+            )
+            await c.data_entities_processor.on_new_record_groups(
+                [(group, None) for group in self._build_project_record_groups(project)]
+            )
+            return
         if listing_failed or listing_empty:
             creator_perm = c.creator_user_permission()
             if creator_perm is None:
@@ -396,6 +435,8 @@ class ProjectsSync:
         permission_merge_requests_level: list[Permission] = []
 
         for member in dict_member.values():
+            if not member_has_access(member):
+                continue
             permission = await self._transform_restrictions_to_permissions(member)
             if not permission:
                 continue

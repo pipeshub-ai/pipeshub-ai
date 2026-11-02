@@ -1,33 +1,14 @@
-import { Org, Users } from '../../../config';
-import { OrgAuthConfig } from '../../auth/schema/orgAuthConfiguration.schema';
+import { getOrgMetricsJobRepository } from '../../../libs/repositories/org-metrics-job';
 import {
   setOrgsTotal,
   setOrgAuthMethods,
 } from '../../../libs/services/telemetry/modules/org-metrics';
 import { setOrgUsers } from '../../../libs/services/telemetry/modules/user-metrics';
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
+import { spawnDetached, system } from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 
 const DEFAULT_INTERVAL_MS = 60000 * 5;
-
-interface OrgRow {
-  _id: unknown;
-  accountType?: string | null;
-  domain?: string | null;
-}
-
-interface AuthMethodLean {
-  type?: unknown;
-}
-
-interface AuthStepLean {
-  allowedMethods?: AuthMethodLean[];
-}
-
-interface AuthConfigLean {
-  orgId: unknown;
-  authSteps?: AuthStepLean[];
-}
 
 export function startOrgMetricsRefresh(
   logger: Logger,
@@ -37,17 +18,11 @@ export function startOrgMetricsRefresh(
     try {
       // Single org read drives both the per-account-type totals and the
       // org→domain lookup; grouping for the totals happens in Node.
-      const [userAgg, orgRows] = await Promise.all([
-        Users.aggregate<{ _id: string | null; count: number }>([
-          { $match: { isDeleted: { $ne: true } } },
-          { $group: { _id: '$orgId', count: { $sum: 1 } } },
-        ]),
-        Org.find(
-          { isDeleted: { $ne: true } },
-          { accountType: 1, domain: 1 },
-        ).lean(),
+      const jobs = getOrgMetricsJobRepository();
+      const [userAgg, orgs] = await Promise.all([
+        jobs.countUsersByOrg(),
+        jobs.listLiveOrgs(),
       ]);
-      const orgs = orgRows as OrgRow[];
 
       const norm = (v: string | null | undefined): string =>
         v == null || v === '' ? 'unknown' : v;
@@ -85,10 +60,7 @@ export function startOrgMetricsRefresh(
       );
 
       // Enabled auth methods per org (presence only — never credentials).
-      const authConfigs = (await OrgAuthConfig.find(
-        { isDeleted: { $ne: true } },
-        { orgId: 1, authSteps: 1 },
-      ).lean()) as AuthConfigLean[];
+      const authConfigs = await jobs.listLiveAuthConfigs();
       const authRows: { org: string; method: string }[] = [];
       for (const cfg of authConfigs) {
         const org = normalizeOrgId(cfg.orgId);
@@ -115,10 +87,12 @@ export function startOrgMetricsRefresh(
   };
 
   // Kick off immediately, then on an interval. unref so it never blocks exit.
-  void refresh();
-  const timer = setInterval(() => {
-    void refresh();
-  }, intervalMs);
+  // Cross-org aggregation: explicit system scope, and a timer that keeps no caller context.
+  const run = (): void => void system('metrics_refresh', refresh);
+  const timer = spawnDetached(() => {
+    run();
+    return setInterval(run, intervalMs);
+  });
   timer.unref();
   return timer;
 }

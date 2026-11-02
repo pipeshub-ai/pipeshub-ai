@@ -1,5 +1,6 @@
 """Unit tests for ``ops/entity_discovery.py`` (``search_entities``)."""
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +12,7 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     ENTITY_INDEX_CACHE_KEY,
+    LIMITED_SCOPE_NOTE,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
 )
 from app.modules.retrieval.entity_permissions import (
@@ -19,6 +21,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityHit,
     EntitySearchTimedOut,
 )
+from app.modules.retrieval.selection_scope import SelectionScope
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -64,6 +67,20 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, AsyncMock]:
     monkeypatch.setattr(entity_filters, "get_entity_access_context", access)
     monkeypatch.setattr(entity_discovery, "search_entities_for_user", search)
     return access, search
+
+
+class TestEmptyResultInsideASelection:
+    @pytest.mark.asyncio
+    async def test_it_says_only_the_selection_was_searched(self, patched) -> None:
+        patched[0].return_value = replace(CONTEXT, row_scopes=(SelectionScope(groups={"g": "kb-1"}),))
+        ok, text = await execute_search_entities(_state(), "KG Tools")
+        payload = json.loads(text)
+        assert ok and payload["results"] == [] and payload["scopeNote"] == LIMITED_SCOPE_NOTE
+
+    @pytest.mark.asyncio
+    async def test_without_a_selection_there_is_no_note(self, patched) -> None:
+        ok, text = await execute_search_entities(_state(), "KG Tools")
+        assert ok and "scopeNote" not in json.loads(text)
 
 
 class TestGuards:
@@ -116,7 +133,7 @@ class TestGuards:
         assert ok is True
         assert "ignoredEntityTypes" not in json.loads(text)
         _, search_kwargs = patched[1].call_args
-        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization"])
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization", "product"])
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
@@ -355,7 +372,7 @@ class TestWhereEntitySearchIsOffered:
     async def test_kinds_it_cannot_serve_are_explained_and_not_sent(self, patched) -> None:
         _, search = patched
         _, payload = await self._offered(query="Acme", named_entity_kinds=["organization", "person", "date", "company"])
-        assert search.call_args.kwargs["kinds"] == ["organization"]
+        assert search.call_args.kwargs["kinds"] == ["organization", "product"]
         notes = " ".join(payload["kindNotes"])
         assert "search_by_entities" in notes and "find_records_by_value" in notes and "'company'" in notes
 
@@ -391,11 +408,17 @@ class TestWithoutEntitySearch:
         monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
 
     @pytest.mark.asyncio
-    async def test_kinds_go_to_the_search_as_given(self, patched) -> None:
+    async def test_kinds_go_to_the_search_with_the_kinds_their_names_are_filed_under(self, patched) -> None:
         _, search = patched
         ok, text = await execute_search_entities(_state(), "Sam", named_entity_kinds=["person", "organization"])
-        assert ok and search.call_args.kwargs["kinds"] == ["person", "organization"]
+        assert ok and search.call_args.kwargs["kinds"] == ["person", "organization", "product"]
         assert "kindNotes" not in json.loads(text) and "search_by_entities" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_place_kind_reaches_every_place_kind(self, patched) -> None:
+        _, search = patched
+        await execute_search_entities(_state(), "Hamburg", named_entity_kinds=["state"])
+        assert set(search.call_args.kwargs["kinds"]) == {"location", "city", "state", "country_region"}
 
     @pytest.mark.asyncio
     async def test_hits_carry_no_kind(self, patched) -> None:
@@ -409,3 +432,22 @@ class TestWithoutEntitySearch:
     async def test_queries_are_not_taken(self, patched) -> None:
         ok, _ = await execute_search_entities(_state(), None, queries=["Acme"])
         assert ok is False
+
+
+class TestUploadDates:
+    @pytest.mark.asyncio
+    async def test_a_previewed_upload_shows_its_upload_date_not_a_modified_date(self, patched) -> None:
+        uploaded = 1_792_090_099_000  # 2026-10-15
+        upload = {
+            **_row("r1", "kb-1"), "connectorName": "KB", "origin": "UPLOAD",
+            "createdAtTimestamp": uploaded, "sourceCreatedAtTimestamp": uploaded - 30,
+            "sourceLastModifiedTimestamp": uploaded - 30,
+        }
+        patched[1].return_value = [_hit("t1", "topic", records=[upload])]
+
+        ok, text = await execute_search_entities(_state(), "legal")
+
+        assert ok is True
+        preview = json.loads(text)["results"][0]["records"][0]
+        assert preview["uploaded"] == "2026-10-15"
+        assert "modified" not in preview

@@ -24,6 +24,7 @@ import {
   type ReasoningEffort,
 } from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { ModelSelectorExtraOptions } from '@/config';
 
 // Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
 // render a matching "· High" style indicator without redefining labels.
@@ -85,6 +86,8 @@ interface ModelSelectorPanelProps {
   hideHeader?: boolean;
   /** Optional agent ID - when provided, shows only agent-configured models */
   agentId?: string | null;
+  /** Show the edition's entries beside the configured models. Off where a configured model must be chosen. */
+  allowExtraOptions?: boolean;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -104,6 +107,7 @@ export function ModelSelectorPanel({
   onModelSelect,
   hideHeader = false,
   agentId,
+  allowExtraOptions = true,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -212,7 +216,7 @@ export function ModelSelectorPanel({
       {!hideHeader && (
         <Flex align="center" justify="between">
           <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {t('chat.configuredModels', 'Configured Models')}
+            {t('chat.configuredModels', 'Configured models')}
           </Text>
           {isAdmin && (
             <span
@@ -231,7 +235,7 @@ export function ModelSelectorPanel({
                 lineHeight: 'inherit',
               }}
             >
-              {t('chat.openModels', 'Open Models')}
+              {t('chat.openModels', 'Manage models')}
             </span>
           )}
         </Flex>
@@ -294,10 +298,14 @@ export function ModelSelectorPanel({
                 }}
               >
                 <MaterialIcon name="settings" size={16} />
-                {t('chat.openModels', 'Open Models')}
+                {t('chat.openModels', 'Manage models')}
               </Button>
             )}
           </Flex>
+        )}
+
+        {!isLoading && !error && allowExtraOptions && (
+          <ModelSelectorExtraOptions models={models} selectedModel={selectedModel} onModelSelect={onModelSelect} />
         )}
 
         {!isLoading && !error && models.map((model) => (

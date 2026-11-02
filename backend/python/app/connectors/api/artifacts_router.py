@@ -274,3 +274,78 @@ async def delete_artifact(
     except ArtifactStorageError as e:
         raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=_STORAGE_UNAVAILABLE) from e
     return Response(status_code=HttpStatusCode.NO_CONTENT.value)
+
+
+MAX_COPY_ARTIFACTS = 50
+
+
+class ArtifactCopyRef(BaseModel):
+    artifactId: str = Field(min_length=1)
+    upToVersion: int = Field(ge=1)
+
+
+class ArtifactCopyRequest(BaseModel):
+    conversationId: str = Field(min_length=1)
+    artifacts: list[ArtifactCopyRef] = Field(min_length=1, max_length=MAX_COPY_ARTIFACTS)
+
+
+@artifacts_router.post(
+    "/api/v1/artifacts/copy",
+    # The scopes of the two fork routes that call this: a client allowed to fork
+    # must be allowed to copy what the fork carries over.
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
+)
+async def copy_artifacts_to_conversation(
+    request: Request,
+    body: ArtifactCopyRequest,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """Give a forked chat its own copy of every artifact it carried over.
+
+    Only artifacts the caller can already read are copied, and each copy is
+    owned by the caller and filed under `conversationId`, so deleting the
+    fork deletes its copies and deleting the original does not. A ref that
+    cannot be copied is reported in `failed` instead of failing the batch, so
+    the caller decides whether that matters."""
+    actor = _actor_from_request(request)
+    container = getattr(request.app, "container", None)
+    if container is None:
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Artifact storage is not available",
+        )
+    registry = ArtifactRegistryService(
+        graph_provider,
+        BlobStorage(logger, container.config_service(), graph_provider=graph_provider),
+    )
+
+    copies: list[dict] = []
+    failed: list[dict] = []
+    for ref in body.artifacts:
+        try:
+            copied = await registry.copy_to_conversation(
+                actor=actor,
+                artifact_id=ref.artifactId,
+                up_to_version=ref.upToVersion,
+                conversation_id=body.conversationId,
+            )
+        except ArtifactNotFoundError:
+            failed.append({"artifactId": ref.artifactId, "reason": "not_found"})
+            continue
+        except AccessDeniedError:
+            failed.append({"artifactId": ref.artifactId, "reason": "forbidden"})
+            continue
+        except Exception:
+            logger.exception("Could not copy artifact %s into conversation %s", ref.artifactId, body.conversationId)
+            failed.append({"artifactId": ref.artifactId, "reason": "error"})
+            continue
+        copies.append(
+            {
+                "sourceArtifactId": copied.source_artifact_id,
+                "sourceDocumentId": copied.source_document_id,
+                "artifactId": copied.artifact_id,
+                "documentId": copied.document_id,
+                "versions": [{"from": src, "to": dst} for src, dst in sorted(copied.versions.items())],
+            }
+        )
+    return {"copies": copies, "failed": failed}

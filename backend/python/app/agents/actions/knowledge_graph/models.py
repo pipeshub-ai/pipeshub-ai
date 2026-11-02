@@ -38,6 +38,8 @@ class NodeRow(NodeRef):
     # rows from get_linked_records, which don't project timestamps).
     source_created_at: int | None = None
     source_modified_at: int | None = None
+    # A knowledge-base file: its listing dates are upload times.
+    upload_dated: bool = False
     # 1-based nesting depth from the navigated parent. 1 for a plain
     # depth=1 listing and for the top level of a depth>=2 flat-descendants
     # listing; 2/3 for deeper rows, backfilled via get_node_depths_batch().

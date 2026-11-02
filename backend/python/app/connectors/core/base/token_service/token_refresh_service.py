@@ -9,6 +9,7 @@ import weakref
 from datetime import datetime, timedelta
 from typing import Optional
 
+from app.core.org_context import spawn_detached
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import (
@@ -23,7 +24,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.utils.oauth_config import get_oauth_config
+from app.utils.oauth_config import (
+    carry_oauth_url_settings,
+    get_oauth_config,
+    pin_oauth_urls,
+)
 from app.utils.request_context import (
     new_system_root,
     reset_context,
@@ -110,10 +115,10 @@ class TokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            spawn_detached(self._refresh_all_tokens())
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        spawn_detached(self._periodic_refresh_check())
 
     async def stop(self) -> None:
         """Stop the token refresh service"""
@@ -287,11 +292,15 @@ class TokenRefreshService:
                 if oauth_cfg.get("_id") == oauth_config_id:
                     return oauth_cfg
 
-            self.logger.warning(f"OAuth config {oauth_config_id} not found in list")
+            self.logger.warning("Referenced OAuth config not found in the list for connector type %s", connector_type)
             return {}
 
         except Exception as e:
-            self.logger.warning(f"Error fetching shared OAuth config {oauth_config_id}: {e}")
+            self.logger.warning(
+                "Error fetching shared OAuth config for connector type %s: %s",
+                connector_type,
+                type(e).__name__,
+            )
             return {}
 
     def _enrich_from_registry(
@@ -436,6 +445,7 @@ class TokenRefreshService:
         # A Salesforce refresh must go to the login host that issued the token.
         if config_data.get(AuthFieldKeys.LOGIN_URL):
             oauth_flow_config[AuthFieldKeys.LOGIN_URL] = config_data[AuthFieldKeys.LOGIN_URL]
+        carry_oauth_url_settings(connector_type, config_data, oauth_flow_config)
 
         # Add optional infrastructure fields if present
         if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
@@ -783,6 +793,8 @@ class TokenRefreshService:
             connector_type,
             auth_config
         )
+        carry_oauth_url_settings(connector_type, auth_config, oauth_flow_config)
+        pin_oauth_urls(connector_type, oauth_flow_config)
         oauth_config = get_oauth_config(oauth_flow_config)
 
         from app.connectors.core.base.token_service.oauth_service import OAuthProvider

@@ -12,7 +12,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock
 
 import pytest
-from drive_world import GDOC, DriveWorld
+from drive_world import GDOC, GSHEET, GSLIDES, DriveWorld
 from fastapi.responses import StreamingResponse
 from google_behaviour_fakes import (
     ApiRequest,
@@ -23,9 +23,11 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
-from app.config.constants.arangodb import MimeTypes
+from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.individual.connector import (
@@ -81,7 +83,14 @@ class Harness:
         return self.connector
 
     async def sync(self) -> None:
-        await (await self.connector_()).run_sync()
+        """One run. A run that left part of Drive unread ends with DriveSyncIncomplete, after doing everything
+        else it could; that is recorded in `incomplete` rather than raised, so a test checks what the run did
+        and, where it matters, that it was reported as incomplete."""
+        try:
+            await (await self.connector_()).run_sync()
+            self.incomplete = False
+        except DriveSyncIncomplete:
+            self.incomplete = True
 
     def checkpoint(self) -> Optional[str]:
         value = self.sync_points.value(CHECKPOINT)
@@ -118,9 +127,11 @@ async def test_full_sync_reads_every_page_and_saves_the_token_taken_before_listi
     listing = [r for r in drive.http.calls("GET", "/drive/v3/files") if "sharedWithMe" not in r.query.get("q", "")]
     assert len(listing) == 3
     assert drive.checkpoint() == token_before
-    owner = drive.records.permissions["f0"]
-    assert [(p.email, p.type) for p in owner] == [(ME, PermissionType.OWNER)]
+    assert drive.records.permissions["f0"] == [], "the file inherits the drive instead of granting its owner"
+    assert drive.records.records["f0"].inherit_permissions is True
     assert drive.records.record_groups[ROOT].name == f"Google Drive - {ME}"
+    assert drive.records.record_groups[ROOT].inherit_permissions is True
+    assert drive.records.record_group_permissions[ROOT] == []
 
 
 async def test_trashed_files_are_not_synced_on_full_sync(drive: Harness) -> None:
@@ -273,7 +284,9 @@ async def test_items_shared_from_a_shared_drive_are_synced_as_read_with_their_fo
     await drive.sync()
 
     assert drive.names() == {"Shared folder", "inside.txt", "from-a-colleague.txt"}
-    assert [p.type for p in drive.records.permissions["sd-child"]] == [PermissionType.READ]
+    assert drive.records.permissions["sd-child"] == []
+    assert drive.records.records["sd-child"].inherit_permissions is True
+    assert drive.records.records["sd-child"].parent_external_record_id == "sd-folder"
 
 
 async def test_a_rate_limited_shared_folder_walk_fails_the_run_instead_of_skipping_its_contents(drive: Harness) -> None:
@@ -470,7 +483,8 @@ async def test_one_unreadable_item_does_not_abort_the_sync(drive: Harness) -> No
     await drive.sync()
 
     assert drive.names() == {"good-1.txt", "good-2.txt"}
-    assert drive.checkpoint() is not None
+    assert drive.incomplete, "a run that skipped an item is not reported as complete"
+    assert drive.checkpoint() is None, "nothing else would bring the skipped item back"
 
 
 async def test_a_database_failure_on_a_change_fails_the_run_and_keeps_the_checkpoint(drive: Harness) -> None:
@@ -501,6 +515,23 @@ async def test_folder_filter_syncs_only_the_selected_subtree(drive: Harness) -> 
 
     assert drive.names() == {"Picked", "Picked sub", "in-1.txt", "in-2.txt"}
 
+
+
+async def test_a_selected_folder_id_that_does_not_exist_is_reported_to_the_user(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await drive.connector_()).notify = notify
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "in-1.txt"}
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
 
 async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(drive: Harness) -> None:
     drive.world.hide_unreadable_parents = True
@@ -552,6 +583,42 @@ async def test_a_full_resync_keeps_the_folders_above_a_selected_folder(drive: Ha
     assert drive.records.deleted == []
     assert drive.records.records["pick"].parent_external_record_id == "nested"
     assert drive.records.records["nested"].parent_external_record_id == "new"
+
+
+@pytest.mark.parametrize("mime", [GDOC, GSHEET, GSLIDES])
+async def test_a_full_resync_writes_an_indexed_google_file_shared_since_as_a_metadata_update(
+    drive: Harness, mime: str
+) -> None:
+    # The full sync removes the links of every record it does not write, so a file whose
+    # version moved with no new content must still be written, without being re-indexed.
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=mime, content=b"doc body")
+    await drive.sync()
+    drive.records.records["doc"].indexing_status = ProgressStatus.COMPLETED.value
+    drive.world.share("doc", {"type": "user", "role": "reader", "emailAddress": "friend@example.com"})
+    batches_before = len(drive.records.new_record_batches)
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert "doc" in {r.external_record_id for r in drive.records.metadata_updates}
+    assert drive.records.content_updates == [], "a sharing change is not new content"
+    assert all("doc" not in batch for batch in drive.records.new_record_batches[batches_before:])
+    assert drive.records.records["doc"].indexing_status == ProgressStatus.COMPLETED.value
+    assert drive.records.records["doc"].external_revision_id == drive.world.files["doc"].meta["version"]
+
+
+async def test_a_full_resync_writes_an_edited_google_doc_as_new_content(drive: Harness) -> None:
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=GDOC, content=b"doc body")
+    await drive.sync()
+    drive.world.edit("doc", b"new body")
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert [r.external_record_id for r in drive.records.content_updates] == ["doc"]
+    assert "doc" not in {r.external_record_id for r in drive.records.metadata_updates}
 
 
 async def test_a_selected_folder_that_cannot_be_listed_keeps_its_subtree_records(drive: Harness) -> None:
@@ -918,7 +985,8 @@ async def test_the_connection_test_fails_once_the_refresh_token_is_revoked(drive
     drive.http._token_owner.pop("access-1")
     drive.http.revoked_refresh_tokens.add("refresh-1")
 
-    assert not await connector.test_connection_and_access()
+    with pytest.raises(ConnectorInitError, match="sign in to Google again"):
+        await connector.test_connection_and_access()
 
 
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
@@ -978,15 +1046,10 @@ async def test_reindex_refreshes_changed_records_and_republishes_unchanged_ones(
     await connector.reindex_records([drive.records.records["same"], drive.records.records["changed"]])
 
     assert drive.records.records["changed"].record_name == "changed-at-source.txt"
-    assert [r.external_record_id for r in drive.records.reindexed] == ["same"]
+    assert [r.external_record_id for r in drive.records.reindexed] == ["same", "changed"], \
+        "a rename is applied, and the file is re-queued too: reindex re-queues every record it is given"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A file at the top of My Drive always looks moved: its stored parent is empty (the drive "
-    "root is dropped) but the fresh parent is the root folder id. Reindex then re-saves it as "
-    "'changed' instead of asking for a reindex, and an already-indexed file is never re-indexed.",
-)
 async def test_reindex_of_an_unchanged_file_at_the_top_of_my_drive_asks_for_a_reindex(drive: Harness) -> None:
     my_file(drive.world, "top", "top.txt")
     await drive.sync()
@@ -1044,9 +1107,10 @@ async def test_a_file_shared_out_by_the_user_stays_indexed_when_shared_indexing_
     await drive.sync()
 
     assert drive.records.records["mine"].indexing_status != "AUTO_INDEX_OFF"
-    assert [p.type for p in drive.records.permissions["mine"]] == [PermissionType.OWNER]
+    assert drive.records.permissions["mine"] == []
     assert drive.records.records["theirs"].indexing_status == "AUTO_INDEX_OFF"
-    assert [p.type for p in drive.records.permissions["theirs"]] == [PermissionType.READ]
+    assert drive.records.permissions["theirs"] == []
+    assert drive.records.records["theirs"].inherit_permissions is True
 
 
 async def test_a_member_shared_drive_syncs_as_its_own_group_and_leaves_when_membership_ends(drive: Harness) -> None:
@@ -1058,7 +1122,9 @@ async def test_a_member_shared_drive_syncs_as_its_own_group_and_leaves_when_memb
     assert drive.records.record_groups["sd-1"].name == "Engineering"
     assert [p.type for p in drive.records.record_group_permissions["sd-1"]] == [PermissionType.WRITE]
     assert "spec.txt" in drive.names()
-    assert [p.type for p in drive.records.permissions["spec"]] == [PermissionType.WRITE]
+    assert drive.records.permissions["spec"] == [], "the file takes the user's role from the drive's group"
+    assert drive.records.records["spec"].inherit_permissions is True
+    assert drive.records.records["spec"].external_record_group_id == "sd-1"
 
     drive.world.add_item("later", "later.txt", parent="sd-1")
     await drive.sync()

@@ -43,11 +43,15 @@ afterEach(() => {
 });
 
 describe('agent pages', () => {
-  it('shows the agents landing placeholder', () => {
+  it('sends the bare agents URL to chat, where agents live', () => {
     render(<AgentsPage />);
+    expect(router.replace).toHaveBeenCalledWith('/chat/');
+  });
 
-    expect(screen.getByRole('heading', { name: 'Agents' })).toBeTruthy();
-    expect(screen.getByText('Coming soon')).toBeTruthy();
+  it('keeps the agent in the link when redirecting to chat', () => {
+    search.params = new URLSearchParams('agentId=a1');
+    render(<AgentsPage />);
+    expect(router.replace).toHaveBeenCalledWith('/chat/?agentId=a1');
   });
 
   it('opens the create dialog over a blank builder, and returns to chat when it is dismissed', async () => {

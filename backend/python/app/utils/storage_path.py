@@ -5,21 +5,73 @@ produce identical paths for the same record.  This module is the single
 source of truth for the path algorithm so the two can never drift.
 """
 
+import hashlib
 import re
 from typing import Any
 from urllib.parse import urlparse
 
 _UNSAFE_CHARS = re.compile(r'[/\\:*?"<>|\x00-\x1f\x7f]')
 
+# Filesystems cap one name at 255 bytes. Names that fit keep their old
+# segment byte for byte: moves recompute a record's old path from its name.
+_MAX_SEGMENT_BYTES = 255
+# S3 and Azure cap a key at 1024; Node adds "<orgId>/PipesHub/" before and
+# "/<docId>/record_<vrid>.json" after this path (~110 bytes).
+_MAX_PATH_BYTES = 900
+_HASH_CHARS = 16
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:_HASH_CHARS]
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+
 
 def sanitize_path_segment(name: str) -> str:
-    """Sanitize a record/group name for use as a storage path segment."""
+    """Sanitize a record/group name for use as a storage path segment.
+
+    A name that is empty once cleaned becomes ``_`` rather than vanishing,
+    which would file the record at its parent's path.
+    """
     if not isinstance(name, str):
         return ""
     sanitized = _UNSAFE_CHARS.sub("_", name.strip())[:100]
     if sanitized in (".", ".."):
         sanitized = "_" * len(sanitized)
+    if not sanitized:
+        return "_"
+    if len(sanitized.encode("utf-8")) > _MAX_SEGMENT_BYTES:
+        suffix = "~" + _digest(name)
+        sanitized = _truncate_utf8(sanitized, _MAX_SEGMENT_BYTES - len(suffix)) + suffix
     return sanitized
+
+
+def _join_capped(parts: list[str]) -> str:
+    """Join path parts, folding the tail into a hash when the path is too long.
+
+    Leading segments are kept while they fit so a deep record still sits
+    under its connector and outer folders. Limit: once a path is folded, only
+    leading segments within ~882 bytes stay real folders, and where the fold
+    falls depends on every ancestor's name length. A prefix move of a folder
+    past that point, or an ancestor rename that shifts the fold, does not reach
+    the folded content; it is relocated when the record is next re-indexed.
+    """
+    path = "/".join(parts)
+    if len(path.encode("utf-8")) <= _MAX_PATH_BYTES:
+        return path
+    budget = _MAX_PATH_BYTES - _HASH_CHARS - 2
+    kept = parts[:2]  # records/<connector_id>
+    used = len("/".join(kept).encode("utf-8"))
+    for part in parts[2:]:
+        size = len(part.encode("utf-8")) + 1
+        if used + size > budget:
+            break
+        kept.append(part)
+        used += size
+    tail = "/".join(parts[len(kept):])
+    return "/".join([*kept, "~" + _digest(tail)])
 
 
 def _build_web_storage_path(connector_id: str, weburl: str) -> str | None:
@@ -31,7 +83,8 @@ def _build_web_storage_path(connector_id: str, weburl: str) -> str | None:
     ``host/path`` directly: ``records/<connector_id>/<host>/<url_path>``.
     """
     parsed = urlparse(weburl)
-    host = parsed.netloc
+    # Credentials in the URL must not become a directory name.
+    host = parsed.netloc.rpartition("@")[2]
     if not host:
         return None
     parts: list[str] = ["records", connector_id, sanitize_path_segment(host)]
@@ -39,7 +92,7 @@ def _build_web_storage_path(connector_id: str, weburl: str) -> str | None:
     if url_path:
         url_segments = [s for s in url_path.split("/") if s]
         parts.extend(sanitize_path_segment(s) for s in url_segments)
-    return "/".join(parts)
+    return _join_capped(parts)
 
 
 def build_record_group_path(
@@ -53,7 +106,7 @@ def build_record_group_path(
     """
     if not connector_id or not isinstance(group_name, str) or not group_name:
         return None
-    return f"records/{connector_id}/{sanitize_path_segment(group_name)}"
+    return _join_capped(["records", connector_id, sanitize_path_segment(group_name)])
 
 
 def build_record_group_prefix_from_chain(
@@ -73,7 +126,7 @@ def build_record_group_prefix_from_chain(
     parts.extend(s for s in (sanitize_path_segment(n) for n in group_names) if s)
     if len(parts) == 2:
         return None
-    return "/".join(parts)
+    return _join_capped(parts)
 
 
 async def build_hierarchical_storage_path(
@@ -170,4 +223,4 @@ async def build_hierarchical_storage_path(
             return f"records/{virtual_record_id}" if virtual_record_id else None
         parts.append(sanitize_path_segment(record_name))
 
-    return "/".join(parts)
+    return _join_capped(parts)

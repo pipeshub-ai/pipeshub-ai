@@ -162,8 +162,14 @@ function findQuestionField(req: Request): QuestionField | undefined {
   }
   const body = req.body;
 
-  // The search route MCP's pipeshub_search calls, and the web search box.
-  if (req.path === '/api/v1/search' || req.path === '/api/v1/search/') {
+  // The search route MCP's pipeshub_search calls, and the web search box,
+  // and /retrieve, which takes the same plain-text query and renders nothing.
+  if (
+    req.path === '/api/v1/search' ||
+    req.path === '/api/v1/search/' ||
+    req.path === '/api/v1/retrieve' ||
+    req.path === '/api/v1/retrieve/'
+  ) {
     return typeof body.query === 'string'
       ? { holder: body, key: 'query' }
       : undefined;
@@ -418,6 +424,18 @@ export const xssSanitizationMiddleware = (
     if (
       (req.path === '/api/v1/skills' || req.path.startsWith('/api/v1/skills/')) &&
       (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH')
+    ) {
+      next();
+      return;
+    }
+
+    // API Toolsets carry an OpenAPI spec, which must reach the parser byte for byte
+    // (sanitizing turns YAML's `>` into `&gt;`), and credentials, which must not be
+    // altered. Python validates every field; the web app renders them as React text.
+    if (
+      (req.path === '/api/v1/api-toolsets' ||
+        req.path.startsWith('/api/v1/api-toolsets/')) &&
+      (req.method === 'POST' || req.method === 'PUT')
     ) {
       next();
       return;

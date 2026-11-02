@@ -95,36 +95,261 @@ _ASK, _ALLOW, _BLOCK = "ask", "allow", "block"
 class TestDecide:
     @pytest.mark.parametrize("kind,expected", [("read", _ALLOW), ("write", _ASK), ("destructive", _BLOCK)])
     def test_the_starting_rule_follows_what_the_tool_does(self, kind: str, expected: str) -> None:
-        assert decide(own=None, kind=kind, watched=True).rule == expected  # type: ignore[arg-type]
+        assert decide(source="mcp", own=None, kind=kind, watched=True).rule == expected  # type: ignore[arg-type]
 
     def test_a_deleting_tool_is_denied_by_default_until_someone_allows_it(self) -> None:
-        assert decide(own=None, kind="destructive", watched=True) == approvals.Verdict(_BLOCK, "default")
-        assert decide(own=_ASK, kind="destructive", watched=True).rule == _ASK
-        assert decide(own=_ALLOW, kind="destructive", watched=True).rule == _ALLOW
+        assert decide(source="mcp", own=None, kind="destructive", watched=True) == approvals.Verdict(_BLOCK, "default")
+        assert decide(source="mcp", own=_ASK, kind="destructive", watched=True).rule == _ASK
+        assert decide(source="mcp", own=_ALLOW, kind="destructive", watched=True).rule == _ALLOW
 
     @pytest.mark.parametrize("own", [_ALLOW, _ASK, _BLOCK])
     def test_the_own_rule_replaces_the_starting_one(self, own: str) -> None:
-        assert decide(own=own, kind="read", watched=True).rule == own  # type: ignore[arg-type]
+        assert decide(source="mcp", own=own, kind="read", watched=True).rule == own  # type: ignore[arg-type]
 
     def test_a_block_says_whose_it_is(self) -> None:
-        assert decide(own=_BLOCK, kind="write", watched=True).reason == "own"
-        assert decide(own=_BLOCK, kind="destructive", watched=True).reason == "own"
-        assert decide(own=None, kind="destructive", watched=True).reason == "default"
+        assert decide(source="mcp", own=_BLOCK, kind="write", watched=True).reason == "own"
+        assert decide(source="mcp", own=_BLOCK, kind="destructive", watched=True).reason == "own"
+        assert decide(source="mcp", own=None, kind="destructive", watched=True).reason == "default"
 
     def test_the_approved_call_runs(self) -> None:
         """Answering the card is the asking."""
-        assert decide(own=None, kind="write", watched=True, approved_call=True).rule == _ALLOW
+        assert decide(source="mcp", own=None, kind="write", watched=True, approved_call=True).rule == _ALLOW
 
     def test_the_approved_call_is_still_stopped_by_a_block(self) -> None:
-        verdict = decide(own=_BLOCK, kind="write", watched=True, approved_call=True)
+        verdict = decide(source="mcp", own=_BLOCK, kind="write", watched=True, approved_call=True)
         assert verdict.rule == _BLOCK
 
     def test_nobody_watching_turns_ask_into_block(self) -> None:
-        assert decide(own=None, kind="write", watched=False) == approvals.Verdict(_BLOCK, "unattended")
+        assert decide(source="mcp", own=None, kind="write", watched=False) == approvals.Verdict(_BLOCK, "unattended")
         # Only what the person pre-approved runs where nobody can answer.
-        assert decide(own=_ALLOW, kind="write", watched=False).rule == _ALLOW
-        assert decide(own=None, kind="read", watched=False).rule == _ALLOW
-        assert decide(own=_BLOCK, kind="write", watched=False).rule == _BLOCK
+        assert decide(source="mcp", own=_ALLOW, kind="write", watched=False).rule == _ALLOW
+        assert decide(source="mcp", own=None, kind="read", watched=False).rule == _ALLOW
+        assert decide(source="mcp", own=_BLOCK, kind="write", watched=False).rule == _BLOCK
+
+
+class TestEnabledOnProject:
+    """A project chat loads only the tools the project enables, so one that would start at Block
+    asks instead; what someone set, and an unwatched run, are unchanged."""
+
+    def test_a_deleting_tool_nobody_set_a_rule_for_asks(self) -> None:
+        verdict = decide(source="mcp", own=None, kind="destructive", watched=True, enabled_on_project=True)
+        assert verdict.rule == _ASK
+
+    def test_a_block_someone_set_still_blocks(self) -> None:
+        verdict = decide(source="mcp", own=_BLOCK, kind="destructive", watched=True, enabled_on_project=True)
+        assert verdict == approvals.Verdict(_BLOCK, "own")
+
+    def test_nobody_watching_still_blocks(self) -> None:
+        verdict = decide(source="mcp", own=None, kind="destructive", watched=False, enabled_on_project=True)
+        assert verdict == approvals.Verdict(_BLOCK, "unattended")
+
+    def test_the_approved_call_runs(self) -> None:
+        verdict = decide(
+            source="mcp", own=None, kind="destructive", watched=True, approved_call=True, enabled_on_project=True,
+        )
+        assert verdict.rule == _ALLOW
+
+    @pytest.mark.parametrize("kind,expected", [("read", _ALLOW), ("write", _ASK)])
+    def test_other_kinds_keep_their_starting_rule(self, kind: str, expected: str) -> None:
+        assert decide(source="mcp", own=None, kind=kind, watched=True, enabled_on_project=True).rule == expected  # type: ignore[arg-type]
+
+    async def test_the_gate_shows_a_card_in_a_project_chat(self) -> None:
+        store = _Store()
+        ctx = await _gate(
+            _context(store, project_tools_selected=True), _adapter(read_only=False, name="delete_issue"), key="X-1",
+        )
+        assert ctx.decision == PreDecision.ASK
+        assert ctx.pending_approval is not None
+        assert ctx.pending_approval.details["kind"] == "destructive"
+        assert len(store.pending()) == 1
+
+    async def test_the_gate_still_denies_outside_a_project(self) -> None:
+        ctx = await _gate(_context(), _adapter(read_only=False, name="delete_issue"), key="X-1")
+        assert ctx.decision == PreDecision.DENY
+
+
+class TestToolsetStartingRules:
+    """A toolset tool is one of PipesHub's own integrations: its writes run, a deleting call asks."""
+
+    @pytest.mark.parametrize("watched", [True, False])
+    def test_a_write_runs_watched_or_not(self, watched: bool) -> None:
+        assert decide(source="toolset", own=None, kind="write", watched=watched).rule == _ALLOW
+
+    @pytest.mark.parametrize("watched", [True, False])
+    def test_a_read_runs(self, watched: bool) -> None:
+        assert decide(source="toolset", own=None, kind="read", watched=watched).rule == _ALLOW
+
+    def test_a_deleting_call_asks_where_someone_can_answer(self) -> None:
+        assert decide(source="toolset", own=None, kind="destructive", watched=True).rule == _ASK
+
+    def test_a_deleting_call_is_blocked_where_nobody_can_answer(self) -> None:
+        verdict = decide(source="toolset", own=None, kind="destructive", watched=False)
+        assert verdict == approvals.Verdict(_BLOCK, "unattended")
+
+    def test_mcp_tools_keep_their_own_starting_rules(self) -> None:
+        assert decide(source="mcp", own=None, kind="write", watched=True).rule == _ASK
+        assert decide(source="mcp", own=None, kind="destructive", watched=True).rule == _BLOCK
+
+
+class TestSqlStatements:
+    """Free-form SQL tools: a statement that is one plain read keeps the tool's kind; anything else,
+    writes included, asks first, as a call that can't be undone."""
+
+    @pytest.mark.parametrize("sql", [
+        "SELECT * FROM orders WHERE id = 1",
+        "  select count(*) from t;  ",
+        "SHOW TABLES",
+        "DESCRIBE orders",
+        "EXPLAIN SELECT * FROM t",
+        "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
+        "SELECT '#1' AS tag",
+        "SELECT 'drop table x; delete from y' AS note",
+        "SELECT 1 -- delete everything later\n",
+        "SELECT /* drop */ 1",
+        "/* c */ SELECT audit_log_write('x')",
+        "SELECT audit_log_write('x'), ';' AS s",
+        "SELECT audit_log_write('x'), 'INTO' AS s",
+    ])
+    def test_plain_reads_keep_their_kind(self, sql: str) -> None:
+        assert approvals.sql_keeps_its_kind(sql)
+
+    @pytest.mark.parametrize("sql", [
+        "INSERT INTO t (a) VALUES (1)",
+        "UPDATE t SET a = 2 WHERE id = 1",
+        # Not positively a plain read: a parenthesised select.
+        "(SELECT audit_log_write('x'))",
+        "SELECT * FROM customers FOR UPDATE",
+        "WITH x AS (UPDATE customers SET email = NULL RETURNING *) SELECT * FROM x",
+        "EXPLAIN ANALYZE DELETE FROM customers",
+        "EXPLAIN ANALYSE SELECT 1",
+        "EXPLAIN (ANALYSE) SELECT 1",
+        "EXPLAIN (FORMAT JSON, ANALYSE) SELECT 1",
+        # Names split from their "(" by a comment, escaped identifiers, functions that run a string.
+        "SELECT pg_terminate_backend--x\n(1)",
+        "SELECT SLEEP#x\n(1)",
+        "SELECT U&\"pg_s\\006Ceep\"(1)",
+        "SELECT query_to_xml('select pg_terminate_backend(1)', true, true, '')",
+        "SELECT cursor_to_xml('c', 1, true, true, '')",
+        "SELECT exec_sql('DROP TABLE t')",
+        "DELETE FROM orders",
+        "DROP TABLE orders",
+        "TRUNCATE orders",
+        # A function that acts on the server, other sessions, files, locks or the clock.
+        "SELECT pg_terminate_backend(123)",
+        "SELECT pg_cancel_backend(123)",
+        "SELECT set_config('search_path', 'x', false)",
+        "SELECT pg_read_file('/etc/passwd')",
+        "SELECT pg_ls_dir('/')",
+        "SELECT lo_import('/etc/passwd')",
+        "SELECT lo_export(1, '/tmp/x')",
+        "SELECT setval('s', 1)",
+        "SELECT nextval('s')",
+        "SELECT pg_advisory_lock(1)",
+        "SELECT pg_sleep(60)",
+        "SELECT pg_sleep /* x */ (60)",
+        "SELECT SLEEP(60)",
+        "SELECT sleep\n(60)",
+        "SELECT BENCHMARK(100000000, MD5('a'))",
+        "SELECT LOAD_FILE('/etc/hostname')",
+        "SELECT GET_LOCK('a', 60)",
+        "SELECT dblink_exec('host=x', 'DROP TABLE t')",
+        "SELECT @x := 1",
+        "COPY orders TO '/tmp/x'",
+        "ALTER TABLE orders DROP COLUMN note",
+        "GRANT ALL ON orders TO bob",
+        "REVOKE SELECT ON orders FROM bob",
+        "REPLACE INTO t VALUES (1)",
+        "CREATE TABLE t (a int)",
+        "SELECT 1; DELETE FROM orders",
+        "WITH gone AS (DELETE FROM t RETURNING *) SELECT * FROM gone",
+        "",
+        "   ;  ",
+        None,
+        # Read one way by MariaDB and another by Redshift, so where they end is unclear.
+        "SELECT 'a\\'; DELETE FROM t; --'",
+        "SELECT `x;DELETE FROM t`",
+        "SELECT 1 /*! ; DROP TABLE t */",
+        "SELECT 1 --x; DELETE FROM t",
+        "SELECT 1 # ; DROP TABLE t",
+        "# update cancelled orders\nDELETE FROM orders WHERE status='cancelled'",
+        "# select the old rows\nDROP TABLE t",
+        # SELECT ... INTO makes a table, or writes a file on the database server.
+        "SELECT * INTO new_table FROM old",
+        "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'",
+        "SELECT * FROM t INTO DUMPFILE '/tmp/t.bin'",
+        "WITH c AS (SELECT 1 AS a) SELECT a FROM c INTO OUTFILE '/tmp/a.txt'",
+        # Comments that MariaDB runs or ignores and Redshift ignores: fail closed on any left over.
+        "/*!select*/ DELETE FROM orders",
+        "/*!update*/ TRUNCATE orders",
+        "/*!50701 select */ DELETE FROM orders",
+        "/*!insert*/ SELECT * INTO new_table FROM old",
+        "SELECT * INTO new_table FROM old /*M insert */",
+        "SELECT *--insert\nINTO new_table FROM old",
+        "SELECT 1 */ DELETE FROM t",
+        # "insert" as an alias doesn't make INTO an INSERT, and a CTE's INSERT asks too.
+        "SELECT 1 AS insert INTO new_table FROM (SELECT 1) s",
+        "SELECT * INTO new_table FROM (SELECT 1) insert",
+        "WITH c AS (SELECT 1 AS a) SELECT a AS insert INTO new_table FROM c",
+        "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
+        # Redshift reads `#` as XOR, so the "comment" is code there.
+        "SELECT 1 # 2 INTO new_table FROM old",
+    ])
+    def test_anything_else_needs_approval(self, sql: Any) -> None:  # noqa: ANN401
+        assert not approvals.sql_keeps_its_kind(sql)
+
+    def test_a_sql_tool_call_takes_the_kind_of_its_statement(self) -> None:
+        target = SimpleNamespace(kind="write")
+        path = "/tools/mariadb/execute_query"
+        assert approvals.call_kind(target, path, {"query": "SELECT 1"}) == "write"
+        assert approvals.call_kind(target, path, {"query": "UPDATE t SET a = 1"}) == "destructive"
+        assert approvals.call_kind(target, path, {"query": "DELETE FROM t"}) == "destructive"
+        assert approvals.call_kind(target, path, {}) == "destructive"
+        # Other tools keep their own kind, whatever their arguments say.
+        assert approvals.call_kind(target, "/tools/jira/create_issue", {"query": "DROP TABLE t"}) == "write"
+
+
+class TestDocsBatchUpdate:
+    """A Docs batch update keeps its kind only when every request adds or restyles content."""
+
+    @pytest.mark.parametrize("requests", [
+        [{"insertText": {"location": {"index": 1}, "text": "Hi"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}, "replaceText": "b"}}, {"updateTextStyle": {}}],
+        [{"insertTable": {"rows": 2, "columns": 2}}, {"createParagraphBullets": {}}],
+    ])
+    def test_adding_or_changing_content_keeps_its_kind(self, requests: Any) -> None:  # noqa: ANN401
+        assert approvals.docs_requests_keep_their_kind(requests)
+
+    @pytest.mark.parametrize("requests", [
+        [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 9}}}],
+        [{"insertText": {}}, {"deleteTableRow": {}}],
+        [{"deleteTab": {"tabId": "t.1"}}],
+        [{"DeleteHeader": {}}],
+        # Not deletes by name, but each removes content.
+        [{"replaceNamedRangeContent": {"namedRangeName": "x", "text": "y"}}],
+        [{"acceptSuggestion": {"suggestionId": "s"}}],
+        [{"rejectSuggestion": {"suggestionId": "s"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}, "replaceText": ""}}],
+        [{"replaceAllText": {"containsText": {"text": ".+", "searchByRegex": True}, "replaceText": "x"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}}}],
+        [{"replaceImage": {"imageObjectId": "i", "uri": "https://example.com/a.png"}}],
+        # A request type this list doesn't know, or two requests packed into one object.
+        [{"someFutureRequest": {}}],
+        [{"insertText": {}, "deleteContentRange": {}}],
+        [],
+        [{}],
+        ["deleteContentRange"],
+        "[{\"deleteContentRange\": {}}]",
+        None,
+    ])
+    def test_a_delete_or_an_unreadable_list_cant_be_undone(self, requests: Any) -> None:  # noqa: ANN401
+        assert not approvals.docs_requests_keep_their_kind(requests)
+
+    def test_the_call_takes_the_kind_of_its_requests(self) -> None:
+        target = SimpleNamespace(kind="write")
+        path = "/tools/docs/batch_update_document"
+        assert approvals.call_kind(target, path, {"requests": [{"insertText": {}}]}) == "write"
+        assert approvals.call_kind(target, path, {"requests": [{"deleteContentRange": {}}]}) == "destructive"
+        assert approvals.call_kind(target, path, {}) == "destructive"
 
 
 def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN401
@@ -867,3 +1092,13 @@ class TestWhatCountsAsAnAnswer:
 
         assert mcp.calls == []
         assert not [k for k in store.values if "/claims/" in k]
+
+
+@pytest.mark.parametrize("tool_path", ["/tools/mariadb/execute_query", "/tools/redshift/execute_query"])
+@pytest.mark.parametrize("sql", [
+    "EXPLAIN ANALYSE SELECT 1", "EXPLAIN (ANALYSE) SELECT 1", "EXPLAIN ANALYZE SELECT 1",
+])
+def test_call_kind_explain_with_execution_needs_approval(tool_path: str, sql: str) -> None:
+    target = SimpleNamespace(kind="write")
+    assert approvals.call_kind(target, tool_path, {"query": sql}) == "destructive"
+    assert approvals.call_kind(target, tool_path, {"query": "EXPLAIN SELECT 1"}) == "write"

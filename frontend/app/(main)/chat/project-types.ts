@@ -27,6 +27,9 @@ export interface ProjectMember {
   role: ProjectMemberRole;
   addedBy: string;
   addedAt: string;
+  /** Resolved server-side for user rows; absent when the lookup failed. */
+  name?: string;
+  email?: string;
 }
 
 /** One row from `GET /api/v1/projects` — server-enriched with the caller's role and conversation count. */

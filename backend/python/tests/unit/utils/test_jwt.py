@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,65 +27,90 @@ class TestIsJwtExpired:
     """Tests for is_jwt_expired()."""
 
     def test_expired_token_returns_true(self):
-        # is_jwt_expired uses datetime.utcnow().timestamp() which interprets
-        # the naive datetime as local time. We must use the same approach for
-        # the test to be consistent regardless of system timezone.
-        past = int(datetime.utcnow().timestamp()) - 3600
+        """Token with an exp timestamp in the past should evaluate as expired."""
+        past = int(datetime.now(timezone.utc).timestamp()) - 3600
         token = _make_jwt_token({"exp": past, "sub": "user1"})
         assert is_jwt_expired(token) is True
 
     def test_valid_token_returns_false(self):
-        future = int(datetime.utcnow().timestamp()) + 3600
+        """Token with an exp timestamp in the future should evaluate as not expired."""
+        future = int(datetime.now(timezone.utc).timestamp()) + 3600
         token = _make_jwt_token({"exp": future, "sub": "user1"})
         assert is_jwt_expired(token) is False
 
     def test_empty_string_returns_true(self):
+        """Empty token string should be treated as expired."""
         assert is_jwt_expired("") is True
 
     def test_none_returns_true(self):
+        """None token should be treated as expired."""
         assert is_jwt_expired(None) is True
 
     def test_malformed_not_three_parts_returns_true(self):
+        """Token without three dot-separated segments should be treated as expired."""
         assert is_jwt_expired("only.two") is True
 
     def test_malformed_four_parts_returns_true(self):
+        """Token with four segments should be treated as expired."""
         assert is_jwt_expired("a.b.c.d") is True
 
     def test_no_exp_claim_returns_true(self):
+        """Token missing the exp claim should be treated as expired."""
         token = _make_jwt_token({"sub": "user1"})
         assert is_jwt_expired(token) is True
 
     def test_token_just_expired(self):
         """Token that expired 1 second ago should be expired."""
-        just_past = int(datetime.utcnow().timestamp()) - 1
+        just_past = int(datetime.now(timezone.utc).timestamp()) - 1
         token = _make_jwt_token({"exp": just_past})
         assert is_jwt_expired(token) is True
 
     def test_token_expires_far_future(self):
-        far_future = int(datetime.utcnow().timestamp()) + 365 * 86400
+        """Token expiring far into the future should evaluate as not expired."""
+        far_future = int(datetime.now(timezone.utc).timestamp()) + 365 * 86400
         token = _make_jwt_token({"exp": far_future})
         assert is_jwt_expired(token) is False
 
     def test_padding_handled_correctly(self):
         """Token payload that needs base64 padding should still decode."""
         # Create payload whose base64 length is not a multiple of 4
-        payload = {"exp": int(datetime.utcnow().timestamp()) + 3600, "x": "a"}
+        payload = {"exp": int(datetime.now(timezone.utc).timestamp()) + 3600, "x": "a"}
         token = _make_jwt_token(payload)
         # Verify it works without error
         assert is_jwt_expired(token) is False
 
     def test_exp_exactly_now(self):
-        """Token with exp exactly at current time should be expired (strict < comparison)."""
-        now_ts = int(datetime.utcnow().timestamp())
+        """Token with exp exactly at current time should not be expired (strict < comparison)."""
+        now_ts = int(datetime.now(timezone.utc).timestamp())
         token = _make_jwt_token({"exp": now_ts})
         # exp < current_time: if they're equal, exp is NOT less than current_time
-        # so it should return False (not expired) in a race-free scenario, but
-        # by the time we check, current_time may have moved past. Use mock:
+        # so it should return False (not expired) in a race-free scenario. Use mock:
         with patch("app.utils.jwt.datetime") as mock_dt:
-            mock_dt.utcnow.return_value.timestamp.return_value = float(now_ts)
+            mock_dt.now.return_value.timestamp.return_value = float(now_ts)
             result = is_jwt_expired(token)
         # exp == current_time means exp < current_time is False, so not expired
         assert result is False
+
+    def test_timezone_independence(self) -> None:
+        """Verify token expiration evaluates correctly under non-UTC process timezones."""
+        orig_tz = os.environ.get("TZ")
+        for tz in ("America/Los_Angeles", "Asia/Kolkata"):
+            try:
+                os.environ["TZ"] = tz
+                if hasattr(time, "tzset"):
+                    time.tzset()
+                now_ts = int(datetime.now(timezone.utc).timestamp())
+                valid_token = _make_jwt_token({"exp": now_ts + 1800, "sub": "user1"})
+                expired_token = _make_jwt_token({"exp": now_ts - 1800, "sub": "user1"})
+                assert is_jwt_expired(valid_token) is False
+                assert is_jwt_expired(expired_token) is True
+            finally:
+                if orig_tz is None:
+                    os.environ.pop("TZ", None)
+                else:
+                    os.environ["TZ"] = orig_tz
+                if hasattr(time, "tzset"):
+                    time.tzset()
 
 
 # ---------------------------------------------------------------------------

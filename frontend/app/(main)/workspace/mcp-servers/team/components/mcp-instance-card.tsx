@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
@@ -115,6 +116,7 @@ function ActionButton({
   onClick: () => void;
   danger?: boolean;
 }) {
+  const isMobile = useIsMobile();
   const [isHovered, setIsHovered] = useState(false);
   const color = danger ? 'var(--red-11)' : 'var(--accent-11)';
   return (
@@ -137,7 +139,7 @@ function ActionButton({
         justifyContent: 'center',
         gap: 'var(--space-2)',
         flex: 1,
-        height: 'var(--space-6)',
+        height: isMobile ? 44 : 'var(--space-6)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered
           ? danger

@@ -5,8 +5,8 @@ from enum import Enum
 
 class ConfigPaths:
     """Configuration path templates for etcd / configuration service."""
-    CONNECTOR_CONFIG = "/services/connectors/{connector_id}/config"
-    OAUTH_CONFIG = "/services/oauth/{connector_type}"
+    CONNECTOR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+    OAUTH_CONFIG_PATH = "/services/oauth/{connector_type}"
 
 
 class OAuthConfigKeys:
@@ -133,6 +133,7 @@ class ConnectorStateKeys:
     LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
     LAST_SYNC_OUTCOME = "lastSyncOutcome"
     LAST_SYNC_SUMMARY = "lastSyncSummary"
+    ACTION_ITEMS = "actionItems"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
@@ -156,6 +157,61 @@ CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
     "Notion workspace. Notion's API does not expose per-page sharing, so access cannot be "
     "restricted to the people a page is shared with. Use the Notion Personal connector if you "
     "want your pages searchable only by you."
+)
+
+
+# These sources have no per-user access rules PipesHub can apply, so a team
+# connector's data is readable by the whole organization.
+_PERSONAL_CONNECTOR_HINT = (
+    "A team connector is for data the whole organization may read. To keep the data to "
+    "yourself, set it up as a personal connector instead."
+)
+_OBJECT_STORE_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every bucket it "
+    "syncs. With Bucket Names empty, that is every bucket the key can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_AZURE_BLOB_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every container "
+    "it syncs. With Container Names empty, that is every container the credentials can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_AZURE_FILES_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every file share "
+    "it syncs. With File Share Names empty, that is every share the credentials can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_GCS_INFO = (
+    "If you create a team connector, everyone in your organization can search every bucket it "
+    "syncs. With Bucket Names empty, that is every bucket the service account can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_POSTGRES_INFO = (
+    "If you create a team connector, everyone in your organization can search every table it "
+    "syncs; table and database permissions are not applied. With Schemas and Tables empty, that "
+    "is every table the database user can read. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_MARIADB_INFO = (
+    "If you create a team connector, everyone in your organization can search every table it "
+    "syncs; table and database permissions are not applied. With Tables empty, that is every "
+    "table the database user can read. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+
+# The permission lists must match what test_connection_and_access checks.
+CONNECTOR_S3_INFO = (
+    "This connector only lists and reads objects, so give it a read-only key. Its IAM policy "
+    "needs s3:ListBucket, s3:GetBucketLocation and s3:GetObject on the buckets to sync. It needs "
+    "s3:ListAllMyBuckets to discover the buckets and to load the Bucket Names options. For buckets "
+    "encrypted with SSE-KMS, also allow kms:Decrypt on the KMS key."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
+)
+CONNECTOR_MINIO_INFO = (
+    "This connector only lists and reads objects, so give it a read-only key. Its MinIO policy "
+    "needs s3:ListBucket and s3:GetObject on the buckets to sync. It needs s3:ListAllMyBuckets "
+    "to discover the buckets and to load the Bucket Names options."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
 
 

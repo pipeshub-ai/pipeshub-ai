@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,6 +130,52 @@ def extract_tiny_ref(target: str) -> str | None:
 def build_tiny_web_ref_url(ref: str) -> str:
     """Wrap a refN token into its LLM-facing tiny URL form (https://refN.xyz)."""
     return f"https://{ref}.xyz"
+
+
+# A citation ref as a tool writes it for the model: the tiny web URL (with or
+# without its scheme), or a bare ``refN`` that is not part of a word, a path, an
+# assignment or a longer id. Only a whole token matches: nothing host- or
+# path-like may follow (``https://ref1.xyz.evil``, ``…/path``, ``ref1.xyz``), or
+# the rewrite would splice a URL into the middle of something else; nor may a
+# tiny URL sit inside a longer one (``…?next=https://ref1.xyz``). Sentence
+# punctuation may follow. A ref running into "…" was cut by a preview cap
+# ("ref12" kept as "ref1"), so it is matched as `cut` and never taken for the
+# ref it now reads as.
+_REQUEST_REF_RE = re.compile(
+    r'(?:(?<![\w/.=?&%#:+-])https?://|(?<![\w/.=-]))(?P<web>ref\d+)'
+    r'(?:\.xyz(?:/(?![\w-]))?(?![\w/-]|\.[\w-])|(?P<webcut>(?:\.x?y?)?…))'
+    r'|(?<![\w/.=-])(?P<bare>ref\d+)(?:(?P<cut>…)|(?![\w/-]|\.[\w-]))'
+)
+
+# What a ref becomes when no mapping says what it stood for. Neither a ref nor
+# a URL, so the model cannot cite it and nothing resolves it.
+EARLIER_TURN_REF = "earlier-turn source"
+
+
+def rewrite_request_refs(text: str, ref_to_url: Mapping[str, str] | None) -> tuple[str, int, int]:
+    """Make `text` safe to keep beyond the request whose refs it carries.
+
+    ``refN`` ids are numbered per request, so a ref that outlives its request
+    (a saved tool-result preview, a durable artifact) would resolve to whatever
+    a later request numbers the same. Each ref `ref_to_url` knows becomes its
+    URL, which is valid in any request; any other becomes ``EARLIER_TURN_REF``.
+    Returns the text and the counts of refs expanded and made uncitable.
+    """
+    expanded = unresolved = 0
+
+    def _replace(m: re.Match[str]) -> str:
+        nonlocal expanded, unresolved
+        if m.group("webcut") or m.group("cut"):
+            unresolved += 1
+            return f"{EARLIER_TURN_REF}…"
+        url = (ref_to_url or {}).get(m.group("web") or m.group("bare"))
+        if url:
+            expanded += 1
+            return url
+        unresolved += 1
+        return EARLIER_TURN_REF
+
+    return _REQUEST_REF_RE.sub(_replace, text), expanded, unresolved
 
 
 def _expand_multi_ref_links(text: str) -> str:
@@ -313,6 +360,10 @@ def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
     ref = ref_mapper.get_or_create_ref(url)
     return build_tiny_web_ref_url(ref)
 
+def _link_label(md_link: str) -> str:
+    return md_link[1:md_link.index('](')]
+
+
 def _clean_duplicate_citation_links(
     text: str,
     ref_to_url: dict[str, str] | None = None,
@@ -352,6 +403,18 @@ def _clean_duplicate_citation_links(
         resolved_first = _resolve_ref(first_target, ref_to_url)
         resolved_second = _resolve_ref(second_target, ref_to_url)
         if resolved_first == resolved_second:
+            second_link = m.group(4)
+            # "[source](ref1) [Pricing review](ref1)": keep the link whose text names the source.
+            # A dead target gets no badge, so there a URL is text worth keeping.
+            first_label, second_label = _link_label(first_link), _link_label(second_link)
+            if _REF_TOKEN_RE.fullmatch(resolved_first):
+                if _is_real_url_text(second_label) and not _is_real_url_text(first_label):
+                    return second_link
+                disposable = _is_label_or_id
+            else:
+                disposable = _is_citation_label
+            if disposable(first_label) and not disposable(second_label):
+                return second_link
             return first_link
 
         return m.group(0)
@@ -426,15 +489,83 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
-# Any ``[text](ref…)`` link.  Only ``ref<digits>`` targets can ever resolve
-# (``_MD_LINK_PATTERN``), and those that did were already rewritten to
-# ``[N](url)`` by the time this runs, so whatever still matches is dead.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
-# A ``[text](https://refN.xyz)`` web-citation alias that matched no read page, usually one the
-# model made up. The link goes; descriptive text ("India – Wikipedia") stays in the sentence, a
-# bare citation label ("source", "3") goes with it.
-_UNRESOLVED_WEB_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(https?://ref\d+\.xyz/?\)')
-_CITATION_LABEL_RE = re.compile(r'^\s*(?:sources?|refs?|links?|citations?|\d+)?\s*$', re.IGNORECASE)
+# A ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Resolvable refs were already
+# rewritten to ``[N](url)`` by the time this runs, so whatever still matches is dead.  One
+# pattern, so a later link sees every earlier one already stripped.
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _REF_TOKEN + r'\)')
+_CITATION_LABEL_RE = re.compile(
+    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+)
+# Link text that only names the target: a ref token or a record id.  Meaningless to a reader,
+# so it goes even when the link is dead and no badge replaces it.
+_LINK_ID_TEXT_RE = re.compile(
+    rf'^(?:{_REF_TOKEN}'
+    r'|[0-9A-Fa-f]{8}(?:-?[0-9A-Fa-f]{4}){3}-?[0-9A-Fa-f]{12}'
+    r'|[0-9A-Fa-f]{24})$'
+)
+# Link text that is a URL: redundant next to a badge that links there, but a dead link's only trace.
+_LINK_URL_TEXT_RE = re.compile(r'^<?(?:https?://|www\.)\S*>?$')
+_LINK_TEXT_WRAPPERS = ' \t\n`\'"[]()<>'
+_CITATION_BADGE = r'\[\d+\]\([^)]*\)'
+# How far back an already-written copy of the link text is looked for.
+_LINK_TEXT_ECHO_WINDOW = 2000
+
+
+def _is_label_or_id(link_text: str) -> bool:
+    return bool(_CITATION_LABEL_RE.match(link_text) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+
+
+def _is_url_text(link_text: str) -> bool:
+    return bool(_LINK_URL_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+
+
+def _is_real_url_text(link_text: str) -> bool:
+    """A URL that is not itself a ref token: "https://ref99.xyz" is a dead reference, not an address."""
+    return _is_url_text(link_text) and not _is_label_or_id(link_text)
+
+
+def _is_citation_label(link_text: str) -> bool:
+    """True when link text carries no prose: a generic label ("source", "ref 2")
+    or the target itself (a URL, ref or record id)."""
+    return _is_label_or_id(link_text) or _is_url_text(link_text)
+
+
+def _already_written(kept: str, preceding: str) -> bool:
+    """True when ``preceding`` ends with ``kept``, as plain text or another link's
+    text, optionally followed by badges."""
+    echo = re.compile(rf'(?<!\w){re.escape(kept)}(?:\]\([^)]*\))?\s*(?:{_CITATION_BADGE}\s*)*$', re.IGNORECASE)
+    return bool(echo.search(preceding[-(len(kept) + _LINK_TEXT_ECHO_WINDOW):]))
+
+
+def kept_citation_link_text(link_text: str, preceding: str) -> str:
+    """The prose a citation link keeps in the sentence once its link becomes a badge.
+
+    Empty for a label, and for text the answer already wrote just before the
+    link (``the Q3 review [Q3 review](ref1)``) or before the badges in front of
+    it (``[Q3 review](ref1, ref2)`` expands to one link per ref).
+    """
+    if _is_citation_label(link_text):
+        return ''
+    kept = link_text.strip()
+    return '' if _already_written(kept, preceding) else kept
+
+
+def sub_in_order(pattern: re.Pattern[str], text: str, replace: Callable[[re.Match[str], str], str]) -> str:
+    """``pattern.sub`` whose ``replace(match, written)`` also gets the output
+    written so far, so it sees earlier replacements rather than the raw text."""
+    out = ''
+    pos = 0
+    for match in pattern.finditer(text):
+        out += text[pos:match.start()]
+        out += replace(match, out)
+        pos = match.end()
+    return out + text[pos:]
+
+
+def _badge_url(url: str) -> str:
+    """``url`` with ``(`` and ``)`` percent-encoded, so ``[N](url)`` cannot end early in a
+    reader that stops a link at the first ``)``. Browsers treat both forms as the same address."""
+    return url.replace("(", "%28").replace(")", "%29")
 
 
 def _renumber_citation_links(
@@ -446,22 +577,31 @@ def _renumber_citation_links(
     """
     Replace citation markdown links with sequential ``[N](url)`` badges.
     Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
-    Processes matches in reverse order to preserve string positions.
 
-    All matched links — whether their text is a generic label ("source") or
-    descriptive ("India - Wikipedia") — are replaced with ``[N](url)`` so the
-    frontend can render them as numbered citation chips.  The original link text
-    is discarded because the citation metadata already stores the title/content.
+    A generic label ("source", "3") is replaced by the badge.  Descriptive text
+    ("the Velora renewal") is part of the sentence, so it stays as plain text
+    in front of the badge: ``the Velora renewal [1](url)``.
     """
-    for match in reversed(md_matches):
+    out = ''
+    pos = 0
+    for match in md_matches:
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
-        if new_num is not None:
-            replacement = f"[{new_num}]({full_url})"
-            text = text[:match.start()] + replacement + text[match.end():]
-    text = _strip_unresolved_ref_citations(text)
-    return text
+        # Looked up raw above; written into the badge with parentheses encoded.
+        full_url = _badge_url(full_url)
+        out += text[pos:match.start()]
+        if new_num is None:
+            out += match.group(0)
+        else:
+            # Dead links before this one are stripped only after the walk; strip them in
+            # the window the echo check reads, so their kept text counts as written.
+            written = _strip_unresolved_ref_citations(out[-(len(match.group(1)) + _LINK_TEXT_ECHO_WINDOW):])
+            kept = kept_citation_link_text(match.group(1), written)
+            out += f"{kept} [{new_num}]({full_url})" if kept else f"[{new_num}]({full_url})"
+        pos = match.end()
+    out += text[pos:]
+    return _strip_unresolved_ref_citations(out)
 
 
 def _strip_unresolved_ref_citations(text: str) -> str:
@@ -471,12 +611,16 @@ def _strip_unresolved_ref_citations(text: str) -> str:
     conversation turn whose ``CitationRefMapper`` no longer exists, or
     invented by the model from a record id (``[source](ref444d5fad-…)``),
     which no mapper ever mints.  Leaving them renders as broken
-    ``[source](ref209)`` links in the UI.
+    ``[source](ref209)`` links in the UI.  The link goes; descriptive text
+    ("India – Wikipedia") stays in the sentence, a label goes with it.
     """
-    text = _UNRESOLVED_WEB_REF_LINK_RE.sub(
-        lambda m: '' if _CITATION_LABEL_RE.match(m.group(1)) else m.group(1), text,
-    )
-    return _UNRESOLVED_REF_LINK_RE.sub('', text)
+    def _keep_text(m: re.Match[str], written: str) -> str:
+        if _is_label_or_id(m.group(1)):
+            return ''
+        kept = m.group(1).strip()
+        return '' if _already_written(kept, written) else kept
+
+    return sub_in_order(_UNRESOLVED_REF_LINK_RE, text, _keep_text)
 
 
 def _extract_block_index_from_url(url: str) -> int | None:
@@ -501,8 +645,15 @@ def _find_record_by_id(
     record_id: str,
     records: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None,
+    *,
+    listed: bool = False,
 ) -> dict[str, Any] | None:
-    
+    # A listing's citation quotes what the listing showed, even when a search
+    # or a read in the same turn holds the record too.
+    if listed:
+        for r in records:
+            if r.get("id") == record_id and LISTED_FACTS_KEY in r:
+                return r
     if virtual_record_id_to_result:
         for rec in virtual_record_id_to_result.values():
             if rec and rec.get("id") == record_id:
@@ -513,12 +664,28 @@ def _find_record_by_id(
     return None
 
 
-# `blockType` of a record-page citation, which cites no block: its text is the
+# `blockType` of a record-page citation, which cites no block: its text is
+# what a listing (navigate, lookup_record) stated about the record, the
 # record's summary (`BlockType.RECORD_SUMMARY`), the text the keyword (grep)
 # search matched in the record, or only the record's name. Only matched text
 # is quoted from the record itself.
+RECORD_PAGE_LISTED_FACTS = "listed_facts"
 RECORD_PAGE_MATCHED_TEXT = "matched_text"
 RECORD_PAGE_NAME_ONLY = "record_name"
+
+# On a record a listing made citable: what the listing said about it.
+LISTED_FACTS_KEY = "_listed_facts"
+# Marks a listing's record-page citation URL, so it never shares a Citation ID
+# with that record's summary citation, which quotes the record itself.
+_LISTING_URL_SUFFIX = "?cited=listing"
+
+
+def listing_citation_url(record_page_url: str) -> str:
+    return f"{record_page_url}{_LISTING_URL_SUFFIX}" if record_page_url else ""
+
+
+def is_listing_citation_url(url: str) -> bool:
+    return url.endswith(_LISTING_URL_SUFFIX)
 
 
 def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
@@ -528,7 +695,11 @@ def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
     # says more than its name, which the citation already shows as its title.
     summary = (record.get("semantic_metadata") or {}).get("summary")
     matched = record.get("_match_snippet")
-    if summary:
+    # A listed record is cited for what the listing said, and a listing that
+    # showed only the name (list_files) is cited by the name.
+    if LISTED_FACTS_KEY in record:
+        snippet, kind = record[LISTED_FACTS_KEY] or name, RECORD_PAGE_LISTED_FACTS
+    elif summary:
         snippet, kind = summary, BlockType.RECORD_SUMMARY.value
     elif matched:
         snippet, kind = matched, RECORD_PAGE_MATCHED_TEXT
@@ -555,7 +726,7 @@ def _append_record_page_citation(
     meta = get_enhanced_metadata(
         record,
         None,
-        {"webUrl": url, "blockText": display_content, },
+        {"webUrl": url.removesuffix(_LISTING_URL_SUFFIX), "blockText": display_content, },
     )
     # Set after the metadata is built, so the citation's link is made exactly
     # as before: a caller can tell the record's own words from a summary.
@@ -976,7 +1147,9 @@ def _normalize_markdown_link_citations(
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
             if record_id is not None and block_index is None:
-                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                rec = _find_record_by_id(
+                    record_id, records, virtual_record_id_to_result, listed=is_listing_citation_url(url),
+                )
                 if rec and url not in url_to_citation_num:
                     new_citation_num = _append_record_page_citation(
                         rec, url, new_citations, url_to_citation_num, new_citation_num
@@ -1168,7 +1341,9 @@ def _normalize_markdown_link_citations_for_agent(
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
             if record_id is not None and block_index is None:
-                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                rec = _find_record_by_id(
+                    record_id, records, virtual_record_id_to_result, listed=is_listing_citation_url(url),
+                )
                 if rec and url not in url_to_citation_num:
                     new_citation_num = _append_record_page_citation(
                         rec, url, new_citations, url_to_citation_num, new_citation_num

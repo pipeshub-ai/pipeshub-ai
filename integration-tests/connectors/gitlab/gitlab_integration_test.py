@@ -22,6 +22,7 @@ path namespace keeps them apart.
   order 3  TC-GL-RG-002           — namespace group nodes are flat, and each gets an App edge
   order 4  TC-GL-USER-001         — AppUsers keyed by GitLab numeric id + USER_APP edge
   order 5  TC-GL-USER-002         — pseudo-groups stand in for members with no public_email
+  order 5  TC-GL-AUTH-001         — the creator's link to the GitLab account the token belongs to
   order 6  TC-GL-ISSUE-001        — TICKET properties, and the people fields that are absent
   order 7  TC-GL-ISSUE-002        — issue_type mapping and the raw GitLab state
   order 8  TC-GL-ISSUE-BLOCKS-001 — streamed issue blocks snapshot
@@ -66,6 +67,7 @@ from app.config.constants.arangodb import (  # type: ignore[import-not-found]  #
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_record_by_external_id,
@@ -583,6 +585,24 @@ class TestGitLabIdentity:
             len(unresolved),
         )
 
+    @pytest.mark.order(5)
+    async def test_tc_gl_auth_001_authenticated_identity(
+        self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GL-AUTH-001: the creator is linked to the GitLab account the token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /user`` the connector reads.
+        """
+        me = await gitlab_connector["_rest"].get_json("/user")
+        email = me.get("email") or me.get("public_email")
+        await assert_authenticated_identity_link(
+            graph_provider, gitlab_connector["connector_id"],
+            email.strip() if isinstance(email, str) else None,
+            str(me["id"]) if me.get("id") is not None else None,
+        )
+        logger.info("TC-GL-AUTH-001 passed: GitLab account %s", me.get("id"))
+
 
 # =============================================================================
 # Work items
@@ -712,10 +732,10 @@ class TestGitLabIssues:
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
         )
 
-        comment_bodies = [
-            note["body"] for note in
-            await _notes_for(gitlab_connector, "issues", issue["iid"])
-        ]
+        notes = await _notes_for(gitlab_connector, "issues", issue["iid"])
+        # Internal notes are for Planner and up; the issue's readers include Guests, so the
+        # connector leaves them out of the issue's content.
+        comment_bodies = [note["body"] for note in notes if not note.get("internal")]
         serialised = str(expected)
         for body in comment_bodies:
             fragment = body.strip().split("\n")[0][:40]
@@ -723,6 +743,10 @@ class TestGitLabIssues:
                 f"comment {fragment!r} is missing from the issue blocks — the per-issue "
                 "comment fetch is not reaching the block builder"
             )
+        for note in notes:
+            fragment = note["body"].strip().split("\n")[0][:40]
+            if note.get("internal") and fragment:
+                assert fragment not in serialised, f"internal note {fragment!r} is in the issue blocks"
         logger.info(
             "TC-GL-ISSUE-BLOCKS-001 passed: issue #%s blocks + %d comment(s) validated",
             issue["iid"], len(comment_bodies),
@@ -965,9 +989,8 @@ class TestGitLabCodeFiles:
     ) -> None:
         """TC-GL-CODE-001: CodeFileRecord fields, including the extension-less case.
 
-        ``language`` and ``file_role`` are populated here — GitHub leaves both null —
-        so a regression that drops them is invisible in record counts and only shows up
-        as code search quietly losing its language filter.
+        A regression that drops ``language`` or ``file_role`` is invisible in record
+        counts and only shows up as code search quietly losing its language filter.
         """
         connector_id = gitlab_connector["connector_id"]
         primary = gitlab_connector["primary"]

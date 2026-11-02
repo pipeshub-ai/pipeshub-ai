@@ -250,6 +250,12 @@ class ToolInstanceCreator:
             return None
         return ts["instanceId"], ts.get("instanceName") or ts.get("displayName") or ts.get("name") or app_name
 
+    def instance_is_personal(self, instance_id: str) -> bool:
+        """Whether the instance is a personal one, as the server marked the person's sign-in to it
+        (`toolsets.py` writes the mark; nothing the person sends can set it)."""
+        config = self._toolset_configs.get(instance_id)
+        return isinstance(config, dict) and config.get("scope") == "personal"
+
     def _toolset_for_app(self, app_name: str) -> dict | None:
         """The agent's configured toolset for an app, when its config is loaded."""
         normalized = app_name.lower().replace(" ", "").replace("_", "")

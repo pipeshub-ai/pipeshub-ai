@@ -109,11 +109,13 @@ _REPORT_VERSIONS = (
 
 # Supersession, then scope, then corroboration, then recency: "authoritative or
 # most recent" let a formal page beat the draft that explicitly replaced it.
+# Recency was read off knowledge-base upload times, which order uploads, not documents.
 _RESOLVE_CONFLICTS = (
     "When sources disagree, prefer in order: a record saying it updates, corrects or "
     "replaces the other (updated, final, vN, deprecated, change log); a narrower record "
     "applying a broader rule to the exact scope asked (an ADR or exception under a "
-    "standard); the value most independent sources state; the most recent. Title or "
+    "standard); the value most independent sources state; the most recent, by a date the "
+    "record states or its source system gives it (an upload time is neither). Title or "
     "formality never decides. Name each other version as a labelled difference: what it "
     "said, where, and why it was not used."
 )

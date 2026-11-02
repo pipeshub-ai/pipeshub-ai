@@ -21,6 +21,7 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
 from app.agents.actions.knowledge_graph.ops.results import (
     search_result_summary as _search_result_summary,
 )
+from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope
 
 
 def _tool_result(content: str = "", is_error: bool = False) -> SimpleNamespace:
@@ -459,10 +460,10 @@ class TestLookupRecord:
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
 
-        scope = SimpleNamespace(app_ids=("app-1",))
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         mock_resolve_scope.return_value = scope
 
-        match = SimpleNamespace(id="rec-1", name="Login bug")
+        match = SimpleNamespace(id="rec-1", name="Login bug", context_block=None)
         result_obj = SimpleNamespace(matches=[match])
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = result_obj
@@ -477,6 +478,33 @@ class TestLookupRecord:
         assert ok is True
         assert text == "Record ID: rec-1"
         mock_remember.assert_called_once_with(kg.state, ["rec-1"], names={"rec-1": "Login bug"})
+
+    @pytest.mark.asyncio
+    @patch("app.utils.chat_helpers.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.render_lookup_result_with_ids", return_value=("Record ID: rec-1", ["rec-1"]))
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver")
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")
+    async def test_match_cut_by_the_byte_cap_is_not_remembered(self, mock_uk, mock_catalog_build, mock_resolver_cls,
+                                                               mock_resolve_scope, mock_render, mock_shortener) -> None:
+        catalog = MagicMock()
+        catalog.is_empty.return_value = False
+        mock_catalog_build.return_value = catalog
+        mock_resolve_scope.return_value = KnowledgeScope(app_ids=("app-1",), kb_ids=())
+
+        resolver_instance = AsyncMock()
+        resolver_instance.resolve_many.return_value = SimpleNamespace(matches=[
+            SimpleNamespace(id="rec-1", name="Login bug", context_block=None),
+            SimpleNamespace(id="rec-2", name="Cut by the cap", context_block=None),
+        ])
+        mock_resolver_cls.return_value = resolver_instance
+
+        state = {"graph_provider": AsyncMock(), "org_id": "o1", "user_id": "u1"}
+        ok, _ = await self._make_kg(state=state).lookup_record(["JIRA-1", "JIRA-2"])
+        assert ok is True
+        assert state["known_record_ids"] == {"rec-1"}
+        assert state["known_record_names"] == {"rec-1": "Login bug"}
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
@@ -500,6 +528,7 @@ class TestLookupRecord:
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")
     async def test_empty_catalog_with_knowledge(self, mock_uk, mock_catalog_build) -> None:
+        """A KB-only user has no connector in the catalog; the lookup still runs."""
         catalog = MagicMock()
         catalog.is_empty.return_value = True
         mock_catalog_build.return_value = catalog
@@ -511,7 +540,7 @@ class TestLookupRecord:
             "has_knowledge": True,
         })
         ok, msg = await kg.lookup_record("JIRA-1")
-        assert ok is False
+        assert ok is True
         assert "Not found" in msg
 
     @pytest.mark.asyncio
@@ -527,7 +556,7 @@ class TestLookupRecord:
         catalog = MagicMock()
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
-        mock_resolve_scope.return_value = SimpleNamespace(app_ids=())
+        mock_resolve_scope.return_value = KnowledgeScope(app_ids=(), kb_ids=())
         resolver = AsyncMock()
         resolver.resolve_many.return_value = SimpleNamespace(matches=[])
         mock_resolver_cls.return_value = resolver
@@ -550,7 +579,7 @@ class TestLookupRecord:
         catalog = MagicMock()
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
-        mock_resolve_scope.return_value = SimpleNamespace(app_ids=())
+        mock_resolve_scope.return_value = KnowledgeScope(app_ids=(), kb_ids=())
         resolver = AsyncMock()
         resolver.resolve_many.side_effect = RuntimeError("resolver error")
         mock_resolver_cls.return_value = resolver
@@ -568,7 +597,7 @@ class TestLookupRecord:
     @patch("app.utils.chat_helpers.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.render_lookup_result_with_ids", return_value=("OK", []))
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.remember_record_ids")
-    @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock, return_value=SimpleNamespace(app_ids=()))
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock, return_value=KnowledgeScope(app_ids=(), kb_ids=()))
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver")
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")

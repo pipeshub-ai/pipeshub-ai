@@ -185,3 +185,19 @@ async def test_too_many_refs_returns_failure():
     assert not bundle.resolved
     assert bundle.failures
     instance.resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_records_are_resolved_as_the_run_user_and_artifacts_as_their_owner() -> None:
+    """A service-account agent attaches knowledge with its creator's access and
+    the chat's own files as the person chatting."""
+    from app.agents.actions.util.attachments import resolve_attachments
+
+    with patch("app.agents.actions.util.attachments.RecordContentResolver") as MockResolver:
+        instance = AsyncMock()
+        instance.resolve = AsyncMock(return_value=_resolved("rec1"))
+        MockResolver.return_value = instance
+        await resolve_attachments(_make_state(user_id="u-alice", artifact_owner_user_id="u-bob"), ["rec1"])
+
+    kwargs = instance.resolve.await_args.kwargs
+    assert (kwargs["actor"].user_id, kwargs["artifact_actor"].user_id) == ("u-alice", "u-bob")

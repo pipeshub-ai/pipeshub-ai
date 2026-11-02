@@ -9,11 +9,14 @@ from app.modules.transformers.blob_storage import BlobStorage
 
 
 def _make_bs(*, config_service=None, graph_provider=None):
-    return BlobStorage(
+    bs = BlobStorage(
         logger=MagicMock(),
         config_service=config_service or AsyncMock(),
         graph_provider=graph_provider or AsyncMock(),
     )
+    # No document left unmapped by an earlier attempt, unless a test says so.
+    bs._find_unmapped_record_document = AsyncMock(return_value=None)
+    return bs
 
 
 def _configure_auth(bs, storage_type="s3"):
@@ -245,18 +248,37 @@ class TestSaveReconciliationMetadata:
         bs._update_metadata_buffer.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_lookup_error_falls_back_to_create(self):
-        """If graph lookup fails, creation path is still taken."""
+    async def test_lookup_error_fails_without_creating(self) -> None:
+        # Creating here left the existing metadata document unreferenced.
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(side_effect=RuntimeError("db err"))
         graph_provider.batch_upsert_nodes = AsyncMock()
         bs = _make_bs(graph_provider=graph_provider)
         bs._create_metadata_document = AsyncMock(return_value="fresh")
 
-        result = await bs.save_reconciliation_metadata(
-            "org", "rec", "vr", {},
-        )
-        assert result == "fresh"
+        with pytest.raises(RuntimeError, match="db err"):
+            await bs.save_reconciliation_metadata("org", "rec", "vr", {})
+        bs._create_metadata_document.assert_not_awaited()
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unmapped_metadata_document_is_reused(self) -> None:
+        # A worker stored the metadata, then died before recording it.
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"record_doc_id": "rec-doc"})
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        bs = _make_bs(graph_provider=graph_provider)
+        bs._find_unmapped_record_document = AsyncMock(return_value="meta-left-behind")
+        bs._update_metadata_buffer = AsyncMock(return_value=("meta-left-behind", 9))
+        bs._create_metadata_document = AsyncMock()
+
+        result = await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
+
+        assert result == "meta-left-behind"
+        bs._find_unmapped_record_document.assert_awaited_once_with("org", "vr", kind="metadata")
+        bs._create_metadata_document.assert_not_awaited()
+        upserted = graph_provider.batch_upsert_nodes.call_args.args[0][0]
+        assert upserted["record_metadata_doc_id"] == "meta-left-behind"
 
     @pytest.mark.asyncio
     async def test_failure_in_create_propagates(self):

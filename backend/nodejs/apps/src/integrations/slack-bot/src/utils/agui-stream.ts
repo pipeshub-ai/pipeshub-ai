@@ -75,6 +75,8 @@ export interface SlackAGUICallbacks {
   /** Full current answer text (caller diffs against last streamed length). */
   onAnswerAccumulated?: (accumulated: string) => void;
   onClearAnswerPreamble?: () => void;
+  /** A model call failed mid-stream and is retried: drop what it streamed. */
+  onModelCallDiscarded?: () => void;
   onAskUserQuestion?: (payload: AskUserQuestionEvent) => void;
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
@@ -431,6 +433,17 @@ export function createSlackAGUIEventHandler(
           emitAskUserFromRaw(value);
         } else if (name === "artifact") {
           callbacks.onArtifact?.((value ?? {}) as SlackArtifactPayload);
+        } else if (name === 'message_discarded') {
+          // A model call failed mid-stream and may be retried: drop its text.
+          const runId =
+            typeof data?.runId === 'string' ? data.runId : undefined;
+          if (runs.isRootRun(runId)) {
+            textBuffer = '';
+            rawTextReceived = 0;
+            state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            callbacks.onModelCallDiscarded?.();
+            emitAnswer();
+          }
         }
         break;
       }

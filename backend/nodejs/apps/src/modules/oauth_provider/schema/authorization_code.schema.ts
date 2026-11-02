@@ -1,4 +1,6 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
+import { KnowledgeLimit } from '../types/oauth.types';
+import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export interface IAuthorizationCode extends Document {
   code: string
@@ -9,9 +11,12 @@ export interface IAuthorizationCode extends Document {
   orgId: Types.ObjectId
   redirectUri: string
   scopes: string[]
+  knowledgeLimit?: KnowledgeLimit;
   expiresAt: Date
   isUsed: boolean
   usedAt?: Date
+  /** Set when a used code was presented again; the redeemer that won takes its own tokens back. */
+  replayedAt?: Date;
   createdAt: Date
 }
 
@@ -45,6 +50,7 @@ const AuthorizationCodeSchema = new Schema<IAuthorizationCode>(
     },
     redirectUri: { type: String, required: true },
     scopes: { type: [String], required: true },
+    knowledgeLimit: knowledgeLimitField,
     expiresAt: {
       type: Date,
       required: true,
@@ -52,6 +58,7 @@ const AuthorizationCodeSchema = new Schema<IAuthorizationCode>(
     },
     isUsed: { type: Boolean, default: false },
     usedAt: { type: Date },
+    replayedAt: { type: Date },
   },
   { timestamps: true },
 )

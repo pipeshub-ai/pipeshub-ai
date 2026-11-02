@@ -22,6 +22,7 @@ import {
   toolsetDialogPanelStyle,
   toolsetDialogPrimaryActionsStyle,
 } from './toolset-config-dialog-styles';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 function extractErrorDetail(e: unknown): string | undefined {
   return isProcessedError(e) ? e.message : e instanceof Error ? e.message : undefined;
@@ -83,7 +84,7 @@ export function McpCredentialsDialog({
       onClose();
     },
     getAuthorizationUrl: agentKey
-      ? (id: string) => McpServersApi.getAgentOAuthAuthorizationUrl(agentKey, id, window.location.origin)
+      ? (id: string) => McpServersApi.getAgentOAuthAuthorizationUrl(agentKey, id, browserOAuthBaseUrl())
       : undefined,
   });
 

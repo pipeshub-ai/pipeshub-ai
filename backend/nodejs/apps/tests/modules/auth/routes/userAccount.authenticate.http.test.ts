@@ -8,7 +8,6 @@ import mongoose from 'mongoose';
 import { Container } from 'inversify';
 import { createUserAccountRouter } from '../../../../src/modules/auth/routes/userAccount.routes';
 import {
-  SAML_HAS_ITS_OWN_SIGN_IN,
   UserAccountController,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { SessionService } from '../../../../src/modules/auth/services/session.service';
@@ -18,8 +17,10 @@ import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middlewa
 import type { Logger } from '../../../../src/libs/services/logger.service';
 import type { ICacheService } from '../../../../src/libs/services/cache/cacheService.interface';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
+import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { createMockRedisService } from '../../../helpers/mock-redis';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 // Serves the real sign-in router over HTTP with the real controller and the
 // real session service, so a request that never gets an answer shows up as a
@@ -30,6 +31,8 @@ const SCOPED_SECRET = 'authenticate-http-scoped-secret';
 const ANSWER_WITHIN_MS = 3000;
 
 describe('POST /userAccount/authenticate over HTTP', () => {
+  useCommunitySignInLists();
+
   const orgId = new mongoose.Types.ObjectId().toHexString();
   let server: Server;
   let baseUrl: string;
@@ -115,11 +118,12 @@ describe('POST /userAccount/authenticate over HTTP', () => {
     await new Promise((resolve) => server.close(resolve));
   });
 
-  it('answers a SAML request with a 400 that points to the SAML sign-in route, instead of hanging', async () => {
+  it('offers password for a policy saved with only SAML, and refuses a SAML attempt with a 400', async () => {
     const started = await post('/userAccount/initAuth', { email: 'alice@acme.test' });
     const sessionToken = started.headers.get('x-session-token');
     expect(started.status).to.equal(200);
     expect(sessionToken).to.be.a('string');
+    expect((started.body as { allowedMethods?: string[] }).allowedMethods).to.deep.equal(['password']);
 
     const res = await post(
       '/userAccount/authenticate',
@@ -129,7 +133,48 @@ describe('POST /userAccount/authenticate over HTTP', () => {
 
     expect(res.status).to.equal(400);
     expect((res.body as { error?: { message?: string } }).error?.message).to.equal(
-      SAML_HAS_ITS_OWN_SIGN_IN,
+      SIGN_IN_METHOD_NOT_ALLOWED,
     );
+  });
+
+  it('lets the sign-in page load many times without spending the sign-in attempts', async () => {
+    // The default limit is 10 a minute; a page load starts a sign-in each time.
+    for (let i = 0; i < 12; i += 1) {
+      expect((await post('/userAccount/initAuth', {})).status, `page load ${i + 1}`).to.equal(200);
+    }
+    const started = await post('/userAccount/initAuth', { email: 'alice@acme.test' });
+
+    const res = await post(
+      '/userAccount/authenticate',
+      { method: 'samlSso', credentials: {}, email: 'alice@acme.test' },
+      { 'x-session-token': String(started.headers.get('x-session-token')) },
+    );
+
+    expect(res.status).to.equal(400);
+  });
+
+  it('still refuses an 11th sign-in attempt in a minute', async () => {
+    const started = await post('/userAccount/initAuth', { email: 'alice@acme.test' });
+    const attempt = () =>
+      post(
+        '/userAccount/authenticate',
+        { method: 'samlSso', credentials: {}, email: 'alice@acme.test' },
+        { 'x-session-token': String(started.headers.get('x-session-token')) },
+      );
+    for (let i = 0; i < 10; i += 1) {
+      expect((await attempt()).status, `attempt ${i + 1}`).to.equal(400);
+    }
+
+    expect((await attempt()).status).to.equal(429);
+  });
+
+  it('still limits how fast sign-ins can be started', async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 61; i += 1) {
+      statuses.push((await post('/userAccount/initAuth', {})).status);
+    }
+
+    expect(statuses.slice(0, 60).every((s) => s === 200)).to.equal(true);
+    expect(statuses[60]).to.equal(429);
   });
 });

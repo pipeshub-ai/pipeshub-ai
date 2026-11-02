@@ -31,9 +31,12 @@ from app.services.docling.docling_service import (
 )
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.logger import install_log_redaction
+from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -64,6 +67,9 @@ async def get_initialized_container() -> DoclingAppContainer:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
+    # Before the first conversion starts the threads that would take arenas.
+    limit_malloc_arenas(2)
 
     # Initialize container and Docling service
     logger = None
@@ -200,7 +206,7 @@ async def health_check() -> JSONResponse:
             governor: ResourceGovernor | None = getattr(app.state, "governor", None)
             if governor is not None:
                 try:
-                    content["resource_governor"] = governor.stats()
+                    content["resource_governor"] = await run_for_health(governor.stats)
                 except Exception as stats_error:
                     # Observability failure must not fail the liveness
                     # probe — the service itself is still healthy.

@@ -4,7 +4,7 @@ import { ChatApi } from '../api';
 import { getThreadMessagePlainText, loadHistoricalMessages, prependOlderRows } from '../runtime';
 import type { CitationMaps } from '../components/message-area/response-tabs/citations';
 import type { ConversationMessage } from '../types';
-import { parseArtifactMarkers, parseDownloadMarkers } from './parse-download-markers';
+import { stripAnswerMarkers } from './parse-download-markers';
 import { saveTextFile } from './save-text-file';
 
 export interface ExportLabels {
@@ -41,8 +41,7 @@ export async function fetchAllConversationRows(
 
 /** What the chat shows for an answer: the text without the markers that become download cards. */
 function answerText(message: ThreadMessageLike): string {
-  const withoutArtifacts = parseArtifactMarkers(getThreadMessagePlainText(message)).text;
-  return parseDownloadMarkers(withoutArtifacts).text.trim();
+  return stripAnswerMarkers(getThreadMessagePlainText(message)).trim();
 }
 
 function escapeLinkText(text: string): string {

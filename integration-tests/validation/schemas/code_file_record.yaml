@@ -1,6 +1,9 @@
 name: code_file_layer
 description: CodeFileRecord fields not on Record
 fields:
+  commit_sha:
+    required: false
+    type: string
   extension:
     required: false
     type: string

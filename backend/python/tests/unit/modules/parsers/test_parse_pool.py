@@ -88,10 +88,29 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
+def _spawn_sleeper() -> tuple:
+    """A job that leaves a child process running in the worker, as the PDF
+    rasteriser's process pool does, and returns its pid. It closes the worker's
+    pipes it inherited, as a multiprocessing child does, or a crash would never
+    read as one."""
+    code = "import os, time; os.closerange(3, 4096); time.sleep(600)"
+    return os.posix_spawn, sys.executable, [sys.executable, "-c", code], {}
+
+
+def _is_zombie(pid: int) -> bool:
+    """Dead but not yet reaped, as an orphan stays where nothing reaps it (a
+    container without an init)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except OSError:
+        return False
+
+
 async def _wait_until_gone(pid: int, seconds: float = 10.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if not _process_exists(pid):
+        if not _process_exists(pid) or _is_zombie(pid):
             return True
         await asyncio.sleep(0.05)
     return False
@@ -255,7 +274,8 @@ class TestParsersUseThePool:
         assert _shape(container) == _shape(MarkdownToBlocksConverter().convert(markdown))
 
     async def test_large_source_is_parsed_in_a_worker(self, governor: MagicMock) -> None:
-        source = b"def f():\n    return 1\n\n\n" * 14_000
+        # Large by size, under the parser's block cap.
+        source = (b"def f():\n" + b"    x = 1\n" * 30 + b"    return x\n\n\n") * 1_000
         assert len(source) >= LARGE
         parser = CodeFileParser()
 
@@ -302,6 +322,25 @@ class TestWorkerCrash:
         container = await parse_pool.submit(convert_markdown_to_blocks, "# Still working\n")
         assert container.blocks[0].data == "Still working"
         assert await parse_pool.submit(os.getpid) != crashed_pid
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux OOM killer")
+    async def test_the_oom_killer_picks_a_worker_before_its_service(
+        self, governor: MagicMock
+    ) -> None:
+        worker_pid = await parse_pool.submit(os.getpid)
+
+        with open(f"/proc/{worker_pid}/oom_score_adj") as adj:
+            assert adj.read().strip() == "1000"
+
+    async def test_a_crashed_workers_processes_do_not_outlive_it(
+        self, governor: MagicMock
+    ) -> None:
+        child_pid = await parse_pool.submit(*_spawn_sleeper())
+
+        with pytest.raises(parse_pool.ParseWorkerError):
+            await parse_pool.submit(os._exit, 137)
+
+        assert await _wait_until_gone(child_pid)
 
     async def test_a_crash_is_reported_to_the_governor_as_a_memory_incident(
         self, governor: MagicMock
@@ -367,6 +406,20 @@ class TestAbandonedJobs:
         assert await _wait_until_gone(stuck_pid)
         monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
         assert await parse_pool.submit(len, b"abc") == len(b"abc")
+
+    async def test_a_job_with_its_own_deadline_is_stopped_at_it(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
+        await parse_pool.submit(os.getpid)
+
+        started = time.monotonic()
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(time.sleep, 600, label="slow.pdf", timeout=0.5)
+
+        assert raised.value.cause == "timed_out"
+        assert time.monotonic() - started < 10
+        assert await parse_pool.submit(len, b"abc", timeout=30) == len(b"abc")
 
     async def test_cancelling_the_caller_stops_its_running_parse(self, governor: MagicMock) -> None:
         busy_pid = await parse_pool.submit(os.getpid)
@@ -452,6 +505,16 @@ class TestLifecycle:
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
         assert await _wait_until_gone(busy_pid)
 
+    async def test_an_idle_worker_takes_the_processes_it_started_with_it(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The PDF rasteriser's pool outlived a killed worker and held up to
+        0.7 GB each until the container ran out of memory."""
+        monkeypatch.setattr(parse_pool, "IDLE_SECONDS", 0.3)
+        child_pid = await parse_pool.submit(*_spawn_sleeper())
+
+        assert await _wait_until_gone(child_pid)
+
     async def test_an_idle_worker_exits_and_the_next_job_gets_a_new_one(
         self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -470,6 +533,9 @@ class TestLifecycle:
         "app.modules.parsers.markdown.image_references",
         "app.modules.parsers.code_parser.code_file_parser",
         "app.modules.parsers.csv.table_detection",
+        "app.modules.parsers.pdf.pdf_inspection",
+        "app.modules.parsers.pdf.layout_pages",
+        "app.modules.parsers.pdf.pdf_rasterizer",
     ],
 )
 def test_what_a_worker_imports_stays_light(module: str) -> None:
@@ -496,7 +562,8 @@ async def test_the_event_loop_keeps_ticking_while_a_worker_parses_a_large_file(
 ) -> None:
     """Ticks are counted, not timed, so a slow runner cannot make this flaky:
     a loop held by the parse gives zero ticks, a free one gives dozens."""
-    source = b"class A:\n    def run(self, n: int) -> int:\n        return n + 1\n\n\n" * 6_000
+    body = b"        n = n + 1\n" * 40
+    source = (b"class A:\n    def run(self, n: int) -> int:\n" + body + b"        return n\n\n\n") * 900
     assert len(source) >= LARGE
     parser = CodeFileParser()
     ticks = 0
@@ -515,5 +582,5 @@ async def test_the_event_loop_keeps_ticking_while_a_worker_parses_a_large_file(
         running = False
         await beat
 
-    assert len(container.block_groups) == 6_000
+    assert len(container.block_groups) == 900
     assert ticks >= 3

@@ -1,10 +1,10 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
+import { KnowledgeLimit } from '../types/oauth.types';
+import { knowledgeLimitField } from './knowledge_limit.schema';
 
-export enum OAuthDeviceCodeStatus {
-  PENDING = 'pending',
-  APPROVED = 'approved',
-  DENIED = 'denied',
-}
+import { OAuthDeviceCodeStatus } from '../../../libs/repositories/oauth-token/types';
+
+export { OAuthDeviceCodeStatus };
 
 export interface IOAuthDeviceCode extends Document {
   deviceCodeHash: string
@@ -14,6 +14,7 @@ export interface IOAuthDeviceCode extends Document {
   status: OAuthDeviceCodeStatus
   userId?: Types.ObjectId
   orgId?: Types.ObjectId
+  knowledgeLimit?: KnowledgeLimit;
   interval: number
   lastPolledAt?: Date
   expiresAt: Date
@@ -48,6 +49,7 @@ const OAuthDeviceCodeSchema = new Schema<IOAuthDeviceCode>(
     },
     userId: { type: Schema.Types.ObjectId, ref: 'users' },
     orgId: { type: Schema.Types.ObjectId, ref: 'org' },
+    knowledgeLimit: knowledgeLimitField,
     interval: { type: Number, default: 5 },
     lastPolledAt: { type: Date },
     expiresAt: {

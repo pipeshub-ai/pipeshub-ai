@@ -11,10 +11,8 @@ import {
   storageValidationSchema,
   smtpConfigSchema,
   azureAdConfigSchema,
-  ssoConfigSchema,
   googleAuthConfigSchema,
   githubAuthConfigSchema,
-  oauthConfigSchema,
   microsoftConfigSchema,
   platformSettingsSchema,
   createSlackBotConfigSchema,
@@ -180,13 +178,6 @@ describe('CM Validators', () => {
       expect(result.success).to.be.true
     })
 
-    it('ssoConfigSchema should accept valid config', () => {
-      const result = ssoConfigSchema.safeParse({
-        body: { entryPoint: 'https://idp.example.com', certificate: 'CERT', emailKey: 'email' },
-      })
-      expect(result.success).to.be.true
-    })
-
     it('googleAuthConfigSchema should accept valid config', () => {
       const result = googleAuthConfigSchema.safeParse({ body: { clientId: 'gid' } })
       expect(result.success).to.be.true
@@ -195,13 +186,6 @@ describe('CM Validators', () => {
     it('githubAuthConfigSchema should require clientId and clientSecret', () => {
       expect(githubAuthConfigSchema.safeParse({ body: { clientId: 'gid', clientSecret: 'gs' } }).success).to.be.true
       expect(githubAuthConfigSchema.safeParse({ body: { clientId: 'gid' } }).success).to.be.false
-    })
-
-    it('oauthConfigSchema should accept valid config', () => {
-      const result = oauthConfigSchema.safeParse({
-        body: { providerName: 'custom', clientId: 'cid' },
-      })
-      expect(result.success).to.be.true
     })
 
     it('microsoftConfigSchema should accept valid config', () => {

@@ -110,7 +110,7 @@ test.describe.skip('Groups Edit Behavior', () => {
 
     const nameInput = detailDialog.locator('input[type="text"]').first();
     await nameInput.fill(renamedName);
-    await detailDialog.getByRole('button', { name: /Save Edits/i }).click();
+    await detailDialog.getByRole('button', { name: /Save edits/i }).click();
 
     await expect(detailDialog.getByRole('button', { name: /Edit Group/i })).toBeVisible({
       timeout: 15_000,
@@ -178,7 +178,7 @@ test.describe.skip('Groups Edit Behavior', () => {
     await option.click();
     await expect(detailDialog.getByText(/1 Selected/i)).toBeVisible({ timeout: 5_000 });
 
-    await detailDialog.getByRole('button', { name: /Save Edits/i }).click();
+    await detailDialog.getByRole('button', { name: /Save edits/i }).click();
     await expect(detailDialog.getByRole('button', { name: /Edit Group/i })).toBeVisible({
       timeout: 15_000,
     });
@@ -210,7 +210,7 @@ test.describe.skip('Groups Edit Behavior', () => {
     await expect(userRow).toBeVisible({ timeout: 10_000 });
     await userRow.getByText('Remove', { exact: true }).click();
 
-    await detailDialog.getByRole('button', { name: /Save Edits/i }).click();
+    await detailDialog.getByRole('button', { name: /Save edits/i }).click();
     await expect(detailDialog.getByRole('button', { name: /Edit Group/i })).toBeVisible({
       timeout: 15_000,
     });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from app.agent_loop_lib.core.messages import CONTEXT_NOTE_RULE
 from app.agent_loop_lib.core.types import Goal, Todo
 from app.agent_loop_lib.modules.providers.skills.bundle import SKILLS_MOUNT_ROOT
 from app.agent_loop_lib.roles.prompt_template import MODE_GUIDANCE, PromptTemplate
@@ -62,6 +63,7 @@ class DefaultPromptBuilder:
         template = PromptTemplate()
         identity = spec.system_prompt if isinstance(spec.system_prompt, str) else ""
         template.set("identity", identity)
+        template.set("context_notes", CONTEXT_NOTE_RULE[0].upper() + CONTEXT_NOTE_RULE[1:])
         template.set("goal_brief", _render_goal_brief(goal))
         template.set("toolset_overview", _render_toolset_overview(runtime, spec))
         template.set("skills_overview", render_skills_overview(runtime))

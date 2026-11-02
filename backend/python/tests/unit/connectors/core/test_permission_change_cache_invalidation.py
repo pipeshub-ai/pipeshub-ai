@@ -368,17 +368,24 @@ class TestTrashingDropsTheConnector:
     async def test_group_kept_for_the_trash(self, notify, events) -> None:
         tx = AsyncMock()
         tx.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="rg-key", name="Shared"))
-        tx.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+        tx.get_edges_to_node = AsyncMock(
+            side_effect=lambda node, _collection: [{"_from": "records/rec-1"}] if node == "recordGroups/rg-key" else []
+        )
+        tx.get_record_by_key = AsyncMock(return_value={"recordGroupId": "rg-key"})
         tx.batch_update_nodes = AsyncMock(return_value=True)
         proc = _processor(tx, events)
 
         with patch(
             "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
             new=AsyncMock(return_value=True),
-        ), patch.object(proc, "_trash_live_records_of_group", new=AsyncMock()) as trash:
-            assert await proc.on_record_group_deleted("rg-ext", CONNECTOR, trash_live_records=True) is True
+        ), patch.object(
+            proc, "on_records_deleted_cascade", new=AsyncMock(return_value={"success": True})
+        ) as trash:
+            assert await proc.on_record_group_deleted("rg-ext", CONNECTOR) is True
 
-        trash.assert_awaited_once()
+        assert trash.await_args.args == (["rec-1"], CONNECTOR)
+        assert trash.await_args.kwargs["soft_delete"] is True
+        tx.batch_update_nodes.assert_awaited_once()
         tx.delete_nodes_and_edges.assert_not_called()
         _dropped_after_commit(events)
 

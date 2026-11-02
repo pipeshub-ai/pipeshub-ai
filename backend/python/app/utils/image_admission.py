@@ -51,6 +51,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
 from typing import TYPE_CHECKING
 
+from app.utils.bounded_cache import SizeBoundedCache
 from app.utils.image_utils import (
     MAX_CONTENT_ASPECT_RATIO,
     MIN_CONTENT_AREA_PX,
@@ -67,6 +68,18 @@ if TYPE_CHECKING:
 # `chat_helpers` re-exports it, which is where the codebase has always
 # imported it from.
 MAX_IMAGES_IN_CONVERSATION = 50
+
+# Normalization verdicts shared across requests, keyed by (content hash, long
+# edge limit, byte limit). The per-request caches below forget everything at
+# the end of a turn, so the same record images were decoded, resized and
+# re-encoded by Pillow on every turn -- 19% of query-service CPU at 16 users.
+_UNSENDABLE = object()
+_UNCHANGED = object()
+_shared_normalized: SizeBoundedCache[object] = SizeBoundedCache(
+    max_size=400_000_000,
+    size_of=lambda v: len(v) if isinstance(v, str) else 0,
+    max_entries=2000,
+)
 
 
 class ImageBudget:
@@ -430,12 +443,13 @@ class ImageAdmission:
         from app.utils.image_utils import downscale_to_limits, to_llm_image_format
 
         digest = content_hash(data_uri)
-        if digest in self._normalization_checked:
+        if digest in self._normalization_checked or self._adopt_shared(digest):
             return
         sendable = to_llm_image_format(data_uri, max_long_edge_px=self.policy.max_long_edge_px)
         if sendable is None:
             self._unsendable_hashes.add(digest)
             self._normalization_checked.add(digest)
+            _shared_normalized.put(self._shared_key(digest), _UNSENDABLE)
             return
         normalized = downscale_to_limits(
             sendable,
@@ -447,6 +461,24 @@ class ImageAdmission:
             # Keyed by the ORIGINAL hash: that is what a renderer holds and
             # what a later batch will present again.
             self._normalized_by_hash[digest] = normalized
+            _shared_normalized.put(self._shared_key(digest), normalized)
+        else:
+            _shared_normalized.put(self._shared_key(digest), _UNCHANGED)
+
+    def _shared_key(self, digest: str) -> "tuple[str, int | None, int | None]":
+        return (digest, self.policy.max_long_edge_px, self.policy.max_bytes_per_image)
+
+    def _adopt_shared(self, digest: str) -> bool:
+        """Take an earlier request's verdict for these bytes under this policy."""
+        verdict = _shared_normalized.get(self._shared_key(digest))
+        if verdict is None:
+            return False
+        if verdict is _UNSENDABLE:
+            self._unsendable_hashes.add(digest)
+        elif verdict is not _UNCHANGED:
+            self._normalized_by_hash[digest] = verdict
+        self._normalization_checked.add(digest)
+        return True
 
     async def warm(self, data_uris: "list[str]") -> None:
         """Precompute the downscales `data_uris` will need, off the event loop.
@@ -462,7 +494,10 @@ class ImageAdmission:
             return
         todo = [
             uri for uri in dict.fromkeys(data_uris)
-            if uri and content_hash(uri) not in self._normalization_checked
+            if uri and not (
+                (digest := content_hash(uri)) in self._normalization_checked
+                or self._adopt_shared(digest)
+            )
         ]
         if not todo:
             return

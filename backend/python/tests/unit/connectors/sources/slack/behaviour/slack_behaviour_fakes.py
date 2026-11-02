@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
+from app.models.permission import EntityType
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
@@ -274,8 +275,12 @@ class SlackWorkspace:
     # ── Web API methods ───────────────────────────────────────────────────
 
     def _api_auth_test(self, params: dict[str, str]) -> dict[str, Any]:
-        return {"ok": True, "url": f"https://{DOMAIN}.slack.com/", "team": "Acme", "team_id": TEAM_ID,
-                "user_id": self.auth_user_id or "UBOT"}
+        reply = {"ok": True, "url": f"https://{DOMAIN}.slack.com/", "team": "Acme", "team_id": TEAM_ID,
+                 "user_id": self.auth_user_id or "UBOT"}
+        # As Slack answers: a bot token also names its bot, a user token only the user
+        if "xoxb-" in (self.calls[-1].token or ""):
+            reply["bot_id"] = "B0APPBOT"
+        return reply
 
     def _api_team_info(self, params: dict[str, str]) -> dict[str, Any]:
         return {"ok": True, "team": {"id": TEAM_ID, "name": "Acme", "domain": DOMAIN}}
@@ -405,9 +410,21 @@ class FakeSlackStore:
     are implemented.
     """
 
-    def __init__(self, org_id: str = "org-1", creator_email: Optional[str] = None) -> None:
+    def __init__(
+        self, org_id: str = "org-1", creator_email: Optional[str] = None, authenticator_email: str | None = None,
+    ) -> None:
         self.org_id = org_id
         self.creator_email = creator_email
+        # Who authenticated the connector; None stands for a user the graph cannot name.
+        self.authenticator_email = authenticator_email
+        # (email, source user id) per link the connector asked for, and how often it unlinked.
+        self.links: list[tuple[str | None, str | None]] = []
+        self.unlinks = 0
+        # Lowercased emails holding the membership an external collaborator gets on the app.
+        # A member's own comes from on_new_app_users.
+        self.external_members: set[str] = set()
+        # What the connector wrote, in order: (method, external ids of the groups it saved).
+        self.events: list[tuple[str, tuple[str, ...]]] = []
         self.records: dict[str, Record] = {}
         self.record_groups: dict[str, Any] = {}
         self.group_access: dict[str, list[Any]] = {}
@@ -431,6 +448,35 @@ class FakeSlackStore:
     async def get_app_creator_user(self, connector_id: str) -> Optional[SimpleNamespace]:
         return SimpleNamespace(email=self.creator_email) if self.creator_email else None
 
+    async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict[str, Any]:
+        return {"email": self.authenticator_email} if self.authenticator_email else {}
+
+    async def link_authenticator_to_source_user(
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
+    ) -> None:
+        self.links.append((email, source_user_id))
+
+    async def unlink_authenticator(self, connector_id: str) -> None:
+        self.unlinks += 1
+
+    async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
+        """Create-only, as the processor's: a member keeps the edge the user sync gave them."""
+        self.events.append(("on_external_app_users", ()))
+        members = {(user.email or "").lower() for user in self.app_users.values()}
+        self.external_members |= {email.lower() for email in emails if email.lower() not in members}
+
+    async def reap_external_app_users(self, connector_id: str) -> int:
+        """Drops an external membership once no channel grants its holder anything, as the
+        processor's does. Returns the people it removed, of which the fake keeps none."""
+        self.events.append(("reap_external_app_users", ()))
+        granted = {
+            (p.email or "").lower()
+            for permissions in self.group_access.values() for p in permissions
+            if p.entity_type == EntityType.USER
+        }
+        self.external_members &= granted
+        return 0
+
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
             self.roles[role.source_role_id] = (role, list(members))
@@ -440,6 +486,7 @@ class FakeSlackStore:
             self.user_groups[group.source_user_group_id] = (group, list(members))
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        self.events.append(("on_new_record_groups", tuple(group.external_group_id for group, _ in groups)))
         for group, permissions in groups:
             existing = self.record_groups.get(group.external_group_id)
             if existing:

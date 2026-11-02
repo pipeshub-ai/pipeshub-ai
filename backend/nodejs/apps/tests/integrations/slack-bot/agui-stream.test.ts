@@ -5,6 +5,7 @@ import {
   createSlackAGUIEventHandler,
   toolProgressText,
 } from '../../../src/integrations/slack-bot/src/utils/agui-stream';
+import { SlackActivityBuilder } from '../../../src/integrations/slack-bot/src/utils/activity-ui';
 
 function snapshot(fields: Record<string, unknown>) {
   return { event: 'STATE_SNAPSHOT', data: { type: 'STATE_SNAPSHOT', snapshot: fields } };
@@ -46,6 +47,47 @@ describe('slack-bot/utils/agui-stream', () => {
       const onStatus = sinon.stub();
       createSlackAGUIEventHandler({ onStatus })(snapshot({ final: true, progress: 1, total: 2 }));
       expect(onStatus.called).to.equal(false);
+    });
+  });
+
+  describe('a model call discarded mid-stream', () => {
+    const frame = (type: string, fields: Record<string, unknown> = {}) => ({ event: type, data: { type, ...fields } });
+
+    it('takes back the text the failed attempt streamed, so the retry is posted once', () => {
+      const onAnswerAccumulated = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onAnswerAccumulated });
+
+      handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+      handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
+      handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+      handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+      expect(onAnswerAccumulated.lastCall.args[0]).to.equal('');
+
+      handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm2' }));
+      handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The deploy broke it.' }));
+      expect(onAnswerAccumulated.lastCall.args[0]).to.equal('The deploy broke it.');
+    });
+
+    it('drops the reasoning the failed attempt streamed, so the retry shows it once', () => {
+      const activity = new SlackActivityBuilder();
+      const handle = createSlackAGUIEventHandler({
+        onReasoning: (delta) => activity.appendReasoning(delta),
+        onModelCallDiscarded: () => activity.dropTrailingReasoning(),
+      });
+      const attempt = (messageId: string) => {
+        handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId }));
+        handle(frame('REASONING_MESSAGE_CONTENT', { runId: 'root', delta: 'Check the deploy log.' }));
+        handle(frame('REASONING_END', { runId: 'root' }));
+      };
+
+      activity.appendNarration('Searching.');
+      attempt('m1');
+      handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+      handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+      attempt('m2');
+
+      expect(activity.format().split('Check the deploy log.').length - 1).to.equal(1);
+      expect(activity.format()).to.contain('Searching.');
     });
   });
 });

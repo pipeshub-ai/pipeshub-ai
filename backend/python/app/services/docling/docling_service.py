@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import time
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.core.org_context import spawn_in_request
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.services.resource_governor import (
     ParseTier,
@@ -15,7 +17,9 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.memory_domain import parse_admission_cap
 from app.utils.logger import create_logger
+from app.utils.memory_release import release_freed_memory
 
 logger = logging.getLogger(__name__)
 
@@ -144,13 +148,15 @@ async def _acquire_docling_gate(pdf_binary: bytes, message_id: str) -> tuple[boo
     if _resource_governor is None:
         return True, 0
     cost = parse_cost(ParseTier.HEAVY, len(pdf_binary))
-    gate = _resource_governor.gate(gate_pool(ParseTier.HEAVY))
+    pool = gate_pool(ParseTier.HEAVY)
+    gate = _resource_governor.gate(pool)
     admitted = await acquire_gate_with_backpressure(
         gate, cost, ParseTier.HEAVY, message_id,
         logger=logger,
         log_prefix="docling",
         queue_wait_warn_seconds=DOCLING_QUEUE_WAIT_WARN_SECONDS,
         gate_timeout_seconds=DOCLING_GATE_TIMEOUT_SECONDS,
+        cap=parse_admission_cap(_resource_governor, pool),
     )
     return admitted, (cost if admitted else 0)
 
@@ -204,7 +210,15 @@ async def startup_event() -> None:
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     """Health check endpoint"""
-    return {"status": "healthy", "service": "docling"}
+    now = time.monotonic()
+    return {
+        "status": "healthy",
+        "service": "docling",
+        # A conversion that outlives its caller's timeout keeps its permit; a
+        # growing age here is how a hung one shows up.
+        "parse_tasks_in_flight": len(_parse_tasks),
+        "oldest_parse_age_seconds": round(max((now - t for t in _parse_tasks.values()), default=0.0), 1),
+    }
 
 
 def serialize_docling_doc(doc: DoclingDocument) -> str:
@@ -217,34 +231,53 @@ def serialize_docling_doc(doc: DoclingDocument) -> str:
 
 @app.post("/parse-pdf", response_model=ParseResponse)
 async def parse_pdf_endpoint(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     record_name: str = Form(...),
     start_page: int | None = Form(default=None),
     end_page: int | None = Form(default=None),
 ) -> ParseResponse | JSONResponse:
     """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
+    # After the response is sent: until then the serialized document is still held.
+    background_tasks.add_task(release_freed_memory)
     cost = 0
+    handed_off = False
     try:
         pdf_binary = await file.read()
         admitted, cost = await _acquire_docling_gate(pdf_binary, record_name)
         if not admitted:
             return _backpressure_response()
 
-        if docling_service is None:
+        service = docling_service
+        if service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
         page_range = None
         if start_page is not None and end_page is not None:
             page_range = (start_page, end_page)
 
-        doc = await asyncio.wait_for(
-            docling_service.parse_pdf_only(
-                record_name, pdf_binary, page_range=page_range
-            ),
-            timeout=PDF_PARSING_TIMEOUT_SECONDS
+        # The conversion runs in a thread or worker process that a timeout or a
+        # client disconnect cannot stop. The task owns the permit and returns
+        # it only once the conversion and the serialization (both hold the
+        # document) have ended; the caller is answered at its deadline without
+        # cancelling the task.
+        parse_task = spawn_in_request(
+            _parse_holding_gate(service, record_name, pdf_binary, page_range, cost),
+            name=f"docling-parse:{record_name}",
         )
-
-        serialized_result = await asyncio.to_thread(serialize_docling_doc, doc)
+        handed_off = True
+        _parse_tasks[parse_task] = time.monotonic()
+        parse_task.add_done_callback(_parse_task_done)
+        try:
+            serialized_result = await asyncio.wait_for(
+                asyncio.shield(parse_task), timeout=PDF_PARSING_TIMEOUT_SECONDS
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # A parse that itself raised TimeoutError is already done and reported
+            # here; only a task still running is left without a caller.
+            if not parse_task.done():
+                _abandoned.add(parse_task)
+            raise
 
         return ParseResponse(
             success=True,
@@ -252,16 +285,57 @@ async def parse_pdf_endpoint(
         )
 
     except asyncio.TimeoutError:
-        return ParseResponse(
-            success=False,
-            error=f"Parsing timed out after {PDF_PARSING_TIMEOUT_SECONDS} seconds"
+        return _parse_failure_response(
+            "PARSE_TIMEOUT",
+            f"Parsing timed out after {PDF_PARSING_TIMEOUT_SECONDS} seconds",
         )
     except HTTPException:
         raise
-    except Exception as e:
-        return ParseResponse(
-            success=False,
-            error=f"Parsing failed: {str(e)}"
-        )
+    except Exception:
+        logger.exception("PDF parsing failed for %s", record_name)
+        return _parse_failure_response("PARSE_FAILED", "Parsing failed")
+    finally:
+        if not handed_off:
+            _release_docling_gate(cost)
+
+
+# Strong references (the loop keeps only weak ones, and a parse abandoned by
+# its caller still has to run to the end), with each task's start time.
+_parse_tasks: dict[asyncio.Task, float] = {}
+# Tasks whose caller timed out or was cancelled: nobody else will report them.
+_abandoned: set[asyncio.Task] = set()
+
+
+def _parse_task_done(task: asyncio.Task) -> None:
+    _parse_tasks.pop(task, None)
+    abandoned = task in _abandoned
+    _abandoned.discard(task)
+    if abandoned and not task.cancelled() and task.exception() is not None:
+        logger.warning("Abandoned Docling parse failed: %r", task.exception())
+
+
+async def _parse_holding_gate(
+    service: DoclingService,
+    record_name: str,
+    pdf_binary: bytes,
+    page_range: tuple[int, int] | None,
+    cost: int,
+) -> str:
+    try:
+        doc = await service.parse_pdf_only(record_name, pdf_binary, page_range=page_range)
+        return await asyncio.to_thread(serialize_docling_doc, doc)
     finally:
         _release_docling_gate(cost)
+
+
+def _parse_failure_response(error_code: str, error: str) -> JSONResponse:
+    """A failed parse as a 422 rather than a 200 with ``success: false``.
+
+    422, not 5xx: a timeout or parse error is a property of the document, so
+    BaseServiceClient must neither retry it (a retry re-runs the full
+    40-minute budget) nor count it against the circuit breaker.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={"success": False, "error": error, "errorCode": error_code},
+    )

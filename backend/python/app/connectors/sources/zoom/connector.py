@@ -198,6 +198,7 @@ class ZoomRecordingDetail(BaseModel):
                 personal_sync=[],
                 team_sync=[
                     "user:read:list_users:admin",
+                    "user:read:user:admin",
                     "report:read:user:admin",
                     "report:read:list_meeting_participants:admin",
                     "meeting:read:meeting:admin",
@@ -316,11 +317,36 @@ class ZoomConnector(BaseConnector):
     # Core sync
     # ============================================================================
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.user("me")
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Zoom user: %s", e)
+            return
+        if not response.success or not isinstance(response.data, dict):
+            self.logger.warning(
+                "Zoom connector %s: could not read the authenticated Zoom user (%s: %s). If Zoom "
+                "reports a missing scope, add user:read:user:admin to the Zoom app and "
+                "re-authorize the connector",
+                self.connector_id, response.message, response.data or response.error,
+            )
+            return
+        email, source_user_id = response.data.get("email"), response.data.get("id")
+        await self.register_authenticated_source_user(
+            email.strip().lower() if isinstance(email, str) else None,
+            source_user_id.strip() if isinstance(source_user_id, str) else None,
+        )
+
     async def run_sync(self) -> None:
         """Sync meetings — checkpoint-driven; handles both first run and incremental."""
         try:
             if not self.data_source:
                 await self.init()
+
+            await self._register_authenticated_identity()
 
             await self._load_filters()
 

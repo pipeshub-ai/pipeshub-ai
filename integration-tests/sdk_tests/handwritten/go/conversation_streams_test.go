@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	pipeshub "github.com/pipeshub-ai/pipeshub-sdk-go"
-	"github.com/pipeshub-ai/pipeshub-sdk-go/models/components"
-	"github.com/pipeshub-ai/pipeshub-sdk-go/models/operations"
+	pipeshub "github.com/pipeshub-ai/pipeshub-sdk-go/v2"
+	"github.com/pipeshub-ai/pipeshub-sdk-go/v2/models/components"
+	"github.com/pipeshub-ai/pipeshub-sdk-go/v2/models/operations"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,4 +53,11 @@ func TestHandwritten_ConversationStreams(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, answerID, feedback.MessageFeedbackUpdateResponse.MessageID)
 	assert.Equal(t, pipeshub.Pointer(true), feedback.MessageFeedbackUpdateResponse.Feedback.IsHelpful)
+
+	fork, err := s.Conversations.ForkConversation(ctx, conversationID, answerID)
+	require.NoError(t, err)
+	_, err = s.Conversations.DeleteConversationByID(ctx, fork.ForkConversationResponse.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, components.ForkedFrom{ConversationID: conversationID, MessageID: answerID},
+		fork.ForkConversationResponse.ForkedFrom)
 }

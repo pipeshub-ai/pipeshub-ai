@@ -796,7 +796,7 @@ class TestProcessBlockgroupsEmpty:
         ):
             proc.parsers = {"md": MagicMock()}
             with pytest.raises(RuntimeError, match="parser failed"):
-                await proc._process_blockgroups(bc, "test.md")
+                await proc._process_blockgroups(bc, "test.md", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_no_blockgroups_to_process(self):
@@ -812,7 +812,7 @@ class TestProcessBlockgroupsEmpty:
         )
         bc = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups(bc, "test.md")
+        result = await proc._process_blockgroups(bc, "test.md", allow_remote_fetch=True)
         assert result is bc
 
 
@@ -1213,7 +1213,7 @@ class TestProcessPptDocument:
     async def test_ppt_delegates_to_pptx(self):
         """PPT is converted to PPTX and delegated."""
         ppt_parser = MagicMock()
-        ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx_data")
+        ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx_data")
         proc = _make_processor(parsers={"ppt": ppt_parser})
 
         async def _fake_pptx(*args, **kwargs):
@@ -1228,7 +1228,7 @@ class TestProcessPptDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"ppt_data")
+        ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"ppt_data")
 
 
 # ===================================================================
@@ -1241,7 +1241,7 @@ class TestProcessXlsDocument:
     async def test_xls_delegates_to_excel(self):
         """XLS is converted to XLSX and delegated to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx_data")
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_data")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -1256,7 +1256,7 @@ class TestProcessXlsDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"xls_data")
+        xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"xls_data")
 
 
 # ===================================================================
@@ -1269,7 +1269,7 @@ class TestProcessDocDocument:
     async def test_doc_delegates_to_docx(self):
         """DOC is converted to DOCX and delegated to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx = MagicMock(return_value=b"docx_data")
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_data")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         async def _fake_docx(*args, **kwargs):
@@ -1284,7 +1284,7 @@ class TestProcessDocDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        doc_parser.convert_doc_to_docx.assert_called_once_with(b"doc_data")
+        doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"doc_data")
 
 
 # ===================================================================
@@ -1477,6 +1477,7 @@ class TestCreateTransformContextCalledByProcessMethods:
     async def test_process_excel_calls_create_transform_context(self):
         """process_excel_document uses _create_transform_context with event_type."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -1601,7 +1602,7 @@ class TestProcessorCoverageBranchesTo95:
 
         proc.parsers = {"md": md_parser, "png": png_parser}
 
-        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3)
+        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3, allow_remote_fetch=True)
         assert mod_md == "text"
         assert cmap.get("cap1") == "data:x"
 

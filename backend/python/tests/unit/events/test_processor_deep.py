@@ -7,11 +7,12 @@ process_image, process_delimited_document.
 
 import logging
 from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, RecordDeletedError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 log = logging.getLogger(__name__)
@@ -186,7 +187,7 @@ class TestProcessMdDocument:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """When record is missing from DB, indexing_complete is still yielded."""
+        """When record is missing from DB, the deletion is raised."""
         proc = _make_processor()
 
         md_parser = MagicMock()
@@ -196,11 +197,10 @@ class TestProcessMdDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        events = await _collect_events(
-            proc.process_md_document("test.md", "r1", b"text", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_md_document("test.md", "r1", b"text", "vr1")
+            )
 
 
 # ============================================================================
@@ -238,6 +238,7 @@ class TestProcessExcelDocument:
     async def test_success(self):
         """Excel workbook is loaded and blocks are created."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -278,8 +279,9 @@ class TestProcessExcelDocument:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """Missing record yields indexing_complete without crashing."""
+        """Missing record raises RecordDeletedError."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -289,11 +291,10 @@ class TestProcessExcelDocument:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            events = await _collect_events(
-                proc.process_excel_document("test.xlsx", "r1", "1", "s", "o1", b"data", "vr1")
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_excel_document("test.xlsx", "r1", "1", "s", "o1", b"data", "vr1")
+                )
 
 
 # ============================================================================
@@ -340,11 +341,10 @@ class TestProcessPptxDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=None)
         proc.docling_processor = mock_processor
 
-        events = await _collect_events(
-            proc.process_pptx_document("test.pptx", "r1", "1", "src", "o1", b"data", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_pptx_document("test.pptx", "r1", "1", "src", "o1", b"data", "vr1")
+            )
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -393,7 +393,7 @@ class TestProcessDocxDocument:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """Missing record yields indexing_complete without crashing."""
+        """Missing record raises RecordDeletedError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
@@ -405,11 +405,10 @@ class TestProcessDocxDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=None)
         proc.docling_processor = mock_processor
 
-        events = await _collect_events(
-            proc.process_docx_document("test.docx", "r1", "1", "src", "o1", b"data", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_docx_document("test.docx", "r1", "1", "src", "o1", b"data", "vr1")
+            )
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -494,10 +493,8 @@ class TestProcessImage:
         proc = _make_processor()
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        events = await _collect_events(proc.process_image("r1", b"data", "vr1"))
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(proc.process_image("r1", b"data", "vr1"))
 
 
 # ============================================================================
@@ -566,12 +563,10 @@ class TestProcessDelimitedDocument:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            events = await _collect_events(
-                proc.process_delimited_document("test.csv", "r1", b"a,b\n1,2", "vr1")
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_delimited_document("test.csv", "r1", b"a,b\n1,2", "vr1")
+                )
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -643,12 +638,10 @@ class TestProcessPdfWithPymupdf:
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
-            events = await _collect_events(
-                proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdfdata", "vr1")
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdfdata", "vr1")
+                )
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -745,11 +738,10 @@ class TestProcessPdfWithDocling:
         proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        events = await _collect_events(
-            proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
+            )
 
 
 # ============================================================================
@@ -761,7 +753,7 @@ class TestProcessDocDocument:
     async def test_success(self):
         """DOC is converted to DOCX and delegated to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_binary")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         async def _fake_docx(*args, **kwargs):
@@ -776,7 +768,7 @@ class TestProcessDocDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        doc_parser.convert_doc_to_docx.assert_called_once_with(b"docdata")
+        doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"docdata")
 
 
 # ============================================================================
@@ -788,7 +780,7 @@ class TestProcessXlsDocument:
     async def test_success(self):
         """XLS is converted to XLSX and delegated to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_binary")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -803,13 +795,13 @@ class TestProcessXlsDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"xlsdata")
+        xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"xlsdata")
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
         """XLS conversion failure propagates wrapped in DocumentProcessingError."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx.side_effect = RuntimeError("bad xls")
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(side_effect=RuntimeError("bad xls"))
         proc = _make_processor(parsers={"xls": xls_parser})
 
         with pytest.raises(DocumentProcessingError, match="bad xls"):
@@ -970,11 +962,10 @@ class TestProcessBlocks:
 
         blocks_dict = {"blocks": [], "block_groups": []}
 
-        events = await _collect_events(
-            proc.process_blocks("test", "r1", "1", "src", "o1", blocks_dict, "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_blocks("test", "r1", "1", "src", "o1", blocks_dict, "vr1")
+            )
 
 
 # ============================================================================
@@ -1268,13 +1259,12 @@ class TestProcessPdfDocumentWithOcr:
                 "llm": [],
             })
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_azure_ocr_failure_propagates(self):
@@ -2001,6 +1991,26 @@ class TestProcessTxtDocumentAdditional:
         assert received == [expected]
 
 
+    @pytest.mark.asyncio
+    async def test_windows_1252_text_keeps_its_quotes_and_euro_sign(self) -> None:
+        """latin-1 decodes every byte, so cp1252 has to be tried before it."""
+        proc = _make_processor()
+        seen: list[str] = []
+
+        async def _fake_md(*args: object, **kwargs: object) -> AsyncIterator[PipelineEvent]:
+            seen.append(str(kwargs["md_binary"]))
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_md_document = _fake_md
+
+        text = "\u201cquoted\u201d costs \u20ac5"
+        await _collect_events(
+            proc.process_txt_document(
+                "test.txt", "r1", "1", "src", "o1", text.encode("cp1252"), "vr1", "FILE", "UPLOAD", "UPLOAD"
+            )
+        )
+        assert seen == [text]
+
 # ============================================================================
 # process_excel_document — additional
 # ============================================================================
@@ -2010,6 +2020,7 @@ class TestProcessExcelDocumentAdditional:
     async def test_parser_exception(self):
         """Exception during workbook load propagates wrapped in DocumentProcessingError."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock(side_effect=RuntimeError("corrupt excel"))
         proc = _make_processor(parsers={"xlsx": excel_parser})
 
@@ -2090,7 +2101,7 @@ class TestEventTypeForwarding:
     async def test_doc_forwards_event_type_to_docx(self):
         """process_doc_document forwards event_type to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_binary")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         captured_kwargs = {}
@@ -2111,7 +2122,7 @@ class TestEventTypeForwarding:
     async def test_xls_forwards_event_type_to_excel(self):
         """process_xls_document forwards event_type to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_binary")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -2127,7 +2138,7 @@ class TestEventTypeForwarding:
     async def test_ppt_forwards_event_type_to_pptx(self):
         """process_ppt_document forwards event_type to process_pptx_document."""
         ppt_parser = MagicMock()
-        ppt_parser.convert_ppt_to_pptx.return_value = b"pptx_binary"
+        ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx_binary")
         proc = _make_processor(parsers={"ppt": ppt_parser})
 
         async def _fake_pptx(*args, **kwargs):

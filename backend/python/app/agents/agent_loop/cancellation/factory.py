@@ -50,6 +50,11 @@ def _build_kv_store() -> "KeyValueStore[str] | None":
     except this falls back to in-process instead of raising)."""
     store_type_str = os.getenv("KV_STORE_TYPE", "redis").strip().lower()
 
+    if store_type_str == "postgres":
+        return KeyValueStoreFactory.create_store(
+            store_type=StoreType.POSTGRES, serializer=_serialize, deserializer=_deserialize, config=StoreConfig(host="", port=0),
+        )
+
     if store_type_str == "redis":
         config = StoreConfig(
             host=os.getenv("REDIS_HOST", "localhost"),

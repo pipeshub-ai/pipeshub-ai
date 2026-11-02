@@ -287,7 +287,3 @@ networkPolicy:
           port: 80
         - protocol: TCP
           port: 2703
-
-monitoring:
-  serviceMonitor:
-    enabled: false

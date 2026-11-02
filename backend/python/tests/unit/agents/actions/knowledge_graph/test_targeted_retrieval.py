@@ -37,7 +37,14 @@ def targeted(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TARGETED_RETRIEVAL", "false")
+
+
+@pytest.fixture
+def unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TARGETED_RETRIEVAL", raising=False)
+    for name in ("TARGETED_SEARCH_MAX_CHARS", "TARGETED_SEARCH_PASSAGES_PER_RECORD", "FOCUSED_READ_MAX_CHARS"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _record(vrid: str, blocks: int = 60, chars: int = 900) -> dict[str, Any]:
@@ -110,6 +117,21 @@ def _corpus(records: int = 8, hits_per_record: int = 6) -> tuple[dict[str, Any],
         for r in range(records) for h in range(hits_per_record)
     ]
     return recs, units
+
+
+class TestOnByDefault:
+    """A deployment that never set TARGETED_RETRIEVAL gets the feature."""
+
+    @pytest.mark.asyncio
+    async def test_unset_a_search_holds_half(self, unset: None) -> None:
+        records, units = _corpus(hits_per_record=12)
+        result = await _search(_state(), records, units)
+        assert 28_000 < len(result) <= 32_000
+
+    def test_unset_the_tool_takes_a_query(self, unset: None) -> None:
+        context = SimpleNamespace(tool_state={})
+        tool = _FetchFullRecordTool(CitationCollector(context), context)  # type: ignore[arg-type]
+        assert [p.name for p in tool.parameters][-1] == "query"
 
 
 class TestSearchFindsWithLess:

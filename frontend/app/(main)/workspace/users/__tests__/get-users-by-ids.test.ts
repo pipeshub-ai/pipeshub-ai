@@ -39,3 +39,29 @@ describe.each([
     expect(post.mock.calls[0][1]).toEqual({ userIds: [ID_A] });
   });
 });
+
+describe('UsersApi.inviteUsers', () => {
+  it('passes on the invited and already-member counts', async () => {
+    post.mockResolvedValue({
+      data: { queued: true, invited: 2, reinvited: 1, restored: 0, alreadyActive: 3 },
+    });
+    await expect(UsersApi.inviteUsers(['a@x.com'])).resolves.toEqual({
+      queued: true,
+      invited: 2,
+      reinvited: 1,
+      restored: 0,
+      alreadyActive: 3,
+    });
+  });
+
+  it('leaves the counts out when the server does not send them', async () => {
+    post.mockResolvedValue({ data: { queued: true } });
+    await expect(UsersApi.inviteUsers(['a@x.com'])).resolves.toEqual({
+      queued: true,
+      invited: undefined,
+      reinvited: undefined,
+      restored: undefined,
+      alreadyActive: undefined,
+    });
+  });
+});

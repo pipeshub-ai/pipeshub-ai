@@ -593,7 +593,10 @@ export function DateRangePicker({
         style={{
           padding: '8px',
           minWidth: '280px',
-          backgroundColor: 'var(--olive-2)',
+          // Frosted like the action menus (shared frost tokens in globals.css)
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           border: '1px solid var(--olive-4)',
           borderRadius: 'var(--radius-2)',
         }}
@@ -641,7 +644,8 @@ export function DateRangePicker({
           justify="between"
           style={{
             padding: '8px 16px',
-            backgroundColor: 'var(--olive-3)',
+            // Translucent so the popover's frost shows through
+            backgroundColor: 'var(--olive-a3)',
             borderRadius: 'var(--radius-2)',
             marginBottom: withTime ? '8px' : '16px',
             border: '1px solid var(--olive-4)',
@@ -765,7 +769,7 @@ export function DateRangePicker({
         {/* Calendar container */}
         <Box
           style={{
-            backgroundColor: 'var(--olive-3)',
+            backgroundColor: 'var(--olive-a3)',
             borderRadius: 'var(--radius-2)',
             padding: '8px',
             border: '1px solid var(--olive-4)',

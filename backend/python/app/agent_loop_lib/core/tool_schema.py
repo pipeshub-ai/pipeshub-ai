@@ -8,9 +8,13 @@ enforced.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
+
+# "none" asks for a reply without tool calls while the tool list is still sent:
+# providers reject tool-call history without the definitions it refers to.
+ToolChoice = Literal["auto", "none"]
 
 
 class ToolSchema(BaseModel):

@@ -441,6 +441,7 @@ class JiraClient(IClient):
             raise ValueError("Toolset is not authenticated. Please complete authentication first.")
 
         auth_type = toolset_config.get("authType", "").upper()
+        jira_instance: Optional[dict[str, Any]] = None
 
         try:
             if auth_type == "OAUTH":
@@ -543,6 +544,11 @@ class JiraClient(IClient):
                     f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_TOKEN, BASIC_AUTH"
                 )
 
+            # A personal action's address is its owner's: connect only to the public one checked.
+            from app.agents.toolset_store import is_personal
+
+            if jira_instance is not None and is_personal(jira_instance):
+                client.require_public_addresses()
             logger.info(f"Created Jira client from toolset config (auth type: {auth_type})")
             return cls(client)
 

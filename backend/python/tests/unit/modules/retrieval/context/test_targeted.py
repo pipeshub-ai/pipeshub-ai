@@ -3,7 +3,9 @@ of each record a search keeps."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import pytest
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
@@ -22,9 +24,6 @@ from app.modules.retrieval.context.targeted import (
     targeted_retrieval_enabled,
 )
 from app.modules.retrieval.context.units import NEIGHBOUR_OF_KEY
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _leaf(vrid: str, index: int, score: float) -> dict[str, Any]:
@@ -59,13 +58,25 @@ def _children(unit: dict[str, Any]) -> list[int]:
 
 
 class TestSwitchAndKnobs:
-    def test_off_unless_set_true_and_not_part_of_high_accuracy_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_is_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("TARGETED_RETRIEVAL", raising=False)
-        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
-        assert targeted_retrieval_enabled() is False
-        monkeypatch.setenv("TARGETED_RETRIEVAL", "true")
+        monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
         assert targeted_retrieval_enabled() is True
-        monkeypatch.setenv("TARGETED_RETRIEVAL", "yes")
+        # Compose passes an unset variable through as "".
+        monkeypatch.setenv("TARGETED_RETRIEVAL", "")
+        assert targeted_retrieval_enabled() is True
+
+    @pytest.mark.parametrize("value", ["false", "FALSE", "0", "no", "off", " false "])
+    def test_false_is_off(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv("TARGETED_RETRIEVAL", value)
+        assert targeted_retrieval_enabled() is False
+
+    @pytest.mark.parametrize("mode", ["true", "false"])
+    def test_high_accuracy_mode_does_not_change_it(self, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", mode)
+        monkeypatch.delenv("TARGETED_RETRIEVAL", raising=False)
+        assert targeted_retrieval_enabled() is True
+        monkeypatch.setenv("TARGETED_RETRIEVAL", "false")
         assert targeted_retrieval_enabled() is False
 
     def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:

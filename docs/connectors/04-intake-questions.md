@@ -17,7 +17,15 @@ Do not ask the human these. Look them up, and cite the documentation page in the
 - How to list changes since a point in time: a delta or changes endpoint, `updated_since` filters, cursors, audit logs, webhooks.
 - How deletions and moves are reported, if at all.
 - Rate limits, pagination style, and maximum page sizes.
-- How to download file content, and whether the API can return a temporary signed URL.
+- How to download file content, and whether the API can return a temporary signed URL. How long that URL stays valid.
+- Whether containers can be listed, or the admin must type their ids.
+- Whether members, groups and per-item ACLs can be listed, and on which plan or scope.
+- Whether record ids are unique across object types, or only inside one type.
+- Whether an association change or a permission change updates the object's modified time.
+- The search or list cap (a maximum number of results per query, not only a page size).
+- Whether a successful response can be empty when the token lacks an intent or scope (a 200 with no content).
+- Whether 401 or 403 counts toward an invalid-request ban.
+- Whether the token is static (a bot or API token that never refreshes) or an OAuth token with a refresh token. A static token is not retried on 401 (`02-low-level-design.md`).
 
 ## Ask the human
 
@@ -29,7 +37,9 @@ Ask these together, in one message, before you start. Give a recommended answer 
 4. **How permissions must behave.** Ask whether users must see only what they can see in the source. For any enterprise source the answer is yes; confirm it anyway, and say which source sharing features cannot be mirrored (see `06-permissions.md`). If the API cannot list group members or user emails, say what that means: those grants cannot be applied, and the affected items will be visible to fewer people than in the source.
 5. **Volume.** Roughly how many users, containers and items. This decides batch sizes, whether a full sync can run on every schedule, and whether incremental sync is required in the first version.
 6. **Which filters admins need.** For example: only some spaces, a date range, file types. Offer the standard ones the framework already has (`SyncFilterKey`, `IndexingFilterKey` in `app/connectors/core/registry/filters.py`).
-7. **Freshness.** Is a scheduled sync enough, or is near-real-time needed? Webhook handlers are not called by the platform today (see `01-high-level-design.md`), so real-time support needs a decision before you build it.
+7. **Freshness.** Is a scheduled sync enough, or is near-real-time needed? Webhook handlers are not called by the platform today (see `01-high-level-design.md`), so real-time support needs a decision before you build it. A schedule does not set `fullSync`, so say how long a deletion can wait.
+8. **Identity, when the source has no email.** Where the id-to-email mapping comes from. Without it, users cannot pass the App gate. Pseudo-groups do not help if the email will never appear (`06-permissions.md`).
+9. **A paid tier, a privileged intent, or an app type that closes an endpoint.** Name what stays hidden if they cannot grant it.
 
 ## Stop and ask during the build when
 

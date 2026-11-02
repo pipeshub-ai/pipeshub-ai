@@ -1,11 +1,14 @@
 'use client';
 
 import React, { useEffect, useRef, useState, Suspense } from 'react';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useOnboardingStore } from './store';
 import { useAuthStore } from '@/config';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { getOnboardingStatus, updateOnboardingStatus } from './api';
 import {
   OnboardingHeader,
@@ -26,6 +29,8 @@ function OnboardingPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
   const [onboardingGate, setOnboardingGate] = useState<'checking' | 'allowed'>('checking');
   const [embeddingDefaultDialog, setEmbeddingDefaultDialog] = useState(false);
   const [embeddingRegistryHasDefault, setEmbeddingRegistryHasDefault] = useState(false);
@@ -51,6 +56,7 @@ function OnboardingPageInner() {
 
   // Auth store — real user data
   const { user, isHydrated, isAuthenticated } = useAuthStore();
+  const isAdmin = useUserStore(selectIsAdmin);
   const userName = user?.name ?? '';
   const userEmail = user?.email ?? '';
   const userInitials = userName
@@ -72,6 +78,12 @@ function OnboardingPageInner() {
     if (!isHydrated || !isAuthenticated) {
       return;
     }
+    // Only admins can save these steps; a member who lands here goes back to the app.
+    if (isAdmin === false) {
+      setOnboardingActive(false);
+      router.replace('/');
+      return;
+    }
 
     getOnboardingStatus()
       .then(({ status }) => {
@@ -87,7 +99,7 @@ function OnboardingPageInner() {
         // Match main layout: do not block the app on a failed status check
         setOnboardingGate('allowed');
       });
-  }, [isHydrated, isAuthenticated, router, setOnboardingActive]);
+  }, [isHydrated, isAuthenticated, isAdmin, router, setOnboardingActive]);
 
   // Sync URL → store with validation; redirect to safe default if step is missing or unrecognised
   useEffect(() => {
@@ -144,12 +156,15 @@ function OnboardingPageInner() {
     try {
       await updateOnboardingStatus('configured');
     } catch {
-      // Non-fatal — proceed to chat regardless
-    } finally {
-      setOnboardingActive(false);
-      router.replace('/chat');
+      // Leaving now would bring the admin straight back here on the next load.
+      // Top placement keeps the toast off the Enter button the admin retries with.
+      toast.error(t('onboarding.nav.finishFailed'), { placement: 'top' });
+      setIsFinishing(false);
+      return;
     }
-  }
+    setOnboardingActive(false);
+    router.replace('/chat');
+  };
 
   const handleStepSuccess = (nextStep: OnboardingStepId | null) => {
     // Mark current step as completed
@@ -161,14 +176,6 @@ function OnboardingPageInner() {
     // If nextStep is null (e.g. final optional step saved), stay on the step —
     // the user will click "Enter Pipeshub" in the footer when ready.
   };
-
-  // ---- System config step numbering ----
-
-  // System config steps are all steps except the terminal 'loading' step
-  const systemConfigSteps = steps.filter((s) => s.id !== 'loading');
-  const systemStepIndex =
-    systemConfigSteps.findIndex((s) => s.id === stepFromUrl) + 1;
-  const totalSystemSteps = systemConfigSteps.length;
 
   // ---- Footer visibility ----
 
@@ -205,16 +212,12 @@ function OnboardingPageInner() {
       case 'ai-model':
         return (
           <StepAiModel
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
             nextGateRef={nextGateRef}
           />
         );
       case 'embedding-model':
         return (
           <StepEmbeddingModel
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
             embeddingDefaultDialog={embeddingDefaultDialog}
             setEmbeddingDefaultDialog={setEmbeddingDefaultDialog}
             onRegistryHasSystemDefaultEmbedding={setEmbeddingRegistryHasDefault}
@@ -224,8 +227,6 @@ function OnboardingPageInner() {
         return (
           <StepStorage
             onSuccess={handleStepSuccess}
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
           />
         );
       case 'loading':
@@ -234,8 +235,6 @@ function OnboardingPageInner() {
         // return <StepOrgProfile onSuccess={handleStepSuccess} />;
         return (
           <StepAiModel
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
             nextGateRef={nextGateRef}
           />
         );
@@ -260,9 +259,10 @@ function OnboardingPageInner() {
   return (
     <Flex
       direction="column"
+      className="viewport-height"
       style={{
-        height: '100vh',
-        overflow: 'hidden',
+        // Phones scroll the whole page so the card and nav row are never clipped.
+        overflow: isMobile ? 'auto' : 'hidden',
         backgroundColor: 'var(--color-background)',
       }}
     >
@@ -293,14 +293,15 @@ function OnboardingPageInner() {
         <Box
           style={{
             maxWidth: '1228px',
-            width: '100%',
+            width: isBelowDesktop ? 'calc(100% - 32px)' : '100%',
             margin: '24px auto 0',
-            border: '1px solid var(--gray-4)',
-            flex: 1,
+            // Phones keep only the step card's frame; a second border squeezes it.
+            border: isMobile ? 'none' : '1px solid var(--gray-4)',
+            flex: isMobile ? '1 0 auto' : 1,
             minHeight: 0,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
+            overflow: isMobile ? 'visible' : 'hidden',
           }}
         >
           {/* Tab strip — fixed, never scrolls */}
@@ -311,7 +312,7 @@ function OnboardingPageInner() {
             align="center"
             justify="center"
             className="no-scrollbar"
-            style={{ flex: 1, minHeight: 0, overflow: 'hidden', padding: '8px 16px' }}
+            style={{ flex: 1, minHeight: 0, overflow: isMobile ? 'visible' : 'hidden', padding: isMobile ? '8px 0' : '8px 16px' }}
           >
             {renderStep()}
           </Flex>
@@ -327,7 +328,7 @@ function OnboardingPageInner() {
             maxWidth: '1228px',
             width: '100%',
             margin: '0 auto',
-            padding: '8px 0',
+            padding: isBelowDesktop ? '8px 16px' : '8px 0',
             flexShrink: 0,
           }}
         >

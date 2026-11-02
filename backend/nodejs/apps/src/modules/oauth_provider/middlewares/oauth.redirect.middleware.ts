@@ -17,6 +17,7 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express'
 import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
+import { makeOrgContext, runWithOrgContext } from '../../../libs/context/orgContext';
 
 /**
  * Creates a middleware that redirects to frontend for OAuth authentication
@@ -69,7 +70,21 @@ export function createOAuthRedirectMiddleware(
           accountType: decoded.accountType,
         }
         logger.debug('OAuth request authenticated', { userId: decoded.userId })
-        next()
+        // The handler after this reads the person's organisation, which PostgreSQL needs bound.
+        const orgId = decoded.orgId as string | undefined;
+        if (orgId) {
+          runWithOrgContext(
+            makeOrgContext({
+              orgId,
+              userId: (decoded.userId as string | undefined) || null,
+              kind: 'user',
+              source: 'jwt',
+            }),
+            next,
+          );
+        } else {
+          next();
+        }
       } catch (tokenError) {
         // Token invalid/expired, redirect to frontend
         logger.info('Token invalid/expired, redirecting to frontend OAuth page')

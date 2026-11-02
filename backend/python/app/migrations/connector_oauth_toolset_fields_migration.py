@@ -7,11 +7,12 @@ metadata. Saved apps kept those values, because defaults only fill missing
 fields; Salesforce apps, for one, forced a consent screen on every sign-in.
 
 Writes are idempotent (each repaired value depends only on the stored app and the
-registry), so two replicas running this at once save the same result.
+registry), so two replicas running this at once save the same result. The saved
+apps are read inside each org in turn, as the org's own requests read them.
 """
 
 import copy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.constants import AuthFieldKeys, ConfigPaths, OAuthConfigKeys
@@ -20,6 +21,10 @@ from app.connectors.core.registry.oauth_config_registry import (
     CONNECTOR_SOURCE,
     OAuthConfigRegistry,
 )
+from app.core.org_context import for_org, system
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 MIGRATION_FLAG_KEY = "/migrations/connector_oauth_toolset_fields_v1"
 
@@ -78,10 +83,12 @@ class ConnectorOAuthToolsetFieldsRepair:
         config_service: ConfigurationService,
         oauth_registry: OAuthConfigRegistry,
         logger: Any,
+        graph_provider: "IGraphDBProvider",
     ) -> None:
         self.config_service = config_service
         self.oauth_registry = oauth_registry
         self.logger = logger
+        self.graph_provider = graph_provider
 
     async def _is_already_done(self) -> bool:
         try:
@@ -122,7 +129,7 @@ class ConnectorOAuthToolsetFieldsRepair:
             )
             return 0, 1
 
-        path = ConfigPaths.OAUTH_CONFIG.format(connector_type=connector_type.lower().replace(" ", ""))
+        path = ConfigPaths.OAUTH_CONFIG_PATH.format(connector_type=connector_type.lower().replace(" ", ""))
         # Without raise_on_error a failed read answers the default, and an empty list would mark this done.
         apps = await self.config_service.get_config(path, default=[], use_cache=False, raise_on_error=True)
         if not isinstance(apps, list):
@@ -166,16 +173,26 @@ class ConnectorOAuthToolsetFieldsRepair:
         if await self._is_already_done():
             return {"success": True, "skipped": True, "apps_repaired": 0}
 
+        # Raised, not []: an empty answer from a failed read would mark this done.
+        with system("connector_oauth_toolset_fields_repair"):
+            orgs = await self.graph_provider.get_all_orgs(active=False, raise_on_error=True)
         apps_repaired = 0
         failures = 0
-        for connector_type in AFFECTED_CONNECTOR_TYPES:
-            try:
-                repaired, failed = await self._repair_type(connector_type)
-            except Exception as e:
-                self.logger.error(f"Connector OAuth app repair: could not check the {connector_type} apps: {e}")
-                repaired, failed = 0, 1
-            apps_repaired += repaired
-            failures += failed
+        for org in orgs:
+            org_id = org.get("_key") or org.get("id")
+            if not org_id:
+                continue
+            with for_org(str(org_id), job="connector_oauth_toolset_fields_repair"):
+                for connector_type in AFFECTED_CONNECTOR_TYPES:
+                    try:
+                        repaired, failed = await self._repair_type(connector_type)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Connector OAuth app repair: could not check the {connector_type} apps: {e}"
+                        )
+                        repaired, failed = 0, 1
+                    apps_repaired += repaired
+                    failures += failed
 
         # Leave the flag unset after a failure so the next start retries; repaired apps are skipped then.
         if failures == 0:
@@ -187,5 +204,6 @@ async def run_connector_oauth_toolset_fields_repair(
     config_service: ConfigurationService,
     oauth_registry: OAuthConfigRegistry,
     logger: Any,
+    graph_provider: "IGraphDBProvider",
 ) -> dict[str, Any]:
-    return await ConnectorOAuthToolsetFieldsRepair(config_service, oauth_registry, logger).run()
+    return await ConnectorOAuthToolsetFieldsRepair(config_service, oauth_registry, logger, graph_provider).run()

@@ -204,7 +204,10 @@ class TestFetchProjectsEmitsGroupPermission:
         assert record_groups[1][1] == []
         assert record_groups[0][0].inherit_permissions is True
         assert record_groups[1][0].inherit_permissions is True
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        conn.data_entities_processor.on_new_app_users.assert_awaited_once()
+        members = conn.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert [m.email for m in members] == ["owner@example.com"]
 
         rg_alpha, _ = record_groups[0]
         assert rg_alpha.external_group_id == "10001"
@@ -378,7 +381,10 @@ class TestPersonalRunSyncEdgeCases:
             "creator-id-99",
         )
         assert conn.creator_email == "resolved@example.com"
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        conn.data_entities_processor.on_new_app_users.assert_awaited_once()
+        members = conn.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert [m.email for m in members] == ["resolved@example.com"]
 
     async def test_run_sync_creator_lookup_exception_is_logged(self) -> None:
         conn = _make_connector(created_by="creator-id")

@@ -50,6 +50,12 @@ describe('tool rules', () => {
     expect(ruleToolFromName('archive_page')).toEqual({ name: 'archive_page' });
   });
 
+  it("starts a toolset's reads and writes Pre-approved and its deleting tools on approval, like the server", () => {
+    expect(
+      [startingRule('read', 'toolset'), startingRule('write', 'toolset'), startingRule('destructive', 'toolset'), startingRule(undefined, 'toolset')]
+    ).toEqual(['allow', 'allow', 'ask', 'allow']);
+  });
+
   it('starts read-only tools Pre-approved, tools that change data on approval and deleting tools Denied, like the server', () => {
     expect([startingRule('read'), startingRule('write'), startingRule('destructive'), startingRule(undefined)]).toEqual([
       'allow',

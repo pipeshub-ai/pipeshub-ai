@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
-from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
 from app.utils.url_fetcher import IPAddress, vetted_addresses
 
@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 # (e.g. asyncpg.Pool) resolve correctly in annotations instead of widening to Any.
 if TYPE_CHECKING:
     import asyncpg
+
+    from app.config.configuration_service import ConfigurationService
 else:
     try:
         import asyncpg
@@ -72,11 +74,13 @@ async def connect_to_checked_address(
     *,
     host: str,
     loop: asyncio.AbstractEventLoop | None = None,
+    public_only: bool = False,
     **kwargs: object,
 ) -> asyncpg.Connection:
     """``asyncpg.connect`` for one pool connection, to an address of ``host`` that passes the
     deployment's address policy (``vetted_addresses``). Each new connection looks the name
-    up again, so a failover that moves the name is followed.
+    up again, so a failover that moves the name is followed. ``public_only`` (personal
+    connectors) allows public addresses only, whatever the deployment setting.
 
     Raises:
         HostCheckError: before anything is dialled, when the host is refused or doesn't resolve.
@@ -85,10 +89,19 @@ async def connect_to_checked_address(
     # The lookup spends the connection's timeout (asyncpg's default is 60 s), as asyncpg's own would.
     timeout = float(kwargs.get("timeout") or 60)
     started = real_loop.time()
-    addresses = await vetted_addresses(host, lookup_timeout_s=timeout)
+    addresses = await vetted_addresses(host, lookup_timeout_s=timeout, public_only=public_only)
     kwargs["timeout"] = max(timeout - (real_loop.time() - started), 1.0)
     dial_loop = _CheckedDialLoop(real_loop, addresses) if addresses else real_loop
     return await asyncpg.connect(dsn, host=host, loop=dial_loop, **kwargs)
+
+
+
+def _client_timeout(timeout_s: int | None) -> float | None:
+    """asyncpg's own timeout, set past the server's so the server's clearer error wins.
+
+    Without it the connection's ``command_timeout`` (30 s by default) cancels first.
+    """
+    return timeout_s + 10.0 if timeout_s else None
 
 
 class PostgreSQLClient:
@@ -106,8 +119,13 @@ class PostgreSQLClient:
         min_pool_size: int = 1,
         max_pool_size: int = 10,
         pool_acquire_timeout: float = 60.0,
+        *,
+        public_only: bool = False,
     ) -> None:
-        """Initialize PostgreSQL client."""
+        """Initialize PostgreSQL client.
+
+        ``public_only``: connect to public addresses only (a personal connector).
+        """
         if asyncpg is None:
             raise ImportError(
                 "asyncpg is required for PostgreSQL client. "
@@ -133,12 +151,13 @@ class PostgreSQLClient:
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.pool_acquire_timeout = pool_acquire_timeout
+        self.public_only = public_only
         self._pool: asyncpg.Pool | None = None
         self._connect_lock = asyncio.Lock() # Serialize pool creation so concurrent connect() calls create only one pool.
 
         logger.info(f"🔧 [PostgreSQLClient] Initialized successfully for {user}@{host}:{port}/{database}")
 
-    async def connect(self) -> "PostgreSQLClient":
+    async def connect(self) -> PostgreSQLClient:
         """Initialize the asyncpg connection pool."""
         if self._pool is not None and not self._pool.is_closing():
             logger.debug("🔧 [PostgreSQLClient] Pool already initialized")
@@ -173,7 +192,7 @@ class PostgreSQLClient:
                     # where that name is another client's statement. With the
                     # cache off, asyncpg prepares unnamed statements instead.
                     statement_cache_size=0,
-                    connect=connect_to_checked_address,
+                    connect=partial(connect_to_checked_address, public_only=self.public_only),
                 )
 
                 logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
@@ -201,7 +220,7 @@ class PostgreSQLClient:
         """Check if the connection pool is active."""
         return self._pool is not None and not self._pool.is_closing()
 
-    def resize_pool(self, min_pool_size: int, max_pool_size: int) -> "PostgreSQLClient":
+    def resize_pool(self, min_pool_size: int, max_pool_size: int) -> PostgreSQLClient:
         """Resize the connection pool. Must be called before ``connect()``."""
         if self._pool is not None and not self._pool.is_closing():
             raise RuntimeError("Cannot resize after pool is initialized")
@@ -221,8 +240,19 @@ class PostgreSQLClient:
         self,
         query: str,
         params: Sequence[Any] | None = None,
+        *,
+        local_settings: Mapping[str, str] | None = None,
+        read_only: bool = True,
     ) -> list[dict[str, Any]]:
-        """Execute a SQL query and return results as list of dicts."""
+        """Execute a SQL query and return results as list of dicts.
+
+        The transaction is read-only unless ``read_only=False``: connector
+        sync and profiling only read from the source database, so the server
+        rejects any write they might carry. ``local_settings`` are applied with ``set_config(..., true)``
+        for this query's transaction only, which also holds behind a
+        transaction-mode pooler where connection-level settings would leak or
+        be refused.
+        """
         if not self.is_connected():
             await self.connect()
 
@@ -235,7 +265,9 @@ class PostgreSQLClient:
                 # Prepare and run in one transaction: a transaction-mode pooler
                 # keeps a transaction on one server connection, so the unnamed
                 # statement is still there when it is run.
-                async with conn.transaction():
+                async with conn.transaction(readonly=read_only):
+                    for name, value in (local_settings or {}).items():
+                        await conn.execute("SELECT set_config($1, $2, true)", name, value)
                     statement = await conn.prepare(query)
                     if statement.get_attributes():
                         rows = await statement.fetch(*prepared_params)
@@ -255,10 +287,18 @@ class PostgreSQLClient:
         self,
         query: str,
         params: Sequence[Any] | None = None,
+        *,
+        read_only: bool = True,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """
-        Execute a SQL query and return raw columns/rows.
+        Execute a SQL query and return raw columns/rows, read-only unless
+        ``read_only=False`` (see ``execute_query``).
         conn.execute doesn't support multi-statement queries.
+
+        ``timeout_s`` sets the server's statement_timeout for this transaction and
+        ``max_rows`` reads at most that many rows through a server-side cursor.
         """
         if not self.is_connected():
             await self.connect()
@@ -270,20 +310,65 @@ class PostgreSQLClient:
             async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
                 prepared_params = self._normalize_params(params)
                 # See execute_query: one transaction keeps the pooler on one server.
-                async with conn.transaction():
-                    statement = await conn.prepare(query)
+                async with conn.transaction(readonly=read_only):
+                    if timeout_s:
+                        await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
+                    client_timeout = _client_timeout(timeout_s)
+                    statement = await conn.prepare(query, timeout=client_timeout)
                     attributes = statement.get_attributes()
                     if not attributes:
                         await conn.execute(query, *prepared_params)
                         return ([], [])
 
-                    rows = await statement.fetch(*prepared_params)
+                    rows = await self._fetch(statement, prepared_params, max_rows, client_timeout)
                     columns = [attr.name for attr in attributes]
                     raw_rows = [tuple(row) for row in rows]
                     return (columns, raw_rows)
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLClient.execute_query_raw] Query execution failed: {e}")
             raise
+
+    async def execute_read_only_query(
+        self,
+        query: str,
+        timeout_s: int,
+        max_rows: int | None = None,
+    ) -> tuple[list[str], list[tuple[Any, ...]]]:
+        """Run one row-returning statement in a read-only transaction.
+
+        The server rejects writes, DDL and sequence changes (including
+        ``SELECT ... INTO`` and data-modifying CTEs), so this does not depend
+        on recognising write syntax. Statements that return no columns are
+        refused before they run.
+        """
+        if not self.is_connected():
+            await self.connect()
+        if self._pool is None:
+            raise RuntimeError("PostgreSQL pool not initialized")
+
+        async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
+            async with conn.transaction(readonly=True):
+                await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
+                client_timeout = _client_timeout(timeout_s)
+                statement = await conn.prepare(query, timeout=client_timeout)
+                attributes = statement.get_attributes()
+                if not attributes:
+                    raise ValueError("Only statements that return rows can be run here.")
+                rows = await self._fetch(statement, (), max_rows, client_timeout)
+                return [attr.name for attr in attributes], [tuple(row) for row in rows]
+
+    @staticmethod
+    async def _fetch(
+        statement: asyncpg.prepared_stmt.PreparedStatement,
+        params: Sequence[Any],
+        max_rows: int | None,
+        timeout: float | None = None,
+    ) -> list[Any]:
+        """All rows, or at most ``max_rows`` read from a server-side cursor (needs a transaction)."""
+        if max_rows is None:
+            return await statement.fetch(*params, timeout=timeout)
+        cursor = await statement.cursor(*params, timeout=timeout)
+        return await cursor.fetch(max_rows, timeout=timeout)
 
     @staticmethod
     def _normalize_params(
@@ -319,7 +404,7 @@ class PostgreSQLClient:
             "sslmode": self.sslmode,
         }
 
-    async def __aenter__(self) -> "PostgreSQLClient":
+    async def __aenter__(self) -> PostgreSQLClient:
         """Async context manager entry."""
         await self.connect()
         return self
@@ -363,6 +448,10 @@ class PostgreSQLConfig(BaseModel):
         description="Seconds a caller will wait for a free pool connection",
         gt=0,
     )
+    public_only: bool = Field(
+        default=False,
+        description="Connect to public addresses only (a personal connector)",
+    )
 
     def create_client(self) -> PostgreSQLClient:
         """Create a PostgreSQL client."""
@@ -377,6 +466,7 @@ class PostgreSQLConfig(BaseModel):
             min_pool_size=self.min_pool_size,
             max_pool_size=self.max_pool_size,
             pool_acquire_timeout=self.pool_acquire_timeout,
+            public_only=self.public_only,
         )
 
 
@@ -400,7 +490,7 @@ class AuthConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _populate_from_connection_string(self) -> "AuthConfig":
+    def _populate_from_connection_string(self) -> AuthConfig:
         if self.connection_string:
             parsed = urlparse(self.connection_string)
             set_fields = self.model_fields_set
@@ -471,7 +561,7 @@ class PostgreSQLClientBuilder(IClient):
     def build_with_config(
         cls,
         config: PostgreSQLConfig,
-    ) -> "PostgreSQLClientBuilder":
+    ) -> PostgreSQLClientBuilder:
         """Build PostgreSQLClientBuilder with configuration.
         
         Args:
@@ -488,7 +578,9 @@ class PostgreSQLClientBuilder(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: str | None = None,
-    ) -> "PostgreSQLClientBuilder":
+        *,
+        public_only: bool = False,
+    ) -> PostgreSQLClientBuilder:
         """Build PostgreSQLClientBuilder using configuration service.
         
         This method retrieves PostgreSQL connector configuration from
@@ -498,6 +590,7 @@ class PostgreSQLClientBuilder(IClient):
             logger: Logger instance for error reporting
             config_service: Configuration service instance
             connector_instance_id: Optional connector instance ID
+            public_only: Connect to public addresses only (a personal connector)
             
         Returns:
             PostgreSQLClientBuilder instance
@@ -531,6 +624,7 @@ class PostgreSQLClientBuilder(IClient):
                 password=config.auth.password,
                 timeout=config.timeout,
                 sslmode=config.auth.sslmode,
+                public_only=public_only,
             )
             
             logger.info(

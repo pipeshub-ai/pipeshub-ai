@@ -1,8 +1,11 @@
 'use client';
 
-import React from 'react';
-import { Box } from '@radix-ui/themes';
+import React, { createContext, useContext } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { normalizePaletteLabel } from '../display-utils';
 
@@ -15,6 +18,44 @@ export function applyDragData(event: React.DragEvent, entries: Record<string, st
   });
 }
 
+/** Adds a palette row's drag payload to the canvas; set by the builder so rows work without drag. */
+export const PaletteTapAddContext = createContext<((data: Record<string, string>) => void) | null>(null);
+
+/** Tap handler for a row with this drag payload, or undefined when the row cannot be added. */
+export function usePaletteTapAdd(data: Record<string, string> | undefined, disabled = false): (() => void) | undefined {
+  const add = useContext(PaletteTapAddContext);
+  return add && data && !disabled ? () => add(data) : undefined;
+}
+
+/** Visible "+" for touch screens and phones, where HTML5 drag does not start. */
+export function TapAddButton({ onTap }: { onTap?: () => void }) {
+  return onTap ? <TapAddIconButton onTap={onTap} /> : null;
+}
+
+function TapAddIconButton({ onTap }: { onTap: () => void }) {
+  const { t } = useTranslation();
+  const canHover = useCanHover();
+  const isMobile = useIsMobile();
+  if (canHover && !isMobile) return null;
+  return (
+    <IconButton
+      type="button"
+      size="1"
+      variant="soft"
+      className="touch-hit"
+      aria-label={t('agentBuilder.addToCanvas')}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onTap();
+      }}
+      style={{ flexShrink: 0 }}
+    >
+      <MaterialIcon name="add" size={18} />
+    </IconButton>
+  );
+}
+
 export function DraggableRow({
   children,
   disabled,
@@ -23,6 +64,7 @@ export function DraggableRow({
   comfortable = false,
   title,
   mb,
+  onTap,
 }: {
   children: React.ReactNode;
   disabled?: boolean;
@@ -32,7 +74,10 @@ export function DraggableRow({
   comfortable?: boolean;
   title?: string;
   mb?: React.ComponentProps<typeof Box>['mb'];
+  /** Adds the row without dragging; defaults to the palette's tap-to-add. */
+  onTap?: () => void;
 }) {
+  const paletteTap = usePaletteTapAdd(data, disabled);
   return (
     <Box
       draggable={!disabled}
@@ -71,6 +116,7 @@ export function DraggableRow({
       }
     >
       {children}
+      <TapAddButton onTap={disabled ? undefined : (onTap ?? paletteTap)} />
     </Box>
   );
 }

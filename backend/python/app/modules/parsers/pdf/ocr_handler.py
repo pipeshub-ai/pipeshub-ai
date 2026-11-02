@@ -1,8 +1,14 @@
+import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, cast
 
 from app.config.constants.ai_models import OCRProvider
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+
+if TYPE_CHECKING:
+    from pdfplumber.page import Page
+
+    from app.config.configuration_service import ConfigurationService
 
 
 class OCRStrategy(ABC):
@@ -10,6 +16,8 @@ class OCRStrategy(ABC):
 
     DOMINANT_IMAGE_AREA_RATIO = 0.5
     MAX_TEXT_WITH_DOMINANT_IMAGE = 250
+    UNMAPPED_GLYPH_SHARE = 0.3
+    MIN_UNMAPPED_GLYPHS = 20
 
     @staticmethod
     def _has_dominant_image(text, images, page_area) -> bool:
@@ -25,7 +33,7 @@ class OCRStrategy(ABC):
             )
         )
 
-    def __init__(self, logger) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
 
     @abstractmethod
@@ -37,6 +45,20 @@ class OCRStrategy(ABC):
     async def load_document(self, content: bytes) -> None:
         """Load document content"""
         pass
+
+    @staticmethod
+    def has_unreadable_text(page: "Page") -> bool:
+        """Whether much of the page's text layer is glyphs with no Unicode mapping.
+
+        pdfplumber reports such glyphs as "(cid:N)"; the words exist only as
+        pixels, so the page needs OCR like a scanned one.
+        """
+        glyphs = [c["text"] for c in page.chars if c["text"].strip()]
+        unmapped = sum(1 for t in glyphs if t.startswith("(cid:"))
+        return (
+            unmapped >= OCRStrategy.MIN_UNMAPPED_GLYPHS
+            and unmapped >= OCRStrategy.UNMAPPED_GLYPH_SHARE * len(glyphs)
+        )
 
     @staticmethod
     def has_dominant_image_with_limited_text(page) -> bool:
@@ -80,6 +102,7 @@ class OCRStrategy(ABC):
                 (has_minimal_text and has_significant_images)
                 or low_density
                 or has_dominant_image
+                or OCRStrategy.has_unreadable_text(page)
             )
 
         except Exception as e:
@@ -95,7 +118,7 @@ class OCRHandler:
     The handler itself is safe to share across concurrent requests.
     """
 
-    def __init__(self, logger, strategy_type: str, **kwargs) -> None:
+    def __init__(self, logger: logging.Logger, strategy_type: str, **kwargs: object) -> None:
         """
         Initialize OCR handler with specified strategy
 
@@ -118,7 +141,7 @@ class OCRHandler:
             details={"strategy": strategy_type},
         )
 
-    def _create_strategy(self, strategy_type: str, **kwargs) -> OCRStrategy:
+    def _create_strategy(self, strategy_type: str, **kwargs: object) -> OCRStrategy:
         """Factory method to create appropriate OCR strategy"""
         self.logger.debug(f"🏭 Creating OCR strategy: {strategy_type}")
         self._ensure_supported(strategy_type)
@@ -128,9 +151,13 @@ class OCRHandler:
             VLMOCRStrategy,
         )
 
+        config = kwargs.get("config")
+        if config is None:
+            # VLM OCR resolves its model from the org's AI settings; without them it fails mid-document.
+            raise ValueError("VLM OCR needs the configuration service (config=...)")
         return VLMOCRStrategy(
             logger=self.logger,
-            config=kwargs.get("config"),
+            config=cast("ConfigurationService", config),
         )
 
     async def process_document(self, content: bytes) -> Dict[str, Any]:

@@ -26,6 +26,7 @@ are taken out: an API caller has no use for them.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.record_block_selection import (
     API_READ_HINTS,
+    ReadHints,
     estimate_frame_chars,
     estimate_render_chars,
     select_relevant_blocks,
@@ -56,6 +58,8 @@ DEFAULT_READ_CHARS = 40_000
 MIN_READ_CHARS = 2_000
 # The assistant's own ceiling for one fetch.
 MAX_READ_CHARS = FETCH_MAX_CHARS
+# A thread read already shows the replies, so its records do not point to it.
+_THREAD_READ_HINTS = replace(API_READ_HINTS, thread="")
 
 class _LabelMapper(CitationRefMapper):
     """Mints citation refs no document can contain, so the labels the renderer
@@ -122,6 +126,7 @@ def _render(
     start_block: int,
     include_blocks: set[int] | None,
     clipped_note: Callable[[RecordRenderOutcome], str | None] | None = None,
+    hints: ReadHints = API_READ_HINTS,
 ) -> str:
     """The record's text as the caller reads it.
 
@@ -137,7 +142,7 @@ def _render(
         start_block=start_block,
         budget=budget,
         include_blocks=include_blocks,
-        hints=API_READ_HINTS,
+        hints=hints,
     )
     texts = [_strip_labels(item.get("text", "")) for item in content if item.get("type") == "text"]
     note = clipped_note(budget.outcome(_record_key(record))) if clipped_note else None
@@ -385,6 +390,7 @@ async def read_thread(
         clipped_note, clip = _clip(record, offset, max_chars)
         parts.append(_render(
             record, budget, start_block=offset, include_blocks=None, clipped_note=clipped_note,
+            hints=_THREAD_READ_HINTS,
         ))
         outcome = budget.outcome(key)
         resume = None if outcome.complete else outcome.stopped_at_block

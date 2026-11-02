@@ -18,6 +18,9 @@ fields:
       block_groups:
         type: array
         required: true
+      code_facts_version:
+        type: string
+        required: false
   child_record_ids:
     required: false
     type: array
@@ -87,6 +90,11 @@ fields:
     required: false
     type: boolean
   is_vlm_ocr_processed:
+    required: false
+    type: boolean
+  # Created by an API push; written only when true. Indexing never fetches remote
+  # content for such a record.
+  push_origin:
     required: false
     type: boolean
   is_deleted:
@@ -182,6 +190,9 @@ fields:
   source_created_at:
     required: false
     type: integer
+  source_timestamp_origin:
+    required: false
+    type: string
   source_updated_at:
     required: false
     type: integer

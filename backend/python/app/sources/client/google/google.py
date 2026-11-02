@@ -8,9 +8,9 @@ from app.config.configuration_service import ConfigurationService
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
-    AdminDelegationError,
     AdminServiceError,
     GoogleAuthError,
+    ServiceAccountKeyError,
 )
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
@@ -141,6 +141,7 @@ class GoogleClient(IClient):
         user_email: Optional[str] = None, # User email for enterprise impersonation
         connector_instance_id: Optional[str] = None,
         delegated_scopes: list[str] | None = None,
+        api_base_url: str | None = None,
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service
@@ -153,6 +154,8 @@ class GoogleClient(IClient):
             version: Version of the service to build the client for
             delegated_scopes: Exact scopes for the service account's delegated token,
                 replacing the service defaults. Ignored for personal connectors.
+            api_base_url: Send the API and token calls to this origin instead of Google's hosts
+                (a test stack's simulator). None in production.
         Returns:
             GoogleClient instance
         """
@@ -160,6 +163,8 @@ class GoogleClient(IClient):
         config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
         if not config:
             raise ValueError(f"Failed to get Google connector configuration for instance {service_name} {connector_instance_id}")
+        token_uri = f"{api_base_url}/token" if api_base_url else "https://oauth2.googleapis.com/token"
+        client_options = {"api_endpoint": f"{api_base_url}/"} if api_base_url else None
         connector_scope = config.get("auth", {}).get("connectorScope", None)
 
         if is_individual or connector_scope == ConnectorScope.PERSONAL.value:
@@ -213,14 +218,20 @@ class GoogleClient(IClient):
                 google_credentials = Credentials(
                     token=access_token,
                     refresh_token=refresh_token,
-                    token_uri="https://oauth2.googleapis.com/token",
+                    token_uri=token_uri,
                     client_id=client_id,
                     client_secret=client_secret,
                     scopes=credential_scopes,
                 )
 
-                # Create Google Drive service using the credentials
-                client = build(service_name, version, credentials=google_credentials)
+                # Create Google Drive service using the credentials. client_options is set only when a
+                # test origin replaces Google's hosts, so a production call stays the two-argument build.
+                client = build(
+                    service_name,
+                    version,
+                    credentials=google_credentials,
+                    **({"client_options": client_options} if client_options else {}),
+                )
             except Exception as e:
                 raise GoogleAuthError("Failed to get individual token: " + str(e)) from e
         else:
@@ -250,16 +261,18 @@ class GoogleClient(IClient):
                     else GoogleClient._get_optimized_scopes(service_name, scopes)
                 )
 
+                account_info = {**saved_credentials, "token_uri": token_uri} if api_base_url else saved_credentials
                 google_credentials = (
                         service_account.Credentials.from_service_account_info(
-                            saved_credentials,
+                            account_info,
                             scopes=optimized_scopes,
                             # Impersonate the specific user when provided; otherwise default to admin
                             subject=(user_email or admin_email)
                         )
                     )
             except Exception as e:
-                raise AdminDelegationError(
+                # Building credentials makes no request: what fails here is the key itself.
+                raise ServiceAccountKeyError(
                     "Failed to create delegated credentials: " + str(e),
                     details={
                         "service_name": service_name,
@@ -275,6 +288,7 @@ class GoogleClient(IClient):
                     version,
                     credentials=google_credentials,
                     cache_discovery=False,
+                    **({"client_options": client_options} if client_options else {}),
                 )
             except Exception as e:
                 raise AdminServiceError(
@@ -385,7 +399,7 @@ class GoogleClient(IClient):
                 logger.error(
                     f"Invalid serviceAccountJson for connector {connector_instance_id}: {e}"
                 )
-                raise AdminAuthError(
+                raise ServiceAccountKeyError(
                     "Invalid service account JSON",
                     details={
                         "service_name": service_name,

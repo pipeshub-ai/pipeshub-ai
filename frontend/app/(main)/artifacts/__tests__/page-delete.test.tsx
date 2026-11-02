@@ -277,7 +277,7 @@ describe('finding artifacts', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(screen.queryByRole('button', { name: OWNED.name })).toBeNull());
-    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('All Artifacts'));
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('All artifacts'));
   });
 
   it('retries a failed load', async () => {

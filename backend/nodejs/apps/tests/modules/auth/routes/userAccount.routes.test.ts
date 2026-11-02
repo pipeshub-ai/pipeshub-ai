@@ -7,12 +7,19 @@ import { UserAccountController } from '../../../../src/modules/auth/controller/u
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 import { Logger } from '../../../../src/libs/services/logger.service';
+import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
+import { AUTH_APP_CONFIG_RELOADER } from '../../../../src/modules/auth/container/authService.container';
+import {
+  authSessionMiddleware,
+  userValidator,
+} from '../../../../src/modules/auth/middlewares/userAuthentication.middleware';
 
 describe('createUserAccountRouter', () => {
   let container: Container;
   let mockUserAccountController: any;
   let mockAuthMiddleware: any;
   let mockConfig: any;
+  let reloadAppConfig: sinon.SinonStub;
 
   beforeEach(() => {
     container = new Container();
@@ -27,7 +34,6 @@ describe('createUserAccountRouter', () => {
       resetPasswordViaEmailLink: sinon.stub(),
       forgotPasswordEmail: sinon.stub(),
       hasPasswordMethod: sinon.stub(),
-      exchangeOAuthToken: sinon.stub(),
     };
 
     mockAuthMiddleware = {
@@ -53,19 +59,71 @@ describe('createUserAccountRouter', () => {
     container
       .bind<Logger>('Logger')
       .toConstantValue(sinon.createStubInstance(Logger) as unknown as Logger);
+    reloadAppConfig = sinon.stub();
+    container.bind(AUTH_APP_CONFIG_RELOADER).toConstantValue(reloadAppConfig);
   });
 
-  it('should mount one shared auth rate limiter first on credential, OTP and password routes', () => {
+  it('should mount the shared auth rate limiters on credential, OTP and password routes', () => {
     const router = createUserAccountRouter(container);
-    const firstHandler = (path: string) =>
-      (router.stack as any[]).find((layer) => layer.route?.path === path).route.stack[0].handle;
+    const handlers = (path: string): any[] =>
+      (router.stack as any[])
+        .find((layer) => layer.route?.path === path)
+        .route.stack.map((layer: any) => layer.handle);
 
-    const limited = ['/initAuth', '/authenticate', '/login/otp/generate', '/password/reset', '/password/forgot'];
-    const limiter = firstHandler(limited[0]);
-    for (const path of limited) {
-      expect(firstHandler(path), path).to.equal(limiter);
+    // Anonymous routes: per-IP backstop first, then the per-account bucket.
+    const ipLimiter = handlers('/login/otp/generate')[0];
+    const accountLimiter = handlers('/login/otp/generate')[1];
+    expect(accountLimiter).to.not.equal(ipLimiter);
+    expect(handlers('/password/forgot').slice(0, 2)).to.deep.equal([ipLimiter, accountLimiter]);
+    // /authenticate counts after the session lookup, which names the account.
+    expect(handlers('/authenticate').slice(0, 2)).to.deep.equal([ipLimiter, authSessionMiddleware]);
+    expect(handlers('/authenticate')[2]).to.be.a('function');
+    // Signed-in routes count per user, so the limiter runs after userValidator.
+    for (const path of ['/password/reset', '/password/setup/email']) {
+      expect(handlers(path).slice(0, 2), path).to.deep.equal([userValidator, accountLimiter]);
     }
-    expect(firstHandler('/refresh/token')).to.not.equal(limiter);
+    expect(handlers('/refresh/token')).to.not.include(accountLimiter);
+    // Loading the sign-in page calls /initAuth; it has its own bucket.
+    expect(handlers('/initAuth')[0]).to.be.a('function');
+    expect(handlers('/initAuth')).to.not.include(accountLimiter);
+    expect(handlers('/initAuth')).to.not.include(ipLimiter);
+  });
+
+  it('should count password and OTP sign-ins per account but provider sign-ins only per IP', async () => {
+    const router = createUserAccountRouter(container);
+    const limiter = (router.stack as any[]).find((layer) => layer.route?.path === '/authenticate')
+      .route.stack[2].handle;
+    // Resolves with 200 when the limiter lets the request through, else its status.
+    const send = (body: Record<string, unknown>): Promise<number> =>
+      new Promise((resolve) => {
+        const headers: Record<string, unknown> = {};
+        const res: any = {
+          statusCode: 200,
+          setHeader: (k: string, v: unknown) => { headers[k] = v; return res; },
+          getHeader: (k: string) => headers[k],
+          header: (k: string, v: unknown) => { headers[k] = v; return res; },
+          set: (k: string, v: unknown) => { headers[k] = v; return res; },
+          status: (code: number) => { res.statusCode = code; return res; },
+          json: () => { resolve(res.statusCode); return res; },
+          send: () => { resolve(res.statusCode); return res; },
+        };
+        const req: any = {
+          method: 'POST', path: '/authenticate', ip: '10.0.9.1', headers: {},
+          socket: { remoteAddress: '10.0.9.1' }, app: { enabled: () => false }, get: () => undefined,
+          sessionInfo: { email: '' }, body,
+        };
+        limiter(req, res, () => resolve(200));
+      });
+
+    // Google sign-ins name no email; they must not share one bucket per IP.
+    for (let i = 0; i < 11; i++) {
+      expect(await send({ method: 'google', credentials: 'id-token' }), `google ${i + 1}`).to.equal(200);
+    }
+    for (let i = 0; i < 10; i++) {
+      expect(await send({ method: 'password', email: 'ada@example.com' }), `password ${i + 1}`).to.equal(200);
+    }
+    expect(await send({ method: 'password', email: 'ada@example.com' })).to.equal(429);
+    expect(await send({ method: 'password', email: 'grace@example.com' })).to.equal(200);
   });
 
   afterEach(() => {
@@ -220,30 +278,15 @@ describe('createUserAccountRouter', () => {
     expect(checkRoute?.methods.get).to.be.true;
   });
 
-  it('should register POST /oauth/exchange route', () => {
-    const router = createUserAccountRouter(container);
-    const routes = router.stack
-      .filter((layer: any) => layer.route)
-      .map((layer: any) => ({
-        path: layer.route.path,
-        methods: layer.route.methods,
-      }));
-
-    const oauthRoute = routes.find(
-      (r: any) => r.path === '/oauth/exchange',
-    );
-    expect(oauthRoute).to.exist;
-    expect(oauthRoute?.methods.post).to.be.true;
-  });
-
   describe('route count', () => {
     it('should register all expected routes', () => {
       const router = createUserAccountRouter(container);
       const routes = router.stack.filter((layer: any) => layer.route);
 
       // initAuth, authenticate, login/otp/generate, password/reset, refresh/token,
-      // logout/manual, password/reset/token, password/forgot, internal/password/check, oauth/exchange = 10
+      // logout/manual, password/reset/token, password/forgot, internal/password/check, updateAppConfig = 10
       expect(routes.length).to.be.greaterThanOrEqual(10);
+      expect(routes.map((layer: any) => layer.route.path)).to.not.include('/oauth/exchange');
     });
   });
 
@@ -479,25 +522,32 @@ describe('createUserAccountRouter', () => {
       expect(mockUserAccountController.hasPasswordMethod.calledOnce).to.be.true;
     });
 
-    it('POST /oauth/exchange handler should call userAccountController.exchangeOAuthToken', async () => {
+    it('POST /updateAppConfig applies the reloaded settings and answers with a message only', async () => {
+      const reloaded = { jwtSecret: 'new-secret' } as unknown as appConfigModule.AppConfig;
+      sinon.stub(appConfigModule, 'loadAppConfig').resolves(reloaded);
       const router = createUserAccountRouter(container);
-      const handler = findRouteHandler(router, '/oauth/exchange', 'post');
-      expect(handler).to.not.be.undefined;
+      const handler = findRouteHandler(router, '/updateAppConfig', 'post');
 
       const { mockReq, mockRes, mockNext } = createMockReqRes();
       await handler(mockReq, mockRes, mockNext);
 
-      expect(mockUserAccountController.exchangeOAuthToken.calledOnce).to.be.true;
+      expect(reloadAppConfig.calledOnceWithExactly(reloaded)).to.be.true;
+      expect(mockRes.status.calledWith(200)).to.be.true;
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal({
+        message: 'Auth configuration updated successfully',
+      });
+      expect(mockNext.called).to.be.false;
     });
 
-    it('POST /oauth/exchange handler should call next on error', async () => {
-      mockUserAccountController.exchangeOAuthToken.rejects(new Error('Exchange failed'));
+    it('POST /updateAppConfig passes a failed reload to next', async () => {
+      sinon.stub(appConfigModule, 'loadAppConfig').rejects(new Error('store down'));
       const router = createUserAccountRouter(container);
-      const handler = findRouteHandler(router, '/oauth/exchange', 'post');
+      const handler = findRouteHandler(router, '/updateAppConfig', 'post');
 
       const { mockReq, mockRes, mockNext } = createMockReqRes();
       await handler(mockReq, mockRes, mockNext);
 
+      expect(reloadAppConfig.called).to.be.false;
       expect(mockNext.calledOnce).to.be.true;
     });
   });

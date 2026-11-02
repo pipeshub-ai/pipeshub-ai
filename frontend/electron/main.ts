@@ -34,7 +34,8 @@ import {
   parseOAuthDeepLink,
   type OAuthDeepLink,
 } from './deep-link';
-import { isAppUrl, isExternalWebUrl } from './navigation';
+import { classifyWindowOpen, isAppUrl, isExternalWebUrl } from './navigation';
+import { resolveStaticExportPath } from './static-export';
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -173,20 +174,9 @@ function createWindow(): void {
   //   • AuthGuard: redirects to /login if not authenticated
   //   • If already authenticated: renders chat immediately (no round-trip via login)
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const parsed = new URL(url);
-      if (
-        parsed.protocol === 'http:' ||
-        parsed.protocol === 'https:' ||
-        parsed.protocol === 'mailto:' ||
-        parsed.protocol === 'tel:'
-      ) {
-        void shell.openExternal(url);
-        return { action: 'deny' };
-      }
-    } catch {
-      // ignore malformed URLs
-    }
+    const target = classifyWindowOpen(url, SCHEME);
+    if (target === 'in-app') void mainWindow?.loadURL(url);
+    else if (target === 'external') void shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -214,7 +204,7 @@ interface StreamStartPayload {
   url: string;
   method?: string;
   headers?: Record<string, string>;
-  body?: string;
+  body?: string | Uint8Array;
 }
 
 interface ConnectorIdPayload {
@@ -317,19 +307,8 @@ app.whenReady().then(() => {
     const url = new URL(request.url);
     const pathname = decodeURIComponent(url.pathname);
 
-    // Resolve to a file inside the static export directory
-    let filePath = path.join(STATIC_DIR, pathname);
-
-    // An extensionless route resolves to the directory the export wrote it as
-    // (/login -> out/login), whether or not it carries a trailing slash.
-    // Fetching the directory itself fails with ERR_UNEXPECTED, so prefer the
-    // index.html inside it -- this is what a full navigation to a route hits.
-    if (!path.extname(filePath)) {
-      const withIndex = path.join(filePath, 'index.html');
-      if (fs.existsSync(withIndex)) {
-        filePath = withIndex;
-      }
-    }
+    const filePath = resolveStaticExportPath(STATIC_DIR, pathname);
+    if (!filePath) return new Response(null, { status: 404 });
 
     // pathToFileURL, not string concatenation: the install path can contain
     // spaces and a bare drive letter is not a valid file:// host.

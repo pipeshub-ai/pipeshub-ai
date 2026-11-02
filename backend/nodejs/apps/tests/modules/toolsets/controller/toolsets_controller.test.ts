@@ -653,6 +653,15 @@ describe('Toolsets Controller', () => {
       await handler(req, res, next)
       expect(executeStub.firstCall.args[0]).to.include('search=jira')
     })
+
+    it('forwards scope, so the admin catalog can leave personal instances out', async () => {
+      executeStub.resolves({ statusCode: 200, data: [] })
+      const handler = getMyToolsets(createMockAppConfig())
+      const req = createMockRequest({ query: { scope: 'org' } })
+
+      await handler(req, createMockResponse(), createMockNext())
+      expect(executeStub.firstCall.args[0]).to.include('scope=org')
+    })
   })
 
   // -----------------------------------------------------------------------

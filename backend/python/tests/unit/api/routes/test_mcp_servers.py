@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
     get_mcp_dcr_client_path,
+    get_mcp_oauth_state_path,
     get_mcp_step_up_scopes_path,
 )
 from app.agents.mcp import oauth_client as oauth_client_module
@@ -255,6 +256,76 @@ class TestBuildInstanceRecord:
         assert record["args"] == ["-y", "server"]
         assert record["requiredEnv"] == ["API_KEY"]
         assert record["isCustom"] is False
+
+    def test_okta_catalog_stores_the_url_the_admin_typed(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="Okta",
+            type_id="okta",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://acme.okta.com/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-okta", "org-1", "user-1", registry)
+        assert record["url"] == "https://acme.okta.com/mcp"
+        assert record["scopes"] == ["okta.users.read", "okta.groups.read"]
+        assert record["isCustom"] is False
+        assert record["transport"] == "streamable_http"
+        from app.agents.mcp.service import instance_config_from_dict
+
+        assert instance_config_from_dict(record).url == "https://acme.okta.com/mcp"
+
+    def test_okta_catalog_requires_a_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="Okta",
+            type_id="okta",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+        )
+        with pytest.raises(HTTPException) as exc:
+            _validate_instance_config(payload, registry)
+        assert exc.value.status_code == 400
+
+    def test_github_catalog_keeps_its_own_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="GitHub",
+            type_id="github",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://evil.example/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-gh", "org-1", "user-1", registry)
+        assert record["url"] == "https://api.githubcopilot.com/mcp/"
+
+    def test_docusign_catalog_keeps_its_production_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="DocuSign",
+            type_id="docusign",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://mcp-d.docusign.com/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-ds", "org-1", "user-1", registry)
+        assert record["url"] == "https://mcp.docusign.com/mcp"
+        assert "signature" in record["scopes"]
 
     def test_update_preserves_created_by_and_created_at(self) -> None:
         registry = MagicMock()
@@ -692,6 +763,27 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
             patch("app.api.routes.mcp_servers.dcr_module.generate_code_challenge", return_value="challenge-1"),
             patch("app.api.routes.mcp_servers.asyncio.create_task", side_effect=lambda coro: coro.close() or MagicMock()),
         )
+
+    @pytest.mark.asyncio
+    async def test_desktop_marks_url_state_but_stores_record_under_raw_state(self) -> None:
+        existing = {"clientId": "existing-cid", "clientSecret": "existing-secret", "registeredAt": 1}
+        config_service = self._config_service(shared_dcr=existing)
+        discovered = DiscoveredOAuthMetadata(
+            authorization_endpoint="https://auth.example.com/authorize",
+            token_endpoint="https://auth.example.com/token",
+        )
+
+        patches = self._patched(discovered=discovered)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = await _build_oauth_authorization_url(
+                config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", None,
+                initiated_by="user-1", owner_type="user", desktop=True,
+            )
+
+        assert "state=phd.state-1" in result["authorizationUrl"]
+        state_paths = [c.args[0] for c in config_service.create_config_if_absent.await_args_list]
+        assert get_mcp_oauth_state_path("state-1") in state_paths
+        assert get_mcp_oauth_state_path("phd.state-1") not in state_paths
 
     @pytest.mark.asyncio
     async def test_reuses_shared_dcr_client_without_reregistering(self) -> None:

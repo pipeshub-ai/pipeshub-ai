@@ -51,6 +51,16 @@ function listFilesUnderPrefix(files: FileStateMap, prefix: string): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
+/** Folders strictly below `prefix`, parents before children. */
+function listDirsUnderPrefix(files: FileStateMap, prefix: string): string[] {
+  const normalizedPrefix = String(prefix || '').replace(/\/+$/, '');
+  if (!normalizedPrefix) return [];
+  const childPrefix = `${normalizedPrefix}/`;
+  return Object.keys(files)
+    .filter((relPath) => files[relPath]?.isDirectory && relPath.startsWith(childPrefix))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 /**
  * Best-effort fresh hash for a file expanded out of a directory move: right
  * after a live `DIR_RENAMED`/`DIR_MOVED` the file genuinely exists at its new
@@ -84,6 +94,9 @@ export async function expandWatchEventsForReplay(
     if (!event.isDirectory) { expanded.push(event); continue; }
     expanded.push(event);
     if (event.type === 'DIR_DELETED') {
+      for (const relPath of listDirsUnderPrefix(files, event.path)) {
+        expanded.push({ type: 'DIR_DELETED', path: relPath, timestamp: event.timestamp, isDirectory: true });
+      }
       for (const relPath of listFilesUnderPrefix(files, event.path)) {
         expanded.push({ type: 'DELETED', path: relPath, timestamp: event.timestamp, isDirectory: false });
       }
@@ -92,6 +105,21 @@ export async function expandWatchEventsForReplay(
     if (event.type === 'DIR_MOVED' || event.type === 'DIR_RENAMED') {
       const oldPrefix = String(event.oldPath || '').replace(/\/+$/, '');
       if (!oldPrefix) continue;
+      // Subfolders move with it. Their own raw events are dropped as already
+      // reported by the move ledger, so leaving them out here would strand
+      // every subfolder record at the old path.
+      for (const oldRelPath of listDirsUnderPrefix(files, oldPrefix)) {
+        const suffix = oldRelPath.slice(oldPrefix.length).replace(/^\/+/, '');
+        expanded.push({
+          type: event.type,
+          path: [event.path, suffix].filter(Boolean).join('/'),
+          oldPath: oldRelPath,
+          timestamp: event.timestamp,
+          isDirectory: true,
+          mtimeMs: files[oldRelPath]?.mtimeMs,
+          birthtimeMs: files[oldRelPath]?.birthtimeMs,
+        });
+      }
       for (const oldRelPath of listFilesUnderPrefix(files, oldPrefix)) {
         const suffix = oldRelPath.slice(oldPrefix.length).replace(/^\/+/, '');
         const newRelPath = [event.path, suffix].filter(Boolean).join('/');

@@ -173,6 +173,7 @@ describe('what this module writes reaches the client', () => {
   for (const message of [
     'The search index took too long to respond, so no results are shown. Please try again in a minute.',
     "We couldn't reach the search index just now, so no results are shown. Please try again in a minute.",
+    'This search took too long, so it was stopped and no results are shown. Try again, or narrow it with filters or a shorter date range.',
   ]) {
     it(`passes search's sentence for a vector store that did not answer: ${message}`, () => {
       // Search sends it as `message` in its own body, not as `detail`.

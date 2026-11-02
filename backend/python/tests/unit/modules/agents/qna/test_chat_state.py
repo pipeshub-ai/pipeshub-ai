@@ -56,6 +56,18 @@ def minimal_user_info():
 # ===================================================================
 class TestBuildInitialState:
     @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "artifact_owner_user_id": "u-caller"}, "u-caller"),
+        ({"query": "q", "artifact_owner_user_id": None}, "user-1"),
+        ({"query": "q"}, "user-1"),
+    ], ids=["set", "none", "absent"])
+    def test_artifacts_belong_to_the_run_user_unless_an_owner_is_set(
+        self, mock_deps, minimal_user_info, chat_query, expected,
+    ) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["artifact_owner_user_id"] == expected
+        assert state["user_id"] == "user-1"
+
+    @pytest.mark.parametrize(("chat_query", "expected"), [
         ({"query": "q", "keywordSearchBudget": "short"}, "short"),
         ({"query": "q", "keyword_search_budget": "full"}, "full"),
         ({"query": "q"}, None),

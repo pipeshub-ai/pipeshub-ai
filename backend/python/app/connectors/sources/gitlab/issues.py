@@ -28,7 +28,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.base.sync_point.sync_point import FailedItems
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.models.entities import Record, RecordGroupType, RecordType, TicketRecord, ItemType
+from app.models.entities import Record, RecordGroupType, RecordType, Status, TicketRecord, ItemType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.blocks import (
     BlockGroup,
@@ -48,6 +48,8 @@ from .models import GitlabLiterals, RecordUpdate
 # Guests, so they cannot share a record group with the ordinary ones.
 _WORK_ITEMS_SUFFIX = "-work-items"
 _CONFIDENTIAL_SUFFIX = "-confidential-work-items"
+# GitLab's issue.state words. Any other state is kept as GitLab spells it.
+_ISSUE_STATUS = {"opened": Status.OPEN, "closed": Status.CLOSED}
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -79,25 +81,20 @@ class IssuesSync:
         updated_before = filter_before
         created_after, created_before = c.datetime_range_from_sync_filter("created")
 
-        issues_res = await c.runtime.ds_call(
+        issues_res = await c.listing.list(
             c.data_source.list_issues,
             project_id=project_id,
             updated_after=since_dt,
             updated_before=updated_before,
             created_after=created_after,
             created_before=created_before,
-            order_by=GitlabLiterals.UPDATED_AT.value,
-            sort="asc",
-            get_all=True,
         )
         if not issues_res.success:
             self.logger.error("Error fetching issues for project %s: %s", project_id, issues_res.error)
-            return
-        if not issues_res.data:
-            self.logger.debug("No issues found for project %s", project_id)
+            c.note_failed_read(f"issues of project {project_id}", issues_res)
             return
 
-        all_issues = issues_res.data
+        all_issues = issues_res.data or []
         self.logger.info("Fetched %s issues for project %s; processing in batches", len(all_issues), project_id)
 
         # The sweep owns checkpoint advancement. The listing is sorted
@@ -114,6 +111,7 @@ class IssuesSync:
                     "checkpoint stays behind the failure instead of skipping past it.",
                     project_id, i,
                 )
+                c.note_sync_problem(f"issues of project {project_id}: a batch could not be stored")
                 return
         if failed.count:
             self.logger.warning(
@@ -121,8 +119,14 @@ class IssuesSync:
                 "before the earliest one so the next sync retries them.",
                 failed.count, project_id,
             )
+            c.note_sync_problem(f"{failed.count} issue(s) of project {project_id} could not be synced")
         for group_id, last_sync_time in watermarks.items():
             await self._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
+        await c.deleted_issues.reconcile(
+            project_id, listed=all_issues,
+            listed_everything=since_dt is None and updated_before is None,
+            created_after=created_after, created_before=created_before,
+        )
 
     # ------------------------------------------------------------------
     # Record building
@@ -237,7 +241,7 @@ class IssuesSync:
                 record_group_type=RecordGroupType.PROJECT.value,
                 mime_type=MimeTypes.BLOCKS.value,
                 weburl=issue.web_url,
-                status=issue.state,
+                status=_ISSUE_STATUS.get(issue.state, issue.state),
                 external_revision_id=str(parse_timestamp(issue.updated_at)),
                 preview_renderable=False,
                 type=issue_type,
@@ -287,12 +291,12 @@ class IssuesSync:
         c = self.c
         candidates: list[int] = []
         author = getattr(issue, "author", None) or {}
-        if isinstance(author, dict) and author.get("id") is not None:
-            candidates.append(int(author["id"]))
+        people = [author, *(getattr(issue, "assignees", None) or [])]
+        # A blocked or banned author or assignee reads nothing on GitLab.
         candidates.extend(
-            int(assignee["id"])
-            for assignee in getattr(issue, "assignees", None) or []
-            if isinstance(assignee, dict) and assignee.get("id") is not None
+            int(person["id"]) for person in people
+            if isinstance(person, dict) and person.get("id") is not None
+            and (person.get("state") or "active") == "active"
         )
 
         permissions: list[Permission] = []

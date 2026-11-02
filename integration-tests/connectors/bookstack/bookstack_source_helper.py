@@ -98,6 +98,12 @@ class BookStackSourceHelper:
     def rename_page(self, page_id: int, name: str) -> None:
         self._api("PUT", f"pages/{page_id}", name=name)
 
+    def move_page(self, page_id: int, chapter_id: int) -> None:
+        self._api("PUT", f"pages/{page_id}", chapter_id=chapter_id)
+
+    def rename_chapter(self, chapter_id: int, name: str) -> None:
+        self._api("PUT", f"chapters/{chapter_id}", name=name)
+
     def delete_page(self, page_id: int) -> None:
         self._api("DELETE", f"pages/{page_id}")
 

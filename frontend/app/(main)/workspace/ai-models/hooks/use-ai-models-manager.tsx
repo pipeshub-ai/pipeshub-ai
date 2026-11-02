@@ -12,6 +12,8 @@ import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import type { MainSection } from '../store';
 import { ModelConfigDialog, type ModelConfigSaveResult } from '../components/model-config-dialog';
 import { RotateCredentialsDialog } from '../components/rotate-credentials-dialog';
+import { IdentityForwardingDialog } from '../components/identity-forwarding-dialog';
+import { IdentityPolicyDialog } from '../components/identity-policy-dialog';
 
 interface UseAiModelsManagerOptions {
   enabled?: boolean;
@@ -60,6 +62,8 @@ export function useAiModelsManager({
   } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<ConfiguredModel | null>(null);
+  const [identityTarget, setIdentityTarget] = useState<ConfiguredModel | null>(null);
+  const [identityPolicyOpen, setIdentityPolicyOpen] = useState(false);
 
   const loadProviders = useCallback(async () => {
     setLoadingProviders(true);
@@ -206,6 +210,12 @@ export function useAiModelsManager({
         onClose={() => setRotateTarget(null)}
         onSaved={() => { void loadModels(); }}
       />
+      <IdentityForwardingDialog
+        model={identityTarget}
+        onClose={() => setIdentityTarget(null)}
+        onSaved={() => { void loadModels(); }}
+      />
+      <IdentityPolicyDialog open={identityPolicyOpen} onClose={() => setIdentityPolicyOpen(false)} />
     </>
   );
 
@@ -228,6 +238,8 @@ export function useAiModelsManager({
     openEdit,
     openDelete,
     openRotate: setRotateTarget,
+    openIdentityForwarding: setIdentityTarget,
+    openIdentityPolicy: () => setIdentityPolicyOpen(true),
     handleSetDefault,
     dialogs,
   };

@@ -44,6 +44,7 @@ import {
   useWorkspaceRightPanelBodyRefresh,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 export interface UserToolsetConfigDialogProps {
   toolset: BuilderSidebarToolset;
@@ -264,7 +265,7 @@ export function UserToolsetConfigDialog({
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
           instanceId,
-          typeof window !== 'undefined' ? window.location.origin : undefined
+          browserOAuthBaseUrl()
         );
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));

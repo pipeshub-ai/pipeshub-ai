@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Tuple
 import markdown as markdown_lib
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.parsing.interface import ParseResult
+from docling.datamodel.base_models import InputFormat
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
@@ -50,7 +51,7 @@ class DoclingMarkdownParser:
         logger: logging.Logger | None = None,
         config_service: object | None = None,
     ) -> None:
-        self.converter = DocumentConverter()
+        self.converter = DocumentConverter(allowed_formats=[InputFormat.MD])
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
 
@@ -72,7 +73,9 @@ class DoclingMarkdownParser:
 
         # Convert URLs to base64 if there are any images
         if urls_to_convert:
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
 
             # Create caption map with base64 URLs
             for i, image in enumerate(images):

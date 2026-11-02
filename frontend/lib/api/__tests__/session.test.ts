@@ -57,6 +57,12 @@ function fakeServer(...replies: Array<FakeReply | Error>) {
   return sent;
 }
 
+/** An unsigned JWT for `userId` in org `o1`. */
+function tokenFor(userId: string, secondsFromNow = 3600): string {
+  const claims = { exp: Math.floor(Date.now() / 1000) + secondsFromNow, userId, orgId: 'o1' };
+  return `header.${btoa(JSON.stringify(claims)).replace(/=+$/, '')}.signature`;
+}
+
 const bearer = (config: InternalAxiosRequestConfig) => AxiosHeaders.from(config.headers).get('Authorization');
 const errorToasts = () => useToastStore.getState().toasts.filter((t) => t.variant === 'error');
 const fetchMock = vi.fn<typeof fetch>();
@@ -246,7 +252,7 @@ describe('error toasts', () => {
       requestId: 'req-42',
     });
     expect(errorToasts().map((t) => [t.title, t.description])).toEqual([
-      ['Server Error', 'The export could not be created. Try again in a minute. Reference: req-42'],
+      ['Server error', 'The export could not be created. Try again in a minute. Reference: req-42'],
     ]);
   });
 
@@ -273,7 +279,7 @@ describe('error toasts', () => {
   it('says to check the connection when the request never reached the server', async () => {
     fakeServer(new Error('Network Error'));
     await expect(apiClient.get('/x')).rejects.toMatchObject({ type: ErrorType.NETWORK_ERROR });
-    expect(errorToasts()[0].title).toBe('Connection Error');
+    expect(errorToasts()[0].title).toBe('Connection error');
   });
 
   it('stays quiet for a cancelled request', async () => {
@@ -289,7 +295,7 @@ describe('error toasts', () => {
     await expect(apiClient.get('/b', { suppressErrorToast: onlyNotFound })).rejects.toBeDefined();
     expect(errorToasts()).toHaveLength(0);
     await expect(apiClient.get('/c', { suppressErrorToast: onlyNotFound })).rejects.toMatchObject({ type: ErrorType.CONFLICT });
-    expect(errorToasts().map((t) => t.title)).toEqual(['Action Required']);
+    expect(errorToasts().map((t) => t.title)).toEqual(['Action required']);
   });
 
   it('reads the error out of a Blob body from a download request', async () => {
@@ -356,6 +362,26 @@ describe('the proactive refresh timer', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: fromOtherTab }));
       expect(useAuthStore.getState().accessToken).toBe(fromOtherTab);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('starts over on a fresh chat page when another tab signs in as someone else', () => {
+      const originalLocation = window.location;
+      const assign = vi.fn();
+      Object.defineProperty(window, 'location', { value: { assign }, configurable: true });
+      try {
+        useAuthStore.setState({ accessToken: tokenFor('user-a') });
+
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+        expect(assign).not.toHaveBeenCalled();
+
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+        // A page load drops every cache and store of the previous account, and the
+        // chat it had open, which belongs to that account.
+        expect(assign).toHaveBeenCalledWith('/chat/');
+        expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+      } finally {
+        Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+      }
     });
 
     it('signs out here when another tab signs out', () => {

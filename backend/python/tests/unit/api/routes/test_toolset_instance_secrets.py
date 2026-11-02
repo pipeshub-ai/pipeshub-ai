@@ -4,6 +4,8 @@ or be saved as a new one."""
 
 from __future__ import annotations
 
+import json
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -206,3 +208,146 @@ class TestWithTheRealEditionMasker:
         )
 
         assert merged == {"clientSecret": SECRET}
+
+
+def _request(body: dict | None = None) -> MagicMock:
+    request = MagicMock()
+    request.state.user = {"userId": "u1", "orgId": "o1"}
+    request.query_params.getlist.return_value = []
+    request.body = AsyncMock(return_value=json.dumps(body or {}).encode())
+    request.app.state.toolset_registry.get_toolset_metadata.return_value = {
+        "supported_auth_types": ["OAUTH", "API_TOKEN"], "tools": [],
+    }
+    return request
+
+
+def _config_service() -> MagicMock:
+    config_service = MagicMock()
+    config_service.get_config = AsyncMock(return_value=[])
+    config_service.set_config = AsyncMock()
+    return config_service
+
+
+def _stored(config_service: MagicMock) -> str:
+    """Everything the handler wrote to the config store."""
+    return str([c.args for c in config_service.set_config.call_args_list])
+
+
+class TestGetInstance:
+    async def _get(self, toolsets: ModuleType, *, is_admin: bool) -> dict:
+        instance = {"_id": "i1", "orgId": "o1", "instanceName": "n", "toolsetType": "jiradatacenter",
+                    "authType": "API_TOKEN", "auth": {"baseUrl": "https://jira.example.com", "apiKey": SECRET}}
+        with patch.object(toolsets, "_load_toolset_instances", new=AsyncMock(return_value=[instance])), \
+             patch.object(toolsets, "_check_user_is_admin", new=AsyncMock(return_value=is_admin)):
+            result = await toolsets.get_toolset_instance("i1", _request(), config_service=_config_service())
+        return result["instance"]
+
+    async def test_member_gets_no_inline_auth(self, toolsets: ModuleType) -> None:
+        instance = await self._get(toolsets, is_admin=False)
+
+        assert "auth" not in instance
+        assert SECRET not in str(instance)
+
+    async def test_admin_gets_the_token_masked(self, toolsets: ModuleType) -> None:
+        instance = await self._get(toolsets, is_admin=True)
+
+        assert instance["auth"] == {"baseUrl": "https://jira.example.com", "apiKey": MASK}
+
+
+class TestCreateNeverStoresAnOAuthSecretInline:
+    """An OAuth client secret belongs in its OAuth app, never in the shared instance list."""
+
+    async def _create(
+        self, toolsets: ModuleType, body: dict, config_service: MagicMock, *, oauth_save: AsyncMock | None = None,
+    ) -> dict:
+        save = nullcontext() if oauth_save is None else patch.object(
+            toolsets, "_create_or_update_toolset_oauth_config", new=oauth_save
+        )
+        with patch.object(toolsets, "_check_user_is_admin", new=AsyncMock(return_value=True)), \
+             patch.object(toolsets, "_load_instances_for_mutation", new=AsyncMock(return_value=[])), save:
+            return await toolsets.create_toolset_instance(_request(body), config_service=config_service)
+
+    @pytest.mark.parametrize("body", [
+        {"authConfig": {"clientId": "cid", "clientSecret": SECRET}},
+        {"clientId": "cid", "clientSecret": SECRET},
+    ])
+    async def test_failed_oauth_app_save_refuses_and_stores_nothing(self, toolsets: ModuleType, body: dict) -> None:
+        config_service = _config_service()
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(
+                toolsets,
+                {"instanceName": "Jira", "toolsetType": "jira", "authType": "OAUTH", "baseUrl": "https://app.example.com", **body},
+                config_service, oauth_save=AsyncMock(return_value=None),
+            )
+
+        assert exc.value.status_code == 500
+        config_service.set_config.assert_not_called()
+
+    async def test_unexpected_error_while_saving_the_app_refuses(self, toolsets: ModuleType) -> None:
+        """The real save helper turns an unexpected error (here a non-string tenantId) into None."""
+        config_service = _config_service()
+        body = {"instanceName": "Outlook", "toolsetType": "outlook", "authType": "OAUTH", "baseUrl": "https://app.example.com",
+                "authConfig": {"clientId": "cid", "clientSecret": SECRET, "tenantId": 42}}
+
+        with pytest.raises(HTTPException) as exc, \
+             patch.object(toolsets, "_get_oauth_config_from_registry", return_value=MagicMock(redirect_uri="")):
+            await self._create(toolsets, body, config_service)
+
+        assert exc.value.status_code == 500
+        assert SECRET not in _stored(config_service)
+
+    async def test_saved_oauth_app_is_linked_not_copied(self, toolsets: ModuleType) -> None:
+        config_service = _config_service()
+        result = await self._create(
+            toolsets,
+            {"instanceName": "Jira", "toolsetType": "jira", "authType": "OAUTH", "baseUrl": "https://app.example.com",
+             "authConfig": {"clientId": "cid", "clientSecret": SECRET}},
+            config_service, oauth_save=AsyncMock(return_value="cfg-1"),
+        )
+
+        saved = config_service.set_config.call_args.args[1][0]
+        assert saved["oauthConfigId"] == "cfg-1"
+        assert "auth" not in saved
+        assert SECRET not in str(result)
+
+    async def test_oauth_instance_without_credentials_has_no_inline_auth(self, toolsets: ModuleType) -> None:
+        oauth_save, config_service = AsyncMock(), _config_service()
+        await self._create(
+            toolsets,
+            {"instanceName": "Jira", "toolsetType": "jira", "authType": "OAUTH", "baseUrl": "https://app.example.com"},
+            config_service, oauth_save=oauth_save,
+        )
+
+        oauth_save.assert_not_called()
+        assert "auth" not in config_service.set_config.call_args.args[1][0]
+
+    async def test_non_oauth_instance_still_keeps_its_settings(self, toolsets: ModuleType) -> None:
+        config_service = _config_service()
+        await self._create(
+            toolsets,
+            {"instanceName": "Jira DC", "toolsetType": "jiradatacenter", "authType": "API_TOKEN",
+             "authConfig": {"baseUrl": "https://jira.example.com"}},
+            config_service, oauth_save=AsyncMock(),
+        )
+
+        assert config_service.set_config.call_args.args[1][0]["auth"] == {"baseUrl": "https://jira.example.com"}
+
+
+class TestUpdateOAuthAppSaveFailure:
+    async def test_failed_save_refuses_and_leaves_the_instance_alone(self, toolsets: ModuleType) -> None:
+        instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Jira", "toolsetType": "jira",
+                      "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
+        config_service = _config_service()
+
+        with pytest.raises(HTTPException) as exc:
+            with patch.object(toolsets, "_check_user_is_admin", new=AsyncMock(return_value=True)), \
+                 patch.object(toolsets, "_load_instances_for_mutation", new=AsyncMock(return_value=instances)), \
+                 patch.object(toolsets, "_create_or_update_toolset_oauth_config", new=AsyncMock(return_value=None)):
+                await toolsets.update_toolset_instance(
+                    "i1", _request({"baseUrl": "https://app.example.com", "authConfig": {"clientId": "cid", "clientSecret": SECRET}}),
+                    config_service=config_service,
+                )
+
+        assert exc.value.status_code == 500
+        config_service.set_config.assert_not_called()

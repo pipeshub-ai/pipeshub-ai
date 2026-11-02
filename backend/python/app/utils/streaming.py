@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import random
 import re
 from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import (
@@ -21,29 +20,35 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.agent_loop_lib.transport.provider_conflicts import (
-    is_prompt_cache_param_conflict,
+    refused_cache_params,
 )
 from app.agents.agent_loop.prompt_cache import (
     CacheStrategy,
+    NoCacheStrategy,
     forget_cache_params,
     without_cache_markers,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.error.stream_errors import map_source_status
+from app.connectors.core.base.error.stream_errors import (
+    map_source_status,
+    not_downloadable,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.citations import (
     detect_hallucinated_citation_urls,
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,  # noqa: F401  # tests patch this module attribute
 )
-from app.utils.concurrency import indexing_llm_slot, note_indexing_llm_rate_limit
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
+from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.opik import get_llm_invoke_config, get_opik_tracer
+from app.utils.url_fetcher import private_addresses_blocked
+from app.utils.url_redaction import redact_urls_in_text
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -58,61 +63,32 @@ TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 MAX_TOOL_HOPS = 6
-MAX_RATE_LIMIT_RETRIES = 3
-_RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "too many requests", "quota exceeded")
-
-
-def _is_rate_limit_error(exc: Exception) -> bool:
-    if getattr(exc, "status_code", None) == HttpStatusCode.TOO_MANY_REQUESTS.value:
-        return True
-    message = str(exc).lower()
-    return any(marker in message for marker in _RATE_LIMIT_MARKERS)
 
 
 async def _ainvoke_throttled(
-    llm: BaseChatModel,
+    runnable: Invocable,
     messages: list[Any],
     config: dict | None = None,
     *,
+    provider: str | None = None,
     call_timeout: float | None = None,
     call_kwargs: Mapping[str, Any] | None = None,
 ) -> Any:  # noqa: ANN401
-    """Invoke *llm*, holding a slot in the process-wide indexing budget.
+    """Invoke through the indexing LLM gateway: its process-wide cap, the provider's breaker, a
+    ceiling on hangs and jittered 429 retries outside the permit.
 
-    Retries rate-limit errors with jittered backoff. The jitter matters more than the
-    retry: LangChain's own ``max_retries`` has none, so concurrent row batches that get
-    429ed all retry in lockstep.
-
-    ``call_timeout`` bounds each provider call once the slot is held; waiting
-    for the slot is backpressure, not a hung call, so it is never timed. A
-    timeout is raised, not retried.
+    ``provider`` names the base model (a structured-output wrapper hides it); it defaults to
+    ``runnable``'s own. ``call_timeout`` bounds each provider call once the permit is held;
+    waiting for the permit is backpressure, not a hung call, so it is never timed. A timeout
+    is raised as ``TimeoutError``, not retried.
     """
-    delay = 0.0
-    for attempt in range(MAX_RATE_LIMIT_RETRIES):
-        async with indexing_llm_slot():
-            try:
-                kwargs = dict(call_kwargs or {})
-                if config:
-                    kwargs["config"] = config
-                call = llm.ainvoke(messages, **kwargs)
-                result = await (
-                    asyncio.wait_for(call, timeout=call_timeout) if call_timeout else call
-                )
-                note_llm_call()
-                return result
-            except Exception as e:
-                if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES - 1:
-                    raise
-                note_rate_limit_retry()
-                note_indexing_llm_rate_limit()
-                delay = 2 ** attempt + random.uniform(0, 1)
-        logger.warning(
-            f"Rate limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
-            f"retrying in {delay:.1f}s"
-        )
-        # Sleep outside the slot so a backing-off call does not occupy the budget.
-        await asyncio.sleep(delay)
-    return None
+    kwargs = dict(call_kwargs or {})
+    if config:
+        kwargs["config"] = config
+    return await get_llm_gateway().invoke(
+        runnable, messages, provider=provider or provider_key(runnable), timeout=call_timeout, **kwargs
+    )
+
 
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
@@ -188,15 +164,19 @@ async def stream_content(
     log_parts.append(f"File path: {file_path_info}")
     log_prefix = " | ".join(log_parts)
 
-    # Log truncated presigned URL for debugging (first 150 chars to see structure)
-    logger.debug(f"Fetching presigned URL (truncated): {signed_url[:150]}...")
+    # Never the query: it carries the signature.
+    logger.debug(f"Fetching presigned URL: {file_path_info}")
 
     try:
         # Use a timeout to prevent hanging requests
-        timeout = aiohttp.ClientTimeout(total=300, connect=10)
+        # No total limit: it would cut off a large file that is still downloading.
+        timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
 
-        # Create session - AWS presigned URLs must be used exactly as generated
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # The URL comes from the source, whose address a user chose: it gets the deployment's
+        # rule for such hosts. Presigned URLs must be used exactly as generated.
+        from app.connectors.sources.web.address_guard import create_guarded_session
+
+        async with create_guarded_session(allow_private=not private_addresses_blocked(), timeout=timeout) as session:
             # Make request - presigned URLs include all necessary authentication in the URL itself
             # We don't modify headers to avoid breaking the signature
             async with session.get(
@@ -209,8 +189,8 @@ async def stream_content(
                     try:
                         error_body = await response.text()
                         if error_body:
-                            # Truncate long error messages
-                            error_details = f" | Error details: {error_body[:500]}"
+                            # A source may echo the presigned URL, whose query is a credential.
+                            error_details = f" | Error details: {redact_urls_in_text(error_body)[:500]}"
                     except Exception:
                         pass
 
@@ -236,6 +216,12 @@ async def stream_content(
                         logger.error(
                             f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
                         )
+                    if response.headers.get("x-ms-error-code") == "BlobArchived":
+                        raise not_downloadable(
+                            "This file is in the Archive tier in Azure. Rehydrate it to the Hot or "
+                            "Cool tier to read it.",
+                            connector=connector,
+                        )
                     # error_details stays in the log: it can contain presigned
                     # URL internals and bucket names.
                     raise map_source_status(
@@ -254,7 +240,8 @@ async def stream_content(
         ) from e
     except aiohttp.ClientError as e:
         logger.error(
-            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
+            # Only the type: the message of a redirect or URL error holds the whole signed URL.
+            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {type(e).__name__} | {log_prefix}"
         )
         raise map_source_status(
             HttpStatusCode.BAD_GATEWAY.value, connector=connector
@@ -1153,10 +1140,14 @@ async def invoke_with_structured_output_and_reflection(
     call_timeout: float | None = None,
     raise_call_errors: bool = False,
     prompt_cache: CacheStrategy | None = None,
-    on_cache_rejected: Callable[[], None] | None = None,
+    on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
+    raise_unavailable: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
+
+    With ``raise_unavailable`` a provider outage raises ``LLMUnavailableError`` instead of
+    returning None, for callers that must tell an outage from output they cannot use.
 
     Args:
         llm: The LangChain chat model to use
@@ -1175,59 +1166,58 @@ async def invoke_with_structured_output_and_reflection(
         prompt_cache: The cache strategy ``messages`` were built with (its
             ``system`` block); its ``finalize`` is applied here. If the provider
             refuses a cache parameter or marker, that call (the first or a
-            reflection) is resent without any of them, in the kwargs or on the
-            messages, and so is every later call: the cache is off for this
-            model, as ``LangChainTransport`` falls back to no strategy.
-        on_cache_rejected: Called once when the provider refuses a cache
-            parameter. Pass the callback that records the refusal under the
-            identity the cache strategy was chosen with; by default it is
-            recorded for ``llm`` with no model name.
+            reflection) is resent without the ones the error names, in the
+            kwargs or on the messages, and so is every later call, as
+            ``LangChainTransport`` narrows its strategy.
+        on_cache_rejected: Called with the refused names each time the
+            provider refuses some. Pass the callback that records them under
+            the identity the cache strategy was chosen with; by default they
+            are recorded for ``llm`` with no model name.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    provider = provider_key(llm)
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
     invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
-    kwargs: dict[str, Any] = {}
-    cache_params: frozenset[str] = frozenset()
-    if prompt_cache is not None:
-        messages, kwargs = prompt_cache.finalize(list(messages))
-        cache_params = prompt_cache.sent_params | frozenset(kwargs)
-    refused = False
+    cache = prompt_cache or NoCacheStrategy()
+    messages, kwargs = cache.finalize(list(messages))
+    sent = cache.sent_params | frozenset(kwargs)
+    dropped: frozenset[str] = frozenset()
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
-        nonlocal refused
-        if refused:
-            return await _ainvoke_throttled(
-                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
-                call_timeout=call_timeout,
-            )
-        try:
-            return await _ainvoke_throttled(
-                llm_with_structured_output, request, config=invoke_config,
-                call_timeout=call_timeout, call_kwargs=kwargs,
-            )
-        except Exception as exc:
-            if not is_prompt_cache_param_conflict(exc, cache_params):
-                raise
-            logger.warning("Prompt-cache parameters rejected; resending without them: %s", exc)
-            if on_cache_rejected is not None:
-                on_cache_rejected()
-            else:
-                forget_cache_params(llm)
-            refused = True
-            return await _ainvoke_throttled(
-                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
-                call_timeout=call_timeout,
-            )
+        nonlocal cache, dropped
+        # Each refusal names a parameter this request still carries, and the
+        # resend drops it, so the loop ends.
+        while True:
+            try:
+                return await _ainvoke_throttled(
+                    llm_with_structured_output, without_cache_markers(request, dropped) if dropped else request,
+                    config=invoke_config, provider=provider, call_timeout=call_timeout,
+                    call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
+                )
+            except Exception as exc:
+                refused = refused_cache_params(exc, sent - dropped)
+                if not refused:
+                    raise
+                logger.warning("Prompt-cache parameters %s rejected; resending without them: %s", sorted(refused), exc)
+                if on_cache_rejected is not None:
+                    on_cache_rejected(refused)
+                else:
+                    forget_cache_params(llm, params=refused)
+                # The strategy decides what goes with them: Anthropic's and Bedrock's markers stand or fall together.
+                cache = cache.without(refused)
+                dropped = sent - cache.sent_params
 
     try:
         response = await _call(messages)
     except NonRetryableError:
         raise
     except Exception as e:
+        if raise_unavailable and isinstance(e, LLMUnavailableError):
+            raise
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
@@ -1334,6 +1324,8 @@ Respond only with valid JSON that matches the schema."""
             except NonRetryableError:
                 raise
             except Exception as reflection_error:
+                if raise_unavailable and isinstance(reflection_error, LLMUnavailableError):
+                    raise
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
                     logger.info(

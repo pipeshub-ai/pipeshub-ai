@@ -28,6 +28,8 @@ import time
 import traceback
 from typing import TYPE_CHECKING, Any
 
+from app.core.org_context import spawn_detached
+
 if TYPE_CHECKING:
     import logging
     from collections.abc import Callable
@@ -101,11 +103,10 @@ class LoopLagMonitor:
 
     def start(self) -> asyncio.Task[None]:
         """Start on the running loop; call from that loop (e.g. ``call_soon``)."""
-        loop = asyncio.get_running_loop()
         self._loop_thread_id = threading.get_ident()
         self._stop.clear()
         self._last_tick = self._clock()
-        self._task = loop.create_task(self._run(), name=f"loop-lag-monitor:{self.name}")
+        self._task = spawn_detached(self._run(), name=f"loop-lag-monitor:{self.name}")
         if self.stack_after is not None and self.stack_after > 0:
             self._watchdog = threading.Thread(
                 target=self._watch,

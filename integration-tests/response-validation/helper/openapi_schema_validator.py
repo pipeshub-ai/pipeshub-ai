@@ -36,14 +36,18 @@ _OPENAPI_PATH = (
 SPEC_URI = "urn:pipeshub:openapi"
 
 
-def _strip_nonvalidation_keys(obj: Any) -> Any:
-    """Remove OpenAPI-only keys that confuse strict validators."""
+def _strip_nonvalidation_keys(obj: Any, *, under_properties: bool = False) -> Any:
+    """Remove OpenAPI-only keys that confuse strict validators.
+
+    Keys directly under ``properties`` are field names, not keywords, so a field called
+    ``examples`` keeps its schema.
+    """
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
-            if k in ("example", "examples", "discriminator", "xml", "externalDocs"):
+            if not under_properties and k in ("example", "examples", "discriminator", "xml", "externalDocs"):
                 continue
-            out[k] = _strip_nonvalidation_keys(v)
+            out[k] = _strip_nonvalidation_keys(v, under_properties=k == "properties" and not under_properties)
         return out
     if isinstance(obj, list):
         return [_strip_nonvalidation_keys(i) for i in obj]
@@ -159,9 +163,14 @@ def operation_response_json_pointer(operation_id: str, status_code: str) -> str:
                 raise KeyError(
                     f"No response {want_status} for operationId={operation_id!r}"
                 )
-            content = (responses[want_status].get("content") or {}).get(
-                "application/json"
-            ) or {}
+            response = responses[want_status]
+            ref = response.get("$ref") if isinstance(response, dict) else None
+            if isinstance(ref, str) and ref.startswith("#/components/responses/"):
+                # A shared response (XssRejected, InsufficientScope, ...) keeps its schema there.
+                name = ref.rsplit("/", 1)[-1]
+                response = (doc.get("components") or {}).get("responses", {}).get(name) or {}
+                ptr = f"{ref}/content/application~1json/schema"
+            content = (response.get("content") or {}).get("application/json") or {}
             if content.get("schema") is None:
                 raise KeyError(
                     f"No application/json schema for operationId={operation_id!r} "

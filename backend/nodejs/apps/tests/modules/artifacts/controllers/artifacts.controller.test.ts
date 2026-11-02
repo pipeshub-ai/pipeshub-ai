@@ -101,13 +101,27 @@ describe('Artifacts Controller', () => {
                 conversationId: '507f1f77bcf86cd799439013',
               },
               { artifactId: 'art-2' },
+              {
+                artifactId: 'art-3',
+                conversationId: '507f1f77bcf86cd799439014',
+              },
+              {
+                artifactId: 'art-4',
+                conversationId: '507f1f77bcf86cd799439015',
+              },
             ],
-            pagination: { page: 1, limit: 50, totalCount: 2, totalPages: 1 },
+            pagination: { page: 1, limit: 50, totalCount: 4, totalPages: 1 },
           },
         });
       sinon
         .stub(ConversationTitleService, 'batchTitles')
-        .resolves(new Map([['507f1f77bcf86cd799439013', 'Q3 report']]));
+        .resolves(
+          new Map([
+            ['507f1f77bcf86cd799439013', { title: 'Q3 report' }],
+            ['507f1f77bcf86cd799439014', { title: 'Plan', agentKey: 'agent-7' }],
+            ['507f1f77bcf86cd799439015', { title: 'Old', projectId: 'proj-1', conversationArchived: true }],
+          ]),
+        );
 
       const handler = listArtifacts(createMockAppConfig());
       const req = createMockRequest({
@@ -126,7 +140,16 @@ describe('Artifacts Controller', () => {
       expect(res.status.calledWith(200)).to.equal(true);
       const body = res.json.firstCall.args[0];
       expect(body.items[0].conversationTitle).to.equal('Q3 report');
+      expect(body.items[0].agentKey).to.equal(undefined);
       expect(body.items[1].conversationTitle).to.equal(undefined);
+      expect(body.items[2].conversationTitle).to.equal('Plan');
+      expect(body.items[2].agentKey).to.equal('agent-7');
+      expect(body.items[2].projectId).to.equal(undefined);
+      expect(body.items[3]).to.deep.include({
+        conversationTitle: 'Old',
+        projectId: 'proj-1',
+        conversationArchived: true,
+      });
     });
 
     it('rejects unauthenticated callers', async () => {
@@ -153,7 +176,7 @@ describe('Artifacts Controller', () => {
       });
       sinon
         .stub(ConversationTitleService, 'batchTitles')
-        .resolves(new Map([['507f1f77bcf86cd799439013', 'Budget']]));
+        .resolves(new Map([['507f1f77bcf86cd799439013', { title: 'Budget' }]]));
 
       const handler = getArtifact(createMockAppConfig());
       const req = createMockRequest({ params: { artifactId: 'art-1' } });
@@ -449,6 +472,12 @@ describe('ConversationTitleService', () => {
       $and: [
         { isShared: true },
         { 'sharedWith.userId': new Types.ObjectId(CALLER_ID) },
+        {
+          $or: [
+            { sessionType: { $ne: 'agent' } },
+            { isArchived: { $ne: true } },
+          ],
+        },
       ],
     });
   });
@@ -473,7 +502,7 @@ describe('ConversationTitleService', () => {
       CALLER_ID,
     );
 
-    expect(titles.get(CONVERSATION_ID)).to.equal('Shared with me');
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Shared with me' });
   });
 
   it('returns a title for a project-visible chat in a project the caller can view', async () => {
@@ -500,7 +529,157 @@ describe('ConversationTitleService', () => {
       CALLER_ID,
     );
 
-    expect(titles.get(CONVERSATION_ID)).to.equal('Project chat');
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
+      title: 'Project chat',
+      projectId: PROJECT_ID,
+    });
+  });
+
+  it('leaves out the project of an own chat whose project the caller can no longer view', async () => {
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+    stubSessions([
+      {
+        _id: new Types.ObjectId(CONVERSATION_ID),
+        orgId: new Types.ObjectId(ORG_ID),
+        userId: new Types.ObjectId(CALLER_ID),
+        projectId: new Types.ObjectId(PROJECT_ID),
+        isDeleted: false,
+        title: 'Old project chat',
+      },
+    ]);
+
+    const titles = await ConversationTitleService.batchTitles(
+      [CONVERSATION_ID],
+      ORG_ID,
+      CALLER_ID,
+    );
+
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({ title: 'Old project chat' });
+  });
+
+  const archivedFor = (overrides: Record<string, unknown>) => ({
+    _id: new Types.ObjectId(CONVERSATION_ID),
+    orgId: new Types.ObjectId(ORG_ID),
+    userId: new Types.ObjectId(OTHER_USER_ID),
+    isDeleted: false,
+    isArchived: true,
+    title: 'Archived by its owner',
+    ...overrides,
+  });
+
+  it('keeps an archived assistant chat for a viewer it is shared with', async () => {
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+    stubSessions([
+      archivedFor({
+        isShared: true,
+        sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }],
+      }),
+    ]);
+
+    const titles = await ConversationTitleService.batchTitles(
+      [CONVERSATION_ID],
+      ORG_ID,
+      CALLER_ID,
+    );
+
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
+      title: 'Archived by its owner',
+      conversationArchived: true,
+    });
+  });
+
+  it('drops an archived agent chat for a viewer it is shared with', async () => {
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+    stubSessions([
+      archivedFor({
+        sessionType: 'agent',
+        agentKey: 'agent-7',
+        isShared: true,
+        sharedWith: [{ userId: new Types.ObjectId(CALLER_ID) }],
+      }),
+    ]);
+
+    const titles = await ConversationTitleService.batchTitles(
+      [CONVERSATION_ID],
+      ORG_ID,
+      CALLER_ID,
+    );
+
+    expect(titles.size).to.equal(0);
+  });
+
+  it('drops an archived project chat for other project members', async () => {
+    sinon
+      .stub(ProjectService, 'getAccessibleProjectIds')
+      .resolves([new Types.ObjectId(PROJECT_ID)]);
+    stubSessions([
+      archivedFor({
+        projectId: new Types.ObjectId(PROJECT_ID),
+        projectVisibility: 'project',
+      }),
+    ]);
+
+    const titles = await ConversationTitleService.batchTitles(
+      [CONVERSATION_ID],
+      ORG_ID,
+      CALLER_ID,
+    );
+
+    expect(titles.size).to.equal(0);
+  });
+
+  it('marks an archived chat so the gallery opens it from the archive', async () => {
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+    stubSessions([
+      {
+        _id: new Types.ObjectId(CONVERSATION_ID),
+        orgId: new Types.ObjectId(ORG_ID),
+        userId: new Types.ObjectId(CALLER_ID),
+        isDeleted: false,
+        isArchived: true,
+        sessionType: 'agent',
+        agentKey: 'agent-7',
+        title: 'Archived agent chat',
+      },
+    ]);
+
+    const titles = await ConversationTitleService.batchTitles(
+      [CONVERSATION_ID],
+      ORG_ID,
+      CALLER_ID,
+    );
+
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
+      title: 'Archived agent chat',
+      agentKey: 'agent-7',
+      conversationArchived: true,
+    });
+  });
+
+  it('returns the agent of an agent chat so the gallery can open it there', async () => {
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+    stubSessions([
+      {
+        _id: new Types.ObjectId(CONVERSATION_ID),
+        orgId: new Types.ObjectId(ORG_ID),
+        userId: new Types.ObjectId(CALLER_ID),
+        isDeleted: false,
+        sessionType: 'agent',
+        agentKey: 'agent-7',
+        title: 'Agent chat',
+      },
+    ]);
+
+    const titles = await ConversationTitleService.batchTitles(
+      [CONVERSATION_ID],
+      ORG_ID,
+      CALLER_ID,
+    );
+
+    expect(titles.get(CONVERSATION_ID)).to.deep.equal({
+      title: 'Agent chat',
+      agentKey: 'agent-7',
+    });
   });
 });
 
