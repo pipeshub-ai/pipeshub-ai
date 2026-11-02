@@ -99,7 +99,7 @@ class TestExternalStack(RunCase):
 
 class TestGraphRuns(RunCase):
     def _run(self, execute_outcomes, **kw):
-        stacks = [mock.Mock(graph_db=g, events=[], environment={}, build=False, env=mock.Mock(return_value={"G": g})) for g in ("neo4j", "arango")]
+        stacks = [mock.Mock(graph_db=g, events=[], environment={}, build=False, upgrade=False, env=mock.Mock(return_value={"G": g})) for g in ("neo4j", "arango")]
         outs = iter(execute_outcomes)
         with mock.patch.object(run, "preflight", return_value=({}, [])), \
              mock.patch.object(run, "_stacks", return_value=stacks), \
@@ -1119,6 +1119,106 @@ class TestBuildFailure(RunCase):
         self.assertEqual(len([c for c in commands if "build" in c]), 1)
         self.assertEqual(result["tests"][0]["outcome"], "error")
         self.assertNotIn("environment", result)
+
+
+class TestUpgradeVariant(RunCase):
+    SEED = "it:weekly/test_upgrade.py::test_seed"
+    COMPARE = "it:weekly/test_upgrade.py::test_counts_survive"
+    OLD = "aaaaaaaaaaaa" + "0" * 28
+
+    def go(self, build_fails: bool = False, build: bool = True, release_error: str = ""):
+        import contextlib
+        import subprocess as sp_mod
+        from qa import stack
+        events: list[str] = []
+
+        def fake_sub(cmd, **kw):
+            if cmd[:3] == ["docker", "image", "rm"]:
+                events.append("rm:" + cmd[3])
+            elif cmd[:2] == ["docker", "compose"]:
+                op = next((a for a in cmd if a in ("build", "up", "restart", "down", "logs")), "")
+                events.append(op + (":old" if op == "build" and str(self.out / "tree") in cmd else ""))
+                if op == "build" and build_fails and str(self.out / "tree") in cmd:
+                    raise sp_mod.CalledProcessError(1, cmd)
+            return sp_mod.CompletedProcess(cmd, 0, "", "")
+
+        @contextlib.contextmanager
+        def tree(root, sha):
+            events.append("worktree:" + sha[:12])
+            yield self.out / "tree"
+
+        fake_mod = mock.Mock()
+        fake_mod.wait.return_value = []
+        fake_mod.seed.return_value = "ok"
+
+        def fake_execute(cfg, inv, log_dir, env):
+            events.append(f"test:{inv.phase}:{env.get('QA_UPGRADE_DIR', '').endswith('stack/upgrade')}")
+            return {"exit": 0, "label": inv.label}
+        plan = {**plan_for([self.SEED, self.COMPARE]), "head": HEAD}
+        with mock.patch.dict(os.environ, {"QA_RUN_ID": "5", "QA_KEEP_IMAGE": "0"}), \
+             mock.patch.object(run, "preflight", return_value=({}, [])), \
+             mock.patch.object(stack, "previous_release", **({"side_effect": RuntimeError(release_error)} if release_error else {"return_value": self.OLD})), \
+             mock.patch.object(run.collect, "worktree", tree), \
+             mock.patch.object(stack, "_load", return_value=fake_mod), \
+             mock.patch.object(run, "_execute", fake_execute), \
+             mock.patch.object(run, "_outcomes", lambda inv, rows, code: {i: {"outcome": "pass", "seconds": 1, "details": ""} for i in inv.ids}), \
+             mock.patch("subprocess.run", fake_sub):
+            os.environ.pop("QA_COMPOSE_PROJECT", None)
+            result = run.run(self.cfg, plan, self.rows, self.out, stack_mode="managed", build=build, retry=False, variant="upgrade")
+        return result, events
+
+    def test_upgrade_variant_boots_old_then_new_on_the_same_volumes(self) -> None:
+        result, events = self.go()
+        ops = [e for e in events if e.split(":")[0] in ("build", "up", "restart", "down", "test", "rm")]
+        self.assertEqual(ops, ["build:old", "up", "test:before:True", "build", "up", "restart", "test:after:True", "down",
+                               "rm:pipeshub-ai:qa-0123456789ab", "rm:pipeshub-ai:qa-aaaaaaaaaaaa"])
+        self.assertEqual({t["id"]: t["outcome"] for t in result["tests"]}, {self.SEED: "pass", self.COMPARE: "pass"})
+        self.assertIn("upgrade: aaaaaaaaaaaa -> 0123456789ab", result["stack"][0]["events"])
+        self.assertIn("second boot healthy", result["stack"][0]["events"])
+
+    def test_upgrade_build_failure_errors_the_tests_and_leaves_nothing(self) -> None:
+        result, events = self.go(build_fails=True)
+        for t in result["tests"]:
+            self.assertEqual(t["outcome"], "error")
+            self.assertIn("upgrade from aaaaaaaaaaaa", t["details"])
+        self.assertNotIn("up", events)
+        self.assertNotIn("down", events)  # nothing was started, so there is nothing to tear down
+        self.assertFalse([e for e in events if e.startswith("test:")])
+        self.assertIn("rm:pipeshub-ai:qa-aaaaaaaaaaaa", events)
+
+    def test_a_missing_release_tag_errors_the_tests_naming_the_ref(self) -> None:
+        result, events = self.go(release_error="no v* tag before 0123456789ab")
+        for t in result["tests"]:
+            self.assertEqual(t["outcome"], "error")
+            self.assertIn("upgrade from the previous release: no v* tag before 0123456789ab", t["details"])
+        self.assertEqual([e for e in events if e in ("build", "build:old", "up")], [])
+        self.assertFalse([e for e in events if "aaaaaaaaaaaa" in e])
+
+    def test_previous_release_is_the_last_v_tag_before_head(self) -> None:
+        from qa import stack
+        self.assertRaisesRegex(RuntimeError, "no v\\* tag before", stack.previous_release, self.root, testing.git(self.root, "rev-parse", "HEAD"))
+        first = testing.git(self.root, "rev-parse", "HEAD")
+        testing.git(self.root, "tag", "v0.1.0")
+        testing.write(self.root, "a.txt", "1")
+        second = testing.commit(self.root, "two")
+        testing.git(self.root, "tag", "v0.2.0")
+        testing.write(self.root, "a.txt", "2")
+        head = testing.commit(self.root, "three")
+        testing.git(self.root, "tag", "not-a-release")
+        self.assertEqual(stack.previous_release(self.root, head), second)
+        self.assertEqual(stack.previous_release(self.root, second), first)
+
+    def test_dry_run_names_both_images_and_the_switch(self) -> None:
+        from qa import stack
+        plan = {**plan_for([self.SEED, self.COMPARE]), "head": HEAD}
+        with mock.patch.object(stack, "previous_release", return_value=self.OLD):
+            dry = run.run(self.cfg, plan, self.rows, self.out, stack_mode="managed", dry_run=True, variant="upgrade")
+            text = run.describe_dry_run(dry)
+        self.assertIn("pipeshub-ai:qa-aaaaaaaaaaaa", text)
+        self.assertIn("pipeshub-ai:qa-0123456789ab", text)
+        self.assertIn("restart pipeshub-ai", text)
+        self.assertIn("-before", text)
+        self.assertIn("-after", text)
 
 
 class TestEnvironmentReport(RunCase):

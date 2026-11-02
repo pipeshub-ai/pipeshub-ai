@@ -184,6 +184,19 @@ journeys the tests protect.
   report's merge keeps the executed outcome. If no job ran a variant, its tests
   stay `not_run` and `--strict` blocks. The compose project name gains
   `-<name>`, and overlay hooks read the name from `QA_STACK_VARIANT`.
+- **Upgrade variant.** A variant with `upgrade_from = "previous-release"` runs
+  managed only. Order, per graph DB:
+  1. Build an image from a worktree at the newest `v*` tag before the commit
+     under test (`git describe --tags --abbrev=0 --match 'v*' <head>^`), tagged
+     `pipeshub-ai:qa-<sha12>`.
+  2. Start the stack on it and run the tests marked `before_marker`
+     (`QA_UPGRADE_DIR=<out>/stack/upgrade` is their shared directory).
+  3. Build this commit's image (with `--build`), recreate only the app service on
+     it over the same volumes, then restart it once, so the new version boots twice.
+  4. Run the remaining tests of the variant, which compare.
+  Any failure before step 4 (no tag, a failed build, an unhealthy boot) errors
+  every test of the variant with `upgrade from <ref>: <error>`. The stack is
+  torn down with `down -v` and both images are removed unless `QA_KEEP_IMAGE=1`.
 - **Gate.**
   - `fail` / `error` on a test that is not quarantined blocks.
   - `flaky`, `skip` and `not_run` are reported and do not block. `--strict`

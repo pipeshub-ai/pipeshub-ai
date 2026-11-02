@@ -87,7 +87,7 @@ tests = ["integration-tests/weekly/test_*.py"]
 profiles = ["weekly"]
 
 [suite.marker_needs]
-heavy = "stack:solo"
+upgrade = "stack:upgrade"
 
 [compose_profiles]
 kafka = ["requires_kafka"]
@@ -149,6 +149,11 @@ suites = ["it-weekly"]
 
 [variants.solo]
 description = "fixture variant"
+
+[variants.upgrade]
+description = "fixture upgrade variant"
+upgrade_from = "previous-release"
+before_marker = "upgrade_before"
 
 [[always]]
 id = "e2e-smoke"
@@ -373,7 +378,22 @@ FILES = {
         def test_heavy_path():
             """TC-HEAVY-001: the heavy path works."""
         '''),
-    "integration-tests/weekly/test_upgrade.py": 'import pytest\n\npytestmark = pytest.mark.heavy\n\n\ndef test_counts_survive():\n    """TC-WEEKLY-001: counts survive the upgrade."""\n',
+    "integration-tests/weekly/test_upgrade.py": textwrap.dedent('''\
+        import pytest
+
+        pytestmark = pytest.mark.upgrade
+
+
+        @pytest.mark.order(1)
+        @pytest.mark.upgrade_before
+        def test_seed():
+            """TC-WEEKLY-001: seed before the upgrade."""
+
+
+        @pytest.mark.order(2)
+        def test_counts_survive():
+            """TC-WEEKLY-002: counts survive the upgrade."""
+        '''),
     "integration-tests/plus/test_ai_usage.py": 'def test_budget():\n    """TC-PLUS-USAGE-001: usage stops at the org budget."""\n',
 }
 

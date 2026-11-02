@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from qa import junit
+from qa import collect, junit
 from qa import shard as shard_mod
 from qa.catalog import rel_to, variant_of
 from qa.config import Config
@@ -47,6 +47,7 @@ class Invocation:
     graph_db: str | None = None
     modules: dict[str, str] = field(default_factory=dict)
     unavailable: tuple[str, str] | None = None
+    phase: str = ""  # upgrade variant: "before" or "after" the switch to this commit
 
 
 def _split(env_name: str, default: list[str]) -> list[str]:
@@ -108,7 +109,7 @@ def _mark(not_run: dict[str, tuple[str, str]], ids, kind: str, reason: str) -> N
         not_run.setdefault(i, (kind, reason))
 
 
-def resolve(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], out: Path) -> tuple[list[Invocation], dict[str, tuple[str, str]]]:
+def resolve(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], out: Path, explicit: bool = False) -> tuple[list[Invocation], dict[str, tuple[str, str]]]:
     """Group the plan's tests by suite into runner commands; unknown ids are not_run."""
     not_run: dict[str, tuple[str, str]] = {}
     by_suite: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -140,7 +141,7 @@ def resolve(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], 
             cmd = python_cmd() + ["-m", "pytest", *targets, *PYTEST_FLAGS, "-q", f"--junitxml={jx}"] + _split("QA_PYTEST_ARGS", [])
             invocations.append(Invocation(suite_id, suite_id, fam, cwd, cmd, ids, jx, modules=junit.module_names(files)))
         elif fam == "it-pytest":
-            node_ids = _it_node_ids(selected, suite_rows[suite_id], cwd)
+            node_ids = _it_node_ids(selected, suite_rows[suite_id], cwd, explicit)
             graphs = plan["stack"]["graph_db"] if suite.get("stack") else [None]
             for g in graphs:
                 label = f"{suite_id}-{g}" if g else suite_id
@@ -190,8 +191,11 @@ def resolve(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], 
     return invocations, not_run
 
 
-def _it_node_ids(selected: list[dict[str, Any]], all_rows: list[dict[str, Any]], cwd: str) -> list[str]:
-    """Ordered lifecycle modules run whole; a fully selected module runs as a file."""
+def _it_node_ids(selected: list[dict[str, Any]], all_rows: list[dict[str, Any]], cwd: str, explicit: bool = False) -> list[str]:
+    """Ordered lifecycle modules run whole; a fully selected module runs as a file.
+    explicit: every test by its own id, for phases that split one ordered module."""
+    if explicit:
+        return sorted(r["id"].split(":", 1)[1] for r in selected)
     by_file: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in all_rows:
         by_file[r["path"]].append(r)
@@ -389,6 +393,9 @@ def run(
         kept_ids = {t for i in keep for t in i.ids}
         _mark(not_run, [t["id"] for t in plan["tests"] if t["id"] not in kept_ids], "scope", f"outside --scope {scope}")
         invs = keep
+    upgrade = (cfg.always.get("variants", {}).get(variant) or {}) if variant else {}
+    if upgrade.get("upgrade_from"):
+        invs = _split_upgrade(cfg, plan, rows, invs, out, upgrade.get("before_marker", ""), stack_mode, not_run)
     stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard, variant)
     # Hooks and port remaps come first, so the dry run lists their files and preflight checks the ports the run will bind.
     setup_error = _prepare(cfg, stacks, out, variant) if stack_mode == "managed" and stacks and any(i.needs_stack for i in invs) else None
@@ -434,6 +441,7 @@ def run(
                     if stack_mode == "managed":
                         os.environ.update(stack_mod.run_credentials(os.environ))
                     build_error = None
+                    old_images: list[str] = []
                     try:
                         for stack in stacks:
                             these = [i for i in stacked if i.graph_db in (None, stack.graph_db)]
@@ -441,9 +449,17 @@ def run(
                                 if build_error:
                                     # compose up would build the missing image itself, from unpinned bases.
                                     raise RuntimeError(build_error)
-                                stack.start()
+                                if stack.upgrade:
+                                    run_one = lambda inv, env: _run_one(cfg, inv, rows, log_dir, env, not_run, results, invocation_log, retry)
+                                    _upgrade_stack(cfg, stack, plan, build, these, out, run_one, old_images)
+                                else:
+                                    stack.start()
+                                    for inv in these:
+                                        _run_one(cfg, inv, rows, log_dir, stack.env(), not_run, results, invocation_log, retry)
+                            except _UpgradeFailed as exc:
                                 for inv in these:
-                                    _run_one(cfg, inv, rows, log_dir, stack.env(), not_run, results, invocation_log, retry)
+                                    for i in inv.ids:
+                                        _merge_outcome(results, i, {"outcome": "error", "seconds": None, "details": str(exc)})
                             except (RuntimeError, subprocess.SubprocessError) as exc:
                                 if stack.build and not stack.up:
                                     build_error = f"the image build on the {stack.graph_db} stack failed: {exc}"
@@ -458,8 +474,9 @@ def run(
                                 stack.stop()
                                 stack_events.append({"graph_db": stack.graph_db, "events": stack.events})
                     finally:
-                        if stacks and build and stack_mode == "managed" and os.environ.get("QA_KEEP_IMAGE") != "1":
-                            _remove_image(stack_mod.image_tag(plan.get("tag") or plan.get("head")), stacks[-1].events)
+                        if stacks and stack_mode == "managed" and os.environ.get("QA_KEEP_IMAGE") != "1":
+                            for tag in ([stack_mod.image_tag(plan.get("tag") or plan.get("head"))] if build else []) + old_images:
+                                _remove_image(tag, stacks[-1].events)
     except (_Cancelled, KeyboardInterrupt):
         for t in plan["tests"]:
             if t["id"] not in results:
@@ -490,6 +507,64 @@ def run(
         "stack": stack_events,
         "deferred": plan.get("deferred", []),
     }
+
+
+class _UpgradeFailed(RuntimeError):
+    """The upgrade could not reach the point where its tests compare; every upgrade test errors."""
+
+
+def _split_upgrade(cfg: Config, plan, rows, invs: list[Invocation], out: Path, marker: str, stack_mode: str, not_run) -> list[Invocation]:
+    """Stack tests of an upgrade variant run in two phases: those marked `marker` seed before the switch, the rest compare after.
+    Each phase names its tests one by one, so an ordered module can be split between them."""
+    ids = {i for inv in invs if inv.needs_stack for i in inv.ids}
+    keep = [inv for inv in invs if not inv.needs_stack]
+    if stack_mode != "managed":
+        _mark(not_run, sorted(ids), "scope", "the upgrade variant needs --stack managed: it swaps the app image")
+        return keep
+    for phase, before in (("before", True), ("after", False)):
+        sub = {**plan, "tests": [t for t in plan["tests"] if t["id"] in ids and (marker in rows[t["id"]]["markers"]) == before]}
+        got, _ = resolve(cfg, sub, rows, out / phase, explicit=True)
+        for inv in got:
+            inv.label, inv.phase = f"{inv.label}-{phase}", phase
+        keep += got
+    return keep
+
+
+def _upgrade_stack(cfg: Config, stack: Stack, plan, build: bool, invs: list[Invocation], out: Path, run_one, old_images: list[str]) -> None:
+    """Boot the previous release, run the seeding tests, switch to this commit's image on the same volumes
+    (booting it twice), run the comparing tests. Anything that fails before the comparing tests errors them all."""
+    head = plan.get("tag") or plan.get("head")
+    work = out / "stack"
+    env = {"QA_UPGRADE_DIR": str(work / "upgrade")}
+    (work / "upgrade").mkdir(parents=True, exist_ok=True)
+    stack.build = False  # this commit's image is built below, after the old release has been seeded
+    ref = "the previous release"
+    try:
+        ref = stack_mod.previous_release(cfg.root, head or "HEAD")[:12]
+        old_tag = stack_mod.image_tag(ref)
+        stack.use_image(old_tag, work)
+        old_images.append(old_tag)
+        stack.pin_bases()
+        with collect.worktree(cfg.root, ref) as tree:
+            stack.extra_env["GIT_COMMIT"] = ref
+            try:
+                stack.build_from(tree)
+            finally:
+                stack.extra_env["GIT_COMMIT"] = head or ""
+        stack.start()
+        for inv in (i for i in invs if i.phase == "before"):
+            run_one(inv, {**stack.env(), **env})
+        new_tag = stack_mod.image_tag(head)
+        if build:
+            stack.use_image(new_tag, work)  # builds under this commit's tag; the running stack stays on the old one until the switch
+            stack.build_from(cfg.root)
+            stack.use_image(old_tag, work)
+        stack.switch_to(new_tag, work)
+        stack.record_environment()
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        raise _UpgradeFailed(f"upgrade from {ref}: {exc}") from exc
+    for inv in (i for i in invs if i.phase == "after"):
+        run_one(inv, {**stack.env(), **env})
 
 
 def _run_one(cfg, inv, rows, log_dir, extra_env, not_run, results, invocation_log, retry) -> None:
@@ -529,6 +604,8 @@ def _is_target(arg: str) -> bool:
 
 
 def _it_targets(inv: Invocation, ids: list[str], rows) -> list[str]:
+    if inv.phase:  # an upgrade phase names its tests one by one
+        return sorted(i.split(":", 1)[1] for i in ids)
     return sorted({i.split(":", 1)[1] if not rows[i].get("ordered") else rel_to(rows[i]["path"], inv.cwd) for i in ids})
 
 
@@ -599,9 +676,10 @@ def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, 
     if mode == "managed":
         # Tag the image with the commit so a stale pipeshub-ai:latest from another branch is never reused.
         image = out / "stack" / "image.json"
-        image.parent.mkdir(parents=True, exist_ok=True)
-        image.write_text(json.dumps({"services": {stack_mod.APP_SERVICE: {"image": stack_mod.image_tag(head)}}}), encoding="utf-8")
+        stack_mod.write_image_override(image, stack_mod.image_tag(head))
+        upgrade = bool(variant and (cfg.always.get("variants", {}).get(variant) or {}).get("upgrade_from"))
         for s in stacks:
+            s.upgrade = upgrade
             s.overrides.append(str(image))
             if head:
                 s.extra_env["GIT_COMMIT"] = head

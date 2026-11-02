@@ -98,6 +98,7 @@ class TestFullRunsAndProfiles(ImpactCase):
 
 class TestWeeklyProfile(ImpactCase):
     WEEKLY = "it:weekly/test_upgrade.py::test_counts_survive"
+    WEEKLY_ALL = {WEEKLY, "it:weekly/test_upgrade.py::test_seed"}
 
     def test_full_profile_skips_weekly_only_suites(self) -> None:
         p = self.change({"scripts/plus/qa/qa_hooks.py": "def edition(path):\n    return None\n"}, profile="full")
@@ -108,8 +109,8 @@ class TestWeeklyProfile(ImpactCase):
     def test_weekly_profile_selects_only_its_suites(self) -> None:
         p = self.change({"README.md": "hi\n"}, profile="weekly")
         self.assertEqual(set(p["full_suites"]), {"it-weekly"})
-        self.assertEqual({t for t in p["floor"]["tests"] if "weekly" in t}, {self.WEEKLY})
-        self.assertEqual(p["floor"]["tests"], [self.WEEKLY])
+        self.assertEqual({t for t in p["floor"]["tests"] if "weekly" in t}, self.WEEKLY_ALL)
+        self.assertEqual(set(p["floor"]["tests"]), self.WEEKLY_ALL)
 
     def test_branch_override_never_lowers_weekly(self) -> None:
         p = self.change({"README.md": "hi\n"}, profile="weekly", branch="oss-sync-1-1-26")

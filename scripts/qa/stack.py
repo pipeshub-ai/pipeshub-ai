@@ -69,6 +69,20 @@ def image_tag(head: str | None) -> str:
     return f"pipeshub-ai:qa-{(head or 'local')[:12]}"
 
 
+def previous_release(root: Path, head: str) -> str:
+    """The commit of the newest v* tag before head: the release an upgrade starts from."""
+    described = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v*", f"{head}^"], cwd=root, capture_output=True, text=True, timeout=60)
+    tag = described.stdout.strip()
+    if described.returncode or not tag:
+        raise RuntimeError(f"no v* tag before {head[:12]}")
+    return subprocess.run(["git", "rev-parse", f"{tag}^{{commit}}"], cwd=root, capture_output=True, text=True, check=True, timeout=60).stdout.strip()
+
+
+def write_image_override(path: Path, tag: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"services": {APP_SERVICE: {"image": tag}}}), encoding="utf-8")
+
+
 def project_name(head: str | None, run_id: str, graph: str, variant: str = "") -> str:
     """One compose project per commit, run, stack variant and graph DB, so concurrent runs never share a stack.
     run_id already carries the variant; a fixed QA_COMPOSE_PROJECT does not, so it gets it here."""
@@ -112,6 +126,8 @@ class Stack:
     overrides: list[str] = field(default_factory=list)
     environment: dict[str, Any] = field(default_factory=dict)
     port_map: dict[int, int] = field(default_factory=dict)
+    upgrade: bool = False
+    image: str = ""
     _published: list[dict[str, Any]] | None = field(default=None, repr=False)
 
     @property
@@ -144,6 +160,15 @@ class Stack:
             if self.build:
                 lines.append(" ".join(self.compose("build")))
             lines.append(" ".join(self.compose("up", "-d")))
+        if self.upgrade and self.mode == "managed":
+            head = self.extra_env.get("GIT_COMMIT")
+            try:
+                old = image_tag(previous_release(self.root, head)) if head else "the previous release"
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                old = f"the previous release ({exc})"
+            lines += [f"upgrade: boot {old} (built from the previous v* tag), seed, then switch to {image_tag(head)} on the same volumes",
+                      " ".join(self.compose("up", "-d", APP_SERVICE)) + "   (switch)",
+                      " ".join(self.compose("restart", APP_SERVICE)) + "   (second head boot)"]
         lines.append(f"wait for {self.base_url}/api/v1/health and /api/v1/health/services")
         lines.append(f"seed org at {self.base_url}")
         if self.mode == "managed":
@@ -256,6 +281,34 @@ class Stack:
         except (OSError, subprocess.SubprocessError) as exc:
             self.events.append(f"environment not recorded: {exc}")
 
+    def wait_healthy(self, timeout: float = 300) -> None:
+        pending = _load(self.root, "health").wait(self.base_url, timeout)
+        if pending:
+            raise RuntimeError(f"stack unhealthy after {timeout:.0f}s: {', '.join(pending)}")
+        self.events.append("healthy")
+
+    def use_image(self, tag: str, work_dir: Path) -> None:
+        write_image_override(work_dir / "image.json", tag)
+        self.image = tag
+
+    def build_from(self, tree: Path) -> None:
+        """Build the app image from another checkout, with that checkout's compose file and build context."""
+        cmd = self.compose("build", APP_SERVICE)
+        cmd[cmd.index("-f") + 1] = str(tree / self.compose_file)
+        cmd[cmd.index("-f"):cmd.index("-f")] = ["--project-directory", str(tree)]
+        self._run(cmd, f"stack-{self.graph_db}.log", timeout=3600)
+
+    def switch_to(self, tag: str, work_dir: Path, health_timeout: float = 300) -> None:
+        """Recreate the app on a new image over the same volumes, then boot it once more: the second boot must be a no-op."""
+        old = self.image
+        self.use_image(tag, work_dir)
+        self._run(self.compose("up", "-d", APP_SERVICE), f"stack-{self.graph_db}.log")
+        self.wait_healthy(health_timeout)
+        self.events.append(f"upgrade: {old.split('qa-')[-1]} -> {tag.split('qa-')[-1]}")
+        self._run(self.compose("restart", APP_SERVICE), f"stack-{self.graph_db}.log")
+        self.wait_healthy(health_timeout)
+        self.events.append("second boot healthy")
+
     def start(self, health_timeout: float = 300) -> None:
         if self.mode == "none":
             return
@@ -267,10 +320,7 @@ class Stack:
             self._run(self.compose("up", "-d"), f"stack-{self.graph_db}.log")
             self.record_environment()
             self.events.append("compose up")
-        pending = _load(self.root, "health").wait(self.base_url, health_timeout)
-        if pending:
-            raise RuntimeError(f"stack unhealthy after {health_timeout:.0f}s: {', '.join(pending)}")
-        self.events.append("healthy")
+        self.wait_healthy(health_timeout)
         email = os.environ.get("PIPESHUB_TEST_USER_EMAIL")
         password = os.environ.get("PIPESHUB_TEST_USER_PASSWORD")
         if not email or not password:
