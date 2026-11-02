@@ -815,7 +815,7 @@ class TestConvertToPdf:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_convert_output_file_not_found(self, connector):
+    async def test_convert_output_file_not_found(self, connector, tmp_path):
         with patch("asyncio.create_subprocess_exec") as mock_exec, \
              patch("os.path.exists", return_value=False):
             mock_proc = AsyncMock()
@@ -824,7 +824,7 @@ class TestConvertToPdf:
             mock_exec.return_value = mock_proc
 
             with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
+                await connector._convert_to_pdf("/tmp/test.docx", str(tmp_path))
             assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
@@ -2474,7 +2474,7 @@ class TestConvertToPdfFullCoverage:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_convert_output_file_not_found(self, connector):
+    async def test_convert_output_file_not_found(self, connector, tmp_path):
         with patch("asyncio.create_subprocess_exec") as mock_exec, \
              patch("os.path.exists", return_value=False):
             mock_proc = AsyncMock()
@@ -2483,7 +2483,7 @@ class TestConvertToPdfFullCoverage:
             mock_exec.return_value = mock_proc
 
             with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
+                await connector._convert_to_pdf("/tmp/test.docx", str(tmp_path))
             assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio

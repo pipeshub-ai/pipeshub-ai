@@ -23,6 +23,12 @@ from app.sandbox.artifact_upload import (
 from app.sandbox.models import ArtifactOutput, ExecutionResult
 
 
+@pytest.fixture(autouse=True)
+def _per_test_sandbox_tempdir(tmp_path, monkeypatch) -> None:
+    """Each test gets its own temp dir, so the sandbox roots it creates die with it."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+
 class TestInferArtifactType:
     def test_source_file_is_code_whatever_its_mime(self) -> None:
         # mimetypes guesses ".ts" as video/mp2t or text/vnd.trolltech.linguist.
