@@ -103,7 +103,6 @@ jobs:
           --expect-suite 'fence cutover waits for fenced writes=3'
           --expect-suite 'pre-flight _id check=1'
           --expect-suite 'docstore-migrate CLI end to end=47'
-          --expect-suite 'docstore-migrate: follow, drain, reset and schema=10'
           --expect-suite 'docstore-migrate: follow, drain, reset and schema=12'
           --expect-suite 'docstore-migrate: pre-flight checks=14'
           --expect-suite 'docstore-migrate: offline and online switch-over=6'
