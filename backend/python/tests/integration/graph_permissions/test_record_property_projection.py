@@ -216,7 +216,7 @@ async def test_arango_migrates_a_populated_collection(arango_provider, downgrade
     client = downgraded_arango_schema
     key = await _seed(arango_provider, _ticket())
     args = {"values": {"a": "1"}, "previous_names": (), "controls": CONTROLS, "conditions": [Cond("propsVer", "is_null")]}
-    with pytest.raises(Exception):  # noqa: B017, PT011 - the closed schema refuses fields it does not name
+    with pytest.raises(Exception):  # noqa: B017 - the closed schema refuses fields it does not name
         await arango_provider.set_record_properties(key, **args)
 
     assert await client.update_collection_schema(RECORDS, record_schema)
