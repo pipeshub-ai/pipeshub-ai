@@ -72,6 +72,27 @@ def test_unknown_key_refused_when_additional_properties_false() -> None:
     assert _check(_pending(), {**_ARGS, "bcc": "x"}) != []
 
 
+def _pattern_call(pattern: str, value: str) -> approvals.PendingCall:
+    schema = {"type": "object", "properties": {"q": {"type": "string", "pattern": pattern}}}
+    return _pending(arguments={"q": value}, input_schema=schema)
+
+
+def test_pattern_mismatch_refused() -> None:
+    p = _pattern_call("^[a-z]+$", "abc")
+    assert _check(p, {"q": "ABC"})[0].path == "/q"
+
+
+@pytest.mark.parametrize("pattern", ["^(a+)+$", "^(a|a)+$", "^(a|aa)+$"])
+def test_catastrophic_pattern_is_bounded(pattern: str) -> None:
+    # A server's regex can backtrack for ages; the check gives up within its budget, and a value
+    # it could not check is left to the tool to reject.
+    p = _pattern_call(pattern, "a")
+    start = time.monotonic()
+    errors = _check(p, {"q": "a" * 40 + "!"})
+    assert time.monotonic() - start < 1
+    assert all(e.path == "/q" for e in errors)
+
+
 def test_ref_and_anyof_schema_followed() -> None:
     schema = {
         "type": "object", "$defs": {"id": {"type": "integer"}},
