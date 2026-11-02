@@ -47,7 +47,7 @@ function ready(slotId: string, approvalId: string): 'ok' | 'busy' | 'missing' {
 /** Answers a call waiting in another chat, on that chat's own background slot; the chat on
  * screen stays as it is. Resolves once the server took the answer ('sent'), sent the card back
  * with an edit's errors ('refused'), or the stream failed ('failed'). Nothing is sent when that
- * chat is still running ('busy') or the call was already answered ('stale'). */
+ * chat is still running ('busy'), or the call was already answered or passed over ('stale'). */
 export async function answerElsewhere(item: PendingApprovalItem, answer: ToolApprovalAnswer): Promise<AnswerElsewhereResult> {
   const { approvalId } = item.card;
   let slotId: string;
@@ -65,6 +65,9 @@ export async function answerElsewhere(item: PendingApprovalItem, answer: ToolApp
   }
   const row = rowHolding(slotId, approvalId) as Row & { id: string };
   if (!waiting(approvalPart(rowParts(row), approvalId))) return 'stale';
+  // A newer message passed the call over: the chat shows it as not run.
+  const messages = (useChatStore.getState().slots[slotId]?.messages ?? []) as Row[];
+  if (messages.filter((r) => r.role === 'assistant').pop() !== row) return 'stale';
   // Answered elsewhere (another tab or device) since the list was fetched.
   const stillPending = await fetchPendingApprovals().then(
     (items) => items.some((i) => i.card.approvalId === approvalId),
