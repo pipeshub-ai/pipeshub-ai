@@ -1,61 +1,45 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { apiClient } from '@/lib/api';
+import useSWR from 'swr';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
+import { isLookupUserId } from '@/lib/utils/user-ids';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
+import type { User } from '@/app/(main)/workspace/users/types';
 
-export interface UserDirectoryEntry {
-  fullName: string;
-  /** Id for `/api/v1/users/{id}/dp` — from API or fallback to the requested id */
-  resolvedUserId: string;
+type DirectoryUserKey = readonly [typeof SWR_NS.userDirectory, string];
+type Waiter = { resolve: (user: User | null) => void; reject: (error: unknown) => void };
+
+const queued = new Map<string, Waiter[]>();
+
+function flush(): void {
+  const batch = new Map(queued);
+  queued.clear();
+  // A card falls back to the id or initials on its own; a toast per failed lookup would only be noise.
+  UsersApi.getUsersByIds([...batch.keys()], { suppressErrorToast: true }).then(
+    (users) => {
+      const byId = new Map(users.map((user) => [user.userId.toLowerCase(), user]));
+      batch.forEach((waiters, id) => waiters.forEach((w) => w.resolve(byId.get(id) ?? null)));
+    },
+    (error: unknown) => batch.forEach((waiters) => waiters.forEach((w) => w.reject(error))),
+  );
 }
 
-/** Normalizes POST `/api/v1/users/by-ids` response (array or `{ users }`). */
-export function parseUserDirectoryByIdsResponse(
-  data: unknown,
-  fallbackUserId: string
-): UserDirectoryEntry | null {
-  const users = Array.isArray(data)
-    ? data
-    : (data as { users?: unknown[] } | null)?.users ?? [];
-  if (users.length === 0) return null;
-  const user = users[0] as Record<string, unknown>;
-  const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-  const resolvedUserId =
-    (user.id as string) ?? (user._id as string) ?? fallbackUserId;
-  return { fullName, resolvedUserId };
+/** Joins every id asked for in the same tick into one by-ids request. */
+function fetchDirectoryUser([, id]: DirectoryUserKey): Promise<User | null> {
+  return new Promise((resolve, reject) => {
+    if (queued.size === 0) queueMicrotask(flush);
+    queued.set(id, [...(queued.get(id) ?? []), { resolve, reject }]);
+  });
 }
 
-/** Loads a single user from the directory by id (same endpoint/shape as other callers). */
-export function useUserDirectoryEntry(
-  userId: string | null | undefined
-): UserDirectoryEntry | null {
-  const [entry, setEntry] = useState<UserDirectoryEntry | null>(null);
-
-  useEffect(() => {
-    if (!userId) {
-      setEntry(null);
-      return;
-    }
-
-    let cancelled = false;
-    setEntry(null);
-
-    void (async () => {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [userId],
-        });
-        if (cancelled) return;
-        setEntry(parseUserDirectoryByIdsResponse(data, userId));
-      } catch {
-        if (!cancelled) setEntry(null);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
-
-  return entry;
+/**
+ * A user's name, email and picture from the org directory, or `null` while
+ * loading, when unknown, or when the lookup failed. Looked up once per session
+ * and shared by every caller; user edits in this app refresh it.
+ */
+export function useUserDirectoryEntry(userId: string | null | undefined): User | null {
+  const id = userId?.trim().toLowerCase();
+  const key: DirectoryUserKey | null = isLookupUserId(id) ? [SWR_NS.userDirectory, id] : null;
+  const { data } = useSWR(key, fetchDirectoryUser, SWR_POLICY.sessionStable);
+  return data ?? null;
 }

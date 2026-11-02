@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const api = vi.hoisted(() => ({
@@ -55,6 +55,7 @@ vi.mock('next/link', () => ({
   ),
 }));
 
+import { clearSessionCache } from '@/lib/api/session-cache';
 import TeamConnectorsPage from '../connectorsTeamPage';
 import { useConnectorsStore } from '../../store';
 import {
@@ -76,6 +77,7 @@ const teamOnly = makeConnector({ name: 'Team Only DB', type: 'Team Only DB', app
 
 beforeEach(() => {
   installDomShims();
+  clearSessionCache();
   useConnectorsStore.getState().reset();
   clearToasts();
   signInAs('admin');
@@ -115,7 +117,7 @@ describe('Team connectors page: list', () => {
     expect(await screen.findByTestId('connector-card-Jira')).toBeTruthy();
     expect(screen.getByTestId('connector-card-Slack')).toBeTruthy();
     expect(api.getRegistryConnectors).toHaveBeenCalledWith('team');
-    expect(api.getActiveConnectors).toHaveBeenCalledWith('team');
+    expect(api.getActiveConnectors).toHaveBeenCalledWith('team', 1, 100, { suppressErrorToast: true });
   });
 
   it('still lists the catalog when only the configured list fails', async () => {
@@ -232,6 +234,80 @@ describe('Team connectors page: connectors whose data the whole organization can
 
     expect(await screen.findByRole('dialog', { name: 'Set up Slack' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: warningName })).toBeNull();
+  });
+});
+
+describe('Team connectors page: reads it can reuse', () => {
+  const scheduled = makeConfig({
+    config: { auth: {}, sync: { selectedStrategy: 'SCHEDULED', scheduledConfig: { intervalMinutes: 60 } }, filters: {} },
+  });
+
+  function openTypePage() {
+    nav.params = new URLSearchParams('connectorType=Jira');
+    api.getActiveConnectors.mockResolvedValue({ connectors: [makeInstance()] });
+    api.getConnectorConfig.mockResolvedValue(scheduled);
+    return renderInTheme(<TeamConnectorsPage />);
+  }
+
+  it('reads the team list once for a remount within a minute', async () => {
+    const first = renderInTheme(<TeamConnectorsPage />);
+    await screen.findByTestId('connector-card-Jira');
+    first.unmount();
+
+    renderInTheme(<TeamConnectorsPage />);
+    await screen.findByTestId('connector-card-Jira');
+
+    expect(api.getActiveConnectors).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the team list again after the personal page put its own list in the store', async () => {
+    const teamInstance = makeInstance({ _key: 'team-1' });
+    api.getActiveConnectors.mockResolvedValue({ connectors: [teamInstance] });
+    const first = renderInTheme(<TeamConnectorsPage />);
+    await waitFor(() => expect(useConnectorsStore.getState().activeConnectors.map((c) => c._key)).toEqual(['team-1']));
+    first.unmount();
+    useConnectorsStore.setState({ activeConnectors: [makeInstance({ _key: 'personal-1' })] });
+
+    renderInTheme(<TeamConnectorsPage />);
+
+    await waitFor(() => expect(useConnectorsStore.getState().activeConnectors.map((c) => c._key)).toEqual(['team-1']));
+    expect(api.getActiveConnectors).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads each instance config once, and not again when the type page reopens within a minute', async () => {
+    const first = openTypePage();
+    expect(await screen.findByText('Scheduled')).toBeTruthy();
+    expect(api.getConnectorConfig).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    openTypePage();
+
+    expect(await screen.findByText('Scheduled')).toBeTruthy();
+    expect(api.getConnectorConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes no request when going back to the list', async () => {
+    openTypePage();
+    await screen.findByText('Scheduled');
+    for (const fn of Object.values(api)) fn.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connectors' }));
+    await act(async () => {});
+
+    expect(nav.push).toHaveBeenCalledWith('/workspace/connectors/team/');
+    expect(api.getRegistryConnectors).not.toHaveBeenCalled();
+    expect(api.getActiveConnectors).not.toHaveBeenCalled();
+    expect(api.getConnectorConfig).not.toHaveBeenCalled();
+  });
+
+  it('reads the configs again after a catalog refresh (a save, a new instance, a sign-in)', async () => {
+    openTypePage();
+    await screen.findByText('Scheduled');
+
+    act(() => useConnectorsStore.getState().bumpCatalogRefresh());
+
+    await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalledTimes(2));
   });
 });
 

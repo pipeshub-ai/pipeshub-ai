@@ -26,7 +26,7 @@ import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspac
 interface ConnectorDetailsLayoutProps {
   /** Connector type info */
   connector: Connector | null;
-  /** Scope: team or personal */
+  /** Scope: team or personal. Not read any more; kept because edition pages pass it. */
   scope: ConnectorScope;
   /** Scope label for breadcrumb */
   scopeLabel: string;
@@ -65,7 +65,6 @@ interface ConnectorDetailsLayoutProps {
 
 export function ConnectorDetailsLayout({
   connector,
-  scope,
   scopeLabel,
   instances,
   instanceConfigs,
@@ -346,7 +345,6 @@ export function ConnectorDetailsLayout({
             <InstanceCard
               key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
               instance={instance}
-              scope={scope}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               onManage={onManageInstance}
               onToggleSyncActive={onToggleSyncActive}

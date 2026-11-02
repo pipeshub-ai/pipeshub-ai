@@ -8,7 +8,13 @@ import {
 } from './sidebar-child-pagination-meta';
 import { restoreOpenFoldersInSidebar } from './root-app-list';
 import { kbSessionToken } from './kb-session';
-import type { KnowledgeHubNode, NodeType } from '../types';
+import { asArray } from '@/lib/utils/safe';
+import type {
+  KnowledgeHubApiResponse,
+  KnowledgeHubNode,
+  KnowledgeHubQueryParams,
+  NodeType,
+} from '../types';
 
 /**
  * The one way the sidebar tree lists a folder's (or collection's) children:
@@ -209,6 +215,56 @@ export async function reloadOpenFoldersUnder(rootIds: string[], keepVisibleId?: 
     await reloadChildren(id, nodeTypeOf(id, 'folder'), keepVisibleId);
   }
   restoreOpenFoldersInSidebar();
+}
+
+// The server's `onlyContainers` rule (arango_http_provider.py `_kh_v2_filters_aql`).
+const TREE_CONTAINER_TYPES = new Set<string>(['app', 'recordGroup', 'folder']);
+// A listing with any other parameter (search, filters, a cursor) may leave children out.
+const PARAMS_THAT_KEEP_EVERY_CHILD = new Set(['limit', 'include', 'sortBy', 'sortOrder']);
+
+function isTreeContainer(node: KnowledgeHubNode): boolean {
+  return node.hasChildren === true || TREE_CONTAINER_TYPES.has(node.nodeType);
+}
+
+// The server's name order: lower-cased, by code unit, nameless last, then id.
+function byServerNameOrder(a: KnowledgeHubNode, b: KnowledgeHubNode): number {
+  const nameA = a.name == null ? null : a.name.toLowerCase();
+  const nameB = b.name == null ? null : b.name.toLowerCase();
+  if (nameA !== nameB) {
+    if (nameA === null) return 1;
+    if (nameB === null) return -1;
+    return nameA < nameB ? -1 : 1;
+  }
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
+}
+
+/**
+ * Fills a node's tree children from a table listing that already holds every
+ * child, so the sidebar does not list the same node again. Never touches a list
+ * that still has pages to load.
+ */
+export function seedChildrenFromListing(
+  parentId: string,
+  nodeType: NodeType,
+  params: KnowledgeHubQueryParams,
+  response: KnowledgeHubApiResponse,
+): void {
+  if (response.pagination?.hasNext) return;
+  if (Object.keys(params).some((key) => !PARAMS_THAT_KEEP_EVERY_CHILD.has(key))) return;
+  const state = useKnowledgeBaseStore.getState();
+  if (state.nodeChildrenPagination.get(parentId)?.hasNext) return;
+
+  const containers = asArray(response.items).filter(isTreeContainer).sort(byServerNameOrder);
+  storeChildrenList(parentId, containers, {
+    hasNext: false,
+    nextCursor: null,
+    nodeType: nodeTypeOf(parentId, nodeType),
+    // In tree pages, so a later reload reads back every row.
+    pagesLoaded: Math.max(1, Math.ceil(containers.length / SIDEBAR_PAGINATION_PAGE_SIZE)),
+  });
+  if (containers.length > 0) state.addNodes(containers);
+  if (state.expandedFolders[parentId]) showFolderChildren(parentId);
 }
 
 /** Forgets in-flight loads so a new session never waits on the previous one's. */

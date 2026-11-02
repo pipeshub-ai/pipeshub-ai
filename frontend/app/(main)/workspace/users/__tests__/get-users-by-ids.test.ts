@@ -8,7 +8,7 @@ vi.mock('@/lib/api', () => ({
 
 const { UsersApi } = await import('../api');
 const { ShareCommonApi } = await import('@/app/components/share/api');
-const { toLookupUserIds } = await import('@/lib/utils/user-ids');
+const { isLookupUserId, shortUserName, toLookupUserIds } = await import('@/lib/utils/user-ids');
 
 const ID_A = '507f1f77bcf86cd799439011';
 const ID_B = '507f1f77bcf86cd799439012';
@@ -21,6 +21,43 @@ beforeEach(() => {
 describe('toLookupUserIds', () => {
   it('drops blank and missing ids and duplicates', () => {
     expect(toLookupUserIds(['', ID_A, '  ', null, undefined, ID_A, ` ${ID_B} `])).toEqual([ID_A, ID_B]);
+  });
+
+  it('drops ids the server would refuse, since one of them fails the whole lookup', () => {
+    expect(toLookupUserIds(['creator-1', ID_A.slice(1), `${ID_A}0`, ID_B])).toEqual([ID_B]);
+  });
+});
+
+describe('isLookupUserId', () => {
+  it('accepts the 24-hex ids the server accepts, in either case', () => {
+    expect(isLookupUserId(ID_A)).toBe(true);
+    expect(isLookupUserId(ID_A.toUpperCase())).toBe(true);
+  });
+
+  it.each([['blank', ''], ['missing', null], ['23 characters', ID_A.slice(1)], ['not hex', 'z'.repeat(24)]])(
+    'refuses a %s id',
+    (_label, id) => {
+      expect(isLookupUserId(id)).toBe(false);
+    },
+  );
+});
+
+describe('shortUserName', () => {
+  it.each([
+    ['Ada Lovelace', 'Ada L'],
+    ['  Ada   Byron   Lovelace ', 'Ada L'],
+    ['Ada', 'Ada'],
+    ['   ', ''],
+    [null, ''],
+  ])('%j becomes %j', (fullName, expected) => {
+    expect(shortUserName(fullName)).toBe(expected);
+  });
+});
+
+describe('UsersApi.getUsersByIds options', () => {
+  it('passes suppressErrorToast to the request', async () => {
+    await UsersApi.getUsersByIds([ID_A], { suppressErrorToast: true });
+    expect(post).toHaveBeenCalledWith('/api/v1/users/by-ids', { userIds: [ID_A] }, { suppressErrorToast: true });
   });
 });
 
