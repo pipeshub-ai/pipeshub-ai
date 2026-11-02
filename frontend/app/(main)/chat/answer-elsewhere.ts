@@ -10,8 +10,9 @@ import { fetchModelsForContext } from './utils/fetch-models-for-context';
 
 type Row = { id?: string; role: string; metadata?: { custom?: Record<string, unknown> } };
 
-/** `refused`: the server sent the card back with the edit's errors; it is back in the list. */
-export type AnswerElsewhereResult = 'sent' | 'busy' | 'stale' | 'failed' | 'refused';
+/** `refused`: the server sent the card back with the edit's errors; it is back in the list.
+ * `{ failed }`: the stream failed and said why. */
+export type AnswerElsewhereResult = 'sent' | 'busy' | 'stale' | 'failed' | 'refused' | { failed: string };
 
 function rowParts(row: Row): MessagePart[] {
   const parts = row.metadata?.custom?.persistedParts;
@@ -90,7 +91,8 @@ export async function answerElsewhere(item: PendingApprovalItem, answer: ToolApp
       const live = approvalPart(state.slots[slotId]?.streamingParts, approvalId);
       if (live && !waiting(live)) finish('sent');
     });
-    void streamMessageForSlot(slotId, query, request, { reuseRowId: row.id })
+    let reason = '';
+    void streamMessageForSlot(slotId, query, request, { reuseRowId: row.id, onApprovalFailed: (why) => { reason = why; } })
       .catch(() => undefined)
       .then(async () => {
         const after = rowHolding(slotId, approvalId);
@@ -102,8 +104,8 @@ export async function answerElsewhere(item: PendingApprovalItem, answer: ToolApp
           usePendingApprovals.getState().put({ ...item, card: card as ToolApprovalDetails });
           return finish('refused');
         }
-        // The stream failed (it said why in a toast); the call still waits.
-        finish('failed');
+        // The stream failed; the call still waits, and the card says why.
+        finish(reason ? { failed: reason } : 'failed');
       });
   });
 }

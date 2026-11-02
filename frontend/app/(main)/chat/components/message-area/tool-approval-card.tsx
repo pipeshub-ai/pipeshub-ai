@@ -38,14 +38,18 @@ interface ToolApprovalCardProps {
   placement?: 'inline' | 'composer';
   conversationTitle?: string | null;
   /** Sends the answer in the call's own chat instead of the active one. */
-  onAnswer?: (answer: ToolApprovalAnswer) => Promise<'sent' | 'busy' | 'stale' | 'failed'>;
+  /** `{ failed }` carries the reason the server or stream gave. */
+  onAnswer?: (answer: ToolApprovalAnswer) => Promise<AnswerResult>;
   onOpenChat?: () => void;
   /** Composer: how many more calls wait behind this one; `onMore` shows the next. */
   moreCount?: number;
   onMore?: () => void;
 }
 
+export type AnswerResult = 'sent' | 'busy' | 'stale' | 'failed' | { failed: string };
+
 const ANSWER_PROBLEM = { busy: 'busyElsewhere', stale: 'alreadyAnswered', failed: 'answerFailed' } as const;
+type Problem = { kind: keyof typeof ANSWER_PROBLEM; detail?: string };
 
 const MAX_FEEDBACK_CHARS = 2000;
 
@@ -77,9 +81,12 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const [note, setNote] = useState('');
   const [sending, setSending] = useState(false);
   const [focusTick, setFocusTick] = useState(0);
-  const [problem, setProblem] = useState<keyof typeof ANSWER_PROBLEM | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
+  // Leaving the editor or the note box unmounts the focused field: focus goes back to its opener.
+  const editRef = useRef<HTMLButtonElement>(null);
+  const suggestRef = useRef<HTMLButtonElement>(null);
   // Someone viewing a conversation shared with them can't send in it; onAnswer sends in the call's own chat.
   const ownsActive = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
   const canSend = Boolean(onAnswer) || ownsActive;
@@ -103,8 +110,10 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
 
   useEffect(() => {
     const invalid = focusTick ? cardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') : null;
-    // A list field marks its group; the input inside takes the focus.
-    const target = invalid?.matches('input, textarea, button') ? invalid : invalid?.querySelector<HTMLElement>('input, textarea, button');
+    // A list field marks its group; the input inside takes the focus, not a chip's remove button.
+    const target = invalid?.matches('input, textarea, button')
+      ? invalid
+      : invalid?.querySelector<HTMLElement>('input, textarea') ?? invalid?.querySelector<HTMLElement>('button');
     if (!target) return;
     // The errors grew the card under the composer: bring back the actions, which sit below every field.
     // One scroll only: a second call would cancel the scroller's smooth scroll.
@@ -120,7 +129,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     const notice = expired ? 'expired' : canSend ? 'passed' : 'waiting';
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--gray-11)' }}>
-        <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--gray-9)" style={{ marginTop: 3 }} />
+        <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--gray-9)" style={{ marginTop: 'calc(var(--space-1) / 2)' }} />
         <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server })}</Text>
       </Flex>
     );
@@ -155,7 +164,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     if (onAnswer) {
       setProblem(null);
       setSending(true);
-      let result: 'sent' | 'busy' | 'stale' | 'failed' = 'failed';
+      let result: AnswerResult = 'failed';
       try {
         result = await onAnswer(payload);
       } catch {
@@ -163,7 +172,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
       } finally {
         setSending(false);
       }
-      if (result !== 'sent') setProblem(result);
+      if (typeof result === 'object') setProblem({ kind: 'failed', detail: result.failed });
+      else if (result !== 'sent') setProblem({ kind: result });
       return;
     }
     const slotId = useChatStore.getState().activeSlotId;
@@ -216,12 +226,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     e.stopPropagation();
     setEditing(false);
+    editRef.current?.focus();
   };
 
   const onNoteKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     e.stopPropagation();
     setNoteOpen(false);
+    suggestRef.current?.focus();
   };
 
   const soon = minutesLeft <= 1;
@@ -264,7 +276,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         </Flex>
         <Box style={{ flex: 1, minWidth: 0 }}>
           <Flex align="center" gap="2">
-            <Text size="2" weight="bold" truncate title={approval.toolName} style={{ color: 'var(--gray-12)', minWidth: 0 }}>
+            <Text size="2" weight="medium" truncate title={approval.toolName} style={{ color: 'var(--gray-12)', minWidth: 0 }}>
               {t('chat.toolApproval.titleIn', { tool, server })}
             </Text>
             {approval.kind === 'destructive' && (
@@ -283,7 +295,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           </Text>
         </Box>
         {moreCount > 0 && onMore && (
-          <Button size="1" variant="ghost" color="gray" style={{ flexShrink: 0 }} onClick={onMore}>
+          <Button
+            size="1"
+            variant="ghost"
+            color="gray"
+            style={{ flexShrink: 0 }}
+            aria-label={t('chat.toolApproval.moreWaitingLabel', { count: moreCount })}
+            onClick={onMore}
+          >
             {t('chat.toolApproval.moreWaiting', { count: moreCount })}
           </Button>
         )}
@@ -332,10 +351,10 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           <Box style={{ display: 'grid', gridTemplateColumns: 'minmax(72px, max-content) 1fr', columnGap: 'var(--space-4)', rowGap: 'var(--space-1)' }}>
             {lines.map((line) => (
               <React.Fragment key={line.name}>
-                <Text size="1" style={{ color: 'var(--gray-10)', fontFamily: 'var(--code-font-family)', lineHeight: '20px' }}>
+                <Text size="1" style={{ color: 'var(--gray-10)', fontFamily: 'var(--code-font-family)', lineHeight: 'var(--line-height-2)' }}>
                   {line.name}
                 </Text>
-                <Text size="2" style={{ color: 'var(--gray-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: '20px' }}>
+                <Text size="2" style={{ color: 'var(--gray-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 'var(--line-height-2)' }}>
                   {line.value}
                 </Text>
               </React.Fragment>
@@ -371,15 +390,15 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           />
           <Flex gap="2">
             <Button size="2" disabled={!note.trim()} loading={sending} onClick={() => void answer('deny', { feedback: note.trim() })}>
-              {t('chat.toolApproval.sendToAgent')}
+              {t('chat.toolApproval.sendSuggestion')}
             </Button>
           </Flex>
         </Flex>
       )}
 
       {problem && (
-        <Text as="p" size="1" mt="2" role="status" style={{ color: problem === 'failed' ? 'var(--red-11)' : 'var(--gray-11)' }}>
-          {t(`chat.toolApproval.${ANSWER_PROBLEM[problem]}`)}
+        <Text as="p" size="1" mt="2" role="status" style={{ color: problem.kind === 'failed' ? 'var(--red-11)' : 'var(--gray-11)' }}>
+          {problem.detail || t(`chat.toolApproval.${ANSWER_PROBLEM[problem.kind]}`)}
         </Text>
       )}
 
@@ -394,9 +413,9 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         wrap="wrap"
         style={{ scrollMarginBottom: 'calc(var(--composer-dock-height, 0px) + var(--space-4))' }}
       >
-        <Flex className="tool-approval-card-group tool-approval-card-lead" align="center" gap="4">
+        <Flex className="tool-approval-card-group tool-approval-card-lead" align="center" gapX="4" gapY="2" wrap="wrap">
           {canEdit && (
-            <Button size="2" variant="ghost" color="gray" onClick={() => setEditing((value) => !value)}>
+            <Button ref={editRef} size="2" variant="ghost" color="gray" onClick={() => setEditing((value) => !value)}>
               {showForm ? t('chat.toolApproval.done') : t('chat.toolApproval.edit')}
             </Button>
           )}
@@ -413,7 +432,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
               {t('chat.toolApproval.reset')}
             </Button>
           )}
-          <Button size="2" variant="ghost" color="gray" aria-expanded={noteOpen} onClick={() => setNoteOpen((value) => !value)}>
+          <Button ref={suggestRef} size="2" variant="ghost" color="gray" aria-expanded={noteOpen} onClick={() => setNoteOpen((value) => !value)}>
             {t('chat.toolApproval.suggestChange')}
           </Button>
           {placement === 'composer' && onOpenChat && (
@@ -422,7 +441,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             </Button>
           )}
         </Flex>
-        <Flex className="tool-approval-card-group" align="center" gap="2">
+        <Flex className="tool-approval-card-group tool-approval-card-answer" align="center" gap="2">
           <Button size="2" variant="soft" color="gray" disabled={sending} onClick={() => void answer('deny')}>
             {t('chat.toolApproval.deny')}
           </Button>
