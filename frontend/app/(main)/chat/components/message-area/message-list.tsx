@@ -948,7 +948,15 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       if (grew > 0 && lastDockHeightRef.current > 0 && !isScrolledUpRef.current) {
         const tail = measureTail();
         // visibleBottom is measured with the grown dock; the end was in view above the old one.
-        if (tail && tail.bottom <= tail.visibleBottom + grew + 1) container.scrollTop += grew;
+        if (tail && tail.bottom <= tail.visibleBottom + grew + 1) {
+          // As keepTailInView does: instant, and flagged, so a scroll event on the way is not read
+          // as the reader scrolling up.
+          isAutoScrollingRef.current = true;
+          container.scrollTo({ top: container.scrollTop + grew, behavior: 'instant' });
+          queueMicrotask(() => {
+            isAutoScrollingRef.current = false;
+          });
+        }
       }
       lastDockHeightRef.current = height;
       setComposerDockHeight(height);
