@@ -106,5 +106,3 @@ jobs:
           --expect-suite 'docstore-migrate: follow, drain, reset and schema=14'
           --expect-suite 'docstore-migrate: pre-flight checks=14'
           --expect-suite 'docstore-migrate: offline and online switch-over=6'
-          --expect-suite 'docstore-migrate: follow, drain, reset and schema=14'
-          --expect-suite 'docstore-migrate: follow, drain, reset and schema=14'
