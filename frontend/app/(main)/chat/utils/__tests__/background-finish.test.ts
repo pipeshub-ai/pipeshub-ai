@@ -63,6 +63,15 @@ describe('an answer that finishes in a chat the user is not looking at', () => {
     expect(unread()).toEqual(['conv-1']);
   });
 
+  it('marks the chat unread but shows no toast when the caller already told the person', () => {
+    const slotId = seed('conv-1');
+
+    notifyAnswerFinishedInBackground(slotId, false, { toast: false });
+
+    expect(unread()).toEqual(['conv-1']);
+    expect(toasts()).toHaveLength(0);
+  });
+
   it('shows no description when the chat has no known title', () => {
     const slotId = seed('conv-1');
 
