@@ -124,6 +124,9 @@ interface QuestionField {
   key: string;
 }
 
+const TOOL_APPROVAL_VALIDATE_PATH =
+  /^\/api\/v1\/mcp-servers\/tool-approvals\/[^/]+\/validate$/;
+
 /** MCP tools whose `query` argument is a question typed for chat or search. */
 const MCP_QUESTION_TOOLS = new Set(['pipeshub_chat', 'pipeshub_search']);
 
@@ -441,8 +444,22 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    // An edited tool call is checked before it is answered, and the answer goes through
+    // /api/v1/conversations/, which is skipped above. Its body must reach the check
+    // unchanged, or the check passes values the answer then sends differently. Python
+    // validates it against the tool's schema; the web app renders it as React text. The
+    // approval id in the path is still checked below.
+    const isToolApprovalCheck =
+      req.method === 'POST' &&
+      TOOL_APPROVAL_VALIDATE_PATH.test(req.path);
+
     // Validate request body
-    if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+    if (
+      !isToolApprovalCheck &&
+      req.body &&
+      typeof req.body === 'object' &&
+      !Array.isArray(req.body)
+    ) {
       // Skip if body is a Buffer (file upload)
       if (!(req.body instanceof Buffer)) {
         // A chat or search question made through MCP is passed through as
