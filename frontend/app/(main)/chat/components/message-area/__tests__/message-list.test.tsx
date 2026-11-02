@@ -854,6 +854,32 @@ describe('MessageList — blur above the composer dock', () => {
     }
   });
 
+  it('a card appearing above the composer leaves a reader who scrolled up where they are', () => {
+    let height = 150;
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? height : 0;
+      },
+    });
+    try {
+      open();
+      scrollTo(0);
+
+      height = 400;
+      act(() => {
+        for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+      });
+
+      expect(scroller().style.getPropertyValue('--composer-dock-height')).toBe('400px');
+      expect(scroller().scrollTop).toBe(0);
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+    }
+  });
+
   it('keeps its full height above a full composer', () => {
     withDockHeight(300, () => {
       open();

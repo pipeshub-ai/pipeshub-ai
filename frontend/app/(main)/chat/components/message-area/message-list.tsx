@@ -943,8 +943,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       const height = composerDockRef.current?.offsetHeight ?? 0;
       const grew = height - lastDockHeightRef.current;
       // The dock grows upward over the transcript (an approval card from another chat appears above
-      // the composer): scroll by as much, so what sat just above the composer stays in view.
-      if (grew > 0 && lastDockHeightRef.current > 0) container.scrollTop += grew;
+      // the composer): scroll by as much, so what sat just above the composer stays in view. Only
+      // when the latest message's end was in view; a reader up-thread stays put.
+      if (grew > 0 && lastDockHeightRef.current > 0 && !isScrolledUpRef.current) {
+        const tail = measureTail();
+        // visibleBottom is measured with the grown dock; the end was in view above the old one.
+        if (tail && tail.bottom <= tail.visibleBottom + grew + 1) container.scrollTop += grew;
+      }
       lastDockHeightRef.current = height;
       setComposerDockHeight(height);
     };
@@ -957,7 +962,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     if (composerDockRef.current) observer.observe(composerDockRef.current);
 
     return () => observer.disconnect();
-  }, [recalcSpacerHeight, hasComposer]);
+  }, [recalcSpacerHeight, hasComposer, measureTail]);
 
   // ── 3b. Streaming→final scroll-position guard ────────────────────
   // When the assistant-ui runtime atomically swaps the streaming message for
