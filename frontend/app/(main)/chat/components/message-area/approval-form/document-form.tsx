@@ -2,7 +2,7 @@
 
 import React, { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Button, DropdownMenu, Flex, Popover, Text } from '@radix-ui/themes';
+import { Box, Button, DropdownMenu, Flex, Popover, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { documentLayout } from './document-layout';
 import { Field, SchemaForm } from './schema-form';
@@ -13,8 +13,6 @@ interface DocumentFormProps {
   values: Record<string, unknown>;
   /** A message per field name, already translated. */
   errors: Record<string, string>;
-  /** Field names whose value differs from the call as asked. */
-  changed?: Set<string>;
   onChange: (name: string, value: unknown) => void;
 }
 
@@ -22,7 +20,7 @@ const blank = (v: unknown) => v === undefined || v === null || v === '' || (Arra
 
 /** The call's arguments laid out as the thing it makes: recipients, a title, settings as pills,
  * other lists as chip rows, the text, and anything else folded under "More fields". */
-export function DocumentForm({ fields, values, errors, changed, onChange }: DocumentFormProps) {
+export function DocumentForm({ fields, values, errors, onChange }: DocumentFormProps) {
   const { t } = useTranslation();
   const base = useId();
   const layout = useMemo(() => documentLayout(fields), [fields]);
@@ -33,7 +31,6 @@ export function DocumentForm({ fields, values, errors, changed, onChange }: Docu
     field,
     value: values[field.name],
     error: errors[field.name],
-    changed: changed?.has(field.name) ?? false,
     onChange: (value: unknown) => onChange(field.name, value),
   });
   const pillErrors = layout.pills.filter((f) => errors[f.name]);
@@ -66,7 +63,7 @@ export function DocumentForm({ fields, values, errors, changed, onChange }: Docu
           </Button>
           {showMore && (
             <Box mt="3">
-              <SchemaForm fields={layout.more} values={values} errors={errors} changed={changed} onChange={onChange} />
+              <SchemaForm fields={layout.more} values={values} errors={errors} onChange={onChange} />
             </Box>
           )}
         </Box>
@@ -77,8 +74,7 @@ export function DocumentForm({ fields, values, errors, changed, onChange }: Docu
 
 type RegionProps = React.ComponentProps<typeof Field>;
 
-function Headline({ id, field, value, error, changed, onChange }: RegionProps) {
-  const { t } = useTranslation();
+function Headline({ id, field, value, error, onChange }: RegionProps) {
   const errorId = `${id}-error`;
   return (
     <Flex direction="column" gap="1">
@@ -108,7 +104,6 @@ function Headline({ id, field, value, error, changed, onChange }: RegionProps) {
             color: 'var(--gray-12)',
           }}
         />
-        {changed && <Badge size="1" variant="soft" color="gray">{t('chat.toolApproval.edited')}</Badge>}
       </Flex>
       {error && <Text id={errorId} size="1" style={{ color: 'var(--red-11)' }}>{error}</Text>}
     </Flex>
@@ -150,7 +145,7 @@ const PillTrigger = React.forwardRef<HTMLButtonElement, PillTriggerProps>(functi
   );
 });
 
-function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
+function Pill({ id, field, value, error, onChange }: RegionProps) {
   const { t } = useTranslation();
   // An optional field the call didn't set reads "not set", a yes/no one too: nothing is sent for it.
   const empty = blank(value);
@@ -160,7 +155,6 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
   const face = (icon: boolean) => (
     <>
       <Text truncate>{text}</Text>
-      {changed && <Badge size="1" variant="soft" color="gray">{t('chat.toolApproval.edited')}</Badge>}
       {icon && <MaterialIcon name="expand_more" size={16} color="var(--gray-10)" />}
     </>
   );
@@ -202,7 +196,7 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
         <PillTrigger {...trigger} face={face(true)} />
       </Popover.Trigger>
       <Popover.Content size="1" minWidth="calc(var(--space-9) * 4)" maxWidth="calc(var(--space-9) * 5)">
-        <Field id={id} field={field} value={value} error={error} changed={changed} onChange={onChange} />
+        <Field id={id} field={field} value={value} error={error} onChange={onChange} />
       </Popover.Content>
     </Popover.Root>
   );

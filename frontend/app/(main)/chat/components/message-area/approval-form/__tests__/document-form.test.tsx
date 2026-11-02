@@ -28,7 +28,6 @@ function Harness({ initial, errors = {}, onChange = vi.fn() }: { initial: Record
       fields={fields}
       values={values}
       errors={errors}
-      changed={new Set(Object.keys(values).filter((k) => values[k] !== initial[k]))}
       onChange={(name, value) => {
         onChange(name, value);
         setValues((prev) => ({ ...prev, [name]: value }));
@@ -104,13 +103,6 @@ describe('DocumentForm', () => {
     fireEvent.click(pill);
     expect(screen.getAllByText('Too high').length).toBe(1);
     expect(screen.getByRole('spinbutton', { name: 'Priority' }).getAttribute('aria-invalid')).toBe('true');
-  });
-
-  it('marks an edited headline', () => {
-    renderInTheme(<Harness initial={{ to: [], subject: 'Hello' }} />);
-    expect(screen.queryByText('Edited')).toBeNull();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Subject' }), { target: { value: 'Hi' } });
-    expect(screen.getByText('Edited')).toBeTruthy();
   });
 
   it('an enum pill opens a list and writes back the value as it was', async () => {

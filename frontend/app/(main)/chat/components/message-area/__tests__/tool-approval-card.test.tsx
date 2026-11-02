@@ -193,6 +193,8 @@ function editable(overrides: Partial<ToolApprovalDetails> = {}): ToolApprovalDet
 
 const sent = () => chat.buildStreamChatRequestForSlot.mock.calls.at(-1)?.[3];
 const titleField = () => screen.getByRole('textbox', { name: /Title/ }) as HTMLInputElement;
+// The visible count on the title line (a hidden live region repeats it for screen readers).
+const changeLabel = (text: string | RegExp) => screen.queryAllByText(text).find((el) => el.getAttribute('tabindex') === '0') ?? null;
 
 describe('ToolApprovalCard: editing and notes', () => {
   it('offers Edit only on a card that can be edited', () => {
@@ -208,18 +210,19 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy();
   });
 
-  it('marks an edited field, hides both "ask again" choices, and Reset puts it back', () => {
+  it('counts the changes on the title line, hides both "ask again" choices, and Reset puts it back', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(changeLabel(/^\d+ changes?$/)).toBeNull();
 
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
-    expect(screen.getByText('Edited')).toBeTruthy();
+    expect(changeLabel('1 change')).toBeTruthy();
     expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: 'Allow for this chat' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect(titleField().value).toBe('Login fails');
-    expect(screen.queryByText('Edited')).toBeNull();
+    expect(changeLabel('1 change')).toBeNull();
     expect(screen.getByRole('checkbox', { name: "Don't ask again for this tool" })).toBeTruthy();
   });
 
@@ -251,7 +254,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     const noteField = screen.getByRole('textbox', { name: 'Note' });
     fireEvent.change(noteField, { target: { value: 'x' } });
     fireEvent.change(noteField, { target: { value: '' } });
-    expect(screen.queryByText('Edited')).toBeNull();
+    expect(changeLabel(/^\d+ changes?$/)).toBeNull();
   });
 
   it('reopens a refused edit on what the person sent, with the errors', () => {
@@ -262,7 +265,7 @@ describe('ToolApprovalCard: editing and notes', () => {
       />,
     );
     expect(titleField().value).toBe('Bug');
-    expect(screen.getByText('Edited')).toBeTruthy();
+    expect(changeLabel('1 change')).toBeTruthy();
     expect(screen.getByText('Title is too vague')).toBeTruthy();
   });
 
@@ -611,13 +614,31 @@ describe('ToolApprovalCard: house style', () => {
     expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
   });
 
-  it('changed field shows a gray Edited badge', () => {
-    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
-    const badge = screen.getByText('Edited');
-    expect(badge.getAttribute('data-accent-color')).toBe('gray');
-    expect(variant(badge)).toBe('rt-variant-soft');
+  it('one quiet label counts the changes, with no per-field marker, and names them on focus', async () => {
+    const schema = {
+      type: 'object',
+      properties: { title: { type: 'string' }, count: { type: 'integer' }, body: { type: 'string' } },
+    };
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({ arguments: { title: 'Login fails', count: 1, body: 'Steps' }, editedArguments: { title: 'Bug', count: 2, body: 'Steps' }, inputSchema: schema })}
+        isLatest
+      />,
+    );
+    expect(screen.queryByText('Edited')).toBeNull();
+    const label = changeLabel('2 changes')!;
+    // Plain secondary text on the title line, not a badge.
+    expect(label.className).not.toContain('rt-Badge');
+    expect(label.getAttribute('tabindex')).toBe('0');
+    expect(label.closest('[data-testid="tool-approval-card"]')).toBeTruthy();
+    const title = screen.getByText('Create an issue in Jira');
+    expect(label.parentElement).toBe(title.parentElement);
+    // Announced politely as the count changes.
+    const live = screen.getAllByRole('status').find((el) => el.textContent === '2 changes');
+    expect(live?.getAttribute('aria-live')).toBe('polite');
+
+    await act(async () => { label.focus(); });
+    expect((await screen.findByRole('tooltip', {}, { timeout: 3000 })).textContent).toBe('Changed: Title, Count');
   });
 
   it('narrow: the action groups take full width with no margin pushing past the card', () => {
