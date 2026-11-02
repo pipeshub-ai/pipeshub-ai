@@ -1532,8 +1532,8 @@
         "declined": "You declined {{tool}}",
         "expired": "{{tool}} didn't run: the request expired",
         "allowedNotRun": "You allowed {{tool}}, but it didn't run",
-        "allowedWithChanges": "Allowed with changes",
-        "declinedWithNote": "Declined: {{note}}",
+        "allowedWithChanges": "You allowed {{tool}} with changes",
+        "declinedWithNote": "You declined {{tool}}: {{note}}",
         "changedFields": "Changed: {{fields}}"
       },
       "edit": "Edit",

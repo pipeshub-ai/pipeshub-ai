@@ -1529,8 +1529,8 @@
         "declined": "{{tool}}을(를) 거부했습니다",
         "expired": "{{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다",
         "allowedNotRun": "{{tool}}을(를) 허용했지만 실행되지 않았습니다",
-        "allowedWithChanges": "변경 후 허용함",
-        "declinedWithNote": "거부함: {{note}}",
+        "allowedWithChanges": "{{tool}}을(를) 변경 후 허용했습니다",
+        "declinedWithNote": "{{tool}}을(를) 거부했습니다: {{note}}",
         "changedFields": "변경됨: {{fields}}"
       },
       "edit": "편집",

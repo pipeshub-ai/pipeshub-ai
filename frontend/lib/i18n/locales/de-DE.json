@@ -1443,8 +1443,8 @@
         "declined": "Sie haben {{tool}} abgelehnt",
         "expired": "{{tool}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen",
         "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt",
-        "allowedWithChanges": "Mit Änderungen zugelassen",
-        "declinedWithNote": "Abgelehnt: {{note}}",
+        "allowedWithChanges": "Sie haben {{tool}} mit Änderungen zugelassen",
+        "declinedWithNote": "Sie haben {{tool}} abgelehnt: {{note}}",
         "changedFields": "Geändert: {{fields}}"
       },
       "edit": "Bearbeiten",

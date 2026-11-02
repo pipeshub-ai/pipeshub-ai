@@ -1464,8 +1464,8 @@
         "declined": "Rechazaste {{tool}}",
         "expired": "{{tool}} no se ejecutó: la solicitud caducó",
         "allowedNotRun": "Permitiste {{tool}}, pero no se ejecutó",
-        "allowedWithChanges": "Permitido con cambios",
-        "declinedWithNote": "Rechazado: {{note}}",
+        "allowedWithChanges": "Permitiste {{tool}} con cambios",
+        "declinedWithNote": "Rechazaste {{tool}}: {{note}}",
         "changedFields": "Cambiado: {{fields}}"
       },
       "edit": "Editar",

@@ -1443,8 +1443,8 @@
         "declined": "आपने {{tool}} को मना किया",
         "expired": "{{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई",
         "allowedNotRun": "आपने {{tool}} की अनुमति दी, लेकिन यह नहीं चला",
-        "allowedWithChanges": "बदलावों के साथ अनुमति दी",
-        "declinedWithNote": "अस्वीकार किया: {{note}}",
+        "allowedWithChanges": "आपने बदलावों के साथ {{tool}} की अनुमति दी",
+        "declinedWithNote": "आपने {{tool}} को मना किया: {{note}}",
         "changedFields": "बदला गया: {{fields}}"
       },
       "edit": "संपादित करें",

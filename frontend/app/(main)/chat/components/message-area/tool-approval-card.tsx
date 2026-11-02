@@ -537,9 +537,9 @@ function Receipt({ item }: { item: SettledToolApproval }) {
   const [open, setOpen] = useState(false);
   const icon = RECEIPT_ICON[item.answer];
   const text = item.note
-    ? t('chat.toolApproval.receipt.declinedWithNote', { note: item.note })
+    ? t('chat.toolApproval.receipt.declinedWithNote', { tool: item.tool, note: item.note })
     : item.changedFields
-      ? t('chat.toolApproval.receipt.allowedWithChanges')
+      ? t('chat.toolApproval.receipt.allowedWithChanges', { tool: item.tool })
       : t(`chat.toolApproval.receipt.${item.answer}`, { tool: item.tool });
   return (
     <Box>

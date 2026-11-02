@@ -1596,8 +1596,8 @@
         "declined": "Zamítli jste {{tool}}",
         "expired": "{{tool}} se nespustil: platnost požadavku vypršela",
         "allowedNotRun": "Povolili jste {{tool}}, ale nespustil se",
-        "allowedWithChanges": "Povoleno se změnami",
-        "declinedWithNote": "Zamítnuto: {{note}}",
+        "allowedWithChanges": "Povolili jste {{tool}} se změnami",
+        "declinedWithNote": "Zamítli jste {{tool}}: {{note}}",
         "changedFields": "Změněno: {{fields}}"
       },
       "edit": "Upravit",

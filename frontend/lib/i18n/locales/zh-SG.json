@@ -1529,8 +1529,8 @@
         "declined": "你拒绝了 {{tool}}",
         "expired": "{{tool}} 未运行：请求已过期",
         "allowedNotRun": "你允许了 {{tool}}，但它没有运行",
-        "allowedWithChanges": "已允许（有修改）",
-        "declinedWithNote": "已拒绝：{{note}}",
+        "allowedWithChanges": "你允许了 {{tool}}（有修改）",
+        "declinedWithNote": "你拒绝了 {{tool}}：{{note}}",
         "changedFields": "已修改：{{fields}}"
       },
       "edit": "编辑",
