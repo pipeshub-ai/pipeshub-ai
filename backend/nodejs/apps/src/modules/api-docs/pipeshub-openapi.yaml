@@ -2373,6 +2373,8 @@ components:
               type: string
             toolTitle:
               type: string
+              nullable: true
+              description: The tool's title from its server; null when it has none.
             serverName:
               type: string
             kind:
@@ -59826,12 +59828,13 @@ paths:
       description: >-
         The calls waiting on the caller in their chats in the app, newest first, each with its
         chat's title and agent. Calls from Slack, expired or answered calls, and calls whose chat
-        isn't the caller's are left out. Available to a web sign-in only.
+        isn't the caller's are left out.
+
+        **Session only.** The bearer token must be the user's interactive session JWT. OAuth
+        access tokens and personal access tokens (`phpat_...`) are rejected with `403`.
       operationId: listPendingToolApprovals
       security:
         - bearerAuth: []
-        - oauth2:
-            - mcp:read
       responses:
         '200':
           description: The waiting calls
@@ -59852,7 +59855,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller used an OAuth token or personal access token (only a web sign-in can answer an approval), or lacks the `mcp:read` scope
+          description: The caller used an OAuth access token or personal access token (only a web sign-in can answer an approval)
           content:
             application/json:
               schema:
@@ -59869,13 +59872,15 @@ paths:
         - MCP Server Instances
       summary: Check edited arguments for a tool call waiting for approval
       description: >-
-        Runs the checks on an edit without answering the approval, which stays open. Available to
-        a web sign-in only.
+        Runs the checks on an edit without answering the approval, which stays open. The body
+        reaches the checks unchanged, as the answer does: the app-wide XSS filter does not check
+        or rewrite it.
+
+        **Session only.** The bearer token must be the user's interactive session JWT. OAuth
+        access tokens and personal access tokens (`phpat_...`) are rejected with `403`.
       operationId: validateMcpToolApprovalEdit
       security:
         - bearerAuth: []
-        - oauth2:
-            - mcp:write
       parameters:
         - name: approvalId
           in: path
@@ -59896,6 +59901,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/McpToolApprovalValidateResponse'
+        '400':
+          description: |
+            Refused before authentication: the approval id in the path looks like markup to the
+            app-wide XSS filter, or the JSON body does not parse (`HTTP_BAD_REQUEST`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing, invalid or expired bearer token
           content:
@@ -59903,7 +59916,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller used an OAuth token or personal access token (only a web sign-in can answer an approval), or lacks the `mcp:write` scope
+          description: The caller used an OAuth access token or personal access token (only a web sign-in can answer an approval)
           content:
             application/json:
               schema:
@@ -59916,6 +59929,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '410':
           description: The approval has expired or was already answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            The body is not a validate request: `argsHash` or `arguments` is missing or of the
+            wrong type, `argsHash` is longer than 64 characters, or `arguments` is longer than
+            64,000 characters as JSON. A valid request whose edit can't be approved is a `200`
+            with `errors`.
           content:
             application/json:
               schema:
