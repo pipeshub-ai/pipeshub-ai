@@ -175,6 +175,17 @@ describe('sessionToken', () => {
     expect(sessionToken()()).toBe(true);
   });
 
+  it('tells the resets whether the app stays open on another org', () => {
+    const reset = vi.fn();
+    const stop = onSessionEnd(reset);
+
+    clearSessionCache();
+    clearSessionCache({ refetch: true });
+
+    expect(reset.mock.calls).toEqual([[{ refetch: false }], [{ refetch: true }]]);
+    stop();
+  });
+
   it('has already moved on when the resets run', () => {
     const before = sessionToken();
     let duringReset: (() => boolean) | null = null;

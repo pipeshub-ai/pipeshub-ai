@@ -18,6 +18,7 @@ vi.mock('@/config', async () => {
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { apiClient } = await import('@/lib/api/axios-instance');
 const { useFeatureFlagsStore, selectFeatureFlagsLoaded } = await import('../feature-flags-store');
+const { clearSessionCache } = await import('@/lib/api/session-cache');
 
 const pending: Array<(status: number, flags?: Record<string, boolean>) => void> = [];
 function deferredAdapter(config: InternalAxiosRequestConfig) {
@@ -116,6 +117,22 @@ describe('feature flags at session end', () => {
     pending[1](200, { NEW: true });
     await flush();
     expect(useFeatureFlagsStore.getState().flags).toEqual({ NEW: true });
+  });
+
+  it('are loaded again for the new org when the session ends on an org switch (app stays open)', async () => {
+    const load = useFeatureFlagsStore.getState().fetchFlags();
+    await flush();
+    pending[0](200, { ENABLE_PROJECTS: true });
+    await load;
+
+    clearSessionCache({ refetch: true });
+    expect(loaded()).toBe(false);
+    await flush();
+
+    expect(pending).toHaveLength(2);
+    pending[1](200, { ENABLE_PROJECTS: false });
+    await flush();
+    expect(useFeatureFlagsStore.getState().flags).toEqual({ ENABLE_PROJECTS: false });
   });
 
   it('a refresh within the session (Labs save) still updates them', async () => {

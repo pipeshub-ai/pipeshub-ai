@@ -1,10 +1,17 @@
 import { mutate, unload } from 'swr';
 
-const resetters = new Set<() => void>();
+/** How the session ended: `refetch` is true when the app stays open on another org (see clearSessionCache). */
+export interface SessionEnd {
+  refetch: boolean;
+}
+
+type SessionResetter = (end: SessionEnd) => void;
+
+const resetters = new Set<SessionResetter>();
 let generation = 0;
 
 /** Registers per-user state that must not outlive the session. Returns a function that unregisters it. */
-export function onSessionEnd(reset: () => void): () => void {
+export function onSessionEnd(reset: SessionResetter): () => void {
   resetters.add(reset);
   return () => {
     resetters.delete(reset);
@@ -49,7 +56,7 @@ export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions 
   // reset after that would throw away the new session's answer.
   resetters.forEach((reset) => {
     try {
-      reset();
+      reset({ refetch });
     } catch (error) {
       console.error('Session reset failed:', error);
     }

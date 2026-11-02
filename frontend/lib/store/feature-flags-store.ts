@@ -83,10 +83,12 @@ export const useFeatureFlagsStore = create<FeatureFlagsStore>()(
   ),
 );
 
-// Flags belong to the org signed in to; the next sign-in (maybe another server on desktop) loads its own.
-onSessionEnd(() => {
+// Flags belong to the org signed in to; the next sign-in (maybe another server on desktop) loads its
+// own through HealthGate. A switch to another org keeps the app on screen, so it loads them here.
+onSessionEnd(({ refetch }) => {
   fetchPromise = null;
   useFeatureFlagsStore.setState(useFeatureFlagsStore.getInitialState(), true);
+  if (refetch) void useFeatureFlagsStore.getState().fetchFlags();
 });
 
 export const selectFeatureFlagsLoaded = (s: FeatureFlagsStore) => s.flags !== null;
