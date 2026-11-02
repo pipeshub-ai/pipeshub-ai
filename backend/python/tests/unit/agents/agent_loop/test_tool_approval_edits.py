@@ -85,13 +85,25 @@ def test_pattern_mismatch_refused() -> None:
 
 @pytest.mark.parametrize("pattern", ["^(a+)+$", "^(a|a)+$", "^(a|aa)+$"])
 def test_catastrophic_pattern_is_bounded(pattern: str) -> None:
-    # A server's regex can backtrack for ages; the check gives up within its budget, and a value
-    # it could not check is left to the tool to reject.
+    # A server's regex can backtrack for ages; the check gives up within its budget and refuses
+    # a value it could not check.
     p = _pattern_call(pattern, "a")
     start = time.monotonic()
     errors = _check(p, {"q": "a" * 40 + "!"})
     assert time.monotonic() - start < 1
     assert all(e.path == "/q" for e in errors)
+
+
+_UNCHECKED = "This value couldn't be checked in time. Shorten it or allow the original."
+
+
+def test_a_value_that_cannot_be_checked_in_time_is_refused() -> None:
+    # The tool doesn't check schema patterns itself, so an unchecked value must not get through.
+    p = _pattern_call("^(a|aa)+$", "a")
+    errors = _check(p, {"q": "a" * 40 + "!"})
+    assert [(e.path, e.message) for e in errors] == [("/q", _UNCHECKED)]
+    # The call as asked is a plain allow, not an edit, and stays answerable.
+    assert _check(p, {"q": "a"}) == []
 
 
 def test_one_budget_covers_every_pattern_and_skips_are_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -102,13 +114,15 @@ def test_one_budget_covers_every_pattern_and_skips_are_logged(caplog: pytest.Log
     start = time.monotonic()
     with caplog.at_level(logging.WARNING, logger=approvals.__name__):
         # Distinct strings, as parsed JSON gives: the log finds the field by its value's identity.
-        assert _check(p, {f: f"{value}{f}" for f in fields}) == []
+        errors = _check(p, {f: f"{value}{f}" for f in fields})
     # Four timeouts would take four budgets; one shared budget ends them all.
     assert time.monotonic() - start < approvals._PATTERN_BUDGET_SECONDS * 2 + 0.3
     # One line per edit: the tool, the first field skipped, and how many checks were.
     assert len(caplog.records) == 1
     assert "/tools/gmail/send_email" in caplog.text and "'/q0'" in caplog.text and "4 pattern checks" in caplog.text
     assert value not in caplog.text
+    # A value its pattern couldn't be checked against is refused, at the first such field.
+    assert [(e.path, e.message) for e in errors] == [("/q0", _UNCHECKED)]
 
 
 def test_a_spent_budget_skips_the_rest_without_work(caplog: pytest.LogCaptureFixture) -> None:
@@ -117,8 +131,9 @@ def test_a_spent_budget_skips_the_rest_without_work(caplog: pytest.LogCaptureFix
     edited = {"items": ["a" * 40 + "!"] + [f"a{i}" for i in range(20_000)]}
     start = time.monotonic()
     with caplog.at_level(logging.WARNING, logger=approvals.__name__):
-        _check(p, edited)
+        errors = _check(p, edited)
     assert time.monotonic() - start < 1
+    assert [(e.path, e.message) for e in errors] == [("/items/0", _UNCHECKED)]
     assert len(caplog.records) == 1 and "'/items/0'" in caplog.text
 
 
