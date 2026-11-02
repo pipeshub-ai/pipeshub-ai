@@ -5,22 +5,20 @@ import { readMongoFence } from './fence';
 import { follow, followStart } from './follow';
 import { migrateOffline } from './offline';
 import { cutover, onlineStart, onlineVerify, unfreeze } from './online';
-import { reverseFollow, rollbackOnline } from './reverse-follow';
 import { preflight } from './preflight';
 import { reset } from './reset';
-import { rollback } from './reverse';
 import { MigrationRuntime } from './runtime';
 import { postLoad, runMigrateJob } from './schema';
 import { JobState } from './state';
 import { verifyAll } from './verify';
 
-interface Args {
+export interface Args {
   cmd: string;
   sub?: string;
   flags: Map<string, string | true>;
 }
 
-function parse(argv: string[]): Args {
+export function parse(argv: string[]): Args {
   const [cmd = 'help', ...rest] = argv;
   const flags = new Map<string, string | true>();
   let sub: string | undefined;
@@ -35,6 +33,88 @@ function parse(argv: string[]): Args {
     } else sub ??= a;
   }
   return { cmd, ...(sub ? { sub } : {}), flags };
+}
+
+/** A command line that cannot be run as written: exit 2, before anything is touched. */
+export class UsageError extends Error {}
+
+/** The text operand of `--k`: absent is undefined; a flag without a value, or with an empty one, is refused rather than read as "on". */
+export function strFlag(a: Args, k: string): string | undefined {
+  if (!a.flags.has(k)) return undefined;
+  const v = a.flags.get(k);
+  if (typeof v !== 'string' || v.trim() === '')
+    throw new UsageError(`--${k} needs a value`);
+  return v;
+}
+
+/** The number operand of `--k`: finite and within the range of the option, or refused. */
+export function numFlag(
+  a: Args,
+  k: string,
+  o: { min: number; max?: number; int?: boolean },
+): number | undefined {
+  const v = strFlag(a, k);
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (
+    !Number.isFinite(n) ||
+    n < o.min ||
+    (o.max !== undefined && n > o.max) ||
+    (o.int === true && !Number.isInteger(n))
+  )
+    throw new UsageError(
+      `--${k} must be ${o.int === true ? 'a whole number' : 'a number'} from ${String(o.min)}${o.max !== undefined ? ` to ${String(o.max)}` : ''}, not '${v}'`,
+    );
+  return n;
+}
+
+const COMMANDS = new Set([
+  'preflight',
+  'schema',
+  'bulk',
+  'follow',
+  'post_load',
+  'verify',
+  'drain',
+  'migrate',
+  'cutover',
+  'unfreeze',
+  'reset',
+  'status',
+  'reverse',
+  'rollback',
+]);
+
+/** Everything a command reads from its flags, checked before a connection is opened. */
+function plan(a: Args): {
+  only?: string[];
+  stopAfterBatches?: number;
+  idleMs: number;
+  sample?: number;
+  waitMs: number;
+  secs: Record<string, number | undefined>;
+  failAt?: string;
+} {
+  const onlyRaw = strFlag(a, 'only');
+  const only = onlyRaw?.split(',').filter((x) => x.trim() !== '');
+  if (only?.length === 0) throw new UsageError('--only needs collection names');
+  const stop = numFlag(a, 'stop-after-batches', { min: 1, int: true });
+  const idle = numFlag(a, 'until-idle', { min: 0 });
+  const sample = numFlag(a, 'sample', { min: 0.000001, max: 1 });
+  const wait = numFlag(a, 'wait', { min: 0 });
+  const secs: Record<string, number | undefined> = {};
+  for (const k of ['drain-wait', 'max-freeze', 'grace', 'max-lag'])
+    secs[k] = numFlag(a, k, { min: 0 });
+  const failAt = strFlag(a, 'fail-at');
+  return {
+    ...(only ? { only } : {}),
+    ...(stop !== undefined ? { stopAfterBatches: stop } : {}),
+    idleMs: (idle ?? 0) * 1000,
+    ...(sample !== undefined ? { sample } : {}),
+    waitMs: (wait ?? 300) * 1000,
+    secs,
+    ...(failAt !== undefined ? { failAt } : {}),
+  };
 }
 
 const out = (o: unknown): void =>
@@ -61,10 +141,38 @@ export async function runCli(
     process.stdout.write(`${HELP}\n`);
     return 0;
   }
-  const only =
-    typeof a.flags.get('only') === 'string'
-      ? String(a.flags.get('only')).split(',')
-      : undefined;
+  // what can be refused without a server is refused first: no configuration is read and no connection is opened
+  if (!COMMANDS.has(a.cmd)) {
+    process.stderr.write(`${redact(HELP)}\n`);
+    return 2;
+  }
+  if (a.cmd === 'reset' && !a.flags.has('yes')) {
+    process.stderr.write(
+      'reset deletes every copied row in PostgreSQL; pass --yes\n',
+    );
+    return 2;
+  }
+  if (
+    a.cmd === 'migrate' &&
+    !a.flags.has('online') &&
+    !a.flags.has('offline')
+  ) {
+    process.stderr.write(
+      'use `migrate --offline` (the application is stopped) or `migrate --online` (it keeps running)\n',
+    );
+    return 2;
+  }
+  let p: ReturnType<typeof plan>;
+  try {
+    p = plan(a);
+  } catch (e) {
+    if (e instanceof UsageError) {
+      process.stderr.write(`${e.message}\n`);
+      return 2;
+    }
+    throw e;
+  }
+  const only = p.only;
   const cfg = loadConfig(env);
   // drain only touches MongoDB: it runs inside the application container, which has no migrate login
   const rt = await MigrationRuntime.open(
@@ -97,12 +205,11 @@ export async function runCli(
       }
       case 'bulk': {
         const js = await JobState.attach(rt);
-        const stop = a.flags.get('stop-after-batches');
         try {
           await bulk(rt, js, {
             ...(only ? { only } : {}),
-            ...(typeof stop === 'string'
-              ? { stopAfterBatches: Number(stop) }
+            ...(p.stopAfterBatches !== undefined
+              ? { stopAfterBatches: p.stopAfterBatches }
               : {}),
             log,
           });
@@ -123,24 +230,25 @@ export async function runCli(
           out({ ok: true, job: js.id });
           return 0;
         }
-        const idle =
-          typeof a.flags.get('until-idle') === 'string'
-            ? Number(a.flags.get('until-idle')) * 1000
-            : 0;
         const ac = new AbortController();
-        process.once('SIGTERM', () => {
+        const onSignal = (): void => {
           ac.abort();
-        });
-        process.once('SIGINT', () => {
-          ac.abort();
-        });
-        const r = await follow(rt, js, {
-          untilIdleMs: idle,
-          stop: ac.signal,
-          log,
-        });
-        out({ ok: true, ...r });
-        return 0;
+        };
+        process.once('SIGTERM', onSignal);
+        process.once('SIGINT', onSignal);
+        try {
+          const r = await follow(rt, js, {
+            untilIdleMs: p.idleMs,
+            stop: ac.signal,
+            log,
+          });
+          out({ ok: true, ...r });
+          return 0;
+        } finally {
+          // a handler left behind would hold the process after the command, and a second command would add another
+          process.off('SIGTERM', onSignal);
+          process.off('SIGINT', onSignal);
+        }
       }
       case 'post_load': {
         const r = await postLoad(rt, (m) => {
@@ -151,18 +259,16 @@ export async function runCli(
       }
       case 'verify': {
         if (a.flags.has('incremental')) {
-          const sample = a.flags.get('sample');
           const r = await onlineVerify(rt, {
-            ...(typeof sample === 'string' ? { sample: Number(sample) } : {}),
+            ...(p.sample !== undefined ? { sample: p.sample } : {}),
             log,
           });
           out(r);
           return r.ok ? 0 : 1;
         }
-        const sample = a.flags.get('sample');
         const r = await verifyAll(rt, {
           ...(only ? { only } : {}),
-          ...(typeof sample === 'string' ? { sample: Number(sample) } : {}),
+          ...(p.sample !== undefined ? { sample: p.sample } : {}),
           log,
         });
         out(r);
@@ -174,12 +280,8 @@ export async function runCli(
           out({ ok: true, changed, fence: (await readMongoFence(rt)).mode });
           return 0;
         }
-        const wait =
-          typeof a.flags.get('wait') === 'string'
-            ? Number(a.flags.get('wait')) * 1000
-            : 300_000;
         const r = await drain(rt, {
-          waitMs: wait,
+          waitMs: p.waitMs,
           force: a.flags.has('force'),
           confirmArmed: a.flags.has('confirm-fence-armed'),
           log,
@@ -189,20 +291,13 @@ export async function runCli(
       }
       case 'migrate': {
         if (a.flags.has('online')) {
-          const sample = a.flags.get('sample');
           const r = await onlineStart(rt, {
             dryRun: a.flags.has('dry-run'),
-            ...(typeof sample === 'string' ? { sample: Number(sample) } : {}),
+            ...(p.sample !== undefined ? { sample: p.sample } : {}),
             log,
           });
           out(r);
           return r.ok ? 0 : 1;
-        }
-        if (!a.flags.has('offline')) {
-          process.stderr.write(
-            'use `migrate --offline` (the application is stopped) or `migrate --online` (it keeps running)\n',
-          );
-          return 2;
         }
         const r = await migrateOffline(rt, {
           dryRun: a.flags.has('dry-run'),
@@ -214,10 +309,8 @@ export async function runCli(
         return r.ok ? 0 : 1;
       }
       case 'cutover': {
-        const secs = (k: string, d: number): number => {
-          const v = a.flags.get(k);
-          return typeof v === 'string' ? Number(v) * 1000 : d;
-        };
+        const secs = (k: string, d: number): number =>
+          (p.secs[k] ?? d / 1000) * 1000;
         const r = await cutover(rt, {
           log,
           dryRun: a.flags.has('dry-run'),
@@ -228,9 +321,8 @@ export async function runCli(
           lagMaxMs: secs('max-lag', 5_000),
           fenceArmed: a.flags.has('fence-armed'),
           shadowClean: a.flags.has('shadow-clean'),
-          ...(typeof a.flags.get('fail-at') === 'string' &&
-          env.MIGRATE_TEST_HOOKS === '1'
-            ? { failAt: String(a.flags.get('fail-at')) }
+          ...(p.failAt !== undefined && env.MIGRATE_TEST_HOOKS === '1'
+            ? { failAt: p.failAt }
             : {}),
         });
         out(r);
@@ -242,38 +334,40 @@ export async function runCli(
         return 0;
       }
       case 'reverse': {
+        // loaded when used: the reverse path brings in every Mongoose model of the application, which no other command needs
+        const { reverseFollow } = await import('./reverse-follow');
         const js = await JobState.attach(rt);
-        const idle =
-          typeof a.flags.get('until-idle') === 'string'
-            ? Number(a.flags.get('until-idle')) * 1000
-            : 0;
         const ac = new AbortController();
-        process.once('SIGTERM', () => {
+        const onSignal = (): void => {
           ac.abort();
-        });
-        process.once('SIGINT', () => {
-          ac.abort();
-        });
-        const r = await reverseFollow(rt, js, {
-          untilIdleMs: idle,
-          stop: ac.signal,
-          log,
-        });
-        out({ ok: true, ...r });
-        return 0;
+        };
+        process.once('SIGTERM', onSignal);
+        process.once('SIGINT', onSignal);
+        try {
+          const r = await reverseFollow(rt, js, {
+            untilIdleMs: p.idleMs,
+            stop: ac.signal,
+            log,
+          });
+          out({ ok: true, ...r });
+          return 0;
+        } finally {
+          process.off('SIGTERM', onSignal);
+          process.off('SIGINT', onSignal);
+        }
       }
       case 'rollback': {
         if (a.flags.has('online')) {
-          const sample = a.flags.get('sample');
-          const max = a.flags.get('max-freeze');
+          const { rollbackOnline } = await import('./reverse-follow');
           const r = await rollbackOnline(rt, {
             log,
-            maxFreezeMs: typeof max === 'string' ? Number(max) * 1000 : 900_000,
-            ...(typeof sample === 'string' ? { sample: Number(sample) } : {}),
+            maxFreezeMs: (p.secs['max-freeze'] ?? 900) * 1000,
+            ...(p.sample !== undefined ? { sample: p.sample } : {}),
           });
           out(r);
           return r.ok ? 0 : 1;
         }
+        const { rollback } = await import('./reverse');
         const r = await rollback(rt, {
           reverse: a.flags.has('reverse'),
           allowWriters:
@@ -284,12 +378,6 @@ export async function runCli(
         return r.ok ? 0 : 1;
       }
       case 'reset': {
-        if (!a.flags.has('yes')) {
-          process.stderr.write(
-            'reset deletes every copied row in PostgreSQL; pass --yes\n',
-          );
-          return 2;
-        }
         const r = await reset(rt, { force: a.flags.has('force') });
         out(r);
         return r.ok ? 0 : 1;
