@@ -363,7 +363,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   })
 
   describe('listPendingToolApprovals', () => {
-    const entry = (conversationId: string, createdAt = 1) => ({ conversationId, createdAt, card: { approvalId: `ap-${conversationId}` } })
+    const entry = (conversationId: string, createdAt = 1) => ({ conversationId, createdAt, card: { approvalId: `ap-${conversationId.slice(0, 2)}` } })
     const run = async (items: any[], rows: any[]) => {
       const listVisibleSummaries = sinon.stub().resolves(rows)
       setConversationRepository({ listVisibleSummaries } as any)
@@ -376,24 +376,30 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
 
     it('lists pending with titles', async () => {
       const { body, listVisibleSummaries } = await run(
-        [entry('c1', 3), entry('c2', 2)],
-        [{ _id: 'c2', title: 'Second', sessionType: 'chat' }, { _id: 'c1', sessionType: 'chat' }])
+        [entry('aaaaaaaaaaaaaaaaaaaaaaaa', 3), entry('bbbbbbbbbbbbbbbbbbbbbbbb', 2)],
+        [{ _id: 'bbbbbbbbbbbbbbbbbbbbbbbb', title: 'Second', sessionType: 'chat' }, { _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', sessionType: 'chat' }])
       expect(executeStub.firstCall.args[0]).to.equal('http://localhost:8088/api/v1/mcp-servers/tool-approvals/pending')
-      expect(listVisibleSummaries.calledOnceWithExactly('org-1', 'user-1', ['c1', 'c2'], [])).to.equal(true)
+      expect(listVisibleSummaries.calledOnceWithExactly('org-1', 'user-1', ['aaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbb'], [])).to.equal(true)
       expect(body).to.deep.equal({ items: [
-        { conversationId: 'c1', conversationTitle: null, agentId: null, createdAt: 3, card: { approvalId: 'ap-c1' } },
-        { conversationId: 'c2', conversationTitle: 'Second', agentId: null, createdAt: 2, card: { approvalId: 'ap-c2' } },
+        { conversationId: 'aaaaaaaaaaaaaaaaaaaaaaaa', conversationTitle: null, agentId: null, createdAt: 3, card: { approvalId: 'ap-aa' } },
+        { conversationId: 'bbbbbbbbbbbbbbbbbbbbbbbb', conversationTitle: 'Second', agentId: null, createdAt: 2, card: { approvalId: 'ap-bb' } },
       ] })
     })
 
     it('drops items whose chat is not the user\'s', async () => {
-      const { body } = await run([entry('c1'), entry('other')], [{ _id: 'c1', title: 'Mine', sessionType: 'chat' }])
-      expect(body.items.map((i: any) => i.conversationId)).to.deep.equal(['c1'])
+      const { body } = await run([entry('aaaaaaaaaaaaaaaaaaaaaaaa'), entry('cccccccccccccccccccccccc')], [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', title: 'Mine', sessionType: 'chat' }])
+      expect(body.items.map((i: any) => i.conversationId)).to.deep.equal(['aaaaaaaaaaaaaaaaaaaaaaaa'])
     })
 
     it('agent chat carries agentId', async () => {
-      const { body } = await run([entry('c1')], [{ _id: 'c1', title: 'A', sessionType: 'agent', agentKey: 'agent-9' }])
+      const { body } = await run([entry('aaaaaaaaaaaaaaaaaaaaaaaa')], [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', title: 'A', sessionType: 'agent', agentKey: 'agent-9' }])
       expect(body.items[0].agentId).to.equal('agent-9')
+    })
+
+    it('skips an item with an invalid conversation id', async () => {
+      const { body, listVisibleSummaries } = await run([entry(''), entry('aaaaaaaaaaaaaaaaaaaaaaaa')], [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', title: 'Mine', sessionType: 'chat' }])
+      expect(listVisibleSummaries.firstCall.args[2]).to.deep.equal(['aaaaaaaaaaaaaaaaaaaaaaaa'])
+      expect(body.items.map((i: any) => i.conversationId)).to.deep.equal(['aaaaaaaaaaaaaaaaaaaaaaaa'])
     })
 
     it('answers an empty list without a lookup', async () => {
