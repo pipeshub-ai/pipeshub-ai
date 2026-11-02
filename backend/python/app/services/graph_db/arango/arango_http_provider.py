@@ -668,15 +668,24 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
     # The membership of ``v`` is tested after the first child is found, so a node with no child never pays for it.
     # The way-below test of a stub is a subquery, so it follows the rule's filter and runs only for a child that
     # passed it.
-    children = (
-        f"FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
-        f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
-        f" LET kh_pm = {_aql_is_member(v, 'kh_ce')}"
-        f' FILTER (IS_SAME_COLLECTION("{records}", kh_ch) OR IS_SAME_COLLECTION("{groups}", kh_ch))'
-        f" AND kh_ch.orgId == @org_id"
-        f" FILTER {rule}"
-        f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch')})"
-    )
+    def children_of(passes: str) -> str:
+        return (
+            f"FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+            f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
+            f" LET kh_pm = {_aql_is_member(v, 'kh_ce')}"
+            f' FILTER (IS_SAME_COLLECTION("{records}", kh_ch) OR IS_SAME_COLLECTION("{groups}", kh_ch))'
+            f" AND kh_ch.orgId == @org_id"
+            f" FILTER {passes}"
+            f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch')})"
+        )
+
+    children = children_of(rule)
+    # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
+    # the records that belong to it are what the rule reads from the scope an expansion carries.
+    in_scope = children_of(
+        f'({rule} OR (kh_ch.isDeleted != true AND (IS_SAME_COLLECTION("{groups}", kh_ch) OR LENGTH('
+        f"FOR kh_sg IN 1..1 OUTBOUND kh_ch {CollectionNames.BELONGS_TO.value} FILTER kh_sg._id == {v}._id"
+        f" LIMIT 1 RETURN 1) > 0)))")
     record = f'{_aql_node_type(v)} == "record" AND NOT {declared}'
     # What belongs to ``v``: for a declared group its members, and where the App opens everything a record filed
     # in a record (one subquery for both, as every row pays for each).
@@ -696,7 +705,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
     # A page's rows only: every kind of node (a folder is neither a group nor a record here) is asked. A group that
     # hides its children lists none, whatever belongs to it; a stub is held to the stub test wherever it comes from.
     return (f"({v}.hideChildren != true AND ({gated(f'{group} OR kh_opens', filed)}"
-            f" OR {gated('true', children)}))")
+            f" OR {gated(f'NOT {declared}', children)} OR {gated(declared, in_scope)}))")
 
 
 # Edges one statement moves; a hub node's millions go in batches.

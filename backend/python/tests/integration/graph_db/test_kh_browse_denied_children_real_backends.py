@@ -76,6 +76,10 @@ def _more() -> tuple[list, list]:
         app("st", "Stubs", connector=DRIVE, app_group="G"),
         rg("st-S", "S", connectorId="st", **g),
         rec("st-f", "f", connector_id="st", rule="STRICT", isPlaceholder=True),
+        app("mh", "Multi hop", connector=DRIVE, app_group="G"),
+        rg("mh-mid", "mid", connectorId="mh", **g),
+        rg("mh-dd", "dd", permissionModel=RGL, connectorId="mh", **g),
+        rec("mh-m", "m", connector_id="mh"),
         app("hh", "Hidden above", connector=DRIVE, app_group="G"),
         rg("hh-hp", "hp", connectorId="hh", hideChildren=True, **g),
         rg("hh-dg", "dg", permissionModel=RGL, connectorId="hh", **g),
@@ -112,6 +116,9 @@ def _more() -> tuple[list, list]:
         nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
     ]
     edges += [
+        user_app(USER_U, "mh"), nr("mh", "mh-mid"), bt("mh-mid", "mh"), perm(GROUP_G, "mh-mid", grant_type="GROUP"),
+        nr("mh-mid", "mh-dd"), ip("mh-dd", "mh-mid"), bt("mh-dd", "mh-mid"),
+        nr("mh-dd", "mh-m"), bt("mh-m", "mh-dd"),
         user_app(USER_U, "hh"), nr("hh", "hh-hp"), bt("hh-hp", "hh"), perm(GROUP_G, "hh-hp", grant_type="GROUP"),
         nr("hh-hp", "hh-dg"), bt("hh-dg", "hh-hp"), perm(GROUP_G, "hh-dg", grant_type="GROUP"),
         nr("hh", "hh-q"), bt("hh-q", "hh"), perm(GROUP_G, "hh-q", grant_type="GROUP"),
@@ -348,7 +355,7 @@ async def _rows_and_expansions(world: _World, app_id: str) -> list[tuple[str, bo
     return seen
 
 
-@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st", "hc", "oa", "ct"])
+@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st", "hc", "oa", "ct", "mh"])
 async def test_an_arrow_is_on_exactly_when_the_expansion_lists_something(world: _World, app_id: str) -> None:
     rows = await _rows_and_expansions(world, app_id)
 

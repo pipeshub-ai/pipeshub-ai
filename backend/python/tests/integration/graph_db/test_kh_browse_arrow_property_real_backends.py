@@ -78,7 +78,7 @@ def _world(i: int, rnd: random.Random) -> tuple[list, list]:
         if rnd.random() < 0.7:
             edges.append(perm(GROUP_G, gid, grant_type="GROUP"))
         for c in range(rnd.randint(0, 4)):
-            kind = rnd.choice(("member", "inherit", "strict", "stub", "stub-leaf", "subgroup", "chain-top"))
+            kind = rnd.choice(("member", "inherit", "strict", "stub", "stub-leaf", "subgroup", "chain-top", "via-mid"))
             cid = f"g{k}c{c}"
             if kind == "member":
                 m = record(cid)
@@ -99,6 +99,16 @@ def _world(i: int, rnd: random.Random) -> tuple[list, list]:
                     leaf = record(cid + "leaf")
                     edges += [nr(m, leaf), ip(leaf, m)]
                     edges += [bt(leaf, gid)] if rnd.random() < 0.5 else []
+            elif kind == "via-mid":
+                # A declared group nobody granted, below a readable group that is not declared.
+                mid = f"{a}-{cid}"
+                nodes.append(rg(mid, cid, connectorId=a, **g))
+                edges += [nr(gid, mid), ip(mid, gid)]
+                dd = f"{a}-{cid}d"
+                nodes.append(rg(dd, cid + "d", connectorId=a, permissionModel=RGL, **g))
+                edges += [nr(mid, dd), ip(dd, mid), bt(dd, mid)]
+                inner = record(cid + "m")
+                edges += [bt(inner, dd), nr(dd, inner)]
             elif kind == "chain-top":
                 # A declared group granted to the viewer below a parent the viewer cannot read.
                 sg = f"{a}-{cid}"
@@ -217,7 +227,12 @@ async def _arrows_vs_expansions(w: _World, app_id: str) -> list[tuple[str, bool,
     while queue:
         start, kind = queue.pop(0)
         kw = {"start_id": start, "start_type": kind} if start else {}
-        for row in (await _page(w, app_id, flatten=False, **kw))["rows"]:
+        page_rows = (await _page(w, app_id, flatten=False, **kw))["rows"]
+        listed_ids = [r["id"] for r in page_rows]
+        denied_here = set(listed_ids) - await _admitted(w, listed_ids)
+        if denied_here:
+            wrong.append((start or app_id, False, ["denied", *sorted(denied_here)]))
+        for row in page_rows:
             if row["id"] in seen:
                 continue
             seen.add(row["id"])
