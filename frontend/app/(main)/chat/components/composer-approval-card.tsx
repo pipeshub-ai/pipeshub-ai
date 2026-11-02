@@ -60,8 +60,12 @@ export function ComposerApprovalCard() {
     const minutes = Math.floor((now - target.createdAt) / 60_000);
     return minutes < 1 ? t('chat.toolApproval.askedJustNow') : t('chat.toolApproval.askedAgo', { count: minutes });
   };
+  // Every listed card is mounted, the others hidden: look only in the one on show (or the bar).
   const focusLater = (selector: string) =>
-    setTimeout(() => rootRef.current?.querySelector<HTMLElement>(selector)?.focus(), 0);
+    setTimeout(() => {
+      const shown = [...(rootRef.current?.children ?? [])].find((child) => !child.hasAttribute('hidden'));
+      shown?.querySelector<HTMLElement>(selector)?.focus();
+    }, 0);
   const expand = () => {
     setExpanded(true);
     focusLater('[data-approval-hide]');
@@ -71,6 +75,11 @@ export function ComposerApprovalCard() {
     focusLater('[data-approval-review]');
   };
   const showNext = () => setShownId(items[(items.indexOf(item) + 1) % items.length].card.approvalId);
+  // The card stepped away from hides with its button: keep focus on "+N more" in the next one.
+  const showNextCard = () => {
+    showNext();
+    focusLater('[data-approval-more]');
+  };
 
   const gone = (target: PendingApprovalItem) => {
     usePendingApprovals.getState().drop(target.card.approvalId);
@@ -185,7 +194,7 @@ export function ComposerApprovalCard() {
               onAnswer={answerFor(target)}
               onOpenChat={() => void openChat(target)}
               moreCount={items.length - 1}
-              onMore={showNext}
+              onMore={showNextCard}
               onHide={collapse}
             />
           </Box>

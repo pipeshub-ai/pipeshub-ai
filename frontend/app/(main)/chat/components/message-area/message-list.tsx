@@ -554,8 +554,26 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // tail-sync position; resume when flush with the doc bottom (`dist` only —
   // equivalent to near-max for non-subpixel cases). Resume MUST run before the
   // opt-out check so a stale anchor cannot block "scroll back down to follow."
+  // The newest message can grow after its run ends (this chat's own approval card arrives) while
+  // the dock covers the bottom of the scroller. If its end was in view, keep it in view; a reader
+  // up-thread or at the top of a long answer stays put. Read on scroll too, so a small scroll-up
+  // is not pulled back down by the next growth.
+  const tailInViewRef = useRef(false);
+  const measureTail = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const key = lastMessageKeyRef.current;
+    const lastEl = key ? messageRefs.current.get(key) : null;
+    if (!container || !lastEl) return null;
+    return {
+      bottom: lastEl.getBoundingClientRect().bottom,
+      visibleBottom: container.getBoundingClientRect().bottom - (composerDockRef.current?.offsetHeight ?? 0),
+    };
+  }, []);
+
   const handleScroll = useCallback(() => {
     if (!scrollContainerRef.current) return;
+    const tail = measureTail();
+    if (tail) tailInViewRef.current = tail.bottom <= tail.visibleBottom + 1;
 
     const container = scrollContainerRef.current;
     const { scrollTop, scrollHeight, clientHeight } = container;
@@ -607,7 +625,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     ) {
       triggerLoadOlderMessages();
     }
-  }, [runStreamingBottomResume, triggerLoadOlderMessages, updateJumpToNewestVisibility]);
+  }, [runStreamingBottomResume, triggerLoadOlderMessages, updateJumpToNewestVisibility, measureTail]);
 
   // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
   // so the first tail sync is not skipped. On every streaming commit, pin the tail
@@ -632,27 +650,21 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   ]);
 
   // ── Keep a growing tail clear of the composer dock ────────────────
-  // The newest message can grow after its run ends (this chat's own approval card arrives) while
-  // the dock covers the bottom of the scroller. If its end was in view, keep it in view; a reader
-  // up-thread or at the top of a long answer stays put.
-  const tailInViewRef = useRef(false);
   const keepTailInView = useCallback(() => {
-    const container = scrollContainerRef.current;
-    const key = lastMessageKeyRef.current;
-    const lastEl = key ? messageRefs.current.get(key) : null;
-    if (!container || !lastEl) return;
-    const visibleBottom = container.getBoundingClientRect().bottom - (composerDockRef.current?.offsetHeight ?? 0);
-    const tailBottom = lastEl.getBoundingClientRect().bottom;
-    const by = isScrolledUpRef.current ? 0 : tailClearance(tailInViewRef.current, tailBottom, visibleBottom);
+    const tail = measureTail();
+    if (!tail) return;
+    const container = scrollContainerRef.current!;
+    const by = isScrolledUpRef.current ? 0 : tailClearance(tailInViewRef.current, tail.bottom, tail.visibleBottom);
     if (by > 0) {
       isAutoScrollingRef.current = true;
-      container.scrollTop += by;
+      // Instant, not the container's smooth scroll: mid-animation scroll events would read the end as out of view.
+      container.scrollTo({ top: container.scrollTop + by, behavior: 'instant' });
       queueMicrotask(() => {
         isAutoScrollingRef.current = false;
       });
     }
-    tailInViewRef.current = tailBottom - by <= visibleBottom + 1;
-  }, []);
+    tailInViewRef.current = tail.bottom - by <= tail.visibleBottom + 1;
+  }, [measureTail]);
 
   // ── rAF-coalesced resize handler for ResizeObserver ───────────────
   // Spacer + tail on size changes that are not always tied to store updates
