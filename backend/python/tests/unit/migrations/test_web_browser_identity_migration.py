@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core import org_context
 from app.migrations.web_browser_identity_migration import (
     MIGRATION_FLAG_KEY,
     backfill_sync_settings,
@@ -25,9 +26,12 @@ class _MemoryConfigService:
         self.store = store
         self.failing = failing
         self.writes: list[str] = []
+        self.read_in: dict[str, str] = {}
 
     async def get_config(self, path: str, default: object = None, use_cache: bool = True, *,
                          raise_on_error: bool = False) -> object:
+        if path.startswith("/services/connectors/"):
+            self.read_in[path] = org_context.current_org_id()
         if path in self.failing:
             if raise_on_error:
                 raise ConnectionError(f"store did not answer for {path}")
@@ -41,13 +45,18 @@ class _MemoryConfigService:
 
 
 class _Graph:
-    def __init__(self, ids: list[str]) -> None:
+    def __init__(self, ids: list[str], *, org_id: str | None = "org-1", edge_org: str | None = None) -> None:
         self.ids = ids
+        self.org_id = org_id
+        self.edge_org = edge_org
 
     async def get_nodes_by_field_in(self, collection: str, field: str, values: list, fields: list, *,
                                     raise_on_error: bool = False) -> list[dict]:
         assert (field, values) == ("type", ["Web"])
-        return [{"id": i, "orgId": "org-1"} for i in self.ids]
+        return [{"id": i, "orgId": self.org_id} for i in self.ids]
+
+    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict]:
+        return [{"from_id": self.edge_org}] if self.edge_org else []
 
 
 def _container(config: _MemoryConfigService) -> SimpleNamespace:
@@ -69,6 +78,35 @@ async def test_a_connector_from_before_the_setting_is_stored_as_browser_like() -
     assert sync["browser_like_identity"] is True
     assert sync["customValues"]["browser_like_identity"] is True
     assert result == {"success": True, "skipped": False, "connectors_updated": 1, "failures": 0}
+    assert config.store[MIGRATION_FLAG_KEY]["done"] is True
+
+
+async def test_each_connector_is_backfilled_inside_its_org() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["old"]), LOGGER)
+
+    assert config.read_in == {_path("old"): "org-1"}
+
+
+async def test_an_app_saved_without_its_org_takes_it_from_the_org_edge() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    result = await run_web_browser_identity_backfill(
+        _container(config), _Graph(["old"], org_id=None, edge_org="org-2"), LOGGER,
+    )
+
+    assert result["connectors_updated"] == 1
+    assert config.read_in == {_path("old"): "org-2"}
+
+
+async def test_an_app_with_no_org_is_skipped_and_the_flag_is_still_set() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    result = await run_web_browser_identity_backfill(_container(config), _Graph(["old"], org_id=None), LOGGER)
+
+    assert result == {"success": True, "skipped": False, "connectors_updated": 0, "failures": 0}
+    assert config.read_in == {}
     assert config.store[MIGRATION_FLAG_KEY]["done"] is True
 
 

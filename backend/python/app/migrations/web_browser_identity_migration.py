@@ -24,6 +24,8 @@ from app.connectors.sources.web.connector import (
     MAX_PAGES_LIMIT,
     MAX_SIZE_MB_LIMIT,
 )
+from app.core.org_context import for_org, system
+from app.services.graph_db.common.utils import org_id_from_app_edge
 
 # v2: also fills Maximum pages and clamps the numeric settings; v1 did the identity alone.
 MIGRATION_FLAG_KEY = "/migrations/web_sync_settings_backfill_v2"
@@ -116,16 +118,25 @@ class WebBrowserIdentityBackfill:
         if await self._is_already_done():
             return {"success": True, "skipped": True, "connectors_updated": 0}
 
-        apps = await self.graph_provider.get_nodes_by_field_in(
-            CollectionNames.APPS.value, "type", ["Web"], ["id", "orgId"], raise_on_error=True
-        )
+        with system("web_browser_identity_backfill"):
+            apps = await self.graph_provider.get_nodes_by_field_in(
+                CollectionNames.APPS.value, "type", ["Web"], ["id", "orgId"], raise_on_error=True
+            )
         updated = failures = 0
         for app in apps or []:
             connector_id = app.get("id")
             if not connector_id:
                 continue
             try:
-                updated += await self._backfill(connector_id, app.get("orgId"))
+                # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
+                with system("web_browser_identity_backfill"):
+                    org_id = app.get("orgId") or await org_id_from_app_edge(self.graph_provider, connector_id)
+                if not org_id:
+                    # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
+                    self.logger.warning(f"Web settings backfill: connector {connector_id} has no org; skipped")
+                    continue
+                with for_org(org_id, job="web_browser_identity_backfill"):
+                    updated += await self._backfill(connector_id, org_id)
             except Exception as e:
                 failures += 1
                 self.logger.error(f"Web settings backfill: could not update connector {connector_id}: {e}")
