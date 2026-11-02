@@ -659,6 +659,10 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
     # shortcut: the sidebar, which reads this for every node, costs about 1.6x main at 10,000 members (290 against
     # 180 ms), the rest of it the connector test and the rule's longer text per row; next, read the arrow of the
     # rows the page keeps only, after the sort, as the page's own rows already do.
+    # A declared group also lists the groups below it (the rule reads a scope the app-level row does not carry).
+    group_child = (f' OR ({declared} AND HAS(@granted, {v}._key) AND IS_SAME_COLLECTION("{groups}", kh_ch)'
+                   f" AND kh_ch.isDeleted != true AND {v}.hideChildren != true)") if exact else ""
+    group = f'IS_SAME_COLLECTION("{groups}", {v})'
     # The membership of ``v`` is tested after the first child is found, so a node with no child never pays for it.
     # The way-below test of a stub is a subquery, so it follows the rule's filter and runs only for a child that
     # passed it.
@@ -668,15 +672,17 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
         f" LET kh_pm = {_aql_is_member(v, 'kh_ce')}"
         f' FILTER (IS_SAME_COLLECTION("{records}", kh_ch) OR IS_SAME_COLLECTION("{groups}", kh_ch))'
         f" AND kh_ch.orgId == @org_id"
-        f" FILTER {rule}"
+        f" FILTER {rule}{group_child}"
         f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch')})"
     )
     record = f'{_aql_node_type(v)} == "record" AND NOT {declared}'
     # What belongs to ``v``: for a declared group its members, and where the App opens everything a record filed
     # in a record (one subquery for both, as every row pays for each).
+    # A group that is not declared lists the records it holds only as chain-tops, which are granted ones.
     filed = (f"FOR kh_bm IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
              f' FILTER IS_SAME_COLLECTION("{records}", kh_bm) AND kh_bm.isDeleted != true AND kh_bm.orgId == @org_id'
-             f" AND {_aql_read_by_app('kh_bm')}")
+             f" AND {_aql_read_by_app('kh_bm')}"
+             + (f" AND ({declared} OR {record} OR HAS(@granted, kh_bm._key))" if exact else ""))
     if not exact:
         return (
             f'({_aql_node_type(v)} != "record" ? true : (LENGTH({children} LIMIT 1 RETURN 1) > 0'
@@ -684,6 +690,10 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
             f" FILTER kh_bm.isDeleted != true AND kh_bm.orgId == @org_id AND {_aql_read_by_app('kh_bm')}"
             f" LIMIT 1 RETURN 1) > 0)))"
         )
+    if exact:
+        # A page's rows only: every kind of node (a folder is neither a group nor a record here) is asked.
+        return (f"({gated(f'{group} OR kh_opens', filed)}"
+                f" OR {gated('true', children)})")
     return (
         f'((NOT {declared} AND {_aql_node_type(v)} != "record")'
         f" OR {gated(f'{declared} OR {record}', children)}"
@@ -19716,6 +19726,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
             after=after, direction=direction, filters=filters or {},
             lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
+            exact_arrows=not flatten,
             row_ctx=row_ctx, transaction=transaction,
         ))
         self.logger.debug(
@@ -19895,6 +19906,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         direction: str,
         filters: dict[str, Any],
         lists_placeholders: bool,
+        exact_arrows: bool,
         row_ctx: dict[str, Any],
         transaction: str | None,
     ) -> dict[str, Any]:
@@ -19958,7 +19970,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows: list[dict[str, Any]] = []
         if window:
             built = await self._kh_v3_run(
-                "enrich_exact" if lists_placeholders else "enrich", {"kh_page": [r[1] for r in window], "app_id": app_id, "org_id": org_id,
+                "enrich_exact" if exact_arrows else "enrich", {"kh_page": [r[1] for r in window], "app_id": app_id, "org_id": org_id,
                            "kh_placeholders": lists_placeholders, **row_ctx}, transaction,
             )
             by_index = {b["i"]: b["row"] for b in built}

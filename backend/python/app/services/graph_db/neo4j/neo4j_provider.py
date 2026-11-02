@@ -395,25 +395,31 @@ def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container
     everything is open, a record filed in it. A container (``container``: a group
     or folder) always answers yes: finding out means reading every hidden child,
     which cost 3x a large folder's page, and a constant says nothing about what the
-    viewer cannot read. Its expansion may also list chain-tops."""
-    # ``exact`` (a browse) answers a declared group's arrow from its children; a flatten keeps the constant.
+    viewer cannot read. Its expansion may also list chain-tops. ``exact`` (a browse of a
+    page) answers a container from its children instead, so that an arrow is on exactly
+    when the expansion lists something: a declared group also lists the groups below it
+    and the records that belong to it (the rule reads a scope the app-level row does not
+    carry), and another container the records it holds that the viewer is granted (its
+    chain-tops)."""
     declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
                 f" AND coalesce({v}.connectorId, '') = app.id)") if exact else "false"
+    own = lambda var: f"NOT coalesce({var}.isDeleted, false) AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)}"  # noqa: E731
+    group_child = (f"({declared} AND {v}.id IN $grantedIds AND kh_ch:RecordGroup AND NOT coalesce(kh_ch.isDeleted, false)"
+                   f" AND NOT coalesce({v}.hideChildren, false))")
+    holds = (f"({declared} AND EXISTS {{ (kh_bm:Record)-[:BELONGS_TO]->({v}) WHERE {own('kh_bm')} }}) "
+             f"OR ({container} AND NOT {declared} AND EXISTS {{ (kh_bg:Record)-[:BELONGS_TO]->({v}) "
+             f"WHERE {own('kh_bg')} AND kh_bg.id IN $grantedIds }})") if exact else "false"
     return (
-        # A declared group is answered like a record: its children are those the rule admits, and the records that
-        # belong to it, so an arrow is not lit by children the expansion hides.
-        f"(CASE WHEN {container} AND NOT {declared} THEN true ELSE ("
+        f"(CASE WHEN {'false' if exact else container} THEN true ELSE ({holds} OR "
         f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
         f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
-        f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds "
+        f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
         f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{extra} AND ({rule}) }} "
+        f"{extra} AND ({rule} OR {group_child}) }} "
         f"OR ({filed} AND EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
-        f"WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id AND {_cypher_read_by_app('kh_bc')} }}) "
-        f"OR ({declared} AND EXISTS {{ (kh_bm:Record)-[:BELONGS_TO]->({v}) "
-        f"WHERE NOT coalesce(kh_bm.isDeleted, false) AND kh_bm.orgId = $org_id AND {_cypher_read_by_app('kh_bm')} }})) END)"
+        f"WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id AND {_cypher_read_by_app('kh_bc')} }})) END)"
     )
 
 

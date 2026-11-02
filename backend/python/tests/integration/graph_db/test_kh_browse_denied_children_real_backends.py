@@ -67,6 +67,15 @@ def _more() -> tuple[list, list]:
         rg("ka-g", "g", permissionModel=RGL, connectorId="ka", **g),
         rg("kb-g", "g", permissionModel=RGL, connectorId="kb", **g),
         *[rec(f"{a}-{n}", n, connector_id=a) for a in ("ka", "kb") for n in ("nr", "ip", "bt")],
+        app("mk", "Mail", connector=DRIVE, app_group="G"),
+        rg("mk-box", "box", permissionModel=RGL, connectorId="mk", **g),
+        rg("mk-label", "label", connectorId="mk", **g),
+        app("mt", "Chat2", connector=DRIVE, app_group="G"),
+        rg("mt-chan", "chan", permissionModel=RGL, connectorId="mt", **g),
+        rg("mt-thread", "thread", connectorId="mt", **g),
+        app("st", "Stubs", connector=DRIVE, app_group="G"),
+        rg("st-S", "S", connectorId="st", **g),
+        rec("st-f", "f", connector_id="st", rule="STRICT", isPlaceholder=True),
         app("ch", "Hidden", connector=DRIVE, app_group="G"),
         rg("ch-chan", "chan", permissionModel=RGL, connectorId="ch", **g),
         rec("ch-msg", "msg", connector_id="ch"),
@@ -79,6 +88,12 @@ def _more() -> tuple[list, list]:
         nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
     ]
     edges += [
+        user_app(USER_U, "mk"), nr("mk", "mk-box"), bt("mk-box", "mk"), perm(GROUP_G, "mk-box", grant_type="GROUP"),
+        nr("mk-box", "mk-label"), ip("mk-label", "mk-box"), bt("mk-label", "mk-box"),
+        user_app(USER_U, "mt"), nr("mt", "mt-chan"), bt("mt-chan", "mt"), perm(GROUP_G, "mt-chan", grant_type="GROUP"),
+        nr("mt-chan", "mt-thread"), ip("mt-thread", "mt-chan"),
+        user_app(USER_U, "st"), nr("st", "st-S"), bt("st-S", "st"), perm(GROUP_G, "st-S", grant_type="GROUP"),
+        nr("st-S", "st-f"), ip("st-f", "st-S"),
         user_app(USER_U, "ch"), nr("ch", "ch-chan"), bt("ch-chan", "ch"), perm(GROUP_G, "ch-chan", grant_type="GROUP"),
         nr("ch-chan", "ch-msg"), ip("ch-msg", "ch-chan"),
     ]
@@ -278,7 +293,7 @@ async def _rows_and_expansions(world: _World, app_id: str) -> list[tuple[str, bo
     return seen
 
 
-@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb"])
+@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st"])
 async def test_an_arrow_is_on_exactly_when_the_expansion_lists_something(world: _World, app_id: str) -> None:
     rows = await _rows_and_expansions(world, app_id)
 
@@ -293,3 +308,10 @@ async def test_a_flatten_started_at_a_channel_lists_only_what_the_check_admits(w
     assert ids == {"kt-thread"}
     assert page["total"] == len(ids)
     assert ids <= await _admitted(world, sorted(ids))
+
+
+async def test_a_filtered_browse_gives_a_group_with_no_visible_child_no_arrow(world: _World) -> None:
+    page = await _page(world, "ch", flatten=False, filters={"node_types": ["recordGroup"]})
+    arrows = {row["id"]: row["hasChildren"] for row in page["rows"]}
+
+    assert arrows == {"ch-chan": False}
