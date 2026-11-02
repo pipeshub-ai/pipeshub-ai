@@ -84,6 +84,34 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(rep.applied.get('publishing becomes pending')).to.equal(1);
     });
 
+    it('outbox: two events that fold to one table id stop the copy; the same event again is accepted', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'outbox_events')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      // same seconds and same low 21 bits of the counter, different ObjectIds
+      const hexA = (1577836800 + 400_000_000).toString(16).padStart(8, '0') + 'abcdef0123' + '000005';
+      const hexB = hexA.slice(0, 18) + '800005';
+      const ev = (id: string, key: string): Record<string, unknown> => ({
+        _id: id, topic: 't', key, value: JSON.stringify({ payload: { orgId: String(ORG_A) } }), createdAt: new Date('2026-01-02T00:00:00.000Z'), status: 'pending',
+      });
+      const run = (list: Record<string, unknown>[]) =>
+        jobsUnit((tx) => repo.importBatch(m.collection, list.map((d) => toNeutral(d, new SourceReport(), m.collection)), tx));
+      const folded = (): Promise<number> => count('platform.outbox', `id = ${String(Number(BigInt(parseInt(hexA.slice(0, 8), 16) - 1577836800) * 2097152n + 5n))}`);
+      expect((await run([ev(hexA, 'a')])).inserted['platform.outbox']).to.equal(1);
+      expect((await run([ev(hexA, 'a')])).inserted['platform.outbox'] ?? 0, 'an exact retry writes nothing and does not fail').to.equal(0);
+      let err: Error | undefined;
+      await run([ev(hexB, 'b')]).catch((e: Error) => (err = e));
+      expect(err?.message, 'a different event on a held id').to.contain(hexB).and.to.contain('already holds');
+      const hexC = hexA.slice(0, 8) + 'cccccccccc' + '000009';
+      const hexD = hexC.slice(0, 18) + '800009';
+      err = undefined;
+      await run([ev(hexC, 'c'), ev(hexD, 'd')]).catch((e: Error) => (err = e));
+      expect(err?.message, 'two different events in one batch').to.contain(hexC).and.to.contain(hexD);
+      expect(await folded(), 'nothing was dropped or overwritten').to.equal(1);
+      expect(await count('platform.outbox', "msg_key = 'a'")).to.equal(1);
+      expect(await count('platform.outbox', "msg_key IN ('b','c','d')")).to.equal(0);
+      await stack.admin((c) => c.query("DELETE FROM platform.outbox WHERE msg_key = 'a'"));   // the next test counts the fixture's rows
+    });
+
     it('copies every other collection and reads back identical documents (zero diffs)', async () => {
       const r = await copyAndCompare(withoutOutbox(), MAPPINGS);
       for (const m of CONTENT_MAPPINGS.filter((x) => x.collection !== 'outbox_events' && x.collection !== 'oauthDeviceCodes')) expect(r.diffs[m.collection], m.collection).to.deep.equal([]);

@@ -6249,7 +6249,9 @@ class DataSourceEntitiesProcessor:
             return
         for external_id in sorted(external_ids):
             members = run.group_memberships.get(external_id, {})
-            async with self.data_store_provider.transaction() as tx_store:
+            async def give_members(
+                tx_store: TransactionStore, external_id: str, members: dict[str, tuple[str, str]]
+            ) -> list[str]:
                 copies = await tx_store.get_nodes_by_filters(
                     groups,
                     {"connectorId": connector_id, "externalGroupId": external_id},
@@ -6271,6 +6273,9 @@ class DataSourceEntitiesProcessor:
                         for user_id, (source_id, email) in members.items()
                     ]
                     await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
+                return group_ids
+
+            group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
             for group_id in group_ids:
                 run.add(groups, group_id)
         await self._access_changed([connector_id])

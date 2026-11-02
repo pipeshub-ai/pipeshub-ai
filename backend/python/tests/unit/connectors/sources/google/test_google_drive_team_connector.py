@@ -58,6 +58,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -3237,7 +3238,7 @@ class TestConvertToPdf:
                 await conn._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_output_not_found(self):
+    async def test_output_not_found(self, tmp_path: Path):
         from fastapi import HTTPException
 
         conn = _make_connector()
@@ -3249,7 +3250,7 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process):
             with patch("os.path.exists", return_value=False):
                 with pytest.raises(HTTPException):
-                    await conn._convert_to_pdf("/tmp/test.docx", "/tmp")
+                    await conn._convert_to_pdf("/tmp/test.docx", str(tmp_path))
 
     @pytest.mark.asyncio
     async def test_timeout(self):

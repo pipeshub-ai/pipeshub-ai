@@ -2456,7 +2456,7 @@ class TestProcessBlockgroupImages:
         proc, _, _, _ = _make_processor()
         proc.parsers = {}  # no parsers
 
-        md, caption_map = await proc._process_blockgroup_images("# Hello", 0)
+        md, caption_map = await proc._process_blockgroup_images("# Hello", 0, allow_remote_fetch=True)
         assert md == "# Hello"
         assert caption_map == {}
 
@@ -2480,7 +2480,7 @@ class TestProcessBlockgroupImages:
             ExtensionTypes.PNG.value: mock_image_parser,
         }
 
-        md, caption_map = await proc._process_blockgroup_images("# Hello ![img](http://example.com/img.png)", 0)
+        md, caption_map = await proc._process_blockgroup_images("# Hello ![img](http://example.com/img.png)", 0, allow_remote_fetch=True)
         assert "img" in caption_map
         assert caption_map["img"] == "base64data"
 
@@ -2499,7 +2499,7 @@ class TestProcessBlockgroupImages:
             ExtensionTypes.PNG.value: mock_image_parser,
         }
 
-        md, caption_map = await proc._process_blockgroup_images("# Hello", 0)
+        md, caption_map = await proc._process_blockgroup_images("# Hello", 0, allow_remote_fetch=True)
         assert caption_map == {}
 
 
@@ -2518,7 +2518,7 @@ class TestProcessSingleBlockgroupHtml:
         bg = MagicMock(data=None, index=0)
 
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await proc._process_single_blockgroup_html(bg, "test.html")
+            await proc._process_single_blockgroup_html(bg, "test.html", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_missing_html_parser_raises(self):
@@ -2528,7 +2528,7 @@ class TestProcessSingleBlockgroupHtml:
         bg = MagicMock(data="<p>hi</p>", index=0)
 
         with pytest.raises(ValueError, match="HTML parser is not configured"):
-            await proc._process_single_blockgroup_html(bg, "test.html")
+            await proc._process_single_blockgroup_html(bg, "test.html", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_success_delegates_to_html_parser(self):
@@ -2549,7 +2549,8 @@ class TestProcessSingleBlockgroupHtml:
         proc.parsers = {ExtensionTypes.HTML.value: html_parser}
 
         new_bgs, new_blocks = await proc._process_single_blockgroup_html(
-            bg, "fallback"
+            bg, "fallback",
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -2580,7 +2581,8 @@ class TestProcessSingleBlockgroup:
 
         with pytest.raises(ValueError, match="no valid markdown data"):
             await proc._process_single_blockgroup(
-                bg, "test.md", MagicMock()
+                bg, "test.md", MagicMock(),
+                allow_remote_fetch=True
             )
 
     @pytest.mark.asyncio
@@ -2594,7 +2596,8 @@ class TestProcessSingleBlockgroup:
 
         with pytest.raises(ValueError, match="no valid markdown data"):
             await proc._process_single_blockgroup(
-                bg, "test.md", MagicMock()
+                bg, "test.md", MagicMock(),
+                allow_remote_fetch=True
             )
 
     @pytest.mark.asyncio
@@ -2618,7 +2621,8 @@ class TestProcessSingleBlockgroup:
         mock_md_parser.parse_to_blocks = AsyncMock(return_value=result_container)
 
         new_bgs, new_blocks = await proc._process_single_blockgroup(
-            bg, "test.md", mock_md_parser
+            bg, "test.md", mock_md_parser,
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -2648,7 +2652,8 @@ class TestProcessSingleBlockgroup:
         mock_md_parser.parse_to_blocks = AsyncMock(return_value=result_container)
 
         new_bgs, new_blocks = await proc._process_single_blockgroup(
-            bg, "test_record", mock_md_parser
+            bg, "test_record", mock_md_parser,
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -2800,7 +2805,7 @@ class TestProcessBlockgroups:
         proc, _, _, _ = _make_processor()
 
         container = BlocksContainer(blocks=[], block_groups=[])
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
         assert result is container
 
     @pytest.mark.asyncio
@@ -2812,7 +2817,7 @@ class TestProcessBlockgroups:
         bg = BlockGroup(index=0, type=GroupType.TABLE, requires_processing=False)
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
         assert result is container
 
     @pytest.mark.asyncio
@@ -2831,7 +2836,7 @@ class TestProcessBlockgroups:
         )
 
         with pytest.raises(RuntimeError, match="parser error"):
-            await proc._process_blockgroups(container, "test")
+            await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_missing_md_parser_raises(self):
@@ -2843,7 +2848,7 @@ class TestProcessBlockgroups:
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
         with pytest.raises(ValueError, match="Markdown parser is not configured"):
-            await proc._process_blockgroups(container, "test")
+            await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_successful_processing(self):
@@ -2865,7 +2870,7 @@ class TestProcessBlockgroups:
             return_value=([new_bg], [new_block])
         )
 
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
         assert len(result.blocks) >= 1
         assert len(result.block_groups) >= 1
@@ -2898,7 +2903,7 @@ class TestProcessBlockgroups:
         )
         proc._process_single_blockgroup = AsyncMock()
 
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
         proc._process_single_blockgroup_html.assert_awaited_once()
         proc._process_single_blockgroup.assert_not_awaited()
