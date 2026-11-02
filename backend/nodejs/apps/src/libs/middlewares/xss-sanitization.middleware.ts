@@ -450,8 +450,7 @@ export const xssSanitizationMiddleware = (
     // validates it against the tool's schema; the web app renders it as React text. The
     // approval id in the path is still checked below.
     const isToolApprovalCheck =
-      req.method === 'POST' &&
-      TOOL_APPROVAL_VALIDATE_PATH.test(req.path);
+      req.method === 'POST' && TOOL_APPROVAL_VALIDATE_PATH.test(req.path);
 
     // Validate request body
     if (
