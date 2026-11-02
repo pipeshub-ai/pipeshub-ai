@@ -17,7 +17,18 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     client = await new MongoClient(mongo.uri).connect();
     // a subclass, so the process's own Collection is left alone; the module is loaded afresh so that it wraps once more
     delete require.cache[require.resolve('../../../src/libs/repositories/fence')];
-    Fenced = class extends Collection {};
+    // the subclass times its own driver call: the fence wraps `updateMany`, reads the fence first (up to its own two second deadline) and
+    // then calls this, so what is measured here is the statement and nothing else
+    Fenced = class extends Collection {
+      async updateMany(...args: Parameters<Collection['updateMany']>): ReturnType<Collection['updateMany']> {
+        const t0 = Date.now();
+        try {
+          return await super.updateMany(...args);
+        } finally {
+          elapsedMs = Date.now() - t0;
+        }
+      }
+    };
     const fresh = require('../../../src/libs/repositories/fence');
     fresh.setFenceTrustMsForTests(0);
     fresh.installMongoFence(Fenced);
@@ -38,14 +49,8 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     await db.collection('t').insertMany(Array.from({ length: 30 }, (_, i) => ({ i })));
     const fenced = new Fenced(db, 't', {} as never);
     // server-side JS makes the statement last about 9 s, longer than the 5 s deadline
-    // only the statement is timed, not the set-up
-    const t0 = Date.now();
-    try {
-      const r = await fenced.updateMany({ $where: 'sleep(300) || true' }, { $set: { done: true } });
-      return r.modifiedCount;
-    } finally {
-      elapsedMs = Date.now() - t0;
-    }
+    const r = await fenced.updateMany({ $where: 'sleep(300) || true' }, { $set: { done: true } });
+    return r.modifiedCount;
   };
   const setMode = (mode: string) => client.db('fence_deadline').collection<any>('docstore_fence').replaceOne({ _id: 'fence' }, { _id: 'fence', mode, epoch: 1 }, { upsert: true });
 

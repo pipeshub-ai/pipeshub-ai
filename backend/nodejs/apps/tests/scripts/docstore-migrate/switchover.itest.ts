@@ -276,6 +276,26 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await store()).to.include({ backend: 'postgres', readonly: false });
       });
 
+      it('the rollback of the flip commits and then fails on the client: the row is read again, PostgreSQL is closed, and MongoDB is unfrozen', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-back-commit' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MongoDB is the store and writable again');
+        expect(r.message).to.not.contain('is the live store');
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('the rollback of the flip fails and the row cannot be read again: unknown state, MongoDB stays frozen, neither store is claimed live', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-back-reread-fails' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MANUAL REPAIR NEEDED').and.to.contain('state of platform.store_epoch is unknown');
+        expect(r.message).to.not.contain('is the live store');
+        expect(await mode()).to.equal('readonly');
+        expect(await store(), 'the rollback did commit').to.include({ backend: 'mongo', readonly: true });
+      });
+
       it('a failure after a successful flip is reported as done: PostgreSQL live, MongoDB retired, nothing unfrozen', async () => {
         await onlineStart(w.rt, { dryRun: false, log });
         const r = await cut({ failAt: 'F8-checkpoint' });
