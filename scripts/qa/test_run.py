@@ -1126,19 +1126,23 @@ class TestUpgradeVariant(RunCase):
     COMPARE = "it:weekly/test_upgrade.py::test_counts_survive"
     OLD = "aaaaaaaaaaaa" + "0" * 28
 
-    def go(self, build_fails: bool = False, build: bool = True, release_error: str = ""):
+    def go(self, build_fails: bool = False, build: bool = True, release_error: str = "", preexisting: bool = False, restart_fails: bool = False):
         import contextlib
         import subprocess as sp_mod
         from qa import stack
         events: list[str] = []
 
         def fake_sub(cmd, **kw):
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                return sp_mod.CompletedProcess(cmd, 0 if cmd[-1].endswith("aaaaaaaaaaaa") and preexisting else 1, "", "")
             if cmd[:3] == ["docker", "image", "rm"]:
                 events.append("rm:" + cmd[3])
             elif cmd[:2] == ["docker", "compose"]:
                 op = next((a for a in cmd if a in ("build", "up", "restart", "down", "logs")), "")
-                events.append(op + (":old" if op == "build" and str(self.out / "tree") in cmd else ""))
-                if op == "build" and build_fails and str(self.out / "tree") in cmd:
+                events.append(op + (":old" if op == "build" and any(str(self.out / "tree") in a for a in cmd) else ""))
+                if op == "restart" and restart_fails:
+                    raise sp_mod.CalledProcessError(1, cmd)
+                if op == "build" and build_fails and any(str(self.out / "tree") in a for a in cmd):
                     raise sp_mod.CalledProcessError(1, cmd)
             return sp_mod.CompletedProcess(cmd, 0, "", "")
 
@@ -1185,6 +1189,21 @@ class TestUpgradeVariant(RunCase):
         self.assertNotIn("down", events)  # nothing was started, so there is nothing to tear down
         self.assertFalse([e for e in events if e.startswith("test:")])
         self.assertIn("rm:pipeshub-ai:qa-aaaaaaaaaaaa", events)
+
+    def test_upgrade_switch_failure_tears_down_and_removes_both_images(self) -> None:
+        result, events = self.go(restart_fails=True)
+        for t in result["tests"]:
+            self.assertEqual(t["outcome"] if t["id"] == self.COMPARE else "error", "error")
+        self.assertIn("upgrade from aaaaaaaaaaaa", next(t for t in result["tests"] if t["id"] == self.COMPARE)["details"])
+        self.assertIn("down", events)
+        self.assertNotIn("test:after:True", events)
+        self.assertIn("rm:pipeshub-ai:qa-aaaaaaaaaaaa", events)
+        self.assertIn("rm:pipeshub-ai:qa-0123456789ab", events)
+
+    def test_a_release_image_that_existed_before_the_run_is_not_removed(self) -> None:
+        _, events = self.go(preexisting=True)
+        self.assertNotIn("rm:pipeshub-ai:qa-aaaaaaaaaaaa", events)
+        self.assertIn("rm:pipeshub-ai:qa-0123456789ab", events)
 
     def test_a_missing_release_tag_errors_the_tests_naming_the_ref(self) -> None:
         result, events = self.go(release_error="no v* tag before 0123456789ab")

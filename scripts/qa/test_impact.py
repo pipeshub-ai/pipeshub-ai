@@ -112,6 +112,17 @@ class TestWeeklyProfile(ImpactCase):
         self.assertEqual({t for t in p["floor"]["tests"] if "weekly" in t}, self.WEEKLY_ALL)
         self.assertEqual(set(p["floor"]["tests"]), self.WEEKLY_ALL)
 
+    def test_changed_weekly_test_is_selected_only_under_weekly(self) -> None:
+        change = {"integration-tests/weekly/test_upgrade.py": (self.root / "integration-tests/weekly/test_upgrade.py").read_text() + "\n# edit\n"}
+        std = self.change(dict(change), profile="standard")
+        self.assertFalse([t for t in std["floor"]["tests"] if "weekly" in t])
+        self.assertFalse([c for c in std["candidates"] if "weekly" in c["id"]])
+
+    def test_changed_weekly_test_is_selected_under_weekly(self) -> None:
+        change = {"integration-tests/weekly/test_upgrade.py": (self.root / "integration-tests/weekly/test_upgrade.py").read_text() + "\n# edit\n"}
+        p = self.change(change, profile="weekly")
+        self.assertIn(self.WEEKLY, p["floor"]["tests"])
+
     def test_branch_override_never_lowers_weekly(self) -> None:
         p = self.change({"README.md": "hi\n"}, profile="weekly", branch="oss-sync-1-1-26")
         self.assertEqual(p["profile"], "weekly")

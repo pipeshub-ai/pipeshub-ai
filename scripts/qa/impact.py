@@ -118,8 +118,12 @@ def compute(
     profile, override = effective_profile(cfg, profile, changeset.get("branch", ""))
     prof = cfg.profile(profile)
 
+    suite_profiles = {s["id"]: s.get("profiles") for s in cfg.suites}
+
     def in_scope(row: dict[str, Any]) -> bool:
-        return (scope == "all" or row["edition"] == scope) and row["suite"] in prof.get("suites", [row["suite"]])
+        allowed = suite_profiles.get(row["suite"])
+        return ((scope == "all" or row["edition"] == scope) and row["suite"] in prof.get("suites", [row["suite"]])
+                and (not allowed or profile in allowed))
 
     floor = Floor(by_id, in_scope)
     files = [f["path"] for f in changeset["files"]]

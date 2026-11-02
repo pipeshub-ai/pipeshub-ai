@@ -357,6 +357,8 @@ jobs:
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # The perf smoke compares against the committed CI baseline; with none yet it only reports.
+      PERF_SMOKE_LABEL: ${{ matrix.variant == 'perf' && 'smoke-ci-neo4j-4cpu' || '' }}
       # A pull request gets no model key (spec section 2, "LLM in tests"), so its stack
       # indexes with the web-fixtures stand-in model. Tests that assert on a real
       # model's answers carry the live_model marker and stay not_run there.

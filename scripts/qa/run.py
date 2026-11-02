@@ -543,7 +543,9 @@ def _upgrade_stack(cfg: Config, stack: Stack, plan, build: bool, invs: list[Invo
         ref = stack_mod.previous_release(cfg.root, head or "HEAD")[:12]
         old_tag = stack_mod.image_tag(ref)
         stack.use_image(old_tag, work)
-        old_images.append(old_tag)
+        # Only a tag this run creates is removed: another run on a shared daemon may hold the same release image.
+        if subprocess.run(["docker", "image", "inspect", old_tag], capture_output=True, timeout=60).returncode != 0:
+            old_images.append(old_tag)
         stack.pin_bases()
         with collect.worktree(cfg.root, ref) as tree:
             stack.extra_env["GIT_COMMIT"] = ref

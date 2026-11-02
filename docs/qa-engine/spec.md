@@ -56,7 +56,7 @@ For a change set and profile, the floor is the union of:
 
 1. **Full runs.** The `full` profile, more than `max_files` changed files, a
    `[[full_run]]` path, or an edition switch file. A suite with `profiles = [...]`
-   joins only those profiles' full runs, and a profile with `suites = [...]`
+   is selected only under those profiles (full runs, changed tests, rules, history), and a profile with `suites = [...]`
    (`weekly`: `it-weekly`) selects only those suites, so the nightly never
    runs, or blocks on, weekly tests. A switch file covers the unit
    suites of both editions under the same `cwd`.
@@ -188,7 +188,8 @@ journeys the tests protect.
   managed only. Order, per graph DB:
   1. Build an image from a worktree at the newest `v*` tag before the commit
      under test (`git describe --tags --abbrev=0 --match 'v*' <head>^`), tagged
-     `pipeshub-ai:qa-<sha12>`.
+     `pipeshub-ai:qa-<sha12>`. The build uses this commit's compose file with the old
+     tree as build context. A tag that already existed is left in place at the end.
   2. Start the stack on it and run the tests marked `before_marker`
      (`QA_UPGRADE_DIR=<out>/stack/upgrade` is their shared directory).
   3. Build this commit's image (with `--build`), recreate only the app service on

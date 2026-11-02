@@ -292,10 +292,10 @@ class Stack:
         self.image = tag
 
     def build_from(self, tree: Path) -> None:
-        """Build the app image from another checkout, with that checkout's compose file and build context."""
+        """Build the app image from another checkout: this checkout's compose file, with the other one's build context.
+        The project directory is the compose file's own directory inside `tree`, so its relative context paths resolve there."""
         cmd = self.compose("build", APP_SERVICE)
-        cmd[cmd.index("-f") + 1] = str(tree / self.compose_file)
-        cmd[cmd.index("-f"):cmd.index("-f")] = ["--project-directory", str(tree)]
+        cmd[cmd.index("-f"):cmd.index("-f")] = ["--project-directory", str(tree / Path(self.compose_file).parent)]
         self._run(cmd, f"stack-{self.graph_db}.log", timeout=3600)
 
     def switch_to(self, tag: str, work_dir: Path, health_timeout: float = 300) -> None:

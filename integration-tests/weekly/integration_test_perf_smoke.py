@@ -24,7 +24,7 @@ def test_perf_smoke_stays_within_budget() -> None:
 
     needs: env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_STAND_IN_MODEL_ENDPOINT
     """
-    label = os.environ.get("PERF_SMOKE_LABEL", "smoke-local-neo4j")
+    label = os.environ.get("PERF_SMOKE_LABEL") or "smoke-local-neo4j"
     out = _IT / "reports" / "perf" / "smoke"
     out.mkdir(parents=True, exist_ok=True)
 
