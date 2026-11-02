@@ -88,8 +88,10 @@ from app.utils.record_block_selection import (  # noqa: E402
     FETCH_RECORD_HINTS,
     RECORD_CLOSE,
     ReadHints,
+    block_positions,
     continuation_hint,
     describe_gaps,
+    grouped_row_indexes,
     no_fit_hint,
     record_trailer_reserve,
     selection_hint,
@@ -3131,6 +3133,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     # A split row's container queued for a large table, by chunk id: where its
     # entry sits in rows_to_be_included, so a later fragment can raise its score.
     pending_split_rows: dict[str, tuple[str, int]] = {}
+    # Block id to position, per record, for points that group several table rows.
+    row_positions: dict[str, dict[str, int]] = {}
     # What a later point on an already-seen chunk updates, so the passage keeps
     # its best hit's score: a block over 100 words is several points with one
     # blockIndex, and the search API runs several queries.
@@ -3142,6 +3146,24 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         rows_key, position = pending_split_rows[pending_key]
         row_index, row_score, content = rows_to_be_included[rows_key][position]
         rows_to_be_included[rows_key][position] = (row_index, max(row_score, score), content)
+
+    def _queue_rows(first_chunk_id: str, rows_key: str, index: int, meta: dict[str, Any],
+                    blocks: list[dict[str, Any]], score: float) -> None:
+        """Queue the table rows one point stands for; a row already queued only has its score raised."""
+        virtual_record_id = rows_key.rsplit("_", 1)[0]
+        if meta.get("rowBlockIds") and virtual_record_id not in row_positions:
+            row_positions[virtual_record_id] = block_positions(blocks)
+        for row_index in grouped_row_indexes(meta, row_positions.get(virtual_record_id, {}), index):
+            row_chunk_id = f"{virtual_record_id}-{row_index}"
+            if row_chunk_id in pending_split_rows:
+                _raise_pending_row(row_chunk_id, score)
+            elif row_chunk_id in emitted_table_rows:
+                _note_matched_block(emitted_table_rows[row_chunk_id], row_index, score)
+            elif row_chunk_id == first_chunk_id or row_chunk_id not in seen_chunks:
+                seen_chunks.add(row_chunk_id)
+                pending_split_rows[row_chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
+                rows_to_be_included[rows_key].append((row_index, score, None))
+                on_repeat_hit[row_chunk_id] = functools.partial(_raise_pending_row, row_chunk_id)
 
     def _raise_passage(passage: dict[str, Any], score: float) -> None:
         passage["score"] = max(float(passage.get("score") or 0.0), score)
@@ -3337,6 +3359,12 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 row_index, row_score, content = rows_to_be_included[rows_key][position]
                 if repeat_score > row_score and result.get("content"):
                     rows_to_be_included[rows_key][position] = (row_index, repeat_score, result["content"])
+            elif chunk_id in pending_split_rows and meta.get("rowBlockIds"):
+                # A later point grouping other rows of the same table.
+                blocks_seen = (virtual_record_id_to_result.get(virtual_record_id) or {}).get(
+                    "block_containers", {}
+                ).get("blocks", [])
+                _queue_rows(chunk_id, pending_split_rows[chunk_id][0], index, meta, blocks_seen, repeat_score)
             elif chunk_id in on_repeat_hit:
                 on_repeat_hit[chunk_id](repeat_score)
             continue
@@ -3508,9 +3536,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 logger.warning("Table row %d has no table, vrid=%s", index, virtual_record_id)
                 continue
             rows_key = f"{virtual_record_id}_{block_group_index}"
-            pending_split_rows[chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
-            rows_to_be_included[rows_key].append((index,float(result.get("score",0.0)), None))
-            on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
+            _queue_rows(chunk_id, rows_key, index, meta, blocks, float(result.get("score", 0.0)))
             continue
         elif block_type == GroupType.TABLE.value:
             table_metadata = block.get("table_metadata", {})
