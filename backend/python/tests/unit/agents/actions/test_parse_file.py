@@ -803,7 +803,7 @@ class TestHandleHtml:
         result = await parser.handle_html(b"<html></html>", "page.html")
         assert result is expected
         parser._image_parser.urls_to_base64.assert_awaited_once_with(
-            ["https://example.com/pic.png"]
+            ["https://example.com/pic.png"], allow_remote_fetch=True
         )
         parser._html_parser.parse_to_blocks.assert_awaited_once_with(
             cleaned,

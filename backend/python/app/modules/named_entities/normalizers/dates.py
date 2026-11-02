@@ -12,7 +12,7 @@ import calendar
 import re
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -21,6 +21,8 @@ from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.values import DateRangeValue, DurationValue
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from dateparser.conf import Settings
     from dateparser.date import DateDataParser
 
@@ -57,6 +59,20 @@ _RANGE_END_DAY = re.compile(rf"^(?P<d>\d{{1,2}}){ORDINAL}(?:(?:,\s*|\s+)(?P<y>\d
 # Starts only at the first space of a run, so a long run is not scanned again from each of its spaces.
 _RANGE_SEPARATOR = re.compile(r"(?<!\s)(?:\s*[–—‒/-]\s*|\s+(?:to|through|thru|until|till)\s+)", re.IGNORECASE)
 _FROM = re.compile(r"^from\s+", re.IGNORECASE)
+_BETWEEN = re.compile(r"^between\s+", re.IGNORECASE)
+# Only after a leading "between": "2024-01-01 and later" is no range. Starts only at the
+# first space of a run, like _RANGE_SEPARATOR, so a long run is not rescanned from each space.
+_AND = re.compile(r"(?<!\s)\s+and\s+", re.IGNORECASE)
+_YEAR_FIRST = re.compile(r"^(?P<y>\d{4})(?P<sep>[/.])(?P<m>\d{1,2})(?P=sep)(?P<d>\d{1,2})$")
+# A dotted date is the European form, day first: dateparser reads "10.09.2026" as October 9.
+_DOTTED = re.compile(r"^(?P<d>\d{1,2})\.(?P<m>\d{1,2})\.(?P<y>\d{4})$")
+# Two-digit years ("1-Jan-99") stay with dateparser, which pivots the century.
+_DAY_MON_YEAR = re.compile(rf"^(?P<d>\d{{1,2}})-(?P<mon>{_MONTH_NAMES})-(?P<y>\d{{4}})$", re.IGNORECASE)
+# shortcut: calendar halves, as quarters are; upgrade with a fiscal-year start setting.
+_HALF = re.compile(
+    r"^(?:H(?P<h>[12])(?:[ ]?(?i:FY)[ ]?(?P<fy>\d{4}|\d{2})|['’](?P<ap>\d{2})|[ ](?P<y>\d{4}))"
+    r"|(?P<h2>[12])H(?:(?!00)(?P<y2>\d{2})|[ ]?(?P<y4>\d{4})))$"
+)
 _FISCAL_YEAR = re.compile(r"^FY\s?(?P<y>\d{4}|\d{2})$", re.IGNORECASE)
 _RELATIVE_PERIOD = re.compile(r"^(?P<which>next|last|this)\s+(?P<unit>week|month|quarter|year)$", re.IGNORECASE)
 _DURATION = re.compile(
@@ -73,6 +89,10 @@ _RELATIVE = re.compile(
 class NormalizationContext:
     reference_time_ms: int | None = None
     tz: str = "UTC"
+    # Give a date written without a year ("September 10") the year nearest the
+    # reference time. Only where that time is when the text was written: a record's
+    # creation, never an upload's (its own date comes from its content, afterwards).
+    anchor_years: bool = False
 
 
 def _zone(name: str) -> ZoneInfo:
@@ -118,6 +138,17 @@ def normalize_temporal(
     period = _RELATIVE_PERIOD.match(text)
     if period:
         return _period(period.group("which").casefold(), period.group("unit").casefold(), ctx)
+    half = _HALF.match(text)
+    if half:
+        year = next(g for g in (half.group(n) for n in ("fy", "ap", "y", "y2", "y4")) if g)
+        return _half(int(half.group("h") or half.group("h2")), year, ctx)
+    numeric = _YEAR_FIRST.match(text) or _DOTTED.match(text)
+    if numeric:
+        return _day(int(numeric.group("y")), int(numeric.group("m")), int(numeric.group("d")), ctx, anchored=False)
+    day_mon_year = _DAY_MON_YEAR.match(text)
+    if day_mon_year:
+        month = _MONTHS[day_mon_year.group("mon").casefold()]
+        return _day(int(day_mon_year.group("y")), month, int(day_mon_year.group("d")), ctx, anchored=False)
     ends = _range_ends(text)
     if ends is not None:
         # Final even when None: dateparser reads "Sep 9 – 11" as 2011-09-09.
@@ -134,7 +165,7 @@ def normalize_temporal(
         month = _MONTHS[month_day.group("mon").casefold()]
         day = int(month_day.group("d"))
         if not year:
-            return DateRangeValue(timex=f"XXXX-{month:02d}-{day:02d}", ambiguous=True, granularity="day")
+            return _year_less_day(month, day, ctx)
         return _day(int(year), month, day, ctx, anchored=False)
     day_month = _DAY_MONTH.match(text)
     if day_month:
@@ -144,11 +175,26 @@ def normalize_temporal(
         if not 1 <= day <= 31:
             return None
         if not year:
-            return DateRangeValue(timex=f"XXXX-{month:02d}-{day:02d}", ambiguous=True, granularity="day")
+            return _year_less_day(month, day, ctx)
         return _day(int(year), month, day, ctx, anchored=False)
     if _RELATIVE.match(text):
         return _relative(text, ctx)
     return _dateparser(text, kind, ctx)
+
+
+def _half(h: int, year_raw: str, ctx: NormalizationContext) -> DateRangeValue:
+    year = int(year_raw)
+    if year < 100:
+        year += 2000
+    start = _start_of(year, 1 if h == 1 else 7, 1, _zone(ctx.tz))
+    return DateRangeValue(
+        start_ms=_ms(start),
+        end_ms=_ms(_add_months(start, 6)),
+        timex=f"{year}-H{h}",
+        granularity="half",
+        anchored=True,
+        anchor_source="explicit",
+    )
 
 
 def _quarter(q: int, year_raw: str, ctx: NormalizationContext) -> DateRangeValue:
@@ -192,7 +238,11 @@ def _range_ends(text: str) -> tuple[str, str] | None:
     dates and one names a month ("12/25" is a day, not a range). ISO's own hyphens
     just fail to split."""
     text = _FROM.sub("", text)
-    for separator in _RANGE_SEPARATOR.finditer(text):
+    between = _BETWEEN.match(text)
+    if between:
+        text = text[between.end():]
+    separators = [*_RANGE_SEPARATOR.finditer(text), *(_AND.finditer(text) if between else ())]
+    for separator in separators:
         left, right = text[: separator.start()], text[separator.end():]
         if _ISO_DATE.match(left) and _ISO_DATE.match(right):
             return left, right
@@ -219,8 +269,16 @@ def _range(left: str, right: str, kind: EntityKind, ctx: NormalizationContext) -
     if month1 is None or month2 is None:
         return None
     backwards = (month1, day1 or 1) > (month2, day2 or 1)
+    anchor_source = "explicit"
     if year1 is None and year2 is None:
-        return _unanchored_range(month1, day1, month2, day2)
+        wraps = backwards and month1 != month2
+        # The end must exist too: "Feb 28 - Feb 29" anchors to a leap year.
+        year1 = _nearest_year(month1, day1 or 1, ctx, lambda year: _is_day(year + wraps, month2, day2 or 1))
+        if year1 is None:
+            return _unanchored_range(month1, day1, month2, day2)
+        # A range that wraps the year ("Dec 28 - Jan 3") ends in the next one.
+        year2 = year1 + 1 if backwards and month1 != month2 else year1
+        anchor_source = "record"
     if year1 is None:
         year1 = year2 - 1 if backwards and month1 != month2 else year2
     elif year2 is None:
@@ -237,8 +295,40 @@ def _range(left: str, right: str, kind: EntityKind, ctx: NormalizationContext) -
         timex=f"{first_value.timex}/{last_value.timex}",
         granularity=first_value.granularity,
         anchored=True,
-        anchor_source="explicit",
+        anchor_source=anchor_source,
     )
+
+
+def _year_less_day(month: int, day: int, ctx: NormalizationContext) -> DateRangeValue:
+    """A day written without a year: in the year nearest the reference when ``ctx``
+    anchors years and one fits, otherwise kept unresolved as before."""
+    year = _nearest_year(month, day, ctx)
+    anchored = _day(year, month, day, ctx, anchored=True) if year is not None else None
+    return anchored or DateRangeValue(timex=f"XXXX-{month:02d}-{day:02d}", ambiguous=True, granularity="day")
+
+
+def _nearest_year(
+    month: int, day: int, ctx: NormalizationContext, fits: Callable[[int], bool] = lambda _year: True,
+) -> int | None:
+    """The year that puts ``month``/``day`` nearest the reference day, in the record's
+    time zone, among the years ``fits`` accepts; a tie goes to the past. None when years
+    are not anchored, there is no reference, or no nearby year has the day (Feb 29)."""
+    if not ctx.anchor_years or not ctx.reference_time_ms:
+        return None
+    reference = _base(ctx, _zone(ctx.tz))[0].date()
+    found: list[tuple[int, date]] = []
+    for year in (reference.year - 1, reference.year, reference.year + 1):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if fits(year):
+            found.append((abs((candidate - reference).days), candidate))
+    return min(found)[1].year if found else None
+
+
+def _is_day(year: int, month: int, day: int) -> bool:
+    return 1 <= day <= calendar.monthrange(year, month)[1]
 
 
 def _unanchored_range(month1: int, day1: int | None, month2: int, day2: int | None) -> DateRangeValue | None:

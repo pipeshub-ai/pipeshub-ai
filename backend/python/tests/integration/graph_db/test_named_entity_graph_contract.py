@@ -125,13 +125,16 @@ def _quarter(org_id: str) -> ResolvedEntity:
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
 
 
-def _amount(org_id: str, amount: str, currency: str = "USD") -> ResolvedEntity:
+def _amount(org_id: str, amount: str, currency: str = "USD", high: str | None = None) -> ResolvedEntity:
     value = Decimal(amount)
     entity = NamedEntity(
         kind=EntityKind.CURRENCY,
-        display_name=f"{currency} {amount}",
-        norm_key=f"{currency}:{amount}",
-        value=MoneyValue(amount=value, amount_float=float(value), currency=currency),
+        display_name=f"{currency} {amount}" + (f"-{high}" if high else ""),
+        norm_key=f"{currency}:{amount}" + (f"..{high}" if high else ""),
+        value=MoneyValue(
+            amount=value, amount_float=float(value), currency=currency,
+            amount_high=Decimal(high) if high else None,
+        ),
         mentions=[_mention(f"{currency} {amount}")],
     )
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
@@ -264,6 +267,29 @@ async def test_range_and_overlap_queries_return_the_same_records(graph) -> None:
         amount_min=90_000, amount_max=90_000, date_start_ms=_ms(2025, 8, 1), date_end_ms=_ms(2025, 8, 2),
     )
     assert (await provider.get_records_for_named_entities(org_id, None, no_record_has_both))["hits"] == []
+
+
+async def test_an_amount_range_matches_any_window_it_overlaps(graph) -> None:
+    provider, org_id, _ = graph
+    ranged, exact = await _records(provider, org_id, 2)
+    writer = _writer(provider)
+    # "$5-10M" and an exact $5M.
+    await writer.write(org_id, ranged, [_amount(org_id, "5000000", high="10000000")])
+    await writer.write(org_id, exact, [_amount(org_id, "5000000")])
+
+    async def found(low: float, high: float) -> set[str]:
+        query = NamedEntityQuery(kinds=["currency"], amount_min=low, amount_max=high, currency="USD")
+        return {hit["recordId"] for hit in (await provider.get_records_for_named_entities(org_id, None, query))["hits"]}
+
+    assert await found(8_000_000, 12_000_000) == {ranged}
+    assert await found(4_000_000, 5_000_000) == {ranged, exact}
+    assert await found(10_000_000, 10_000_000) == {ranged}
+    assert await found(11_000_000, 20_000_000) == set()
+    assert await found(1_000_000, 4_999_999) == set()
+    in_window = await provider.get_named_entity_values_in_records(
+        org_id, NamedEntityQuery(amount_min=8_000_000, amount_max=9_000_000), [ranged, exact],
+    )
+    assert set(in_window) == {ranged}
 
 
 async def test_name_filter_narrows_and_an_oversized_match_is_truncated(graph) -> None:
@@ -1286,3 +1312,50 @@ async def test_mentions_from_records_list_every_live_entity_of_only_those_record
     await _merge(provider, backend, initech.graph_key, acme.graph_key)
     rows = await provider.get_named_entity_mentions_from_records(org_id, [second])
     assert {row["entityId"] for row in rows} == {acme.graph_key}
+
+
+async def test_an_entity_with_a_value_kind_finds_the_records_that_have_both(graph) -> None:
+    """entity_ids with kinds=["currency"] matched nothing: the value kind made the entity part empty."""
+    provider, org_id, _ = graph
+    both, entity_only, amount_only = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    acme = _org(org_id, "Acme")
+    await writer.write(org_id, both, [acme, _amount(org_id, "1250")])
+    await writer.write(org_id, entity_only, [acme])
+    await writer.write(org_id, amount_only, [_amount(org_id, "900")])
+
+    hits = await provider.get_records_for_named_entities(org_id, [acme.graph_key], NamedEntityQuery(kinds=["currency"]))
+    assert {hit["recordId"] for hit in hits["hits"]} == {both}
+
+
+async def test_records_stating_a_date_inside_a_window_are_told_from_wider_ranges(graph) -> None:
+    provider, org_id, _ = graph
+    quarter_only, with_day = await _records(provider, org_id, 2)
+    writer = _writer(provider)
+    day = NamedEntity(
+        kind=EntityKind.DATE, display_name="Aug 5, 2025", norm_key="2025-08-05",
+        value=DateRangeValue(start_ms=_ms(2025, 8, 5), end_ms=_ms(2025, 8, 6), granularity="day", timex="2025-08-05"),
+        mentions=[_mention("Aug 5, 2025")],
+    )
+    await writer.write(org_id, quarter_only, [_quarter(org_id)])
+    await writer.write(org_id, with_day, [
+        _quarter(org_id), ResolvedEntity(entity=day, graph_key=named_entity_key(org_id, "date", "2025-08-05")),
+    ])
+
+    day_ms = _ms(2025, 8, 6) - _ms(2025, 8, 5)
+    quarter_ms = _ms(2025, 10, 1) - _ms(2025, 7, 1)
+    spans = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day, f"{org_id}-missing"], _ms(2025, 8, 5), _ms(2025, 8, 6),
+    )
+    # The quarter covers the day but does not name it; the record naming the day does.
+    assert spans == {quarter_only: (False, quarter_ms), with_day: (True, day_ms)}
+    # A day asked with its end written as the last millisecond still counts the whole-day value.
+    last_ms = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day], _ms(2025, 8, 5), _ms(2025, 8, 6) - 1,
+    )
+    assert last_ms[with_day] == (True, day_ms)
+    whole_quarter = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day], _ms(2025, 7, 1), _ms(2025, 10, 1),
+    )
+    assert {record for record, (named, _) in whole_quarter.items() if named} == {quarter_only, with_day}
+    assert await provider.get_named_entity_date_spans(f"{org_id}-other", [with_day], _ms(2025, 8, 5), _ms(2025, 8, 6)) == {}
