@@ -13,6 +13,7 @@ from app.agents.agent_loop.tool_approvals import args_hash
 from app.agents.constants.mcp_server_constants import (
     get_mcp_tool_approval_claim_path,
     get_mcp_tool_approval_path,
+    get_mcp_tool_approval_user_index_dir,
 )
 from app.api.routes import mcp_servers
 from app.api.routes.mcp_servers import (
@@ -147,3 +148,33 @@ class TestValidateEdit:
         assert await self._validate(store, {"q": "a"}) == {"errors": []}
         blocked = self._store(kind="destructive")
         assert (await self._validate(blocked, {"q": "a"}))["errors"][0].message == "A rule blocks this action with these details."
+
+
+class TestPendingList:
+    @staticmethod
+    def _store(user_id: str = "user-1") -> FakeConfigService:
+        d = get_mcp_tool_approval_user_index_dir("org-1", user_id)
+        entry = {"conversationId": "c", "createdAt": 5, "expiresAt": (time.time() + 60) * 1000, "card": {"approvalId": "w"}}
+        return FakeConfigService({
+            f"{d}/w": {**entry, "approvalId": "w", "client": "pipeshub-ai"},
+            f"{d}/s": {**entry, "approvalId": "s", "client": "slack-approvals", "card": {"approvalId": "s"}},
+        })
+
+    async def _list(self, store: FakeConfigService, *, extra_user: dict[str, Any] | None = None, query_user: str | None = None) -> Any:  # noqa: ANN401
+        request = route_request(store, user_id="user-1")
+        request.state.user.update(extra_user or {})
+        request.query_params = {"userId": query_user} if query_user else {}
+        with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-test")):
+            return await mcp_servers.list_pending_tool_approvals(request)
+
+    async def test_pending_route_lists_web_calls_only(self) -> None:
+        assert await self._list(self._store()) == {"items": [{"conversationId": "c", "createdAt": 5, "card": {"approvalId": "w"}}]}
+
+    async def test_pending_route_refuses_oauth(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._list(self._store(), extra_user={"isOAuth": True})
+        assert caught.value.status_code == 403
+
+    async def test_pending_route_ignores_query_user_id(self) -> None:
+        out = await self._list(self._store("user-2"), query_user="user-2")
+        assert out == {"items": []}
