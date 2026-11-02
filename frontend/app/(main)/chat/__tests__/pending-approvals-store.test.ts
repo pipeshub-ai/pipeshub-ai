@@ -14,6 +14,7 @@ vi.mock('../store', () => ({
   }),
 }));
 
+import { useAuthStore } from '@/lib/store/auth-store';
 import {
   resetPendingApprovalsForTest,
   useOtherChatApprovals,
@@ -173,5 +174,62 @@ describe('pending approvals store', () => {
     finishOld([item('old', 'conv-other')]);
     await act(() => older);
     expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['new']);
+  });
+
+  describe('signing out', () => {
+    beforeEach(() => {
+      useAuthStore.getState().setTokens('access', 'refresh');
+    });
+    afterEach(() => {
+      useAuthStore.getState().logout();
+      useAuthStore.getState().setUser(null);
+    });
+
+    const hanging = () => {
+      let finish!: (items: PendingApprovalItem[]) => void;
+      api.fetchPendingApprovals.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+      return (items: PendingApprovalItem[]) => finish(items);
+    };
+
+    it('empties the list when the person signs out', async () => {
+      api.fetchPendingApprovals.mockResolvedValue([item('b', 'conv-other')]);
+      await act(() => usePendingApprovals.getState().refresh());
+      act(() => useAuthStore.getState().logout());
+      expect(usePendingApprovals.getState().items).toEqual([]);
+    });
+
+    it('discards a fetch that was running when the list was reset', async () => {
+      const finish = hanging();
+      const running = usePendingApprovals.getState().refresh();
+      act(() => usePendingApprovals.getState().reset());
+      finish([item('old-user', 'conv-other')]);
+      await act(() => running);
+      expect(usePendingApprovals.getState().items).toEqual([]);
+    });
+
+    it("starts the next person's refresh at once, not after the old fetch", async () => {
+      hanging();
+      const old = renderHook(() => usePendingApprovalsSync());
+      await act(async () => {});
+      old.unmount();
+      act(() => useAuthStore.getState().logout());
+
+      api.fetchPendingApprovals.mockResolvedValue([item('mine', 'conv-other')]);
+      const next = renderHook(() => usePendingApprovalsSync());
+      await act(async () => {});
+      expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(2);
+      expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['mine']);
+      next.unmount();
+    });
+
+    it('resets when a different person signs in', async () => {
+      act(() => useAuthStore.getState().setUser({ id: 'u1' }));
+      api.fetchPendingApprovals.mockResolvedValue([item('b', 'conv-other')]);
+      await act(() => usePendingApprovals.getState().refresh());
+      act(() => useAuthStore.getState().setUser({ id: 'u1', name: 'Ann' }));
+      expect(usePendingApprovals.getState().items).toHaveLength(1);
+      act(() => useAuthStore.getState().setUser({ id: 'u2' }));
+      expect(usePendingApprovals.getState().items).toEqual([]);
+    });
   });
 });
