@@ -609,3 +609,33 @@ async def test_writing_a_kept_extraction_again_folds_its_short_forms_and_learns_
     assert (kind, displays, keys) == ("organization", ["Pinecrest"], ["name:organization:pinecrest"])
     # The stored extraction itself is left as it was.
     assert [e.display_name for e in kept.entities] == ["Pinecrest Hospitality", "Pinecrest"]
+
+
+async def test_a_year_less_date_is_written_in_the_year_nearest_the_records_creation() -> None:
+    from app.modules.named_entities.merge import entity_identity
+    from app.modules.named_entities.normalizers.dates import NormalizationContext
+
+    display, key, value = entity_identity(EntityKind.DATE, "Sep 10", NormalizationContext())
+    year_less = NamedEntity(
+        kind=EntityKind.DATE, display_name=display, norm_key=key, value=value,
+        mentions=[Mention(block_index=0, char_start=0, char_end=6, surface="Sep 10", extractor="value")],
+    )
+    kept = NamedEntityExtraction(strategy="agent", termination_reason="finish_ok", status="COMPLETED", entities=[year_less])
+    record = SimpleNamespace(**vars(_record()), source_created_at=1_759_320_000_000, connector_name="CONFLUENCE", origin="CONNECTOR")
+    graph = MagicMock(
+        get_named_entities_for_record=AsyncMock(return_value=[]),
+        find_named_entities=AsyncMock(return_value=[]),
+        create_named_entities_if_absent=AsyncMock(),
+        replace_named_entity_values=AsyncMock(),
+        clear_named_entity_persist_retry=AsyncMock(return_value=True),
+    )
+    with patch("app.modules.named_entities.graph_writer.EdgeReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock()
+        await stage.persist_named_entities(
+            SimpleNamespace(record=record), kept, graph_provider=graph, graph_data_store=_store(), enabled=True,
+        )
+
+    _record_id, values, _ = graph.replace_named_entity_values.await_args.args
+    # Created 2025-10-01: September 10 is 2025, and now has a start a date query can match.
+    assert [(v["timex"], v["startMs"] is not None) for v in values] == [("2025-09-10", True)]
+    assert kept.entities[0].value.ambiguous

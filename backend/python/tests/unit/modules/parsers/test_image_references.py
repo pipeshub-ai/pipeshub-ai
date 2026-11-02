@@ -280,7 +280,7 @@ async def test_the_image_parser_refuses_a_data_uri_that_is_not_an_image(monkeypa
 
     monkeypatch.setattr(module, "PublicUrlFetcher", Boom)
     result = await module.ImageParser.urls_to_base64(
-        ["data:text/html,<script>alert(1)</script>", "javascript:alert(1)"]
+        ["data:text/html,<script>alert(1)</script>", "javascript:alert(1)"], allow_remote_fetch=True
     )
     assert result == [None, None]
 

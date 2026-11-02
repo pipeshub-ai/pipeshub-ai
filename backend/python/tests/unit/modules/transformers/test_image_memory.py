@@ -109,7 +109,7 @@ class TestFetchingImages:
     async def test_no_more_than_four_images_are_downloaded_at_once(self) -> None:
         in_flight = peak = 0
 
-        async def fetch(fetcher, url, logger=None) -> str:
+        async def fetch(fetcher, url, logger=None, *, allow_remote_fetch) -> str:
             nonlocal in_flight, peak
             in_flight += 1
             peak = max(peak, in_flight)
@@ -118,14 +118,14 @@ class TestFetchingImages:
             return _jpeg(10, 10)
 
         with patch.object(ImageParser, "_fetch_single_url", side_effect=fetch):
-            result = await ImageParser.urls_to_base64([f"https://example.com/{i}.jpg" for i in range(12)])
+            result = await ImageParser.urls_to_base64([f"https://example.com/{i}.jpg" for i in range(12)], allow_remote_fetch=True)
 
         assert len(result) == 12 and all(result)
         assert peak == 4
 
     async def test_each_image_is_shrunk_as_it_arrives(self) -> None:
         with patch.object(ImageParser, "_fetch_single_url", AsyncMock(return_value=_jpeg(4000, 3000))):
-            [uri] = await ImageParser.urls_to_base64(["https://example.com/photo.jpg"])
+            [uri] = await ImageParser.urls_to_base64(["https://example.com/photo.jpg"], allow_remote_fetch=True)
 
         assert read_image_dimensions(uri) == (2000, 1500)
 
@@ -135,7 +135,7 @@ class TestFetchingImages:
         fetch = AsyncMock(return_value=small)
 
         with patch.object(ImageParser, "_fetch_single_url", fetch):
-            result = await ImageParser.urls_to_base64([f"https://example.com/{i}.jpg" for i in range(8)])
+            result = await ImageParser.urls_to_base64([f"https://example.com/{i}.jpg" for i in range(8)], allow_remote_fetch=True)
 
         assert result[:4] == [small] * 4
         assert result[4:] == [None] * 4

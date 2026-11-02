@@ -638,6 +638,7 @@
      "value": {
       "amount": "12500",
       "amount_float": 12500.0,
+      "amount_high": null,
       "currency": "EUR",
       "currency_ambiguous": false,
       "value_type": "money"
@@ -763,6 +764,7 @@
      "value": {
       "amount": "2500000.0",
       "amount_float": 2500000.0,
+      "amount_high": null,
       "currency": "USD",
       "currency_ambiguous": false,
       "value_type": "money"
@@ -852,6 +854,7 @@
      "value": {
       "amount": "50000",
       "amount_float": 50000.0,
+      "amount_high": null,
       "currency": "EUR",
       "currency_ambiguous": false,
       "value_type": "money"
@@ -1493,6 +1496,7 @@
      {
       "amount": "12500",
       "amountFloat": 12500.0,
+      "amountHighFloat": null,
       "blockIds": [
        "contract-b1"
       ],
@@ -1601,6 +1605,7 @@
      {
       "amount": "2500000.0",
       "amountFloat": 2500000.0,
+      "amountHighFloat": null,
       "blockIds": [
        "contract-b1"
       ],
@@ -1683,6 +1688,7 @@
      {
       "amount": "50000",
       "amountFloat": 50000.0,
+      "amountHighFloat": null,
       "blockIds": [
        "contract-b1"
       ],
@@ -2083,6 +2089,7 @@
      "value": {
       "amount": "-1250.50",
       "amount_float": -1250.5,
+      "amount_high": null,
       "currency": "USD",
       "currency_ambiguous": true,
       "value_type": "money"
@@ -2200,6 +2207,7 @@
      "value": {
       "amount": "-300",
       "amount_float": -300.0,
+      "amount_high": null,
       "currency": "USD",
       "currency_ambiguous": true,
       "value_type": "money"
@@ -2768,6 +2776,7 @@
      {
       "amount": "-1250.50",
       "amountFloat": -1250.5,
+      "amountHighFloat": null,
       "blockIds": [
        "incident-b1"
       ],
@@ -2876,6 +2885,7 @@
      {
       "amount": "-300",
       "amountFloat": -300.0,
+      "amountHighFloat": null,
       "blockIds": [
        "incident-b1"
       ],

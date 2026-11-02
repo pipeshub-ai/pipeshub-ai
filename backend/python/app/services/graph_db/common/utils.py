@@ -422,7 +422,7 @@ TRASH_STATE_FIELDS = (
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
 # when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
-# taxonomy copy. No client reads them, and the record endpoint's response
+# taxonomy copy, and the mark a push leaves for indexing. No client reads them, and the record endpoint's response
 # schema rejects fields it does not list, so the endpoint leaves these out.
 # `deletedByUserId` predates the trash and is documented, so it stays in.
 INTERNAL_RECORD_FIELDS = frozenset({
@@ -439,6 +439,7 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "duplicateReconcileAttempts",
     "extractionDeferred",
     "duplicateReconcileDueAt",
+    "pushOrigin",
 })
 
 
