@@ -8,6 +8,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { validateApprovalEdits } from '../../api';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
+import { usePendingApprovals } from '../../pending-approvals-store';
 import { useChatStore } from '../../store';
 import { useRenderSlotId } from './render-slot';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
@@ -40,6 +41,9 @@ interface ToolApprovalCardProps {
   /** Sends the answer in the call's own chat instead of the active one. */
   onAnswer?: (answer: ToolApprovalAnswer) => Promise<'sent' | 'busy' | 'stale' | 'failed'>;
   onOpenChat?: () => void;
+  /** Composer: how many more calls wait behind this one; `onMore` shows the next. */
+  moreCount?: number;
+  onMore?: () => void;
 }
 
 const ANSWER_PROBLEM = { busy: 'busyElsewhere', stale: 'alreadyAnswered', failed: 'answerFailed' } as const;
@@ -60,7 +64,7 @@ function pointerField(path: string): string {
  * answer carries on this same reply, sending the approval id, the choice and, when the person
  * changed the call or wrote a note, those too. Where it can't be answered (expired, an older
  * reply, a conversation shared with the viewer) it is one line. */
-export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inline', conversationTitle, onAnswer, onOpenChat }: ToolApprovalCardProps) {
+export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inline', conversationTitle, onAnswer, onOpenChat, moreCount = 0, onMore }: ToolApprovalCardProps) {
   const { t } = useTranslation();
   const minutesLeft = useMinutesLeft(approval.expiresAt);
   const original = approval.arguments ?? null;
@@ -169,6 +173,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     const query = toolApprovalResumeQuery(decision);
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, payload);
     if (!request) return;
+    // Answered here: the list above the composer must not offer it once this chat is left.
+    usePendingApprovals.getState().drop(approval.approvalId);
     void streamMessageForSlot(slotId, query, request, { reuseRowId: rowId });
   };
 
@@ -231,7 +237,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   return (
     <Box
       ref={cardRef}
-      className="tool-approval-card"
+      className={placement === 'composer' ? 'tool-approval-card no-scrollbar' : 'tool-approval-card'}
       data-testid="tool-approval-card"
       role="group"
       aria-label={t('chat.toolApproval.needsApproval')}
@@ -240,6 +246,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         border: '1px solid var(--gray-5)',
         borderRadius: 'var(--radius-3)',
         backgroundColor: 'var(--gray-2)',
+        ...(placement === 'composer' ? { boxShadow: 'var(--shadow-4)', maxHeight: '60vh', overflowY: 'auto' } : {}),
       }}
     >
       <Flex gap="3" align="start">
@@ -276,6 +283,11 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             {expiry}
           </Text>
         </Box>
+        {moreCount > 0 && onMore && (
+          <Button size="1" variant="ghost" color="gray" style={{ flexShrink: 0 }} onClick={onMore}>
+            {t('chat.toolApproval.moreWaiting', { count: moreCount })}
+          </Button>
+        )}
       </Flex>
 
       <Box

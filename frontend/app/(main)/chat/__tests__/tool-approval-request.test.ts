@@ -153,4 +153,25 @@ describe('validateApprovalEdits', () => {
     vi.mocked(apiClient.post).mockRejectedValueOnce(new Error('network'));
     await expect(validateApprovalEdits('a', 'h', {})).rejects.toThrow('network');
   });
+
+  it("answers a chat in the background as that chat's own, not the agent or tools on screen", () => {
+    window.history.replaceState(null, '', '/chat/?agentId=agent-on-screen');
+    try {
+      const store = useChatStore.getState();
+      const onScreen = store.createSlot('conv-here');
+      store.setActiveSlot(onScreen);
+      useChatStore.setState({ agentStreamTools: ['jira.search'] });
+      const plain = store.createSlot('conv-plain');
+      const agentChat = store.createSlot('conv-agent');
+      store.updateSlot(agentChat, { threadAgentId: 'agent-b' });
+
+      expect(buildStreamChatRequestForSlot(plain, 'q', undefined, ANSWER, { agentMode: true })?.agentId).toBeUndefined();
+      const request = buildStreamChatRequestForSlot(agentChat, 'q', undefined, ANSWER, { agentMode: true });
+      expect(request?.agentId).toBe('agent-b');
+      expect(request?.agentStreamTools).toBeUndefined();
+      expect(buildStreamChatRequestForSlot(onScreen, 'q')?.agentId).toBe('agent-on-screen');
+    } finally {
+      window.history.replaceState(null, '', '/');
+    }
+  });
 });

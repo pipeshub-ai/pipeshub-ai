@@ -14,11 +14,9 @@ import { onLeaveChat, onNewChat } from './compare/compare-controller';
 import {
   applyConversationModelInfoToStore,
   findModelInfoInConversationLists,
-  pickModelInfoFromConversationBundle,
 } from '@/chat/utils/apply-conversation-model-info';
 import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
 import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
-import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
   AgentsApi,
@@ -31,8 +29,9 @@ import {
 import type { GetAgentResult } from '@/app/(main)/agents/types';
 import { useAgentDetail } from '@/chat/hooks/use-agent-detail';
 import { showErrorToast } from '@/lib/api/error-toast';
-import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
+import { buildExternalStoreConfig } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
+import { conversationSlotPatch, fetchConversationDetail } from '@/chat/load-conversation';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
@@ -712,21 +711,13 @@ function ChatContent() {
     const loadHistory = async (attempt = 0): Promise<void> => {
       const generation = generationOf();
       try {
-        const detail = historyAndShareAgentId
-          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
-          : await ChatApi.fetchConversation(convId);
+        const detail = await fetchConversationDetail(convId, historyAndShareAgentId);
         if (cancelled) return;
         if (generationOf() !== generation) {
           return retryStale(attempt);
         }
 
         const messages = detail.messages;
-        const isOwner = detail.conversation.access?.isOwner ?? false;
-        const apiPagination = detail.pagination;
-        const modelInfo = pickModelInfoFromConversationBundle({
-          modelInfo: detail.conversation.modelInfo,
-          messages: detail.messages,
-        });
 
         // Always reset filters so pills from a previously viewed conversation
         // don't persist if this conversation carries no filter history.
@@ -743,25 +734,7 @@ function ChatContent() {
           restoreAppliedFilters(lastFiltered.appliedFilters, Boolean(historyAndShareAgentId), projectId);
         }
 
-        const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
-        useChatStore.getState().updateSlot(activeSlotId, {
-          messages: formattedMessages,
-          rawMessages: messages,
-          isInitialized: true,
-          hasLoaded: true,
-          remoteRunInProgress: detail.conversation.status === 'Inprogress',
-          isOwner,
-          sharedWith: detail.conversation.sharedWith ?? null,
-          forkedFrom: detail.conversation.forkedFrom ?? null,
-          forks: detail.conversation.forks ?? [],
-          messagePagination: {
-            currentPage: apiPagination.page,
-            hasOlderMessages: apiPagination.hasNextPage,
-            isLoadingOlder: false,
-          },
-          ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
-          pendingAskUserQuestion: unansweredAskUserQuestion,
-        });
+        useChatStore.getState().updateSlot(activeSlotId, conversationSlotPatch(detail));
       } catch (error) {
         if (!cancelled && generationOf() !== generation) {
           return retryStale(attempt);
