@@ -1,6 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import { FENCE_WAIT_QUEUE_MS, fenceCutoverWaitMs } from '../../../src/libs/repositories/fence'
+import { FENCED_APP_NAME, fenceClientOptions } from '../../../src/libs/repositories/fence'
+import { drain } from '../../../src/scripts/docstore-migrate/drain'
+import { resolveChange } from '../../../src/scripts/docstore-migrate/follow'
 import { appClients, describeClients, fenceTuning, sleep } from '../../../src/scripts/docstore-migrate/fence'
 import { nonObjectIdSample } from '../../../src/scripts/docstore-migrate/preflight'
 
@@ -80,6 +83,51 @@ describe('docstore-migrate fence helpers', () => {
       ]),
     )
     expect(found.map((c) => c.client)).to.deep.equal(['10.0.0.1:1', '10.0.0.2:1', '10.0.0.4:1'])
+  })
+
+  it('an armed client names its connections so that the cutover tool can tell it from one that is not', () => {
+    const saved = process.env.DOC_STORE_FENCE
+    try {
+      process.env.DOC_STORE_FENCE = 'on'
+      expect(fenceClientOptions()).to.deep.equal({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS, appName: FENCED_APP_NAME })
+      delete process.env.DOC_STORE_FENCE
+      expect(fenceClientOptions()).to.deep.equal({})
+    } finally {
+      if (saved === undefined) delete process.env.DOC_STORE_FENCE
+      else process.env.DOC_STORE_FENCE = saved
+    }
+  })
+
+  it('an update that arrives without its document is read again: written when it is there, removed when it is gone', async () => {
+    const calls: unknown[] = []
+    const rt = (found: unknown) => ({ mongo: { db: (d: string) => ({ collection: (c: string) => ({ findOne: async (f: unknown) => (calls.push([d, c, f]), found) }) }) } }) as never
+    const ev = (extra: Record<string, unknown>) => ({ operationType: 'update', ns: { db: 'es', coll: 'users' }, documentKey: { _id: 'u1' }, ...extra }) as never
+    expect(await resolveChange(rt(null), ev({ fullDocument: { a: 1 } }))).to.deep.equal({ op: 'upsert', doc: { a: 1 } })
+    expect(calls, 'no extra read when the event has its document').to.have.length(0)
+    expect(await resolveChange(rt({ _id: 'u1', a: 2 }), ev({}))).to.deep.equal({ op: 'upsert', doc: { _id: 'u1', a: 2 } })
+    expect(await resolveChange(rt({ _id: 'u1', a: 2 }), ev({ fullDocument: null }))).to.deep.equal({ op: 'upsert', doc: { _id: 'u1', a: 2 } })
+    expect(calls).to.deep.equal([['es', 'users', { _id: 'u1' }], ['es', 'users', { _id: 'u1' }]])
+    expect(await resolveChange(rt(null), ev({}))).to.deep.equal({ op: 'delete' })
+    expect(await resolveChange(rt({ a: 1 }), ev({ operationType: 'delete' }))).to.deep.equal({ op: 'delete' })
+  })
+
+  it('a forced drain closes only the sessions that are still running', async () => {
+    const filters: any[] = []
+    let finds = 0
+    const sessions = {
+      find: () => ({ limit: () => ({ toArray: async () => (finds++ === 0 ? [{ _id: 's1' }] : []) }) }),
+      updateMany: async (f: unknown) => (filters.push(f), { modifiedCount: 1 }),
+    }
+    const fence = { findOne: async () => ({ mode: 'draining', epoch: 1 }), updateOne: async () => ({ matchedCount: 1, modifiedCount: 1 }), countDocuments: async () => 1 }
+    const rt = {
+      db: () => ({ collection: (n: string) => (n === 'chatSessions' ? sessions : fence) }),
+      mongo: { db: () => ({ aggregate: () => ({ toArray: async () => [] }) }) },
+    } as never
+    const r = await drain(rt, { waitMs: 0, force: true, log: () => undefined, settleMs: 0, pollMs: 1 })
+    expect(r.stoppedRuns).to.equal(1)
+    expect(filters[0]._id).to.deep.equal({ $in: ['s1'] })
+    expect(filters[0].status, 'a session that finished meanwhile is not matched').to.equal('Inprogress')
+    expect(filters[0].lastActivityAt.$gt).to.be.a('number')
   })
 
   it('describes the connections, three at most', () => {

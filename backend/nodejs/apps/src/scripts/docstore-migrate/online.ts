@@ -561,7 +561,14 @@ export async function cutover(
     // F1/F2: no new chat turns, wait for the ones running
     const d = await mark(
       'F1-F2 drain',
-      () => drain(rt, { waitMs: o.drainWaitMs, force: o.force, log: o.log }),
+      () =>
+        drain(rt, {
+          waitMs: o.drainWaitMs,
+          force: o.force,
+          log: o.log,
+          // the operator's attestation that every writer carries the fence is already a pre-check of the cut (F0)
+          confirmArmed: o.fenceArmed,
+        }),
       (r) => ({ ok: r.ok, remaining: r.remaining, stopped: r.stoppedRuns }),
     );
     if (!d.ok)

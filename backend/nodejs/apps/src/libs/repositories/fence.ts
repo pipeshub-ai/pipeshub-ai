@@ -78,9 +78,19 @@ export const FENCE_VISIBLE_MS = FENCE_READ_DEADLINE_MS + ACTIVE_FENCE_TRUST_MS;
  * client is a bound on the wait queue; everything else stays as the deployment has it.
  */
 export const FENCE_WAIT_QUEUE_MS = 30_000;
+/**
+ * The name an armed client gives its connections (`appName`), so that `$currentOp` shows which connected clients carry the fence: a
+ * client without it is an application process that does not wrap its writes, and the cutover tool will not drain while one is connected.
+ */
+export const FENCED_APP_NAME = 'pipeshub-fenced';
 /** The MongoClient options to merge in while the fence is armed; empty when it is off. */
-export const fenceClientOptions = (): { waitQueueTimeoutMS?: number } =>
-  mongoFenceArmed() ? { waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS } : {};
+export const fenceClientOptions = (): {
+  waitQueueTimeoutMS?: number;
+  appName?: string;
+} =>
+  mongoFenceArmed()
+    ? { waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS, appName: FENCED_APP_NAME }
+    : {};
 
 /**
  * The connection options the application's `MongoService` sets in code (it passes no others): the migration tool derives the
