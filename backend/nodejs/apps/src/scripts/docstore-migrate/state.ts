@@ -7,6 +7,9 @@ import type { MigrationRuntime } from './runtime';
 
 export const JOB_KIND = 'docstore_migration';
 
+/** Advisory lock key that orders a `reset` against the batches of a running copy (see JobState.guardWrite). */
+export const COPY_LOCK_KEY = 7_041_201;
+
 export interface CollectionProgress {
   state: 'pending' | 'running' | 'done';
   /** Last `_id` copied (hex). With `ranges`, each range keeps its own and this one stays null until all are done. */
@@ -210,6 +213,26 @@ export class JobState {
         throw new Error(`job ${String(this.id)} is no longer running`);
     });
     this.remember(JSON.parse(text) as Progress);
+  }
+
+  /**
+   * Called inside the unit that writes a batch. The unit holds a shared lock until it ends, then reads the job status: a `reset` that
+   * has cancelled the job and then takes the exclusive lock waits for the units already writing and is waited for by none after, and a
+   * unit that starts after the cancel sees it and stops before it writes. The status is read on another connection, after the lock.
+   */
+  async guardWrite(k: {
+    query(sql: string, params?: unknown[]): Promise<unknown>;
+  }): Promise<void> {
+    await k.query(
+      '/* pipeshub:migrate.copy_lock */ SELECT pg_advisory_xact_lock_shared($1)',
+      [COPY_LOCK_KEY],
+    );
+    const { rows } = await this.rt.migratePool.query<{ status: string }>(
+      'SELECT status FROM platform.jobs WHERE id = $1::bigint',
+      [this.id],
+    );
+    if (rows[0]?.status !== 'running')
+      throw new Error(`job ${String(this.id)} is no longer running`);
   }
 
   async finish(status: 'done' | 'failed' | 'cancelled'): Promise<void> {
