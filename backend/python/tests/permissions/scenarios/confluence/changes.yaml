@@ -136,7 +136,7 @@
     index_writes: delete
   tags: [confluence, "cell:confluence/delete"]
 - id: CONF-C-11
-  title: Account deactivated; Atlassian keeps its groups, so Bob keeps everything the groups grant
+  title: Account deactivated; the connector drops Bob from its groups and withdraws his connector, so Bob reads nothing
   source: permission model doc, confluence section (user removed from the org)
   rule: intersection
   comment: >
