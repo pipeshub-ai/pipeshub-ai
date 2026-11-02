@@ -237,6 +237,7 @@ export function TagInput({
         }}
       >
         <Flex
+          className="tag-input-chips"
           wrap="wrap"
           gap="1"
           align="start"
@@ -384,6 +385,8 @@ function TagPill({
           variant="ghost"
           color="gray"
           data-tag-remove=""
+          // A 44px tap area on touch screens; the 16px button and its icon stay as drawn.
+          className="touch-hit"
           aria-label={t('workspace.connectors.schemaForm.removeTagAriaLabel', { tag: tag.value })}
           onClick={(e) => {
             e.stopPropagation();

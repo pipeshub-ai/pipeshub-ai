@@ -1788,6 +1788,15 @@ th code {
   }
 }
 
+/* Tag field chips: their remove buttons are .touch-hit, so on touch screens the chips sit far
+   enough apart that one chip's 44px tap area never reaches the next chip or row. */
+@media (pointer: coarse) {
+  .tag-input-chips {
+    row-gap: var(--space-4) !important;
+    column-gap: var(--space-3) !important;
+  }
+}
+
 /* Grows the element itself to 44px on touch screens. For controls packed tightly in a row, where a
    .touch-hit overlay would reach into the neighbour's tap area. Margin 0 undoes a ghost button's
    negative margin, which would otherwise pull two grown boxes over each other. */
