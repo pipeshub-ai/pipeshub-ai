@@ -198,13 +198,13 @@ class _KV:
 class _OrgKV(_KV):
     """Platform settings per org, answered for the org bound when they are read; unbound raises."""
 
-    def __init__(self, per_org: dict[str, dict]) -> None:
+    def __init__(self, settings_by_org: dict[str, dict]) -> None:
         super().__init__()
-        self.per_org = per_org
+        self.settings_by_org = settings_by_org
 
     async def get_config(self, key, default=None, use_cache=False, *, raise_on_error=False) -> object:
         if key == PLATFORM_SETTINGS_KEY:
-            return {"softDeletePurge": copy.deepcopy(self.per_org.get(org_context.current_org_id(), {}))}
+            return {"softDeletePurge": copy.deepcopy(self.settings_by_org.get(org_context.current_org_id(), {}))}
         return await super().get_config(key, default, use_cache, raise_on_error=raise_on_error)
 
 
