@@ -44,10 +44,6 @@ export interface StreamEvent {
   data: unknown;
 }
 
-export interface StreamStartResult {
-  ts?: string;
-}
-
 export type SlackBlock = Record<string, unknown>;
 
 export interface SlackMessagePayload {
@@ -174,7 +170,6 @@ export const STREAM_UPDATE_THROTTLE_MS = 400;
 /** Flush immediately once this much answer text is buffered (avoid huge appends). */
 export const STREAM_UPDATE_MAX_CHARS = 400;
 /** Activity message updates can be slower; they must not block answer appends. */
-export const ACTIVITY_UPDATE_THROTTLE_MS = 900;
 export const SLACK_MAX_TEXT_LENGTH = 39000;
 export const SLACK_STREAM_MARKDOWN_LIMIT = 11500;
 export const SLACK_STREAM_MESSAGE_CHAR_LIMIT = 11500;
@@ -200,8 +195,6 @@ export const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
 export const STREAM_FAILURE_MESSAGE =
   "I ran into an issue while streaming the response. Please try again.";
 export const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-export const TABLE_STREAMING_PAUSED_HINT =
-  "\n\n:hourglass_flowing_sand:";
 
 export const SUPPORTED_ATTACHMENT_MIMETYPES = new Set([
   "image/jpeg",
@@ -1704,7 +1697,12 @@ export async function buildFinalSlackChunks(
     combinedBlocks.push(...buildSlackTableBlocksFromMarkdownSegment(segment));
   }
 
-  return splitSlackBlocksByLimit(combinedBlocks);
+  // Without expand, Slack folds a long section behind "see more"; only the thinking may fold.
+  return splitSlackBlocksByLimit(
+    combinedBlocks.map((block: SlackBlock): SlackBlock =>
+      block.type === 'section' ? { ...block, expand: true } : block,
+    ),
+  );
 }
 
 const SLACK_FALLBACK_TEXT_LIMIT = 3000;
@@ -1739,55 +1737,6 @@ export function slackBlocksFallbackText(blocks: unknown[]): string {
     text === '' ? 'Reply' : text,
     SLACK_FALLBACK_TEXT_LIMIT,
   );
-}
-
-/**
- * Replace the streamed answer with its final blocks. Slack rejects a
- * chat.update from a streamed (rich text) message to section blocks with
- * `block_mismatch`, so the blocks go out as a new reply and the streamed
- * messages are deleted after it lands. If the post fails they stay, followed
- * by a failure notice, since a streamed answer can be cut short (e.g. at a
- * table). Returns whether the blocks were posted.
- */
-export async function replaceStreamedAnswer(
-  typedClient: TypedSlackClient,
-  channel: string,
-  threadTs: string,
-  streamedTs: string[],
-  blocks: unknown[],
-): Promise<boolean> {
-  try {
-    await typedClient.chat.postMessage({
-      channel,
-      thread_ts: threadTs,
-      text: slackBlocksFallbackText(blocks),
-      blocks: blocks as SlackBlock[],
-      ...NO_UNFURL_OPTIONS,
-    });
-  } catch (error) {
-    console.error(
-      'Error posting the final Slack answer; keeping the streamed text:',
-      error,
-    );
-    await typedClient.chat.postMessage({
-      channel,
-      thread_ts: threadTs,
-      text: FAILED_RESPONSE_GENERATION_MESSAGE,
-      ...NO_UNFURL_OPTIONS,
-    });
-    return false;
-  }
-  for (const ts of streamedTs) {
-    try {
-      await typedClient.apiCall('chat.delete', { channel, ts });
-    } catch (error) {
-      const code = (error as { data?: { error?: string } }).data?.error;
-      if (code !== 'message_not_found') {
-        console.error('Error deleting streamed Slack message:', error);
-      }
-    }
-  }
-  return true;
 }
 
 // ---------------------------------------------------------------------------

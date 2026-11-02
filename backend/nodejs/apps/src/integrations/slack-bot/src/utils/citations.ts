@@ -13,6 +13,7 @@ export type SlackCitationLike = {
     metadata: {
       recordId?: string;
       recordType?: string;
+      recordName?: string;
       webUrl?: string;
       connector?: string;
     };
@@ -173,4 +174,97 @@ export function rewriteCitationsForSlack(
   );
 
   return stripTinyRefCitationLinks(text);
+}
+
+/**
+ * For streamed markdown, where citations are not known yet: `[N](record link)`
+ * and `[N](refN)` become a plain `[N]` that matches the numbered sources
+ * posted at the end, other tiny-ref links go, and web links stay.
+ */
+export function plainCitationMarkers(text: string): string {
+  if (!text) {
+    return '';
+  }
+  const marked = text.replace(
+    NUMBERED_MARKDOWN_LINK_PATTERN,
+    (match, citationNumber: string, target: string) =>
+      target.includes('/record/') || isTinyRefTarget(target)
+        ? `[${citationNumber}]`
+        : match,
+  );
+  return stripTinyRefCitationLinks(marked);
+}
+
+/** An unfinished `[label](target)` at the end of a streamed piece, held until it closes. */
+const OPEN_LINK_TAIL = /\[[^\]\n]*(?:\](?:\([^)\n]*)?)?$/;
+/** An unfinished `::artifact[name](url){meta}` (or a `:` that may start one), held until its `}`. */
+const OPEN_MARKER_TAIL =
+  /:(?::[a-z_]*(?:\[[^\]\n]*(?:\](?:\([^)\n]*(?:\)(?:\{[^}\n]*)?)?)?)?)?)?$/;
+const MAX_HELD_LINK_CHARS = 2000;
+
+/** Splits off a link or artifact marker still being written, so it is handled whole on the next piece. */
+export function splitOpenLinkTail(text: string): [string, string] {
+  const starts = [OPEN_LINK_TAIL, OPEN_MARKER_TAIL]
+    .map((pattern) => pattern.exec(text)?.index)
+    .filter((index): index is number => index !== undefined);
+  if (starts.length === 0) {
+    return [text, ''];
+  }
+  const start = Math.min(...starts);
+  if (text.length - start > MAX_HELD_LINK_CHARS) {
+    return [text, ''];
+  }
+  return [text.slice(0, start), text.slice(start)];
+}
+
+const SOURCES_PER_BLOCK = 10;
+
+/**
+ * The sources of a streamed answer, listed by citation number so its `[N]`
+ * markers point at them. Empty when no citation carries a number.
+ */
+export function buildNumberedSlackSources(
+  citations: SlackCitationLike[] | undefined,
+  frontendBaseUrl: string,
+): Record<string, unknown>[] {
+  const rows = new Map<number, { name: string; url: string }>();
+  for (const citation of citations ?? []) {
+    const citationNumber = parseCitationNumber(
+      citation.citationData.chunkIndex,
+    );
+    if (citationNumber === null || rows.has(citationNumber)) {
+      continue;
+    }
+    const url = stripFragmentDirective(
+      resolveCitationWebUrl(citation, frontendBaseUrl),
+    );
+    if (url === '') {
+      continue;
+    }
+    rows.set(citationNumber, {
+      name: citation.citationData.metadata.recordName?.trim() || 'Source',
+      url,
+    });
+  }
+  const ordered = [...rows.entries()].sort(([a], [b]) => a - b);
+  if (ordered.length === 0) {
+    return [];
+  }
+  const blocks: Record<string, unknown>[] = [
+    { type: 'section', text: { type: 'mrkdwn', text: '*Sources:*' } },
+  ];
+  for (let i = 0; i < ordered.length; i += SOURCES_PER_BLOCK) {
+    const elements = ordered
+      .slice(i, i + SOURCES_PER_BLOCK)
+      .flatMap(([citationNumber, row]) => [
+        { type: 'text', text: `[${String(citationNumber)}] ` },
+        { type: 'link', url: row.url, text: row.name },
+        { type: 'text', text: '\n' },
+      ]);
+    blocks.push({
+      type: 'rich_text',
+      elements: [{ type: 'rich_text_section', elements }],
+    });
+  }
+  return blocks;
 }

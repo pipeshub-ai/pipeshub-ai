@@ -44,10 +44,31 @@ export function parseArtifactMarkers(content: string): {
     },
   );
 
-  // Remnant / hallucinated short forms — strip entirely.
-  text = text.replace(/::artifact\[[^\]]+\](?:\([^)]*\))?(?:\{[^}]*\})?/g, "");
-  // Legacy download-task markers (frontend also strips these).
-  text = text.replace(/::download_conversation_task\[[^\]]+\]\([^)]*\)/g, "");
+  text = stripArtifactRemnants(text);
 
   return { text: text.replace(/\n{3,}/g, "\n\n").trimEnd(), artifacts };
+}
+
+function stripArtifactRemnants(text: string): string {
+  // Remnant / hallucinated short forms — strip entirely.
+  const withoutShortForms = text.replace(
+    /::artifact\[[^\]]+\](?:\([^)]*\))?(?:\{[^}]*\})?/g,
+    "",
+  );
+  // Legacy download-task markers (frontend also strips these).
+  return withoutShortForms.replace(
+    /::download_conversation_task\[[^\]]+\]\([^)]*\)/g,
+    "",
+  );
+}
+
+/**
+ * Markers removed from one streamed piece of the answer. Unlike
+ * {@link parseArtifactMarkers} it keeps the surrounding whitespace: the piece
+ * is joined to the next one as it is.
+ */
+export function stripArtifactMarkers(piece: string): string {
+  return stripArtifactRemnants(
+    piece.replace(/::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}/g, ''),
+  );
 }
