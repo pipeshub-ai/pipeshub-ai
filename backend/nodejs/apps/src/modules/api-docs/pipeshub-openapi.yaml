@@ -28659,8 +28659,9 @@ paths:
           on routes that check for it, the access tokens) issued more than a second before it
         - Client should clear stored tokens locally after calling this endpoint
 
-        **Note:** This endpoint requires the access token, not the refresh token. It does not
-        itself check for an earlier logout, so the same access token can call it again.
+        **Note:** This endpoint requires the access token of an interactive session, not the
+        refresh token, a personal access token or an OAuth access token. A session already
+        ended by an earlier logout (more than a second before) is refused with `401`.
         The request body and query string are not read.
       operationId: logout
       security:
@@ -28670,24 +28671,29 @@ paths:
           description: Logged out successfully (empty response body)
         '400':
           description: |
-            No `Authorization` header, or one with no token after the scheme
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Auth container not found
+        '401':
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal server error. Also returned when the bearer token cannot be verified
-            (not a JWT, signed with another key such as a refresh token, or expired): the
-            verification error is not mapped to `401`.
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -28717,7 +28723,16 @@ paths:
                   hasPassword:
                     type: boolean
         '401':
-          description: Invalid or expired access token
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session
           content:
             application/json:
               schema:
@@ -28752,7 +28767,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired access token
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session
           content:
             application/json:
               schema:
@@ -28782,7 +28806,8 @@ paths:
         Allows a logged-in user to change their password by providing the current password and a new password.
 
         **Order of checks:** the access token is read before the body, so a request without
-        an `Authorization` header answers `400` whatever its body holds. Body fields other
+        a valid session token answers `401` (or `403` for a personal access token or OAuth
+        access token) whatever its body holds. Body fields other
         than the three below are dropped by the validator, and the query string is not read.
 
         **Effect on sessions:** the change ends refresh tokens issued before it. The response
@@ -28855,7 +28880,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - No `Authorization` header, or one with no token after the scheme (checked before the body)
             - The body fails validation (`VALIDATION_ERROR`): `newPassword` missing or not a string, `currentPassword` or `cf-turnstile-response` not a string, or no JSON object body
             - `currentPassword` missing or empty, or `newPassword` empty
             - Current and new password are the same (plain-text comparison)
@@ -28871,10 +28895,17 @@ paths:
         '401':
           description: |
             Unauthorized. Possible causes:
+            - No bearer token, or one that is not valid: not a JWT, signed with another key,
+              expired, revoked, or from a session that has ended (signed out, password or role
+              changed, account disabled or removed)
             - Current password is incorrect
             - Invalid CAPTCHA verification (when Turnstile is configured)
-
-            An access token that cannot be verified is not answered here but with `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token or a service token rather than an interactive user session
           content:
             application/json:
               schema:
@@ -28883,7 +28914,6 @@ paths:
           description: |
             Not found. Possible causes:
             - User credentials not found (no password set for account)
-            - Auth container not found
           content:
             application/json:
               schema:
@@ -28896,9 +28926,7 @@ paths:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
-            Internal server error. Also returned when the bearer token cannot be verified
-            (not a JWT, signed with another key such as a refresh token, or expired): the
-            verification error is not mapped to `401`.
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -28950,17 +28978,25 @@ paths:
                 $ref: '#/components/schemas/AuthConfig'
         '400':
           description: |
-            No `Authorization` header, or one with no token after the scheme
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The token does not belong to an active admin of the organization it names: a member,
-            an admin of another organization, or a token issued to an OAuth app
+            The caller is not an admin of this organization, or the bearer token is an OAuth
+            access token, a personal access token or a service token rather than an interactive
+            user session
           content:
             application/json:
               schema:
@@ -28976,9 +29012,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal server error. Also returned when the bearer token cannot be verified
-            (not a JWT, signed with another key, or expired): the verification error is not
-            mapped to `401`.
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -29037,17 +29071,25 @@ paths:
                 additionalProperties: false
         '400':
           description: |
-            No `Authorization` header, or one with no token after the scheme
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The token does not belong to an active admin of the organization it names: a member,
-            an admin of another organization, or a token issued to an OAuth app
+            The caller is not an admin of this organization, or the bearer token is an OAuth
+            access token, a personal access token or a service token rather than an interactive
+            user session
           content:
             application/json:
               schema:
@@ -29061,9 +29103,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal server error. Also returned when the bearer token cannot be verified
-            (not a JWT, signed with another key, or expired): the verification error is not
-            mapped to `401`.
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -29198,7 +29238,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - No `Authorization` header, or one with no token after the scheme (checked before the body)
             - The body fails validation (`VALIDATION_ERROR`): `authMethod` missing or not an array,
               no steps or more than 3, a step with no methods, a method twice in one step or in two
               steps, an unknown method type, an `order` that is missing, repeated or not a number,
@@ -29213,10 +29252,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The token does not belong to an active admin of the organization it names: a member,
-            an admin of another organization, or a token issued to an OAuth app
+            The caller is not an admin of this organization, or the bearer token is an OAuth
+            access token, a personal access token or a service token rather than an interactive
+            user session
           content:
             application/json:
               schema:
@@ -29232,9 +29281,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal server error. Also returned when the bearer token cannot be verified
-            (not a JWT, signed with another key, or expired): the verification error is not
-            mapped to `401`.
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -29280,17 +29327,25 @@ paths:
                 $ref: '#/components/schemas/OrgAuthConfigSetupResponse'
         '400':
           description: |
-            No `Authorization` header, or one with no token after the scheme
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            No bearer token, or one that is not valid: not a JWT, signed with another key,
+            expired, revoked, or from a session that has ended (signed out, password or role
+            changed, account disabled or removed)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The token does not belong to an active admin of the organization it names: a member,
-            an admin of another organization, or a token issued to an OAuth app
+            The caller is not an admin of this organization, or the bearer token is an OAuth
+            access token, a personal access token or a service token rather than an interactive
+            user session
           content:
             application/json:
               schema:
@@ -29303,9 +29358,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal server error. Also returned when the bearer token cannot be verified
-            (not a JWT, signed with another key, or expired): the verification error is not
-            mapped to `401`.
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
