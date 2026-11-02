@@ -2271,6 +2271,20 @@ class ToolApprovalValidateBody(BaseModel):
         return value
 
 
+@router.get("/tool-approvals/pending", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def list_pending_tool_approvals(request: Request) -> dict[str, Any]:
+    """The calls waiting on the signed-in person in their chats in the app, newest first."""
+    config_service = _get_config_service(request)
+    user_context = _get_user_context(request)
+    if (getattr(request.state, "user", None) or {}).get("isOAuth"):
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Tool approvals can only be answered from the PipesHub app.")
+    entries = await tool_approvals.list_pending_for(config_service, org_id=current_org_id(), user_id=user_context["user_id"])
+    return {"items": [
+        {"conversationId": e.get("conversationId", ""), "createdAt": e.get("createdAt"), "card": e["card"]}
+        for e in entries if e.get("client") == tool_approvals.WEB_CLIENT_NAME
+    ]}
+
+
 @router.post("/tool-approvals/{approval_id}/validate", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def validate_tool_approval_edit(
     request: Request, payload: ToolApprovalValidateBody, approval_id: Annotated[str, Path(max_length=64)],

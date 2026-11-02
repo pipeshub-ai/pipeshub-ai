@@ -54,6 +54,7 @@ from app.agents.constants.mcp_server_constants import (
     get_conversation_allow_path,
     get_mcp_tool_approval_claim_path,
     get_mcp_tool_approval_path,
+    get_mcp_tool_approval_user_index_dir,
     get_mcp_user_tool_rules_path,
 )
 from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
@@ -152,6 +153,8 @@ class PendingCall(MCPCamelModel):
     input_schema: dict[str, Any] | None = None
     # Whether the call was asked in a project chat, where an unset Block asks instead.
     enabled_on_project: bool = False
+    # Who asked (`context.client_name`): the list of waiting calls only shows the app's own.
+    client: str = ""
     created_at: float
     expires_at: float
 
@@ -439,7 +442,35 @@ async def claim_pending(
         return Claim("expired", pending)
     if not await config_service.create_config_if_absent(claim_path, {"claimedAt": time.time()}, ttl_seconds=_RECORD_TTL_SECONDS):
         return Claim("used", pending, _outcome_of(await _read(config_service, claim_path)))
+    await _drop_index_entry(config_service, pending)
     return Claim("claimed", pending)
+
+
+def _index_path(pending: PendingCall) -> str:
+    return f"{get_mcp_tool_approval_user_index_dir(pending.org_id, pending.user_id)}/{pending.approval_id}"
+
+
+async def _drop_index_entry(config_service: "ConfigurationService", pending: PendingCall) -> None:
+    try:
+        await config_service.delete_config(_index_path(pending))
+    except Exception as e:
+        logger.warning(f"Couldn't drop the index entry of tool approval {pending.approval_id}: {e}")
+
+
+async def list_pending_for(config_service: "ConfigurationService", *, org_id: str, user_id: str) -> list[dict[str, Any]]:
+    """The calls waiting on this person, newest first: expired, claimed and unreadable entries are left out."""
+    index_dir = get_mcp_tool_approval_user_index_dir(org_id, user_id)
+    now = time.time()
+    entries: list[dict[str, Any]] = []
+    for key in await config_service.list_keys_in_directory(f"{index_dir}/"):
+        approval_id = key.rsplit("/", 1)[-1]
+        entry = await _read(config_service, f"{index_dir}/{approval_id}")
+        if not isinstance(entry, dict) or not isinstance(entry.get("card"), dict) or entry.get("expiresAt", 0) <= now * 1000:
+            continue
+        if await _read(config_service, get_mcp_tool_approval_claim_path(approval_id)) is not None:
+            continue
+        entries.append(entry)
+    return sorted(entries, key=lambda e: e.get("createdAt", 0), reverse=True)
 
 
 def _outcome_of(raw: Any) -> Optional[Outcome]:  # noqa: ANN401
@@ -704,7 +735,7 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
         tool_path=ctx.tool_path, kind=target.kind, input_schema=schema, enabled_on_project=context.project_tools_selected,
-        created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
+        client=context.client_name or "", created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
     context.tool_state[_PENDING_IN_RUN] = pending.approval_id
@@ -723,7 +754,17 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         return
     message = f"{WAITING_PREFIX} {tool_name} on {server}."
     context.tool_state[PENDING_MESSAGE] = message
-    ctx.ask_later(PendingApproval(message=message, details=_card_details(target, pending)))
+    details = _card_details(target, pending)
+    try:
+        await _write(
+            context.config_service, _index_path(pending),
+            {"approvalId": pending.approval_id, "conversationId": pending.conversation_id, "client": pending.client,
+             "createdAt": int(now * 1000), "expiresAt": int(pending.expires_at * 1000), "card": details},
+            ttl_seconds=_RECORD_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Couldn't index tool approval {pending.approval_id} for listing: {e}")
+    ctx.ask_later(PendingApproval(message=message, details=details))
 
 
 def _card_details(target: ApprovalTarget, pending: PendingCall) -> dict[str, Any]:

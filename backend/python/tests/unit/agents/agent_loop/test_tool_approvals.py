@@ -41,6 +41,10 @@ from app.agents.agent_loop.tool_approvals import (
     ToolRules,
     decide,
 )
+from app.agents.constants.mcp_server_constants import (
+    get_mcp_tool_approval_claim_path,
+    get_mcp_tool_approval_user_index_dir,
+)
 from app.agents.mcp.models import MCPToolInfo
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import (
@@ -84,6 +88,13 @@ class _Store:
         self.values[key] = value
         self.ttls[key] = ttl_seconds
         return True
+
+    async def delete_config(self, key: str) -> bool:
+        self.values.pop(key, None)
+        return True
+
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
+        return [k for k in self.values if k.startswith(directory)]
 
     def pending(self) -> list[dict[str, Any]]:
         return [v for k, v in self.values.items() if "/tool-approvals/pending/" in k]
@@ -626,6 +637,64 @@ class TestEditableCard:
         }
         saved = approvals.PendingCall.model_validate(old)
         assert (saved.tool_path, saved.input_schema) == ("", None)
+
+
+class TestUserIndex:
+    _DIR = get_mcp_tool_approval_user_index_dir("org-1", "user-1")
+
+    async def _ask(self, store: _Store, **overrides: Any) -> dict[str, Any]:  # noqa: ANN401
+        ctx = await _gate(_context(store, **overrides), _adapter(read_only=False), title="Bug")
+        assert ctx.pending_approval is not None
+        return ctx.pending_approval.details
+
+    async def _list(self, store: _Store) -> list[dict[str, Any]]:
+        return await approvals.list_pending_for(store, org_id="org-1", user_id="user-1")  # type: ignore[arg-type]
+
+    async def test_ask_writes_user_index_entry(self) -> None:
+        store = _Store()
+        details = await self._ask(store)
+        assert await store.list_keys_in_directory(self._DIR) == [f"{self._DIR}/{details['approvalId']}"]
+        entry = store.values[f"{self._DIR}/{details['approvalId']}"]
+        assert entry["card"] == details and entry["client"] == "pipeshub-ai" and entry["conversationId"] == "conv-1"
+        assert store.ttls[f"{self._DIR}/{details['approvalId']}"] == approvals._RECORD_TTL_SECONDS
+
+    async def test_list_pending_skips_claimed_and_expired(self) -> None:
+        store = _Store()
+        live = await self._ask(store)
+        claimed = await self._ask(store, conversation_id="conv-2")
+        expired = await self._ask(store, conversation_id="conv-3")
+        store.values[f"{self._DIR}/{expired['approvalId']}"]["expiresAt"] = 1
+        store.values[get_mcp_tool_approval_claim_path(claimed["approvalId"])] = {"claimedAt": 1}
+        store.values[f"{self._DIR}/junk"] = "not an entry"
+        assert [e["approvalId"] for e in await self._list(store)] == [live["approvalId"]]
+
+    async def test_list_pending_newest_first(self) -> None:
+        store = _Store()
+        first, second = await self._ask(store), await self._ask(store, conversation_id="conv-2")
+        store.values[f"{self._DIR}/{first['approvalId']}"]["createdAt"] = 1
+        store.values[f"{self._DIR}/{second['approvalId']}"]["createdAt"] = 2
+        assert [e["approvalId"] for e in await self._list(store)] == [second["approvalId"], first["approvalId"]]
+
+    async def test_claiming_drops_the_index_entry(self) -> None:
+        store = _Store()
+        details = await self._ask(store)
+        claim = await approvals.claim_pending(store, details["approvalId"], org_id="org-1", user_id="user-1", conversation_id="conv-1")  # type: ignore[arg-type]
+        assert claim.status == "claimed" and await store.list_keys_in_directory(self._DIR) == []
+
+    async def test_index_write_failure_does_not_block_the_card(self, caplog: pytest.LogCaptureFixture) -> None:
+        store = _Store()
+        real = store.set_config
+
+        async def _flaky(key: str, *a: Any, **kw: Any) -> bool:  # noqa: ANN401
+            if "/by-user/" in key:
+                raise ConnectionError("down")
+            return await real(key, *a, **kw)
+
+        store.set_config = _flaky  # type: ignore[method-assign]
+        with caplog.at_level("WARNING"):
+            ctx = await _gate(_context(store), _adapter(read_only=False), title="Bug")
+        assert ctx.decision == PreDecision.ASK and len(store.pending()) == 1
+        assert "Couldn't index tool approval" in caplog.text
 
 
 class TestClaimingAnApproval:
