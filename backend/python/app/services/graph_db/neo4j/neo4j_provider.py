@@ -20218,12 +20218,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         arrow both read it, so an arrow means the expansion lists something."""
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop(c, p, state=state, grant_once=grant_once, opens=opens)
-        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}))
+        # The check does not walk through a declared group of this App: a child below one is read by its
+        # membership (the last arm) or its own grant, not by inheriting from the group.
+        walk = (f"(NOT ({p}:RecordGroup AND coalesce({p}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
+                f" AND coalesce({p}.connectorId, '') = app.id) OR {c}.id IN $grantedIds OR {opens})")
+        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}) AND {walk})
               OR (NOT {from_app} AND NOT {opens}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
-                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds))
+                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk})
               OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope
@@ -20567,7 +20571,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
         def placeholder_test(v: str) -> str:
-            return "" if lists_placeholders else f"AND NOT {self._kh_placeholder(v, state=state)}"
+            if not lists_placeholders:
+                return f"AND NOT {self._kh_placeholder(v, state=state)}"
+            # A browse shows a stub only as the way to something readable below it. shortcut: the hops
+            # between the stub and that node are not each tested, only the last, so a stub whose way is
+            # cut by a node the viewer cannot read is still shown; test every hop if that matters.
+            below = self._kh_v3_child_rule(
+                "kh_xd", "kh_xq", from_app="false", opens=app_opens, state=state, grant_once=grant_once)
+            return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ ({v}) "
+                    f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']){{0,49}} "
+                    f"(kh_xq)-[kh_xe:NODE_RELATION]->(kh_xd) WHERE kh_xe.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
+                    f"AND NOT {self._kh_placeholder('kh_xd', state=state)} AND ({below}) }})")
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
         # NODE_RELATION also holds untyped edges and links not yet split off it.

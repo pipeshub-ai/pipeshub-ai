@@ -494,9 +494,13 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str) -> str:
     open App) reaches ``p``, OPEN nodes only below a seed, and the declared scope either way. Written once:
     the expansion and a row's arrow both read it, so an arrow means the expansion lists something.
     ``kh_opens``, ``@granted`` and ``@kh_scope`` must be in scope."""
-    return (f"({_aql_read_by_app(c)} AND ((({from_app}) OR kh_opens) ? ({_aql_granted_hop(c, p, tag + 'h', navigation=True)} ? true"
-            f" : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')})"
-            f" ? true : ({_aql_in_scope(c, p)})))))")
+    # The check does not walk through a declared group of this App: a child below one is read by its
+    # membership (the scope arm) or its own grant, not by inheriting from the group.
+    walk = (f'(NOT ({p}.permissionModel == "RECORD_GROUP_LEVEL" AND {p}.connectorId == @app_id)'
+            f" OR HAS(@granted, {c}._key) OR kh_opens)")
+    return (f"({_aql_read_by_app(c)} AND ((({from_app}) OR kh_opens) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
+            f" AND {walk}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
+            f" AND {walk}) ? true : ({_aql_in_scope(c, p)})))))")
 
 
 # Arango's write-write conflict (errorNum 1200), as the HTTP client reports it.
@@ -19871,7 +19875,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "kh_unplaced_only": visible.unplaced_members_only,
                     "kh_placed": visible.placed, "kh_placed_groups": visible.placed_groups,
                     "kh_placeholders": lists_placeholders,
-                    # Declared only when the sidebar filter reads hasChildren; an unused bind fails the statement.
+                    # The stub test reads these two; the rest only when the sidebar filter reads hasChildren
+                    # (an unused bind fails the statement).
+                    "granted": row_ctx["granted"], "kh_scope": row_ctx["kh_scope"],
                     **(row_ctx if any("node.hasChildren" in c for c in conditions) else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
@@ -20072,13 +20078,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             _aql_kh_has_children("kh_n") if any("node.hasChildren" in c for c in conditions) else "false"
         )
 
+        # A browse shows a stub only as the way to something readable below it. shortcut: the hops between the
+        # stub and that node are not each tested, only the last, so a stub whose way is cut by a node the viewer
+        # cannot read is still shown.
+        below = (f"LENGTH(FOR kh_pd, kh_pe IN 1..50 OUTBOUND kh_n {CollectionNames.NODE_RELATIONS.value}"
+                 f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
+                 f" AND {_aql_browse_child('kh_pd', 'DOCUMENT(kh_pe._from)', 'pb', 'false')}"
+                 f" LIMIT 1 RETURN 1) > 0")
+
         def rows(collection: str) -> str:
             return f"""(
                 FOR kh_h IN kh_handles
                     FILTER STARTS_WITH(kh_h, "{collection}/")
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
-                            AND kh_n.isDeleted != true AND (@kh_placeholders OR kh_n.isPlaceholder != true)
+                            AND kh_n.isDeleted != true AND (kh_n.isPlaceholder != true OR (@kh_placeholders AND {below}))
                             AND {_aql_read_by_app("kh_n")}
                     LET node = {{
                         id: kh_n._key,
