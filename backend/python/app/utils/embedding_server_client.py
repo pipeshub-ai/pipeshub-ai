@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+import openai
 from langchain_core.embeddings import Embeddings
 from langchain_openai.embeddings import OpenAIEmbeddings
 
@@ -74,6 +75,8 @@ class EmbeddingServerEmbeddings(Embeddings):
         self.max_retries = max_retries if max_retries is not None else _embedding_server_max_retries()
         self.timeout = timeout if timeout is not None else _embedding_server_timeout()
         self.trust_remote_code = trust_remote_code
+        # Tokens the server's model adds to every input; set when the limit is read.
+        self.prompt_tokens = 0
         # Falls back to the process-wide default so this shares a pause
         # signal with ParsingClient/DoclingClient in the same indexing
         # worker without every construction site needing to plumb one in.
@@ -101,6 +104,45 @@ class EmbeddingServerEmbeddings(Embeddings):
             extra_body=extra_body,
             default_headers={EMBEDDING_PRIORITY_HEADER: EMBEDDING_PRIORITY_QUERY},
         )
+
+    async def max_input_tokens(self) -> int | None:
+        """The model's longest input as the server reports it, or None."""
+        client = openai.AsyncOpenAI(
+            base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY,
+            max_retries=0, timeout=self.timeout,
+        )
+        try:
+            page = await client.models.list()
+        except openai.OpenAIError:
+            logger.error("Embedding server did not report the model's input limit", exc_info=True)
+            return None
+        finally:
+            await client.close()
+        for item in page.data:
+            if item.id == self.model:
+                overhead = getattr(item, "prompt_tokens", 0)
+                self.prompt_tokens = overhead if isinstance(overhead, int) and overhead > 0 else 0
+                limit = getattr(item, "max_seq_length", None)
+                return limit if isinstance(limit, int) and limit > 0 else None
+        return None
+
+    def count_tokens(self, texts: list[str]) -> list[int]:
+        """Tokens the server's model reads for each text. Raises when the server cannot say."""
+        client = openai.OpenAI(
+            base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY,
+            max_retries=0, timeout=self.timeout,
+        )
+        try:
+            body = {"model": self.model, "input": texts, "trust_remote_code": self.trust_remote_code}
+            return call_with_retry(
+                lambda: client.post("/tokenize", cast_to=object, body=body)["counts"],
+                max_retries=self.max_retries,
+                operation="count_tokens",
+                service_name=_EMBEDDING_SERVER_SERVICE_NAME,
+                backpressure_coordinator=self._backpressure_coordinator,
+            )
+        finally:
+            client.close()
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return call_with_retry(

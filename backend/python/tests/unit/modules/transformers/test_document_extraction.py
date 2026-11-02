@@ -279,7 +279,7 @@ class TestPrepareContent:
         ext = _build_extractor()
         blocks = [_make_text_block("Hello world", index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["type"] == "text"
@@ -289,7 +289,7 @@ class TestPrepareContent:
         ext = _build_extractor()
         blocks = [Block(type=BlockType.TEXT, format=DataFormat.TXT, data=None, index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -299,7 +299,7 @@ class TestPrepareContent:
             _make_image_block("data:image/png;base64,AAAA", index=0),
         ]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -315,7 +315,7 @@ class TestPrepareContent:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["type"] == "image_url"
@@ -334,7 +334,7 @@ class TestPrepareContent:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         image_items = [r for r in result if r["type"] == "image_url"]
         assert len(image_items) == 50
@@ -355,7 +355,7 @@ class TestPrepareContent:
         ]
 
         with patch.dict("sys.modules", {"tiktoken": None}):
-            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=100)
+            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=100, allow_remote_image_uri=True)
 
         # The first three should fit; the fourth should be truncated away
         assert len(result) == 3
@@ -364,7 +364,7 @@ class TestPrepareContent:
         ext = _build_extractor()
         blocks = [_make_image_block("https://example.com/image.png", index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["image_url"]["url"] == "https://example.com/image.png"
@@ -377,16 +377,49 @@ class TestPrepareContent:
         with patch(
             "app.modules.transformers.document_extraction._downscale_base64_image",
         ) as mock_ds:
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         mock_ds.assert_not_called()
         assert len(result) == 1
+
+    def test_a_remote_url_is_not_sent_to_the_provider_when_not_allowed(self) -> None:
+        """The provider fetches the URL itself, which is a fetch indexing must not cause for pushed content."""
+        ext = _build_extractor()
+        blocks = [
+            _make_image_block("https://example.com/a.png", index=0),
+            _make_image_block("http://example.com/b.png", index=1),
+        ]
+
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=False)
+
+        assert result == []
+
+    async def test_apply_withholds_remote_uris_for_a_pushed_record(self) -> None:
+        ext = _build_extractor()
+        ext.process_document = AsyncMock(return_value=None)
+        for pushed in (True, False):
+            record = MagicMock(push_origin=pushed, external_revision_id="123")
+            record.block_containers.blocks, record.block_containers.block_groups = [], []
+
+            await ext.apply(MagicMock(record=record))
+
+            assert ext.process_document.await_args.kwargs["allow_remote_image_uri"] is (not pushed)
+
+    async def test_apply_withholds_remote_uris_for_a_record_with_the_push_revision_tag(self) -> None:
+        ext = _build_extractor()
+        ext.process_document = AsyncMock(return_value=None)
+        record = MagicMock(push_origin=False, external_revision_id="pb1:" + "a" * 64 + ":" + "b" * 16)
+        record.block_containers.blocks, record.block_containers.block_groups = [], []
+
+        await ext.apply(MagicMock(record=record))
+
+        assert ext.process_document.await_args.kwargs["allow_remote_image_uri"] is False
 
     def test_unsupported_image_format_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [_make_image_block("data:image/tiff;base64,AAAA", index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -402,7 +435,7 @@ class TestPrepareContent:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=None,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -414,7 +447,7 @@ class TestPrepareContent:
             )
         ]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["type"] == "text"
@@ -424,7 +457,7 @@ class TestPrepareContent:
         ext = _build_extractor()
         blocks = [_make_table_row_block("plain text row", index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["text"] == "plain text row"
@@ -440,7 +473,7 @@ class TestPrepareContent:
             )
         ]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -455,7 +488,7 @@ class TestPrepareContent:
             )
         ]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -470,7 +503,7 @@ class TestPrepareContent:
             )
         ]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -478,7 +511,7 @@ class TestPrepareContent:
         ext = _build_extractor()
         blocks = [_make_image_block("ftp://invalid/image.png", index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -500,7 +533,7 @@ class TestPrepareContent:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 4
         types = [r["type"] for r in result]
@@ -509,7 +542,7 @@ class TestPrepareContent:
     def test_empty_blocks_list(self) -> None:
         ext = _build_extractor()
 
-        result = ext._prepare_content([], is_multimodal_llm=True, context_length=128000)
+        result = ext._prepare_content([], is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert result == []
 
@@ -517,7 +550,7 @@ class TestPrepareContent:
         ext = _build_extractor()
         blocks = [_make_table_row_block(None, index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 0
 
@@ -563,7 +596,7 @@ class TestExtractMetadata:
         ):
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is not None
         assert result.departments == ["Engineering"]
@@ -608,7 +641,7 @@ class TestExtractMetadata:
         ) as mock_fallback:
             mock_graph.get_departments = AsyncMock(return_value=[])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is not None
         assert result.summary == "Fallback summary text"
@@ -638,7 +671,7 @@ class TestExtractMetadata:
         ) as mock_graph:
             mock_graph.get_departments = AsyncMock(return_value=["Dept"])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is None
 
@@ -845,7 +878,7 @@ class TestPrepareContentDeeper:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ) as mock_ds:
-            ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
             mock_ds.assert_called_once()
 
     def test_token_budget_exhaustion_stops_processing(self) -> None:
@@ -860,7 +893,7 @@ class TestPrepareContentDeeper:
         ]
 
         with patch.dict("sys.modules", {"tiktoken": None}):
-            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=50)
+            result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=50, allow_remote_image_uri=True)
 
         # Only first block should fit
         assert len(result) == 1
@@ -870,7 +903,7 @@ class TestPrepareContentDeeper:
         ext = _build_extractor()
         blocks = [_make_table_row_block({"other_key": "value"}, index=0)]
 
-        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000)
+        result = ext._prepare_content(blocks, is_multimodal_llm=False, context_length=128000, allow_remote_image_uri=True)
 
         # The dict.get("row_natural_language_text") returns None, which is falsy,
         # so the text becomes "" (empty string)
@@ -891,7 +924,7 @@ class TestPrepareContentDeeper:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         image_items = [r for r in result if r["type"] == "image_url"]
         assert len(image_items) == 50
@@ -908,7 +941,7 @@ class TestPrepareContentDeeper:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 1
         assert result[0]["type"] == "image_url"
@@ -932,7 +965,7 @@ class TestPrepareContentDeeper:
             "app.modules.transformers.document_extraction._downscale_base64_image",
             return_value=uri,
         ):
-            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
+            result = ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000, allow_remote_image_uri=True)
 
         assert len(result) == 4
         types = [r["type"] for r in result]
@@ -991,7 +1024,7 @@ class TestExtractMetadataDeeper:
         ):
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is not None
         assert result.summary == "API documentation with images."
@@ -1035,7 +1068,7 @@ class TestExtractMetadataDeeper:
         ):
             mock_graph.get_departments = AsyncMock(return_value=[])
 
-            result = await ext.extract_metadata(blocks, "org-1")
+            result = await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         assert result is not None
         assert result.summary == "Short summary."
@@ -1051,7 +1084,7 @@ class TestExtractMetadataDeeper:
             side_effect=RuntimeError("LLM unavailable"),
         ):
             with pytest.raises(RuntimeError, match="LLM unavailable"):
-                await ext.extract_metadata([_make_text_block("text")], "org-1")
+                await ext.extract_metadata([_make_text_block("text")], "org-1", allow_remote_image_uri=True)
 
 
 # =========================================================================
@@ -1096,6 +1129,7 @@ class TestRecordMetadataSubstitution:
 
             await ext.extract_metadata(
                 blocks, "org-1", record_name="Q3 Board Deck.pdf", record_type="FILE",
+                allow_remote_image_uri=True
             )
 
         messages = mock_invoke.call_args[0][1]
@@ -1137,7 +1171,7 @@ class TestRecordMetadataSubstitution:
         ) as mock_invoke:
             mock_graph.get_departments = AsyncMock(return_value=[])
 
-            await ext.extract_metadata(blocks, "org-1")
+            await ext.extract_metadata(blocks, "org-1", allow_remote_image_uri=True)
 
         messages = mock_invoke.call_args[0][1]
         filled_prompt = messages[1].content[0]["text"]

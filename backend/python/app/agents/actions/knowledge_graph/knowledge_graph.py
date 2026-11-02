@@ -1147,14 +1147,16 @@ class KnowledgeGraph:
             "extraction to be enabled. Lists readable records most recently modified first, "
             "each with the values that matched, in pages: continue with the call it prints. "
             "To look in one knowledge base or app (the Invoices knowledge base for \"invoices over "
-            "$50k\"), pass its id in source_ids. record_types is the storage type (FILE, MAIL, "
-            "TICKET, ...), not a document kind."
+            "$50k\"), pass its id in source_ids. To keep records about a company, person or product "
+            "(\"Acme invoices over $50k\"), pass its name, which is linked to its entities as an "
+            "entity search links it, or entity_ids an entity search returned. record_types is the storage type (FILE, MAIL, TICKET, ...), not a document kind."
         ),
         parameters=[
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
-            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name prefix.", required=False),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name of a company, person or product the records must mention; linked to its entities, not a prefix.", required=False),
+            ToolParameter(name="entity_ids", type=ParameterType.ARRAY, description="Optional entity ids an entity search returned; records must mention one of them.", required=False, items={"type": "string"}),
             ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
-            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds.", required=False),
+            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds (exclusive). For one calendar day pass that day's local midnight as date_from and the next local midnight here (a day can be 23 or 25 hours); the same as date_from (or earlier) is the 24 hours from date_from.", required=False),
             ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
             ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
             ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
@@ -1175,6 +1177,7 @@ class KnowledgeGraph:
         self,
         kinds: list[str] | None = None,
         name: str | None = None,
+        entity_ids: list[str] | None = None,
         date_from: int | None = None,
         date_to: int | None = None,
         amount_min: float | None = None,
@@ -1195,6 +1198,7 @@ class KnowledgeGraph:
             self.state,
             kinds=kinds,
             name=name,
+            entity_ids=entity_ids,
             date_from=date_from,
             date_to=date_to,
             amount_min=amount_min,

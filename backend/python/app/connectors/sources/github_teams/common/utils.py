@@ -61,6 +61,21 @@ def listing_payload(obj: Any) -> dict[str, Any]:
     return getattr(obj, "_rawData", None) or {}
 
 
+def milestone_title(raw: dict[str, Any]) -> str | None:
+    """The title of the milestone on an issue or pull request payload, if any.
+
+    Both the ``/issues`` and ``/pulls`` listings carry the milestone object,
+    so this needs no extra request.
+    """
+    milestone = raw.get("milestone")
+    if not isinstance(milestone, dict):
+        return None
+    title = milestone.get("title")
+    if not isinstance(title, str):
+        return None
+    return title.strip() or None
+
+
 def updated_since_filter_field() -> FilterField:
     """The "updated since" sync filter, shared by the team and personal connectors.
 

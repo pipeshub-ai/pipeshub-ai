@@ -63,10 +63,13 @@ def _issue(
     field_priority: str | None = None,
     blocked_by: int | None = None,
     blocking: int | None = None,
+    milestone: dict | None = None,
 ) -> SimpleNamespace:
     # type, parent_issue_url and issue_field_values ride the listing payload but
     # are not parsed by PyGithub 2.8, so they are read off _rawData directly.
     raw_data: dict = {}
+    if milestone is not None:
+        raw_data["milestone"] = milestone
     if issue_type:
         raw_data["type"] = {"name": issue_type}
     if parent_issue_url:
@@ -567,6 +570,28 @@ class TestProcessIssueToTicket:
         assert ru.record.labels == ["bug"]
         assert ru.record.assignee_source_id == ["801"]
         assert ru.record.status == "OPEN"
+        assert ru.record.milestone is None
+
+    async def test_milestone_title_is_read_off_the_listing_payload(self) -> None:
+        """The /issues listing carries the milestone object, so no extra call."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=42)
+        issue = _issue(number=7, milestone={"title": "Airflow 3.5.0", "state": "open"})
+
+        ru = await IssuesSync(c)._process_issue_to_ticket(repo, issue)
+
+        assert ru is not None
+        assert ru.record.milestone == "Airflow 3.5.0"
+
+    async def test_a_malformed_milestone_is_left_out(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=42)
+        issue = _issue(number=7, milestone={"title": "   "})
+
+        ru = await IssuesSync(c)._process_issue_to_ticket(repo, issue)
+
+        assert ru is not None
+        assert ru.record.milestone is None
 
     async def test_a_closed_issue_keeps_its_close_date(self) -> None:
         c = make_mock_connector()
