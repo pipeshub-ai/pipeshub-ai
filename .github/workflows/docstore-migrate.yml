@@ -143,7 +143,6 @@ jobs:
           --expect-suite 'Mongo store fence deadline=2'
           --expect-suite 'store fence against PostgreSQL=15'
           --expect-suite 'Mongo store fence against a real MongoDB=18'
-          --expect-suite 'docstore-migrate: follow, drain, reset and schema=10'
           --expect-suite 'docstore-migrate: follow, drain, reset and schema=12'
           --expect-suite 'docstore-migrate: pre-flight checks=14'
           --expect-suite 'docstore-migrate: offline and online switch-over=6'
