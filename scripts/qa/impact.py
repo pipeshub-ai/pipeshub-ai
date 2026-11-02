@@ -12,7 +12,7 @@ from typing import Any
 from qa import globs, graphs
 from qa.config import Config, list_files
 
-PROFILE_ORDER = ["fast", "standard", "conservative", "full"]
+PROFILE_ORDER = ["fast", "standard", "conservative", "full", "weekly"]
 # Text files here are read at runtime (skill packs, prompts), so they are not docs.
 PRODUCT_DIRS = ("backend/", "frontend/", "integration-tests/", "deployment/")
 UNIT_FAMILIES = {"pytest", "mocha", "vitest"}
@@ -115,19 +115,21 @@ def compute(
         by_path[r["path"]].append(r)
         by_suite[r["suite"]].append(r)
 
+    profile, override = effective_profile(cfg, profile, changeset.get("branch", ""))
+    prof = cfg.profile(profile)
+
     def in_scope(row: dict[str, Any]) -> bool:
-        return scope == "all" or row["edition"] == scope
+        return (scope == "all" or row["edition"] == scope) and row["suite"] in prof.get("suites", [row["suite"]])
 
     floor = Floor(by_id, in_scope)
     files = [f["path"] for f in changeset["files"]]
     src_files = [f["path"] for f in changeset["files"] if f["kind"] in ("src", "config", "infra")]
-
-    profile, override = effective_profile(cfg, profile, changeset.get("branch", ""))
-    prof = cfg.profile(profile)
     notes: list[str] = [override] if override else []
 
     full_suites: dict[str, str] = {}
-    all_suites = [s["id"] for s in cfg.suites]
+    # A suite with `profiles` runs only there; a profile with `suites` runs only those in a full run.
+    all_suites = [s["id"] for s in cfg.suites
+                  if profile in s.get("profiles", [profile]) and s["id"] in prof.get("suites", [s["id"]])]
     if prof.get("full"):
         full_suites.update({s: "full profile" for s in all_suites})
     if len(files) > cfg.always.get("max_files", 300):
@@ -273,7 +275,7 @@ def compute(
         planner_reason = "profile planner is none"
     elif all(f["kind"] == "docs" and not f["path"].startswith(PRODUCT_DIRS) for f in changeset["files"]):
         planner_name, planner_reason = "none", "no testable change"
-    elif {s["id"] for s in cfg.suites if scope == "all" or s.get("edition", "oss") == scope} <= set(full_suites):
+    elif {s["id"] for s in cfg.suites if s["id"] in all_suites and (scope == "all" or s.get("edition", "oss") == scope)} <= set(full_suites):
         planner_name, planner_reason = "none", "full run"
     return {
         "schema": "qa-plan-input/v1",

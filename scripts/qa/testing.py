@@ -65,7 +65,7 @@ grain = "test"
 planned = true
 stack = true
 tests = ["integration-tests/**/test_*.py"]
-exclude = ["integration-tests/unit/**"]
+exclude = ["integration-tests/unit/**", "integration-tests/weekly/**"]
 catalog = "integration-tests/catalog"
 
 [suite.fixture_needs]
@@ -73,6 +73,20 @@ setup_test_llm_model = "env:TEST_OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_A
 
 [suite.marker_needs]
 live_model = "env:REAL_KEY"
+heavy = "stack:solo"
+
+[[suite]]
+id = "it-weekly"
+family = "it-pytest"
+edition = "oss"
+marker_rules = true
+cwd = "integration-tests"
+grain = "test"
+stack = true
+tests = ["integration-tests/weekly/test_*.py"]
+profiles = ["weekly"]
+
+[suite.marker_needs]
 heavy = "stack:solo"
 
 [compose_profiles]
@@ -123,6 +137,15 @@ graph_db = "both"
 integration = true
 extra_minutes = 0
 full = true
+
+[profiles.weekly]
+planner = "none"
+import_depth = 99
+graph_db = "neo4j"
+integration = true
+extra_minutes = 0
+full = true
+suites = ["it-weekly"]
 
 [variants.solo]
 description = "fixture variant"
@@ -350,6 +373,7 @@ FILES = {
         def test_heavy_path():
             """TC-HEAVY-001: the heavy path works."""
         '''),
+    "integration-tests/weekly/test_upgrade.py": 'import pytest\n\npytestmark = pytest.mark.heavy\n\n\ndef test_counts_survive():\n    """TC-WEEKLY-001: counts survive the upgrade."""\n',
     "integration-tests/plus/test_ai_usage.py": 'def test_budget():\n    """TC-PLUS-USAGE-001: usage stops at the org budget."""\n',
 }
 

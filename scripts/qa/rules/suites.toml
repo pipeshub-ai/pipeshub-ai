@@ -118,6 +118,7 @@ exclude = [
   "integration-tests/unit/**",
   "integration-tests/helper/**",
   "integration-tests/perf/**",
+  "integration-tests/weekly/**",
   "integration-tests/validation/**",
   "integration-tests/examples/**",
 ]
@@ -136,6 +137,23 @@ live_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+T
 postgres_incremental = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
 postgres_relations = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
 demo = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
+
+# Runs only in the weekly profile (never in another profile's full run), each marker on a stack of its own.
+[[suite]]
+id = "it-weekly"
+family = "it-pytest"
+edition = "oss"
+marker_rules = true
+cwd = "integration-tests"
+grain = "test"
+stack = true
+tests = ["integration-tests/weekly/**/integration_test_*.py"]
+profiles = ["weekly"]
+# No catalog of its own: its rows are listed in it-stack's, the same-family suite of the edition.
+
+[suite.marker_needs]
+perf_smoke = "stack:perf"
+upgrade = "stack:upgrade"
 
 # Markers that need an extra docker-compose profile on the integration stack.
 [compose_profiles]

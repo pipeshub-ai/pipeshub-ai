@@ -55,7 +55,10 @@ producer against them, and `validate` checks model output against
 For a change set and profile, the floor is the union of:
 
 1. **Full runs.** The `full` profile, more than `max_files` changed files, a
-   `[[full_run]]` path, or an edition switch file. A switch file covers the unit
+   `[[full_run]]` path, or an edition switch file. A suite with `profiles = [...]`
+   joins only those profiles' full runs, and a profile with `suites = [...]`
+   (`weekly`: `it-weekly`) selects only those suites, so the nightly never
+   runs, or blocks on, weekly tests. A switch file covers the unit
    suites of both editions under the same `cwd`.
 2. **Changed tests.** Every catalog row in a changed file.
 3. **Rules.** Each `[[rule]]` whose `paths` match adds its `tests` globs,

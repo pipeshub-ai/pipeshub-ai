@@ -72,6 +72,16 @@ integration = true
 extra_minutes = 0
 full = true
 
+# Suites with `profiles = ["weekly"]` run only here, and this profile runs only the suites it lists.
+[profiles.weekly]
+planner = "none"
+import_depth = 99
+graph_db = "neo4j"
+integration = true
+extra_minutes = 0
+full = true
+suites = ["it-weekly"]
+
 # Stack variants: a test that needs `stack:<name>` (through suites.toml marker_needs)
 # runs in its own stack job. Hooks read the name from QA_STACK_VARIANT.
 [variants.perf]
@@ -79,6 +89,8 @@ description = "stack for the performance smoke"
 
 [variants.upgrade]
 description = "stack that boots the previous release, then the head image, on the same volumes"
+upgrade_from = "previous-release"
+before_marker = "upgrade_before"
 
 # Always-run selections beyond changed tests (those always run).
 [[always]]

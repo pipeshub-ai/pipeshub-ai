@@ -41,6 +41,8 @@ on:
   schedule:
     # After the 18:30 UTC integration nightly: the full run that measures misses.
     - cron: '0 21 * * *'
+    # Sundays: the weekly profile (upgrade and perf smoke).
+    - cron: '0 4 * * 0'
 
 permissions:
   contents: read

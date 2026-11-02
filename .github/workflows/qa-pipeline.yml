@@ -113,6 +113,7 @@ jobs:
         id: args
         env:
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
           MODE: ${{ inputs.mode }}
           BASE_SHA: ${{ inputs.base_sha }}
           PROFILE_IN: ${{ inputs.profile }}
@@ -133,6 +134,8 @@ jobs:
             *)     change="--target $BASE_REF --head $HEAD_SHA" ;;
           esac
           [[ "$EVENT" == schedule ]] && { change="--since $HEAD_SHA --mode full"; profile=full; }
+          # The Sunday crons (OSS 04:00, the other edition 04:30) run only the weekly suites.
+          [[ "$EVENT" == schedule && ( "$SCHEDULE" == "0 4 * * 0" || "$SCHEDULE" == "30 4 * * 0" ) ]] && profile=weekly
           echo "change=$change" >> "$GITHUB_OUTPUT"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
 

@@ -96,6 +96,26 @@ class TestFullRunsAndProfiles(ImpactCase):
         self.assertTrue(p["deferred"])
 
 
+class TestWeeklyProfile(ImpactCase):
+    WEEKLY = "it:weekly/test_upgrade.py::test_counts_survive"
+
+    def test_full_profile_skips_weekly_only_suites(self) -> None:
+        p = self.change({"scripts/plus/qa/qa_hooks.py": "def edition(path):\n    return None\n"}, profile="full")
+        self.assertNotIn("it-weekly", p["full_suites"])
+        self.assertTrue(p["floor"]["tests"])
+        self.assertNotIn(self.WEEKLY, p["floor"]["tests"])
+
+    def test_weekly_profile_selects_only_its_suites(self) -> None:
+        p = self.change({"README.md": "hi\n"}, profile="weekly")
+        self.assertEqual(set(p["full_suites"]), {"it-weekly"})
+        self.assertEqual({t for t in p["floor"]["tests"] if "weekly" in t}, {self.WEEKLY})
+        self.assertEqual(p["floor"]["tests"], [self.WEEKLY])
+
+    def test_branch_override_never_lowers_weekly(self) -> None:
+        p = self.change({"README.md": "hi\n"}, profile="weekly", branch="oss-sync-1-1-26")
+        self.assertEqual(p["profile"], "weekly")
+
+
 class TestFlows(ImpactCase):
     def test_flow_trigger_adds_flow_tests(self) -> None:
         p = self.change({"backend/python/app/services/retrieval.py": "def search():\n    return []\n"})
