@@ -4,6 +4,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -875,7 +876,7 @@ class TestConvertToPdf:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_convert_output_file_not_found(self, connector, tmp_path):
+    async def test_convert_output_file_not_found(self, connector, tmp_path: Path):
         with patch("asyncio.create_subprocess_exec") as mock_exec, \
              patch("os.path.exists", return_value=False):
             mock_proc = AsyncMock()

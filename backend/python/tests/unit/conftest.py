@@ -36,13 +36,17 @@ _LEAK_PREFIX = "pipeshub_"
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _private_temp_dir() -> Iterator[str]:
+def _private_temp_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """Give each pytest process (each xdist worker) its own ``tempfile`` directory.
 
     Product code writes ``pipeshub_*`` scratch files with ``tempfile``. In the shared
     system temp dir a test could pass or fail on what other runs left there, and a leak
     could not be told from a concurrent process. A private directory removes both.
     """
+    # pytest places its base temp dir on first use, under tempfile's directory: fix it
+    # first, or tmp_path would land in the private dir and be removed with it, losing
+    # the directories pytest keeps from failed tests.
+    tmp_path_factory.getbasetemp()
     previous = tempfile.tempdir
     # Short and directly under the system temp dir (not under pytest's basetemp), so
     # AF_UNIX socket paths that tests build below it keep their headroom (107 chars).

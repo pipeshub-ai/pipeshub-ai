@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pathlib import Path
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 
@@ -2013,7 +2014,7 @@ class TestConvertToPdf:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_output_file_not_found(self, connector, tmp_path):
+    async def test_output_file_not_found(self, connector, tmp_path: Path):
         with patch("asyncio.create_subprocess_exec") as mock_exec, \
              patch("os.path.exists", return_value=False):
             mock_proc = AsyncMock()

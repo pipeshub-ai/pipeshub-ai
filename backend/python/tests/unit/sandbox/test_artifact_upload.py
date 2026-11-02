@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,7 +25,7 @@ from app.sandbox.models import ArtifactOutput, ExecutionResult
 
 
 @pytest.fixture(autouse=True)
-def _per_test_sandbox_tempdir(tmp_path, monkeypatch) -> None:
+def _per_test_sandbox_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test gets its own temp dir, so the sandbox roots it creates die with it."""
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
