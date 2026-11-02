@@ -894,14 +894,24 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const hasComposer = composer != null;
   // Measured before paint: the blur is capped at this height, so a first frame at 0 would show
   // the last lines of the transcript unblurred until the effect below ran.
+  const lastDockHeightRef = useRef(0);
   useLayoutEffect(() => {
-    setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+    lastDockHeightRef.current = composerDockRef.current?.offsetHeight ?? 0;
+    setComposerDockHeight(lastDockHeightRef.current);
   }, [hasComposer]);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const measureDock = () => setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+    const measureDock = () => {
+      const height = composerDockRef.current?.offsetHeight ?? 0;
+      const grew = height - lastDockHeightRef.current;
+      // The dock grows upward over the transcript (an approval card from another chat appears above
+      // the composer): scroll by as much, so what sat just above the composer stays in view.
+      if (grew > 0 && lastDockHeightRef.current > 0) container.scrollTop += grew;
+      lastDockHeightRef.current = height;
+      setComposerDockHeight(height);
+    };
     measureDock();
     const observer = new ResizeObserver(() => {
       recalcSpacerHeight();
