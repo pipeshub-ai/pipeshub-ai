@@ -123,6 +123,48 @@ FOLDER_DEPTH_LIMIT_REASON = (
 MOVE_INTO_ACTION = "move items into it"
 
 KB_BEING_DELETED_REASON = "This knowledge base is being deleted, so it can't be changed."
+OWNER_USER_ID_HIDDEN_ONLY_REASON = (
+    "ownerUserId is only valid when creating a hidden knowledge base"
+)
+HIDDEN_GRANTS_ONLY_REASON = (
+    "Initial member grants are only valid when creating a hidden knowledge base"
+)
+
+
+def _hidden_kb_follows_project_membership(kb_doc: dict | None) -> bool:
+    """A project's linked file collection is `isHidden`. Its membership must
+    follow the project, so the person who first opened it is not an immovable
+    creator the way they are on a normal Collection."""
+    return bool(kb_doc) and kb_doc.get("isHidden") is True
+
+
+def _is_hidden_orphan_initiator(kb_doc: dict | None, user_id: str) -> bool:
+    return (
+        _hidden_kb_follows_project_membership(kb_doc)
+        and str(kb_doc.get("initiatedBy") or "") == str(user_id)
+    )
+
+
+def _user_kb_permission_edge(
+    *,
+    from_id: str,
+    kb_id: str,
+    role: str,
+    timestamp: int,
+) -> dict[str, object]:
+    return {
+        "from_id": from_id,
+        "from_collection": CollectionNames.USERS.value,
+        "to_id": kb_id,
+        "to_collection": CollectionNames.APPS.value,
+        "externalPermissionId": "",
+        "type": "USER",
+        "role": role,
+        "createdAtTimestamp": timestamp,
+        "updatedAtTimestamp": timestamp,
+        "lastUpdatedTimestampAtSource": timestamp,
+    }
+
 
 # Every public coroutine of KnowledgeBaseService, by what DELETING means for it. A "write" must
 # refuse a KB being deleted (409); a new method fails the classification test until it is listed.
@@ -531,12 +573,21 @@ class KnowledgeBaseService:
         org_id: str,
         name: str,
         is_hidden: bool = False,
+        owner_user_id: str | None = None,
+        writer_user_ids: list[str] | None = None,
+        reader_user_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
     ) -> Optional[Dict]:
         """Create a new knowledge base.
 
         is_hidden excludes the KB from list/browse/unscoped-search surfaces
         (e.g. a project's linked file collection) while it remains fully
         resolvable when explicitly referenced by id (filters.kb, direct get).
+
+        owner_user_id (hidden KBs only) is who becomes createdBy/OWNER — the
+        project owner, not whoever triggered first use. The authenticated
+        caller, if different, is granted WRITER in the same write so they can
+        upload immediately without becoming an immovable creator.
         """
         try:
             self.logger.info(f"🚀 Creating KB '{name}' for user {user_id} in org {org_id}")
@@ -544,6 +595,17 @@ class KnowledgeBaseService:
             if not name or not name.strip():
                 return {"success": False, "code": 400, "reason": "Knowledge base name is required"}
             name = name.strip()
+
+            extra_writers = list(writer_user_ids or [])
+            extra_readers = list(reader_user_ids or [])
+            extra_teams = list(team_ids or [])
+            if (owner_user_id or extra_writers or extra_readers or extra_teams) and not is_hidden:
+                reason = (
+                    OWNER_USER_ID_HIDDEN_ONLY_REASON
+                    if owner_user_id
+                    else HIDDEN_GRANTS_ONLY_REASON
+                )
+                return {"success": False, "code": 400, "reason": reason}
 
             # Step 1: Look up user
             user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
@@ -555,9 +617,50 @@ class KnowledgeBaseService:
                     "reason": f"User not found for user_id: {user_id}"
                 }
 
-            user_key = user.get('id') or user.get('_key')
+            requester_key = user.get('id') or user.get('_key')
             user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
-            self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
+            self.logger.info(f"✅ Found user: {user_name} (key: {requester_key})")
+
+            created_by = user_id
+            owner_key = requester_key
+            if owner_user_id and owner_user_id != user_id:
+                owner = await self.graph_provider.get_user_by_user_id(user_id=owner_user_id)
+                if not owner:
+                    self.logger.warning(f"⚠️ Owner not found in org {org_id}: {owner_user_id}")
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"User not found for user_id: {owner_user_id}",
+                    }
+                # Same-org check goes through the existing grant resolver so
+                # this file does not grow another direct orgId payload read.
+                _, owner_err = await self._resolve_user_ids_to_graph_keys(
+                    [owner_user_id], user_id,
+                )
+                if owner_err:
+                    self.logger.warning(f"⚠️ Owner not found in org {org_id}: {owner_user_id}")
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"User not found for user_id: {owner_user_id}",
+                    }
+                created_by = owner_user_id
+                owner_key = owner.get("id") or owner.get("_key")
+
+            # The requester already has WRITER (or OWNER) from the create
+            # write. A direct-viewer who is an editor via a team still
+            # arrives in extra_readers from the project member row — sharing
+            # that would demote them and block the upload they just started.
+            already_granted = {user_id, created_by}
+            extra_writers = [uid for uid in extra_writers if uid not in already_granted]
+            extra_readers = [uid for uid in extra_readers if uid not in already_granted]
+
+            if extra_writers or extra_readers or extra_teams:
+                grant_error = await self._validate_hidden_member_grants(
+                    created_by, extra_writers, extra_readers, extra_teams,
+                )
+                if grant_error:
+                    return grant_error
 
             timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid.uuid4())
@@ -569,7 +672,7 @@ class KnowledgeBaseService:
                 # External user id (not the graph user_key) — matches every
                 # other connector type's createdBy convention, which
                 # connector_registry._can_access_connector compares against.
-                "createdBy": user_id,
+                "createdBy": created_by,
                 "orgId": org_id,
                 "name": name,
                 "type": Connectors.KNOWLEDGE_BASE.value,
@@ -586,19 +689,26 @@ class KnowledgeBaseService:
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
+            if is_hidden:
+                kb_data["initiatedBy"] = user_id
 
-            permission_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-                "lastUpdatedTimestampAtSource": timestamp,
-            }
+            permission_edges = [
+                _user_kb_permission_edge(
+                    from_id=owner_key,
+                    kb_id=kb_key,
+                    role="OWNER",
+                    timestamp=timestamp,
+                )
+            ]
+            if requester_key != owner_key:
+                permission_edges.append(
+                    _user_kb_permission_edge(
+                        from_id=requester_key,
+                        kb_id=kb_key,
+                        role="WRITER",
+                        timestamp=timestamp,
+                    )
+                )
 
             # ORG_APP_RELATION is validated against basic_edge_schema in Arango
             # (additionalProperties: False — only _from/_to/createdAtTimestamp
@@ -615,7 +725,7 @@ class KnowledgeBaseService:
             # in Arango, which requires syncState/lastSyncUpdate — same
             # convention as every other connector's user-app edge.
             user_app_edge = {
-                "from_id": user_key,
+                "from_id": owner_key,
                 "from_collection": CollectionNames.USERS.value,
                 "to_id": kb_key,
                 "to_collection": CollectionNames.APPS.value,
@@ -630,7 +740,7 @@ class KnowledgeBaseService:
                     await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the knowledge base",
                 )
                 ensure_written(
-                    await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value),
+                    await tx_store.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value),
                     "the knowledge base owner's permission",
                 )
                 ensure_written(
@@ -660,6 +770,17 @@ class KnowledgeBaseService:
                 org_id=org_id,
             )
 
+            share_error = await self._share_hidden_kb_as_owner(
+                kb_key,
+                created_by,
+                extra_writers,
+                extra_readers,
+                extra_teams,
+            )
+            if share_error:
+                return share_error
+
+            caller_role = "OWNER" if requester_key == owner_key else "WRITER"
             self.logger.info(f"✅ KB '{name}' created successfully: {kb_key}")
             return {
                 "id": kb_data["id"],
@@ -667,7 +788,7 @@ class KnowledgeBaseService:
                 "createdAtTimestamp": kb_data["createdAtTimestamp"],
                 "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
                 "success": True,
-                "userRole": "OWNER"
+                "userRole": caller_role,
             }
 
         except Exception as e:
@@ -677,6 +798,53 @@ class KnowledgeBaseService:
                 "code": 500,
                 "reason": action_failed("create this knowledge base")
             }
+
+    async def _validate_hidden_member_grants(
+        self,
+        owner_user_id: str,
+        writer_user_ids: list[str],
+        reader_user_ids: list[str],
+        team_ids: list[str],
+    ) -> dict | None:
+        """Refuse create before the write when a grant principal is gone."""
+        grant_users = list(dict.fromkeys([*writer_user_ids, *reader_user_ids]))
+        if grant_users:
+            _, resolve_err = await self._resolve_user_ids_to_graph_keys(
+                grant_users, owner_user_id,
+            )
+            if resolve_err:
+                return resolve_err
+        return await self._teams_not_in_requester_org(team_ids, owner_user_id)
+
+    async def _share_hidden_kb_as_owner(
+        self,
+        kb_id: str,
+        owner_user_id: str,
+        writer_user_ids: list[str],
+        reader_user_ids: list[str],
+        team_ids: list[str],
+    ) -> dict | None:
+        """Grant the rest of a project's members after create, acting as the
+        owner so an editor's JWT is not required to share the new collection."""
+        if writer_user_ids:
+            result = await self.create_kb_permissions(
+                kb_id, owner_user_id, writer_user_ids, [], "WRITER",
+            )
+            if not (result or {}).get("success"):
+                return result
+        if reader_user_ids:
+            result = await self.create_kb_permissions(
+                kb_id, owner_user_id, reader_user_ids, [], "READER",
+            )
+            if not (result or {}).get("success"):
+                return result
+        if team_ids:
+            result = await self.create_kb_permissions(
+                kb_id, owner_user_id, [], team_ids, "",
+            )
+            if not (result or {}).get("success"):
+                return result
+        return None
 
     async def get_knowledge_base(
         self,
@@ -864,6 +1032,19 @@ class KnowledgeBaseService:
                 "reason": action_failed("update this knowledge base")
             }
 
+    async def _writer_may_delete_hidden_orphan(self, kb_id: str, user_id: str) -> bool:
+        """The editor who created a project collection may remove their empty
+        unused copy after losing the link race. Any WRITER delete would let
+        another editor drop the project's live collection."""
+        kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value)
+        if not _is_hidden_orphan_initiator(kb, user_id):
+            return False
+        try:
+            files = await self.graph_provider.get_uploaded_document_ids(kb_id)
+        except Exception:
+            return False
+        return not files
+
     async def delete_knowledge_base(
         self,
         kb_id: str,
@@ -881,15 +1062,23 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Deleting knowledge base {kb_id}")
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER"],
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
                 permission_denied_reason="Only KB owners can delete knowledge bases",
             )
             if err:
                 # _resolve_user_and_kb_access already logged the denial at warning level;
                 # re-logging here at error would inflate error-rate metrics with auth events.
                 return err
+            if user_role != "OWNER" and not await self._writer_may_delete_hidden_orphan(
+                kb_id, user_id,
+            ):
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": "Only KB owners can delete knowledge bases",
+                }
 
-            self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
+            self.logger.info(f"🔐 User {user_key} has {user_role} permission - proceeding with deletion")
 
             # Recorded before anything is removed: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished
@@ -2527,7 +2716,13 @@ class KnowledgeBaseService:
                         creator_being_updated.append(user_id)
 
             # Block changes to creator (unless requester IS the creator attempting self-modification)
-            if creator_being_updated and requester_key != creator_graph_key:
+            # Hidden project collections follow project membership, so another
+            # owner may demote the person who first opened the files tab.
+            if (
+                creator_being_updated
+                and requester_key != creator_graph_key
+                and not _hidden_kb_follows_project_membership(kb_doc)
+            ):
                 return {
                     "success": False,
                     "reason": "Cannot change permissions for the collection creator.",
@@ -2536,8 +2731,13 @@ class KnowledgeBaseService:
                 }
 
             # Non-creator owners cannot touch another owner's role/access
-            # But the creator CAN change other owners' permissions
-            if requester_key != creator_graph_key:
+            # But the creator CAN change other owners' permissions.
+            # Hidden project collections also let any remaining owner fix a
+            # stale first-opener OWNER so member removal can revoke them.
+            if (
+                requester_key != creator_graph_key
+                and not _hidden_kb_follows_project_membership(kb_doc)
+            ):
                 # Requester is NOT the creator - apply standard owner protection
                 other_owners_being_updated = [
                     owner_user_id for owner_user_id in owners_being_updated
@@ -2729,8 +2929,13 @@ class KnowledgeBaseService:
 
             # Check for owner removal restrictions
             if owner_users_to_remove:
-                # Block removing creator entirely (even by themselves)
-                if creator_graph_key in owner_users_to_remove:
+                # Visible collections keep the creator. A hidden project
+                # collection follows project members, so the first opener can
+                # be removed once another owner (the project owner) remains.
+                if (
+                    creator_graph_key in owner_users_to_remove
+                    and not _hidden_kb_follows_project_membership(kb_doc)
+                ):
                     return {
                         "success": False,
                         "reason": "Cannot remove the collection creator. The creator must always retain access.",
@@ -2739,8 +2944,13 @@ class KnowledgeBaseService:
                     }
 
                 # Non-creator owners cannot remove another owner's access
-                # But the creator CAN remove other owners
-                if requester_key != creator_graph_key:
+                # But the creator CAN remove other owners. Hidden project
+                # collections follow project members, so the project owner
+                # may drop a stale first-opener OWNER.
+                if (
+                    requester_key != creator_graph_key
+                    and not _hidden_kb_follows_project_membership(kb_doc)
+                ):
                     # Requester is NOT the creator - apply standard owner protection
                     other_owners_to_remove = [
                         owner_user_id for owner_user_id in owner_users_to_remove
