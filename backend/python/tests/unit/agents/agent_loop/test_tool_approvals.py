@@ -656,7 +656,8 @@ class TestUserIndex:
         assert await store.list_keys_in_directory(self._DIR) == [f"{self._DIR}/{details['approvalId']}"]
         entry = store.values[f"{self._DIR}/{details['approvalId']}"]
         assert entry["card"] == details and entry["client"] == "pipeshub-ai" and entry["conversationId"] == "conv-1"
-        assert store.ttls[f"{self._DIR}/{details['approvalId']}"] == approvals._RECORD_TTL_SECONDS
+        # The entry lives as long as the call can be answered, not as long as its record is kept.
+        assert approvals.APPROVAL_TTL_SECONDS - 5 <= store.ttls[f"{self._DIR}/{details['approvalId']}"] <= approvals.APPROVAL_TTL_SECONDS
 
     async def test_list_pending_skips_claimed_and_expired(self) -> None:
         store = _Store()
@@ -769,7 +770,7 @@ class TestClaimingAnApproval:
         store = _Store()
         approval_id = await self._saved(store)
         await self._claim(store, approval_id)
-        assert set(store.ttls.values()) == {approvals._RECORD_TTL_SECONDS}
+        assert {ttl for key, ttl in store.ttls.items() if "/by-user/" not in key} == {approvals._RECORD_TTL_SECONDS}
         assert approvals._RECORD_TTL_SECONDS > approvals.APPROVAL_TTL_SECONDS
 
     async def test_an_unknown_approval_is_refused(self) -> None:

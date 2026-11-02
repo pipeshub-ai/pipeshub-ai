@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -787,7 +788,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
             context.config_service, _index_path(pending),
             {"approvalId": pending.approval_id, "conversationId": pending.conversation_id, "client": pending.client,
              "createdAt": int(now * 1000), "expiresAt": int(pending.expires_at * 1000), "card": details},
-            ttl_seconds=_RECORD_TTL_SECONDS,
+            # Listed only while it can be answered: no dead entries for the list to read.
+            ttl_seconds=max(1, math.ceil(pending.expires_at - time.time())),
         )
     except Exception as e:
         logger.warning(f"Couldn't index tool approval {pending.approval_id} for listing: {e}")
