@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from '@/lib/api';
 import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
@@ -510,11 +511,11 @@ export const AgentsApi = {
   async fetchAgentConversation(
     agentId: string,
     conversationId: string,
-    options?: { page?: number; limit?: number }
+    options?: { page?: number; limit?: number } & Pick<AxiosRequestConfig, 'suppressErrorToast'>
   ): Promise<FetchAgentConversationResult> {
     const { data } = await apiClient.get<AgentConversationDetailApiResponse>(
       `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`,
-      { params: { page: options?.page, limit: options?.limit } },
+      { params: { page: options?.page, limit: options?.limit }, suppressErrorToast: options?.suppressErrorToast },
     );
 
     const conv = data?.conversation;

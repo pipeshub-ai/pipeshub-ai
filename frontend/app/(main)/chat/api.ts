@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient, streamSSERequest } from '@/lib/api';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
@@ -278,6 +279,7 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
+    { suppressErrorToast }: Pick<AxiosRequestConfig, 'suppressErrorToast'> = {},
   ): Promise<{
     conversation: {
       id: string;
@@ -319,6 +321,7 @@ export const ChatApi = {
       meta: Record<string, unknown>;
     }>(`/api/v1/conversations/${conversationId}/`, {
       params: { page, limit },
+      suppressErrorToast,
     });
 
     const pagination = data.conversation.pagination ?? {

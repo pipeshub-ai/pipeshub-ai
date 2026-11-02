@@ -22,7 +22,7 @@ const m = vi.hoisted(() => {
     put: vi.fn(),
   };
 });
-vi.mock('../load-conversation', () => ({ loadConversationIntoSlot: m.load }));
+vi.mock('../load-conversation', () => ({ loadConversationIntoSlot: m.load, isNotFound: (e: { statusCode?: number } | null) => e?.statusCode === 404 }));
 vi.mock('../streaming', () => ({ streamMessageForSlot: m.stream }));
 vi.mock('../runtime', () => ({ buildStreamChatRequestForSlot: m.build }));
 vi.mock('../api', () => ({ fetchPendingApprovals: m.pending }));
@@ -184,5 +184,15 @@ describe('answerElsewhere', () => {
     await expect(answerElsewhere(item, answer)).resolves.toBe('refused');
     expect(m.refresh).toHaveBeenCalled();
     expect(m.put.mock.calls[0][0].card.editErrors).toEqual([{ path: '/title', message: 'Too long' }]);
+  });
+});
+
+describe('answerElsewhere on a deleted chat', () => {
+  it('says the chat is gone when loading it finds nothing', async () => {
+    m.load.mockRejectedValueOnce({ statusCode: 404 });
+    expect(await answerElsewhere(item, answer)).toBe('gone');
+    m.load.mockRejectedValueOnce({ statusCode: 500 });
+    expect(await answerElsewhere(item, answer)).toBe('failed');
+    expect(m.stream).not.toHaveBeenCalled();
   });
 });

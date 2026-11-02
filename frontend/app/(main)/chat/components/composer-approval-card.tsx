@@ -8,6 +8,7 @@ import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { toast } from '@/lib/store/toast-store';
 import { answerElsewhere } from '../answer-elsewhere';
 import { buildChatHref } from '../build-chat-url';
+import { isNotFound, loadConversationIntoSlot } from '../load-conversation';
 import { useOtherChatApprovals, usePendingApprovals, usePendingApprovalsSync } from '../pending-approvals-store';
 import { approvalToolLabel } from '../tool-approval';
 import type { PendingApprovalItem, ToolApprovalAnswer } from '../types';
@@ -71,12 +72,29 @@ export function ComposerApprovalCard() {
   };
   const showNext = () => setShownId(items[(items.indexOf(item) + 1) % items.length].card.approvalId);
 
-  const openChat = (target: PendingApprovalItem) =>
+  const gone = (target: PendingApprovalItem) => {
+    usePendingApprovals.getState().drop(target.card.approvalId);
+    toast.info(t('chat.toolApproval.chatDeleted'), TOAST_PLACEMENT);
+  };
+
+  // Loaded first, so a chat deleted since it was listed is dropped here instead of opening a blank page.
+  // The chat page then shows the history this load already put in its slot.
+  const openChat = async (target: PendingApprovalItem) => {
+    try {
+      await loadConversationIntoSlot(target.conversationId, target.agentId);
+    } catch (error) {
+      if (isNotFound(error)) return gone(target);
+    }
     router.push(buildChatHref({ agentId: target.agentId, conversationId: target.conversationId }));
+  };
 
   const answerFor = (target: PendingApprovalItem) => async (answer: ToolApprovalAnswer): Promise<AnswerResult> => {
     const { approvalId } = target.card;
     const result = await answerElsewhere(target, answer);
+    if (result === 'gone') {
+      gone(target);
+      return 'sent';
+    }
     if (result === 'refused') {
       setRefusals((r) => ({ ...r, [approvalId]: (r[approvalId] ?? 0) + 1 }));
       return 'sent';
@@ -89,7 +107,7 @@ export function ComposerApprovalCard() {
         : answer.feedback
           ? t('chat.toolApproval.suggestionSentIn', { title })
           : t('chat.toolApproval.declinedIn', { title });
-      toast.success(message, { ...TOAST_PLACEMENT, action: { label: t('chat.toolApproval.openChat'), onClick: () => openChat(target) } });
+      toast.success(message, { ...TOAST_PLACEMENT, action: { label: t('chat.toolApproval.openChat'), onClick: () => void openChat(target) } });
     } else if (result === 'stale') {
       toast.info(t('chat.toolApproval.alreadyAnswered'), TOAST_PLACEMENT);
     }
@@ -145,7 +163,7 @@ export function ComposerApprovalCard() {
               {t('chat.toolApproval.moreWaiting', { count: items.length - 1 })}
             </Button>
           )}
-          <Button size="1" variant="ghost" color="gray" style={{ flexShrink: 0 }} onClick={() => openChat(item)}>
+          <Button size="1" variant="ghost" color="gray" style={{ flexShrink: 0 }} onClick={() => void openChat(item)}>
             {t('chat.toolApproval.openChat')}
           </Button>
           <Button data-approval-review="" size="1" variant="ghost" style={{ flexShrink: 0 }} onClick={expand}>
@@ -165,7 +183,7 @@ export function ComposerApprovalCard() {
               conversationTitle={titleOf(target)}
               asked={askedOf(target)}
               onAnswer={answerFor(target)}
-              onOpenChat={() => openChat(target)}
+              onOpenChat={() => void openChat(target)}
               moreCount={items.length - 1}
               onMore={showNext}
               onHide={collapse}
