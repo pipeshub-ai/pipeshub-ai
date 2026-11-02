@@ -22,7 +22,7 @@ import { buildMessagePairs } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
-import { shouldShowJumpToNewest } from './jump-to-newest';
+import { shouldShowJumpToNewest, tailClearance } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -554,8 +554,26 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // tail-sync position; resume when flush with the doc bottom (`dist` only —
   // equivalent to near-max for non-subpixel cases). Resume MUST run before the
   // opt-out check so a stale anchor cannot block "scroll back down to follow."
+  // The newest message can grow after its run ends (this chat's own approval card arrives) while
+  // the dock covers the bottom of the scroller. If its end was in view, keep it in view; a reader
+  // up-thread or at the top of a long answer stays put. Read on scroll too, so a small scroll-up
+  // is not pulled back down by the next growth.
+  const tailInViewRef = useRef(false);
+  const measureTail = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const key = lastMessageKeyRef.current;
+    const lastEl = key ? messageRefs.current.get(key) : null;
+    if (!container || !lastEl) return null;
+    return {
+      bottom: lastEl.getBoundingClientRect().bottom,
+      visibleBottom: container.getBoundingClientRect().bottom - (composerDockRef.current?.offsetHeight ?? 0),
+    };
+  }, []);
+
   const handleScroll = useCallback(() => {
     if (!scrollContainerRef.current) return;
+    const tail = measureTail();
+    if (tail) tailInViewRef.current = tail.bottom <= tail.visibleBottom + 1;
 
     const container = scrollContainerRef.current;
     const { scrollTop, scrollHeight, clientHeight } = container;
@@ -607,7 +625,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     ) {
       triggerLoadOlderMessages();
     }
-  }, [runStreamingBottomResume, triggerLoadOlderMessages, updateJumpToNewestVisibility]);
+  }, [runStreamingBottomResume, triggerLoadOlderMessages, updateJumpToNewestVisibility, measureTail]);
 
   // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
   // so the first tail sync is not skipped. On every streaming commit, pin the tail
@@ -631,6 +649,23 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     syncStreamingMessageTail,
   ]);
 
+  // ── Keep a growing tail clear of the composer dock ────────────────
+  const keepTailInView = useCallback(() => {
+    const tail = measureTail();
+    if (!tail) return;
+    const container = scrollContainerRef.current!;
+    const by = isScrolledUpRef.current ? 0 : tailClearance(tailInViewRef.current, tail.bottom, tail.visibleBottom);
+    if (by > 0) {
+      isAutoScrollingRef.current = true;
+      // Instant, not the container's smooth scroll: mid-animation scroll events would read the end as out of view.
+      container.scrollTo({ top: container.scrollTop + by, behavior: 'instant' });
+      queueMicrotask(() => {
+        isAutoScrollingRef.current = false;
+      });
+    }
+    tailInViewRef.current = tail.bottom - by <= tail.visibleBottom + 1;
+  }, [measureTail]);
+
   // ── rAF-coalesced resize handler for ResizeObserver ───────────────
   // Spacer + tail on size changes that are not always tied to store updates
   // (code blocks, images, fonts). While streaming, tail sync also runs from
@@ -647,10 +682,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         } else {
           recalcSpacerHeight();
         }
+        keepTailInView();
         updateJumpToNewestVisibility();
       });
     };
-  }, [recalcSpacerHeight, syncStreamingMessageTail, updateJumpToNewestVisibility]);
+  }, [recalcSpacerHeight, syncStreamingMessageTail, updateJumpToNewestVisibility, keepTailInView]);
 
   // ── Cleanup auto-scroll timeout on unmount ──
   useEffect(() => {
@@ -894,14 +930,37 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const hasComposer = composer != null;
   // Measured before paint: the blur is capped at this height, so a first frame at 0 would show
   // the last lines of the transcript unblurred until the effect below ran.
+  const lastDockHeightRef = useRef(0);
   useLayoutEffect(() => {
-    setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+    lastDockHeightRef.current = composerDockRef.current?.offsetHeight ?? 0;
+    setComposerDockHeight(lastDockHeightRef.current);
   }, [hasComposer]);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const measureDock = () => setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+    const measureDock = () => {
+      const height = composerDockRef.current?.offsetHeight ?? 0;
+      const grew = height - lastDockHeightRef.current;
+      // The dock grows upward over the transcript (an approval card from another chat appears above
+      // the composer): scroll by as much, so what sat just above the composer stays in view. Only
+      // when the latest message's end was in view; a reader up-thread stays put.
+      if (grew > 0 && lastDockHeightRef.current > 0 && !isScrolledUpRef.current) {
+        const tail = measureTail();
+        // visibleBottom is measured with the grown dock; the end was in view above the old one.
+        if (tail && tail.bottom <= tail.visibleBottom + grew + 1) {
+          // As keepTailInView does: instant, and flagged, so a scroll event on the way is not read
+          // as the reader scrolling up.
+          isAutoScrollingRef.current = true;
+          container.scrollTo({ top: container.scrollTop + grew, behavior: 'instant' });
+          queueMicrotask(() => {
+            isAutoScrollingRef.current = false;
+          });
+        }
+      }
+      lastDockHeightRef.current = height;
+      setComposerDockHeight(height);
+    };
     measureDock();
     const observer = new ResizeObserver(() => {
       recalcSpacerHeight();
@@ -911,7 +970,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     if (composerDockRef.current) observer.observe(composerDockRef.current);
 
     return () => observer.disconnect();
-  }, [recalcSpacerHeight, hasComposer]);
+  }, [recalcSpacerHeight, hasComposer, measureTail]);
 
   // ── 3b. Streaming→final scroll-position guard ────────────────────
   // When the assistant-ui runtime atomically swaps the streaming message for
@@ -1082,6 +1141,9 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         // writes scrollTop every frame) — native scroll anchoring would otherwise
         // fight those writes whenever streamed table/content geometry shifts.
         overflowAnchor: isStreaming ? 'none' : 'auto',
+        // The sticky composer covers the bottom of the scroller; the approval card scrolls its actions above it.
+        // Not scroll-padding: focusing or typing in the composer would then scroll the transcript.
+        ['--composer-dock-height' as string]: `${composerDockHeight}px`,
         // Column so the composer dock can sit at the bottom of a short transcript.
         display: 'flex',
         flexDirection: 'column',

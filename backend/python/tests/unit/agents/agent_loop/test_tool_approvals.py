@@ -41,6 +41,10 @@ from app.agents.agent_loop.tool_approvals import (
     ToolRules,
     decide,
 )
+from app.agents.constants.mcp_server_constants import (
+    get_mcp_tool_approval_claim_path,
+    get_mcp_tool_approval_user_index_dir,
+)
 from app.agents.mcp.models import MCPToolInfo
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import (
@@ -84,6 +88,13 @@ class _Store:
         self.values[key] = value
         self.ttls[key] = ttl_seconds
         return True
+
+    async def delete_config(self, key: str) -> bool:
+        self.values.pop(key, None)
+        return True
+
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
+        return [k for k in self.values if k.startswith(directory)]
 
     def pending(self) -> list[dict[str, Any]]:
         return [v for k, v in self.values.items() if "/tool-approvals/pending/" in k]
@@ -545,6 +556,169 @@ class TestTheGate:
         assert ctx.decision == PreDecision.ALLOW
 
 
+class _ToolsetTool:
+    display_name = "Send email"
+
+    def __init__(self, schema: dict[str, Any]) -> None:
+        self._schema = schema
+
+    @property
+    def raw_input_schema(self) -> dict[str, Any]:
+        return self._schema
+
+    def summarize_args(self, args: dict[str, Any]) -> str:
+        return f"to {args.get('mail_to')}"
+
+
+_GMAIL_SCHEMA = {"type": "object", "properties": {"mail_subject": {"type": "string"}}}
+_GMAIL_PATH = "/tools/gmail/send_email"
+
+
+async def _toolset_card(store: _Store, arguments: dict[str, Any], schema: dict[str, Any] = _GMAIL_SCHEMA) -> dict[str, Any]:
+    context = _context(store)
+    target = approvals.ApprovalTarget(
+        source="toolset", instance_id="ts-1", tool_name="send_email", owner="Gmail", kind="destructive",
+        tool=_ToolsetTool(schema),  # type: ignore[arg-type]
+    )
+    context.tool_state.setdefault(approvals.TOOLSET_TOOLS_BY_PATH, {})[_GMAIL_PATH] = target
+
+    async def _next() -> None:
+        return None
+
+    ctx = ToolCallContext(tool_path=_GMAIL_PATH, tool_input=dict(arguments))
+    await approvals.approval_gate(context)(ctx, _next)
+    assert ctx.pending_approval is not None
+    return ctx.pending_approval.details
+
+
+class TestEditableCard:
+    ARGS = {"mail_to": ["a@x.com"], "mail_subject": "Hi"}
+
+    async def test_card_carries_path_source_schema_and_hash(self) -> None:
+        store = _Store()
+        details = await _toolset_card(store, self.ARGS)
+        assert details["toolPath"] == _GMAIL_PATH
+        assert details["source"] == "toolset"
+        assert details["inputSchema"]["properties"]["mail_subject"]["type"] == "string"
+        assert details["argsHash"] == approvals.args_hash(self.ARGS)
+        assert details["editable"] is True
+        assert details["displayName"] == "Send email" and details["argsSummary"] == "to ['a@x.com']"
+        saved = approvals.PendingCall.model_validate(store.pending()[0])
+        assert (saved.tool_path, saved.kind) == (_GMAIL_PATH, "destructive")
+        assert saved.input_schema == _GMAIL_SCHEMA
+
+    async def test_card_not_editable_when_arguments_only_previewed(self) -> None:
+        details = await _toolset_card(_Store(), {"mail_body": "x" * 9000})
+        assert details["arguments"] is None and details["editable"] is False
+
+    async def test_card_omits_schema_over_16000_chars(self) -> None:
+        details = await _toolset_card(_Store(), self.ARGS, {"type": "object", "description": "x" * 17000})
+        assert "inputSchema" not in details and details["editable"] is False
+
+    async def test_card_not_editable_when_its_schema_cannot_be_checked_in_time(self) -> None:
+        schema = {"type": "object", "patternProperties": {"^m": {}}, "unevaluatedProperties": False}
+        assert (await _toolset_card(_Store(), self.ARGS, schema))["editable"] is False
+
+    async def test_card_not_editable_when_edits_turned_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TOOL_APPROVAL_EDITS", "false")
+        assert (await _toolset_card(_Store(), self.ARGS))["editable"] is False
+
+    async def test_mcp_card_carries_its_path_and_schema(self) -> None:
+        adapter = _adapter(read_only=False)
+        ctx = await _gate(_context(), adapter, title="Bug")
+        assert ctx.pending_approval is not None
+        details = ctx.pending_approval.details
+        assert (details["toolPath"], details["source"]) == (adapter.path, "mcp")
+        assert details["inputSchema"] == {"type": "object"}
+
+    def test_args_hash_ignores_key_order(self) -> None:
+        assert approvals.args_hash({"a": 1, "b": 2}) == approvals.args_hash({"b": 2, "a": 1})
+
+    def test_pending_call_saved_before_this_change_still_loads(self) -> None:
+        old = {
+            "approvalId": "a", "orgId": "o", "userId": "u", "conversationId": "c", "instanceId": "i",
+            "serverName": "s", "toolName": "t", "createdAt": 1.0, "expiresAt": 2.0,
+        }
+        saved = approvals.PendingCall.model_validate(old)
+        assert (saved.tool_path, saved.input_schema) == ("", None)
+
+
+class TestUserIndex:
+    _DIR = get_mcp_tool_approval_user_index_dir("org-1", "user-1")
+
+    async def _ask(self, store: _Store, **overrides: Any) -> dict[str, Any]:  # noqa: ANN401
+        ctx = await _gate(_context(store, **overrides), _adapter(read_only=False), title="Bug")
+        assert ctx.pending_approval is not None
+        return ctx.pending_approval.details
+
+    async def _list(self, store: _Store) -> list[dict[str, Any]]:
+        return await approvals.list_pending_for(store, org_id="org-1", user_id="user-1")  # type: ignore[arg-type]
+
+    async def test_ask_writes_user_index_entry(self) -> None:
+        store = _Store()
+        details = await self._ask(store)
+        assert await store.list_keys_in_directory(self._DIR) == [f"{self._DIR}/{details['approvalId']}"]
+        entry = store.values[f"{self._DIR}/{details['approvalId']}"]
+        assert entry["card"] == details and entry["client"] == "pipeshub-ai" and entry["conversationId"] == "conv-1"
+        # The entry lives as long as the call can be answered, not as long as its record is kept.
+        assert approvals.APPROVAL_TTL_SECONDS - 5 <= store.ttls[f"{self._DIR}/{details['approvalId']}"] <= approvals.APPROVAL_TTL_SECONDS
+
+    async def test_list_pending_skips_claimed_and_expired(self) -> None:
+        store = _Store()
+        live = await self._ask(store)
+        claimed = await self._ask(store, conversation_id="conv-2")
+        expired = await self._ask(store, conversation_id="conv-3")
+        store.values[f"{self._DIR}/{expired['approvalId']}"]["expiresAt"] = 1
+        store.values[get_mcp_tool_approval_claim_path(claimed["approvalId"])] = {"claimedAt": 1}
+        store.values[f"{self._DIR}/junk"] = "not an entry"
+        assert [e["approvalId"] for e in await self._list(store)] == [live["approvalId"]]
+
+    async def test_list_pending_newest_first(self) -> None:
+        store = _Store()
+        first, second = await self._ask(store), await self._ask(store, conversation_id="conv-2")
+        store.values[f"{self._DIR}/{first['approvalId']}"]["createdAt"] = 1
+        store.values[f"{self._DIR}/{second['approvalId']}"]["createdAt"] = 2
+        assert [e["approvalId"] for e in await self._list(store)] == [second["approvalId"], first["approvalId"]]
+
+    async def test_claiming_drops_the_index_entry(self) -> None:
+        store = _Store()
+        details = await self._ask(store)
+        claim = await approvals.claim_pending(store, details["approvalId"], org_id="org-1", user_id="user-1", conversation_id="conv-1")  # type: ignore[arg-type]
+        assert claim.status == "claimed" and await store.list_keys_in_directory(self._DIR) == []
+
+    async def test_a_new_message_passes_over_the_call_waiting_in_that_conversation(self) -> None:
+        store = _Store()
+        passed = await self._ask(store)
+        elsewhere = await self._ask(store, conversation_id="conv-2")
+        await approvals.pass_over_waiting_calls(_context(store))
+        assert [e["approvalId"] for e in await self._list(store)] == [elsewhere["approvalId"]]
+        claim = await approvals.claim_pending(store, passed["approvalId"], org_id="org-1", user_id="user-1", conversation_id="conv-1")  # type: ignore[arg-type]
+        assert claim.status == "used" and claim.outcome is not None and claim.outcome.ran is False
+
+    async def test_passing_over_leaves_a_call_already_answered_as_it_was(self) -> None:
+        store = _Store()
+        details = await self._ask(store)
+        claim_path = get_mcp_tool_approval_claim_path(details["approvalId"])
+        store.values[claim_path] = {"claimedAt": 1}
+        await approvals.pass_over_waiting_calls(_context(store))
+        assert store.values[claim_path] == {"claimedAt": 1}
+
+    async def test_index_write_failure_does_not_block_the_card(self, caplog: pytest.LogCaptureFixture) -> None:
+        store = _Store()
+        real = store.set_config
+
+        async def _flaky(key: str, *a: Any, **kw: Any) -> bool:  # noqa: ANN401
+            if "/by-user/" in key:
+                raise ConnectionError("down")
+            return await real(key, *a, **kw)
+
+        store.set_config = _flaky  # type: ignore[method-assign]
+        with caplog.at_level("WARNING"):
+            ctx = await _gate(_context(store), _adapter(read_only=False), title="Bug")
+        assert ctx.decision == PreDecision.ASK and len(store.pending()) == 1
+        assert "Couldn't index tool approval" in caplog.text
+
+
 class TestClaimingAnApproval:
     async def _saved(self, store: _Store) -> str:
         ctx = await _gate(_context(store), _adapter(read_only=False), title="Bug")
@@ -600,7 +774,7 @@ class TestClaimingAnApproval:
         store = _Store()
         approval_id = await self._saved(store)
         await self._claim(store, approval_id)
-        assert set(store.ttls.values()) == {approvals._RECORD_TTL_SECONDS}
+        assert {ttl for key, ttl in store.ttls.items() if "/by-user/" not in key} == {approvals._RECORD_TTL_SECONDS}
         assert approvals._RECORD_TTL_SECONDS > approvals.APPROVAL_TTL_SECONDS
 
     async def test_an_unknown_approval_is_refused(self) -> None:
@@ -738,9 +912,10 @@ async def _ask(store: _Store, mcp: _Server) -> str:
 
 async def _answer(
     store: _Store, mcp: _Server, approval_id: str, decision: str, *model_calls: ToolCall,
-    remember: bool = False, history: list[dict[str, Any]] | None = None, loop: Any = None, **overrides: Any,  # noqa: ANN401
+    remember: bool = False, history: list[dict[str, Any]] | None = None, loop: Any = None,  # noqa: ANN401
+    answer_fields: dict[str, Any] | None = None, **overrides: Any,  # noqa: ANN401
 ) -> _Request:
-    answer = ToolApprovalAnswer(approval_id=approval_id, decision=decision, remember=remember)  # type: ignore[arg-type]
+    answer = ToolApprovalAnswer(approval_id=approval_id, decision=decision, remember=remember, **(answer_fields or {}))  # type: ignore[arg-type]
     context = _context(store, tool_approval=answer, **overrides)
     return await _request(
         context, mcp, *(model_calls or (_DONE,)), history=history or _stopped_turn(), query=f"Tool approval: {decision}",
@@ -831,6 +1006,18 @@ class TestAnsweringTheCard:
         assert started["approved"] is True
         (ended,) = again.events.of(EventType.TOOL_CALL_END, "c1")
         assert ended["status"] == ToolCallStatus.SUCCESS
+
+    async def test_an_answer_to_a_call_a_newer_message_passed_over_runs_nothing(self) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        await approvals.pass_over_waiting_calls(_context(store))
+
+        answered = await _answer(store, mcp, approval_id, "allow")
+
+        assert mcp.calls == []
+        assert "didn't run" in _result_of(answered.sent[0]).content
+        (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
+        assert ended["status"] == ToolCallStatus.BLOCKED
 
     async def test_an_answer_still_being_applied_isnt_applied_again(self) -> None:
         store, mcp = _Store(), _Server()

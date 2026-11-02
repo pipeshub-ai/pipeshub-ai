@@ -933,13 +933,79 @@ li > blockquote {
   animation: activity-fade-in 200ms ease-out;
 }
 
+/* Tool approval card (tool-approval-card.tsx): fades in with no rise; its editor opens down.
+   Narrow, the action groups take their own line: Deny and Allow split theirs evenly, the
+   quiet actions wrap. */
+.tool-approval-card {
+  container-type: inline-size;
+  animation: msgActionsIn 200ms ease;
+}
+.tool-approval-editor {
+  animation: tool-approval-editor-in 200ms ease;
+}
+/* Ghost buttons draw past their box; the margin keeps their hover inside the card. */
+.tool-approval-card-lead {
+  margin-left: var(--space-2);
+}
+@keyframes tool-approval-editor-in {
+  from { opacity: 0; max-height: 0; }
+}
+@container (max-width: 460px) {
+  .tool-approval-card-group {
+    width: 100%;
+  }
+  /* At full width a margin would push the group past the card. */
+  .tool-approval-card-lead {
+    margin-left: 0;
+  }
+  .tool-approval-card-answer > button {
+    flex: 1;
+    min-width: 0;
+  }
+}
+/* Narrow, Deny and Allow may wrap their words, but never clip them. */
+@container (max-width: 460px) {
+  .tool-approval-card-answer > button {
+    white-space: normal;
+    height: auto;
+    min-height: var(--base-button-height);
+  }
+}
+/* A call from another chat, above the composer (composer-approval-card.tsx). Opened, it scrolls
+   inside its cap; narrow, the cap leaves the transcript about 40% of the screen. */
+.composer-approval {
+  container: composer-approval / inline-size;
+}
+.composer-approval .tool-approval-card {
+  max-height: 60vh;
+}
+@container composer-approval (max-width: 600px) {
+  .composer-approval .tool-approval-card {
+    max-height: max(calc(var(--space-9) * 2), calc(60dvh - var(--space-9) * 3));
+  }
+}
+/* The document form's borderless headline field: the house focus ring, and a hairline when invalid. */
+.tool-approval-headline {
+  border-radius: var(--radius-2);
+  outline: none;
+}
+.tool-approval-headline:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 1px;
+}
+.tool-approval-headline[aria-invalid='true'] {
+  box-shadow: 0 0 0 1px var(--red-8);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .typing-cursor {
     animation: none;
     opacity: 1;
   }
 
-  .agent-activity-enter {
+  .agent-activity-enter,
+  .tool-approval-card,
+  .tool-approval-editor {
     animation: none;
   }
 
@@ -1726,6 +1792,15 @@ th code {
     width: max(100%, 44px);
     height: max(100%, 44px);
     transform: translate(-50%, -50%);
+  }
+}
+
+/* Tag field chips: their remove buttons are .touch-hit, so on touch screens the chips sit far
+   enough apart that one chip's 44px tap area never reaches the next chip or row. */
+@media (pointer: coarse) {
+  .tag-input-chips {
+    row-gap: var(--space-4) !important;
+    column-gap: var(--space-3) !important;
   }
 }
 

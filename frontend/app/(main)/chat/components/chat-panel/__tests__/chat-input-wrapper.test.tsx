@@ -18,6 +18,10 @@ vi.mock('../../chat-input', () => ({
   },
 }));
 
+vi.mock('../../composer-approval-card', () => ({
+  ComposerApprovalCard: () => <div data-testid="composer-approval-card" />,
+}));
+
 vi.mock('@/chat/hooks/use-effective-agent-id', () => ({
   useEffectiveAgentId: () => captured.agentId,
 }));
@@ -41,6 +45,11 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('ChatInputWrapper', () => {
+  it('shows calls waiting in other chats directly above the composer', () => {
+    const { getByTestId, getByLabelText } = render(<ChatInputWrapper />);
+    expect(getByTestId('composer-approval-card').nextElementSibling).toBe(getByLabelText('Message composer'));
+  });
+
   it('keeps unsent text in the main chat composer', () => {
     render(<ChatInputWrapper />);
 

@@ -373,6 +373,40 @@ describe('XSS Sanitization Middleware', () => {
       }
     })
 
+    it('passes an edited tool call to its validate route unchanged, as the answer route does', () => {
+      const body = { argsHash: 'a'.repeat(64), arguments: { title: 'Fix <id> & a > b' } }
+      const req = createMockRequest({
+        path: '/api/v1/mcp-servers/tool-approvals/ap-1/validate',
+        method: 'POST',
+        body: JSON.parse(JSON.stringify(body)),
+      })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, createMockResponse(), next)
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.body).to.deep.equal(body)
+    })
+
+    it('still checks other tool-approval routes and the validate query string', () => {
+      for (const [path, body] of [
+        ['/api/v1/mcp-servers/tool-approvals/ap-1/validate/x', { v: '<b>x</b>' }],
+        ['/api/v1/mcp-servers/tool-approvals/pending', { v: '<b>x</b>' }],
+      ] as const) {
+        const req = createMockRequest({ path, method: 'POST', body: { ...body } })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+        expect(next.firstCall.args, path).to.have.length(1)
+      }
+      const req = createMockRequest({
+        path: '/api/v1/mcp-servers/tool-approvals/x/validate',
+        method: 'POST',
+        body: {},
+        query: { q: '<script>alert(1)</script>' },
+      })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, createMockResponse(), next)
+      expect(next.firstCall.args).to.have.length(1)
+    })
+
     it('should skip validation for POST to /api/v1/skills/import/finalize', () => {
       const req = createMockRequest({
         path: '/api/v1/skills/import/finalize',

@@ -119,7 +119,7 @@ describe('approvalArgumentLines', () => {
     expect(approvalArgumentLines({ to: ['admins', 'owners'] })[0]!.value).toBe('admins, owners');
     expect(approvalArgumentLines({ to: ['a', ''] })[0]!.value).toBe('["a",""]');
     expect(approvalArgumentLines({ to: ['a', null] })[0]!.value).toBe('["a",null]');
-    expect(approvalArgumentLines({ to: [] })[0]!.value).toBe('[]');
+    expect(approvalArgumentLines({ to: [], subject: 'Hi' }).map((line) => line.name)).toEqual(['subject']);
     expect(approvalArgumentLines({ to: [1, true] })[0]!.value).toBe('[1,true]');
     expect(approvalArgumentLines({ to: ['1', 'true'] })[0]!.value).toBe('1, true');
   });
@@ -159,5 +159,40 @@ describe('a card the fork settled as expired', () => {
     expect(settledToolApprovals(forked())).toEqual([
       { key: 'c', tool: 'Create an issue', server: 'Jira', answer: 'expired' },
     ]);
+  });
+});
+
+describe('toolApprovalDetails edit fields', () => {
+  const schema = { type: 'object', properties: { a: { type: 'string' } } };
+  it('keeps the new fields', () => {
+    const editErrors = [{ path: '/a', message: 'bad' }];
+    expect(
+      toolApprovalDetails({
+        ...WIRE,
+        toolPath: 'jira.create',
+        source: 'toolset',
+        inputSchema: schema,
+        argsHash: 'h1',
+        editable: true,
+        argsSummary: 'sum',
+        displayName: 'Create issue',
+        editErrors,
+      })
+    ).toMatchObject({ toolPath: 'jira.create', source: 'toolset', inputSchema: schema, argsHash: 'h1', editable: true, argsSummary: 'sum', displayName: 'Create issue', editErrors });
+  });
+  it('drops malformed ones', () => {
+    const d = toolApprovalDetails({
+      ...WIRE,
+      source: 'other',
+      inputSchema: 'x',
+      editable: 'yes',
+      argsHash: 5,
+      editErrors: [{ path: '/a', message: 'ok' }, { path: 1 }, 'x'],
+    });
+    expect(d).not.toHaveProperty('source');
+    expect(d).not.toHaveProperty('inputSchema');
+    expect(d).not.toHaveProperty('editable');
+    expect(d).not.toHaveProperty('argsHash');
+    expect(d?.editErrors).toEqual([{ path: '/a', message: 'ok' }]);
   });
 });

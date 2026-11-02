@@ -205,6 +205,50 @@ describe('mcp_servers/routes/mcp_servers.routes', () => {
     })
   })
 
+  describe('POST /tool-approvals/:approvalId/validate', () => {
+    function validateHandlers() {
+      const route = findRoute(createMcpServersRouter(makeContainer().container), '/tool-approvals/:approvalId/validate', 'post')
+      expect(route).to.exist
+      return route!.handlers.map((layer: any) => layer.handle)
+    }
+    const run = (handle: any, user: Record<string, unknown>) => {
+      const next = sinon.stub()
+      handle({ headers: {}, body: {}, params: { approvalId: 'a1' }, query: {}, user: { userId: 'u1', orgId: 'o1', ...user } }, {}, next)
+      return next
+    }
+
+    it('refuses an OAuth token', () => {
+      const next = run(validateHandlers()[2], { isOAuth: true, oauthScopes: ['mcp:write'] })
+      expect(next.firstCall.args[0].statusCode).to.equal(403)
+    })
+
+    it('refuses a personal access token', () => {
+      const next = run(validateHandlers()[2], { isOAuth: true, oauthClientId: 'pat-app-1', oauthScopes: ['mcp:write'] })
+      expect(next.firstCall.args[0].statusCode).to.equal(403)
+    })
+
+    it('lets a web sign-in through to the proxy', () => {
+      expect(run(validateHandlers()[2], {}).firstCall.args).to.have.length(0)
+    })
+  })
+
+  describe('GET /tool-approvals/pending', () => {
+    const handlers = () => findRoute(createMcpServersRouter(makeContainer().container), '/tool-approvals/pending', 'get')!.handlers.map((l: any) => l.handle)
+    const run = (user: Record<string, unknown>) => {
+      const next = sinon.stub()
+      handlers()[2]({ headers: {}, body: {}, params: {}, query: {}, user: { userId: 'u1', orgId: 'o1', ...user } }, {}, next)
+      return next
+    }
+
+    it('refuses a personal access token', () => {
+      expect(run({ isOAuth: true, oauthClientId: 'pat-app-1', oauthScopes: ['mcp:read'] }).firstCall.args[0].statusCode).to.equal(403)
+    })
+
+    it('lets a web sign-in through to the proxy', () => {
+      expect(run({}).firstCall.args).to.have.length(0)
+    })
+  })
+
   describe('requireScopes gating', () => {
     it('should reject an OAuth token missing the mcp:write scope on a write route', async () => {
       const { container } = makeContainer()

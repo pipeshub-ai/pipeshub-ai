@@ -169,6 +169,10 @@ class MessagePart(TypedDict, total=False):
     approved: bool
     # How a call that waited for approval was settled: allowed, declined or expired.
     approvalAnswer: Literal["allowed", "declined", "expired"]
+    # The top-level arguments the person changed before allowing the call.
+    changedFields: list[str]
+    # The note the person declined the call with.
+    approvalNote: str
     runId: str
     roleName: str
     parts: list["MessagePart"]
@@ -380,6 +384,10 @@ class TranscriptCollector(EventEmitter):
                 part["approved"] = True
             if payload.get("approval_answer") in ("allowed", "declined", "expired"):
                 part["approvalAnswer"] = payload["approval_answer"]
+            if isinstance(payload.get("changed_fields"), list):
+                part["changedFields"] = payload["changed_fields"]
+            if isinstance(payload.get("approval_note"), str):
+                part["approvalNote"] = payload["approval_note"]
             self._container_for(run_id).append(part)
             self._open_tool_calls[tool_call_id] = part
             return

@@ -14,3 +14,12 @@ export function shouldShowJumpToNewest(
   if (lastMessageBottom === null) return false;
   return lastMessageBottom - viewportBottom > thresholdPx;
 }
+
+/**
+ * How far to scroll so the newest message's end, which just grew, stays above the composer.
+ * Only when its end was in view before the growth: someone reading the top of a long answer
+ * is left where they are.
+ */
+export function tailClearance(wasInView: boolean, tailBottom: number, visibleBottom: number): number {
+  return wasInView ? Math.max(0, Math.ceil(tailBottom - visibleBottom)) : 0;
+}

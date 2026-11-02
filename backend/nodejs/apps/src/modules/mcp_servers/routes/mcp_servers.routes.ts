@@ -14,6 +14,7 @@ import { Router } from 'express';
 import { Container } from 'inversify';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -46,12 +47,14 @@ import {
   getAgentMcpOAuthAuthorizationUrl,
   getMyMcpToolRules,
   updateMyMcpToolRules,
+  validateMcpToolApproval,
+  listPendingToolApprovals,
 } from '../controller/mcp_servers.controller';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createMcpServersRouter(container: Container): Router {
   const router = Router();
-  guardPathParams(router, 'typeId', 'instanceId', 'agentKey');
+  guardPathParams(router, 'typeId', 'instanceId', 'agentKey', 'approvalId');
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
@@ -92,6 +95,22 @@ export function createMcpServersRouter(container: Container): Router {
     authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.MCP_WRITE),
     updateMyMcpToolRules(config),
+  );
+  // Tool approvals: the calls waiting on the caller, across chats. Only a web sign-in answers a card.
+  router.get(
+    '/tool-approvals/pending',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_READ),
+    requireSessionAuth,
+    listPendingToolApprovals(config),
+  );
+  // Tool approvals: checks an edited call. Only a web sign-in answers a card.
+  router.post(
+    '/tool-approvals/:approvalId/validate',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_WRITE),
+    requireSessionAuth,
+    validateMcpToolApproval(config),
   );
 
   // ---- Auth — API token / headers -----------------------------------------

@@ -825,6 +825,10 @@ export interface MessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** The top-level arguments the person changed before allowing the call. */
+  changedFields?: string[];
+  /** The note the person declined the call with. */
+  approvalNote?: string;
   /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
   servers?: McpSignInServer[];
   runId?: string;
@@ -949,7 +953,8 @@ export interface StreamChatRequest {
    * e.g. `agent:auto`, `agent:planExecute` (UI “Plan & Execute” strategy).
    */
   chatMode: StreamChatModePayload;
-  filters: ChatKnowledgeFilters;
+  /** Absent: the conversation's own saved scope (an agent's sources, all of them). */
+  filters?: ChatKnowledgeFilters;
   timezone?: string;
   currentTime?: string;
   appliedFilters?: AppliedFilters;
@@ -1004,7 +1009,43 @@ export interface ToolApprovalAnswer {
   decision: ToolApprovalDecision;
   /** "Don't ask again for this tool": the answer becomes the person's own rule for it. */
   remember?: boolean;
+  /** The server's hash of the call the person saw; echoed back, never recomputed. */
+  argsHash?: string;
+  /** Allow only, never with `remember`: the edited arguments to run instead. */
+  arguments?: Record<string, unknown>;
+  /** Deny only: why, for the assistant to read. */
+  feedback?: string;
+  /** Allow only, never with `remember` or `arguments`: allow this tool for the rest of the conversation. */
+  rememberForConversation?: boolean;
 }
+
+/** The part of JSON Schema the approval form reads. */
+export interface JsonSchema {
+  type?: string | string[];
+  title?: string;
+  description?: string;
+  format?: string;
+  enum?: unknown[];
+  items?: JsonSchema;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  const?: unknown;
+  $ref?: string;
+  anyOf?: JsonSchema[];
+  oneOf?: JsonSchema[];
+}
+
+/** Why the server would refuse an edit; `path` is a JSON pointer, "" for the whole call. */
+export type EditError = {
+  path: string;
+  message: string;
+  /** Set by the app's own checks, for the card to translate; server errors carry only `message`. */
+  code?: string;
+  params?: Record<string, string | number>;
+};
 
 /** A tool call waiting for a person's approval (Python `tool_approvals._ask`). */
 export interface ToolApprovalDetails {
@@ -1023,6 +1064,27 @@ export interface ToolApprovalDetails {
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
   arguments?: Record<string, unknown> | null;
   argumentsPreview?: string;
+  toolPath?: string;
+  source?: 'mcp' | 'toolset';
+  inputSchema?: JsonSchema;
+  argsHash?: string;
+  /** Whether the person may change the arguments before allowing. */
+  editable?: boolean;
+  argsSummary?: string;
+  displayName?: string;
+  editErrors?: EditError[];
+  /** On a card reopened after a refused edit: what the person sent, for the form to start from. */
+  editedArguments?: Record<string, unknown>;
+}
+
+/** A call waiting for the person's approval in one of their chats (newest first from the server). */
+export interface PendingApprovalItem {
+  conversationId: string;
+  conversationTitle: string | null;
+  agentId: string | null;
+  /** Epoch milliseconds. */
+  createdAt: number;
+  card: ToolApprovalDetails;
 }
 
 /**

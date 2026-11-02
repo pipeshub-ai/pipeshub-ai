@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
+import { setConversationRepository } from '../../../../src/libs/repositories/conversation'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import {
   listMcpCatalog,
@@ -29,6 +30,8 @@ import {
   removeAgentMcpCredentials,
   reauthenticateAgentMcpInstance,
   getAgentMcpOAuthAuthorizationUrl,
+  validateMcpToolApproval,
+  listPendingToolApprovals,
 } from '../../../../src/modules/mcp_servers/controller/mcp_servers.controller'
 
 // ---------------------------------------------------------------------------
@@ -346,6 +349,73 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
       expect((await optionsFor(handleMcpOAuthCallback, 'GET')).retries).to.equal(1)
       expect((await optionsFor(getMcpOAuthAuthorizationUrl, 'GET')).retries).to.equal(1)
       expect((await optionsFor(getAgentMcpOAuthAuthorizationUrl, 'GET')).retries).to.equal(1)
+    })
+  })
+
+  describe('validateMcpToolApproval', () => {
+    it('forwards to the encoded approval path', async () => {
+      executeStub.resolves({ statusCode: 200, data: {} })
+      await validateMcpToolApproval(createMockAppConfig())(
+        createMockRequest({ params: { approvalId: 'a/b' }, body: { x: 1 } }), createMockResponse(), sinon.stub())
+      expect(executeStub.firstCall.args[0]).to.equal('http://localhost:8088/api/v1/mcp-servers/tool-approvals/a%2Fb/validate')
+      expect(executeStub.firstCall.args[1]).to.equal('POST')
+    })
+  })
+
+  describe('listPendingToolApprovals', () => {
+    const entry = (conversationId: string, createdAt = 1) => ({ conversationId, createdAt, card: { approvalId: `ap-${conversationId.slice(0, 2)}` } })
+    const run = async (items: any[], rows: any[]) => {
+      const listVisibleSummaries = sinon.stub().resolves(rows)
+      setConversationRepository({ listVisibleSummaries } as any)
+      executeStub.resolves({ statusCode: 200, data: { items } })
+      const next = sinon.stub()
+      await listPendingToolApprovals(createMockAppConfig())(createMockRequest(), createMockResponse(), next)
+      return { body: handleResponseStub.firstCall?.args[0]?.data, next, listVisibleSummaries }
+    }
+    afterEach(() => setConversationRepository(undefined))
+
+    it('lists pending with titles', async () => {
+      const { body, listVisibleSummaries } = await run(
+        [entry('aaaaaaaaaaaaaaaaaaaaaaaa', 3), entry('bbbbbbbbbbbbbbbbbbbbbbbb', 2)],
+        [{ _id: 'bbbbbbbbbbbbbbbbbbbbbbbb', title: 'Second', sessionType: 'chat' }, { _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', sessionType: 'chat' }])
+      expect(executeStub.firstCall.args[0]).to.equal('http://localhost:8088/api/v1/mcp-servers/tool-approvals/pending')
+      expect(listVisibleSummaries.calledOnceWithExactly('org-1', 'user-1', ['aaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbb'], [])).to.equal(true)
+      expect(body).to.deep.equal({ items: [
+        { conversationId: 'aaaaaaaaaaaaaaaaaaaaaaaa', conversationTitle: null, agentId: null, createdAt: 3, card: { approvalId: 'ap-aa' } },
+        { conversationId: 'bbbbbbbbbbbbbbbbbbbbbbbb', conversationTitle: 'Second', agentId: null, createdAt: 2, card: { approvalId: 'ap-bb' } },
+      ] })
+    })
+
+    it('drops items whose chat is not the user\'s', async () => {
+      const { body } = await run([entry('aaaaaaaaaaaaaaaaaaaaaaaa'), entry('cccccccccccccccccccccccc')], [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', title: 'Mine', sessionType: 'chat' }])
+      expect(body.items.map((i: any) => i.conversationId)).to.deep.equal(['aaaaaaaaaaaaaaaaaaaaaaaa'])
+    })
+
+    it('agent chat carries agentId', async () => {
+      const { body } = await run([entry('aaaaaaaaaaaaaaaaaaaaaaaa')], [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', title: 'A', sessionType: 'agent', agentKey: 'agent-9' }])
+      expect(body.items[0].agentId).to.equal('agent-9')
+    })
+
+    it('skips an item with an invalid conversation id', async () => {
+      const { body, listVisibleSummaries } = await run([entry(''), entry('aaaaaaaaaaaaaaaaaaaaaaaa')], [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', title: 'Mine', sessionType: 'chat' }])
+      expect(listVisibleSummaries.firstCall.args[2]).to.deep.equal(['aaaaaaaaaaaaaaaaaaaaaaaa'])
+      expect(body.items.map((i: any) => i.conversationId)).to.deep.equal(['aaaaaaaaaaaaaaaaaaaaaaaa'])
+    })
+
+    it('answers an empty list without a lookup', async () => {
+      const { body, listVisibleSummaries } = await run([], [])
+      expect(listVisibleSummaries.called).to.equal(false)
+      expect(body).to.deep.equal({ items: [] })
+    })
+
+    it('Python 5xx passes on as the shared error mapping', async () => {
+      executeStub.resolves({ statusCode: 502, data: {} })
+      const boom = new Error('boom')
+      handleResponseStub.throws(boom)
+      ;(connectorUtils.handleBackendError as sinon.SinonStub).callsFake((e: any) => e)
+      const next = sinon.stub()
+      await listPendingToolApprovals(createMockAppConfig())(createMockRequest(), createMockResponse(), next)
+      expect(next.firstCall.args[0]).to.equal(boom)
     })
   })
 

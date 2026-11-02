@@ -192,14 +192,14 @@ export function resolveAssistantFiltersForChatSubmit(
   return resolveAssistantFiltersFromSlot(slot, settings);
 }
 
-/** The agent a slot talks to: the thread's own, else the one in the URL. */
-function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
+/** The agent a slot talks to: the thread's own, else (for the chat on screen) the one in the URL.
+ * A chat answered in the background is not the URL's. */
+function effectiveAgentIdForSlot(slot: ChatSlot, onScreen = true): string | undefined {
+  const slotAgent = slot.threadAgentId?.trim() || null;
+  if (slotAgent || !onScreen) return slotAgent ?? undefined;
   const urlParams =
     typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-  const rawUrlAgent = urlParams?.get('agentId');
-  const agentIdFromUrl = rawUrlAgent?.trim() || undefined;
-  const slotAgent = slot.threadAgentId?.trim() || null;
-  return slotAgent ?? agentIdFromUrl ?? undefined;
+  return urlParams?.get('agentId')?.trim() || undefined;
 }
 
 /**
@@ -214,8 +214,9 @@ export function buildStreamChatRequestForSlot(
   query: string,
   outgoingMessage?: ThreadMessageLike,
   toolApproval?: ToolApprovalAnswer,
-  /** `agentMode`: send as agent mode whatever the composer is set to, as an approval answer is. */
-  options?: { agentMode?: boolean }
+  /** `agentMode`: send as agent mode whatever the composer is set to, as an approval answer is.
+   * `background`: the slot is not the chat on screen, so none of the page's scope applies. */
+  options?: { agentMode?: boolean; background?: boolean }
 ): StreamChatRequest | null {
   const currentState = useChatStore.getState();
   const currentSlot = currentState.slots[slotId];
@@ -227,7 +228,8 @@ export function buildStreamChatRequestForSlot(
     outgoingMessage
   );
 
-  const effectiveAgentId = effectiveAgentIdForSlot(currentSlot);
+  const onScreen = !options?.background;
+  const effectiveAgentId = effectiveAgentIdForSlot(currentSlot, onScreen);
 
   const isUniversalAgentMode =
     !effectiveAgentId &&
@@ -382,6 +384,17 @@ export function buildStreamChatRequestForSlot(
         : {}),
     ...(toolApproval ? { toolApproval } : {}),
   };
+
+  if (!onScreen) {
+    // The knowledge, tools and capabilities in the store are the chat on screen's. A chat answered
+    // in the background sends none of them, so the server uses that chat's agent or project as
+    // saved (no filters = all its sources, no tools = all its toolsets), or the slot's own tools.
+    delete request.filters;
+    delete request.appliedFilters;
+    delete request.agentCapabilities;
+    delete request.agentStreamTools;
+    if (currentSlot.agentStreamTools !== null) request.agentStreamTools = currentSlot.agentStreamTools.map(bareToolFullName);
+  }
 
   return request;
 }

@@ -29,6 +29,8 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import { isValidId } from '../../../libs/repositories/ids';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 
 const logger = Logger.getInstance({
@@ -106,7 +108,17 @@ function proxyMcp(
   method: HttpMethodValue,
   pathBuilder: PathBuilder,
   action: string,
-  { sendsOnce = method !== HttpMethod.GET }: { sendsOnce?: boolean } = {},
+  {
+    sendsOnce = method !== HttpMethod.GET,
+    transform,
+  }: {
+    sendsOnce?: boolean;
+    /** Reshapes a successful answer before it is returned. */
+    transform?: (
+      req: AuthenticatedUserRequest,
+      data: unknown,
+    ) => Promise<unknown>;
+  } = {},
 ) {
   return (appConfig: AppConfig) =>
     async (
@@ -136,6 +148,14 @@ function proxyMcp(
           // A resent write could create a second instance or start a second authorization.
           { timeoutMs: MCP_PROXY_TIMEOUT_MS, retries: sendsOnce ? 1 : 3 },
         );
+
+        if (
+          transform &&
+          connectorResponse.statusCode >= 200 &&
+          connectorResponse.statusCode < 300
+        ) {
+          connectorResponse.data = await transform(req, connectorResponse.data);
+        }
 
         handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
       } catch (error: any) {
@@ -315,6 +335,66 @@ export const updateMyMcpToolRules = proxyMcp(
   HttpMethod.PUT,
   (req) => `/instances/${encInstanceId(req)}/my-tool-rules`,
   'Update my MCP tool rules',
+);
+
+// Checks an edit to a waiting call without answering it.
+export const validateMcpToolApproval = proxyMcp(
+  HttpMethod.POST,
+  (req) =>
+    `/tool-approvals/${encodeURIComponent(String(req.params.approvalId))}/validate`,
+  'Validate an edited tool call',
+);
+
+interface PendingApprovalEntry {
+  conversationId: string;
+  createdAt: number;
+  card: unknown;
+}
+
+/**
+ * The calls waiting on the signed-in person, each with its chat's title and agent. Python lists
+ * them; a call whose chat is not this person's (deleted, or another org's) is left out.
+ */
+async function withChatTitles(
+  req: AuthenticatedUserRequest,
+  data: unknown,
+): Promise<{ items: object[] }> {
+  const entries = (data as { items?: PendingApprovalEntry[] }).items ?? [];
+  const { userId, orgId } = req.user ?? {};
+  // Python can send an entry without a chat id; the lookup throws on one that is not an id.
+  const askable = entries.filter((e) => isValidId(e.conversationId));
+  const rows = askable.length
+    ? await getConversationRepository().listVisibleSummaries(
+        String(orgId),
+        String(userId),
+        [...new Set(askable.map((e) => e.conversationId))],
+        [],
+      )
+    : [];
+  const byId = new Map(rows.map((r) => [r._id, r]));
+  return {
+    items: askable.flatMap((e) => {
+      const chat = byId.get(e.conversationId);
+      if (!chat) return [];
+      return [
+        {
+          conversationId: e.conversationId,
+          conversationTitle: chat.title ?? null,
+          agentId:
+            chat.sessionType === 'agent' ? (chat.agentKey ?? null) : null,
+          createdAt: e.createdAt,
+          card: e.card,
+        },
+      ];
+    }),
+  };
+}
+
+export const listPendingToolApprovals = proxyMcp(
+  HttpMethod.GET,
+  () => '/tool-approvals/pending',
+  'List pending tool approvals',
+  { transform: withChatTitles },
 );
 
 export const getAgentMcpServers = proxyMcp(
