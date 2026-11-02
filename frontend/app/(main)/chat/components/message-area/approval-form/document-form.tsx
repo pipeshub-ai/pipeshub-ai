@@ -51,7 +51,7 @@ export function DocumentForm({ fields, values, errors, changed, onChange }: Docu
           </Flex>
           {pillErrors.map((field) => (
             <Text key={field.name} id={`${id(field)}-pill-error`} size="1" style={{ color: 'var(--red-11)' }}>
-              {t('chat.toolApproval.pill', { label: field.label, value: errors[field.name] })}
+              {t('chat.toolApproval.pillError', { label: field.label, message: errors[field.name] })}
             </Text>
           ))}
         </Flex>
@@ -102,7 +102,7 @@ function Headline({ id, field, value, error, changed, onChange }: RegionProps) {
             fontFamily: 'var(--default-font-family)',
             fontSize: 'var(--font-size-3)',
             fontWeight: 'var(--font-weight-medium)',
-            lineHeight: 1.3,
+            lineHeight: 'var(--line-height-3)',
             color: 'var(--gray-12)',
           }}
         />
@@ -187,7 +187,7 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
       <Popover.Trigger>
         <button {...a11y}>{face(true)}</button>
       </Popover.Trigger>
-      <Popover.Content size="1" minWidth="240px" maxWidth="320px">
+      <Popover.Content size="1" minWidth="calc(var(--space-9) * 4)" maxWidth="calc(var(--space-9) * 5)">
         <Field id={id} field={field} value={value} error={error} changed={changed} onChange={onChange} />
       </Popover.Content>
     </Popover.Root>

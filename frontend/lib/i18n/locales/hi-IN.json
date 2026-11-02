@@ -1488,7 +1488,8 @@
       "inChatExpiresSoon": "\"{{title}}\" में · एक मिनट से कम में समाप्त",
       "moreFields": "और फ़ील्ड",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: जोड़ें"
+      "pillEmpty": "{{label}}: जोड़ें",
+      "pillError": "{{label}}: {{message}}"
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",

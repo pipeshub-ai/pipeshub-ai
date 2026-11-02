@@ -1574,7 +1574,8 @@
       "inChatExpiresSoon": "在“{{title}}”中 · 不到一分钟后过期",
       "moreFields": "更多字段",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: 添加"
+      "pillEmpty": "{{label}}: 添加",
+      "pillError": "{{label}}: {{message}}"
     },
     "selectedAlone": "{{name}}（仅此项目）",
     "noConnectorsFound": "未找到连接器",

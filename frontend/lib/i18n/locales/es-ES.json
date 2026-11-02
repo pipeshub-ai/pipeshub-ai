@@ -1511,7 +1511,8 @@
       "inChatExpiresSoon": "En «{{title}}» · Caduca en menos de un minuto",
       "moreFields": "Más campos",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: añadir"
+      "pillEmpty": "{{label}}: añadir",
+      "pillError": "{{label}}: {{message}}"
     },
     "selectedAlone": "{{name}} (solo este elemento)",
     "noConnectorsFound": "No se encontraron conectores",

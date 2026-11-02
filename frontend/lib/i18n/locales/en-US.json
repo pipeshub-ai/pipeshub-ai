@@ -1577,7 +1577,8 @@
       "inChatExpiresSoon": "In \"{{title}}\" · Expires in under a minute",
       "moreFields": "More fields",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: add"
+      "pillEmpty": "{{label}}: add",
+      "pillError": "{{label}}: {{message}}"
     },
     "selectedAlone": "{{name}} (this item only)",
     "noConnectorsFound": "No connectors found",

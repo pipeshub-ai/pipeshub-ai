@@ -1488,7 +1488,8 @@
       "inChatExpiresSoon": "In „{{title}}“ · Läuft in weniger als einer Minute ab",
       "moreFields": "Weitere Felder",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: hinzufügen"
+      "pillEmpty": "{{label}}: hinzufügen",
+      "pillError": "{{label}}: {{message}}"
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
     "noConnectorsFound": "Keine Konnektoren gefunden",

@@ -23,13 +23,20 @@ describe('schemaFields', () => {
     expect(control({ type: 'string' }, 'Body')).toBe('textarea');
   });
 
+  it('matches a long-text name as the whole name or its last word only', () => {
+    for (const name of ['body', 'email_body', 'issueDescription', 'comment-text', 'BODY'])
+      expect(control({ type: 'string' }, name), name).toBe('textarea');
+    for (const name of ['message_id', 'contentType', 'html_url', 'context', 'textColor'])
+      expect(control({ type: 'string' }, name), name).toBe('text');
+  });
+
   it('maps each kind of property to a control', () => {
     expect(control({ type: 'string' }, 'subject')).toBe('text');
     expect(control({ type: 'string', format: 'email' })).toBe('email');
     expect(control({ type: 'string', format: 'date' })).toBe('date');
     expect(control({ type: 'string', format: 'date-time' })).toBe('datetime');
     expect(control({ type: 'string', maxLength: 500 })).toBe('textarea');
-    expect(control({ type: 'string', maxLength: 50 }, 'body')).toBe('text');
+    expect(control({ type: 'string', maxLength: 160 }, 'message')).toBe('textarea');
     expect(control({ type: 'string' }, 'body')).toBe('textarea');
     expect(control({ type: 'integer' })).toBe('number');
     expect(control({ type: 'number' })).toBe('number');

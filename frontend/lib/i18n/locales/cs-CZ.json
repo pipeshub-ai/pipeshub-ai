@@ -1645,7 +1645,8 @@
       "inChatExpiresSoon": "V „{{title}}“ · Vyprší za méně než minutu",
       "moreFields": "Další pole",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: přidat"
+      "pillEmpty": "{{label}}: přidat",
+      "pillError": "{{label}}: {{message}}"
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
     "noConnectorsFound": "Nebyly nalezeny žádné konektory",
