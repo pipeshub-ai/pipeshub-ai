@@ -489,10 +489,12 @@ def _aql_in_scope(c: str, p: str) -> str:
             f" LIMIT 1 RETURN 1) > 0)))")
 
 
-def _aql_is_member(p: str) -> str:
-    """Whether record ``p`` belongs to a group of the declared scope (``@kh_scope``)."""
+def _aql_is_member(p: str, after: str = "true") -> str:
+    """Whether record ``p`` belongs to a group of the declared scope (``@kh_scope``). ``after`` names a loop
+    variable the test must wait for: the optimizer would otherwise lift it above that loop, and a node with no
+    child would pay for it."""
     return (f'(IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {p}) AND LENGTH(FOR kh_mg IN 1..1 OUTBOUND {p}'
-            f" {CollectionNames.BELONGS_TO.value} FILTER HAS(@kh_scope, kh_mg._key) LIMIT 1 RETURN 1) > 0)")
+            f" {CollectionNames.BELONGS_TO.value} FILTER {after} != null AND HAS(@kh_scope, kh_mg._key) LIMIT 1 RETURN 1) > 0)")
 
 
 def _aql_way_below(v: str) -> str:
@@ -654,13 +656,16 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
         loop over an empty list is what keeps it from reading anything."""
         return f"LENGTH(FOR kh_g IN ({gate} ? [1] : []) {body} LIMIT 1 RETURN 1) > 0"
 
+    # shortcut: the sidebar, which reads this for every node, costs about 1.6x main at 10,000 members (290 against
+    # 180 ms), the rest of it the connector test and the rule's longer text per row; next, read the arrow of the
+    # rows the page keeps only, after the sort, as the page's own rows already do.
     # The membership of ``v`` is tested after the first child is found, so a node with no child never pays for it.
     # The way-below test of a stub is a subquery, so it follows the rule's filter and runs only for a child that
     # passed it.
     children = (
         f"FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
         f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
-        f" LET kh_pm = {_aql_is_member(v)}"
+        f" LET kh_pm = {_aql_is_member(v, 'kh_ce')}"
         f' FILTER (IS_SAME_COLLECTION("{records}", kh_ch) OR IS_SAME_COLLECTION("{groups}", kh_ch))'
         f" AND kh_ch.orgId == @org_id"
         f" FILTER {rule}"
