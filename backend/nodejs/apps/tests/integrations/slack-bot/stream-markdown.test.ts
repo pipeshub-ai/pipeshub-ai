@@ -26,8 +26,15 @@ describe('slack-bot streamed markdown', () => {
       expect(markers.mark('A [real link](https://asana.com) and [1](/record/r1) stay.')).to.equal(
         'A [real link](https://asana.com) and [1](/record/r1) stay.',
       );
-      markers.reset();
-      expect(markers.mark('[source](ref9)')).to.equal('[1]');
+    });
+
+    it('frees the numbers a discarded model call took', () => {
+      const markers = new CitationMarkers();
+      expect(markers.mark('[source](ref4)')).to.equal('[1]');
+      markers.checkpoint();
+      expect(markers.mark('[source](ref9)')).to.equal('[2]');
+      markers.rollback();
+      expect(markers.mark('[source](ref7) and [source](ref4)')).to.equal('[2] and [1]');
     });
   });
 

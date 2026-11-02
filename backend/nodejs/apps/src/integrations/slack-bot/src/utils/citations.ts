@@ -230,14 +230,21 @@ const CITATION_TOKEN =
  * `https://refN.xyz`) as a plain `[n]` marker. Numbers go to distinct refs by
  * first appearance, the way the backend numbers the finished answer, so they
  * match the numbered Sources list. A link with its own words keeps them
- * before the marker; other links stay as written. One instance per model
- * call: `reset()` when its text starts over.
+ * before the marker; other links stay as written. One instance per reply, so
+ * a number never stands for two refs: `checkpoint()` when a model call's text
+ * starts, and `rollback()` when the backend discards that call, so the
+ * numbers it took are free again for the retry.
  */
 export class CitationMarkers {
   private numbers = new Map<string, number>();
+  private saved = new Map<string, number>();
 
-  reset(): void {
-    this.numbers = new Map();
+  checkpoint(): void {
+    this.saved = new Map(this.numbers);
+  }
+
+  rollback(): void {
+    this.numbers = new Map(this.saved);
   }
 
   mark(text: string): string {

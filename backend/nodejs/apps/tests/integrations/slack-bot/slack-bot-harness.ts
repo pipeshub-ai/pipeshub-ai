@@ -491,6 +491,21 @@ export function describeAnswerWiring(
       expect(visibleText(client)).to.equal(SHOWN_ANSWER);
     });
 
+    it('does not let a discarded model call shift the [n] numbering', async () => {
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1', messageId: 'm1' },
+        ...tokens('An old figure [source](ref9).\n\nMore on it below, from the filing.'),
+        { type: 'TEXT_MESSAGE_END', runId: 'r1', messageId: 'm1' },
+        { type: 'CUSTOM', runId: 'r1', name: 'message_discarded', value: { messageId: 'm1' } },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1', messageId: 'm2' },
+        ...tokens(ANSWER),
+        finished(NORMALIZED_ANSWER, CITATIONS),
+      ]);
+
+      expect(visibleText(client)).to.equal(SHOWN_ANSWER);
+    });
+
     it('never gives two different citations the same [n] in one reply', async () => {
       const opening = 'The older filing [source](ref9) covers this. '.repeat(40);
       const client = await ask([
