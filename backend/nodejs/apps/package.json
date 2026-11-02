@@ -19,6 +19,7 @@
     "test:pg-import": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 120000 tests/libs/repositories/import.itest.ts",
     "test:pg-stores": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000 tests/stores/pg-*.itest.ts",
     "test:docstore-migrate": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 600000 tests/scripts/docstore-migrate/*.itest.ts",
+    "test:docstore-fence": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000 tests/libs/repositories/fence.itest.ts tests/libs/db/store-fence.itest.ts tests/stores/mongo-fence.itest.ts",
     "test:notification": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --grep 'notification/(routes|service/notification\\.consumer)' --timeout 15000",
     "slack": "nodemon src/integrations/slack-bot/src/index.ts"
   },
@@ -71,7 +72,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1156.0",
     "@azure/storage-blob": "^12.34.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@pipeshub-ai/mcp": "4.9.0",
+    "@pipeshub-ai/mcp": "4.9.1",
     "@qdrant/js-client-rest": "^1.20.0",
     "@slack/bolt": "^5.1.0",
     "arangojs": "^10.6.0",
