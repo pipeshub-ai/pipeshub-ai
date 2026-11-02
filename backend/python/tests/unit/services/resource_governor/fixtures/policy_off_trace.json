@@ -805,6 +805,8 @@
    "ResourceGovernor:Expr": "473f21677c19a97b",
    "_fmt_bytes": "83c3290a01a6a83b",
    "_fmt_ratio": "f5930d5ea0cb4d72",
+   "assign:_HEALTH_EXECUTOR": "994996a9f5bb0c03",
+   "assign:_T": "96ca7084071e3d2a",
    "class ResourceGovernor": "17afd56e579682dd",
    "if:TYPE_CHECKING": "96b617760d9616f7",
    "import:from __future__ import annotations": "890bede517510aea",
@@ -824,6 +826,7 @@
    "import:import random": "7083f1b7d4b22017",
    "import:import threading": "80f21c52b46d18d9",
    "import:import time": "ff05bad0fd9a7212",
+   "run_for_health": "f260a4deaaf82864",
    "stmt:'ResourceGovernor: owns the probe, regis": "ff1c3a497fcdf23b"
   },
   "memory_budget.py": {

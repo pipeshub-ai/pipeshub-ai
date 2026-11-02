@@ -14,6 +14,14 @@ def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _lifespan_leaves_no_governor_behind(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lifespan wires a governor into the service module; its gates are bound to a loop that closes."""
+    from app.services.docling import docling_service
+
+    monkeypatch.setattr(docling_service, "_resource_governor", None)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
