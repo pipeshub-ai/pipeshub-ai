@@ -115,6 +115,19 @@ class TestGraphAccess:
         with pytest.raises(PermissionVerificationUnavailableError):
             await access(p, ["d1"])
 
+    async def test_user_lookup_failure_is_an_outage_not_a_raw_driver_error(self) -> None:
+        p = FakeProvider([row("d1", "r1")], readable={"r1"})
+        p.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("driver down"))
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await access(p, ["d1"])
+
+    async def test_access_hint_failure_is_an_outage_not_a_raw_driver_error(self) -> None:
+        p = FakeProvider([row("d1", "r1")], readable={"r1"})
+        p._ref_access_hint = AsyncMock(side_effect=RuntimeError("driver down"))
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await access(p, ["d1"])
+        assert p.check_calls == []
+
     async def test_unknown_user_reads_nothing(self) -> None:
         p = FakeProvider([row("d1", "r1")], readable={"r1"})
         p.get_user_by_user_id = AsyncMock(return_value=None)
@@ -196,7 +209,7 @@ class TestServiceDecision:
         elif cause == "artifact_set":
             doc.artifact_set = True
         elif cause == "non_image":
-            doc.mime = "application/pdf"
+            doc.ext = ".pdf"
         elif cause == "over_20mib":
             doc.data = b"x" * ((20 << 20) + 1)
         elif cause == "foreign":

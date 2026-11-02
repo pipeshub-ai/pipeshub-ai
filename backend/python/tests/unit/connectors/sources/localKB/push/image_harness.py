@@ -52,7 +52,7 @@ def image_body(uris: list[str], *, version: int = 1, text: str = "hello", key: s
 class Doc:
     data: bytes
     initiator: str | None = USER
-    mime: str = "image/png"
+    ext: str = ".png"  # Node stores the extension with its dot and never sets mimeType (storage.controller.ts:483)
     vendor: str = "local"
     trusted: bool = True
     settled: bool = True
@@ -66,14 +66,14 @@ class Doc:
 
     def body(self, doc_id: str) -> dict[str, Any]:
         document = {"_id": doc_id, "isDeleted": self.deleted, "sizeInBytes": len(self.data), "storageVendor": self.vendor,
-                    "initiatorUserId": self.initiator, "mimeType": self.mime, "awaitingDirectUpload": self.awaiting}
+                    "initiatorUserId": self.initiator, "extension": self.ext, "awaitingDirectUpload": self.awaiting}
         if self.artifact_set:
             document["artifactSet"] = {"id": "set-1"}
         if self.retired:
             document["retiredAt"] = "2026-01-01T00:00:00Z"
         if self.object_url:
             document["s3" if self.vendor == "s3" else "azureBlob"] = {"url": self.object_url}
-        out: dict[str, Any] = {"document": document}
+        out: dict[str, Any] = dict(document)  # the route answers the row itself plus storageFingerprint (storage.controller.ts:549-552)
         if self.fp_version is not None:
             value = hashlib.sha256(f"{doc_id}:{self.counter}:{etag_of(self.data)}".encode()).hexdigest()[:32]
             out["storageFingerprint"] = {

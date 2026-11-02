@@ -7,7 +7,8 @@ download, the signed-URL hop and a user's own upload. The graph decisions on rea
 
 Environment: as ``test_storage_fingerprint_e2e.py`` (``ARTIFACTS_IT_STORAGE_URL``, ``ARTIFACTS_IT_SCOPED_SECRET``,
 ``ARTIFACTS_IT_STORAGE_TYPE`` = local | s3 | azureBlob, ``ARTIFACTS_IT_S3_VHOST=1`` on the MinIO leg, ``SSL_CERT_FILE`` the
-throwaway CA). A missing URL fails the module's fixture: the CI job always sets it.
+throwaway CA). Without ``ARTIFACTS_IT_STORAGE_URL`` the whole module skips, so the offline integration job (no storage
+service) passes over it and only the storage job runs it.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from app.connectors.sources.localKB.push.materialiser import Materialiser
 from app.connectors.sources.localKB.push.service import UNTRUSTED, KbPushService
 from app.connectors.sources.localKB.push.spool import Spool
 from app.services.graph_db.interface.graph_db_provider import RefAccess
-from app.services.storage_documents import StorageDocuments
+from app.services.storage_documents import StorageDocuments, StorageUploadError
 from app.utils.jwt import generate_jwt
 from tests.unit.connectors.sources.localKB.push.image_harness import FakeGraph
 
@@ -54,7 +55,11 @@ PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4
 API = f"{STORAGE_URL}/api/v1/document/internal"
 logger = logging.getLogger("kb-push-storage-it")
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.timeout(600),
+    pytest.mark.skipif(not STORAGE_URL, reason="set ARTIFACTS_IT_STORAGE_URL to a running storage service"),
+]
 
 
 def _config_service() -> MagicMock:
@@ -117,8 +122,6 @@ class Pushes:
 
 
 async def build(tmp: str, *, resolver_override: dict[str, str] | None = None, before_task=None) -> Pushes:
-    if not STORAGE_URL:
-        pytest.fail("ARTIFACTS_IT_STORAGE_URL is not set: this suite needs the storage service (CI starts it)")
     config = _config_service()
     docs = StorageDocuments(config, logger)
     mat = Materialiser(resolver_override=resolver_override, ca_file=os.environ.get("SSL_CERT_FILE") if resolver_override else None,
@@ -189,20 +192,37 @@ async def test_linked_to_unreadable_record_denied_though_uploaded_by_caller(p: P
 
 
 async def test_oversize_upload_status_on_real_storage(p: Pushes) -> None:
-    """31 MiB against the 30 MiB default: the real route answers 400 (not 413), and the push surfaces 413 ``resolved``;
-    exactly the limit is stored, limit + 1 is refused."""
+    """The real upload route answers 400 (not 413) over the 30 MiB default and ``create`` maps it to 413: exactly the limit
+    is stored, limit + 1 is refused with the limit that was read."""
     limit = await p.docs.upload_limit()
     assert limit == 30 << 20, "this cell assumes the default platform setting"
-    filler = {"index": 0, "type": "text", "format": "txt", "data": "x" * (15 << 20)}
+    tmp = tempfile.mkdtemp(prefix="pb")
+    try:
+        path = os.path.join(tmp, "big.bin")
 
-    def text_of(size: int) -> bytes:
-        blocks = [dict(filler, data="x" * (size // 2)), {"index": 1, "type": "text", "format": "txt", "data": "y" * (size - size // 2)}]
-        return json.dumps({"recordName": "big", "mimeType": "application/blocks", "externalRecordId": f"big-{size}", "version": 1, "blocksFormat": 1,
-                           "blocks": {"blocks": blocks}}).encode()
+        async def create(size: int) -> str:
+            with open(path, "wb") as f:
+                f.truncate(size)
+            return await p.docs.create(org_id=ORG_ID, name=f"big-{uuid.uuid4().hex[:8]}", document_path="push-it/big", file_path=path,
+                                       extension="bin", content_type="application/octet-stream", tags={})
 
+        assert await create(limit)
+        with pytest.raises(StorageUploadError) as e:
+            await create(limit + 1)
+        assert (e.value.status, e.value.limit_bytes) == (413, limit)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def test_images_that_inline_past_the_setting_are_413_resolved_before_any_download(p: Pushes) -> None:
+    """A body is at most 16 MiB, so only images take a record past the 30 MiB setting: three 11 MiB documents inline to
+    about 44 MiB, and the push refuses from the stored sizes alone."""
+    limit = await p.docs.upload_limit()
+    docs = [await upload_as(USER_ID, os.urandom(11 << 20)) for _ in range(3)]
     with pytest.raises(PushRefusal) as e:
-        await p.push(text_of(31 << 20))
+        await p.push(body_with(docs))
     assert (e.value.status, e.value.extra["limit"], e.value.extra["limitBytes"]) == (413, "resolved", limit)
+    assert not p.claims
 
 
 async def test_image_replaced_between_info_and_download_fails_bound() -> None:

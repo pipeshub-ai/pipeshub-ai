@@ -101,17 +101,24 @@ class Materialiser:
         self.spawned += 1
 
     @staticmethod
-    def _kill(slot: _Slot) -> None:
+    def _kill(slot: _Slot) -> multiprocessing.process.BaseProcess | None:
+        """Forget the slot's child and SIGKILL it; never waits. Returns the process so the caller can reap it off the loop."""
         proc, conn = slot.proc, slot.conn
         slot.proc = slot.conn = None
         with contextlib.suppress(Exception):
             if proc is not None and proc.is_alive():
                 proc.kill()
-            if proc is not None:
-                proc.join(5)
         with contextlib.suppress(Exception):
             if conn is not None:
                 conn.close()
+        return proc
+
+    @staticmethod
+    async def _reap(proc: multiprocessing.process.BaseProcess | None) -> None:
+        """Wait for a killed child in a thread: a process in uninterruptible I/O can take seconds, and the loop is shared."""
+        if proc is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(proc.join, 5)
 
     async def _acquire(self) -> _Slot:
         if self._free is None:
@@ -145,7 +152,7 @@ class Materialiser:
         outcome = "died"
         try:
             if slot.proc is None or not slot.proc.is_alive():
-                self._kill(slot)
+                await self._reap(self._kill(slot))
                 await asyncio.to_thread(self._start, slot)
             if self.before_task is not None:
                 await self.before_task(task)
@@ -153,18 +160,18 @@ class Materialiser:
             try:
                 await asyncio.to_thread(conn.send, task)
             except OSError:  # the child is gone (killed between the check and the send)
-                self._kill(slot)
+                await self._reap(self._kill(slot))
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The image worker stopped; retry.", extra={"retryAfter": 5}) from None
             if not await asyncio.to_thread(conn.poll, self.wall_budget_s):
                 outcome = "overrun"
-                self._kill(slot)
+                await self._reap(self._kill(slot))
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The images took too long to process.", extra={"retryAfter": 5})
             try:
                 kind, payload = await asyncio.to_thread(conn.recv)
             except (EOFError, OSError):
                 await asyncio.to_thread(proc.join, 5)
                 code = proc.exitcode
-                self._kill(slot)
+                await self._reap(self._kill(slot))
                 logger.warning("the push materialiser died (exit %s)", code)
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The image worker stopped; retry.", extra={"retryAfter": 5}) from None
             if kind == "ok":
@@ -173,10 +180,11 @@ class Materialiser:
             outcome = "refused"
             if kind == "refused":
                 raise _refusal(payload)
-            self._kill(slot)  # an unexpected error: do not trust the process again
+            await self._reap(self._kill(slot))  # an unexpected error: do not trust the process again
             raise PushRefusal(503, "PUSH_TIMEOUT", "The images could not be processed; retry.", extra={"retryAfter": 5})
         except asyncio.CancelledError:
-            self._kill(slot)  # the task may still be running; its answer would be the next push's
+            # The task may still be running; its answer would be the next push's. The kill is immediate; only the reap waits.
+            await asyncio.shield(self._reap(self._kill(slot)))
             raise
         finally:
             self._release(slot)
@@ -189,4 +197,4 @@ class Materialiser:
 
     async def close(self) -> None:
         for slot in self._slots:
-            await asyncio.to_thread(self._kill, slot)
+            await self._reap(self._kill(slot))

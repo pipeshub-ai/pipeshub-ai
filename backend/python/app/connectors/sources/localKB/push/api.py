@@ -41,14 +41,20 @@ class PushRuntime:
     worker: PushWorker
     spool: Spool
     admission: Admission
-    # Both are made on the first push with images, so a deployment that never sees one starts no extra process.
+    # Both are made on first use and start no process until the first image task.
     _materialiser: Materialiser | None = None
+    _materialiser_failed: bool = False
     _image_admission: ImageAdmission | None = None
 
     @property
-    def materialiser(self) -> Materialiser:
-        if self._materialiser is None:
-            self._materialiser = Materialiser(listed_origins=_signed_url_origins())
+    def materialiser(self) -> Materialiser | None:
+        """None when ``KB_PUSH_SIGNED_URL_ORIGINS`` is malformed: pushes with images then answer 503, every other push is untouched."""
+        if self._materialiser is None and not self._materialiser_failed:
+            try:
+                self._materialiser = Materialiser(listed_origins=_signed_url_origins())
+            except ValueError as e:
+                self._materialiser_failed = True
+                logger.error("KB_PUSH_SIGNED_URL_ORIGINS is not usable, so pushes with storage images are refused: %s", e)
         return self._materialiser
 
     @property

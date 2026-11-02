@@ -244,6 +244,9 @@ class KbPushService:
     # ---- images -----------------------------------------------------------------------------
 
     def _begin_images(self, user_id: str, org_id: str) -> ImagePush:
+        if self.materialiser is None and self.image_admission is not None:
+            # A deployment whose materialiser could not be made (a malformed origin list): an operator fault, not the caller's.
+            raise _refuse(503, "IMAGES_UNAVAILABLE", "Images in pushes are unavailable on this deployment.")
         if self.materialiser is None or self.image_admission is None:
             raise PushRefusal(422, "IMAGE_REF_INVALID", "An image reference must be a data:image/(png|jpeg|gif|webp);base64 URI.",
                               extra={"code": "BLOCKS_INVALID"})
@@ -486,7 +489,9 @@ class KbPushService:
                 return PushResult(
                     status=status, http_status=201 if action == "create" else 200, record_id=key, kb_id=kb_id,
                     external_record_id=v.external_record_id, version=v.version,
-                    content_changed=action in ("create", "content"), content_rev=v.content_rev,
+                    content_changed=action in ("create", "content"),
+                    # A metadata change with images never fetched them: the stored bytes' revision is the answer.
+                    content_rev=v.content_rev or (stored_rev[2] if (stored_rev := C.parse_revision_id((existing or {}).get("externalRevisionId"))) else None),
                     schema_id=v.schema_id, event=outcome.event, indexing_status=indexing,
                 )
             raise _refuse(409, "PUSH_CONFLICT", "Another push of this record is in progress; retry.", retryAfter=1)

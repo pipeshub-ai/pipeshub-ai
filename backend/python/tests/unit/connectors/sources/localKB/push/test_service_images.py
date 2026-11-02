@@ -219,6 +219,12 @@ class TestImageChange:
         assert (r.status, r.content_changed) == ("updated", False) and len(h.docs.uploads) == 1
         assert h.claims[-1][0] == "metadata"
 
+    async def test_untouched_images_higher_version_is_metadata_and_answers_the_stored_content_rev(self, h) -> None:
+        first = await h.push(image_body([ref(1)], version=1))
+        r = await h.push(image_body([ref(1)], version=2))
+        assert (r.status, r.content_changed) == ("updated", False) and h.claims[-1][0] == "metadata" and len(h.docs.uploads) == 1
+        assert first.content_rev and r.content_rev == first.content_rev
+
     async def test_same_version_after_same_bytes_rewrite_and_its_retry_is_200_never_409(self, h) -> None:
         await h.push(image_body([ref(1)], version=1))
         h.docs.docs[did(1)].counter = 1

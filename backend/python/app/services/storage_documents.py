@@ -18,6 +18,7 @@ import aiohttp
 from yarl import URL
 
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.core.org_context import spawn_in_request
 from app.modules.transformers.blob_storage import (
     CustomMetadataEntry,
     _add_custom_metadata_to_form,
@@ -132,6 +133,26 @@ def _as_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+#: The image rows of Node's ``extensionToMimeType`` (``storage/mimetypes/mimetypes.ts``); the push admits only images, so
+#: any other extension maps to None. Node lower-cases the extension and drops its first dot (``getMimeType``).
+_IMAGE_MIME_BY_EXTENSION = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "svg": "image/svg+xml", "webp": "image/webp",
+    "bmp": "image/bmp", "ico": "image/x-icon", "tiff": "image/tiff", "heic": "image/heic", "heif": "image/heif", "avif": "image/avif",
+    "jp2": "image/jp2", "jpx": "image/jpx", "jpm": "image/jpm", "jxl": "image/jxl", "jxs": "image/jxs", "jxr": "image/jxr",
+}
+
+
+def _document_mime(document: dict[str, Any]) -> str | None:
+    """The document's type. Node's upload route stores only ``extension`` (``".png"``, ``storage.controller.ts:483``) and
+    never sets ``mimeType`` (``document.schema.ts:114``), so the extension decides; a stored ``mimeType`` is read only when
+    there is no extension."""
+    extension = document.get("extension")
+    if isinstance(extension, str) and extension:
+        return _IMAGE_MIME_BY_EXTENSION.get(extension.lower().replace(".", "", 1))
+    mime = document.get("mimeType")
+    return mime if isinstance(mime, str) else None
+
+
 def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | None:
     """Parse the body of ``GET /internal/:id``; None when it holds no document."""
     document: Any = body.get("document", body) if isinstance(body, dict) else None
@@ -147,7 +168,6 @@ def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | 
     obj = obj if isinstance(obj, dict) else None
     vendor = document.get("storageVendor")
     initiator = document.get("initiatorUserId")
-    mime = document.get("mimeType")
     remote = document.get("s3") if vendor == "s3" else document.get("azureBlob") if vendor == "azureBlob" else None
     object_url = remote.get("url") if isinstance(remote, dict) and isinstance(remote.get("url"), str) else None
     trusted = bool(verify and fp and fp.get("verified") is True and fp.get("trusted") is True and obj)
@@ -179,7 +199,7 @@ def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | 
         is_artifact_set=bool(document.get("artifactSet")),
         storage_vendor=vendor if isinstance(vendor, str) else None,
         initiator_user_id=str(initiator) if isinstance(initiator, (str, int)) and not isinstance(initiator, bool) and initiator else None,
-        mime_type=mime if isinstance(mime, str) else None,
+        mime_type=_document_mime(document),
         retired=bool(document.get("retiredAt")),
         object_url=object_url,
         settled=fp.get("settled") if fp and isinstance(fp.get("settled"), bool) else None,
@@ -357,7 +377,15 @@ class StorageDocuments:
 
         ids = list(dict.fromkeys(document_ids))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            results = await asyncio.gather(*(one(session, i) for i in ids))
+            tasks = [spawn_in_request(one(session, i)) for i in ids]
+            try:
+                results = await asyncio.gather(*tasks)
+            except BaseException:
+                # gather leaves its siblings running: stop them and wait, so none outlives the session it uses.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
         return dict(zip(ids, results, strict=True))
 
     async def _put_presigned(

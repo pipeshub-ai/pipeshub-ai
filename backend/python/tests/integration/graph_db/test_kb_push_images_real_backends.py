@@ -99,6 +99,20 @@ async def test_forged_link_never_grants(env: Env, kind) -> None:
     assert victim_doc in got.linked and victim_doc not in got.readable and own_doc in got.readable
 
 
+async def test_a_flooded_document_cannot_hide_another_documents_link(env: Env) -> None:
+    """More linking records for one document than any call-wide row limit must not drop the only link of another."""
+    flooded, victim_doc = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]
+    _record_id, own_doc = await pushed_document(env)
+    rows = [{"id": f"flood-{i}-{uuid.uuid4().hex[:6]}", "orgId": env.org_id, "externalRecordId": flooded, "origin": "CONNECTOR", "connectorName": "WEB",
+             "connectorId": "c1", "recordName": "flood", "recordType": "FILE", "createdAtTimestamp": 1} for i in range(1_100)]
+    rows.append({"id": f"lone-{uuid.uuid4().hex[:6]}", "orgId": env.org_id, "externalRecordId": victim_doc, "origin": "CONNECTOR", "connectorName": "WEB",
+                 "connectorId": "c1", "recordName": "lone", "recordType": "FILE", "createdAtTimestamp": 1})
+    env.seeded[CollectionNames.RECORDS.value].extend(r["id"] for r in rows)
+    assert await env.graph.batch_upsert_nodes(rows, CollectionNames.RECORDS.value)
+    got = await env.graph.get_ref_access(env.user_id, env.org_id, [flooded, victim_doc, own_doc])
+    assert {flooded, victim_doc, own_doc} <= got.linked and got.readable == {own_doc}
+
+
 async def test_one_check_access_call_per_push(env: Env) -> None:
     _, doc = await pushed_document(env)
     spy = AsyncMock(wraps=env.graph.check_access)

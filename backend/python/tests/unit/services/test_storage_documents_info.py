@@ -205,3 +205,46 @@ async def test_p12_exists_is_unchanged() -> None:
             assert await sd.exists("org1", "d1") is False
             storage.payload = {"_id": "d1", "isDeleted": False}
             assert await sd.exists("org1", "d1") is True
+
+
+# The document row Node writes for an upload (``storage.controller.ts:473-484``): the type is the extension, with a
+# leading dot; ``mimeType`` exists in the schema (``document.schema.ts:114``) but no writer sets it.
+@pytest.mark.parametrize(("extension", "mime"), [
+    (".png", "image/png"), (".PNG", "image/png"), (".jpg", "image/jpeg"), (".jpeg", "image/jpeg"), (".gif", "image/gif"),
+    (".webp", "image/webp"), (".svg", "image/svg+xml"), (".pdf", None), (".bin", None), ("", None), (None, None),
+])
+def test_the_mime_type_comes_from_the_extension_like_nodes_upload_rows(extension: str | None, mime: str | None) -> None:
+    doc = {**DOC, **({} if extension is None else {"extension": extension})}
+    info = parse_document_info({"document": doc}, verify=False)
+    assert info is not None and info.mime_type == mime
+
+
+def test_a_stored_mime_type_is_used_only_when_there_is_no_extension() -> None:
+    assert parse_document_info({"document": {**DOC, "mimeType": "image/gif"}}, verify=False).mime_type == "image/gif"
+    assert parse_document_info({"document": {**DOC, "extension": ".png", "mimeType": "application/pdf"}}, verify=False).mime_type == "image/png"
+
+
+async def test_info_many_stops_its_sibling_lookups_when_one_fails() -> None:
+    """The first failure leaves no lookup running behind it (``gather`` alone would let them outlive the session)."""
+    import asyncio
+
+    started = asyncio.Event()
+
+    async def handler(request: web.Request) -> web.Response:
+        if request.match_info["doc_id"] == "bad":
+            await started.wait()  # the slow lookup is in flight when this one fails
+            return web.json_response({}, status=500)
+        started.set()
+        await asyncio.sleep(30)
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_get("/api/v1/document/internal/{doc_id}", handler)
+    async with TestServer(app) as server:
+        sd = StorageDocuments(AsyncMock(), logging.getLogger("t"))
+        with patch.object(StorageDocuments, "_storage_url", AsyncMock(return_value=str(server.make_url("")).rstrip("/"))), \
+             patch("app.services.storage_documents.generate_jwt", AsyncMock(return_value="tok")), \
+             pytest.raises(StorageUploadError):
+            await sd.info_many("org1", ["bad", "slow"], verify=True)
+        lookups = [t for t in asyncio.all_tasks() if t.get_coro().__qualname__.endswith("info_many.<locals>.one")]
+        assert [t for t in lookups if not t.done()] == []

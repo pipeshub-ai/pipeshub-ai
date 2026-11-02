@@ -194,7 +194,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
-    REF_LINK_ROW_LIMIT,
+    REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -12479,23 +12479,30 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
 
     async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # Per document, so a document with many links cannot push another document's only link out of the result.
         records = await self.client.execute_query(
             """
-            MATCH (r:Record) WHERE r.externalRecordId IN $ids
-            RETURN r.externalRecordId AS docId, r.id AS recordId, 'externalRecordId' AS kind, r.origin AS origin,
+            UNWIND $ids AS doc
+            CALL (doc) {
+              MATCH (r:Record {externalRecordId: doc})
+              RETURN r ORDER BY (r.origin = $upload AND r.connectorName = $kb) DESC, r.id LIMIT $per_doc
+            }
+            RETURN doc AS docId, r.id AS recordId, 'externalRecordId' AS kind, r.origin AS origin,
                    r.connectorName AS connectorName, r.connectorId AS connectorId
-            LIMIT $limit
             """,
-            parameters={"ids": doc_ids, "limit": REF_LINK_ROW_LIMIT},
+            parameters={"ids": doc_ids, "per_doc": REF_LINKS_PER_DOC, "upload": OriginTypes.UPLOAD.value, "kb": Connectors.KNOWLEDGE_BASE.value},
         )
         files = await self.client.execute_query(
             """
-            MATCH (f:File) WHERE f.path IN $paths
-            RETURN substring(f.path, 10) AS docId, f.id AS recordId, 'files.path' AS kind,
+            UNWIND $paths AS path
+            CALL (path) {
+              MATCH (f:File {path: path})
+              RETURN f ORDER BY f.id LIMIT 1
+            }
+            RETURN substring(path, 10) AS docId, f.id AS recordId, 'files.path' AS kind,
                    null AS origin, null AS connectorName, null AS connectorId
-            LIMIT $limit
             """,
-            parameters={"paths": [f"storage://{d}" for d in doc_ids], "limit": REF_LINK_ROW_LIMIT},
+            parameters={"paths": [f"storage://{d}" for d in doc_ids]},
         )
         return [dict(r) for r in (records or []) + (files or [])]
 

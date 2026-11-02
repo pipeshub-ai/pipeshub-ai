@@ -80,7 +80,6 @@ class RefAccess:
 #: Linking records taken per document and per call; any readable one grants, more than the cap is not an error.
 REF_LINKS_PER_DOC = 8
 REF_LINKS_PER_CALL = 128
-REF_LINK_ROW_LIMIT = 1024
 
 
 @dataclass(frozen=True)
@@ -7278,7 +7277,9 @@ class IGraphDBProvider(ABC):
         """Rows ``{docId, recordId, kind, origin, connectorName, connectorId}`` naming any of ``doc_ids``.
 
         ``kind`` is ``externalRecordId`` (a record) or ``files.path`` (a file whose path is ``storage://<id>``).
-        Any org, live or trashed: "linked" is global; only readability is org-scoped. At most ``REF_LINK_ROW_LIMIT`` rows.
+        Any org, live or trashed: "linked" is global; only readability is org-scoped. The cap is per document
+        (``REF_LINKS_PER_DOC`` rows, platform upload links first), never over the whole call: a document that many
+        other documents' links crowd out would otherwise look unlinked, and its uploader would pass on the initiator check.
         """
         raise NotImplementedError
 
@@ -7299,9 +7300,9 @@ class IGraphDBProvider(ABC):
         ids = sorted(set(doc_ids))
         if not ids:
             return RefAccess()
-        user = await self.get_user_by_user_id(user_id, raise_on_error=True)
-        user_key = (user or {}).get("id") or (user or {}).get("_key") or ""
         try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user_key = (user or {}).get("id") or (user or {}).get("_key") or ""
             rows = await self._ref_link_rows(ids)
         except NotImplementedError:
             raise
@@ -7320,7 +7321,10 @@ class IGraphDBProvider(ABC):
         if not chosen or not user_key:
             return RefAccess(frozenset(linked), frozenset())
         connectors = {r.get("connectorId") for r in chosen if r.get("connectorId")}
-        access = await self._ref_access_hint(user_key, org_id, connectors) if len(connectors) == 1 else None
+        try:
+            access = await self._ref_access_hint(user_key, org_id, connectors) if len(connectors) == 1 else None
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
         check = await self.check_access(user_key, org_id, node_ids=[r["recordId"] for r in chosen], access=access)
         allowed = check.node_ids - check.placeholder_ids
         return RefAccess(frozenset(linked), frozenset(r["docId"] for r in chosen if r["recordId"] in allowed))
