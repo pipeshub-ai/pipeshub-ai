@@ -241,6 +241,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -22740,6 +22741,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.exception(f"❌ Failed to get knowledge hub filter options: {str(e)}")
             return {"apps": []}
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # Per document, so a document with many links cannot push another document's only link out of the result.
+        # The persistent index on (externalRecordId, connectorId) serves a lookup on its leading field.
+        records = await self.execute_query(
+            """
+            FOR doc IN @ids
+              FOR r IN (
+                FOR r IN @@records
+                  FILTER r.externalRecordId == doc
+                  SORT (r.origin == @upload AND r.connectorName == @kb) DESC, r._key
+                  LIMIT @per_doc
+                  RETURN r
+              )
+              RETURN {docId: doc, recordId: r._key, kind: 'externalRecordId', origin: r.origin,
+                      connectorName: r.connectorName, connectorId: r.connectorId}
+            """,
+            bind_vars={"@records": CollectionNames.RECORDS.value, "ids": doc_ids, "per_doc": REF_LINKS_PER_DOC,
+                       "upload": OriginTypes.UPLOAD.value, "kb": Connectors.KNOWLEDGE_BASE.value},
+        )
+        files = await self.execute_query(
+            """
+            FOR path IN @paths
+              FOR f IN (FOR f IN @@files FILTER f.path == path SORT f._key LIMIT 1 RETURN f)
+                RETURN {docId: SUBSTRING(path, 10), recordId: f._key, kind: 'files.path', origin: null,
+                        connectorName: null, connectorId: null}
+            """,
+            bind_vars={"@files": CollectionNames.FILES.value, "paths": [f"storage://{d}" for d in doc_ids]},
+        )
+        return [dict(r) for r in (records or []) + (files or [])]
 
     async def check_record_access_with_details(
         self,

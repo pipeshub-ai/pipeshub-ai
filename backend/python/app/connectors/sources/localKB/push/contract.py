@@ -422,11 +422,27 @@ def blocks_digest(canon_blocks: bytes) -> str:
     return hashlib.sha256(canon_blocks).hexdigest()
 
 
-def request_digest(blocks_sha: str, properties: dict[str, Any] | None) -> str:
-    """Dedup key: normaliser tag, blocks digest, canonical properties."""
+def request_digest(blocks_sha: str, properties: dict[str, Any] | None, image_fp: str | None = None) -> str:
+    """Dedup key: normaliser tag, blocks digest, canonical properties, and the images' fingerprint.
+
+    ``image_fp`` (a hex digest) is appended only for a push with ``storage://`` images, so the digest of
+    a push without them is byte-identical to what it was before images existed. ``canonical_properties_bytes``
+    is JSON, which has no raw ``\\x1f``, so the appended part cannot be confused with the properties.
+    """
     h = hashlib.sha256(NORMALISER.encode() + b"\x1f")
     h.update(bytes.fromhex(blocks_sha))
     h.update(canonical_properties_bytes(properties))
+    if image_fp is not None:
+        h.update(b"\x1fimg\x1f" + bytes.fromhex(image_fp))
+    return h.hexdigest()
+
+
+def request_key(blocks_sha: str, properties: dict[str, Any] | None, ref_ids: list[str]) -> str:
+    """The nonce-free identity of a request (strikes, same-pair refusals, logs): what was asked, not what storage held."""
+    h = hashlib.sha256(b"key\x1f" + bytes.fromhex(blocks_sha))
+    h.update(canonical_properties_bytes(properties))
+    for ref in ref_ids:
+        h.update(b"\x1f" + ref.encode())
     return h.hexdigest()
 
 
