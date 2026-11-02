@@ -1042,6 +1042,27 @@ describe('OAuthAppService', () => {
     })
   })
 
+  describe('validateRedirectUriForApp loopback ports (RFC 8252)', () => {
+    const app = { redirectUris: ['http://localhost/callback', 'http://127.0.0.1:8080/cb', 'https://example.com/cb'] } as any
+
+    it('accepts any port for a loopback URI registered without one', () => {
+      expect(() => service.validateRedirectUriForApp(app, 'http://localhost:53682/callback')).to.not.throw()
+    })
+
+    it('keeps exact matching for everything else', () => {
+      for (const uri of [
+        'http://localhost:53682/other',
+        'http://localhost:53682/callback?x=1',
+        'http://127.0.0.1:9090/cb',
+        'https://example.com:8443/cb',
+        'http://evil.example/callback',
+        'https://localhost:53682/callback',
+      ]) {
+        expect(() => service.validateRedirectUriForApp(app, uri), uri).to.throw(InvalidRedirectUriError)
+      }
+    })
+  })
+
   describe('isGrantTypeAllowed', () => {
     it('should return true when grant type is allowed', () => {
       const app = { allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE] } as any

@@ -253,6 +253,8 @@ export interface ConsentData {
     homepageUrl?: string;
     privacyPolicyUrl?: string;
     isDynamic?: boolean;
+    /** Host of a client metadata document client id: the only part of the app's identity it cannot choose. */
+    clientIdHost?: string;
     /** What the app's creator let it see; absent for everything the user can. */
     knowledgeLimit?: KnowledgeLimit;
   };
@@ -315,6 +317,8 @@ export interface OpenIDConfiguration {
   introspection_endpoint: string;
   jwks_uri: string;
   registration_endpoint?: string;
+  /** draft-ietf-oauth-client-id-metadata-document: an https URL may be used as client_id. */
+  client_id_metadata_document_supported?: boolean;
   device_authorization_endpoint?: string;
   /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
   pipeshub_device_client_id?: string;

@@ -59,6 +59,38 @@ export function isAppUsableInOrg(app: OAuthAppDto, orgId: string): boolean {
   return app.orgId === orgId;
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * RFC 8252 §7.3: a native app listens on a port it picks at run time, so a loopback redirect URI
+ * registered without a port matches the same URI on any port.
+ */
+export function loopbackMatchesAnyPort(
+  registered: string,
+  requested: string,
+): boolean {
+  let r: URL;
+  let q: URL;
+  try {
+    r = new URL(registered);
+    q = new URL(requested);
+  } catch {
+    return false;
+  }
+  return (
+    r.protocol === 'http:' &&
+    r.port === '' &&
+    LOOPBACK_HOSTS.has(r.hostname) &&
+    q.protocol === r.protocol &&
+    q.hostname === r.hostname &&
+    q.pathname === r.pathname &&
+    q.search === r.search &&
+    q.hash === '' &&
+    !q.username &&
+    !q.password
+  );
+}
+
 type WorkspaceMismatchDetails = (app: OAuthAppDto) => Record<string, string>;
 
 let workspaceMismatchDetails: WorkspaceMismatchDetails = () => ({});
@@ -346,6 +378,8 @@ export class OAuthAppService {
    * registered dynamically, without review, should be able to obtain.
    */
   async createDynamicClient(params: {
+    /** A client metadata document URL; a random id otherwise. */
+    clientId?: string;
     orgId: string;
     createdBy: string;
     name: string;
@@ -366,7 +400,7 @@ export class OAuthAppService {
     this.validateGrantTypes(params.allowedGrantTypes);
     this.validateDcrRedirectUris(params.redirectUris);
 
-    const clientId = randomUUID();
+    const clientId = params.clientId ?? randomUUID();
     const clientSecret = this.generateClientSecret();
     const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret);
 
@@ -809,7 +843,10 @@ export class OAuthAppService {
    * Validate redirect URI for an app
    */
   validateRedirectUriForApp(app: OAuthAppDto, redirectUri: string): void {
-    if (!app.redirectUris.includes(redirectUri)) {
+    if (
+      !app.redirectUris.includes(redirectUri) &&
+      !app.redirectUris.some((r) => loopbackMatchesAnyPort(r, redirectUri))
+    ) {
       throw new InvalidRedirectUriError(
         'redirect_uri does not match any registered URIs',
         { providedUri: redirectUri },

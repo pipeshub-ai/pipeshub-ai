@@ -17,6 +17,7 @@ import {
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
 import { mcpDiscoveryScopes } from '../config/scopes.config';
+import { cimdEnabled } from '../services/client_metadata_document';
 
 /**
  * OpenID Connect Provider Controller
@@ -123,6 +124,7 @@ export class OIDCProviderController {
       introspection_endpoint: `${baseUrl}/introspect`,
       jwks_uri: `${backendUrl}/.well-known/jwks.json`,
       ...(dcrEnabled ? { registration_endpoint: `${baseUrl}/register` } : {}),
+      ...(cimdEnabled() ? { client_id_metadata_document_supported: true } : {}),
       ...(deviceEnabled
         ? { device_authorization_endpoint: `${baseUrl}/device_authorization` }
         : {}),

@@ -42,6 +42,7 @@ import {
   toKnowledgeLimit,
 } from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
+import { isClientIdMetadataUrl } from '../services/client_metadata_document';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
@@ -93,7 +94,7 @@ export class OAuthProviderController {
 
     try {
       // Validate client first
-      app = await this.oauthAppService.getAppByClientId(query.client_id);
+      app = await this.oauthDcrService.resolveAuthorizeClient(query.client_id);
 
       // Validate redirect URI - MUST be done before any error redirect
       this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri);
@@ -173,6 +174,9 @@ export class OAuthProviderController {
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
+          ...(isClientIdMetadataUrl(app.clientId)
+            ? { clientIdHost: new URL(app.clientId).host }
+            : {}),
           knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
@@ -236,7 +240,7 @@ export class OAuthProviderController {
       } = req.body;
 
       // Validate client
-      const app = await this.oauthAppService.getAppByClientId(client_id);
+      const app = await this.oauthDcrService.resolveAuthorizeClient(client_id);
 
       // Validate redirect URI
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri);

@@ -35,6 +35,7 @@ interface AppInfo {
   homepageUrl?: string;
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
+  clientIdHost?: string;
   knowledgeLimit?: KnowledgeLimit;
 }
 
@@ -599,6 +600,12 @@ export function OAuthAuthorizeView() {
           {consentData.app.isDynamic ? (
             <Text as="p" size="2" color="amber">
               {t('oauthConsent.unreviewedApp')}
+            </Text>
+          ) : null}
+
+          {consentData.app.clientIdHost ? (
+            <Text as="p" size="2" color="gray">
+              {t('oauthConsent.clientIdHost', { host: consentData.app.clientIdHost })}
             </Text>
           ) : null}
 

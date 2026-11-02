@@ -320,6 +320,7 @@ access token (never `client_credentials` through DCR).
 |----------|---------|--------|
 | `PIPESHUB_ENABLE_DCR` | off (only `true` enables it) | `POST /api/v1/oauth2/register` |
 | `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
+| `PIPESHUB_ENABLE_CIMD` | on (`false` disables it) | An https URL that serves an OAuth Client ID Metadata Document is accepted as `client_id` |
 
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
 `device_authorization_endpoint` and the device grant type only while the
@@ -340,6 +341,17 @@ official agent app or created by an administrator.
 
 DCR refuses `client_credentials`. Tokens issued after device consent carry the
 logged-in user's `userId` and `orgId`.
+
+With client ID metadata documents on, discovery includes
+`client_id_metadata_document_supported: true`, and MCP clients that publish
+their metadata at an https URL (Claude Code, VS Code and others) use that URL
+as `client_id` with no registration step. PipesHub fetches the document when
+a signed-in user opens the authorization page, accepts only public clients
+(`token_endpoint_auth_method: none`, PKCE required) and the redirect URIs the
+document lists, and refuses documents on loopback or private addresses. A
+loopback redirect URI listed without a port matches any port (RFC 8252). The
+consent screen shows the document's host next to the unreviewed-app warning,
+because the name and logo come from the client.
 
 ---
 

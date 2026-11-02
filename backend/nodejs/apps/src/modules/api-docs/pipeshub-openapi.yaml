@@ -3076,6 +3076,9 @@ components:
           type: string
           format: uri
           description: Dynamic client registration endpoint (RFC 7591). Present only when dynamic client registration is enabled (`PIPESHUB_ENABLE_DCR=true`).
+        client_id_metadata_document_supported:
+          type: boolean
+          description: "`true` when a client may use an https URL that serves its OAuth Client ID Metadata Document as its `client_id`, without registering first. The document is fetched at authorization time. Omitted when `PIPESHUB_ENABLE_CIMD=false`."
         device_authorization_endpoint:
           type: string
           format: uri
@@ -24954,7 +24957,10 @@ paths:
                                 type: string
                               isDynamic:
                                 type: boolean
-                                description: Whether the app was created through dynamic client registration
+                                description: Whether the app was created through dynamic client registration or from a client ID metadata document
+                              clientIdHost:
+                                type: string
+                                description: Host of the client ID metadata document, present only when `client_id` is an https URL. The app chooses its name and logo, but not this host.
                               knowledgeLimit:
                                 description: What the app's creator let it see; absent when it may see everything the user can.
                                 allOf:
