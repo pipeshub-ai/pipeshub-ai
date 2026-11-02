@@ -72,6 +72,7 @@ from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.core.org_context import current_org_id
 from app.edition_config import (
     build_schedule_refresh_kwargs,
     can_reveal_secrets,
@@ -784,7 +785,7 @@ async def get_logos(request: Request) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
     instances = await resolve_mcp_instances_with_inheritance(
-        config_service, user_context["org_id"], user_context["user_id"],
+        config_service, current_org_id(), user_context["user_id"],
     )
 
     async def _logo_of(instance_id: str) -> tuple[str, Optional[str]]:
@@ -800,7 +801,7 @@ async def get_logos(request: Request) -> dict[str, Any]:
 async def _logo_target(request: Request, instance_id: str, config_service: ConfigurationService) -> dict[str, Any]:
     """The instance whose logo the caller may change: the same people who may edit the server."""
     user_context = _get_user_context(request)
-    instance = await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"])
+    instance = await _get_org_instance(instance_id, config_service, current_org_id(), user_context["user_id"])
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
     await _require_manage_access(instance, user_context, request, config_service, "change the logo of")

@@ -14,6 +14,7 @@ import {
 } from '../logo-store';
 
 const LOGO = 'data:image/png;base64,AAAA';
+const OLD = 'data:image/png;base64,b2xk';
 
 function Probe({ id }: { id: string | null }) {
   return <span data-testid="logo">{useMcpServerLogo(id) ?? 'none'}</span>;
@@ -59,6 +60,29 @@ describe('MCP server logos', () => {
 
     act(() => setMcpServerLogo('a', null));
     expect(getByTestId('logo').textContent).toBe('none');
+  });
+
+  it('keeps a logo saved or removed here while the read is still on its way', async () => {
+    let answer: (value: { logos: Record<string, string> }) => void = () => {};
+    getLogos.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const { getAllByTestId } = render(
+      <>
+        <Probe id="a" />
+        <Probe id="b" />
+      </>
+    );
+    const read = ensureMcpLogosLoaded();
+
+    act(() => {
+      setMcpServerLogo('a', LOGO);
+      setMcpServerLogo('b', null);
+    });
+    await act(async () => {
+      answer({ logos: { a: OLD, b: OLD } });
+      await read;
+    });
+
+    expect(getAllByTestId('logo').map((el) => el.textContent)).toEqual([LOGO, 'none']);
   });
 
   it('shows no logos when the read fails, and waits before trying again', async () => {

@@ -70,6 +70,7 @@ type Instance = NonNullable<PanelProps['state']['editingInstance']>;
 
 const SAVED = 'data:image/png;base64,c2F2ZWQ=';
 const NEW = 'data:image/png;base64,bmV3';
+const FIRST = 'data:image/png;base64,Zmlyc3Q=';
 
 const custom = {
   _id: 'inst-1',
@@ -215,5 +216,33 @@ describe('McpInstanceConfigPanel logo', () => {
 
     expect(screen.getByRole('alert').textContent).toBe('workspace.mcpServers.form.logoErrors.type');
     expect(preview()).toBe(SAVED);
+  });
+
+  it('keeps the file picked last when an earlier one finishes after it', async () => {
+    let finishFirst: (logo: string) => void = () => {};
+    picked.imageFileToLogo
+      .mockReturnValueOnce(new Promise<string>((resolve) => (finishFirst = resolve)))
+      .mockResolvedValueOnce(NEW);
+    render(panel(editCustom));
+    await waitFor(() => expect(preview()).toBe(SAVED));
+
+    await pickFile();
+    await pickFile();
+    await act(async () => finishFirst(FIRST));
+
+    expect(preview()).toBe(NEW);
+  });
+
+  it('keeps a logo removed while a picked file was still being read', async () => {
+    let finish: (logo: string) => void = () => {};
+    picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
+    render(panel(editCustom));
+    await waitFor(() => expect(preview()).toBe(SAVED));
+
+    await pickFile();
+    fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.logoRemove' }));
+    await act(async () => finish(NEW));
+
+    expect(preview()).toBeNull();
   });
 });

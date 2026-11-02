@@ -22,6 +22,7 @@ from app.api.routes.mcp_servers import (
     remove_instance_logo,
     set_instance_logo,
 )
+from app.core.org_context import OrgContext, bind
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -63,6 +64,13 @@ def _png_upload(size: tuple[int, int] = (200, 100)) -> MCPServerLogoPayload:
     out = io.BytesIO()
     Image.new("RGBA", size, (10, 120, 200, 255)).save(out, format="PNG")
     return MCPServerLogoPayload(logo=f"data:image/png;base64,{base64.b64encode(out.getvalue()).decode('ascii')}")
+
+
+@pytest.fixture(autouse=True)
+def _org_1_request() -> Iterator[None]:
+    # The auth middleware binds the caller's org for the request; these tests call the handlers directly.
+    with bind(OrgContext("org-1", "admin-1", "user", "jwt", "req-test")):
+        yield
 
 
 @pytest.fixture(autouse=True)

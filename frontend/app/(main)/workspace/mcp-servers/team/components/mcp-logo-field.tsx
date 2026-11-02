@@ -19,12 +19,17 @@ interface McpLogoFieldProps {
 export function McpLogoField({ logo, onChange }: McpLogoFieldProps) {
   const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
+  // Reading a file takes a moment: only the latest pick or remove may change the logo.
+  const latestAction = useRef(0);
 
   const pick = async (file: File) => {
+    const action = ++latestAction.current;
     setError(null);
     try {
-      onChange(await imageFileToLogo(file));
+      const logo = await imageFileToLogo(file);
+      if (action === latestAction.current) onChange(logo);
     } catch (e) {
+      if (action !== latestAction.current) return;
       const problem = e instanceof McpLogoFileError ? e.problem : 'unreadable';
       setError(t(`workspace.mcpServers.form.logoErrors.${problem}`));
     }
@@ -41,6 +46,7 @@ export function McpLogoField({ logo, onChange }: McpLogoFieldProps) {
         logo={logo}
         onPick={(file) => void pick(file)}
         onRemove={() => {
+          latestAction.current++;
           setError(null);
           onChange(null);
         }}
