@@ -1,4 +1,3 @@
-import { toolStatusLabel } from "./tool-display";
 import {
   coerceAskUserQuestionEvent,
   isAskUserQuestionToolName,
@@ -58,18 +57,25 @@ export interface SlackConversationComplete {
 }
 
 export interface SlackAGUICallbacks {
-  onStatus?: (message: string) => void;
+  /** What an MCP server says about a running tool: its message, or "3/10" / "25%". */
+  onToolProgress?: (toolName: string, progress: string) => void;
   onReasoning?: (delta: string, done: boolean) => void;
   /**
    * Settled root TEXT_MESSAGE preamble that preceded a tool call — same
    * narration the frontend keeps in the activity timeline.
    */
   onNarration?: (text: string) => void;
-  onToolStart?: (toolName: string, displayName?: string) => void;
+  onToolStart?: (
+    toolName: string,
+    displayName?: string,
+    toolCallId?: string,
+  ) => void;
   onToolResult?: (
     toolName: string,
     displayName?: string,
     status?: string,
+    toolCallId?: string,
+    content?: unknown,
   ) => void;
   onSubAgent?: (role: string, phase: "started" | "completed" | "failed") => void;
   /** Full current answer text (caller diffs against last streamed length). */
@@ -91,12 +97,12 @@ interface AGUIStreamState {
   rawLength: number;
 }
 
-/** A third party's text kept plain in Slack mrkdwn, where `<…>` is a link or a mention. */
+/**
+ * A third party's text shown as a step's output: `<…>` would be a link or a
+ * mention, so the brackets go. Not entity-escaped: the output is not mrkdwn.
+ */
 function slackPlainText(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return text.replace(/[<>]/g, '');
 }
 
 /**
@@ -256,10 +262,7 @@ export function createSlackAGUIEventHandler(
       case "STEP_STARTED": {
         const stepName = typeof data?.stepName === "string" ? data.stepName : "";
         const runId = typeof data?.runId === "string" ? data.runId : undefined;
-        const role = runs.handleStepStarted(stepName, runId);
-        if (role) {
-          callbacks.onStatus?.(`Delegating to ${role}...`);
-        }
+        runs.handleStepStarted(stepName, runId);
         break;
       }
 
@@ -270,7 +273,6 @@ export function createSlackAGUIEventHandler(
         const role = runs.handleRunStarted(runId, parentRunId);
         if (role) {
           callbacks.onSubAgent?.(role, "started");
-          callbacks.onStatus?.(`Delegating to ${role}...`);
         }
         break;
       }
@@ -292,14 +294,6 @@ export function createSlackAGUIEventHandler(
         textBuffer += delta;
         rawTextReceived += delta.length;
         emitAnswer();
-        break;
-      }
-
-      case "TEXT_MESSAGE_END": {
-        const runId = typeof data?.runId === "string" ? data.runId : undefined;
-        if (runs.isRootRun(runId)) {
-          callbacks.onStatus?.("Thinking...");
-        }
         break;
       }
 
@@ -342,8 +336,7 @@ export function createSlackAGUIEventHandler(
           emitAnswer();
         }
 
-        callbacks.onStatus?.(`${toolStatusLabel(toolCallName)}...`);
-        callbacks.onToolStart?.(toolCallName, displayName);
+        callbacks.onToolStart?.(toolCallName, displayName, toolCallId);
         break;
       }
 
@@ -377,17 +370,19 @@ export function createSlackAGUIEventHandler(
         const toolCallName = meta?.name ?? "tool";
         const displayName = meta?.displayName;
         const status = typeof data?.status === "string" ? data.status : "completed";
-        callbacks.onToolResult?.(toolCallName, displayName, status);
+        callbacks.onToolResult?.(
+          toolCallName,
+          displayName,
+          status,
+          toolCallId,
+          data?.content,
+        );
 
         if (isAskUserQuestionToolName(toolCallName)) {
           // Prefer full args; content is a 200-char preview and usually invalid JSON.
           emitAskUserFromRaw(stashedArgs ?? data?.content, toolCallId);
         }
 
-        const runId = typeof data?.runId === "string" ? data.runId : undefined;
-        if (runs.isRootRun(runId) && !isAskUserQuestionToolName(toolCallName)) {
-          callbacks.onStatus?.("Thinking...");
-        }
         break;
       }
 
@@ -487,21 +482,12 @@ export function createSlackAGUIEventHandler(
             ? (data.snapshot as Record<string, unknown>)
             : undefined;
         if (!snapshot || snapshot.final === true) break;
-        const status = typeof snapshot.status === "string" ? snapshot.status : "";
-        const STATUS_MESSAGES: Record<string, string> = {
-          starting: "Thinking...",
-          calling_llm: "Thinking...",
-          running_tool: "Executing tool...",
-        };
-        let message = STATUS_MESSAGES[status];
-        if (message) {
-          if (
-            status === "running_tool" &&
-            typeof snapshot.current_tool === "string"
-          ) {
-            message = `${toolStatusLabel(snapshot.current_tool)}...${toolProgressText(snapshot)}`;
-          }
-          callbacks.onStatus?.(message);
+        if (
+          snapshot.status === "running_tool" &&
+          typeof snapshot.current_tool === "string"
+        ) {
+          const progress = toolProgressText(snapshot);
+          if (progress) callbacks.onToolProgress?.(snapshot.current_tool, progress);
         }
         break;
       }
