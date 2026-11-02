@@ -358,6 +358,28 @@ class TestCifsDialectGuard:
                 client.list_directory(SHARE, "")
             assert conn.connect.call_count >= 2
 
+    def test_a_folder_access_denied_is_a_listing_error_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Access denied: private")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "private")
+
+    def test_a_folder_named_logon_is_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Failed to list /logon on public: Unable to open directory")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "logon")
+
     def test_reconnect_succeeds_on_second_attempt(self):
         with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
             conn = MagicMock()
@@ -537,6 +559,18 @@ class TestCifsConnectorSync:
         await cifs_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
         cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_refused_sign_in_notifies_and_fails_the_run(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(refused_dirs={(SHARE, "")})
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        with pytest.raises(NetworkShareAuthError):
+            await cifs_connector.run_sync()
+        title = cifs_connector.notify.await_args.kwargs["title"]
+        assert "Sign-in refused" in title
+        mock_processor.on_record_deleted.assert_not_awaited()
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_id(self, mock_filters, cifs_connector, mock_processor):
