@@ -65038,6 +65038,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/PendingToolApproval'
+        '400':
+          $ref: '#/components/responses/XssRejected'
         '401':
           description: Missing, invalid or expired bearer token
           content:
@@ -65093,8 +65095,9 @@ paths:
                 $ref: '#/components/schemas/McpToolApprovalValidateResponse'
         '400':
           description: |
-            Refused before authentication: the approval id in the path looks like markup to the
-            app-wide XSS filter, or the JSON body does not parse (`HTTP_BAD_REQUEST`).
+            Refused before authentication (`HTTP_BAD_REQUEST`): a query string value looks like
+            markup to the app-wide XSS filter, or the JSON body does not parse. The body itself
+            is not checked by that filter.
           content:
             application/json:
               schema:

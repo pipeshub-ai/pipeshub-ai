@@ -431,7 +431,7 @@ describe('XSS Sanitization Middleware', () => {
       expect(req.body).to.deep.equal(body)
     })
 
-    it('still checks other tool-approval routes and the approval id', () => {
+    it('still checks other tool-approval routes and the validate query string', () => {
       for (const [path, body] of [
         ['/api/v1/mcp-servers/tool-approvals/ap-1/validate/x', { v: '<b>x</b>' }],
         ['/api/v1/mcp-servers/tool-approvals/pending', { v: '<b>x</b>' }],
@@ -445,7 +445,7 @@ describe('XSS Sanitization Middleware', () => {
         path: '/api/v1/mcp-servers/tool-approvals/x/validate',
         method: 'POST',
         body: {},
-        params: { approvalId: '<script>alert(1)</script>' },
+        query: { q: '<script>alert(1)</script>' },
       })
       const next = createMockNext()
       xssSanitizationMiddleware(req, createMockResponse(), next)
