@@ -648,7 +648,7 @@ export async function cutover(
         steps,
         ...(frozenAt ? { freezeMs: Date.now() - frozenAt } : {}),
         precheck: pc,
-        message: `${why}. MANUAL REPAIR NEEDED: the state of platform.store_epoch is unknown (it could not be read after the update to PostgreSQL failed), MongoDB is frozen (read-only, not retired) and nothing was unfrozen. Read the row first. If backend is postgres at epoch ${String(epoch)}: retire MongoDB (fence mode retired) to finish the move, or set the row back to backend mongo, readonly true, epoch ${String(epoch - 1)} and run unfreeze. If backend is mongo: run unfreeze`,
+        message: `${why}. MANUAL REPAIR NEEDED: the state of platform.store_epoch is unknown (an update to or back from PostgreSQL failed and the row could not be read afterwards), MongoDB is frozen (read-only, not retired) and nothing was unfrozen. Read the row first. If backend is postgres at epoch ${String(epoch)}: retire MongoDB (fence mode retired) to finish the move, or set the row back to backend mongo, readonly true, epoch ${String(epoch - 1)} and run unfreeze. If backend is mongo: run unfreeze`,
       };
     if (flip === 'stuck')
       return {
@@ -814,17 +814,32 @@ export async function cutover(
     ).rows[0];
     epoch = (pgBefore?.epoch ?? 1) + 1;
     await mark('F8 flip', async () => {
-      // PostgreSQL goes back to closed; false when that could not be done (then MongoDB stays frozen and the abort says where things stand)
-      const closePostgres = async (): Promise<boolean> => {
+      // PostgreSQL goes back to closed. The flip state that results: `none` when it is closed, `stuck` when the row says it is still live, and
+      // `unknown` when that cannot be told. An update that failed on the client may have committed, so the row is read again on a
+      // connection of its own, as on the way forward; MongoDB is unfrozen only for `none`.
+      const closePostgres = async (): Promise<'none' | 'stuck' | 'unknown'> => {
         try {
           const back = await rt.migratePool.query(
             "UPDATE platform.store_epoch SET backend = 'mongo', epoch = $1, readonly = true, updated_at = now()",
             [epoch - 1],
           );
-          return back.rowCount === 1;
+          if (
+            o.failAt === 'F8-back-commit' ||
+            o.failAt === 'F8-back-reread-fails'
+          )
+            throw new Error('injected failure after the rollback committed');
+          if (back.rowCount === 1) return 'none';
         } catch {
-          return false;
+          // it may have committed before the error reached us: look at the row
         }
+        const now = await storeEpochOnFreshConnection(
+          rt,
+          o.failAt === 'F8-back-reread-fails',
+        ).catch(() => null);
+        if (now === null) return 'unknown';
+        if (now.backend === 'mongo' && now.epoch === epoch - 1) return 'none';
+        if (now.backend === 'postgres' && now.epoch === epoch) return 'stuck';
+        return 'unknown';
       };
       try {
         const up = await rt.migratePool.query(
@@ -845,18 +860,22 @@ export async function cutover(
           o.failAt === 'F8-reread-fails',
         ).catch(() => null);
         if (now === null) flip = 'unknown';
-        else if (now.backend === 'postgres' && !(await closePostgres()))
-          flip = 'stuck';
+        else if (now.backend === 'postgres') flip = await closePostgres();
         throw e;
       }
       try {
-        if (o.failAt === 'F8-retire') throw new Error('injected failure at F8');
+        if (
+          o.failAt === 'F8-retire' ||
+          o.failAt === 'F8-back-commit' ||
+          o.failAt === 'F8-back-reread-fails'
+        )
+          throw new Error('injected failure at F8');
         await setMongoFence(rt, 'retired', before.epoch + 1);
         flip = 'complete';
       } catch (e) {
         // MongoDB could not be retired: PostgreSQL goes back to closed and the abort lets MongoDB write again; if it cannot be closed,
         // MongoDB stays frozen and the abort says exactly where things stand
-        if (!(await closePostgres())) flip = 'stuck';
+        flip = await closePostgres();
         throw e;
       }
     });
