@@ -732,7 +732,7 @@ class TestModes:
         try:
             stats = budget.stats()
             assert stats["slots"] == "shared" and stats["ledger"] == "ok"
-            (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v1-64")]
+            (directory,) = [p for p in tmp_path.iterdir() if p.name.startswith("pipeshub-cpu-lanes-v2-64")]
             assert {"run", "resident", "ledger", "ledger.lock"} <= {p.name for p in directory.iterdir()}
             assert "presence" not in {p.name for p in directory.iterdir()}  # taken by the first pool, not by open()
         finally:
