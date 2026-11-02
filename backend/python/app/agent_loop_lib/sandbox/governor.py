@@ -131,7 +131,7 @@ class SandboxResourceGovernor:
                     try:
                         await asyncio.wait_for(self._released.wait(), remaining)
                     except TimeoutError:
-                        pass
+                        pass  # the deadline check at the top of the loop decides
                     continue
             told = True
             try:
