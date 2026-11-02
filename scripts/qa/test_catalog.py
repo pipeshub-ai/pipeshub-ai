@@ -211,6 +211,13 @@ class TestBuild(unittest.TestCase):
         config.clear_cache()
         return catalog.lint(self.cfg, catalog.build(self.cfg))[0]
 
+    def test_unknown_variant_is_a_lint_error(self) -> None:
+        testing.write(self.root, "integration-tests/heavy/test_nope.py", "import pytest\n\n\n@pytest.mark.heavy\ndef test_n():\n    pass\n")
+        config.clear_cache()
+        self.cfg.always["variants"].pop("solo")
+        errors = catalog.lint(self.cfg, catalog.build(self.cfg))[0]
+        self.assertTrue(any(e.startswith("unknown stack variant solo (needed by it:heavy/test_nope.py") for e in errors), errors)
+
     def test_orphan_test_file_is_a_lint_error(self) -> None:
         testing.write(self.root, "tools/test_tool.py", "def test_t():\n    pass\n")
         self.assertTrue(any("tools/test_tool.py" in e and "belongs to no suite" in e for e in self._lint_errors()))

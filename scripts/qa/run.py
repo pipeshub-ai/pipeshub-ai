@@ -23,7 +23,7 @@ from typing import Any
 
 from qa import junit
 from qa import shard as shard_mod
-from qa.catalog import rel_to
+from qa.catalog import rel_to, variant_of
 from qa.config import Config
 from qa import stack as stack_mod
 from qa.stack import Stack
@@ -364,17 +364,24 @@ def run(
     cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], out: Path,
     stack_mode: str = "none", base_url: str | None = None, build: bool = False,
     dry_run: bool = False, retry: bool = True, scope: str = "all",
-    shard: tuple[int, int] | None = None,
+    shard: tuple[int, int] | None = None, variant: str = "",
 ) -> dict[str, Any]:
     """scope: "all", "unit" (no stack needed) or "stack" (integration and e2e only).
-    shard (k, n): run only stack shard k of n; the other shards' stack tests are not_run scope."""
+    shard (k, n): run only stack shard k of n; the other shards' stack tests are not_run scope.
+    variant: run only the tests that need this stack variant ("" = the default stack)."""
     out.mkdir(parents=True, exist_ok=True)
     log_dir = out / "logs"
+    other_variant = {t["id"] for t in plan["tests"] if t["id"] in rows and "service:stack" in rows[t["id"]]["needs"] and variant_of(rows[t["id"]]) != variant}
+    full_plan = plan
+    plan = {**plan, "tests": [t for t in plan["tests"] if t["id"] not in other_variant]}
     elsewhere: set[str] = set()
     if shard:
         elsewhere = set(shard_mod.stack_ids(cfg, plan, rows)) - shard_mod.select(cfg, plan, rows, *shard)
     # Resolve without them, so no runner command names another shard's files.
     invs, not_run = resolve(cfg, {**plan, "tests": [t for t in plan["tests"] if t["id"] not in elsewhere]}, rows, out)
+    for i in sorted(other_variant):
+        v = variant_of(rows[i])
+        _mark(not_run, [i], "scope", f"runs on the {v or 'default'} stack variant")
     if shard:
         _mark(not_run, sorted(elsewhere), "scope", f"runs in another stack shard (this is {shard[0]}/{shard[1]})")
     if scope != "all":
@@ -382,9 +389,9 @@ def run(
         kept_ids = {t for i in keep for t in i.ids}
         _mark(not_run, [t["id"] for t in plan["tests"] if t["id"] not in kept_ids], "scope", f"outside --scope {scope}")
         invs = keep
-    stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard)
+    stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard, variant)
     # Hooks and port remaps come first, so the dry run lists their files and preflight checks the ports the run will bind.
-    setup_error = _prepare(cfg, stacks, out) if stack_mode == "managed" and stacks and any(i.needs_stack for i in invs) else None
+    setup_error = _prepare(cfg, stacks, out, variant) if stack_mode == "managed" and stacks and any(i.needs_stack for i in invs) else None
     if dry_run:
         return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": stacks, "setup_error": setup_error}
 
@@ -460,6 +467,7 @@ def run(
     finally:
         signal.signal(signal.SIGTERM, previous)
 
+    plan = full_plan
     tests = []
     for t in plan["tests"]:
         tid = t["id"]
@@ -533,17 +541,25 @@ def _retry_invocation(inv: Invocation, ids: list[str]) -> Invocation:
     return Invocation(inv.label + "-retry", inv.suite, inv.family, inv.cwd, head + targets + rest + [f"--junitxml={jx}"], ids, jx, env=inv.env, needs_stack=inv.needs_stack, graph_db=inv.graph_db, modules=inv.modules)
 
 
-def run_id(shard: tuple[int, int] | None) -> str:
+def run_id(shard: tuple[int, int] | None, variant: str = "") -> str:
     base = os.environ.get("QA_RUN_ID") or os.environ.get("GITHUB_RUN_ID") or str(os.getpid())
-    return f"{base}s{shard[0]}" if shard else base
+    return (f"{base}s{shard[0]}" if shard else base) + (f"-{variant}" if variant else "")
 
 
-def _prepare(cfg: Config, stacks: list[Stack], out: Path) -> str | None:
-    """Overlay hooks, then the QA_PORT_OFFSET remap, for a managed stack; the error text when one fails."""
+def _prepare(cfg: Config, stacks: list[Stack], out: Path, variant: str = "") -> str | None:
+    """Overlay hooks, then the QA_PORT_OFFSET remap, for a managed stack; the error text when one fails.
+    Hooks read the variant from QA_STACK_VARIANT, so their signature stays (work_dir)."""
+    previous = os.environ.get("QA_STACK_VARIANT")
+    os.environ["QA_STACK_VARIANT"] = variant
     try:
         env, files = cfg.prepare_stack(out / "stack")
     except RuntimeError as exc:
         return f"stack setup: {exc}"
+    finally:
+        if previous is None:
+            os.environ.pop("QA_STACK_VARIANT", None)
+        else:
+            os.environ["QA_STACK_VARIANT"] = previous
     for s in stacks:
         s.extra_env.update(env)
         s.overrides += files
@@ -565,12 +581,12 @@ def _remove_image(tag: str, events: list[str]) -> None:
         events.append(f"image removal failed: {exc}")
 
 
-def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, log_dir: Path, build: bool, out: Path, shard: tuple[int, int] | None = None) -> list[Stack]:
+def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, log_dir: Path, build: bool, out: Path, shard: tuple[int, int] | None = None, variant: str = "") -> list[Stack]:
     if mode == "none" or not plan["stack"].get("needed"):
         return []
     # prove passes a tag of its own, so its images and projects never collide with a qa run's.
     head = plan.get("tag") or plan.get("head")
-    rid = run_id(shard)
+    rid = run_id(shard, variant)
     url = base_url or os.environ.get("PIPESHUB_BASE_URL", "http://localhost:3000")
     graphs = plan["stack"]["graph_db"]
     if mode == "external":

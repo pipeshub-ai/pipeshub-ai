@@ -741,6 +741,66 @@ class TestShard(RunCase):
             self.assertNotIn("another stack shard", by_id[i]["details"])
         self.assertIn("outside --scope stack", by_id["py:tests/unit/test_patch_only.py"]["details"])
 
+    HEAVY = "it:heavy/test_heavy.py::test_heavy_path"
+
+    def managed_plan(self, ids, graph=("neo4j",)):
+        return {**plan_for(list(ids), graph=graph), "head": HEAD}
+
+    def test_plan_lists_the_variants_its_tests_need(self) -> None:
+        from qa import validate
+        both = validate._stack(self.cfg, {}, "standard", [self.rows[ACL], self.rows[self.HEAVY]])
+        self.assertEqual(both["variants"], ["", "solo"])
+        self.assertEqual(validate._stack(self.cfg, {}, "standard", [self.rows[self.HEAVY]])["variants"], ["solo"])
+        self.assertEqual(validate._stack(self.cfg, {}, "standard", [self.rows["py:tests/unit/test_patch_only.py"]])["variants"], [])
+
+    def test_a_run_executes_only_its_variant(self) -> None:
+        plan = self.managed_plan([ACL, self.HEAVY], graph=("neo4j",))
+        projects = []
+        with mock.patch.dict(os.environ, {"QA_RUN_ID": "77"}), \
+             mock.patch.object(run, "preflight", return_value=({}, [])), \
+             mock.patch.object(run.Stack, "start", lambda s: projects.append(s.project)), \
+             mock.patch.object(run.Stack, "stop", lambda s: None), \
+             mock.patch.object(run.Stack, "collect_logs", lambda s: None), \
+             mock.patch.object(run, "_execute", return_value={"exit": 0, "label": "x"}), \
+             mock.patch.object(run, "_outcomes", return_value={self.HEAVY: {"outcome": "pass", "seconds": 1, "details": ""}}):
+            os.environ.pop("QA_COMPOSE_PROJECT", None)
+            result = run.run(self.cfg, plan, self.rows, self.out, stack_mode="managed", retry=False, variant="solo")
+        by_id = {t["id"]: t for t in result["tests"]}
+        self.assertEqual(by_id[ACL]["kind"], "scope")
+        self.assertIn("default stack variant", by_id[ACL]["details"])
+        self.assertEqual(by_id[self.HEAVY]["outcome"], "pass")
+        self.assertTrue(projects[0].endswith("-solo-neo4j"), projects)
+
+    def test_default_run_marks_variant_tests_and_starts_no_stack_for_them(self) -> None:
+        result = run.run(self.cfg, plan_for([self.HEAVY]), self.rows, self.out, stack_mode="none")
+        t = result["tests"][0]
+        self.assertEqual((t["outcome"], t["kind"]), ("not_run", "scope"))
+        self.assertIn("solo stack variant", t["details"])
+        with mock.patch.object(run.Stack, "start") as start:
+            run.run(self.cfg, self.managed_plan([ACL]), self.rows, self.out, stack_mode="managed", variant="solo", retry=False)
+        start.assert_not_called()
+
+    def test_hooks_see_the_variant(self) -> None:
+        os.environ.pop("QA_STACK_VARIANT", None)
+        with mock.patch.object(run, "preflight", return_value=({}, [])), \
+             mock.patch.object(run.Stack, "start"), mock.patch.object(run.Stack, "stop"), \
+             mock.patch.object(run.Stack, "collect_logs"), \
+             mock.patch.object(run, "_execute", return_value={"exit": 0, "label": "x"}), \
+             mock.patch.object(run, "_outcomes", return_value={}):
+            run.run(self.cfg, self.managed_plan([self.HEAVY]), self.rows, self.out, stack_mode="managed", retry=False, variant="solo")
+        self.assertEqual((self.out / "stack/variant.txt").read_text(encoding="utf-8"), "solo")
+        self.assertNotIn("QA_STACK_VARIANT", os.environ)
+
+    def test_variant_parts_merge_to_the_executed_outcome(self) -> None:
+        scope = {"outcome": "not_run", "kind": "scope", "details": "x"}
+        default_part = {"tests": [{"id": "a", **{"outcome": "pass"}}, {"id": "h", **scope}]}
+        variant_part = {"tests": [{"id": "a", **scope}, {"id": "h", "outcome": "fail"}]}
+        got = {t["id"]: t["outcome"] for t in report.merge_results([default_part, variant_part], ["a", "h"])["tests"]}
+        self.assertEqual(got, {"a": "pass", "h": "fail"})
+        alone = report.merge_results([default_part], ["a", "h"])
+        self.assertEqual({t["id"]: t["outcome"] for t in alone["tests"]}["h"], "not_run")
+        self.assertEqual(report.verdict(self.cfg, alone, allowed=frozenset())[0], "fail")
+
     def test_bad_shard_argument_exits_2(self) -> None:
         for bad in ("3/2", "x", "0/2"):
             err = io.StringIO()

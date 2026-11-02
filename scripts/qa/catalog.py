@@ -309,6 +309,11 @@ def _ts_rows(cfg: Config, suite: dict[str, Any], path: str) -> list[dict[str, An
     return [_row(cfg, suite, path, None, spec, [], extra)]
 
 
+def variant_of(row: dict[str, Any]) -> str:
+    """The stack variant a test needs ("" = the default stack)."""
+    return next((n[6:] for n in row["needs"] if n.startswith("stack:")), "")
+
+
 def _row(
     cfg: Config, suite: dict[str, Any], path: str, name: str | None, spec: Spec,
     markers: list[str], extra: dict[str, Any], extra_needs: Iterable[str] = (),
@@ -510,7 +515,10 @@ def lint(cfg: Config, rows: list[dict[str, Any]], strict: bool = False) -> tuple
     for (area, tc), n in tcs.items():
         if n > 1:
             errors.append(f"duplicate TC id {tc} in {area} ({n} tests)")
+    known_variants = set(cfg.always.get("variants", {}))
     for r in rows:
+        if (v := variant_of(r)) and v not in known_variants:
+            errors.append(f"unknown stack variant {v} (needed by {r['id']})")
         for pattern in r["covers"]:
             if not any(globs.match(f, pattern) for f in files):
                 errors.append(f"{r['id']}: covers: {pattern!r} matches no file")

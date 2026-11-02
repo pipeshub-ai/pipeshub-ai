@@ -44,7 +44,7 @@ producer against them, and `validate` checks model output against
 | `changeset.json` | `changeset.v1.json` | base, head, first-parent commits, files with status / edition / kind, zero-context hunks |
 | `plan-input.json` | `plan-input.v1.json` | `floor.items[id].why` (up to 3 reasons) and `grep`; `full_suites`; `stack`; `matrix`; `deferred`; `unmapped`; `missing`; `candidates` (up to 300); `catalogs`; `budget` |
 | `plan-llm.json` | `plan-llm.v1.json` | `add[{id, reason, confidence}]`, `add_matrix`, `missing`, `risk`; `_planner` status added by the adapter runner |
-| `plan.json` | `plan.v1.json` | `tests[{id, source floor\|model, why, grep, flows}]`; `flows{id: why}`; `planner`; `stack{needed, graph_db[], broker, compose_profiles[]}`; `dropped`, `budget_trimmed` |
+| `plan.json` | `plan.v1.json` | `tests[{id, source floor\|model, why, grep, flows}]`; `flows{id: why}`; `planner`; `stack{needed, variants[], graph_db[], broker, compose_profiles[]}`; `dropped`, `budget_trimmed` |
 | `review-input.json`, `review-llm.json`, `review.json` | `review-llm.v1.json` for the model reply | `requirements[{id, text, tests[], result}]` (`pass`, `fail`, `not_run`, `untested`), `risks`, `probes`; written by `qa review`, never read by the gate |
 | `scenarios-llm.json`, `implement-llm.json` | `scenarios-llm.v1.json`, `implement-llm.v1.json` for the model replies | scenarios: `scenarios[{title, level, covers, ...}]`; implement: the whole test file as one string. Written by `qa generate`, never read by the gate |
 | `prove/<id>.json` | `proof.v1.json` | `verdict` (`proven` or `unproven`), `reason`, head outcomes, `revert`, `mutants[{file, line, op, outcome}]`; written by `qa prove` |
@@ -171,6 +171,16 @@ journeys the tests protect.
      (`integration-tests/stack/seed.py`, idempotent), the stack invocations,
      logs, then teardown.
   5. Retry: failed pytest ids are retried once; a pass on retry is `flaky`.
+- **Variants.** A test that needs a stack of its own carries a `stack:<name>`
+  need, usually through a suite's `marker_needs`; `<name>` must be a key of
+  `[variants]` in `always.toml` (`catalog lint` rejects others).
+  `plan.stack.variants` lists `""` (the default stack, when any planned stack
+  test needs no variant) and each variant a planned test needs. `qa run
+  --stack-variant NAME` (env `QA_STACK_VARIANT`) runs only that variant's tests
+  and lists every other stack test as `not_run` `scope`, as a shard does, so the
+  report's merge keeps the executed outcome. If no job ran a variant, its tests
+  stay `not_run` and `--strict` blocks. The compose project name gains
+  `-<name>`, and overlay hooks read the name from `QA_STACK_VARIANT`.
 - **Gate.**
   - `fail` / `error` on a test that is not quarantined blocks.
   - `flaky`, `skip` and `not_run` are reported and do not block. `--strict`

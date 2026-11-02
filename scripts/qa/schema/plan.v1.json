@@ -94,6 +94,12 @@
         "needed": {
           "type": "boolean"
         },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "graph_db": {
           "type": "array",
           "items": {

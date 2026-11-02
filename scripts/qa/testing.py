@@ -73,6 +73,7 @@ setup_test_llm_model = "env:TEST_OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_A
 
 [suite.marker_needs]
 live_model = "env:REAL_KEY"
+heavy = "stack:solo"
 
 [compose_profiles]
 kafka = ["requires_kafka"]
@@ -122,6 +123,9 @@ graph_db = "both"
 integration = true
 extra_minutes = 0
 full = true
+
+[variants.solo]
+description = "fixture variant"
 
 [[always]]
 id = "e2e-smoke"
@@ -266,6 +270,7 @@ def edition(path):
 def prepare_stack(work_dir):
     if os.environ.get("PLUS_FAIL"):
         raise RuntimeError("boom")
+    (work_dir / "variant.txt").write_text(os.environ.get("QA_STACK_VARIANT", "unset"), encoding="utf-8")
     (work_dir / "plus.json").write_text("{}", encoding="utf-8")
     return {"env": {"PLUS_STACK": "1"}, "compose_files": [str(work_dir / "plus.json")]}
 """
@@ -335,6 +340,15 @@ FILES = {
 
         def test_ranking():
             """TC-RET-002: exact title matches rank first."""
+        '''),
+    "integration-tests/heavy/test_heavy.py": textwrap.dedent('''\
+        import pytest
+
+        pytestmark = pytest.mark.heavy
+
+
+        def test_heavy_path():
+            """TC-HEAVY-001: the heavy path works."""
         '''),
     "integration-tests/plus/test_ai_usage.py": 'def test_budget():\n    """TC-PLUS-USAGE-001: usage stops at the org budget."""\n',
 }

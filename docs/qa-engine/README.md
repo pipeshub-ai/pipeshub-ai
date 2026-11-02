@@ -114,6 +114,13 @@ hides a fail on the other. Shard jobs' logs and JUnit files share names, so in
 the report job's merged download one shard's can overwrite another's; each job's
 own artifact keeps its full set.
 
+**Stack variants.** A test that needs `stack:<name>` runs in its own stack job.
+`run-stack` adds the plan's `variants` (`""` is the default stack) to its matrix
+and passes `--stack-variant NAME` for a non-empty one. The variant job writes
+`results-stack-G-KofN-NAME.json` and lists every other stack test as `not_run`
+`scope`; the report's merge keeps the executed outcome. Variants are declared
+in `[variants.<name>]` in `rules/always.toml`.
+
 The run jobs call `scripts/qa` from the PR's tree. Once `QA_ENFORCE` is on, a PR
 branch created before the engine landed has no `scripts/qa` and must be rebased.
 

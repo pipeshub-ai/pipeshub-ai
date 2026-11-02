@@ -68,6 +68,7 @@ jobs:
       has_node: ${{ steps.validate.outputs.has_node }}
       families: ${{ steps.validate.outputs.families }}
       graph_db: ${{ steps.validate.outputs.graph_db }}
+      variants: ${{ steps.validate.outputs.variants }}
       shards: ${{ steps.validate.outputs.shards }}
       shard_total: ${{ steps.validate.outputs.shard_total }}
     steps:
@@ -254,6 +255,8 @@ jobs:
         # one shard, on the standard profile's graph DB.
         graph: ${{ fromJSON(needs.plan.outputs.graph_db || '["neo4j"]') }}
         shard: ${{ fromJSON(needs.plan.outputs.shards || '[1]') }}
+        # "" is the default stack; a variant is a stack of its own (qa run --stack-variant).
+        variant: ${{ fromJSON(needs.plan.outputs.variants || '[""]') }}
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     timeout-minutes: 300
@@ -534,16 +537,18 @@ jobs:
           GRAPH: ${{ matrix.graph }}
           SHARD: ${{ matrix.shard }}
           SHARD_TOTAL: ${{ needs.plan.outputs.shard_total || '1' }}
-        # One shard passes no --shard, so a PR tree whose engine predates sharding still runs.
+          VARIANT: ${{ matrix.variant }}
+        # One shard passes no --shard, and the default stack no --stack-variant, so a PR tree whose engine predates them still runs.
         run: |
           shard=()
           if [ "$SHARD_TOTAL" -gt 1 ]; then shard=(--shard "$SHARD/$SHARD_TOTAL"); fi
+          if [ -n "$VARIANT" ]; then shard+=(--stack-variant "$VARIANT"); fi
           python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" "${shard[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           # Must end in -<edition>: the report and gate download qa-*-<edition>.
-          name: qa-results-stack-${{ matrix.graph }}-${{ matrix.shard }}-${{ inputs.edition }}
+          name: qa-results-stack-${{ matrix.graph }}-${{ matrix.shard }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-${{ inputs.edition }}
           path: |
             qa-out/results-stack-*.json
             qa-out/logs/

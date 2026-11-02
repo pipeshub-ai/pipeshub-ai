@@ -72,6 +72,14 @@ integration = true
 extra_minutes = 0
 full = true
 
+# Stack variants: a test that needs `stack:<name>` (through suites.toml marker_needs)
+# runs in its own stack job. Hooks read the name from QA_STACK_VARIANT.
+[variants.perf]
+description = "stack for the performance smoke"
+
+[variants.upgrade]
+description = "stack that boots the previous release, then the head image, on the same volumes"
+
 # Always-run selections beyond changed tests (those always run).
 [[always]]
 id = "e2e-smoke"

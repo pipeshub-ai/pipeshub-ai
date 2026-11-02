@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from qa import collect, schema
+from qa import catalog, collect, schema
 from qa.config import Config
 from qa.impact import PROFILE_ORDER
 
@@ -159,8 +159,12 @@ def _stack(cfg: Config, plan_input: dict[str, Any], profile: str, rows: list[dic
     profiles = sorted(p for p, ms in cfg.compose_profiles.items() if markers & set(ms))
     if broker == "kafka" and "kafka" in cfg.compose_profiles and "kafka" not in profiles:
         profiles.append("kafka")
+    stack_rows = [r for r in rows if "service:stack" in r["needs"]]
+    names = {catalog.variant_of(r) for r in stack_rows}
     return {
         "needed": needs_stack,
+        # "" is the default stack; a variant is its own job.
+        "variants": ([""] if "" in names else []) + sorted(names - {""}),
         "graph_db": ["neo4j", "arango"] if graph == "both" else [graph],
         "broker": broker,
         "compose_profiles": profiles,

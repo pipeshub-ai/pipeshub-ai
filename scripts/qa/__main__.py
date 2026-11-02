@@ -193,6 +193,7 @@ def cmd_validate(args) -> int:
             fh.write(f"tests={len(plan['tests'])}\n")
             fh.write(f"needs_stack={'true' if plan['stack']['needed'] else 'false'}\n")
             fh.write(f"graph_db={json.dumps(plan['stack']['graph_db'])}\n")
+            fh.write(f"variants={json.dumps(plan['stack'].get('variants', []))}\n")
             fh.write(f"families={json.dumps(sorted(families))}\n")
             fh.write(f"matrix={json.dumps(plan['matrix'])}\n")
             fh.write(f"has_python={'true' if families & {'pytest', 'unittest'} else 'false'}\n")
@@ -221,7 +222,7 @@ def cmd_run(args) -> int:
         stack_mode = args.stack or os.environ.get("QA_STACK", "none")
         result = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=args.base_url,
                          build=args.build, dry_run=args.dry_run, retry=not args.no_retry, scope=args.scope,
-                         shard=args.shard)
+                         shard=args.shard, variant=args.stack_variant)
     finally:
         # The upload steps run even when the run raises, so the logs it already wrote must be clean first.
         report.redact_files(out)
@@ -232,7 +233,7 @@ def cmd_run(args) -> int:
         return 0
     report.redact_results(result)
     name = "results" + ("" if args.scope == "all" else f"-{args.scope}") + (f"-{args.graph_db}" if args.graph_db else "")
-    _dump(out / (name + (f"-{args.shard[0]}of{args.shard[1]}" if args.shard else "") + ".json"), result)
+    _dump(out / (name + (f"-{args.shard[0]}of{args.shard[1]}" if args.shard else "") + (f"-{args.stack_variant}" if args.stack_variant else "") + ".json"), result)
     from collections import Counter
     counts = Counter(t["outcome"] for t in result["tests"])
     print("results: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + f" ({result['seconds']}s)")
@@ -747,6 +748,8 @@ def parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-retry", action="store_true")
         sp.add_argument("--scope", choices=["all", "unit", "stack"], default="all",
                         help="unit: tests that need no stack; stack: integration and e2e only")
+        sp.add_argument("--stack-variant", default=os.environ.get("QA_STACK_VARIANT", ""), metavar="NAME",
+                        help="run only the tests that need this stack variant (default: the default stack)")
         sp.add_argument("--shard", type=_shard_arg, metavar="K/N",
                         help="run only stack shard K of N (duration-balanced test groups)")
 
