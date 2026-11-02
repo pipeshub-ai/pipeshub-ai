@@ -1,0 +1,10 @@
+{
+  "label": "smoke-local-neo4j",
+  "benchmark": "smoke",
+  "note": "First smoke baseline, from one local run of integration_test_perf_smoke.py on a managed stack (Neo4j, Redis broker, stand-in model): 50 indexed files, then 20 files, 1 user, 60 s of queries. Keys are what smoke.load_baseline reads; the budget fails above 2x each p95.",
+  "measured_at": "2026-11-02T10:17:21+00:00",
+  "index p95": 47.7,
+  "search p95": 0.285,
+  "chat p95": 0.285,
+  "error_rate": 0.0
+}
