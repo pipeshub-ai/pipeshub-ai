@@ -89,7 +89,7 @@ describe('slack-bot/utils/agui-stream', () => {
       handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
       attempt('m2');
 
-      expect(plan.flushReasoning()?.details).to.equal('Check the deploy log.');
+      expect(plan.flushReasoning()?.output).to.equal('Check the deploy log.');
     });
   });
 });

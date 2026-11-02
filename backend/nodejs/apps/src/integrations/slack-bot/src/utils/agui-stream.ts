@@ -56,6 +56,14 @@ export interface SlackConversationComplete {
   [key: string]: unknown;
 }
 
+/** Where a tool call belongs, as the dashboard shows it. */
+export interface SlackToolCallMeta {
+  /** The sub-agent whose run made the call. */
+  agent?: string;
+  /** How a call that waited for approval was settled. */
+  approvalAnswer?: string;
+}
+
 export interface SlackAGUICallbacks {
   /** What an MCP server says about a running tool: its message, or "3/10" / "25%". */
   onToolProgress?: (toolName: string, progress: string) => void;
@@ -69,13 +77,23 @@ export interface SlackAGUICallbacks {
     toolName: string,
     displayName?: string,
     toolCallId?: string,
+    call?: SlackToolCallMeta,
   ) => void;
   onToolResult?: (
     toolName: string,
     displayName?: string,
     status?: string,
     toolCallId?: string,
-    content?: unknown,
+    result?: { summary?: string; view?: unknown },
+  ) => void;
+  /**
+   * A call's arguments: the server's summary (e.g. `Searched for "Q3 revenue"`)
+   * and the raw arguments it was sent, for the details the summary leaves out.
+   */
+  onToolArgs?: (
+    toolName: string,
+    args: { summary?: string; raw?: string },
+    toolCallId?: string,
   ) => void;
   onSubAgent?: (role: string, phase: "started" | "completed" | "failed") => void;
   /** Full current answer text (caller diffs against last streamed length). */
@@ -209,6 +227,11 @@ class RootRunTracker {
     return role;
   }
 
+  /** The sub-agent a child run belongs to; undefined for the root run. */
+  roleOf(runId: string | undefined): string | undefined {
+    return runId ? this.childRoleByRunId.get(runId) : undefined;
+  }
+
   isRootRun(runId: string | undefined): boolean {
     if (!runId) return true;
     if (this.childRunIds.has(runId)) return false;
@@ -336,7 +359,13 @@ export function createSlackAGUIEventHandler(
           emitAnswer();
         }
 
-        callbacks.onToolStart?.(toolCallName, displayName, toolCallId);
+        const agent = runs.roleOf(runId);
+        const approvalAnswer =
+          typeof data?.approvalAnswer === "string" ? data.approvalAnswer : undefined;
+        callbacks.onToolStart?.(toolCallName, displayName, toolCallId, {
+          ...(agent ? { agent } : {}),
+          ...(approvalAnswer ? { approvalAnswer } : {}),
+        });
         break;
       }
 
@@ -354,6 +383,21 @@ export function createSlackAGUIEventHandler(
           if (isAskUserQuestionToolName(toolCallName)) {
             emitAskUserFromRaw(data.delta, toolCallId);
           }
+        }
+        const summary =
+          typeof data?.argsSummary === "string" ? data.argsSummary : undefined;
+        const raw =
+          typeof data?.argsPreview === "string"
+            ? data.argsPreview
+            : typeof data?.delta === "string"
+              ? data.delta
+              : undefined;
+        if (toolCallName && (summary || raw)) {
+          callbacks.onToolArgs?.(
+            toolCallName,
+            { ...(summary ? { summary } : {}), ...(raw ? { raw } : {}) },
+            toolCallId,
+          );
         }
         break;
       }
@@ -375,7 +419,12 @@ export function createSlackAGUIEventHandler(
           displayName,
           status,
           toolCallId,
-          data?.content,
+          {
+            ...(typeof data?.resultSummary === "string"
+              ? { summary: data.resultSummary }
+              : {}),
+            view: data?.resultView,
+          },
         );
 
         if (isAskUserQuestionToolName(toolCallName)) {

@@ -2,6 +2,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import axios from 'axios';
 import { Readable } from 'stream';
+import { SlackPlanStream } from '../../../src/integrations/slack-bot/src/utils/plan-stream';
 
 // Loads a Slack bot index.ts with Slack, storage and the registry faked, so a
 // test can drive one answer through it and check what lands in the thread.
@@ -20,14 +21,24 @@ const BOT = {
 export const STREAM_TS = '300.1';
 export const STATUS_TS = '200.1';
 
+/** The run's frames, one chunk each, the way a live stream delivers them. */
 export const sse = (...frames: Record<string, unknown>[]) =>
-  Readable.from([
-    frames
-      .map((f) => `event: ${f.type}\ndata: ${JSON.stringify(f)}\n\n`)
-      .join(''),
-  ]);
+  Readable.from(
+    (async function* live() {
+      for (const f of frames) {
+        // A moment between frames, so sends interleave with arriving text.
+        await new Promise((resolve) => setImmediate(resolve));
+        yield `event: ${String(f.type)}\ndata: ${JSON.stringify(f)}\n\n`;
+      }
+    })(),
+  );
 
-export const ANSWER = 'Revenue grew 12% [1](/record/rec-1).';
+/** The answer as the model streams it: its citation is a placeholder. */
+export const ANSWER = 'Revenue grew 12% [source](ref1).';
+/** The same answer as the backend finishes it. */
+export const NORMALIZED_ANSWER = 'Revenue grew 12% [1](/record/rec-1).';
+/** What Slack shows: the placeholder as a plain marker that matches the Sources list. */
+export const SHOWN_ANSWER = 'Revenue grew 12% [1].';
 
 export const finished = (content: string, citations: unknown[] = []) => ({
   type: 'RUN_FINISHED',
@@ -53,13 +64,16 @@ export const CITATIONS = [
   },
 ];
 
+/** Text the way a model streams it: a few characters per frame. */
+export const tokens = (text: string, size = 4): Record<string, unknown>[] =>
+  (text.match(new RegExp(`[\\s\\S]{1,${String(size)}}`, 'g')) ?? []).map(
+    (delta) => ({ type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta }),
+  );
+
 export const answerFrames = (toolStatus: string, preamble = '') => [
   { type: 'RUN_STARTED', runId: 'r1' },
   ...(preamble
-    ? [
-        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: preamble },
-      ]
+    ? [{ type: 'TEXT_MESSAGE_START', runId: 'r1' }, ...tokens(preamble)]
     : []),
   {
     type: 'TOOL_CALL_START',
@@ -74,9 +88,9 @@ export const answerFrames = (toolStatus: string, preamble = '') => [
     status: toolStatus,
   },
   { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-  { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: ANSWER },
+  ...tokens(ANSWER),
   { type: 'TEXT_MESSAGE_END', runId: 'r1' },
-  finished(ANSWER, CITATIONS),
+  finished(NORMALIZED_ANSWER, CITATIONS),
 ];
 
 export function loadBot(src: string, extraFakes: Record<string, unknown>) {
@@ -158,7 +172,10 @@ export function slackClient(startStreamFails = false) {
           data: { error: 'not_allowed' },
         });
       opened += 1;
-      return { ok: true, ts: opened === 1 ? STREAM_TS : `300.${String(opened)}` };
+      return {
+        ok: true,
+        ts: opened === 1 ? STREAM_TS : `300.${String(opened)}`,
+      };
     }),
   };
 }
@@ -189,7 +206,9 @@ export const streamedText = (client: ReturnType<typeof slackClient>): string =>
 
 /** The answer text still in the thread: streamed text of the messages that were not deleted. */
 export function visibleText(client: ReturnType<typeof slackClient>): string {
-  const deleted = new Set(apiCalls(client, 'chat.delete').map((d) => d.ts as string));
+  const deleted = new Set(
+    apiCalls(client, 'chat.delete').map((d) => d.ts as string),
+  );
   const byTs = new Map<string, string>();
   // Opened messages get their ts in call order: 300.1, 300.2, ...
   let opened = 0;
@@ -215,30 +234,48 @@ export function visibleText(client: ReturnType<typeof slackClient>): string {
     .join('');
 }
 
+/** Text and steps in the order they went to the stream. */
+export const streamOrder = (client: ReturnType<typeof slackClient>): string[] =>
+  streamedChunks(client).map((c) =>
+    c.type === 'task_update'
+      ? `[${c.id as string}:${c.status as string}]`
+      : c.type === 'plan_update'
+        ? `[plan:${c.title as string}]`
+        : (c.text as string),
+  );
+
+/** Each step's last state as the reply ended. */
+export const finalSteps = (client: ReturnType<typeof slackClient>): Map<string, AnyArgs> => {
+  const steps = new Map<string, AnyArgs>();
+  const chunks = [
+    ...streamedChunks(client),
+    ...apiCalls(client, 'chat.stopStream').flatMap((stop) => (stop.chunks ?? []) as AnyArgs[]),
+  ];
+  for (const c of chunks) {
+    if (c.type === 'task_update') steps.set(c.id as string, c);
+  }
+  return steps;
+};
+
 export function expectStreamedAnswer(
   client: ReturnType<typeof slackClient>,
   toolEnd: string,
 ): void {
   const [start] = apiCalls(client, 'chat.startStream');
-  expect(start).to.deep.include({
-    thread_ts: '100.1',
-    task_display_mode: 'plan',
-  });
-  expect(start.chunks[0]).to.deep.equal({
-    type: 'plan_update',
-    title: 'Thinking',
-  });
+  expect(start).to.deep.include({ thread_ts: '100.1', task_display_mode: 'plan' });
+  expect(start.chunks[0]).to.deep.equal({ type: 'plan_update', title: 'Thinking' });
   const everyCall = [
     ...apiCalls(client, 'chat.startStream'),
     ...apiCalls(client, 'chat.appendStream'),
   ];
   expect(everyCall.every((call) => !('markdown_text' in call))).to.equal(true);
 
-  const tasks = streamedChunks(client).filter((c) => c.type === 'task_update');
-  expect(tasks.every((t) => t.id === 'c1')).to.equal(true);
-  expect(tasks.at(-1)?.status).to.equal(toolEnd);
-  // Raw markdown, with the record citation as a plain marker that matches the sources.
-  expect(streamedText(client)).to.equal('Revenue grew 12% [1].');
+  // The step, then the answer streamed after it with its citation as a marker.
+  const order = streamOrder(client);
+  expect(order.filter((c) => c.startsWith('['))).to.include(
+    `[tools-1:${toolEnd === 'complete' ? 'complete' : 'error'}]`,
+  );
+  expect(streamedText(client)).to.equal(SHOWN_ANSWER);
 
   const [stop] = apiCalls(client, 'chat.stopStream');
   expect(stop.ts).to.equal(STREAM_TS);
@@ -246,16 +283,15 @@ export function expectStreamedAnswer(
   expect(sources)
     .to.include('Sources')
     .and.include('[1] ')
-    .and.include('Q3 report');
+    .and.include('Q3 report')
+    .and.include('https://x.test/q3');
 
   expect(client.chat.update.called, 'no chat.update on the answer').to.equal(
     false,
   );
+  // The timeline shows progress itself: no status message.
+  expect(client.chat.postMessage.called).to.equal(false);
   expect(apiCalls(client, 'chat.delete')).to.deep.equal([]);
-  expect(
-    client.chat.postMessage.called,
-    'nothing posted besides the stream',
-  ).to.equal(false);
 }
 
 export function expectPostedAnswer(
@@ -300,6 +336,8 @@ export function describeAnswerWiring(
       sinon.stub(console, 'log');
       sinon.stub(console, 'error');
       stubConfig();
+      // No pause between stream calls in tests.
+      SlackPlanStream.minIntervalMs = 0;
       bot = loadBot(src, fakes);
     });
 
@@ -334,141 +372,366 @@ export function describeAnswerWiring(
       return client;
     }
 
-    it('streams the plan and the answer in one message and ends with the sources', async () => {
+    it('streams the step and then the answer in one message, ending with the sources', async () => {
       expectStreamedAnswer(await ask(answerFrames('completed')), 'complete');
     });
 
-    it('marks a failed tool as an error in the plan', async () => {
+    it('marks a failed tool as an error', async () => {
       expectStreamedAnswer(await ask(answerFrames('failed')), 'error');
     });
 
-    it('streams the text before a table and puts the table below it as blocks', async () => {
-      const intro = `${'Revenue by quarter, with the detail you asked for. '.repeat(10)}\n\n`;
-      const answer = `${intro}| Quarter | Revenue |\n| --- | --- |\n| Q3 | 12% |\n\nThat is all.`;
-      // Two deltas: the intro streams, then the table stops the text stream.
-      const frames = answerFrames('completed').flatMap((f) => {
-        if (f.type === 'TEXT_MESSAGE_CONTENT') {
-          return [
-            { ...f, delta: intro },
-            { ...f, delta: answer.slice(intro.length) },
-          ];
-        }
-        return [f.type === 'RUN_FINISHED' ? finished(answer) : f];
-      });
-
-      const client = await ask(frames);
-
-      const text = apiCalls(client, 'chat.appendStream')
-        .flatMap((a) => a.chunks as AnyArgs[])
-        .filter((c) => c.type === 'markdown_text')
-        .map((c) => c.text as string)
-        .join('');
-      expect(text)
-        .to.include('Revenue by quarter')
-        .and.not.include('Quarter |');
-      const [stop] = apiCalls(client, 'chat.stopStream');
-      const blocks = stop.blocks as AnyArgs[];
-      expect(blocks.some((b) => b.type === 'table')).to.equal(true);
-      expect(JSON.stringify(blocks))
-        .to.include('That is all.')
-        .and.not.include('Revenue by quarter');
-      expect(client.chat.update.called).to.equal(false);
-    });
-
-    it('shows no plan for a run with no steps', async () => {
+    it('streams a long answer live, in several appends', async () => {
+      const answer = 'Asana grew revenue in the third quarter. '.repeat(40);
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: 'Hello there.' },
-        finished('Hello there.'),
+        ...tokens(answer),
+        finished(answer),
       ]);
 
+      const appends = apiCalls(client, 'chat.appendStream').filter((a) =>
+        (a.chunks as AnyArgs[]).some((c) => c.type === 'markdown_text'),
+      );
+      expect(appends.length).to.be.greaterThan(1);
+      expect(visibleText(client)).to.equal(answer);
+    });
+
+    it('shows citation placeholders as [n] markers that match a numbered Sources list with real links', async () => {
+      const answer =
+        'Revenue grew [source](ref1). The [Asana Trust Center](https://ref2.xyz) lists the report https://ref1.xyz.';
+      const cites = [
+        {
+          citationData: {
+            chunkIndex: 1,
+            metadata: {
+              recordId: 'r1',
+              recordName: 'Q3 report',
+              webUrl: 'https://x.test/q3',
+            },
+          },
+        },
+        {
+          citationData: {
+            chunkIndex: 2,
+            metadata: {
+              recordId: 'r2',
+              recordName: 'Trust at Asana',
+              webUrl: 'https://asana.com/trust',
+            },
+          },
+        },
+      ];
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 3),
+        finished('normalized', cites),
+      ]);
+
+      expect(visibleText(client)).to.equal(
+        'Revenue grew [1]. The Asana Trust Center [2] lists the report [1].',
+      );
+      const [stop] = apiCalls(client, 'chat.stopStream');
+      const listed = JSON.stringify(stop.blocks);
+      expect(listed)
+        .to.include('"[1] "')
+        .and.include('https://x.test/q3')
+        .and.include('"[2] "')
+        .and.include('https://asana.com/trust');
+      const everything = JSON.stringify(
+        client.apiCall.getCalls().map((c) => c.args),
+      );
+      expect(everything).to.not.match(/ref\d+\.xyz|\(ref\d+\)/);
+    });
+
+    it('keeps line breaks, headings and ordinary links of a multi-paragraph answer streamed in small deltas', async () => {
+      const answer = [
+        '## Asana overview',
+        '',
+        'Asana is a work-management platform.',
+        '',
+        '## SOC 3 report',
+        '',
+        'You can find it in the [Asana Trust Center](https://asana.com/trust); the report is listed there.',
+      ].join('\n');
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 3),
+        finished(answer),
+      ]);
+
+      expect(visibleText(client)).to.equal(answer);
+    });
+
+    it('groups tool calls with no text between them into one step, listing every call, like the dashboard', async () => {
+      const call = (id: string, name: string, args: string, status = 'completed', summary?: string) => [
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: id, toolCallName: name },
+        { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: id, delta: '{}', argsSummary: args },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: id, status, ...(summary ? { resultSummary: summary } : {}) },
+      ];
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        ...call('c1', 'knowledgegraph__search', 'Searched for "Asana SOC 3"', 'completed', '3 results\nDoc A'),
+        ...call('c2', 'knowledgegraph__search', 'Searched for "Asana revenue"', 'failed', 'no results'),
+        ...call('c3', 'knowledgegraph__semantic_search', 'Searched for "Q3"'),
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('The first lookup was inconclusive.'),
+        ...call('c4', 'fetch_url', 'Fetched asana.com'),
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(ANSWER),
+        finished(NORMALIZED_ANSWER, CITATIONS),
+      ]);
+
+      const steps = [...finalSteps(client).values()];
+      expect(steps.map((t) => t.title)).to.deep.equal([
+        'Knowledgegraph: Explored 3 searches',
+        'The first lookup was inconclusive.',
+        'Fetch Url',
+      ]);
+      expect(steps[0]).to.deep.include({
+        status: 'error',
+        details: '3 calls · 1 failed',
+        output: [
+          '✓ Search',
+          '    Arguments: Searched for "Asana SOC 3"',
+          '    Result: 3 results',
+          '    Doc A',
+          '⚠ Search',
+          '    Arguments: Searched for "Asana revenue"',
+          '    Result: Failed: no results',
+          '✓ Semantic Search',
+          '    Arguments: Searched for "Q3"',
+        ].join('\n'),
+      });
+      expect(steps[1]).to.deep.equal({ type: 'task_update', id: steps[1].id, title: 'The first lookup was inconclusive.', status: 'complete' });
+      expect(steps[2]).to.deep.include({ status: 'complete', output: 'Arguments: Fetched asana.com' });
+      expect(steps[2]).to.not.have.property('details');
+      expect(streamedText(client)).to.equal(SHOWN_ANSWER);
+    });
+
+    it('lists every call of a long group', async () => {
+      const frames = Array.from({ length: 6 }, (_, i) => [
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: `c${String(i)}`, toolCallName: 'web_search' },
+        { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: `c${String(i)}`, delta: '{}', argsSummary: `Searched for "query ${String(i)}"` },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: `c${String(i)}`, status: 'completed', resultSummary: `${String(i)} results` },
+      ]).flat();
+      const client = await ask([{ type: 'RUN_STARTED', runId: 'r1' }, ...frames, finished('')]);
+
+      const [group] = [...finalSteps(client).values()];
+      expect(group.title).to.equal('Explored 6 searches');
+      expect(group.details).to.equal('6 calls');
+      expect((group.output as string).split('\n')).to.deep.equal(
+        Array.from({ length: 6 }, (_, i) => [
+          '✓ Web Search',
+          `    Arguments: Searched for "query ${String(i)}"`,
+          `    Result: ${String(i)} results`,
+        ]).flat(),
+      );
+    });
+
+    it('keeps the plan and every step in the message after the answer is done', async () => {
+      const client = await ask(answerFrames('completed', 'Let me check the reports.'));
+
+      expect(apiCalls(client, 'chat.delete')).to.deep.equal([]);
+      expect(apiCalls(client, 'chat.startStream')).to.have.length(1);
+      const [start] = apiCalls(client, 'chat.startStream');
+      expect(start.chunks[0]).to.deep.equal({ type: 'plan_update', title: 'Thinking' });
+      const steps = [...finalSteps(client).values()];
+      expect(steps.map((t) => [t.title, t.status])).to.deep.equal([
+        ['Let me check the reports.', 'complete'],
+        ['Search', 'complete'],
+      ]);
+    });
+
+    it('lists only real pages as a step sources', async () => {
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        {
+          type: 'TOOL_CALL_START',
+          runId: 'r1',
+          toolCallId: 'c1',
+          toolCallName: 'web_search',
+        },
+        {
+          type: 'TOOL_CALL_RESULT',
+          runId: 'r1',
+          toolCallId: 'c1',
+          status: 'completed',
+          content: 'URL: https://ref83.xyz',
+          resultView: {
+            kind: 'records',
+            columns: ['Title'],
+            total: 2,
+            rows: [
+              { cells: ['Trust at Asana'], url: 'https://asana.com/trust' },
+              { cells: ['Placeholder'], url: 'https://ref83.xyz' },
+            ],
+          },
+        },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(ANSWER),
+        finished(NORMALIZED_ANSWER, CITATIONS),
+      ]);
+
+      const done = streamedChunks(client)
+        .filter((c) => c.type === 'task_update')
+        .pop();
+      expect(done.sources).to.deep.equal([
+        { type: 'url', url: 'https://asana.com/trust', text: 'Trust at Asana' },
+      ]);
       expect(
-        streamedChunks(client).some((c) => c.type === 'plan_update'),
-      ).to.equal(false);
-      expect(streamedText(client)).to.equal('Hello there.');
+        JSON.stringify(client.apiCall.getCalls().map((c) => c.args)),
+      ).to.not.match(/ref\d+\.xyz/);
     });
 
-    it('keeps a short opening before a tool call as that step, not answer text', async () => {
-      const client = await ask(
-        answerFrames('completed', 'Let me check the reports.'),
-      );
+    it('shows a short opening before a step once, in full, as its own row in the plan', async () => {
+      const client = await ask(answerFrames('completed', 'Let me check the reports.'));
 
-      expect(streamedText(client)).to.equal('Revenue grew 12% [1].');
-      const [step] = streamedChunks(client).filter(
-        (c) => c.type === 'task_update',
-      );
-      expect(step.details).to.equal('Let me check the reports.');
+      const rows = [...finalSteps(client).values()];
+      expect(rows[0]).to.deep.include({ title: 'Let me check the reports.', status: 'complete' });
+      expect(rows.some((t) => t.details !== undefined)).to.equal(false);
+      expect(streamedText(client)).to.equal(SHOWN_ANSWER);
     });
 
-    it('leaves a long opening in place when a tool call follows it', async () => {
-      const opening = `${'Here is what I know so far about revenue. '.repeat(12)}\n`;
+    it('splits a long opening into rows at sentence ends, never cutting it short', async () => {
+      const sentence = 'I will check the revenue in the filings and the trust page. ';
+      const opening = sentence.repeat(6).trim();
       const client = await ask(answerFrames('completed', opening));
 
-      expect(streamedText(client)).to.equal(
-        `${opening}\n\nRevenue grew 12% [1].`,
-      );
-      expect(apiCalls(client, 'chat.delete')).to.deep.equal([]);
+      const rows = [...finalSteps(client).values()].filter((t) => String(t.id).startsWith('note-'));
+      expect(rows.length).to.be.greaterThan(1);
+      expect(rows.every((r) => (r.title as string).length <= 250 && (r.title as string).endsWith('.'))).to.equal(true);
+      expect(rows.map((r) => r.title as string).join(' ')).to.equal(opening);
+      expect(JSON.stringify(rows)).to.not.include('…');
     });
 
-    it('sends the end of a long opening, streamed token by token, before the tool call', async () => {
+    it('sends the end of a long opening, streamed token by token, before the step', async () => {
       const opening = `${'Here is what I know so far about revenue. '.repeat(11)}It grew in Q3`;
-      const tokens = opening.match(/.{1,4}/gs) ?? [];
-      const client = await ask([
-        { type: 'RUN_STARTED', runId: 'r1' },
-        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        ...tokens.map((delta) => ({ type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta })),
-        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
-        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
-        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: ANSWER },
-        finished(ANSWER, CITATIONS),
-      ]);
+      const client = await ask(answerFrames('completed', opening));
 
-      expect(visibleText(client)).to.equal(`${opening}\n\nRevenue grew 12% [1].`);
+      expect(visibleText(client)).to.equal(`${opening}\n\n${SHOWN_ANSWER}`);
     });
 
-    it('takes back the text of a discarded model call and keeps the plan', async () => {
-      const partial = 'Revenue fell, according to the old report. '.repeat(10);
+    it('takes back the text of a discarded model call and keeps the steps', async () => {
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
-        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
-        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
+        {
+          type: 'TOOL_CALL_START',
+          runId: 'r1',
+          toolCallId: 'c1',
+          toolCallName: 'search',
+        },
+        {
+          type: 'TOOL_CALL_RESULT',
+          runId: 'r1',
+          toolCallId: 'c1',
+          status: 'completed',
+        },
         { type: 'TEXT_MESSAGE_START', runId: 'r1', messageId: 'm1' },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: partial },
+        ...tokens('Revenue fell, according to the old report. '.repeat(10)),
         { type: 'TEXT_MESSAGE_END', runId: 'r1', messageId: 'm1' },
-        { type: 'CUSTOM', runId: 'r1', name: 'message_discarded', value: { messageId: 'm1' } },
+        {
+          type: 'CUSTOM',
+          runId: 'r1',
+          name: 'message_discarded',
+          value: { messageId: 'm1' },
+        },
         { type: 'TEXT_MESSAGE_START', runId: 'r1', messageId: 'm2' },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: ANSWER },
-        finished(ANSWER, CITATIONS),
+        ...tokens(ANSWER),
+        finished(NORMALIZED_ANSWER, CITATIONS),
       ]);
 
-      expect(visibleText(client)).to.equal('Revenue grew 12% [1].');
-      expect(apiCalls(client, 'chat.delete')).to.deep.equal([{ channel: 'C1', ts: STREAM_TS }]);
+      expect(visibleText(client)).to.equal(SHOWN_ANSWER);
+      expect(apiCalls(client, 'chat.delete')).to.deep.equal([
+        { channel: 'C1', ts: STREAM_TS },
+      ]);
       const [, reopened] = apiCalls(client, 'chat.startStream');
       expect(reopened.chunks[0]).to.deep.equal({ type: 'plan_update', title: 'Thinking' });
-      expect(reopened.chunks[1]).to.deep.include({ id: 'c1', status: 'complete' });
+      expect(reopened.chunks[1]).to.deep.include({ id: 'tools-1', status: 'complete' });
     });
 
     it('never sends an artifact marker split across flushes', async () => {
       const intro = 'The report is ready for you to download. '.repeat(10);
       const marker = '::artifact[report.pdf](record:abc){application/pdf||abc}';
-      const content = `${intro}${marker} Done.`;
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: `${intro}${marker.slice(0, 20)}` },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: marker.slice(20, 40) },
-        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: `${marker.slice(40)} Done.` },
-        finished(content),
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          runId: 'r1',
+          delta: `${intro}${marker.slice(0, 20)}`,
+        },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          runId: 'r1',
+          delta: marker.slice(20, 40),
+        },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          runId: 'r1',
+          delta: `${marker.slice(40)} Done.`,
+        },
+        finished(`${intro}${marker} Done.`),
       ]);
 
-      const text = visibleText(client);
-      expect(text).to.not.include('::artifact').and.not.include('application/pdf').and.not.include('record:');
-      expect(text).to.equal(`${intro} Done.`);
+      expect(visibleText(client)).to.equal(`${intro} Done.`);
     });
 
-    it('replaces the plan with the questions when the run asks one', async () => {
+    it('streams the text before a table and puts the table below it as blocks', async () => {
+      const intro = `${'Revenue by quarter, with the detail you asked for. '.repeat(10)}\n\n`;
+      const answer = `${intro}| Quarter | Revenue |\n| --- | --- |\n| Q3 | 12% |\n\nThat is all.`;
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: intro },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          runId: 'r1',
+          delta: answer.slice(intro.length),
+        },
+        finished(answer),
+      ]);
+
+      expect(visibleText(client))
+        .to.include('Revenue by quarter')
+        .and.not.include('Quarter |');
+      const [stop] = apiCalls(client, 'chat.stopStream');
+      const blocks = stop.blocks as AnyArgs[];
+      expect(blocks.some((b) => b.type === 'table')).to.equal(true);
+      expect(JSON.stringify(blocks)).to.include('That is all.');
+    });
+
+    it('puts a table as blocks even when the answer came only with the end of the run', async () => {
+      const answer = 'Revenue by quarter:\n\n| Quarter | Revenue |\n| --- | --- |\n| Q3 | 12% |\n\nThat is all.';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
+        finished(answer),
+      ]);
+
+      expect(streamedText(client)).to.include('Revenue by quarter:').and.not.include('|');
+      const [stop] = apiCalls(client, 'chat.stopStream');
+      expect((stop.blocks as AnyArgs[]).some((b) => b.type === 'table')).to.equal(true);
+      expect(JSON.stringify(stop.blocks)).to.include('That is all.');
+    });
+
+    it('shows no steps for a run with none', async () => {
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('Hello there.'),
+        finished('Hello there.'),
+      ]);
+
+      expect(
+        streamedChunks(client).some((c) => c.type === 'task_update'),
+      ).to.equal(false);
+      expect(streamedText(client)).to.equal('Hello there.');
+    });
+
+    it('replaces the steps with the questions when the run asks one', async () => {
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
         {
@@ -493,7 +756,7 @@ export function describeAnswerWiring(
       ]);
 
       expect(apiCalls(client, 'chat.delete')).to.deep.equal([
-        { channel: 'C1', ts: '300.1' },
+        { channel: 'C1', ts: STREAM_TS },
       ]);
       const posted = client.chat.postMessage
         .getCalls()
@@ -502,14 +765,6 @@ export function describeAnswerWiring(
     });
 
     it('posts the error itself when the stream has expired', async () => {
-      const client = slackClient();
-      client.apiCall
-        .withArgs('chat.stopStream')
-        .rejects(
-          Object.assign(new Error('done'), {
-            data: { error: 'message_not_in_streaming_state' },
-          }),
-        );
       post.resolves({
         data: sse(
           { type: 'RUN_STARTED', runId: 'r1' },
@@ -522,6 +777,14 @@ export function describeAnswerWiring(
           { type: 'RUN_ERROR', runId: 'r1', message: 'The model timed out' },
         ),
       });
+      const client = slackClient();
+      client.apiCall
+        .withArgs('chat.stopStream')
+        .rejects(
+          Object.assign(new Error('done'), {
+            data: { error: 'message_not_in_streaming_state' },
+          }),
+        );
       await bot.events.get('app_mention')!({
         event: {
           type: 'app_mention',
@@ -561,17 +824,15 @@ export function describeAnswerWiring(
       const states = streamedChunks(client)
         .concat(
           apiCalls(client, 'chat.stopStream').flatMap(
-            (s) => (s.chunks ?? []) as AnyArgs[],
+            (stop) => (stop.chunks ?? []) as AnyArgs[],
           ),
         )
-        .filter((c) => c.type === 'task_update' && c.id === 'c1');
-      expect(states.pop()).to.deep.include({
-        status: 'pending',
-        output: 'Waiting for approval',
-      });
+        .filter((c) => c.type === 'task_update');
+      // Waiting is not failing: it stays in progress, saying why, even after the reply stops.
+      expect(states.pop()).to.deep.include({ status: 'in_progress', details: 'Waiting for your approval' });
     });
 
-    it('deletes the status message and says the answer failed when the posted answer is empty', async () => {
+    it('replaces the status message with the failure notice when the posted answer is empty', async () => {
       const client = await ask(
         [
           { type: 'RUN_STARTED', runId: 'r1' },

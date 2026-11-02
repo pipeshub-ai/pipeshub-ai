@@ -1308,6 +1308,35 @@ export function hasMarkdownTableStartOutsideCodeFences(content: string): boolean
   return false;
 }
 
+/**
+ * Splits markdown before its first table (outside code fences): Slack
+ * markdown text shows the part before it, and blocks show the table and the
+ * rest. The second part is empty when there is no table.
+ */
+export function splitBeforeFirstTable(content: string): [string, string] {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  let activeFenceMarker: FenceMarker | null = null;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    if (activeFenceMarker) {
+      if (isFenceClosingLine(line, activeFenceMarker)) activeFenceMarker = null;
+      continue;
+    }
+    const openingFenceMarker = getFenceMarker(line);
+    if (openingFenceMarker) {
+      activeFenceMarker = openingFenceMarker;
+      continue;
+    }
+    if (tryParseMarkdownTableAtLine(lines, lineIndex)) {
+      return [
+        lines.slice(0, lineIndex).join('\n'),
+        lines.slice(lineIndex).join('\n'),
+      ];
+    }
+  }
+  return [lines.join('\n'), ''];
+}
+
 export function splitMarkdownMessageIntoTableAwareSegments(content: string): MarkdownTableSegment[] {
   if (!content) {
     return [];
