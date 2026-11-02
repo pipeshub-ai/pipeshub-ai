@@ -136,7 +136,8 @@ def _join(prefix: str, path: str) -> str:
     return joined or "/"
 
 
-def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
+def routes_in_file(path: Path, prefix: str, admin_only: bool = False) -> list[DiscoveredRoute]:
+    """Every route a router file registers, any method; ``admin_only`` keeps the admin-gated ones."""
     text = _strip_comments(path.read_text(encoding="utf-8"))
     # Middleware lists spread into a route (``...guard``), by the const name.
     lists = {m.group(1): _call_arguments(text, m.end() - 1) for m in _CONST_ARRAY.finditer(text)}
@@ -172,7 +173,7 @@ def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
             continue
         chain = args[1:]
         admin_at = next((i for i, a in enumerate(chain) if _is_admin(a)), None)
-        if admin_at is None and not admin_from_here:
+        if admin_only and admin_at is None and not admin_from_here:
             continue
         before = tuple(used_before) + tuple(
             _middleware_name(a) for a in (chain[:admin_at] if admin_at is not None else ())
@@ -187,6 +188,10 @@ def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
             after_admin=tuple(_middleware_name(a) for a in after),
         ))
     return found
+
+
+def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
+    return routes_in_file(path, prefix, admin_only=True)
 
 
 def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
@@ -212,6 +217,25 @@ def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
             "could not be read from the source: " + ", ".join(unmounted)
         )
     return routes
+
+
+def discover_routes(method: str, node_src: Path = NODE_SRC) -> tuple[list[DiscoveredRoute], list[str]]:
+    """Every route of ``method`` the Node API serves, and the router files whose
+    mount prefix is not a single one (none, or several), returned not raised."""
+    mounts = router_mounts(node_src)
+    routes: list[DiscoveredRoute] = []
+    unknown: list[str] = []
+    for path in _sources(node_src):
+        text = path.read_text(encoding="utf-8")
+        factories = _FACTORY.findall(text)
+        if not factories or not _ROUTE_CALL.search(text):
+            continue
+        prefixes = set().union(*(mounts.get(f, set()) for f in factories))
+        if len(prefixes) != 1:
+            unknown.append(str(path.relative_to(REPO)))
+            continue
+        routes.extend(r for r in routes_in_file(path, prefixes.pop()) if r.method == method.upper())
+    return routes, sorted(unknown)
 
 
 # Calls that ask whether the caller is an org admin in the Python services.

@@ -159,6 +159,12 @@ tests = ["integration-tests/response-validation/auth/**"]
 markers = ["security"]
 
 [[rule]]
+id = "unauthorized-reads"
+module = "auth"
+paths = ["backend/nodejs/apps/src/libs/middlewares/**", "backend/nodejs/apps/src/**/routes/**", "backend/nodejs/apps/src/**/*.routes.ts", "backend/nodejs/apps/src/modules/api-docs/**", "backend/nodejs/apps/src/**/api-docs/*-overlay.yaml", "integration-tests/helper/read_route*.py"]
+tests = ["integration-tests/security/integration_test_unauthorized_reads.py", "integration-tests/unit/test_read_route_inventory.py"]
+
+[[rule]]
 id = "oauth"
 module = "oauth"
 paths = ["backend/nodejs/apps/src/modules/oauth_provider/**", "backend/nodejs/apps/src/modules/oauth_apps/**"]
