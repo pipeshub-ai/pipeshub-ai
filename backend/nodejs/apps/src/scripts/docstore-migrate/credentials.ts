@@ -49,41 +49,26 @@ async function liveUsers(
 const stored = (v: string): string => idText(v) ?? v;
 
 /**
- * The credentials of these users as MongoDB holds them, whatever the case of the stored `userId`: the exact, lower- and upper-case forms
- * are one indexed query; an id that finds nothing there is asked again, alone, with a case-insensitive collation, so an id is taken as
- * absent only when neither finds it.
+ * Every credential of these users as MongoDB holds them, whatever the case of the stored `userId`: one query with a case-insensitive
+ * collation, so an older lower-case credential never hides a newer mixed-case one of the same account.
+ * shortcut: no index on `userCredentials.userId` has this collation, so each batch scans the collection; if follow-up batches get slow,
+ * add an index with `{ locale: 'en', strength: 2 }` on the source (not created here).
  */
 async function credentialsOf(
   rt: MigrationRuntime,
   ids: Iterable<string>,
   filter: Record<string, unknown> = {},
 ): Promise<Array<Record<string, unknown>>> {
-  const want = [...new Set(ids)];
-  const col = rt.db().collection('userCredentials');
-  const ask = (
-    list: string[],
-    collation?: { locale: string; strength: number },
-  ): Promise<Array<Record<string, unknown>>> =>
-    col
-      .find({ ...filter, userId: { $in: list } } as never, {
-        promoteLongs: false,
-        ...(collation ? { collation } : {}),
-      })
-      .toArray();
-  const found = await ask([
-    ...new Set(want.flatMap((u) => [u, u.toLowerCase(), u.toUpperCase()])),
-  ]);
-  const have = new Set(found.map((d) => stored(String(d.userId))));
-  const lost = want.filter((u) => !have.has(stored(u)));
-  const seen = new Set(found.map((d) => String(d._id)));
-  const more = lost.length
-    ? (await ask(lost, { locale: 'en', strength: 2 })).filter(
-        (d) => !seen.has(String(d._id)),
-      )
-    : [];
-  return [...found, ...more].sort((a, b) =>
-    String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0,
-  );
+  const found = await rt
+    .db()
+    .collection('userCredentials')
+    .find({ ...filter, userId: { $in: [...new Set(ids)] } } as never, {
+      promoteLongs: false,
+      collation: { locale: 'en', strength: 2 },
+      sort: { _id: 1 },
+    })
+    .toArray();
+  return found;
 }
 
 const accountOf = (c: Record<string, unknown>): string =>
