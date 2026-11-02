@@ -1,3 +1,4 @@
+import { MongoClient } from 'mongodb';
 import { Logger } from '../services/logger.service';
 import { ServiceUnavailableError } from '../errors/http.errors';
 import { DocStoreFencedError, DocStoreReadOnlyError } from './errors';
@@ -81,6 +82,17 @@ export const FENCE_WAIT_QUEUE_MS = 30_000;
 export const fenceClientOptions = (): { waitQueueTimeoutMS?: number } =>
   mongoFenceArmed() ? { waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS } : {};
 
+/**
+ * The connection options the application's `MongoService` sets in code (it passes no others): the migration tool derives the
+ * application's effective client options from these and the same MONGO_URI, so the two cannot drift apart.
+ */
+export const APP_MONGO_DEFAULT_OPTIONS = {
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  family: 4,
+  maxPoolSize: 10,
+};
+
 /** The client's resolved options (`mongoose.connection.getClient().options`), as far as the send bound needs them. */
 export interface FenceSendOptions {
   waitQueueTimeoutMS: number;
@@ -111,6 +123,24 @@ export const fenceSendMs = (o: FenceSendOptions): number =>
 export const fenceCutoverWaitMs = (o: FenceSendOptions): number =>
   FENCE_VISIBLE_MS + fenceSendMs(o);
 export const FENCE_POLL_GAP_MS = 1_000;
+
+/**
+ * The options the application's MongoDB client runs with while the fence is armed, resolved by the driver from the URI, the options
+ * `MongoService` sets and the bounded wait queue (the URI's own `retryWrites` or `connectTimeoutMS` count, the driver defaults fill the
+ * rest). Nothing is connected.
+ */
+export const appFenceSendOptions = (uri: string): FenceSendOptions => {
+  const o = new MongoClient(uri, {
+    ...APP_MONGO_DEFAULT_OPTIONS,
+    waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS,
+  }).options;
+  return {
+    waitQueueTimeoutMS: o.waitQueueTimeoutMS,
+    connectTimeoutMS: o.connectTimeoutMS,
+    serverSelectionTimeoutMS: o.serverSelectionTimeoutMS,
+    retryWrites: o.retryWrites,
+  };
+};
 /**
  * Every write the fence lets through carries the `comment` `{ tag: FENCED_WRITE_COMMENT, caller?: <the caller's own comment> }`.
  * In `$currentOp` match it with FENCED_WRITE_OP_MATCH, or test a comment with isFencedWriteComment.

@@ -16,13 +16,18 @@ const ident = (s: string): string => {
   return s;
 };
 
+/** The table keys of source ids (they differ for the outbox, whose key is a number folded from the ObjectId). */
+const tableIds = (m: CollectionMapping, ids: string[]): string[] =>
+  m.tableId ? ids.map(m.tableId) : ids;
+
 /** The rows a document owns, not the document's own row. */
 export async function deleteChildren(
   k: KernelTx,
   m: CollectionMapping,
-  ids: string[],
+  sourceIds: string[],
 ): Promise<void> {
-  if (ids.length === 0) return;
+  if (sourceIds.length === 0) return;
+  const ids = tableIds(m, sourceIds);
   for (const c of m.children ?? [])
     await k.query(
       fill(
@@ -43,10 +48,10 @@ export async function deleteDocs(
   await deleteChildren(k, m, ids);
   await k.query(
     fill(
-      '/* pipeshub:follow.delete_root */ DELETE FROM @{T} WHERE @{I} = ANY($1::text[])',
-      { T: ident(m.table), I: ident(m.idCol) },
+      '/* pipeshub:follow.delete_root */ DELETE FROM @{T} WHERE @{I} = ANY($1::@{Y}[])',
+      { T: ident(m.table), I: ident(m.idCol), Y: m.idType ?? 'text' },
     ),
-    [ids],
+    [tableIds(m, ids)],
   );
 }
 

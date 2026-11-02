@@ -1,7 +1,7 @@
 /** The cutover tooling's side of the Mongo fence document (see libs/repositories/fence.ts). */
 import {
   FENCE_POLL_GAP_MS,
-  FENCE_WAIT_QUEUE_MS,
+  appFenceSendOptions,
   FENCED_WRITE_OP_MATCH,
   fenceCutoverWaitMs,
   type FenceSendOptions,
@@ -43,8 +43,8 @@ export class FenceOpsTimeoutError extends Error {
 /** Tunables; tests shorten them. `opsTimeoutMs` is the operator's limit (MIGRATE_FENCE_OPS_TIMEOUT_S, default 120 s). */
 export const fenceTuning = {
   /**
-   * The client options the application's writes run with: its connect, server selection and retry settings come from the same
-   * deployment as this tool's own client, and its wait queue is the bounded one it runs with while the fence is armed. Tests of the
+   * The client options the application's writes run with: the application's own settings applied to the same MONGO_URI (see
+   * appFenceSendOptions), with the bounded wait queue it runs with while the fence is armed. Tests of the
    * command line set MIGRATE_FENCE_CLIENT_OPTIONS (JSON) with MIGRATE_TEST_HOOKS=1 to shorten the wait.
    */
   clientOptions: (rt: MigrationRuntime): FenceSendOptions => {
@@ -55,8 +55,8 @@ export const fenceTuning = {
       return JSON.parse(
         process.env.MIGRATE_FENCE_CLIENT_OPTIONS,
       ) as FenceSendOptions;
-    const o = rt.db().client.options as unknown as FenceSendOptions;
-    return { ...o, waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS };
+    // the application's own options, not this tool's client (which does not retry writes and waits longer to find a server)
+    return appFenceSendOptions(rt.cfg.mongoUri);
   },
   pollMs: FENCE_POLL_GAP_MS,
   opsTimeoutMs: Number(process.env.MIGRATE_FENCE_OPS_TIMEOUT_S ?? 120) * 1000,
