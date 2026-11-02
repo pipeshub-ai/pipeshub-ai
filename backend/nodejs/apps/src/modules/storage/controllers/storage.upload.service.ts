@@ -18,6 +18,7 @@ import {
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
+import { withWriteWindow } from './storage.write-window';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
@@ -232,14 +233,16 @@ export class UploadDocumentService {
     } else if (this.storageVendor === StorageVendor.AzureBlob) {
       patch.azureBlob = { url: baseUrl };
     }
-    const saved = await getDocumentRepository().update(
+    // Path, flag, vendor URL and the sequence in one write: the link can change this document's bytes from now on.
+    const marked = await getDocumentRepository().markAwaitingDirectUpload(
       orgId,
       documentId,
       patch,
     );
-    if (!saved) {
+    if (!marked) {
       throw new NotFoundError('Document does not exist');
     }
+    const saved = marked.row;
 
     res.setHeader('Location', storageURL);
     res.setHeader('x-document-id', documentId);
@@ -403,6 +406,27 @@ export class UploadDocumentService {
       mimeType: string;
     },
   ): Promise<void> {
+    // The bytes and the final save run in one writer window (a late loser of a keyed takeover writes inside it too). The response
+    // leaves after the window ended, so a reader that follows it finds the document settled.
+    const saved = await withWriteWindow(savedDocument, () =>
+      this.writeAndSaveUpload(savedDocument, leaseToken, upload),
+    );
+    res.status(200).json(saved);
+  }
+
+  private async writeAndSaveUpload(
+    savedDocument: Document,
+    leaseToken: string | undefined,
+    upload: {
+      documentName: string | undefined;
+      documentPath: string | undefined;
+      orgId: string;
+      isVersioned: boolean;
+      fileExtension: string;
+      buffer: Buffer;
+      mimeType: string;
+    },
+  ): Promise<Document> {
     const {
       documentName,
       documentPath,
@@ -488,14 +512,12 @@ export class UploadDocumentService {
     }
 
     if (isVersioned === false) {
-      const saved = await this.saveUpload(
+      return await this.saveUpload(
         savedDocument,
         patch,
         addedVersions,
         leaseToken,
       );
-      res.status(200).json(saved);
-      return;
     }
 
     if (savedDocument.versionHistory?.length === 0) {
@@ -536,13 +558,12 @@ export class UploadDocumentService {
         });
       }
     }
-    const saved = await this.saveUpload(
+    return await this.saveUpload(
       savedDocument,
       patch,
       addedVersions,
       leaseToken,
     );
-    res.status(200).json(saved);
   }
 
   /** The upload's final write; for a keyed one, only while it holds the lease. */

@@ -1422,6 +1422,36 @@ class TestNavigateDepthSingleQuery:
         assert captured.get("created_at") is not None
         assert captured["created_at"]["gte"] is not None
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("created_before", "lte"), [
+        ("2026-03-29", None),
+        ("2026-03-28", 1774742399999),
+    ], ids=["the-agents-today", "before-today"])
+    async def test_an_upper_bound_at_the_agents_today_is_not_applied(
+        self, created_before: str, lte: int | None,
+    ) -> None:
+        state = self._state_on_epic()
+        state.update(current_time="2026-03-29T09:30:00Z", timezone="UTC")
+        state["graph_provider"].get_node_depths_batch = AsyncMock(return_value={})
+        captured = {}
+
+        async def capture_get_nodes(self_inner, **kwargs) -> MagicMock:
+            captured.update(kwargs)
+            mock_resp = _make_knowledge_hub_response(items=[], total=0)
+            mock_resp.typed_records = None
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            success, _text = await KnowledgeGraph(state=state).navigate(
+                node_id="epic1", created_after="2026-01-01", created_before=created_before,
+            )
+
+        assert success
+        assert captured["created_at"] == {"gte": 1767225600000, "lte": lte}
+
 
 class TestDepth2ContextEnrichment:
     """depth>1 rows get enriched with `Record.to_llm_context()` metadata via
@@ -1842,3 +1872,58 @@ class TestNavigateTimestampRendering:
             success, text = await tool.navigate()
         assert success
         assert "created:" not in text
+
+
+class TestNavigateFailedListing:
+    """A listing that failed (a busy or out-of-memory graph on a huge app) read as "(no children)"."""
+
+    @staticmethod
+    async def _navigate_failing_with(error: str, code: int) -> tuple[bool, str]:
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        failed = _make_knowledge_hub_response(items=[])
+        failed.success = False
+        failed.error = error
+        failed.errorCode = code
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=failed),
+        ):
+            return await KnowledgeGraph(state=state).navigate()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_is_reported_not_shown_as_empty(self) -> None:
+        success, text = await self._navigate_failing_with(
+            "The listing is busy right now. Please try again in a few seconds.", 503,
+        )
+
+        assert not success
+        assert text == "Listing failed: The listing is busy right now. Please try again in a few seconds."
+        assert "no children" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_page_past_the_walk_names_what_navigate_takes(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        listing = AsyncMock(return_value=_make_knowledge_hub_response(items=[]))
+        with patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=listing):
+            success, text = await KnowledgeGraph(state=state).navigate(page=51)
+
+        assert not success
+        assert text.startswith("Listing failed: Page 51 is past the last page a listing reaches (50).")
+        assert "larger limit" in text
+        assert "cursor" not in text
+        listing.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_only_a_listing_too_large_to_read_points_to_a_name_query(self) -> None:
+        success, text = await self._navigate_failing_with(
+            "This view has too many records to list at once. Open a folder, or narrow by search.", 422,
+        )
+
+        assert not success
+        assert text.startswith("Listing failed: This view has too many records to list at once.")
+        assert "knowledgegraph__list_files with a name query" in text

@@ -119,6 +119,13 @@ STORAGE_NODE = (
     "backend/nodejs/apps/package-lock.json",
     "backend/nodejs/apps/tsconfig.json",
     "backend/nodejs/apps/tsconfig.test.json",
+    # The document write state the storage server keeps (its unit of work, errors and
+    # org context), and the model and itest that prove it.
+    "backend/nodejs/apps/src/libs/db/uow.ts",
+    "backend/nodejs/apps/src/libs/errors/storage.errors.ts",
+    "backend/nodejs/apps/src/libs/context/**",
+    "backend/nodejs/apps/tests/storage/fingerprint-model/**",
+    "backend/nodejs/apps/tests/stores/storage-fingerprint.itest.ts",
 )
 
 
@@ -206,8 +213,8 @@ CONNECTOR_SHARDS = {
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
     ),
-    "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres"),
-    "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear"),
+    "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
+    "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
     "connectors-5": ("google_drive_workspace", "s3"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
@@ -279,7 +286,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
         for name in (
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
-            "lumos", "monday", "pagerduty", "posthog", "redshift", "salesforce", "trello", "workday",
+            "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",
         )
     },
@@ -304,7 +311,8 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "network_share": ("smb",),
     "nextcloud": ("nextcloud",),
     "rss": ("rss",),
-    "servicenow": ("servicenow",),
+    "salesforce": ("salesforce",),
+    "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
     "zammad": ("zammad",),
     "zendesk": ("zendesk",),
@@ -314,6 +322,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 # test_pr_changes.py checks that every test file in a folder carries one of them.
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
+    "servicenow": ("servicenow", "servicenow_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),
@@ -326,11 +335,12 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
 # Shards whose suites import a connector test folder's helpers, beyond the
 # folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
 # Teams' (which, like GitLab's, uses Jira's block parser), Gmail and the individual
-# Google Drive suite on the workspace Drive suite's helpers, and the cleanup tests
-# on core create MinIO, Postgres and S3 connectors.
+# Google Drive suite on the workspace Drive suite's helpers, Salesforce on Gmail's
+# user helper, and the cleanup tests on core create MinIO, Postgres and S3 connectors.
 # test_pr_changes.py follows the suite's imports and fails when this misses one.
 CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "github_teams": ("connectors-1",),
+    "gmail": ("connectors-3",),
     "google_drive_workspace": ("connectors-2", "connectors-4"),
     "jira": ("connectors-1", "connectors-4"),
     "minio": ("core",),

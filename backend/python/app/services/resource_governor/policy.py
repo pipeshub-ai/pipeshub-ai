@@ -397,6 +397,19 @@ def index_memory_cap(
 # ---------------------------------------------------------------------------
 
 
+def ceiling_cpus(cpu_quota: float) -> float:
+    """CPUs that size ceilings: ``floor(cpu_quota)``, equal to
+    ``effective_cpu_count()`` from 1 CPU up.
+
+    Below one CPU the fraction is kept: a 0.5-CPU cgroup has always sized its
+    light and index tiers off 0.5, and every ceiling is floored at 1 anyway.
+    ``ResourceSnapshot.cpu_quota`` itself keeps the fraction for utilisation.
+    """
+    if cpu_quota < 1.0:
+        return max(0.0, cpu_quota)
+    return float(math.floor(cpu_quota))
+
+
 def resolve_ceilings(
     snap: ResourceSnapshot,
     env_parse: int | None,
@@ -452,7 +465,7 @@ def resolve_ceilings(
     (``split_ceilings``), since each runs its own governor against the same
     cgroup.
     """
-    cpus = max(0.0, snap.cpu_quota)
+    cpus = ceiling_cpus(snap.cpu_quota)
     reservation = min(EMBEDDING_CPU_RESERVATION, cpus * EMBEDDING_CPU_RESERVATION_MAX_FRACTION)
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
     # Floored at 1 throughout: a sub-1-CPU cgroup (fractional cpu.max) must

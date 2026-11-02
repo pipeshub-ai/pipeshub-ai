@@ -2052,12 +2052,16 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            # Always: the consumer holds a record that would sit on its file
+            # waiting for a parse slot back until it is not downloaded yet.
             known_size = doc.get("sizeInBytes")
-            if isinstance(known_size, int) and known_size > 0:
-                yield PipelineEvent(
-                    event=IndexingEvent.START_DOWNLOAD,
-                    data=PipelineEventData(record_id=record_id, size_bytes=known_size),
-                )
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD,
+                data=PipelineEventData(
+                    record_id=record_id,
+                    size_bytes=known_size if isinstance(known_size, int) and known_size > 0 else None,
+                ),
+            )
 
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
@@ -2085,6 +2089,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -2146,6 +2155,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()

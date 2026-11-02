@@ -199,7 +199,8 @@
     "units": 2,
     "windows_failed": 0,
     "windows_run": 1,
-    "windows_total": 1
+    "windows_total": 1,
+    "windows_unavailable": 0
    },
    "status": "COMPLETED",
    "strategy": "single_call",
@@ -1108,7 +1109,8 @@
     "units": 5,
     "windows_failed": 0,
     "windows_run": 5,
-    "windows_total": 7
+    "windows_total": 7,
+    "windows_unavailable": 0
    },
    "status": "PARTIAL",
    "strategy": "single_call",
@@ -2357,7 +2359,8 @@
     "units": 5,
     "windows_failed": 0,
     "windows_run": 1,
-    "windows_total": 1
+    "windows_total": 1,
+    "windows_unavailable": 0
    },
    "status": "COMPLETED",
    "strategy": "single_call",

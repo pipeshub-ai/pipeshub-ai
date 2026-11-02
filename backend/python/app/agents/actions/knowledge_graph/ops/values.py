@@ -7,6 +7,7 @@ import bisect
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     NAMED_ENTITIES_DISABLED_MSG,
     _named_entities_enabled,
@@ -17,6 +18,8 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
+    cite_note,
+    listing_facts,
     record_line,
 )
 from app.agents.actions.knowledge_graph.views import _read_hint
@@ -116,7 +119,8 @@ async def execute_find_records_by_value(
         raw["name"] = given["name"] = name
     if _given(date_from, date_to):
         raw["mentionedDate"] = {"from": date_from or None, "to": date_to or None}
-        given.update(_pair("date_from", date_from, "date_to", date_to))
+        # As the filter applies them: a 0 bound is no bound, so it is not stated either.
+        given.update(_pair("date_from", date_from or None, "date_to", date_to or None))
     if _given(amount_min, amount_max) or currency:
         raw["amount"] = {"min": amount_min, "max": amount_max, "currency": currency or ""}
         given.update(_pair("amount_min", amount_min, "amount_max", amount_max, currency=currency))
@@ -208,11 +212,20 @@ async def execute_find_records_by_value(
     record_ids = [r["_key"] for r in records]
     remember_record_ids(state, record_ids, names={r["_key"]: r.get("recordName") or "" for r in records})
     note_retrieved_by(state, "entity", graph_record_refs(records))
+    # The whole filter the record matched (a name too, which the values do not show), then
+    # the values extraction read from it: extraction's reading, not the record's words.
+    cite_refs = await cite_listed_records(state, graph, org_id, {
+        r["_key"]: listing_facts(r, " · ".join(filter(None, (
+            f"matched {_args(given)}",
+            f"extracted values: {'; '.join(values[r['_key']])}" if values.get(r["_key"]) else "",
+        ))))
+        for r in records
+    })
     shortener = get_record_id_shortener_if_enabled(state)
     frontend_url = await resolve_frontend_url(state.get("config_service"))
-    lines = [f"Records matching {_args(given)}, newest first ({len(records)} shown):"]
+    lines = [f"Records matching {_args(given)}, newest first ({len(records)} shown):", *cite_note(records, cite_refs)]
     for record in records:
-        line = record_line(record, context, shortener, frontend_url)
+        line = record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
         matched = values.get(record["_key"])
         lines.append(f"{line} | matched: {'; '.join(matched)}" if matched else line)
     lines.append("")

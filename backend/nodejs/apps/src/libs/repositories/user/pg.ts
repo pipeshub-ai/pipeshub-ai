@@ -38,6 +38,9 @@ import type {
   UserRoleSnapshot,
   UserWithGroupsDto,
 } from './types';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importUserDocs } from './pg-import';
 
 interface UserRow {
   id: string;
@@ -222,7 +225,15 @@ function search(p: Params, text: string): string {
   return `(u.full_name ILIKE ${ref} ESCAPE '\\' OR u.email ILIKE ${ref} ESCAPE '\\')`;
 }
 
-export class PgUserRepository implements UserRepository {
+export class PgUserRepository implements UserRepository, Importable {
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importUserDocs(kernelTx(tx), collection, docs);
+  }
   private one(
     sql: string,
     params: unknown[],

@@ -83,10 +83,15 @@ def _make_handler(logger=None, config_service=None, event_processor=None, produc
 
 
 async def _collect_events(handler, event_type, payload):
-    """Collect all yielded events from process_event into a list."""
+    """Collect the events process_event yields, less the announcement of the download.
+
+    START_DOWNLOAD is for the consumer's admission; it says nothing about the
+    outcome these tests assert on, and every record now yields one.
+    """
     events = []
     async for event in handler.process_event(event_type, payload):
-        events.append(event)
+        if event.event != IndexingEvent.START_DOWNLOAD:
+            events.append(event)
     return events
 
 
@@ -1987,7 +1992,7 @@ class TestAlreadyIndexed:
                 indexingStatus=ProgressStatus.COMPLETED.value,
                 extractionStatus=ProgressStatus.IN_PROGRESS.value,
             )
-            yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
             raise EntityLookupUnavailableError("lookup could not run") from _StoreRefused()
 
         handler.event_processor.on_event = MagicMock(side_effect=indexed_then_deferred)
@@ -2033,7 +2038,7 @@ class TestAlreadyIndexed:
                     indexingStatus=ProgressStatus.COMPLETED.value,
                     extractionStatus=ProgressStatus.IN_PROGRESS.value,
                 )
-            yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
             raise error
 
         handler.event_processor.on_event = MagicMock(side_effect=on_event)
@@ -3571,6 +3576,7 @@ class TestProcessEventErrors:
                 EventTypes.NEW_RECORD.value,
                 payload,
             )
+            assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
             await asyncio.wait_for(entered_processor.wait(), timeout=1)
             processing.cancel()
@@ -3634,6 +3640,7 @@ class TestProcessEventErrors:
                 EventTypes.NEW_RECORD.value,
                 payload,
             )
+            assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
             await asyncio.wait_for(entered_processor.wait(), timeout=1)
             processing.cancel()

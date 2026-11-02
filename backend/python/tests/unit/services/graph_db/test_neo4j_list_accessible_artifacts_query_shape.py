@@ -243,9 +243,11 @@ class TestNeo4jAllRecordsExcludesArtifacts:
         )
         listing = _queries(provider)[-1]
         assert listing.lstrip().startswith("MATCH (app:App {id: $app_id})")
-        # The two arms that read the grant list rather than walk from the App.
+        # The two arms that read the grant list rather than walk from the App (and the row's child test).
         assert re.search(r"MATCH \(sd:Record\|RecordGroup\)\s+WHERE sd\.connectorId = app\.id", listing)
         assert re.search(r"MATCH \(dg:RecordGroup\)\s+WHERE dg\.connectorId = app\.id", listing)
         assert listing.count("IN $kh_lists.grantedIds") == listing.count("sd.id IN $kh_lists.grantedIds") + listing.count(
             "dg.id IN $kh_lists.grantedIds"
-        ) + listing.count("ca.id IN $kh_lists.grantedIds") + listing.count("cc.id IN $kh_lists.grantedIds")
+        ) + listing.count("ca.id IN $kh_lists.grantedIds") + listing.count("cc.id IN $kh_lists.grantedIds") + listing.count(
+            "kh_ch.id IN $kh_lists.grantedIds"
+        )

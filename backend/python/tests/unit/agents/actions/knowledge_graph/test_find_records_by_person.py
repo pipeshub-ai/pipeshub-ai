@@ -83,6 +83,28 @@ class TestResolvingThePerson:
         assert "Ticket r1" in text and "Ticket r2" in text
         assert "That is all 2 readable, indexed record(s)." in text
 
+    @pytest.mark.parametrize(("roles", "said"), [
+        (["assignee"], "linked to Darshan Godase (darshan@x.io) as assignee"),
+        # Every role was looked in at once: the citation must not pick one, nor claim them all.
+        (None, "linked to Darshan Godase (darshan@x.io) as one of " + " / ".join(people.ROLE_EDGES)),
+    ])
+    async def test_rows_are_cited_with_the_roles_asked_never_one_made_up(
+        self, listing, monkeypatch, roles, said,
+    ) -> None:
+        cite = AsyncMock(return_value={"r1": "ref1"})
+        monkeypatch.setattr(people, "cite_listed_records", cite)
+        listing.pages["u-d"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        ok, text = await execute_find_records_by_person(_state([DARSHAN]), "darshan@x.io", roles=roles)
+        assert ok and "cite=ref1" in text
+        assert cite.await_args.args[3]["r1"] == said
+        assert text.startswith(f"Records {said}, newest first:")
+
+    async def test_rows_that_cannot_be_cited_are_listed_as_before(self, listing, monkeypatch) -> None:
+        monkeypatch.setattr(people, "cite_listed_records", AsyncMock(return_value={}))
+        listing.pages["u-d"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        ok, text = await execute_find_records_by_person(_state([DARSHAN]), "darshan@x.io")
+        assert ok and "Ticket r1" in text and "cite=" not in text and "Cite a fact" not in text
+
     async def test_nodes_sharing_an_email_are_one_person(self, listing) -> None:
         listing.pages["u-d"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
         ok, text = await execute_find_records_by_person(_state([DARSHAN, DARSHAN_STUB]), "Darshan Godase")

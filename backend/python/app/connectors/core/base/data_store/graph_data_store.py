@@ -77,16 +77,17 @@ def is_write_conflict(exception: Exception) -> bool:
     return bool(_WRITE_CONFLICT.search(str(exception)))
 
 
+# The Neo4j conflicts with a concurrent writer that a re-run resolves.
+_NEO4J_CONFLICTS = ("DeadlockDetected", "LockAcquisitionTimeout")
+
+
 def _names_deadlock(exception: BaseException) -> bool:
-    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
-        return "DeadlockDetected" in str(exception)
-
     exception_str = str(exception)
-    exception_type = type(exception).__name__
+    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
+        return any(conflict in exception_str for conflict in _NEO4J_CONFLICTS)
 
-    return (
-        "TransientError" in exception_type and
-        "DeadlockDetected" in exception_str
+    return "TransientError" in type(exception).__name__ and any(
+        conflict in exception_str for conflict in _NEO4J_CONFLICTS
     )
 
 
@@ -1216,6 +1217,10 @@ class GraphTransactionStore(TransactionStore):
         """Delete a record and all its relations"""
         self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
+
+    async def filter_linked_record_ids(self, record_ids: list[str]) -> list[str]:
+        """The ids among ``record_ids`` still in the hierarchy (see the graph provider)."""
+        return await self.graph_provider.filter_linked_record_ids(record_ids, transaction=self.txn)
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list, return_fields: list[str] = None

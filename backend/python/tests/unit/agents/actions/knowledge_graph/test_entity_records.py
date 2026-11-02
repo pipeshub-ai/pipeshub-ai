@@ -138,6 +138,75 @@ class TestFindRecordsByEntity:
         assert kwargs["limit"] == 50
 
     @pytest.mark.asyncio
+    async def test_the_first_page_names_the_same_entity_under_a_learned_alias(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        family = AsyncMock(return_value=[{"id": "short-1", "kind": "organization", "name": "Pinecrest"}])
+        monkeypatch.setattr(entity_records, "alias_family", family)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="20")
+        state = _state(**{ENTITY_INDEX_CACHE_KEY: {"full-1": {"type": "named_entity", "name": "Pinecrest Hospitality"}}})
+
+        ok, first = await execute_find_records_by_entity(state, "full-1")
+        ok_next, later = await execute_find_records_by_entity(state, "full-1", cursor="20")
+
+        assert ok and 'Pinecrest (organization): knowledgegraph__find_records_by_entity(entity_id="short-1"' in first
+        assert "add them to a count" in first
+        assert ok_next and "learned alias" not in later
+
+    @pytest.mark.asyncio
+    async def test_no_alias_note_for_other_entity_types_or_when_turned_off(self, patched, monkeypatch) -> None:
+        from app.modules.named_entities.domain.config import NamedEntityConfig
+
+        family = AsyncMock(return_value=[{"id": "x", "kind": "organization", "name": "X"}])
+        monkeypatch.setattr(entity_records, "alias_family", family)
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, topic = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        monkeypatch.setattr(
+            entity_records, "load_named_entity_config", AsyncMock(return_value=NamedEntityConfig(link_aliases=False)),
+        )
+        _, off = await execute_find_records_by_entity(_state(), "e1", entity_type="named_entity")
+        assert "learned alias" not in topic and "learned alias" not in off
+        family.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_each_row_can_be_cited_for_what_the_listing_says(self, patched, monkeypatch) -> None:
+        cite = AsyncMock(return_value={"r1": "ref1"})
+        monkeypatch.setattr(entity_records, "cite_listed_records", cite)
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", sourceLastModifiedTimestamp=1_767_225_600_000)], next_cursor=None,
+        )
+        state = _state(**{ENTITY_INDEX_CACHE_KEY: {"t1": {"type": "named_entity", "name": "Pinecrest"}}})
+
+        ok, text = await execute_find_records_by_entity(state, "t1")
+
+        assert ok and "| record_id=r1 | cite=ref1 |" in text and "Cite a fact this listing states" in text
+        facts = cite.await_args.args[3]
+        assert facts == {"r1": 'connected to named_entity "Pinecrest" · modified 2026-01-01'}
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_entity_is_cited_in_the_listings_own_words(self, patched, monkeypatch) -> None:
+        cite = AsyncMock(return_value={})
+        monkeypatch.setattr(entity_records, "cite_listed_records", cite)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok and "cite=" not in text
+        assert cite.await_args.args[3] == {"r1": "connected to a topic"}
+
+    @pytest.mark.asyncio
+    async def test_a_record_group_listing_cites_its_rows_as_in_the_group(self, patched, monkeypatch) -> None:
+        cite = AsyncMock(return_value={})
+        monkeypatch.setattr(entity_records, "cite_listed_records", cite)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        state = _state(**{ENTITY_INDEX_CACHE_KEY: {"g1": {"type": "record_group", "name": "Finance"}}})
+
+        ok, _ = await execute_find_records_by_entity(state, "g1")
+
+        assert ok and cite.await_args.args[3] == {"r1": 'in record_group "Finance"'}
+
+    @pytest.mark.asyncio
     async def test_listed_records_are_noted_as_found_by_entity(self, patched) -> None:
         patched[1].return_value = EntityRecordPage(
             records=[_row("r1", virtualRecordId="vr-1")], next_cursor=None,

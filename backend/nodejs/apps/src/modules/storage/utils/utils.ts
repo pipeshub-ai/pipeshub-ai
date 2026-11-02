@@ -5,8 +5,10 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  PreconditionFailedError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
+import { localEtagOf, normalizeEtag } from './storage-fingerprint';
 import { Logger } from '../../../libs/services/logger.service';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
@@ -476,7 +478,12 @@ export function getStorageVendor(storageType: string): StorageVendor {
   }
 }
 
-export function serveFileFromLocalStorage(document: Document, res: Response, version?: number) {
+/**
+ * Streams a local file. The file is opened once and its identity (the synthetic ETag, `dev:ino:size:mtimeNs`) is taken from the OPEN
+ * descriptor, which is the same file the bytes come from: with `ifMatch` a download of any other identity answers 412 before a byte
+ * is sent, and the response always carries `ETag`.
+ */
+export function serveFileFromLocalStorage(document: Document, res: Response, version?: number, ifMatch?: string) {
   try {
     const localFilePath = version !== undefined
       ? (document.versionHistory?.[version]?.local?.localPath ||
@@ -517,9 +524,10 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
       filePath = localFilePath;
     }
 
-    // Check if file exists using synchronous access
+    // Open the file once: its identity and its bytes then come from the same descriptor.
+    let fd: number;
     try {
-      fs.accessSync(filePath, fs.constants.R_OK);
+      fd = fs.openSync(filePath, fs.constants.O_RDONLY);
     } catch (err) {
       logger.error('File not accessible:', {
         filePath,
@@ -532,6 +540,20 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
         `File not found or not accessible: ${document.documentName}${document.extension}`,
       );
     }
+    let etag: string;
+    try {
+      etag = localEtagOf(fs.fstatSync(fd, { bigint: true }));
+    } catch (err) {
+      fs.closeSync(fd);
+      throw err;
+    }
+    if (ifMatch !== undefined && normalizeEtag(ifMatch) !== etag) {
+      fs.closeSync(fd);
+      throw new PreconditionFailedError(
+        'The file is not the one that was verified; read the document again',
+      );
+    }
+    res.setHeader('ETag', `"${etag}"`);
 
     // Get mime type from extension
     const mimeType = getMimeType(document.extension);
@@ -548,7 +570,7 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
     );
 
     // Stream the file
-    const fileStream = createReadStream(filePath);
+    const fileStream = createReadStream(filePath, { fd });
     fileStream.pipe(res);
 
     // Handle streaming errors

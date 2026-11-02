@@ -5004,6 +5004,55 @@ components:
         - __v
 
     # ==================== STORAGE SCHEMAS ====================
+    StorageFingerprint:
+      type: object
+      description: |
+        What a reader may rely on about a document's stored bytes. Only `trusted` may justify skipping a re-read. `value` is
+        comparable only between verified responses (`verified: true`); store it only when `trusted` is true.
+
+        The ETag is reported without quotes and without a weak marker; add exactly one pair of quotes to build `If-Match`. On local
+        storage the ETag is synthetic (a hash of device, inode, size and modification time of the file). On S3 only virtual-hosted
+        style stored URLs can be checked: a path-style endpoint, or a bucket or region that does not match the configuration, answers
+        `objectUnverifiable: true` with `reason: unparseable_storage_url` (HTTP 200, not trusted, no retry needed).
+
+        Operators bump `STORAGE_FINGERPRINT_EPOCH` after a restore from backup or a store migration; every stored `value` then stops
+        matching once (one re-read). It is a per-pod setting, so during a rolling restart a value can alternate, which only ever
+        reads as "changed".
+      required: [version, value, settled, verified, object, objectMissing, objectUnverifiable, trusted]
+      properties:
+        version:
+          type: integer
+          example: 1
+        value:
+          type: string
+          description: 32 hex characters.
+        settled:
+          type: boolean
+          description: No writer is mid-write.
+        verified:
+          type: boolean
+        object:
+          nullable: true
+          type: object
+          description: Present only when verified and the object exists.
+          properties:
+            size:
+              type: integer
+            etag:
+              type: string
+            lastModified:
+              type: string
+              nullable: true
+              description: Informational; one-second resolution on Azure. Not part of `value`.
+        objectMissing:
+          type: boolean
+        objectUnverifiable:
+          type: boolean
+        reason:
+          type: string
+          description: '`unparseable_storage_url` or `server_clock_unavailable`.'
+        trusted:
+          type: boolean
     Document:
       type: object
       description: |
@@ -5024,6 +5073,14 @@ components:
           type: string
           description: Display name of the document
           example: "Q4 Financial Report.pdf"
+        awaitingDirectUpload:
+          type: boolean
+          description: A direct upload was started and has not been recorded as finished (a verified read of the document records it).
+        retiredAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Server time (ms) the document was marked retired.
         alternateDocumentName:
           type: string
           description: Alternative name for search/display purposes
@@ -35097,15 +35154,57 @@ paths:
       tags:
         - Internal Storage
       summary: Read a document record (service-to-service)
-      description: Mirrors `GET /document/{documentId}`.
+      description: |
+        Returns the stored document record plus a `storageFingerprint`: a value that changes whenever the document's bytes can have
+        changed, on every write path. Without `verify` the object store is not asked: the fingerprint follows the document's
+        counters only and is never trusted. With `verify=1` the stored object is checked (HEAD on S3 and Azure, a file stat on
+        local storage) and `object` holds its real size and ETag; `trusted` is then the only flag that may justify skipping a
+        re-read.
+
+        A direct upload that finished is recorded by the first verified read (the `awaitingDirectUpload` flag is cleared and
+        `sizeInBytes` follows the object); for documents uploaded before this existed that is a one-time write on a GET.
+        `sizeInBytes` is advisory; `object.size` is the truth. Every response carries `Cache-Control: no-store`.
+
+        Presigned upload links can change a document's bytes for as long as they live (one hour) without any event the server
+        sees; the ETag check and the `If-Match` rule below are what cover that.
       operationId: internalGetDocumentById
       security:
         - scopedToken: []
       parameters:
         - $ref: '#/components/parameters/InternalDocumentId'
+        - name: verify
+          in: query
+          required: false
+          description: '`1` or `true` checks the stored object. Any other value is a 400.'
+          schema:
+            type: string
+            enum: ['1', 'true']
       responses:
         '200':
-          description: The document record.
+          description: The document record and its fingerprint.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Document'
+                  - type: object
+                    required:
+                      - storageFingerprint
+                    properties:
+                      storageFingerprint:
+                        $ref: '#/components/schemas/StorageFingerprint'
+        '503':
+          description: |
+            The object store or the document store could not be read. A verified read still answers 200 with
+            `trusted: false` when the object is missing (`objectMissing`, no `object`), when its stored URL cannot be
+            parsed (`objectUnverifiable`, no `object`), when the document is awaiting its direct upload or is a deleted or
+            retired row (`object` holds the stored object's size and ETag when there is one), when it is an artifact set
+            (no `object`), and when the store clock is unavailable (no `object`; the `reason` says why).
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
@@ -36324,7 +36423,12 @@ paths:
       summary: Download a document (service-to-service)
       description: |
         Returns a time-limited link for S3 or Azure, or the file itself for local
-        storage. Mirrors `GET /document/{documentId}/download`.
+        storage.
+
+        Bind the download to a verified fingerprint: on S3 and Azure send `If-Match: "<object.etag>"` on every request to the
+        signed link (a range download on each range) and compare the `ETag` header of every response with `object.etag`; a 412 or a
+        mismatch means the object changed. On local storage pass the bare `object.etag` as `ifMatch`; the identity is taken from
+        the open file and a different one answers 412 before a byte is sent. The response always carries `ETag`.
       operationId: internalDownloadDocument
       security:
         - scopedToken: []
@@ -36344,9 +36448,22 @@ paths:
           schema:
             type: integer
             minimum: 1
+        - name: ifMatch
+          in: query
+          required: false
+          description: Local storage only. The `object.etag` the caller verified; any other file identity answers 412.
+          schema:
+            type: string
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+          headers:
+            ETag:
+              description: Local storage only. The quoted identity of the file that was sent.
+              schema:
+                type: string
+        '412':
+          description: Local storage only. The file is not the one named by `ifMatch`.
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
@@ -36409,7 +36526,8 @@ paths:
       tags:
         - Internal Storage
       summary: Replace a document's bytes (service-to-service)
-      description: Mirrors `PUT /document/{documentId}/buffer`.
+      description: |
+        Replaces the document's bytes. Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalUpdateDocumentBuffer
       security:
         - scopedToken: []
@@ -36458,7 +36576,9 @@ paths:
       tags:
         - Internal Storage
       summary: Add a new version of a document (service-to-service)
-      description: Mirrors `POST /document/{documentId}/uploadNextVersion`.
+      description: |
+        Uploads the next version.
+        Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalUploadNextVersion
       security:
         - scopedToken: []
@@ -36505,7 +36625,9 @@ paths:
       tags:
         - Internal Storage
       summary: Roll a document back to an earlier version (service-to-service)
-      description: Mirrors `POST /document/{documentId}/rollBack`.
+      description: |
+        Restores a past version as the current one.
+        Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalRollBackToPreviousVersion
       security:
         - scopedToken: []
@@ -36548,6 +36670,8 @@ paths:
           description: No such document, or no such version.
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: Another write to this document was in progress, or the store's clock could not be read; nothing was written. Safe to retry.
   /document/internal/{documentId}/directUpload:
     post:
       tags:
@@ -36555,7 +36679,11 @@ paths:
       summary: Get a link to upload straight to storage (service-to-service)
       description: |
         Returns a time-limited link the caller uses to send the file directly to
-        S3 or Azure. Mirrors `POST /document/{documentId}/directUpload`.
+        S3 or Azure.
+
+        The link replaces the document's current file and stays valid for one hour: the bytes can change at any time in that hour
+        without an event the server sees. Issuing the link moves the document's `storageFingerprint`; only a verified read
+        (`verify=1`) with an `If-Match` download is sound after that.
       operationId: internalDirectUpload
       security:
         - scopedToken: []

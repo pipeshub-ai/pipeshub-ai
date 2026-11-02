@@ -1223,6 +1223,30 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_pdf_plumber.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_docling_failing_after_its_parse_completed_is_retried_not_parsed_again(self) -> None:
+        """A DOCLING_FAILED after PARSING_COMPLETE (block building or indexing) must not reach PdfPlumber."""
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def failed_after_parse(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=failed_after_parse)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False):
+            with pytest.raises(IndexingError, match="after parsing completed"):
+                await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_scan_with_docling_down_still_goes_to_ocr(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}

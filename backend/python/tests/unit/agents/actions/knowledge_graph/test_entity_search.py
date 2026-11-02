@@ -443,6 +443,7 @@ class TestPermissions:
             side_effect=lambda org, ids: [nodes[i] for i in ids if i in nodes and org == self.ORG],
         )
         graph.find_named_entities_by_key_prefix = AsyncMock(return_value=[])
+        graph.find_named_entities_by_alias = AsyncMock(return_value=[])
         graph.get_named_entity_mentions_in_records = AsyncMock(side_effect=lambda org, entity_ids, record_ids: [
             {"recordId": r, "entityId": e, "extractedNames": ["Contoso"], "blockIndexes": [0], "mentionCount": 1}
             for e in entity_ids for r in record_ids if e in nodes and r == self.RECORD["_key"]

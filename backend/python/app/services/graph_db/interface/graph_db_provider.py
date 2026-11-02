@@ -1623,6 +1623,22 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def filter_linked_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        The ids among ``record_ids`` that still hang in the hierarchy: a belongsTo edge to a
+        record group, or a parent record above them (a PARENT_CHILD or ATTACHMENT record
+        relation). A record a full sync no longer saw is unlinked and has neither; a step that
+        grants access across all of a connector's records uses this to leave it unreadable.
+
+        A failed query raises.
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
     async def get_nodes_by_field_in(
         self,
         collection: str,
@@ -7238,6 +7254,38 @@ class IGraphDBProvider(ABC):
             ),
         )
 
+    async def _kh_v3_child_ids(
+        self, parent_ids: list[str], org_id: str, skip: int, limit: int, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        """Each record's live hierarchy children of ``org_id`` by id, ``limit`` from ``skip``."""
+        raise NotImplementedError
+
+    async def _with_readable_children(
+        self, items: list[dict[str, Any]], user_key: str, org_id: str, transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Set each item's ``hasChildren``: true only for a child the user may open (a bare
+        "has a child" tells a viewer about ones they cannot read). Children are read in pages,
+        batch-checked, and an item stops at its first readable one."""
+        pending = {item["id"]: item for item in items}
+        for item in items:
+            item["hasChildren"] = False
+        skip, page = 0, 500
+        while pending:
+            kids = await self._kh_v3_child_ids(list(pending), org_id, skip, page, transaction)
+            asked = {c for ids in kids.values() for c in ids}
+            readable = (
+                (await self.check_access(user_key, org_id, node_ids=asked, transaction=transaction)).node_ids
+                if asked else frozenset()
+            )
+            for pid, ids in kids.items():
+                if any(c in readable for c in ids):
+                    pending.pop(pid).update(hasChildren=True)
+                elif len(ids) < page:
+                    pending.pop(pid)
+            pending = {pid: item for pid, item in pending.items() if kids.get(pid)}
+            skip += page
+        return items
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
@@ -8344,7 +8392,15 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
-        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        """``{id, kind, name, normKey, normalizedAliases}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_alias(
+        self, org_id: str, pairs: list[tuple[str, str]], limit: int = 3
+    ) -> list[dict]:
+        """Nodes carrying a ``(kind, key)`` pair's key as an alias other than their own
+        key, at most ``limit`` per pair, each row tagged with that ``key``."""
         raise NotImplementedError
 
     @abstractmethod
@@ -8361,6 +8417,12 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Mention edges between ``record_ids`` (records the caller already resolved)
         and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        """Every named-entity mention edge from ``record_ids`` (records the caller can
+        read): ``{recordId, entityId, kind, extractedNames}``; merged nodes left out."""
         raise NotImplementedError
 
     @abstractmethod
@@ -8451,6 +8513,12 @@ class IGraphDBProvider(ABC):
         backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
         when its marker is already gone (its claim committed before the failure).
         Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reproject(self, org_id: str, record_id: str) -> None:
+        """Queue the record's stored extraction to be written again, due now, counting no
+        failure; a record with a pending retry or re-extraction keeps that one."""
         raise NotImplementedError
 
     @abstractmethod
