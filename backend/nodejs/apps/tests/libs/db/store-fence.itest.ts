@@ -130,7 +130,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('a writer that passed the fence finishes first; the freeze waits for it; no write commits after the freeze', async () => {
       const rt = runtime()
       const slow = insert(rt, 'slow', 1500)
-      await sleep(300) // the slow writer is inside its unit, holding the shared key
+      // wait until the slow writer really holds the shared fence lock (a fixed pause is too short on a loaded host)
+      let held = false
+      for (let i = 0; i < 200 && !held; i++) {
+        const r = await admin((c) => c.query(
+          "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND mode = 'ShareLock' AND granted",
+          [FENCE_CLASS, FENCE_OBJECT],
+        ))
+        held = (r.rowCount ?? 0) > 0
+        if (!held) await sleep(25)
+      }
+      expect(held, 'slow writer holds the shared fence lock').to.equal(true)
       const t0 = Date.now()
       const frozenAt = await freeze()
       const waited = Date.now() - t0
