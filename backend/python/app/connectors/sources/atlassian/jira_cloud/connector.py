@@ -7064,7 +7064,8 @@ class JiraConnector(BaseConnector):
             parent_key = str((fields.get("parent") or {}).get("key") or "")
             if (
                 parent_external_id and not getattr(record, "parent_external_record_id", None)
-                and parent_key.rsplit("-", 1)[0] != str(project.get("key") or "")
+                and not issue_data["is_subtask"]  # a sub-task always follows its parent, whatever the stored copy had
+                and "-" in parent_key and parent_key.rsplit("-", 1)[0] != str(project.get("key") or "")
             ):
                 # The sync left this parent out (its project is not synced); keep it that way.
                 parent_external_id = None
