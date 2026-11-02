@@ -59,23 +59,30 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
 }));
 
 /** Keeps the list fresh while the composer is shown: on mount, on window focus, every 30s while
- * anything waits, and drops a call the moment it expires. */
+ * the page is visible (a call asked in another chat appears even when nothing waited), when the
+ * page is shown again, and drops a call the moment it expires. */
 export function usePendingApprovalsSync(): void {
   const items = usePendingApprovals((s) => s.items);
-  const waiting = items.length > 0;
 
   useEffect(() => {
     const refresh = () => void usePendingApprovals.getState().refresh();
+    const visible = () => document.visibilityState === 'visible';
+    const onVisibility = () => {
+      if (visible()) refresh();
+    };
     refresh();
+    // A hidden tab doesn't poll; it catches up when shown.
+    const timer = setInterval(() => {
+      if (visible()) refresh();
+    }, POLL_MS);
     window.addEventListener('focus', refresh);
-    return () => window.removeEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
-
-  useEffect(() => {
-    if (!waiting) return;
-    const timer = setInterval(() => void usePendingApprovals.getState().refresh(), POLL_MS);
-    return () => clearInterval(timer);
-  }, [waiting]);
 
   useEffect(() => {
     if (!items.length) return;

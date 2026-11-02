@@ -38,8 +38,21 @@ beforeEach(() => {
   api.fetchPendingApprovals.mockResolvedValue([]);
 });
 
+let visibility: DocumentVisibilityState = 'visible';
+let visibilitySpy: { mockRestore: () => void } | undefined;
+function setVisibility(state: DocumentVisibilityState) {
+  visibility = state;
+  document.dispatchEvent(new Event('visibilitychange'));
+}
+
+beforeEach(() => {
+  visibility = 'visible';
+  visibilitySpy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+});
+
 afterEach(() => {
   vi.useRealTimers();
+  visibilitySpy?.mockRestore();
 });
 
 describe('pending approvals store', () => {
@@ -50,18 +63,34 @@ describe('pending approvals store', () => {
     expect(result.current.map((i) => i.card.approvalId)).toEqual(['b']);
   });
 
-  it('polls every 30s only while non-empty', async () => {
+  it('polls every 30s while the page is visible, even with nothing waiting', async () => {
     const { unmount } = renderHook(() => usePendingApprovalsSync());
     await act(async () => {});
     expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(2);
+
+    // A call asked in another chat shows up with the next poll.
+    api.fetchPendingApprovals.mockResolvedValue([item('b', 'conv-other')]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['b']);
+    unmount();
+  });
+
+  it('pauses while the page is hidden and refreshes when it is shown again', async () => {
+    const { unmount } = renderHook(() => usePendingApprovalsSync());
+    await act(async () => {});
     expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(1);
 
-    api.fetchPendingApprovals.mockResolvedValue([item('b', 'conv-other')]);
-    await act(() => usePendingApprovals.getState().refresh());
-    const before = api.fetchPendingApprovals.mock.calls.length;
+    setVisibility('hidden');
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(1);
+
+    setVisibility('visible');
+    await act(async () => {});
+    expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(api.fetchPendingApprovals.mock.calls.length).toBe(before + 1);
+    expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(3);
     unmount();
   });
 
