@@ -425,3 +425,4 @@ async def test_a_sub_task_that_became_a_story_is_read_as_one_after_a_reindex(wor
     by_key = await _ticket_ids(world)
     readers = {issue["key"]: who for issue, who in ISSUES.values()} | {"PROJ-21": PROJECT_READERS}
     assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-21"] not in await _listed_under(world, "alice", by_key["PROJ-7"])
