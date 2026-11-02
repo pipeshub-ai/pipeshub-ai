@@ -389,15 +389,20 @@ def _cypher_read_by_app(v: str) -> str:
     return f"(NOT {v}:Record OR {v}.connectorId = app.id)"
 
 
-def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container: str) -> str:
+def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container: str, *, exact: bool = False) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
     everything is open, a record filed in it. A container (``container``: a group
     or folder) always answers yes: finding out means reading every hidden child,
     which cost 3x a large folder's page, and a constant says nothing about what the
     viewer cannot read. Its expansion may also list chain-tops."""
+    # ``exact`` (a browse) answers a declared group's arrow from its children; a flatten keeps the constant.
+    declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
+                f" AND coalesce({v}.connectorId, '') = app.id)") if exact else "false"
     return (
-        f"(CASE WHEN {container} THEN true ELSE ("
+        # A declared group is answered like a record: its children are those the rule admits, and the records that
+        # belong to it, so an arrow is not lit by children the expansion hides.
+        f"(CASE WHEN {container} AND NOT {declared} THEN true ELSE ("
         f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
         f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
@@ -406,7 +411,9 @@ def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
         f"{extra} AND ({rule}) }} "
         f"OR ({filed} AND EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
-        f"WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id AND {_cypher_read_by_app('kh_bc')} }})) END)"
+        f"WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id AND {_cypher_read_by_app('kh_bc')} }}) "
+        f"OR ({declared} AND EXISTS {{ (kh_bm:Record)-[:BELONGS_TO]->({v}) "
+        f"WHERE NOT coalesce(kh_bm.isDeleted, false) AND kh_bm.orgId = $org_id AND {_cypher_read_by_app('kh_bm')} }})) END)"
     )
 
 
@@ -20226,7 +20233,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f" AND coalesce({p}.connectorId, '') = app.id) OR {c}.id IN $grantedIds)")
         below_member = (f"(NOT ({p}:Record AND EXISTS {{ ({p})-[:BELONGS_TO]->(kh_mg:RecordGroup) WHERE kh_mg.id IN $declaredScope }})"
                         f" OR {p}.id IN $grantedIds OR {c}.id IN $grantedIds)")
-        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}) AND {walk})
+        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}) AND {walk} AND {below_member})
               OR (NOT {from_app} AND NOT {opens}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
@@ -20609,7 +20616,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "(node:RecordGroup OR node.mimeType IN $folder_mime_types "
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
-            expr = _cypher_kh_has_children("node", rule, app_opens, placeholder_test("kh_ch"), container)
+            expr = _cypher_kh_has_children(
+                "node", rule, app_opens, placeholder_test("kh_ch"), container, exact=not flatten)
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
             # cheap reject's alike, is read from the node.
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr

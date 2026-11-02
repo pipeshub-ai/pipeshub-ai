@@ -67,6 +67,9 @@ def _more() -> tuple[list, list]:
         rg("ka-g", "g", permissionModel=RGL, connectorId="ka", **g),
         rg("kb-g", "g", permissionModel=RGL, connectorId="kb", **g),
         *[rec(f"{a}-{n}", n, connector_id=a) for a in ("ka", "kb") for n in ("nr", "ip", "bt")],
+        app("ch", "Hidden", connector=DRIVE, app_group="G"),
+        rg("ch-chan", "chan", permissionModel=RGL, connectorId="ch", **g),
+        rec("ch-msg", "msg", connector_id="ch"),
     ]
     edges = [
         user_app(USER_U, "kt"), nr("kt", "kt-chan"), bt("kt-chan", "kt"), perm(GROUP_G, "kt-chan", grant_type="GROUP"),
@@ -74,6 +77,10 @@ def _more() -> tuple[list, list]:
         nr("kt-thread", "kt-reply"), ip("kt-reply", "kt-thread"),
         nr("kt-chan", "kt-thread-nm"), ip("kt-thread-nm", "kt-chan"),
         nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
+    ]
+    edges += [
+        user_app(USER_U, "ch"), nr("ch", "ch-chan"), bt("ch-chan", "ch"), perm(GROUP_G, "ch-chan", grant_type="GROUP"),
+        nr("ch-chan", "ch-msg"), ip("ch-msg", "ch-chan"),
     ]
     for a in ("ka", "kb"):
         edges += [
@@ -252,3 +259,37 @@ async def test_a_declared_group_in_an_app_that_opens_everything_lists_only_what_
     assert flat_ids == {f"{app_id}-g", f"{app_id}-bt"}
     assert flat["total"] == len(flat_ids)
     assert flat_ids <= await _admitted(world, sorted(flat_ids))
+
+
+async def _rows_and_expansions(world: _World, app_id: str) -> list[tuple[str, bool, list[str]]]:
+    """Each row of the app's listing and of every container's expansion, with its arrow and what opening it lists."""
+    seen: list[tuple[str, bool, list[str]]] = []
+    queue: list[tuple[str | None, str | None]] = [(None, None)]
+    while queue:
+        start, kind = queue.pop(0)
+        kw = {"start_id": start, "start_type": kind} if start else {}
+        for row in (await _page(world, app_id, flatten=False, **kw))["rows"]:
+            node_type = "recordGroup" if row["nodeType"] == "recordGroup" else "record"
+            opened = [r["id"] for r in (await _page(
+                world, app_id, flatten=False, start_id=row["id"], start_type=node_type))["rows"]]
+            seen.append((row["id"], row["hasChildren"], opened))
+            if opened:
+                queue.append((row["id"], node_type))
+    return seen
+
+
+@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb"])
+async def test_an_arrow_is_on_exactly_when_the_expansion_lists_something(world: _World, app_id: str) -> None:
+    rows = await _rows_and_expansions(world, app_id)
+
+    assert rows
+    assert [(i, arrow, bool(opened)) for i, arrow, opened in rows if arrow != bool(opened)] == []
+
+
+async def test_a_flatten_started_at_a_channel_lists_only_what_the_check_admits(world: _World) -> None:
+    page = await _page(world, "kt", flatten=True, start_id="kt-chan", start_type="recordGroup")
+    ids = {row["id"] for row in page["rows"]}
+
+    assert ids == {"kt-thread"}
+    assert page["total"] == len(ids)
+    assert ids <= await _admitted(world, sorted(ids))

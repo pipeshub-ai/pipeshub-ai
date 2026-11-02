@@ -85,6 +85,7 @@ class _Hub:
             "lineage": [{"ancestors": ["a1"], "declared": ["g1"]}],
             "browse_start": [{"handle": "records/f1", "fromApp": from_app, "crumbNodes": [], "crumbEdges": []}],
             "enrich": [{"i": 0, "row": row}],
+            "enrich_exact": [{"i": 0, "row": row}],
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],
@@ -138,7 +139,9 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
     )
 
     assert [row["id"] for row in page["rows"]] == ["r1"], "the listing stopped before its page"
-    assert {"app", "slim", "enrich", "check:targets"} <= hub.sent, hub.sent
+    assert {"app", "slim", "check:targets"} <= hub.sent, hub.sent
+    # A browse reads the exact arrows, a flatten the strict ones.
+    assert hub.sent & {"enrich", "enrich_exact"}, hub.sent
     for query, binds in hub.calls:
         assert _declared(query) == set(binds), query
 
