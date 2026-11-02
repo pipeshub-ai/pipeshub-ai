@@ -75,3 +75,32 @@ describe('counting the rows of a table', () => {
     expect([...(await countByOrg(k([]), noOrg))]).to.deep.equal([['', 0]])
   })
 })
+
+describe('a copy stops writing once its job is no longer running', () => {
+  const { JobState } = require('../../../src/scripts/docstore-migrate/state') as typeof import('../../../src/scripts/docstore-migrate/state')
+  const job = (status: string, calls: unknown[][] = []) =>
+    Object.assign(Object.create(JobState.prototype), {
+      id: 5,
+      rt: { migratePool: { query: async (sql: string, p: unknown[]) => (calls.push([sql, p]), { rows: [{ status }] }) } },
+    }) as InstanceType<typeof JobState>
+
+  it('takes the shared copy lock first and lets a running job write', async () => {
+    const taken: string[] = []
+    await job('running').guardWrite({ query: async (sql: string) => void taken.push(sql) })
+    expect(taken[0]).to.contain('pg_advisory_xact_lock_shared')
+  })
+
+  it('refuses a cancelled or finished job, naming it', async () => {
+    for (const status of ['cancelled', 'done']) {
+      let err: Error | undefined
+      await job(status).guardWrite({ query: async () => undefined }).catch((e: Error) => (err = e))
+      expect(err?.message).to.equal('job 5 is no longer running')
+    }
+  })
+
+  it('ends a job with the status it is given', async () => {
+    const calls: unknown[][] = []
+    await job('running', calls).finish('cancelled')
+    expect(calls[0]![1]).to.deep.equal([5, 'cancelled'])
+  })
+})
