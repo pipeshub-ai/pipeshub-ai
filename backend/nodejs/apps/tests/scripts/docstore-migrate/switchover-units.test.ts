@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { catchUp, changedIds, onlineStart, precheck, reportFailures, unfreeze } from '../../../src/scripts/docstore-migrate/online'
+import { STORE_READ_TIMEOUT_MS, storeEpochOnFreshConnection, catchUp, changedIds, onlineStart, precheck, reportFailures, unfreeze } from '../../../src/scripts/docstore-migrate/online'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 import { outboxTableId } from '../../../src/scripts/docstore-migrate/mapping/content'
 
@@ -132,5 +132,20 @@ describe('online verify helpers', () => {
       expect(r).to.include({ ok: false, stage: 'fence' })
       expect(r.message).to.contain(`'${mode}'`)
     }
+  })
+
+  it('the store row is read with a time limit of ten seconds, so an unreachable PostgreSQL does not hold the freeze', () => {
+    expect(STORE_READ_TIMEOUT_MS).to.equal(10_000)
+  })
+
+  it('a store that cannot be reached is an error at once (the cut then treats its state as unknown), and the test hook fails the read', async () => {
+    const t = Date.now()
+    let err: Error | undefined
+    await storeEpochOnFreshConnection({ cfg: { pgMigrateUrl: 'postgresql://nobody@127.0.0.1:1/none' } } as never, false).catch((e: Error) => (err = e))
+    expect(err, 'a closed port').to.not.equal(undefined)
+    expect(Date.now() - t).to.be.lessThan(STORE_READ_TIMEOUT_MS)
+    let hooked: Error | undefined
+    await storeEpochOnFreshConnection({ cfg: { pgMigrateUrl: 'x' } } as never, true).catch((e: Error) => (hooked = e))
+    expect(hooked?.message).to.contain('cannot be read')
   })
 })

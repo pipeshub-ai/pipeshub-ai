@@ -251,7 +251,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         await onlineStart(w.rt, { dryRun: false, log });
         const r = await cut({ failAt: 'F8-reread-fails' });
         expect(r).to.include({ ok: false, aborted: true });
-        expect(r.message).to.contain('MANUAL REPAIR NEEDED');
+        expect(r.message).to.contain('MANUAL REPAIR NEEDED').and.to.contain('state of platform.store_epoch is unknown').and.to.contain('Read the row first').and.to.contain('If backend is mongo: run unfreeze');
+        expect(r.message, 'neither store is claimed to be live').to.not.contain('is the live store');
         expect(await mode()).to.equal('readonly');
         expect(await store()).to.include({ backend: 'postgres', readonly: false });
       });
