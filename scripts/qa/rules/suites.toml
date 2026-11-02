@@ -88,8 +88,22 @@ cwd = "frontend"
 grain = "file"
 stack = true
 tests = ["frontend/tests/e2e/**/*.spec.ts"]
-# The visual project exists only with E2E_VISUAL=true, so a file run finds no project.
+# The visual project exists only with E2E_VISUAL=true, so the e2e-visual suite runs those files.
 exclude = ["frontend/tests/e2e/**/*visual.spec.ts"]
+
+# The nightly visual diff: full runs only. qa-pipeline sets E2E_VISUAL=true, and on a
+# schedule the previous nightly's screenshots as the baseline.
+[[suite]]
+id = "e2e-visual"
+family = "playwright"
+edition = "oss"
+cwd = "frontend"
+grain = "file"
+stack = true
+tests = ["frontend/tests/e2e/**/*visual.spec.ts"]
+profiles = ["full"]
+# A catalog directory of its own: two suites cannot share one.
+catalog = "integration-tests/catalog/visual"
 
 [[suite]]
 id = "it-helpers"

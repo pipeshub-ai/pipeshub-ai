@@ -89,6 +89,13 @@ class TestResolve(RunCase):
         invs, _ = run.resolve(self.cfg, plan, self.rows, self.out)
         self.assertEqual(invs[0].cmd[-2:], ["--grep", "@smoke"])
 
+    def test_playwright_extra_args_come_from_env(self) -> None:
+        plan = plan_for([])
+        plan["tests"] = [{"id": "e2e:tests/e2e/login.spec.ts", "source": "floor", "why": ["x"], "grep": None}]
+        with mock.patch.dict(os.environ, {"QA_PLAYWRIGHT_ARGS": "--update-snapshots=missing --workers=1"}):
+            invs, _ = run.resolve(self.cfg, plan, self.rows, self.out)
+        self.assertEqual(invs[0].cmd[-2:], ["--update-snapshots=missing", "--workers=1"])
+
 
 class TestExternalStack(RunCase):
     def test_external_stack_runs_only_its_own_graph_db(self) -> None:

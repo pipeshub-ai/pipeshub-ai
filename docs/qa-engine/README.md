@@ -390,6 +390,7 @@ Each one usually becomes one of the edits above.
 | `QA_PYTHON` | current interpreter | Backend pytest suites (needs backend deps + pytest) |
 | `QA_IT_PYTHON` | `integration-tests/.venv/bin/python` | Integration tests |
 | `QA_NPX` | `npx` | mocha, vitest, Playwright |
+| `QA_PLAYWRIGHT_ARGS` | none | Extra Playwright arguments, split on spaces. The nightly passes `--update-snapshots=missing` |
 | `QA_PLANNER`, `QA_PLANNER_MODEL`, `QA_PLANNER_CMD`, `QA_PLANNER_MAX_TURNS` | `claude_code` | Model adapter and settings |
 | `QA_STACK`, `PIPESHUB_BASE_URL`, `QA_COMPOSE_PROJECT` | `none`, `http://localhost:3000`, `qa-<sha12>-<run>` | Integration stack. Each managed project is `<prefix>-<graph>`, and the image is `pipeshub-ai:qa-<sha12>` |
 | `QA_RUN_ID` | `GITHUB_RUN_ID`, else the process id | The `<run>` in managed compose project names, so concurrent runs of one commit never share a stack |
@@ -408,3 +409,7 @@ Each one usually becomes one of the edits above.
 `{input}` and `{output}` placeholders, and its stdout or `{output}` must hold
 the JSON reply. For example:
 `QA_PLANNER_CMD='codex exec "$(cat {prompt_file})"'`.
+
+## Nightly visual diff
+
+The `e2e-visual` suite (`profiles = ["full"]`) runs the responsive screenshot spec on the stack of a full run; no other profile selects it. `qa-pipeline.yml` sets `E2E_VISUAL=true` so the Playwright `visual` project exists. On the nightly schedule the `run-stack` job first downloads the `visual-baseline-<edition>` artifact of the last completed scheduled run on `main` into `$RUNNER_TEMP/visual-baseline` (`actions: read`; a missing artifact is not an error), sets `VISUAL_BASELINE_DIR` to it and passes `--update-snapshots=missing` through `QA_PLAYWRIGHT_ARGS`. Screenshots with no baseline are written and pass; the others are compared. The folder, now including any new PNGs, is uploaded as `visual-baseline-<edition>` (14 days, from the neo4j job), and `-diff.png` images go into the stack results artifact. Without `VISUAL_BASELINE_DIR` the screenshots are only saved, so a full run on a pull request never fails on them.

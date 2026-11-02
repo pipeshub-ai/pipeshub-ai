@@ -262,8 +262,14 @@ jobs:
         variant: ${{ fromJSON(needs.plan.outputs.variants || '[""]') }}
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+    # actions: read is for `gh run download` of the previous nightly's screenshots (schedule only).
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 300
     env:
+      # Adds the Playwright visual project, which the e2e-visual suite (full runs only) selects.
+      E2E_VISUAL: 'true'
       DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       # One value for both sides: compose seeds the stack with it and the
@@ -534,6 +540,22 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      # The nightly compares against the previous nightly's screenshots. With none yet,
+      # --update-snapshots=missing writes them and the run passes.
+      - name: Fetch the previous nightly's visual baseline
+        if: github.event_name == 'schedule' && contains(needs.plan.outputs.families, 'playwright')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          EDITION: ${{ inputs.edition }}
+        run: |
+          dir="$RUNNER_TEMP/visual-baseline"
+          mkdir -p "$dir"
+          id=$(gh run list --workflow "$WORKFLOW" --branch main --event schedule --status completed --limit 1 --json databaseId -q '.[0].databaseId' || true)
+          if [[ -n "$id" ]]; then gh run download "$id" -n "visual-baseline-$EDITION" -D "$dir" || true; fi
+          echo "VISUAL_BASELINE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "QA_PLAYWRIGHT_ARGS=--update-snapshots=missing" >> "$GITHUB_ENV"
       - name: Pull base images
         run: |
           docker pull pipeshubai/pipeshub-ai-base:python-deps || true
@@ -559,7 +581,16 @@ jobs:
             qa-out/results-stack-*.json
             qa-out/logs/
             qa-out/junit-*.xml
+            frontend/test-results/**/*-diff.png
           retention-days: 14
+      # One graph's screenshots are the next baseline: two jobs cannot share an artifact name.
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'schedule' && matrix.graph == 'neo4j'
+        with:
+          name: visual-baseline-${{ inputs.edition }}
+          path: ${{ runner.temp }}/visual-baseline
+          retention-days: 14
+          if-no-files-found: ignore
 
   report:
     needs: [plan, run-unit, run-stack]
