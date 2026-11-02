@@ -19679,9 +19679,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "granted": bind["granted"], "kh_scope": {}, "kh_from_app": browsing_app,
             "kh_seeded": placed if browsing_app else [],
         }
-        if browsing_app:
-            row_ctx["kh_scope"] = dict.fromkeys(await self._kh_v3_app_declared_scope(
-                app_id, granted_ids, transaction=transaction), True)
+        app_scope = dict.fromkeys(await self._kh_v3_app_declared_scope(
+            app_id, granted_ids, transaction=transaction), True) if not flatten else {}
+        row_ctx["kh_scope"] = app_scope
         if not start_is_app:
             admitted, admitted_ancestors, declared_scope = await self._kh_v3_scoped_start_access(
                 start_id, app_id, org_id, grantee_ids, gated_app_ids,
@@ -19695,7 +19695,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not starts:
                 return empty()
             payload.update(crumbNodes=starts[0]["crumbNodes"], crumbEdges=starts[0]["crumbEdges"])
-            row_ctx.update(kh_scope=dict.fromkeys(declared_scope, True), kh_from_app=bool(starts[0]["fromApp"]))
+            # A browse reads, beside the scope of its start, the scope of every declared group the App admits to
+            # this viewer: the members of one are listed wherever the browse meets them, and the arrows say so.
+            row_ctx.update(kh_scope={**app_scope, **dict.fromkeys(declared_scope, True)},
+                           kh_from_app=bool(starts[0]["fromApp"]))
             walked = await self._kh_v3_walk(
                 [starts[0]["handle"]], "step_browse",
                 {"kh_opens": bind["kh_opens"], "app_id": app_id, **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}},
@@ -19901,11 +19904,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         the scope a scoped browse carries, which the arrows of the App's own rows read as well, so that an
         arrow follows the same rule as the expansion it opens."""
         groups = CollectionNames.RECORD_GROUPS.value
+        # The declared groups the App's own listing admits: granted to the viewer, or reached by the listing's first
+        # hop (an App that opens everything admits all of them).
         return await self.http_client.execute_aql(
             f"""
+            LET kh_app = DOCUMENT("{CollectionNames.APPS.value}", @app_id)
+            LET kh_opens = {_AQL_APP_OPENS}
+            LET kh_admitted = (
+                FOR kh_p, kh_pe IN 1..1 OUTBOUND kh_app {CollectionNames.NODE_RELATIONS.value}
+                    FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL}
+                    FILTER IS_SAME_COLLECTION("{groups}", kh_p) AND {_aql_granted_hop("kh_p", "kh_app", "sc", navigation=True)}
+                    RETURN kh_p._key)
             FOR kh_d IN {groups}
                 FILTER kh_d.connectorId == @app_id AND kh_d.permissionModel == "RECORD_GROUP_LEVEL"
-                    AND kh_d._key IN @granted AND kh_d.isDeleted != true AND kh_d.hideChildren != true
+                    AND kh_d.isDeleted != true AND kh_d.hideChildren != true
+                    AND (HAS(@granted, kh_d._key) OR kh_d._key IN kh_admitted)
                 FOR kh_v, kh_e IN 0..50 OUTBOUND kh_d {CollectionNames.NODE_RELATIONS.value}
                     PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {_HIERARCHY_AQL}
                         OR NOT IS_SAME_COLLECTION("{groups}", kh_v) OR kh_v.hideChildren == true)
@@ -19913,7 +19926,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         AND (kh_e == null OR kh_e.relationshipType IN {_HIERARCHY_AQL})
                     RETURN DISTINCT kh_v._key
             """,
-            bind_vars={"app_id": app_id, "granted": granted_ids}, txn_id=transaction,
+            bind_vars={"app_id": app_id, "granted": dict.fromkeys(granted_ids, True)}, txn_id=transaction,
         )
 
     async def _kh_v3_page_rows(

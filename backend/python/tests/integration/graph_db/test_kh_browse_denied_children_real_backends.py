@@ -76,6 +76,13 @@ def _more() -> tuple[list, list]:
         app("st", "Stubs", connector=DRIVE, app_group="G"),
         rg("st-S", "S", connectorId="st", **g),
         rec("st-f", "f", connector_id="st", rule="STRICT", isPlaceholder=True),
+        app("oa", "Opens", connector=DRIVE, app_group="G", permissionModel="APP_LEVEL"),
+        rg("oa-g", "g", permissionModel=RGL, connectorId="oa", **g),
+        rec("oa-m", "m", connector_id="oa"),
+        app("ct", "Tops", connector=DRIVE, app_group="G"),
+        rg("ct-p", "p", connectorId="ct", **g),
+        rg("ct-n", "n", permissionModel=RGL, connectorId="ct", **g),
+        rec("ct-m", "m", connector_id="ct"),
         app("hc", "Hides", connector=DRIVE, app_group="G"),
         rg("hc-g", "g", permissionModel=RGL, connectorId="hc", hideChildren=True, **g),
         rec("hc-m", "m", connector_id="hc"),
@@ -96,6 +103,10 @@ def _more() -> tuple[list, list]:
         nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
     ]
     edges += [
+        user_app(USER_U, "oa"), nr("oa", "oa-g"), bt("oa-g", "oa"), nr("oa-g", "oa-m"), bt("oa-m", "oa-g"),
+        user_app(USER_U, "ct"), nr("ct", "ct-p"), bt("ct-p", "ct"), perm(GROUP_G, "ct-p", grant_type="GROUP"),
+        nr("ct-p", "ct-n"), bt("ct-n", "ct-p"),
+        perm(GROUP_G, "ct-n", grant_type="GROUP"), nr("ct-n", "ct-m"), bt("ct-m", "ct-n"),
         user_app(USER_U, "hc"), nr("hc", "hc-g"), bt("hc-g", "hc"), perm(GROUP_G, "hc-g", grant_type="GROUP"),
         bt("hc-m", "hc-g"),
         user_app(USER_U, "pp"), nr("pp", "pp-dir"), bt("pp-dir", "pp"), perm(GROUP_G, "pp-dir", grant_type="GROUP"),
@@ -321,7 +332,7 @@ async def _rows_and_expansions(world: _World, app_id: str) -> list[tuple[str, bo
     return seen
 
 
-@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st", "hc"])
+@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st", "hc", "oa", "ct"])
 async def test_an_arrow_is_on_exactly_when_the_expansion_lists_something(world: _World, app_id: str) -> None:
     rows = await _rows_and_expansions(world, app_id)
 

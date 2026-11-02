@@ -60,7 +60,7 @@ SEED = 20261102
 def _world(i: int, rnd: random.Random) -> tuple[list, list]:
     a = f"pa{i}"
     g = {"group_type": "DRIVE", "connector": DRIVE}
-    opens = rnd.random() < 0.25
+    opens = rnd.random() < 0.35
     nodes = [app(a, f"App {i}", connector=DRIVE, app_group="G", **({"permissionModel": "APP_LEVEL"} if opens else {}))]
     edges = [user_app(USER_U, a)]
 
@@ -75,10 +75,10 @@ def _world(i: int, rnd: random.Random) -> tuple[list, list]:
         nodes.append(rg(gid, f"g{k}", connectorId=a, hideChildren=rnd.random() < 0.25,
                         **({"permissionModel": RGL} if declared else {}), **g))
         edges += [nr(a, gid), bt(gid, a)]
-        if rnd.random() < 0.85:
+        if rnd.random() < 0.7:
             edges.append(perm(GROUP_G, gid, grant_type="GROUP"))
         for c in range(rnd.randint(0, 4)):
-            kind = rnd.choice(("member", "inherit", "strict", "stub", "stub-leaf", "subgroup"))
+            kind = rnd.choice(("member", "inherit", "strict", "stub", "stub-leaf", "subgroup", "chain-top"))
             cid = f"g{k}c{c}"
             if kind == "member":
                 m = record(cid)
@@ -99,6 +99,13 @@ def _world(i: int, rnd: random.Random) -> tuple[list, list]:
                     leaf = record(cid + "leaf")
                     edges += [nr(m, leaf), ip(leaf, m)]
                     edges += [bt(leaf, gid)] if rnd.random() < 0.5 else []
+            elif kind == "chain-top":
+                # A declared group granted to the viewer below a parent the viewer cannot read.
+                sg = f"{a}-{cid}"
+                nodes.append(rg(sg, cid, connectorId=a, permissionModel=RGL, **g))
+                edges += [nr(gid, sg), bt(sg, gid), perm(GROUP_G, sg, grant_type="GROUP")]
+                inner = record(cid + "m")
+                edges += [bt(inner, sg), nr(sg, inner)]
             else:
                 sg = f"{a}-{cid}"
                 nodes.append(rg(sg, cid, connectorId=a, hideChildren=rnd.random() < 0.2, **g))

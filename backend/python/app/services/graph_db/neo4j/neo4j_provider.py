@@ -20444,10 +20444,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
         rows = await self._kh_query(
             f"""
+        MATCH (app:App {{id: $app_id}})
+        // The declared groups the App's own listing admits: granted to the viewer, or reached by the listing's
+        // first hop (an App that opens everything admits all of them).
         MATCH (dg:RecordGroup)
-        WHERE dg.connectorId = $app_id AND dg.permissionModel = 'RECORD_GROUP_LEVEL' AND dg.id IN $granted
-          AND NOT {self._kh_deleted("dg", state=state)} AND NOT {self._kh_hides("dg", state=state)}
-        WITH collect(dg) AS declared
+        WHERE dg.connectorId = app.id AND dg.permissionModel = 'RECORD_GROUP_LEVEL'
+          AND NOT {self._kh_hides("dg", state=state)} AND NOT {self._kh_deleted("dg", state=state)}
+          AND (dg.id IN $granted OR EXISTS {{
+              (app)-[kh_ra:NODE_RELATION]->(dg)
+              WHERE kh_ra.relationshipType {hierarchy}
+                AND {self._kh_v3_granted_hop("dg", "app", state=state, opens=_CYPHER_APP_OPENS)} }})
+        WITH collect(DISTINCT dg) AS declared
         CALL (declared) {{
             UNWIND declared AS db
             MATCH (db) ((pb)-[kh_rb:NODE_RELATION]->(cb:RecordGroup)
@@ -20457,7 +20464,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }}
         RETURN ids
             """,
-            parameters={"app_id": app_id, "granted": granted_ids}, txn_id=transaction,
+            parameters={"app_id": app_id, "granted": granted_ids, "grantedIds": granted_ids}, txn_id=transaction,
         )
         return list(rows[0].get("ids") or []) if rows else []
 
@@ -20696,9 +20703,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._kh_v3_shared(("start-access", user_key, org_id, app_id, start_id), start_access)
                 if probe is not None and transaction is None else start_access()
             )
-        if start_is_app and not flatten:
-            declared_scope = await self._kh_v3_app_declared_scope(
-                app_id, granted_ids, state=state, transaction=transaction)
+        if not flatten:
+            # A browse reads, beside the scope of its start, the scope of every declared group the App admits to
+            # this viewer: the members of one are listed wherever the browse meets them, and the arrows say so.
+            declared_scope = list(dict.fromkeys([*declared_scope, *await self._kh_v3_app_declared_scope(
+                app_id, granted_ids, state=state, transaction=transaction)]))
         placed_ids: list[str] = []
         if wants_chain_tops:
             def chain_tops() -> "Awaitable[dict[str, list[dict[str, Any]]]]":
