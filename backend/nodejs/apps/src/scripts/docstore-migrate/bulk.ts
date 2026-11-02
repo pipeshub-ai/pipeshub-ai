@@ -129,7 +129,10 @@ export async function bulk(
           : b.docs;
         const docs = offered.map((d) => toNeutral(d, rep, m.collection));
         const stats = docs.length
-          ? await rt.jobs((tx) => repo.importBatch(m.collection, docs, tx))
+          ? await rt.jobs(async (tx, k) => {
+              await js.guardWrite(k);
+              return repo.importBatch(m.collection, docs, tx);
+            })
           : { skipped: [], inserted: {}, followUps: [] };
         await runFollowUps(rt, stats.followUps);
         report.merge(rep);
