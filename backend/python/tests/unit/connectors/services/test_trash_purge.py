@@ -420,6 +420,29 @@ class TestPerOrgSettings:
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         assert set(graph.records) == {"a"}
 
+    async def test_an_unreadable_org_setting_stops_the_tick_instead_of_using_the_defaults(self, clean_env) -> None:
+        graph, kv = _Graph(), _OrgKV({"org-2": {"minAgeDays": 30}})
+        graph.org_keys = [ORG, "org-2"]
+        graph.trash("b", days_ago=20, orgId="org-2")
+        read = kv.get_config
+
+        async def org_2_unreadable(key, default=None, use_cache=False, *, raise_on_error=False) -> object:
+            if key == PLATFORM_SETTINGS_KEY and org_context.current_org_id() == "org-2":
+                if raise_on_error:
+                    raise ConnectionError("store did not answer")
+                return default
+            return await read(key, default, use_cache, raise_on_error=raise_on_error)
+
+        kv.get_config = org_2_unreadable
+        # The default 14-day retention would remove "b"; its org keeps it for 30 days.
+        with pytest.raises(ConnectionError):
+            await _purger(graph, kv).tick()
+        assert "b" in graph.records
+
+        kv.get_config = read
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert "b" in graph.records
+
     async def test_with_every_org_off_it_is_disabled(self, clean_env) -> None:
         graph, kv = _Graph(), _OrgKV({ORG: {"enabled": False}, "org-2": {"enabled": False}})
         graph.org_keys = [ORG, "org-2"]

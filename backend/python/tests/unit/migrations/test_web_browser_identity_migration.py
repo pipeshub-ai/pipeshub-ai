@@ -45,17 +45,24 @@ class _MemoryConfigService:
 
 
 class _Graph:
-    def __init__(self, ids: list[str], *, org_id: str | None = "org-1", edge_org: str | None = None) -> None:
+    def __init__(self, ids: list[str], *, org_id: str | None = "org-1", edge_org: str | None = None,
+                 edge_read_fails: bool = False) -> None:
         self.ids = ids
         self.org_id = org_id
         self.edge_org = edge_org
+        self.edge_read_fails = edge_read_fails
 
     async def get_nodes_by_field_in(self, collection: str, field: str, values: list, fields: list, *,
                                     raise_on_error: bool = False) -> list[dict]:
         assert (field, values) == ("type", ["Web"])
         return [{"id": i, "orgId": self.org_id} for i in self.ids]
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *,
+                                raise_on_error: bool = False) -> list[dict]:
+        if self.edge_read_fails:
+            if raise_on_error:
+                raise ConnectionError("graph did not answer")
+            return []
         return [{"from_id": self.edge_org}] if self.edge_org else []
 
 
@@ -108,6 +115,17 @@ async def test_an_app_with_no_org_is_skipped_and_the_flag_is_still_set() -> None
     assert result == {"success": True, "skipped": False, "connectors_updated": 0, "failures": 0}
     assert config.read_in == {}
     assert config.store[MIGRATION_FLAG_KEY]["done"] is True
+
+
+async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    result = await run_web_browser_identity_backfill(
+        _container(config), _Graph(["old"], org_id=None, edge_read_fails=True), LOGGER,
+    )
+
+    assert result == {"success": False, "skipped": False, "connectors_updated": 0, "failures": 1}
+    assert MIGRATION_FLAG_KEY not in config.store
 
 
 async def test_a_stored_choice_is_kept_and_copied_to_the_form_values() -> None:

@@ -165,3 +165,26 @@ async def test_an_app_with_no_org_is_skipped_and_the_flag_is_still_set() -> None
     assert result == {"success": True, "skipped": False, "migrated": 0, "failures": 0}
     assert config.read_in == {}
     assert store[MIGRATION_FLAG_KEY]["done"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() -> None:
+    store = {_path("s3-1"): _config({"created": _date("is_after", FEB)})}
+    config = _MemoryConfigService(store)
+    graph = AsyncMock()
+    graph.get_nodes_by_filters = AsyncMock(
+        side_effect=lambda collection, filters, **_: [{"_key": "s3-1"}] if filters["type"] == "S3" else []
+    )
+
+    async def edge_read_fails(node_id, edge_collection, *, raise_on_error=False) -> list[dict]:
+        if raise_on_error:
+            raise ConnectionError("graph did not answer")
+        return []
+
+    graph.get_edges_to_node = AsyncMock(side_effect=edge_read_fails)
+
+    result = await run_s3_created_date_filter_migration(config, graph, LOGGER)
+
+    assert result == {"success": False, "skipped": False, "migrated": 0, "failures": 1}
+    assert MIGRATION_FLAG_KEY not in store
+    assert "created" in _values(store, "s3-1")

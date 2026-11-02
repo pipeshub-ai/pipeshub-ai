@@ -130,7 +130,9 @@ class WebBrowserIdentityBackfill:
             try:
                 # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
                 with system("web_browser_identity_backfill"):
-                    org_id = app.get("orgId") or await org_id_from_app_edge(self.graph_provider, connector_id)
+                    org_id = app.get("orgId") or await org_id_from_app_edge(
+                        self.graph_provider, connector_id, raise_on_error=True
+                    )
                 if not org_id:
                     # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
                     self.logger.warning(f"Web settings backfill: connector {connector_id} has no org; skipped")

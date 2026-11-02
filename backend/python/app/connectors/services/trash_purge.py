@@ -192,7 +192,8 @@ class PurgeSettings:
 
 
 async def load_purge_settings(config_service: ConfigurationService) -> PurgeSettings:
-    settings = await config_service.get_config(PLATFORM_SETTINGS_KEY, default={}, use_cache=False)
+    # Raising: a failed read answered with the defaults would purge an org on the default retention.
+    settings = await config_service.get_config(PLATFORM_SETTINGS_KEY, default={}, use_cache=False, raise_on_error=True)
     return PurgeSettings.from_config(settings.get(SETTINGS_FIELD) if isinstance(settings, dict) else None)
 
 

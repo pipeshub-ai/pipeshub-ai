@@ -105,7 +105,9 @@ async def run_s3_created_date_filter_migration(
             try:
                 # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
                 with system("s3_created_date_filter_migration"):
-                    org_id = app.get("orgId") or await org_id_from_app_edge(graph_provider, connector_id)
+                    org_id = app.get("orgId") or await org_id_from_app_edge(
+                        graph_provider, connector_id, raise_on_error=True
+                    )
                 if not org_id:
                     # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
                     logger.warning(f"S3 created date filter migration: connector {connector_id} has no org; skipped")
