@@ -101,14 +101,25 @@ def test_one_budget_covers_every_pattern_and_skips_are_logged(caplog: pytest.Log
     value = "a" * 40 + "!"
     start = time.monotonic()
     with caplog.at_level(logging.WARNING, logger=approvals.__name__):
-        # Distinct strings, as parsed JSON gives: the log finds each field by its value's identity.
+        # Distinct strings, as parsed JSON gives: the log finds the field by its value's identity.
         assert _check(p, {f: f"{value}{f}" for f in fields}) == []
     # Four timeouts would take four budgets; one shared budget ends them all.
     assert time.monotonic() - start < approvals._PATTERN_BUDGET_SECONDS * 2 + 0.3
-    for f in fields:
-        assert f"/{f}" in caplog.text
-    assert "/tools/gmail/send_email" in caplog.text
+    # One line per edit: the tool, the first field skipped, and how many checks were.
+    assert len(caplog.records) == 1
+    assert "/tools/gmail/send_email" in caplog.text and "'/q0'" in caplog.text and "4 pattern checks" in caplog.text
     assert value not in caplog.text
+
+
+def test_a_spent_budget_skips_the_rest_without_work(caplog: pytest.LogCaptureFixture) -> None:
+    schema = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string", "pattern": "^(a|aa)+$"}}}}
+    p = _pending(arguments={"items": []}, input_schema=schema)
+    edited = {"items": ["a" * 40 + "!"] + [f"a{i}" for i in range(20_000)]}
+    start = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger=approvals.__name__):
+        _check(p, edited)
+    assert time.monotonic() - start < 1
+    assert len(caplog.records) == 1 and "'/items/0'" in caplog.text
 
 
 _KEY = "a" * 40 + "!"
@@ -119,9 +130,8 @@ _KEY = "a" * 40 + "!"
     [
         {"type": "object", "patternProperties": {"^(a+)+$": {"type": "string"}}},
         {"type": "object", "patternProperties": {"^(a+)+$": {"type": "string"}}, "additionalProperties": False},
-        {"type": "object", "patternProperties": {"^(a+)+$": {"type": "string"}}, "unevaluatedProperties": False},
     ],
-    ids=["patternProperties", "additionalProperties", "unevaluatedProperties"],
+    ids=["patternProperties", "additionalProperties"],
 )
 def test_catastrophic_key_pattern_is_bounded(schema: dict[str, Any]) -> None:
     # The keys of an edit are matched against the server's patterns too.
@@ -129,6 +139,20 @@ def test_catastrophic_key_pattern_is_bounded(schema: dict[str, Any]) -> None:
     start = time.monotonic()
     _check(p, {_KEY: "x"})
     assert time.monotonic() - start < 1
+
+
+def test_unevaluated_with_pattern_properties_is_not_editable() -> None:
+    # unevaluatedProperties matches keys against patternProperties with no time limit.
+    schema = {
+        "type": "object", "properties": {"t": {"type": "string"}},
+        "$defs": {"x": {"patternProperties": {"^(a+)+$": {}}}}, "unevaluatedProperties": False,
+    }
+    p = _pending(arguments={"t": "a"}, input_schema=schema)
+    start = time.monotonic()
+    assert [e.message for e in _check(p, {"t": "b", _KEY: "x"})] == ["This action can't be edited."]
+    assert time.monotonic() - start < 1
+    assert approvals.schema_is_editable(schema) is False
+    assert approvals.schema_is_editable({"type": "object", "unevaluatedProperties": False}) is True
 
 
 def test_key_patterns_still_apply() -> None:
