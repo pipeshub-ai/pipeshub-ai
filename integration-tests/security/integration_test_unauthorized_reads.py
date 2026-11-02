@@ -28,6 +28,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.security]
 
 _CASES = {"no-token": {}, "bad-token": {"Authorization": "Bearer not-a-token"}}
 _ROUTES = [r for r in read_routes(load_spec()) if not r.public]
+# An empty list would make the parametrized test vanish and the run look green.
+assert len(_ROUTES) >= 150, f"only {len(_ROUTES)} non-public read routes were found in the spec; the loader is broken"
 
 
 @pytest.mark.parametrize("case", _CASES)

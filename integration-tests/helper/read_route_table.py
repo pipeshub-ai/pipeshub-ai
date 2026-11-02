@@ -53,10 +53,11 @@ UNDOCUMENTED_READS: dict[str, str] = {
 }
 
 # Router file (relative to the repo) -> why its mount prefix is not read from the source.
-_SEVERAL = "mounted at several prefixes, so its routes are not read"
 UNREAD_ROUTERS: dict[str, str] = {
-    "backend/nodejs/apps/src/modules/configuration_manager/routes/openai_models.routes.ts": _SEVERAL,
-    "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts": _SEVERAL,
+    "backend/nodejs/apps/src/modules/configuration_manager/routes/openai_models.routes.ts":
+        "one router, mounted twice (at /v1 and /api/v1), so no single prefix is read",
+    "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts":
+        "five routers from one file, mounted at /api/v1/conversations, /api/v1/agents, /api/v1/chat, /api/v1/search and /api/v1/retrieve",
 }
 
 # operationId -> (statuses a request with no valid token may get, reason).
