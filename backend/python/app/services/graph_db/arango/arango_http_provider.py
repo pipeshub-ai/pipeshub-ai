@@ -240,6 +240,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    REF_LINK_ROW_LIMIT,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -22525,6 +22526,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.exception(f"❌ Failed to get knowledge hub filter options: {str(e)}")
             return {"apps": []}
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # The persistent index on (externalRecordId, connectorId) serves a lookup on its leading field.
+        records = await self.execute_query(
+            """
+            FOR r IN @@records
+              FILTER r.externalRecordId IN @ids
+              LIMIT @limit
+              RETURN {docId: r.externalRecordId, recordId: r._key, kind: 'externalRecordId', origin: r.origin,
+                      connectorName: r.connectorName, connectorId: r.connectorId}
+            """,
+            bind_vars={"@records": CollectionNames.RECORDS.value, "ids": doc_ids, "limit": REF_LINK_ROW_LIMIT},
+        )
+        files = await self.execute_query(
+            """
+            FOR f IN @@files
+              FILTER f.path IN @paths
+              LIMIT @limit
+              RETURN {docId: SUBSTRING(f.path, 10), recordId: f._key, kind: 'files.path', origin: null,
+                      connectorName: null, connectorId: null}
+            """,
+            bind_vars={"@files": CollectionNames.FILES.value, "paths": [f"storage://{d}" for d in doc_ids], "limit": REF_LINK_ROW_LIMIT},
+        )
+        return [dict(r) for r in (records or []) + (files or [])]
 
     async def check_record_access_with_details(
         self,

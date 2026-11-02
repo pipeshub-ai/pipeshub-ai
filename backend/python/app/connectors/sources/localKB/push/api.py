@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,8 @@ from app.modules.record_metadata.schemas import (
 
 from .admission import Admission
 from .contract import PushRefusal
+from .image_admission import ImageAdmission
+from .materialiser import Materialiser
 from .spool import Spool, default_root, sweep
 from .worker import PushWorker
 
@@ -38,6 +41,26 @@ class PushRuntime:
     worker: PushWorker
     spool: Spool
     admission: Admission
+    # Both are made on the first push with images, so a deployment that never sees one starts no extra process.
+    _materialiser: Materialiser | None = None
+    _image_admission: ImageAdmission | None = None
+
+    @property
+    def materialiser(self) -> Materialiser:
+        if self._materialiser is None:
+            self._materialiser = Materialiser(listed_origins=_signed_url_origins())
+        return self._materialiser
+
+    @property
+    def image_admission(self) -> ImageAdmission:
+        if self._image_admission is None:
+            self._image_admission = ImageAdmission()
+        return self._image_admission
+
+
+def _signed_url_origins() -> list[str]:
+    """``KB_PUSH_SIGNED_URL_ORIGINS``: comma-separated https origins of an operator's S3-compatible endpoint."""
+    return [o.strip() for o in os.environ.get("KB_PUSH_SIGNED_URL_ORIGINS", "").split(",") if o.strip()]
 
 
 def runtime_for(app: FastAPI) -> PushRuntime:

@@ -15,7 +15,9 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     DeleteSource,
+    OriginTypes,
     ProgressStatus,
     RecordRelations,
 )
@@ -61,6 +63,24 @@ class MoveDestinationMissing(RuntimeError):
             f"Record {record_id} was not moved: its new parent {parent_record_id} "
             "is not in the graph or is in the trash"
         )
+
+
+@dataclass(frozen=True)
+class RefAccess:
+    """What ``IGraphDBProvider.get_ref_access`` found for a set of storage document ids.
+
+    ``linked``: ids named by any record or file link (so the id is somebody's content, whoever uploaded it).
+    ``readable``: ids with a granting record the caller can read. Record ids are never exposed.
+    """
+
+    linked: frozenset[str] = frozenset()
+    readable: frozenset[str] = frozenset()
+
+
+#: Linking records taken per document and per call; any readable one grants, more than the cap is not an error.
+REF_LINKS_PER_DOC = 8
+REF_LINKS_PER_CALL = 128
+REF_LINK_ROW_LIMIT = 1024
 
 
 @dataclass(frozen=True)
@@ -7253,6 +7273,57 @@ class IGraphDBProvider(ABC):
                 row["id"] for row in accessible_nodes if row.get("isPlaceholder")
             ),
         )
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        """Rows ``{docId, recordId, kind, origin, connectorName, connectorId}`` naming any of ``doc_ids``.
+
+        ``kind`` is ``externalRecordId`` (a record) or ``files.path`` (a file whose path is ``storage://<id>``).
+        Any org, live or trashed: "linked" is global; only readability is org-scoped. At most ``REF_LINK_ROW_LIMIT`` rows.
+        """
+        raise NotImplementedError
+
+    async def _ref_access_hint(self, user_key: str, org_id: str, connector_ids: set[str]) -> dict[str, Any] | None:
+        """``access`` for ``check_access`` when the linking records sit in one connector (a probe instead of resolving
+        every grant of the user); None means "let ``check_access`` resolve it"."""
+        return None
+
+    async def get_ref_access(self, user_id: str, org_id: str, doc_ids: Iterable[str]) -> RefAccess:
+        """Which storage documents ``user_id`` may inline into a pushed record.
+
+        A document is *linked* when any record or file names it. It is *readable* when the caller can read a record
+        that the platform itself linked to it: a record with ``origin = UPLOAD`` in the knowledge-base connector whose
+        ``externalRecordId`` is the document id. Links a connector or a client reported (``files.path``, a connector's
+        ``externalRecordId``) make a document linked, never readable through them. One ``check_access`` call decides all
+        of them. Raises ``PermissionVerificationUnavailableError`` when the graph cannot answer (never a denial).
+        """
+        ids = sorted(set(doc_ids))
+        if not ids:
+            return RefAccess()
+        user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+        user_key = (user or {}).get("id") or (user or {}).get("_key") or ""
+        try:
+            rows = await self._ref_link_rows(ids)
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        linked = {r["docId"] for r in rows if r.get("docId")}
+        by_doc: dict[str, list[dict[str, Any]]] = {}
+        for r in sorted(rows, key=lambda r: str(r.get("recordId"))):
+            if (r.get("kind") == "externalRecordId" and r.get("origin") == OriginTypes.UPLOAD.value
+                    and r.get("connectorName") == Connectors.KNOWLEDGE_BASE.value and r.get("recordId")):
+                by_doc.setdefault(r["docId"], []).append(r)
+        chosen: list[dict[str, Any]] = []
+        for doc in ids:
+            chosen.extend(by_doc.get(doc, [])[:REF_LINKS_PER_DOC])
+        chosen = chosen[:REF_LINKS_PER_CALL]
+        if not chosen or not user_key:
+            return RefAccess(frozenset(linked), frozenset())
+        connectors = {r.get("connectorId") for r in chosen if r.get("connectorId")}
+        access = await self._ref_access_hint(user_key, org_id, connectors) if len(connectors) == 1 else None
+        check = await self.check_access(user_key, org_id, node_ids=[r["recordId"] for r in chosen], access=access)
+        allowed = check.node_ids - check.placeholder_ids
+        return RefAccess(frozenset(linked), frozenset(r["docId"] for r in chosen if r["recordId"] in allowed))
 
     async def _kh_v3_child_ids(
         self, parent_ids: list[str], org_id: str, skip: int, limit: int, transaction: str | None,

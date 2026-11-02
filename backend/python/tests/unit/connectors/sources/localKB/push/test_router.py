@@ -75,7 +75,7 @@ class Harness:
     def service(self) -> KbPushService:
         svc = KbPushService(
             graph_provider=MagicMock(), kb_service=self.kb, processor_for_kb=AsyncMock(), schema_registry=self.schemas,
-            storage=MagicMock(), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
+            storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
         )
 
         async def push(**kw) -> PushResult:

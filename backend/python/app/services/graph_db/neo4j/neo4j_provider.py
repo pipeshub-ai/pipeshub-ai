@@ -194,6 +194,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
+    REF_LINK_ROW_LIMIT,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -1119,6 +1120,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_external_parent_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.externalParentId, n.connectorId)"
+        )
+
+        # SINGLE: externalRecordId alone (the push's storage-reference lookup). The composite above is used only
+        # when every property is in the predicate, so an id-only lookup would scan the records.
+        indexes.append(
+            "CREATE INDEX record_external_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.externalRecordId)"
         )
 
         # SINGLE: File.path (get_records_by_file_path: a delete reported by path only)
@@ -12469,6 +12477,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"get_node_depths_batch failed: {e}")
             return {}
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        records = await self.client.execute_query(
+            """
+            MATCH (r:Record) WHERE r.externalRecordId IN $ids
+            RETURN r.externalRecordId AS docId, r.id AS recordId, 'externalRecordId' AS kind, r.origin AS origin,
+                   r.connectorName AS connectorName, r.connectorId AS connectorId
+            LIMIT $limit
+            """,
+            parameters={"ids": doc_ids, "limit": REF_LINK_ROW_LIMIT},
+        )
+        files = await self.client.execute_query(
+            """
+            MATCH (f:File) WHERE f.path IN $paths
+            RETURN substring(f.path, 10) AS docId, f.id AS recordId, 'files.path' AS kind,
+                   null AS origin, null AS connectorName, null AS connectorId
+            LIMIT $limit
+            """,
+            parameters={"paths": [f"storage://{d}" for d in doc_ids], "limit": REF_LINK_ROW_LIMIT},
+        )
+        return [dict(r) for r in (records or []) + (files or [])]
+
+    async def _ref_access_hint(self, user_key: str, org_id: str, connector_ids: set[str]) -> dict[str, Any] | None:
+        # The same single-connector probe the one-record check uses (``check_record_access_with_details``).
+        (connector_id,) = connector_ids
+        gate = await self.get_knowledge_hub_access_context_v2(user_key, org_id)
+        grantees = await self._kh_v3_connector_grantees(user_key, connector_id, None) if connector_id in gate["gated_app_ids"] else []
+        return {**gate, "by_connector": {}, "probe": {"connector_id": connector_id, "grantees": grantees}}
 
     async def check_record_access_with_details(
         self,

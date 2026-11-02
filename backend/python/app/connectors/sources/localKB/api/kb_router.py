@@ -1866,6 +1866,8 @@ def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_serv
         worker=runtime.worker,
         spool=runtime.spool,
         publish_event=publish,
+        materialiser=runtime.materialiser,
+        image_admission=runtime.image_admission,
     )
 
 

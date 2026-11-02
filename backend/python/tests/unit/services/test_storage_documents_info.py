@@ -48,7 +48,35 @@ def test_p1_full_parse_of_a_verified_answer() -> None:
         document_id="d1", is_deleted=False, awaiting_direct_upload=False, declared_size=10,
         fingerprint="a" * 32, trusted=True, object_size=5, object_etag="abc123",
         object_unverifiable=False, reason=None, is_artifact_set=False, storage_vendor="s3",
+        settled=True, untrusted_reason=None,
     )
+
+
+S3_DOC = {**DOC, "initiatorUserId": "u1", "mimeType": "image/png", "retiredAt": "2026-01-01", "s3": {"url": "https://b.s3.eu-west-1.amazonaws.com/k"}}
+
+
+def test_u2_new_fields_are_parsed() -> None:
+    """Mongo returns ``initiatorUserId`` as a string and Postgres maps the same names (``mongo.ts:46,270-299``, ``pg.ts:123-150``)."""
+    info = parse_document_info(body(S3_DOC, fingerprint()), verify=True)
+    assert (info.initiator_user_id, info.mime_type, info.retired, info.object_url) == ("u1", "image/png", True, "https://b.s3.eu-west-1.amazonaws.com/k")
+    plain = parse_document_info(body(), verify=True)
+    assert (plain.initiator_user_id, plain.mime_type, plain.retired, plain.object_url) == (None, None, False, None)
+
+
+def test_object_url_follows_the_vendor() -> None:
+    azure = {**DOC, "storageVendor": "azureBlob", "azureBlob": {"url": "https://a.blob.core.windows.net/c/k"}, "s3": {"url": "https://wrong"}}
+    assert parse_document_info(body(azure), verify=False).object_url == "https://a.blob.core.windows.net/c/k"
+    local = {**DOC, "storageVendor": "local", "local": {"url": "file:///x"}}
+    assert parse_document_info(body(local), verify=False).object_url is None
+
+
+@pytest.mark.parametrize("fp,reason", [
+    (None, "no_fingerprint"), (fingerprint(version=99), "version"), (fingerprint(objectUnverifiable=True, trusted=False), "unverifiable"),
+    (fingerprint(reason="clock_unavailable", trusted=False), "clock"), (fingerprint(settled=False, trusted=False), "open_writer"),
+    (fingerprint(), None),
+])
+def test_untrusted_reason(fp, reason) -> None:
+    assert parse_document_info(body(fp=fp), verify=True).untrusted_reason == reason
 
 
 def test_p2_missing_storage_fingerprint_is_untrusted() -> None:

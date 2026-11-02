@@ -8,8 +8,10 @@ redirect to a presigned URL, which is followed as a PUT of the raw bytes.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -22,6 +24,7 @@ from app.modules.transformers.blob_storage import (
     _signed_upload_headers,
     _upload_succeeded,
 )
+from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.utils.jwt import generate_jwt
 
 if TYPE_CHECKING:
@@ -34,8 +37,33 @@ _REDIRECTS = frozenset({301, 302, 307, 308})
 _TIMEOUT = aiohttp.ClientTimeout(total=90)
 
 
+#: The platform's per-file upload limit when the setting is absent or unusable
+#: (``KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes``, ``knowledge_base/constants/kb.constants.ts``).
+DEFAULT_UPLOAD_LIMIT_BYTES = 30 << 20
+
+
 class StorageUploadError(Exception):
-    """The storage service did not store the document."""
+    """The storage service did not store the document.
+
+    ``status`` is the service's HTTP status when it answered (413 is set by ``create`` for a 400 that is
+    an oversize file); ``limit_bytes`` is the upload limit read at that moment for a 413.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, limit_bytes: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.limit_bytes = limit_bytes
+
+
+def parse_upload_limit(settings: object) -> int:
+    """The upload limit in a platform settings blob, by the rule of ``getPlatformSettingsFromStore``
+    (``storage/routes/storage.routes.ts:61-67``, ``configuration_manager/utils/util.ts:54-58``): a number
+    greater than 0, else the default. ``True`` is not a number there, nor is a numeric string.
+    """
+    value = settings.get("fileUploadMaxSizeBytes") if isinstance(settings, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 and value != float("inf"):
+        return int(value)
+    return DEFAULT_UPLOAD_LIMIT_BYTES
 
 
 _FINGERPRINT_VERSION = 1
@@ -72,6 +100,15 @@ class StorageDocumentInfo:
     reason: str | None
     is_artifact_set: bool
     storage_vendor: str | None = None
+    initiator_user_id: str | None = None
+    mime_type: str | None = None
+    retired: bool = False
+    #: The object's own URL as stored (``s3.url`` / ``azureBlob.url``); the signed-URL hop is pinned to it.
+    object_url: str | None = None
+    #: False when a writer window is open or reads disagreed (the counter state is not settled); None without a fingerprint.
+    settled: bool | None = None
+    #: Why a fingerprint cannot be trusted: no_fingerprint, version, unverifiable, clock, open_writer, other; None when trusted.
+    untrusted_reason: str | None = None
 
     @property
     def if_match_header(self) -> str | None:
@@ -104,11 +141,30 @@ def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | 
     if not doc_id:
         return None
     fp = body.get("storageFingerprint", document.get("storageFingerprint")) if isinstance(body, dict) else None
-    fp = fp if isinstance(fp, dict) and fp.get("version") == _FINGERPRINT_VERSION else None
+    raw_fp = fp if isinstance(fp, dict) else None
+    fp = raw_fp if raw_fp is not None and raw_fp.get("version") == _FINGERPRINT_VERSION else None
     obj = fp.get("object") if fp else None
     obj = obj if isinstance(obj, dict) else None
     vendor = document.get("storageVendor")
+    initiator = document.get("initiatorUserId")
+    mime = document.get("mimeType")
+    remote = document.get("s3") if vendor == "s3" else document.get("azureBlob") if vendor == "azureBlob" else None
+    object_url = remote.get("url") if isinstance(remote, dict) and isinstance(remote.get("url"), str) else None
     trusted = bool(verify and fp and fp.get("verified") is True and fp.get("trusted") is True and obj)
+    if trusted:
+        why = None
+    elif raw_fp is None:
+        why = "no_fingerprint"
+    elif fp is None:
+        why = "version"
+    elif fp.get("objectUnverifiable") is True:
+        why = "unverifiable"
+    elif isinstance(fp.get("reason"), str):
+        why = "clock"
+    elif fp.get("settled") is False:
+        why = "open_writer"
+    else:
+        why = "other"
     return StorageDocumentInfo(
         document_id=str(doc_id),
         is_deleted=document.get("isDeleted") is True,
@@ -122,6 +178,12 @@ def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | 
         reason=fp.get("reason") if fp and isinstance(fp.get("reason"), str) else None,
         is_artifact_set=bool(document.get("artifactSet")),
         storage_vendor=vendor if isinstance(vendor, str) else None,
+        initiator_user_id=str(initiator) if isinstance(initiator, (str, int)) and not isinstance(initiator, bool) and initiator else None,
+        mime_type=mime if isinstance(mime, str) else None,
+        retired=bool(document.get("retiredAt")),
+        object_url=object_url,
+        settled=fp.get("settled") if fp and isinstance(fp.get("settled"), bool) else None,
+        untrusted_reason=why,
     )
 
 
@@ -187,11 +249,30 @@ class StorageDocuments:
                             if doc_id:
                                 return doc_id
                             raise StorageUploadError("the storage service did not return a document id")
-                        raise StorageUploadError(f"the storage service answered {resp.status}")
+                        if resp.status == 400:
+                            # The route answers 400 with free text for a file over the platform limit (multer's
+                            # LIMIT_FILE_SIZE, ``fp.service.ts:146-151,226-229``), never 413.
+                            await self._explain_400(size)
+                        raise StorageUploadError(f"the storage service answered {resp.status}", status=resp.status)
         except StorageUploadError:
             raise
         except (aiohttp.ClientError, TimeoutError, OSError) as e:
             raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
+
+    async def upload_limit(self, *, use_cache: bool = False) -> int:
+        """The platform's per-file upload limit in bytes. Raises ``StorageUploadError`` when the setting cannot be read:
+        a limit is never guessed, so an outage is a retry, not a refusal or a pass."""
+        try:
+            settings = await self.config_service.get_config(PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache, raise_on_error=True)
+        except Exception as e:
+            raise StorageUploadError(f"the upload limit could not be read: {type(e).__name__}") from e
+        return parse_upload_limit(settings)
+
+    async def _explain_400(self, size: int) -> None:
+        """Raise the 413 a 400 means when the file is larger than the limit now (read fresh); else return."""
+        limit = await self.upload_limit(use_cache=False)
+        if size > limit:  # multer's check is ``>``: a file of exactly the limit is stored
+            raise StorageUploadError("the file is larger than the platform upload limit", status=413, limit_bytes=limit)
 
     async def exists(self, org_id: str, document_id: str) -> bool:
         """Whether the storage service still has the document (absent or soft-deleted is False).
@@ -241,6 +322,43 @@ class StorageDocuments:
         if info is None:
             raise StorageUploadError("the storage service answered without a document")
         return info
+
+    async def mint_token(self, org_id: str, *, ttl_s: int) -> str:
+        """An org-scoped storage token that expires in ``ttl_s`` seconds (never logged)."""
+        return await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]}, timedelta(seconds=ttl_s))
+
+    async def info_many(
+        self, org_id: str, document_ids: list[str], *, verify: bool = False, concurrency: int = 8,
+    ) -> dict[str, StorageDocumentInfo | None]:
+        """``info`` of each distinct id, sharing one token and one session, ``concurrency`` at a time.
+
+        Raises ``StorageUploadError`` for the first failure (an unknown answer is not "absent").
+        """
+        token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
+        base = await self._storage_url()
+        gate = asyncio.Semaphore(concurrency)
+        params = {"verify": "1"} if verify else None
+
+        async def one(session: aiohttp.ClientSession, doc_id: str) -> StorageDocumentInfo | None:
+            async with gate:
+                try:
+                    async with session.get(f"{base}/api/v1/document/internal/{doc_id}", params=params, headers={"Authorization": f"Bearer {token}"}) as resp:
+                        if resp.status in (404, 410):
+                            return None
+                        if resp.status != 200:
+                            raise StorageUploadError(f"the storage service answered {resp.status}", status=resp.status)
+                        body = await resp.json()
+                except (aiohttp.ClientError, TimeoutError, OSError) as e:
+                    raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
+            parsed = parse_document_info(body, verify=verify)
+            if parsed is None:
+                raise StorageUploadError("the storage service answered without a document")
+            return parsed
+
+        ids = list(dict.fromkeys(document_ids))
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            results = await asyncio.gather(*(one(session, i) for i in ids))
+        return dict(zip(ids, results, strict=True))
 
     async def _put_presigned(
         self, session: aiohttp.ClientSession, resp: aiohttp.ClientResponse, file_path: str, size: int
