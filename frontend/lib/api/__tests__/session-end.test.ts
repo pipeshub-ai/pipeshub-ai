@@ -26,7 +26,8 @@ vi.mock('@/config', async () => {
 
 vi.mock('@/lib/utils/jwt', () => ({ getUserIdFromToken: () => 'user-a' }));
 
-const { useAuthStore, ACCESS_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
+const { useAuthStore, ACCESS_TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
+const { useFeatureFlagsStore } = await import('@/lib/store/feature-flags-store');
 const { useInitializeUserProfile } = await import('@/lib/hooks/use-initialize-user-profile');
 const { useUserStore } = await import('@/lib/store/user-store');
 const { renderHook, act } = await import('@testing-library/react');
@@ -90,6 +91,7 @@ beforeEach(() => {
 
 afterEach(() => {
   scheduler.cancel();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -191,8 +193,59 @@ describe('an apiClient answer that arrives after the session ended', () => {
   });
 });
 
+describe('the request whose refresh fails, which ends the session', () => {
+  it('signs out once and never settles: no toast, no error written into the reset stores', async () => {
+    useAuthStore.setState({ accessToken: jwtExpiringIn(20) });
+    deferredServer();
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
+    const seen = watch(apiClient.get('/api/v1/users'));
+    await flush();
+
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(seen.settled).toBe(false);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('leaves the feature flags unloaded, so the next sign-in waits for its own', async () => {
+    useAuthStore.setState({ accessToken: jwtExpiringIn(20) });
+    deferredServer();
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
+    void useFeatureFlagsStore.getState().fetchFlags();
+    await flush();
+
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(useFeatureFlagsStore.getState().flags).toBeNull();
+  });
+
+  it('a 401 whose refresh fails signs out once and never settles', async () => {
+    const pending = deferredServer();
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
+    const seen = watch(apiClient.get('/api/v1/users'));
+    await flush();
+
+    pending[0].answer({ status: 401 });
+    await flush();
+
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(seen.settled).toBe(false);
+  });
+
+  it('a 401 saying the session is over signs out without refreshing and never settles', async () => {
+    const pending = deferredServer();
+    const seen = watch(apiClient.get('/api/v1/users'));
+    await flush();
+
+    pending[0].answer({ status: 401, data: { error: { message: 'Session expired, please login again' } } });
+    await flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(seen.settled).toBe(false);
+  });
+});
+
 describe('a profile load that overlaps a sign-out', () => {
-  it('writes nothing, so the same person signing back in gets no blank profile (no full-name prompt)', async () => {
+  it('writes nothing when the same person signs back in while it is out (no blank profile, no full-name prompt)', async () => {
     const pending = deferredServer();
     const { result } = renderHook(() => useInitializeUserProfile());
     void act(() => result.current.initialize(true));
@@ -263,7 +316,7 @@ describe('a token refresh that overlaps a sign-out', () => {
     expect(seen.settled).toBe(false);
   });
 
-  it('does not sign the next person out from a stream or the refresh timer', async () => {
+  it('does not sign the next person out from a stream', async () => {
     useAuthStore.setState({ accessToken: jwtExpiringIn(20) });
     const answer = deferredRefresh();
     const errors: Error[] = [];
@@ -277,18 +330,41 @@ describe('a token refresh that overlaps a sign-out', () => {
 
     expect(logoutAndRedirect).not.toHaveBeenCalled();
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
 
+  it("neither signs the next person out from the refresh timer nor stops the next person's timer", async () => {
     vi.useFakeTimers();
-    const timerAnswer = deferredRefresh();
+    const lastAnswer = deferredRefresh();
     scheduler.scheduleFromToken(jwtExpiringIn(30));
     await vi.advanceTimersByTimeAsync(0);
-    signOut();
-    signIn();
-    timerAnswer(jsonResponse(401, {}));
-    await vi.advanceTimersByTimeAsync(0);
-    vi.useRealTimers();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
+    signOut();
+    signIn(jwtExpiringIn(200));
+    scheduler.scheduleFromToken(useAuthStore.getState().accessToken);
+    lastAnswer(jsonResponse(401, {}));
+    await vi.advanceTimersByTimeAsync(0);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
+
+    // The next person's token is refreshed 90 s before it expires.
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
+    await vi.advanceTimersByTimeAsync(115_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not sign the last person back in when another tab signed out while the refresh was out', async () => {
+    storage.set(REFRESH_TOKEN_STORAGE_KEY, 'refresh-a');
+    const answer = deferredRefresh();
+    const before = useAuthStore.getState().accessToken;
+    const refresh = refreshAccessToken();
+
+    // The other tab's sign-out is in storage, but this tab has not handled the event yet.
+    storage.delete(REFRESH_TOKEN_STORAGE_KEY);
+    answer(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
+
+    expect(await refresh).toBe(false);
+    expect(useAuthStore.getState().accessToken).toBe(before);
+    expect(storage.has(REFRESH_TOKEN_STORAGE_KEY)).toBe(false);
   });
 
   it("never lets the next person wait on the last person's refresh", async () => {

@@ -19,7 +19,7 @@ export function onSessionEnd(reset: SessionResetter): () => void {
 }
 
 /** Captures the current session; the returned check turns false once it ends. */
-export function sessionToken(): () => boolean {
+export function captureSession(): () => boolean {
   const captured = generation;
   return () => captured === generation;
 }

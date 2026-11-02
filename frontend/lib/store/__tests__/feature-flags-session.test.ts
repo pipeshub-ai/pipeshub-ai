@@ -135,6 +135,23 @@ describe('feature flags at session end', () => {
     expect(useFeatureFlagsStore.getState().flags).toEqual({ ENABLE_PROJECTS: false });
   });
 
+  it("on an org switch while the last org's request is still out, asks once for the new org and keeps its answer", async () => {
+    void useFeatureFlagsStore.getState().fetchFlags();
+    await flush();
+
+    clearSessionCache({ refetch: true });
+    await flush();
+    expect(pending).toHaveLength(2);
+
+    pending[1](200, { NEW_ORG: true });
+    await flush();
+    pending[0](200, { OLD_ORG: true });
+    await flush();
+
+    expect(pending).toHaveLength(2);
+    expect(useFeatureFlagsStore.getState().flags).toEqual({ NEW_ORG: true });
+  });
+
   it('a refresh within the session (Labs save) still updates them', async () => {
     const first = useFeatureFlagsStore.getState().fetchFlags();
     await flush();

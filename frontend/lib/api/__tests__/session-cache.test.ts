@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { createJSONStorage, devtools, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
-import { clearSessionCache, onSessionEnd, resetStoreOnSessionEnd, sessionToken } from '../session-cache';
+import { captureSession, clearSessionCache, onSessionEnd, resetStoreOnSessionEnd } from '../session-cache';
 import { revalidateSwrNamespace, SWR_NS } from '../swr-cache';
 
 async function settle(ms = 20) {
@@ -164,15 +164,15 @@ describe('clearSessionCache', () => {
   });
 });
 
-describe('sessionToken', () => {
+describe('captureSession', () => {
   it('reads true until the session ends, and a token taken afterwards belongs to the next one', () => {
-    const before = sessionToken();
+    const before = captureSession();
     expect(before()).toBe(true);
 
     clearSessionCache();
 
     expect(before()).toBe(false);
-    expect(sessionToken()()).toBe(true);
+    expect(captureSession()()).toBe(true);
   });
 
   it('tells the resets whether the app stays open on another org', () => {
@@ -187,10 +187,10 @@ describe('sessionToken', () => {
   });
 
   it('has already moved on when the resets run', () => {
-    const before = sessionToken();
+    const before = captureSession();
     let duringReset: (() => boolean) | null = null;
     const stop = onSessionEnd(() => {
-      duringReset = sessionToken();
+      duringReset = captureSession();
     });
 
     clearSessionCache();

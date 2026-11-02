@@ -126,9 +126,9 @@ async function readUploadHttpError(response: Response): Promise<UploadHttpError>
  * - if a refresh is already in flight (timer or 401 retry), await the
  *   shared promise so we don't send the about-to-be-rotated token
  *
- * Returns the token (possibly refreshed) or, on refresh failure,
- * `{ sessionExpired: true }` after `logoutAndRedirect()` has been
- * triggered. Caller should `onError` and bail.
+ * Returns the token (possibly refreshed), or `{ sessionExpired: true }` when
+ * the refresh failed (the person has been signed out) or the session ended
+ * while it was out. Caller should `onError` and bail.
  */
 async function ensureFreshToken(): Promise<
   { token: string | null; sessionExpired: false } | { token: null; sessionExpired: true }

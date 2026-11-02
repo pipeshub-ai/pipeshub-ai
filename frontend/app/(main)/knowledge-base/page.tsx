@@ -1770,7 +1770,6 @@ function KnowledgeBasePageContent() {
       // Signing out cancels the batch in flight and the rest: a later batch would go out
       // with the next person's token, into the last person's collection.
       const upload = new AbortController();
-      const stopOnSessionEnd = onSessionEnd(() => upload.abort());
 
       let anySuccess = false;
 
@@ -1917,49 +1916,13 @@ function KnowledgeBasePageContent() {
 
       remainingBatches.push(...createSizeBatches(standaloneEntries));
 
-      // Send priming batches sequentially to establish folder nodes
-      const failedFolders = new Set<string>();
-      for (const batch of primingBatches) {
-        try {
-          await sendBatch(batch);
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error
-              ? error.message
-              : t('uploadProgress.uploadFailedDefault', {
-                  defaultValue: 'Upload failed',
-                });
-          batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
-          const folder = getTopLevelFolder(batch[0].filePath);
-          if (folder) failedFolders.add(folder);
-        }
-      }
-
-      // Fail remaining batches whose folder priming batch failed
-      const viableBatches = remainingBatches.filter((batch) => {
-        const folder = getTopLevelFolder(batch[0]?.filePath);
-        if (folder && failedFolders.has(folder)) {
-          batch.forEach((entry) =>
-            failUpload(
-              entry.storeId,
-              t('uploadProgress.skippedFolderFailed', {
-                defaultValue: 'Skipped: folder creation failed',
-              })
-            )
-          );
-          return false;
-        }
-        return true;
-      });
-
-      // Run viable batches concurrently via worker pool
-      let nextPoolIdx = 0;
-      const poolWorker = async () => {
-        while (true) {
-          const idx = nextPoolIdx++;
-          if (idx >= viableBatches.length) break;
+      const stopOnSessionEnd = onSessionEnd(() => upload.abort());
+      try {
+        // Send priming batches sequentially to establish folder nodes
+        const failedFolders = new Set<string>();
+        for (const batch of primingBatches) {
           try {
-            await sendBatch(viableBatches[idx]);
+            await sendBatch(batch);
           } catch (error) {
             const errorMessage =
               error instanceof Error
@@ -1967,17 +1930,57 @@ function KnowledgeBasePageContent() {
                 : t('uploadProgress.uploadFailedDefault', {
                     defaultValue: 'Upload failed',
                   });
-            viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+            batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
+            const folder = getTopLevelFolder(batch[0].filePath);
+            if (folder) failedFolders.add(folder);
           }
         }
-      };
-      await Promise.all(
-        Array.from(
-          { length: Math.min(UPLOAD_BATCH_CONFIG.uploadConcurrency, viableBatches.length) },
-          () => poolWorker()
-        )
-      );
-      stopOnSessionEnd();
+
+        // Fail remaining batches whose folder priming batch failed
+        const viableBatches = remainingBatches.filter((batch) => {
+          const folder = getTopLevelFolder(batch[0]?.filePath);
+          if (folder && failedFolders.has(folder)) {
+            batch.forEach((entry) =>
+              failUpload(
+                entry.storeId,
+                t('uploadProgress.skippedFolderFailed', {
+                  defaultValue: 'Skipped: folder creation failed',
+                })
+              )
+            );
+            return false;
+          }
+          return true;
+        });
+
+        // Run viable batches concurrently via worker pool
+        let nextPoolIdx = 0;
+        const poolWorker = async () => {
+          while (true) {
+            const idx = nextPoolIdx++;
+            if (idx >= viableBatches.length) break;
+            try {
+              await sendBatch(viableBatches[idx]);
+            } catch (error) {
+              const errorMessage =
+                error instanceof Error
+                  ? error.message
+                  : t('uploadProgress.uploadFailedDefault', {
+                      defaultValue: 'Upload failed',
+                    });
+              viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+            }
+          }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(UPLOAD_BATCH_CONFIG.uploadConcurrency, viableBatches.length) },
+            () => poolWorker()
+          )
+        );
+      } finally {
+        stopOnSessionEnd();
+      }
       if (upload.signal.aborted) return;
 
       // All batch streams have settled — finalize the session (completes any

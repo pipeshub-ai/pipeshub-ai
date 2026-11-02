@@ -1,7 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
-import { STREAM_ERROR_MESSAGES } from './stream-errors';
+import { extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
@@ -9,7 +8,7 @@ import {
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
-import { sessionToken } from './session-cache';
+import { captureSession } from './session-cache';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { applyElectronOverrides } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
@@ -22,7 +21,10 @@ declare module 'axios' {
      * the backend's message through the generic toast.
      */
     suppressErrorToast?: boolean | ((error: ProcessedError) => boolean);
-    /** The session the request was sent in; an answer that arrives after it ended is dropped. */
+    /**
+     * @internal Set by apiClient itself: the session the request was sent in; an answer that
+     * arrives after it ended is dropped. Do not set it or copy it into another request.
+     */
     sessionCurrent?: () => boolean;
   }
 }
@@ -63,7 +65,7 @@ export const apiClient = axios.create({
 // Safety-net path: the timer-based scheduler in `token-refresh-scheduler.ts`
 // is the primary refresh mechanism, but this interceptor still pre-checks
 // expiry on every outbound request and refreshes via the same shared lock
-// (`refreshAccessToken`) when the token slipped past the buffer for any
+// (`refreshOrSignOut`) when the token slipped past the buffer for any
 // reason (e.g. timer was throttled in a backgrounded tab, request was made
 // before the scheduler initialized, manual hot-reload during development).
 //
@@ -73,7 +75,7 @@ export const apiClient = axios.create({
 apiClient.interceptors.request.use(
   async (config) => {
     // Kept on the 401 retry, which passes the same config back in.
-    config.sessionCurrent ??= sessionToken();
+    config.sessionCurrent ??= captureSession();
     config.baseURL = getApiBaseUrl();
     applyElectronOverrides(config);
 
@@ -96,18 +98,10 @@ apiClient.interceptors.request.use(
     let accessToken = headerToken ?? storeToken;
 
     if (accessToken && isTokenExpired(accessToken)) {
-      const outcome = await refreshOrSignOut();
-      if (outcome === 'refreshed') {
-        accessToken = useAuthStore.getState().accessToken;
-      } else if (outcome === 'session-ended') {
-        return dropped();
-      } else {
-        const sessionExpired: ProcessedError = {
-          type: ErrorType.AUTHENTICATION_ERROR,
-          message: STREAM_ERROR_MESSAGES.sessionExpired,
-        };
-        return Promise.reject(sessionExpired);
-      }
+      // Not refreshed means this session is over (signed out now, or earlier), so the
+      // request is dropped: none of its handlers may write into the reset stores.
+      if ((await refreshOrSignOut()) !== 'refreshed') return dropped();
+      accessToken = useAuthStore.getState().accessToken;
     }
 
     if (accessToken) {
@@ -156,31 +150,19 @@ apiClient.interceptors.response.use(
         localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
         sessionStorage.clear();
         logoutAndRedirect();
-        return Promise.reject(processError(error));
+        return dropped();
       }
 
       originalRequest._retry = true;
 
-      try {
-        // If a refresh is already running (timer or another 401), this just
-        // awaits the existing promise; otherwise it kicks off a new one.
-        const outcome = await refreshOrSignOut();
-
-        if (outcome === 'refreshed') {
-          const newToken = useAuthStore.getState().accessToken;
-          if (newToken) {
-            originalRequest.headers.Authorization = `Bearer ${newToken}`;
-          }
-          return apiClient(originalRequest);
-        }
-        if (outcome === 'session-ended') return dropped();
-
-        return Promise.reject(processError(error));
-      } catch {
-        if (sessionEnded(originalRequest)) return dropped();
-        logoutAndRedirect();
-        return Promise.reject(processError(error));
+      // If a refresh is already running (timer or another 401), this just
+      // awaits the existing promise; otherwise it kicks off a new one.
+      if ((await refreshOrSignOut()) !== 'refreshed') return dropped();
+      const newToken = useAuthStore.getState().accessToken;
+      if (newToken) {
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
       }
+      return apiClient(originalRequest);
     }
 
     const processedError = processError(error);

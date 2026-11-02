@@ -1475,21 +1475,22 @@ describe('Knowledge base page — uploading', () => {
         });
       },
     );
-    api.hub.loadFolderData.mockClear();
 
     await chooseFromNewMenu('Upload data');
     fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
     await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
 
+    useToastStore.setState({ toasts: [] });
     act(() => clearSessionCache());
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
 
-    expect(signals[0].aborted).toBe(true);
+    await waitFor(() => expect(signals[0].aborted).toBe(true));
+    // The second folder's batch would have been sent by now had the loop kept going.
+    await act(async () => {
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
     expect(api.kb.streamUpload).toHaveBeenCalledTimes(1);
-    expect(api.hub.loadFolderData).not.toHaveBeenCalled();
     expect(useUploadStore.getState().items).toEqual([]);
+    expect(useToastStore.getState().toasts.filter((t) => t.variant === 'error')).toEqual([]);
   });
 });
 

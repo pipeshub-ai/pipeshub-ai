@@ -58,8 +58,9 @@ async function refreshNow(): Promise<void> {
   timerId = null;
   scheduledForToken = null;
 
-  // On failure this logs the user out, unless the session already ended meanwhile.
-  if ((await refreshOrSignOut()) !== 'refreshed') {
+  // On failure this logs the user out, unless the session already ended meanwhile; then the
+  // timer may already belong to the next person, so it is left alone.
+  if ((await refreshOrSignOut()) === 'signed-out') {
     // Hard stop: clear any state that may have been re-armed concurrently by an inbound `storage` event.
     clearTimer();
   }
