@@ -8,6 +8,7 @@ from app.services.ai_models.decision.clients import (
     AzureOpenAIDecisionModel,
     DecisionModel,
     OpenAIDecisionModel,
+    OpenRouterDecisionModel,
     TypeSafeDecisionModel,
 )
 from app.utils.aimodels import require_allowed_endpoint, select_model_name
@@ -45,10 +46,31 @@ def _typesafe(configuration: Mapping[str, Any], model_name: str) -> DecisionMode
     )
 
 
+def _openrouter(configuration: Mapping[str, Any], model_name: str) -> DecisionModel:
+    return OpenRouterDecisionModel(model_name, api_key=configuration["apiKey"])
+
+
+def _openai_gateway(provider: str, label: str) -> Callable[[Mapping[str, Any], str], DecisionModel]:
+    """A gateway that serves the OpenAI Decisions API at its own endpoint."""
+
+    def build(configuration: Mapping[str, Any], model_name: str) -> DecisionModel:
+        endpoint = _endpoint(configuration)
+        if not endpoint:
+            raise ValueError(f"{label} decision models need an endpoint")
+        return OpenAIDecisionModel(
+            model_name, api_key=configuration["apiKey"], base_url=endpoint, provider=provider
+        )
+
+    return build
+
+
 _DECISION_BUILDERS: dict[str, Callable[[Mapping[str, Any], str], DecisionModel]] = {
     "openAI": _openai,
     "azureOpenAI": _azure_openai,
     "typesafe": _typesafe,
+    "openRouter": _openrouter,
+    "litellmProxy": _openai_gateway("litellmProxy", "LiteLLM Proxy"),
+    "openAICompatible": _openai_gateway("openAICompatible", "OpenAI Compatible"),
 }
 
 

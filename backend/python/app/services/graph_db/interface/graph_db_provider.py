@@ -8426,6 +8426,15 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_named_entity_date_spans(
+        self, org_id: str, record_ids: list[str], start_ms: int, end_ms: int,
+    ) -> dict[str, tuple[bool, int]]:
+        """Each record among ``record_ids`` with a date value overlapping [start_ms, end_ms):
+        whether it names a date in it (one starting in it, no longer than it or than a day),
+        and the narrowest span in milliseconds of its dates overlapping it."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_named_entity_values_in_records(
         self, org_id: str, query: "NamedEntityQuery | None", record_ids: list[str], per_record: int = 10,
     ) -> dict[str, list[str]]:

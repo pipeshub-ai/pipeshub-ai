@@ -55,6 +55,7 @@ def _value_fields(entity: NamedEntity) -> dict[str, Any]:
         return {
             "amount": str(value.amount),
             "amountFloat": value.amount_float,
+            "amountHighFloat": None if value.amount_high is None else float(value.amount_high),
             "currency": value.currency,
             "numericValue": value.amount_float,
         }

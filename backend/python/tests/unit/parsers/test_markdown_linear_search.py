@@ -206,7 +206,7 @@ async def test_large_markdown_image_extraction_does_not_block_the_event_loop(mon
     parser = object.__new__(blocks_parser.BlocksParser)
     parser.logger = logging.getLogger("test")
     parser.config_service = None
-    worst = await _worst_loop_gap(lambda: parser._process_blockgroup_images("x" * (300 * 1024)))
+    worst = await _worst_loop_gap(lambda: parser._process_blockgroup_images("x" * (300 * 1024), allow_remote_fetch=True))
     assert worst < 0.2, worst
 
 
@@ -239,7 +239,7 @@ async def test_large_html_image_extraction_does_not_block_the_event_loop() -> No
 
     async def run() -> None:
         with pytest.raises(_Stop):
-            await parser._process_single_blockgroup_html(group, "r", _SlowHtmlParser())
+            await parser._process_single_blockgroup_html(group, "r", _SlowHtmlParser(), allow_remote_fetch=True)
 
     worst = await _worst_loop_gap(run)
     assert worst < 0.2, worst
