@@ -158,7 +158,8 @@ const KEY_NAME = String.raw`[A-Za-z][A-Za-z0-9_.-]*`;
  * A key name starts only where one can't continue: a plain `\b` would also
  * try every letter inside a long `a.a.a…` run, which turns quadratic.
  */
-const KEY_START = String.raw`(?<![A-Za-z0-9_.-])`;
+// Leading dashes may come first, as in a CLI flag (`--password=…`); a match still starts only once per run.
+const KEY_START = String.raw`(?<![A-Za-z0-9_.-])-*`;
 /** Text a row can show, plus room for a value cut at the edge: nothing longer is scanned. */
 const MAX_REDACT_CHARS = MAX_TASK_OUTPUT_CHARS + 200;
 /** `"key": "value with spaces"` / `key='…'`: masked to the end of the quoted value. */
