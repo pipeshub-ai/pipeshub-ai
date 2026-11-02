@@ -69,7 +69,7 @@ describe('ToolApprovalCard', () => {
 
     const title = screen.getByText('Create an issue in Jira');
     expect(title.getAttribute('title')).toBe('create_issue');
-    expect(title.className).toMatch(/rt-r-weight-bold/);
+    expect(title.className).toMatch(/rt-r-weight-medium/);
     expect(title.className).toMatch(/rt-truncate/);
     expect(screen.queryByText('Jira')).toBeNull();
     expect(screen.getByText(/^Expires in 15 min$/)).toBeTruthy();
@@ -134,14 +134,14 @@ describe('ToolApprovalCard', () => {
   it('is one line, with no buttons, on an older reply or in a conversation shared with the viewer', () => {
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest={false} />);
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue in Jira wasn't approved, so it didn't run.");
     cleanup();
 
     chat.state.slots['slot-1'].isOwner = false;
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByTestId('tool-approval-card').textContent).toBe(
-      "Create an issue on Jira is waiting for the conversation owner's approval.",
+      "Create an issue in Jira is waiting for the chat owner's approval.",
     );
   });
 
@@ -155,7 +155,7 @@ describe('ToolApprovalCard', () => {
     });
 
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.getByText("Create an issue on Jira didn't run: the request expired. Ask again if it's still needed.")).toBeTruthy();
+    expect(screen.getByText("Create an issue in Jira didn't run: the request expired. Ask again if it's still needed.")).toBeTruthy();
   });
 
   it('shows the start of arguments too large to send, and says so', () => {
@@ -214,7 +214,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
     expect(screen.getByText('Edited')).toBeTruthy();
     expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: 'Allow for this conversation' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Allow for this chat' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect(titleField().value).toBe('Login fails');
@@ -246,7 +246,7 @@ describe('ToolApprovalCard: editing and notes', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Note: add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Note: not set' }));
     const noteField = screen.getByRole('textbox', { name: 'Note' });
     fireEvent.change(noteField, { target: { value: 'x' } });
     fireEvent.change(noteField, { target: { value: '' } });
@@ -341,15 +341,15 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
   });
 
-  it('moves focus to the pill of a list field that has the error', async () => {
+  it('moves focus into the chip row of a list field that has the error', async () => {
     chat.validate.mockResolvedValueOnce([{ path: '/labels/0', message: 'Unknown label' }]);
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Bug' } });
     fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
-    expect(await screen.findByText('Labels: Unknown label')).toBeTruthy();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Labels: bug/ }));
+    expect(await screen.findByText('Unknown label')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('group', { name: 'Labels' }).querySelector('input'));
   });
 
   it('says when the request changed under the card', async () => {
@@ -390,7 +390,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Assignee: add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Assignee: not set' }));
     const assignee = screen.getByRole('textbox', { name: /Assignee/ });
     fireEvent.change(assignee, { target: { value: 'sam' } });
     fireEvent.change(assignee, { target: { value: '' } });
@@ -436,19 +436,19 @@ describe('ToolApprovalCard: editing and notes', () => {
   it('"Suggest a change" declines with a note for the agent', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }));
-    const note = screen.getByPlaceholderText('Tell the agent what to change');
+    const note = screen.getByPlaceholderText('Tell PipesHub what to change');
     expect(note.getAttribute('maxlength')).toBe('2000');
 
     fireEvent.change(note, { target: { value: 'Put it on the Q4 board' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send to agent' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send suggestion' }));
 
     expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'deny', argsHash: 'h1', feedback: 'Put it on the Q4 board' });
   });
 
-  it('"Allow for this conversation" and "Don\'t ask again" are one choice or the other', () => {
+  it('"Allow for this chat" and "Don\'t ask again" are one choice or the other', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     const never = screen.getByRole('checkbox', { name: "Don't ask again for this tool" });
-    const chat_ = screen.getByRole('checkbox', { name: 'Allow for this conversation' });
+    const chat_ = screen.getByRole('checkbox', { name: 'Allow for this chat' });
     expect(screen.getByText("It won't ask again in this chat unless the tool changes")).toBeTruthy();
 
     fireEvent.click(never);
@@ -466,7 +466,7 @@ describe('ToolApprovalCard: editing and notes', () => {
   it('offers neither "ask again" choice on a card whose rule an admin owns', () => {
     renderInTheme(<ToolApprovalCard approval={approval({ canRemember: false })} isLatest />);
     expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: 'Allow for this conversation' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Allow for this chat' })).toBeNull();
   });
 
   it('Esc leaves edit mode and keeps the edit; Enter in a field sends nothing', () => {
@@ -480,16 +480,28 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.keyDown(titleField(), { key: 'Escape' });
     expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
     expect(screen.getByText('Login broken')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }));
+  });
+
+  it('Esc in the note box closes it and gives focus back to Suggest a change', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }));
+    const note = screen.getByPlaceholderText('Tell PipesHub what to change');
+    note.focus();
+    fireEvent.keyDown(note, { key: 'Escape' });
+    expect(screen.queryByPlaceholderText('Tell PipesHub what to change')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Suggest a change' }));
   });
 
   it('pill opens a popover editor and Esc closes it without leaving edit mode', async () => {
-    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    const schema = { type: 'object', properties: { title: { type: 'string' }, project: { type: 'string' } } } as const;
+    renderInTheme(<ToolApprovalCard approval={editable({ arguments: { title: 'Login fails', project: 'WEB' }, inputSchema: schema })} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.click(screen.getByRole('button', { name: /^Labels: bug/ }));
-    const input = screen.getByRole('group', { name: 'Labels' }).querySelector('input') as HTMLInputElement;
+    fireEvent.click(screen.getByRole('button', { name: /^Project: WEB/ }));
+    const input = screen.getByRole('textbox', { name: 'Project' });
 
     fireEvent.keyDown(input, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('group', { name: 'Labels' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Project' })).toBeNull());
     expect(titleField()).toBeTruthy();
   });
 
@@ -499,7 +511,6 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
     fireEvent.keyDown(titleField(), { key: 'Enter' });
-    fireEvent.click(screen.getByRole('button', { name: /^Labels: bug/ }));
     const input = screen.getByRole('group', { name: 'Labels' }).querySelector('input') as HTMLInputElement;
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onAnswer).not.toHaveBeenCalled();
@@ -517,7 +528,7 @@ describe('ToolApprovalCard: editing and notes', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    expect(screen.getByRole('button', { name: 'Priority: add' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Priority: not set' })).toBeTruthy();
     expect((screen.getByRole('textbox', { name: 'Description' }) as HTMLTextAreaElement).value).toBe('');
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
     fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
@@ -596,6 +607,11 @@ describe('ToolApprovalCard: house style', () => {
     const narrow = css.match(/@container \(max-width: 460px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
     expect(narrow).toMatch(/\.tool-approval-card-group \{\s*width: 100%;/);
     expect(narrow).toMatch(/\.tool-approval-card-lead \{\s*margin-left: 0;/);
+    // Only Deny and Allow split their line; the quiet actions wrap, so four of them fit at 375px.
+    expect(narrow).toMatch(/\.tool-approval-card-answer > button \{\s*flex: 1;/);
+    expect(narrow).not.toMatch(/\.tool-approval-card-group > button/);
+    expect(screen.getByRole('button', { name: 'Deny' }).parentElement?.className).toContain('tool-approval-card-answer');
+    expect(screen.getByRole('button', { name: 'Edit' }).parentElement?.className).toContain('rt-r-fw-wrap');
   });
 
   it('receipt for allowedNotRun uses orange-11', () => {
@@ -662,7 +678,7 @@ describe('ToolApprovalCard above the composer', () => {
 
   it.each([
     ['busy', 'That chat is still working. Try again in a moment.'],
-    ['stale', 'That was already answered.'],
+    ['stale', 'This was already answered in that chat.'],
     ['failed', "Couldn't send your answer. Try again."],
   ] as const)('says so when the answer comes back %s, and keeps the card', async (result, text) => {
     composer(vi.fn(async () => result));

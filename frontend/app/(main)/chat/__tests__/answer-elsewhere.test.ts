@@ -86,7 +86,7 @@ describe('answerElsewhere', () => {
     await expect(answerElsewhere(item, answer)).resolves.toBe('sent');
     expect(m.load).toHaveBeenCalledWith('conv-bg', null);
     expect(m.build).toHaveBeenCalledWith('slot-bg', 'Tool approval: allow', undefined, answer, { agentMode: true, background: true });
-    expect(m.stream).toHaveBeenCalledWith('slot-bg', 'Tool approval: allow', { query: 'q' }, { reuseRowId: 'row-2' });
+    expect(m.stream).toHaveBeenCalledWith('slot-bg', 'Tool approval: allow', { query: 'q' }, { reuseRowId: 'row-2', onApprovalFailed: expect.any(Function) });
     expect(m.state.activeSlotId).toBe('slot-here');
   });
 
@@ -165,6 +165,14 @@ describe('answerElsewhere', () => {
     await expect(answerElsewhere(item, answer)).resolves.toBe('failed');
     expect(m.refresh).toHaveBeenCalled();
     expect(m.put).not.toHaveBeenCalled();
+  });
+
+  it('a failed stream that says why → failed with the reason, and no toast of its own', async () => {
+    slot();
+    m.stream.mockImplementationOnce(async (...args: unknown[]) => {
+      (args[3] as { onApprovalFailed?: (why: string) => void }).onApprovalFailed?.('The tool server is down.');
+    });
+    await expect(answerElsewhere(item, answer)).resolves.toEqual({ failed: 'The tool server is down.' });
   });
 
   it('an edit the server refused comes back with its errors → refused', async () => {
