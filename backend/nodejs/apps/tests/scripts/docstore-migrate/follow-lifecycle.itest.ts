@@ -77,6 +77,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await name(late)).to.equal('Late Arrival');
       });
 
+      it('applies an outbox event and then its delete, though the table keys an event by a number folded from its id', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const _id = new ObjectId();
+        await events.insertOne({ _id, topic: 'follow-probe', key: 'k', value: JSON.stringify({ payload: { orgId: String(ORG_A) } }), status: 'pending', createdAt: new Date(), updatedAt: new Date(), __v: 0 } as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        const rows = async (): Promise<number> => Number((await sql("SELECT count(*)::int AS n FROM platform.outbox WHERE topic = 'follow-probe'"))[0].n);
+        expect(await rows()).to.equal(1);
+        await events.deleteOne({ _id } as never);
+        const r = await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(r.applied).to.equal(1);
+        expect(await rows(), 'the delete reached the row').to.equal(0);
+      });
+
       it('refuses to run before a start has saved a position', async () => {
         const js = await JobState.attach(w.rt);
         let err: Error | undefined;
@@ -141,6 +157,21 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(fresh.id).to.not.equal(js.id);
         await bulk(w.rt, fresh, { log });
         expect(await snapshot()).to.deep.equal(before);
+      });
+
+      it('run during a copy, stops the copy and leaves the target empty: nothing is written after the rows are removed', async () => {
+        const js = await JobState.attach(w.rt);
+        Object.assign(w.rt.cfg, { batchDelayMs: 1500 });
+        try {
+          const copy = bulk(w.rt, js, { log }).then(() => 'finished', (e: Error) => e.message);
+          for (let i = 0; i < 100 && Number((await sql('SELECT count(*)::int AS n FROM identity.users'))[0].n) === 0; i++) await new Promise((r) => setTimeout(r, 50));
+          expect(Number((await sql('SELECT count(*)::int AS n FROM identity.users'))[0].n), 'the copy is part way through the users').to.be.greaterThan(0);
+          expect((await reset(w.rt, { force: false })).ok).to.equal(true);
+          expect(await copy, 'the copy was stopped, not finished').to.contain('no longer running');
+          for (const [t, rows] of Object.entries(await snapshot())) expect(rows, t).to.deep.equal([]);
+        } finally {
+          Object.assign(w.rt.cfg, { batchDelayMs: 0 });
+        }
       });
 
       it('refuses once MongoDB is marked retired, and goes ahead when forced', async () => {
