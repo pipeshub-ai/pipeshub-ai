@@ -3,9 +3,9 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import { MongoClient } from 'mongodb';
 import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
-import { runCli } from '../../../src/scripts/docstore-migrate/cli';
 import { identityDocs } from './fixtures/identity';
 import { haveMongod } from './mongo-harness';
+import { runCommand } from './cli-run';
 import { World, startWorld } from './world';
 
 const suite = haveStack && haveMongod ? describe : describe.skip;
@@ -26,24 +26,36 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       await w.truncate();
     });
 
-    /** Runs a command in this process and returns its exit code and the JSON it printed. */
-    async function run(args: string[]): Promise<{ code: number; out: any }> {
-      let text = '';
-      const out = process.stdout.write.bind(process.stdout);
-      const err = process.stderr.write.bind(process.stderr);
-      (process.stdout as any).write = (s: string): boolean => ((text += s), true);
-      (process.stderr as any).write = (): boolean => true;
-      try {
-        // a command opens its own runtime, and a process holds one: the suite's is closed for the call
-        await w.rt.close();
-        const code = await runCli(args, w.env);
-        return { code, out: text ? JSON.parse(text) : null };
-      } finally {
-        (process.stdout as any).write = out;
-        (process.stderr as any).write = err;
-        w.rt = await (await import('../../../src/scripts/docstore-migrate/runtime')).MigrationRuntime.open((await import('../../../src/scripts/docstore-migrate/config')).loadConfig(w.env));
-      }
-    }
+    const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => runCommand(w, args, extra);
+
+    it('the dispatcher: an unknown command exits 2, help exits 0, reset wants --yes, and status reads the job', async () => {
+      expect((await run(['no-such-command'])).code).to.equal(2);
+      expect((await run(['help'])).code).to.equal(0);
+      const noYes = await run(['reset']);
+      expect(noYes.code).to.equal(2);
+      const status = await run(['status']);
+      expect(status.code).to.equal(0);
+    });
+
+    it('preflight, bulk, verify and reset on the command line: clean data copies, verifies and can be reset', async () => {
+      const pre = await run(['preflight']);
+      expect(pre.out.red, JSON.stringify(pre.out.red)).to.deep.equal([]);
+      expect(pre.code).to.equal(0);
+      const copy = await run(['bulk']);
+      expect(copy.code).to.equal(0);
+      expect(copy.out.ok).to.equal(true);
+      const verify = await run(['verify']);
+      expect(verify.code, JSON.stringify(verify.out.collections?.filter((c: any) => c.diffCount))).to.equal(0);
+      expect(Number((await w.stack.admin((c) => c.query('SELECT count(*)::int AS n FROM identity.users'))).rows[0].n)).to.be.greaterThan(0);
+      const reset = await run(['reset', '--yes']);
+      expect(reset.code).to.equal(0);
+      expect(Number((await w.stack.admin((c) => c.query('SELECT count(*)::int AS n FROM identity.users'))).rows[0].n)).to.equal(0);
+      // a copy stopped after its first batches is reported as stopped, exit 1, and the next run resumes it
+      const stopped = await run(['bulk', '--stop-after-batches', '1']);
+      expect(stopped.code).to.equal(1);
+      expect(stopped.out.stopped).to.contain('stopped after 1 batches');
+      expect((await run(['bulk'])).code).to.equal(0);
+    });
 
     it('post_load exits 0 on a target that checks out, and 1 with the problem when a constraint is left unvalidated', async () => {
       const ok = await run(['post_load']);
