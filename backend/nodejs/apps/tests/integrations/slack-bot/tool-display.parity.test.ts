@@ -38,6 +38,16 @@ function webGroupLabel(names: string[]): string {
   return `Ran ${String(names.length)} tools`;
 }
 
+/** The dashboard's group app tag (ToolCallGroup in agent-activity.tsx): untagged calls don't count. */
+function webGroupTag(names: string[]): string | undefined {
+  const labels = [
+    ...new Set(
+      names.map((name) => web.extractToolsetLabel(name)).filter(Boolean),
+    ),
+  ] as string[];
+  return labels.length === 1 ? labels[0] : undefined;
+}
+
 describe('slack-bot tool display matches the dashboard', () => {
   for (const [name, displayName] of TOOLS) {
     it(`labels ${name} the same`, () => {
@@ -63,9 +73,13 @@ describe('slack-bot tool display matches the dashboard', () => {
       ['load_skill', 'skill_search'],
       ['run_code', 'web_search'],
       ['dynamic__fetch_url', 'dynamic__fetch_url'],
+      ['web_search', 'knowledgegraph__search'],
+      ['jira__search_issues', 'confluence__get_page', 'run_code'],
+      ['mcp_jira_search_issues', 'web_search'],
     ];
     for (const names of bursts) {
       expect(slack.toolGroupLabel(names)).to.equal(webGroupLabel(names));
+      expect(slack.groupToolsetLabel(names)).to.equal(webGroupTag(names));
     }
   });
 });
