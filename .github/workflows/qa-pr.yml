@@ -13,6 +13,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # qa-pipeline.yml run-stack reads the previous nightly's screenshots; a called job may not ask for more than this.
+  actions: read
 
 concurrency:
   group: qa-pr-${{ github.event.pull_request.number }}

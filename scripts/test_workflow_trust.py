@@ -1524,5 +1524,52 @@ class TestHistoryWriters(unittest.TestCase):
         self.assertEqual(_pr_write_problems(overridden), [])
 
 
+_LEVEL = {"none": 0, "read": 1, "write": 2}
+
+
+def _perms(block: Any) -> dict[str, int]:
+    """A permissions block as {scope: level}; `read-all`/`write-all` expand to every scope a callee names."""
+    if isinstance(block, str):
+        return {"*": _LEVEL["read" if block == "read-all" else "write" if block == "write-all" else "none"]}
+    return {k: _LEVEL.get(str(v), 0) for k, v in (block or {}).items()}
+
+
+def called_job_overreach(workflows: list[Path]) -> list[str]:
+    """Jobs in a called local workflow that ask for a permission their caller does not grant.
+
+    GitHub refuses to start such a run (startup_failure), so this catches it before a push.
+    """
+    docs = {w.name: yaml.safe_load(w.read_text(encoding="utf-8")) or {} for w in workflows}
+    problems = []
+    for caller, doc in docs.items():
+        for job_id, job in (doc.get("jobs") or {}).items():
+            uses = str(job.get("uses", ""))
+            if not uses.startswith("./.github/workflows/"):
+                continue
+            callee = docs.get(uses.rsplit("/", 1)[-1])
+            if callee is None:
+                continue
+            granted = _perms(job["permissions"] if "permissions" in job else doc.get("permissions"))
+            for cjob_id, cjob in (callee.get("jobs") or {}).items():
+                asked = _perms(cjob["permissions"] if "permissions" in cjob else callee.get("permissions"))
+                for scope, level in asked.items():
+                    have = granted.get(scope, granted.get("*", 0))
+                    if level > have:
+                        problems.append(f"{caller}:{job_id} -> {uses}:{cjob_id} asks {scope} level {level}, caller grants {have}")
+    return problems
+
+
+class TestCalledWorkflowPermissions(unittest.TestCase):
+    def test_no_called_job_asks_for_more_than_its_caller_grants(self) -> None:
+        self.assertEqual(called_job_overreach(WORKFLOWS), [])
+
+    def test_overreach_is_caught(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "caller.yml").write_text("permissions:\n  contents: read\njobs:\n  go:\n    uses: ./.github/workflows/called.yml\n")
+            (d / "called.yml").write_text("on: workflow_call\njobs:\n  run:\n    permissions:\n      contents: read\n      actions: read\n    runs-on: x\n")
+            self.assertEqual(len(called_job_overreach(sorted(d.glob("*.yml")))), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
