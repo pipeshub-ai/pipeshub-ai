@@ -113,8 +113,9 @@ def _is_transient_stream_error(error: Any) -> bool:
         elif source is not None and not isinstance(source, str):
             labels += [getattr(source, "type", None), getattr(source, "code", None)]
             texts.append(getattr(source, "message", None))
-    names: list[str] = []
-    for v in labels:
+    codes: list[str] = []
+    types: list[str] = []
+    for i, v in enumerate(labels):
         if isinstance(v, int) and not isinstance(v, bool):
             v = str(v)
         if not isinstance(v, str):
@@ -122,16 +123,17 @@ def _is_transient_stream_error(error: Any) -> bool:
         v = v.strip().lower()
         if v in _NON_LABELS or v.startswith("response."):
             continue
-        if v.isdigit():  # an HTTP status as a code ("500", or 500)
-            if int(v) in _RETRYABLE_STATUS_CODES:
-                return True
-            names.append(v)
-        else:
-            names.append(v.replace("_", ""))
-    if names:
+        # labels alternate type, code (see the loop above).
+        (codes if i % 2 else types).append(v)
+    # The code is the specific cause; a generic type ("api_error") must not override it.
+    for group in (codes, types):
+        if not group:
+            continue
+        if any(v.isdigit() and int(v) in _RETRYABLE_STATUS_CODES for v in group):  # an HTTP status ("500")
+            return True
         # A labelled error is judged by its label alone: "invalid_image_url" whose
         # message mentions a connection reset is still the caller's error.
-        return any(v in _TRANSIENT_STREAM_ERROR_TYPES for v in names)
+        return any(v.replace("_", "") in _TRANSIENT_STREAM_ERROR_TYPES for v in group if not v.isdigit())
     text = " ".join(t for t in texts if isinstance(t, str)).lower()
     return any(marker in text for marker in _TRANSIENT_STREAM_ERROR_MARKERS)
 

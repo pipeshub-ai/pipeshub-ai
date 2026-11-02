@@ -765,6 +765,8 @@ class TestTransientStreamErrors:
         ({"code": "InternalServerError", "message": "Azure had a problem"}, True),  # Azure casing
         ({"code": "ServiceUnavailable", "message": "try later"}, True),
         ({"type": "api_error", "message": "Internal server error"}, True),
+        # The code is the specific cause: a generic transient type does not override it.
+        ({"type": "api_error", "code": "invalid_image_url", "message": "bad url"}, False),
         (None, False),
     ])
     def test_classifier_on_responses_payload_shapes(self, error: object, transient: bool) -> None:
