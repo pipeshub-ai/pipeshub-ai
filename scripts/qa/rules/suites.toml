@@ -149,7 +149,8 @@ grain = "test"
 stack = true
 tests = ["integration-tests/weekly/**/integration_test_*.py"]
 profiles = ["weekly"]
-# No catalog of its own: its rows are listed in it-stack's, the same-family suite of the edition.
+# A catalog directory of its own: two suites cannot share one.
+catalog = "integration-tests/catalog/weekly"
 
 [suite.marker_needs]
 perf_smoke = "stack:perf"

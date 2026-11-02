@@ -360,9 +360,10 @@ jobs:
       # A pull request gets no model key (spec section 2, "LLM in tests"), so its stack
       # indexes with the web-fixtures stand-in model. Tests that assert on a real
       # model's answers carry the live_model marker and stay not_run there.
+      # The perf variant uses it too: it measures our code, not the provider's latency.
       # Neither value is a secret.
-      TEST_AI_MODEL_PROVIDER: ${{ github.event_name == 'pull_request' && 'standIn' || 'azureOpenAI' }}
-      TEST_STAND_IN_MODEL_ENDPOINT: ${{ github.event_name == 'pull_request' && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
+      TEST_AI_MODEL_PROVIDER: ${{ (github.event_name == 'pull_request' || matrix.variant == 'perf') && 'standIn' || 'azureOpenAI' }}
+      TEST_STAND_IN_MODEL_ENDPOINT: ${{ (github.event_name == 'pull_request' || matrix.variant == 'perf') && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
       # Other events: Azure OpenAI is where the quota is, and TEST_AI_MODEL_PROVIDER
       # names it outright: the helper falls back to the next provider on a health
       # check failure, so without this an Azure problem retries against the
