@@ -12,6 +12,8 @@ const POLL_MS = 30_000;
 // back, but a call whose answer never arrived returns with a later poll.
 const answered = new Map<string, number>();
 const CLAIM_GRACE_MS = 15_000;
+// Bumped by every refresh, put and drop: a fetch that finishes after a newer change is stale.
+let generation = 0;
 
 interface PendingApprovalsState {
   items: PendingApprovalItem[];
@@ -33,19 +35,22 @@ const live = (item: PendingApprovalItem) =>
 export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
   items: [],
   refresh: async () => {
+    const mine = ++generation;
     try {
       const items = await fetchPendingApprovals();
-      set({ items: items.filter(live) });
+      if (mine === generation) set({ items: items.filter(live) });
     } catch {
       // A failed poll keeps the list it had; the next one tries again.
     }
   },
   drop: (approvalId) => {
     answered.set(approvalId, Date.now());
+    generation++;
     set((s) => ({ items: s.items.filter((i) => i.card.approvalId !== approvalId) }));
   },
   put: (item) => {
     answered.delete(item.card.approvalId);
+    generation++;
     set((s) => ({ items: [item, ...s.items.filter((i) => i.card.approvalId !== item.card.approvalId)] }));
   },
   prune: () => set((s) => ({ items: s.items.filter(live) })),
