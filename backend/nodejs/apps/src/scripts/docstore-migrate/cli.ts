@@ -5,10 +5,8 @@ import { readMongoFence } from './fence';
 import { follow, followStart } from './follow';
 import { migrateOffline } from './offline';
 import { cutover, onlineStart, onlineVerify, unfreeze } from './online';
-import { reverseFollow, rollbackOnline } from './reverse-follow';
 import { preflight } from './preflight';
 import { reset } from './reset';
-import { rollback } from './reverse';
 import { MigrationRuntime } from './runtime';
 import { postLoad, runMigrateJob } from './schema';
 import { JobState } from './state';
@@ -336,6 +334,8 @@ export async function runCli(
         return 0;
       }
       case 'reverse': {
+        // loaded when used: the reverse path brings in every Mongoose model of the application, which no other command needs
+        const { reverseFollow } = await import('./reverse-follow');
         const js = await JobState.attach(rt);
         const ac = new AbortController();
         const onSignal = (): void => {
@@ -358,6 +358,7 @@ export async function runCli(
       }
       case 'rollback': {
         if (a.flags.has('online')) {
+          const { rollbackOnline } = await import('./reverse-follow');
           const r = await rollbackOnline(rt, {
             log,
             maxFreezeMs: (p.secs['max-freeze'] ?? 900) * 1000,
@@ -366,6 +367,7 @@ export async function runCli(
           out(r);
           return r.ok ? 0 : 1;
         }
+        const { rollback } = await import('./reverse');
         const r = await rollback(rt, {
           reverse: a.flags.has('reverse'),
           allowWriters:
