@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   push: vi.fn(),
   answerElsewhere: vi.fn(async (..._a: unknown[]) => 'sent' as 'sent' | 'busy' | 'stale' | 'failed' | 'refused'),
   fetchPending: vi.fn(async (): Promise<unknown[]> => []),
+  load: vi.fn(async (..._a: unknown[]) => 'slot-bg'),
   toast: { success: vi.fn(), info: vi.fn(), error: vi.fn() },
   state: { activeSlotId: 'slot-1', slots: { 'slot-1': { convId: 'conv-here', isOwner: true, isStreaming: false } } },
 }));
@@ -18,6 +19,7 @@ vi.mock('@/app/components/ui/ConnectorIcon', () => ({ ConnectorIcon: () => <span
 vi.mock('@/lib/store/toast-store', () => ({ toast: m.toast }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
 vi.mock('../../answer-elsewhere', () => ({ answerElsewhere: m.answerElsewhere }));
+vi.mock('../../load-conversation', () => ({ loadConversationIntoSlot: m.load, isNotFound: (e: { statusCode?: number } | null) => e?.statusCode === 404 }));
 vi.mock('../../streaming', () => ({ streamMessageForSlot: vi.fn() }));
 vi.mock('../../runtime', () => ({ buildStreamChatRequestForSlot: vi.fn() }));
 vi.mock('../../api', () => ({ fetchPendingApprovals: m.fetchPending, validateApprovalEdits: vi.fn(async () => []) }));
@@ -68,6 +70,7 @@ beforeEach(() => {
   resetPendingApprovalsForTest();
   vi.clearAllMocks();
   m.answerElsewhere.mockResolvedValue('sent');
+  m.load.mockResolvedValue('slot-bg');
 });
 
 afterEach(() => cleanup());
@@ -151,7 +154,7 @@ describe('ComposerApprovalCard', () => {
     expect(options.action.label).toBe('Open chat');
     expect(options.placement).toBe('top');
     options.action.onClick();
-    expect(m.push).toHaveBeenCalledWith('/chat/?conversationId=conv-a');
+    await waitFor(() => expect(m.push).toHaveBeenCalledWith('/chat/?conversationId=conv-a'));
     expect(screen.queryByTestId('tool-approval-card')).toBeNull();
   });
 
@@ -258,6 +261,19 @@ describe('ComposerApprovalCard', () => {
   it('Open chat navigates', async () => {
     await showBar([item('a', 'conv-a', 'Fix login', { agentId: 'agent-7' })]);
     fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
-    expect(m.push).toHaveBeenCalledWith('/chat/?agentId=agent-7&conversationId=conv-a');
+    await waitFor(() => expect(m.push).toHaveBeenCalledWith('/chat/?agentId=agent-7&conversationId=conv-a'));
+  });
+
+  it('a deleted chat leaves the list with a toast, from Allow or from Open chat', async () => {
+    m.answerElsewhere.mockResolvedValue('gone' as never);
+    await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('That chat was deleted.', expect.anything()));
+    expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['b']);
+
+    m.load.mockRejectedValueOnce({ statusCode: 404 });
+    fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
+    await waitFor(() => expect(usePendingApprovals.getState().items).toEqual([]));
+    expect(m.push).not.toHaveBeenCalled();
   });
 });

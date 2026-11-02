@@ -1,5 +1,5 @@
 import { fetchPendingApprovals } from './api';
-import { loadConversationIntoSlot } from './load-conversation';
+import { isNotFound, loadConversationIntoSlot } from './load-conversation';
 import { usePendingApprovals } from './pending-approvals-store';
 import { buildStreamChatRequestForSlot } from './runtime';
 import { ctxKeyFromAgent, useChatStore } from './store';
@@ -11,8 +11,8 @@ import { fetchModelsForContext } from './utils/fetch-models-for-context';
 type Row = { id?: string; role: string; metadata?: { custom?: Record<string, unknown> } };
 
 /** `refused`: the server sent the card back with the edit's errors; it is back in the list.
- * `{ failed }`: the stream failed and said why. */
-export type AnswerElsewhereResult = 'sent' | 'busy' | 'stale' | 'failed' | 'refused' | { failed: string };
+ * `gone`: the chat was deleted. `{ failed }`: the stream failed and said why. */
+export type AnswerElsewhereResult = 'sent' | 'busy' | 'stale' | 'failed' | 'refused' | 'gone' | { failed: string };
 
 function rowParts(row: Row): MessagePart[] {
   const parts = row.metadata?.custom?.persistedParts;
@@ -60,8 +60,8 @@ export async function answerElsewhere(item: PendingApprovalItem, answer: ToolApp
       state = ready(slotId, approvalId);
     }
     if (state !== 'ok') return state === 'busy' ? 'busy' : 'failed';
-  } catch {
-    return 'failed';
+  } catch (error) {
+    return isNotFound(error) ? 'gone' : 'failed';
   }
   const row = rowHolding(slotId, approvalId) as Row & { id: string };
   if (!waiting(approvalPart(rowParts(row), approvalId))) return 'stale';
