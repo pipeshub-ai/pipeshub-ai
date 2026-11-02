@@ -833,9 +833,9 @@ describe('ChatResponse with a call waiting for approval', () => {
     renderInTheme(<ChatResponse question="Q" answer="Done." persistedParts={settled} isLastMessage />);
 
     const receipts = screen.getByTestId('tool-approval-receipts');
-    expect(receipts.textContent).toContain('Declined: Put it on the Q4 board');
+    expect(receipts.textContent).toContain('You declined Create an issue: Put it on the Q4 board');
     expect(screen.queryByText('Changed: title, labels')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Allowed with changes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'You allowed Create an issue with changes' }));
     expect(screen.getByText('Changed: title, labels')).toBeTruthy();
   });
 
@@ -860,7 +860,7 @@ describe('ChatResponse with a call waiting for approval', () => {
       { type: 'text' as const, content: 'OK.', isFinal: true },
     ];
     renderInTheme(<ChatResponse question="Q" answer="OK." persistedParts={declined} isLastMessage />);
-    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe('Declined: Use the full noteJira');
+    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe('You declined Create an issue: Use the full noteJira');
   });
 
   it('says when an allowed call was stopped before it ran', () => {
