@@ -120,8 +120,9 @@ for (const bin of PG_BINS.length ? PG_BINS.slice(0, 1) : ['none']) {
       writeFileSync(process.env.MIGRATE_SCALE_OUT ?? '/dev/null', JSON.stringify(result, null, 1));
       if (process.env.MIGRATE_SCALE_EVENTS) writeFileSync(process.env.MIGRATE_SCALE_EVENTS, events.join(''));
       process.stderr.write(`${JSON.stringify(result, null, 1)}\n`);
-      expect(bulk.code).to.equal(0);
-      expect(ver.code).to.equal(0);
+      // every timed step must have worked: a step that failed fast would otherwise read as a fast one
+      for (const [step, r] of Object.entries({ pre, fstart, bulk, ver, sampled, follow, ver2, ...(seq ? { seq } : {}) }))
+        expect(r.code, `the ${step} step exited ${String(r.code)}`).to.equal(0);
     });
   });
 }

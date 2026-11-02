@@ -1,7 +1,7 @@
 /** Two gates of the command line, on real servers: `post_load` fails when the target does not check out, and `drain` wants the fence armed. */
 import 'reflect-metadata';
 import { expect } from 'chai';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
 import { identityDocs } from './fixtures/identity';
 import { haveMongod } from './mongo-harness';
@@ -55,6 +55,20 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(stopped.code).to.equal(1);
       expect(stopped.out.stopped).to.contain('stopped after 1 batches');
       expect((await run(['bulk'])).code).to.equal(0);
+    });
+
+    it('follow run leaves no signal handlers behind, and a flag that cannot be read stops a drain before it touches anything', async () => {
+      expect((await run(['follow', 'start'])).code).to.equal(0);
+      const handlers = (): number[] => [process.listenerCount('SIGTERM'), process.listenerCount('SIGINT')];
+      const before = handlers();
+      expect((await run(['follow', 'run', '--until-idle', '1'])).code).to.equal(0);
+      expect(handlers()).to.deep.equal(before);
+      // a running turn is not interrupted by a drain whose wait is not a number
+      const sessions = w.mongo.client.db(DB).collection('chatSessions');
+      await sessions.insertOne({ _id: new ObjectId(), status: 'Inprogress', lastActivityAt: Date.now(), createdAt: new Date() } as never);
+      expect((await run(['drain', '--wait', 'abc', '--force'])).code).to.equal(2);
+      expect(await sessions.countDocuments({ status: 'Inprogress' })).to.equal(1);
+      expect(await w.mongo.client.db(DB).collection('docstore_fence').countDocuments()).to.equal(0);
     });
 
     it('post_load exits 0 on a target that checks out, and 1 with the problem when a constraint is left unvalidated', async () => {
