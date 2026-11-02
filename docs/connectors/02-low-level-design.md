@@ -176,6 +176,7 @@ Everything lives in one config document, read with `await self.config_service.ge
 | `is_dependent_node`, `parent_node_id` | Set on a child that should hang off a parent record in the knowledge hub (Slack's files, links and burst children). `parent_node_id` is the parent's internal id, not the external id. |
 | `shared_with_me_record_group_ids` | Extra record groups this record also belongs to, besides `external_record_group_id`. Use it when one item is in several containers and none of them is "the" parent. `shared_groups_complete` says the list is the full set, so groups left off it are dropped. |
 | `root_record_group_id` | Required for connectors in `ROOT_SCOPED_CONNECTOR_TYPES` (`app/services/graph_db/common/utils.py`, Slack today). Search then filters by the root group instead of every nested group. Adding a connector to that set is shared code: ask first. |
+| `milestone` | On `TicketRecord` and `PullRequestRecord`: the title of the source's milestone (on GitHub, often the release an item is aimed at). The record header shows it to the model. Leave it `None` when the source has none. |
 | people fields | On `TicketRecord`: `assignee_email`, `reporter_email`, `creator_email`. On message records: `mentioned_user_ids`, `mentioned_group_ids`. The processor turns them into assigned-to, reported-by, created-by and mention edges. |
 | `indexing_status` | Leave the default unless an indexing filter excludes the record (`AUTO_INDEX_OFF`). |
 

@@ -513,6 +513,7 @@ class TestAbstractMethodInventory:
         "schedule_named_entity_reproject",
         "find_named_entities_by_key_prefix",
         "get_named_entity_mentions_in_records",
+        "get_named_entity_date_spans",
         "get_named_entity_values_in_records",
         "get_named_entity_mentions_from_records",
         "add_named_entity_aliases",

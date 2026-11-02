@@ -45,6 +45,10 @@ MAX_CELLS = 512
 MAX_VALUES = 256
 MAX_ISSUES = 50
 PUSH_FORMAT = 1
+#: Key of the marker in the stored document; indexing reads it to know the content was pushed.
+PUSH_FORMAT_KEY = "push_format"
+#: Record property set on every record a push creates.
+PUSH_ORIGIN_FIELD = "pushOrigin"
 #: First input of the digest and prefix of ``externalRevisionId``. Bumped on any
 #: change that could alter the canonical form of the same input.
 NORMALISER = "pb1"

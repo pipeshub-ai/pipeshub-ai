@@ -99,8 +99,11 @@ curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
 | OpenAI | `gpt-6-luna` | `POST {base}/decisions` (default base `https://api.openai.com/v1`) |
 | Azure OpenAI (Microsoft Foundry) | a `Microsoft-Decision-1` deployment, addressed by deployment name | `POST {endpoint}/providers/microsoft/v1/systemone` (System One format), `api-key` header |
 | TypeSafe | `jev-latest`, `jev-preview`, `jev-1.14.0`, `jev-1.13.0` | `POST {base}/v1/systemone` (default base `https://api.typesafe.ai`) |
+| OpenRouter | `typesafe/jev-1.13` and other decision models OpenRouter serves | `POST https://openrouter.ai/api/alpha/decisions` (System One format). Its chat completions endpoint refuses decision models |
+| LiteLLM Proxy | a decision model in the proxy's `model_list`, by its alias | `POST {endpoint}/decisions` (OpenAI format); LiteLLM translates for TypeSafe, OpenRouter and Azure |
+| OpenAI Compatible | any model a server serves on the OpenAI Decisions API | `POST {endpoint}/decisions` |
 
-Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
+Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. The gateways don't say which of their models are decision models, so on OpenRouter, LiteLLM Proxy and OpenAI Compatible you type the model name. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
 
 ```python
 from app.services.ai_models.decision import ChoiceQuestion, DecisionOption

@@ -262,6 +262,184 @@ def test_an_indian_amount_reaches_the_indexed_values() -> None:
     assert normalize_money(found[0].surface).amount == 185297
 
 
+def _money_values(text: str) -> list[tuple[str, str | None]]:
+    """Each money span with its value, a range as "CUR:low..high"."""
+    found = []
+    for mention in ValueCandidateRecognizer(frozenset({EntityKind.CURRENCY})).recognize([TextUnit(0, "b", text)]):
+        value = normalize_money(mention.surface)
+        key = value and f"{value.currency}:{value.amount:f}"
+        if value and value.amount_high is not None:
+            key += f"..{value.amount_high:f}"
+        found.append((mention.surface, key))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Swiss grouping, with either apostrophe.
+        ("Fee CHF 1'250.50 due", [("CHF 1'250.50", "CHF:1250.50")]),
+        ("Fee CHF 1’250.50 due", [("CHF 1’250.50", "CHF:1250.50")]),
+        ("Total 1'250'000 CHF", [("1'250'000 CHF", "CHF:1250000")]),
+        ("Q1'25 revenue $5", [("$5", "USD:5")]),
+        ("it's 5 USD", [("5 USD", "USD:5")]),
+        ("price='$500'", [("$500", "USD:500")]),
+        # German scale words, with their dot.
+        ("Umsatz € 2.5 Mio.", [("€ 2.5 Mio", "EUR:2500000.0")]),
+        ("Umsatz 2,5 Mrd. €", [("2,5 Mrd. €", "EUR:2500000000.0")]),
+        ("Umsatz 2,5 Mio. €", [("2,5 Mio. €", "EUR:2500000.0")]),
+        ("Budget EUR 300 Tsd.", [("EUR 300 Tsd", "EUR:300000")]),
+        # Lower-case codes after a number; codes that are words stay out.
+        ("Paid 1500 usd", [("1500 usd", "USD:1500")]),
+        ("Paid 200 eur", [("200 eur", "EUR:200")]),
+        ("Paid 1500 USD", [("1500 USD", "USD:1500")]),
+        ("Give it 5 try", []),
+        ("Bought 3 pen", []),
+        ("See 10 top", []),
+        ("Sent 12 cad drawings", []),
+    ],
+)
+def test_amounts_written_the_swiss_german_or_lower_case_way(text, expected) -> None:
+    assert _money_values(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Deal size $5-10M", [("$5-10M", "USD:5000000..10000000")]),
+        ("Deal size $5–10 million", [("$5–10 million", "USD:5000000..10000000")]),
+        ("Deal size USD 5 to 10M", [("USD 5 to 10M", "USD:5000000..10000000")]),
+        ("Deal size €2M-3M", [("€2M-3M", "EUR:2000000..3000000")]),
+        # The symbol written again on the high end is still one range.
+        ("Deal size €2M-€3M", [("€2M-€3M", "EUR:2000000..3000000")]),
+        ("Deal size $5M - $10M", [("$5M - $10M", "USD:5000000..10000000")]),
+        ("Deal size $500K-1M", [("$500K-1M", "USD:500000..1000000")]),
+        ("Deal size $1.5-2bn", [("$1.5-2bn", "USD:1500000000.0..2000000000")]),
+        ("Fee Rs. 5-10 lakh", [("Rs. 5-10 lakh", "INR:500000..1000000")]),
+        ("Range USD 1'000-2'000k", [("USD 1'000-2'000k", "USD:1000000..2000000")]),
+        # The currency after both ends.
+        ("Cost 500-1000 EUR", [("500-1000 EUR", "EUR:500..1000")]),
+        ("Cost 5 to 10 million dollars", [("5 to 10 million dollars", "USD:5000000..10000000")]),
+        # Both ends name a currency, and not the same one: no range.
+        ("Deal $5M - €10M", [("$5M", "USD:5000000"), ("€10M", "EUR:10000000")]),
+        # A loss of a range runs between the negated ends.
+        ("Loss -$5-10M", [("-$5-10M", "USD:-10000000..-5000000")]),
+        # Without a shared scale each amount stands alone, as before.
+        ("Price $5-10", [("$5", "USD:5")]),
+        ("Price $5 - $10", [("$5", "USD:5"), ("$10", "USD:10")]),
+        ("Call USD 555-1234", [("USD 555", "USD:555")]),
+        ("Plan $5-10Mbps", [("$5", "USD:5")]),
+        # A range that runs backwards is no range.
+        ("Deal $10-5M", [("$10-5M", None)]),
+        ("Deal $500-1M", [("$500-1M", None)]),
+        # A span of years before a code is no amount: "The 2019-2021 USD figures".
+        ("The 2019-2021 USD figures", [("2019-2021 USD", None)]),
+        ("From 2024-2025 eur budget lines", [("2024-2025 eur", None)]),
+        ("Budget 2000-2500 EUR", [("2000-2500 EUR", "EUR:2000..2500")]),
+    ],
+)
+def test_a_money_range_keeps_both_ends_with_its_shared_scale(text, expected) -> None:
+    """"$5-10M" was stored as $5: off by a million, and its high end lost."""
+    assert _money_values(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Item: Widget, Price (INR): 500, Qty: 3", [("(INR): 500", "INR:500")]),
+        ("Amount (USD): 1,250.00", [("(USD): 1,250.00", "USD:1250.00")]),
+        ("Price(USD): 500", [("(USD): 500", "USD:500")]),
+        ("Cost (usd): 5", [("(usd): 5", "USD:5")]),
+        ("Cost ($): 5", [("($): 5", "USD:5")]),
+        ("Revenue (USD): -50", [("(USD): -50", "USD:-50")]),
+        ("Price (USD): 5-10M", [("(USD): 5-10M", "USD:5000000..10000000")]),
+        ("Loss (USD): (1,200)", [("(USD): (1,200)", "USD:-1200")]),
+        ("Discount (%): 5", []),
+        # A scaled header is not read: its scale would be lost.
+        ("Revenue (USD m): 5", []),
+        ("Revenue (USD '000): 5", []),
+        ("Revenue (USD) 500", []),
+    ],
+)
+def test_a_currency_named_in_a_header_reaches_the_amount(text, expected) -> None:
+    """A table row reads "Header: value", so a currency in the header never sat next to the number."""
+    assert _money_values(text) == expected
+
+
+def _money(surface: str) -> str | None:
+    value = normalize_money(surface)
+    if value is None:
+        return None
+    key = f"{value.currency}:{value.amount:f}"
+    return key if value.amount_high is None else f"{key}..{value.amount_high:f}"
+
+
+@pytest.mark.parametrize(
+    ("surface", "expected"),
+    [
+        # A surface a model hands over is not always a bare amount: a later dash is no range.
+        ("$500 - 20% discount", "USD:500"),
+        ("$1,200 (2-3 units)", "USD:1200"),
+        ("USD 500 on 2024-01-15", "USD:500"),
+        ("€500 – 2025 budget", "EUR:500"),
+        ("1-800-555-1234 USD", "USD:1"),
+        ("USD 555-1234", "USD:555"),
+        ("$5-10 per seat", "USD:5"),
+        ("$500 - $20 discount", "USD:500"),
+        # A range with the currency or scale on both ends, or in front of both.
+        ("$5M - $10M", "USD:5000000..10000000"),
+        ("€2M-€3M", "EUR:2000000..3000000"),
+        ("1-2 million USD", "USD:1000000..2000000"),
+        ("($5-10M)", "USD:-10000000..-5000000"),
+        # The high end never borrows the low end's scale: "5k - 10 USD" runs backwards.
+        ("5k - 10 USD", None),
+        # A header: its sign survives, and one that is not just a currency gives nothing.
+        ("(USD): (500)", "USD:-500"),
+        ("(₹): 500", "INR:500"),
+        ("(EUR): 2,5 Mio.", "EUR:2500000.0"),
+        ("(USD m): 5", None),
+        ("(USD '000): 5", None),
+        ("(USD 000): 5", None),
+    ],
+)
+def test_a_model_supplied_surface_reads_as_one_amount_unless_it_is_a_bare_range(surface, expected) -> None:
+    assert _money(surface) == expected
+
+
+@pytest.mark.parametrize(("text", "surface"), [
+    ("{'growth': '12%', 'weight': '5 kg'}", ["12%", "5 kg"]),
+    ("a margin of '12.5%'", ["12.5%"]),
+])
+def test_a_quoted_percent_or_quantity_is_still_read(text, surface) -> None:
+    kinds = frozenset({EntityKind.DIMENSION, EntityKind.PERCENTAGE})
+    assert sorted(m.surface for m in ValueCandidateRecognizer(kinds).recognize([TextUnit(0, "b", text)])) == sorted(surface)
+
+
+def test_a_range_key_never_merges_with_its_low_end() -> None:
+    from app.modules.named_entities.merge import entity_identity
+
+    _, range_key, _ = entity_identity(EntityKind.CURRENCY, "$5-10M", NormalizationContext())
+    _, exact_key, _ = entity_identity(EntityKind.CURRENCY, "$5M", NormalizationContext())
+    assert (range_key, exact_key) == ("money:USD:5000000..10000000", "money:USD:5000000")
+
+
+@pytest.mark.parametrize(
+    ("surface", "unit", "si"),
+    [("450 MWh", "mwh", 1.62e12), ("12 kWh", "kwh", 4.32e7), ("5 wh", "wh", 18_000.0), ("2 GWh", "gwh", 7.2e12)],
+)
+def test_energy_is_a_quantity_in_joules(surface, unit, si) -> None:
+    mentions = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", f"Used {surface} in May")])
+    assert [m.surface for m in mentions] == [surface]
+    value = normalize_quantity(surface)
+    assert (value.unit, value.dimension, value.si_value) == (unit, "energy", si)
+
+
+@pytest.mark.parametrize("text", ["WhatsApp 5 users", "Shipped 1'250 kg", "Margin 1'250%"])
+def test_no_quantity_is_read_from_a_word_or_the_tail_of_a_grouped_number(text) -> None:
+    kinds = frozenset({EntityKind.DIMENSION, EntityKind.PERCENTAGE})
+    assert ValueCandidateRecognizer(kinds).recognize([TextUnit(0, "b", text)]) == []
+
+
 def test_celsius_converts_to_kelvin():
     value = normalize_quantity("20 °C")
     assert value is not None
@@ -383,10 +561,25 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
         "May 1-" * 10_000,
         "1 May - " * 10_000,
         "2025-01-01-" * 10_000,
+        "1" + "'000" * 20_000 + " x",
+        "$1-" * 20_000,
+        "$1M-$" * 20_000,
+        "USD 1 to " * 20_000,
+        "(USD): " * 20_000,
+        "1-2-" * 20_000 + " EUR",
+        "1." * 20_000,
+        "H1 " * 20_000,
+        "1H " * 20_000,
+        "between March " * 5_000,
+        "between March 5 and " * 5_000,
+        "between 2026-01-01 and " * 5_000,
+        "1-Jan-" * 20_000,
     ],
     ids=[
         "space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix",
-        "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes",
+        "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes", "apostrophe-grouped",
+        "money-range-dashes", "money-range-symbol-twice", "money-range-to", "header-currency", "trailing-range-dashes",
+        "dotted-run", "half-run", "half-first-run", "between-run", "between-day-run", "between-iso-run", "day-mon-run",
     ],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
@@ -695,3 +888,132 @@ def test_a_date_padded_with_spaces_normalizes_in_linear_time() -> None:
     start = time.process_time()
     normalize_temporal(EntityKind.DATE, "Jan" + " " * 16_000 + "5", NormalizationContext(tz="UTC"))
     assert time.process_time() - start < 1.0
+
+
+def _dates(text: str) -> list[tuple[str, str | None]]:
+    """Each date span with its value, through the recognizer and ``normalize_value``."""
+    from app.modules.named_entities.normalizers import normalize_value
+
+    kinds = frozenset({EntityKind.DATE, EntityKind.DATE_RANGE, EntityKind.DATE_TIME, EntityKind.DURATION})
+    found = []
+    for mention in ValueCandidateRecognizer(kinds).recognize([TextUnit(0, "b", text)]):
+        value = normalize_value(mention.kind, mention.surface, NormalizationContext(tz="UTC"))
+        found.append((mention.surface, value and (getattr(value, "timex", None) or value.iso)))
+    return found
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # Dotted dates are the European form, day first; dateparser read them month first.
+    ("Due 10.09.2026 per contract", [("10.09.2026", "2026-09-10")]),
+    ("Due 3.1.2026", [("3.1.2026", "2026-01-03")]),
+    ("Due 2026.09.10", [("2026.09.10", "2026-09-10")]),
+    ("Due 2026/09/10 per contract", [("2026/09/10", "2026-09-10")]),
+    ("Due 31-Dec-2026 per contract", [("31-Dec-2026", "2026-12-31")]),
+    # A two-digit year stays with dateparser, which keeps its century.
+    ("Due 1-Jan-99", [("1-Jan-99", "1999-01-01T00:00:00+00:00")]),
+    ("Revenue in H1 2026 grew", [("H1 2026", "2026-H1")]),
+    ("Revenue in 1H26 grew", [("1H26", "2026-H1")]),
+    ("Plan for H2 FY26", [("H2 FY26", "2026-H2")]),
+    ("Plan for H2 fy26", [("H2 fy26", "2026-H2")]),
+    ("H1'26 target", [("H1'26", "2026-H1")]),
+    ("Plan for 2H 2026", [("2H 2026", "2026-H2")]),
+    # A date that ends the sentence.
+    ("Signed 10.09.2026.", [("10.09.2026", "2026-09-10")]),
+    ("Released on 2026.09.10.", [("2026.09.10", "2026-09-10")]),
+    ("between March and May 2026", [("between March and May 2026", "2026-03/2026-05"), ("May 2026", "2026-05")]),
+    # Day and ISO ends, through extraction: one range span, the ends read as dates too.
+    ("Audit between March 5 and May 10, 2026.", [
+        ("between March 5 and May 10, 2026", "2026-03-05/2026-05-10"), ("March 5", "XXXX-03-05"),
+        ("May 10, 2026", "2026-05-10"),
+    ]),
+    ("Audit between Jan 5 and 10, 2026", [("between Jan 5 and 10, 2026", "2026-01-05/2026-01-10"), ("Jan 5", "XXXX-01-05")]),
+    ("Audit between 5 March and 10 May 2026", [
+        ("between 5 March and 10 May 2026", "2026-03-05/2026-05-10"), ("5 March", "XXXX-03-05"),
+        ("10 May 2026", "2026-05-10"),
+    ]),
+    ("Audit between 2026-01-01 and 2026-03-01", [
+        ("between 2026-01-01 and 2026-03-01", "2026-01-01/2026-03-01"), ("2026-01-01", "2026-01-01"),
+        ("2026-03-01", "2026-03-01"),
+    ]),
+    ("between March 2025 and May 2026", [
+        ("between March 2025 and May 2026", "2025-03/2026-05"), ("March 2025", "2025-03"), ("May 2026", "2026-05"),
+    ]),
+])
+def test_more_written_date_forms_read(text: str, expected: list[tuple[str, str | None]]) -> None:
+    assert _dates(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # Durations, not half-years.
+    ("Meeting ran 1h 30 min", [("30 min", "PT30M")]),
+    ("took 2h 15 minutes", [("15 minutes", "PT15M")]),
+    ("H1\n2026", []),
+    ("H2 20 units", []),
+    ("H3 2026", []),
+    ("H1N1 H2O H1B visa", []),
+    ("NVIDIA H100 and H200 GPUs", []),
+    ("part H120 and model H12026", []),
+    ("Ouverture à 1H00", []),
+    ("build 2026.09.10.4 and 10.09.2026.5", []),
+    # Version strings and addresses.
+    ("IntelliJ 2024.1.3", []),
+    ("ip 192.168.10.2026", []),
+    ("v1.2.2026.4", []),
+    ("10.09.26", []),
+    # Matched but no such day: no value.
+    ("2026/13/40", [("2026/13/40", None)]),
+    ("phone 12.34.5678", [("12.34.5678", None)]),
+    # "and" splits a range only after "between".
+    ("Smith and May 2026", [("May 2026", "2026-05")]),
+    ("2024-01-01 and later", [("2024-01-01", "2024-01-01")]),
+    ("between 3 and 5 people", []),
+    ("between May 2 and noon", [("May 2", "XXXX-05-02")]),
+])
+def test_lookalikes_are_not_read_as_new_date_forms(text: str, expected: list[tuple[str, str | None]]) -> None:
+    assert _dates(text) == expected
+
+
+def test_a_half_year_is_a_six_month_range_kept_through_normalize_value() -> None:
+    """"half" missing from the granularity type made every half-year fail validation, silently."""
+    from app.modules.named_entities.normalizers import normalize_value
+
+    value = normalize_value(EntityKind.DATE_RANGE, "H2 2026", NormalizationContext(tz="UTC"))
+    assert value is not None and value.granularity == "half"
+    assert (value.start_ms, value.end_ms) == (_ms(2026, 7, 1), _ms(2027, 1, 1))
+
+
+
+@pytest.mark.parametrize(("surface", "timex", "end"), [
+    # The end is exclusive: the day after the last day named.
+    ("between March 5 and May 10, 2026", "2026-03-05/2026-05-10", (2026, 5, 11)),
+    ("between Jan 5 and 10, 2026", "2026-01-05/2026-01-10", (2026, 1, 11)),
+    ("between 2026-01-01 and 2026-03-01", None, (2026, 3, 2)),
+])
+def test_a_between_range_with_day_ends_reads_whole(surface: str, timex: str | None, end: tuple[int, int, int]) -> None:
+    from app.modules.named_entities.normalizers import normalize_value
+
+    value = normalize_value(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    assert value is not None and value.start_ms is not None
+    assert value.end_ms == _ms(*end)
+    if timex:
+        assert value.timex == timex
+
+
+def test_a_half_by_name_through_normalize_value_rejects_product_codes() -> None:
+    from app.modules.named_entities.normalizers import normalize_value
+
+    for surface in ("H100", "H200", "H12026", "1H00"):
+        value = normalize_value(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+        assert value is None or value.granularity != "half", surface
+
+
+
+def test_a_between_span_padded_with_spaces_normalizes_in_linear_time() -> None:
+    import time
+
+    surface = "between March and May" + " " * 40_000 + "2026"
+    start = time.process_time()
+    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    # The " and " separator retried at every space took about 4 s here; guarded, milliseconds.
+    assert time.process_time() - start < 1.0
+    assert value is not None and value.timex == "2026-03/2026-05"
