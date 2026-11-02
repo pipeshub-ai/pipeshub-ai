@@ -101,7 +101,7 @@ class EntityAccessMixin(PgBase):
                                   CASE WHEN jsonb_typeof(s.doc->'updatedAtTimestamp') = 'number' THEN (s.doc->>'updatedAtTimestamp')::float8 END, 0) END DESC, s.id) AS ord FROM s)
                 SELECT o.id, o.doc, o.ord, (SELECT count(*) FROM s) AS scanned FROM o WHERE o.ord > $7::int AND o.ord <= $7::int + $8::int
                 UNION ALL SELECT NULL, NULL, 0, (SELECT count(*) FROM s) WHERE NOT EXISTS (SELECT 1 FROM o WHERE o.ord > $7::int AND o.ord <= $7::int + $8::int) ORDER BY ord""",
-                                  *args, ref["userIds"], ref["outTypes"], ref["inTypes"])
+                                  *args, ref["userIds"], ref["edgeTypes"], ref["edgeTypes"])
         else:
             edge, colls, scope = ("", (), "none") if typ == EntityType.RECORD.value else _TARGETS[typ]
             rows = await tx.fetch("""/* pipeshub:graph.get_entity_candidate_records */ WITH s AS (SELECT r.id, r.doc FROM graph.nodes r

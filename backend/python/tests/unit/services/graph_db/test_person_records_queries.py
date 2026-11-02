@@ -40,11 +40,10 @@ def _arango(rows: list | None = None) -> ArangoHTTPProvider:
 
 
 class TestPersonQueryRef:
-    def test_edges_are_kept_to_the_allow_list_of_their_direction(self) -> None:
+    def test_edges_are_kept_to_the_person_allow_list_whichever_key_named_them(self) -> None:
         assert person_query_ref(PERSON_REF) == {
             "userIds": ["u1", "u2"],
-            "outTypes": ["REPORTED_BY", "CREATED_BY"],
-            "inTypes": ["MENTIONED_IN"],
+            "edgeTypes": ["ASSIGNED_TO", "REPORTED_BY", "CREATED_BY", "MENTIONED_IN"],
         }
 
     def test_user_ids_default_to_the_ref_id(self) -> None:
@@ -54,16 +53,14 @@ class TestPersonQueryRef:
         """A person entity from search carries only its id, and lists every
         record naming them; an explicit empty list still names none."""
         assert person_query_ref({"id": "u9", "type": "person"}) == {
-            "userIds": ["u9"],
-            "outTypes": list(PERSON_EDGES_TO_USER),
-            "inTypes": list(PERSON_EDGES_FROM_USER),
+            "userIds": ["u9"], "edgeTypes": [*PERSON_EDGES_TO_USER, *PERSON_EDGES_FROM_USER],
         }
-        assert person_query_ref({"id": "u9", "outTypes": [], "inTypes": []})["outTypes"] == []
+        assert person_query_ref({"id": "u9", "outTypes": [], "inTypes": []})["edgeTypes"] == []
 
     def test_a_ref_naming_no_relation_never_follows_an_organisation_edge(self) -> None:
         ref = person_query_ref({"id": "u9"})
         organisation = {EntityRelations.FOR_ACCOUNT.value, EntityRelations.MENTIONS.value}
-        assert not organisation & {*ref["outTypes"], *ref["inTypes"]}
+        assert not organisation & set(ref["edgeTypes"])
 
     def test_every_record_to_person_edge_a_connector_writes_is_in_its_direction(self) -> None:
         written = {
@@ -73,8 +70,10 @@ class TestPersonQueryRef:
         }
         assert {r.value for r in written} == set(PERSON_EDGES_TO_USER)
 
-    def test_naming_one_direction_leaves_the_other_empty(self) -> None:
-        assert person_query_ref({"id": "u9", "inTypes": ["MENTIONED_IN"]})["outTypes"] == []
+    def test_a_type_stored_person_to_record_is_kept_when_asked_as_either_direction(self) -> None:
+        # A role is one edge type, whichever way a connector stored it.
+        assert person_query_ref({"id": "u9", "outTypes": ["MENTIONED_IN"]})["edgeTypes"] == ["MENTIONED_IN"]
+        assert person_query_ref({"id": "u9", "edgeTypes": ["ASSIGNED_TO"]})["edgeTypes"] == ["ASSIGNED_TO"]
 
 
 class TestNeo4jPersonQuery:
@@ -83,9 +82,10 @@ class TestNeo4jPersonQuery:
         await p.get_permitted_entity_records([PERSON_REF], "org1", "ukey", within=WITHIN, **KWARGS)
         query = p.client.execute_query.call_args.args[0]
         assert "MATCH (rec:Record)-[r:ENTITYRELATIONS]->(p:User)" in query
-        assert "r.edgeType IN ref.outTypes" in query
         assert "MATCH (p:User)-[r:ENTITYRELATIONS]->(rec:Record)" in query
-        assert "r.edgeType IN ref.inTypes" in query
+        # Each branch takes every asked type: a role is matched whichever way it is stored.
+        assert query.count("r.edgeType IN ref.edgeTypes") == 4
+        assert "ref.outTypes" not in query and "ref.inTypes" not in query
         assert "p.id IN ref.userIds" in query
 
     async def test_candidates_are_filtered_narrowed_and_deduped_before_the_cap(self) -> None:
@@ -103,8 +103,7 @@ class TestNeo4jPersonQuery:
         await p.get_permitted_entity_records([PERSON_REF], "org1", "ukey", within=WITHIN, **KWARGS)
         params = p.client.execute_query.call_args.kwargs["parameters"]
         (ref,) = params["refs"]
-        assert ref["outTypes"] == ["REPORTED_BY", "CREATED_BY"]
-        assert ref["inTypes"] == ["MENTIONED_IN"]
+        assert ref["edgeTypes"] == ["ASSIGNED_TO", "REPORTED_BY", "CREATED_BY", "MENTIONED_IN"]
         assert ref["userIds"] == ["u1", "u2"]
         assert params["within"] == WITHIN
 
@@ -122,7 +121,7 @@ class TestNeo4jPersonQuery:
         p = _neo4j()
         await p.get_entity_candidate_records([PERSON_REF], "org1")
         query = p.client.execute_query.call_args.args[0]
-        assert "r.edgeType IN ref.outTypes" in query
+        assert "r.edgeType IN ref.edgeTypes" in query
         assert "WITH DISTINCT rec" in query
 
     async def test_taxonomy_refs_keep_their_relationship_match(self) -> None:
@@ -141,8 +140,8 @@ class TestArangoPersonQuery:
         await p.get_permitted_entity_records([PERSON_REF], "org1", "ukey", within=WITHIN, **KWARGS)
         query = p.execute_query.await_args.args[0]
         assert 'CONCAT("users/", uid)' in query
-        assert "edge._to IN people AND edge.edgeType IN ref.outTypes" in query
-        assert "edge._from IN people AND edge.edgeType IN ref.inTypes" in query
+        assert "edge._to IN people AND edge.edgeType IN ref.edgeTypes" in query
+        assert "edge._from IN people AND edge.edgeType IN ref.edgeTypes" in query
         assert "FOR edge IN entityRelations" in query
 
     async def test_the_person_must_be_a_member_of_the_org(self) -> None:
@@ -166,15 +165,15 @@ class TestArangoPersonQuery:
         await p.get_permitted_entity_records([PERSON_REF], "org1", "ukey", within=WITHIN, **KWARGS)
         binds = p.execute_query.await_args.kwargs["bind_vars"]
         (ref,) = binds["refs"]
-        assert (ref["outTypes"], ref["inTypes"], ref["userIds"]) == (
-            ["REPORTED_BY", "CREATED_BY"], ["MENTIONED_IN"], ["u1", "u2"],
+        assert (ref["edgeTypes"], ref["userIds"]) == (
+            ["ASSIGNED_TO", "REPORTED_BY", "CREATED_BY", "MENTIONED_IN"], ["u1", "u2"],
         )
         assert binds["within"] == WITHIN
 
     async def test_candidate_listing_sends_the_same_refs(self) -> None:
         p = _arango()
         await p.get_entity_candidate_records([PERSON_REF], "org1")
-        assert p.execute_query.await_args.kwargs["bind_vars"]["refs"][0]["inTypes"] == ["MENTIONED_IN"]
+        assert "MENTIONED_IN" in p.execute_query.await_args.kwargs["bind_vars"]["refs"][0]["edgeTypes"]
 
 
 @pytest.fixture(params=["neo4j", "arango"])

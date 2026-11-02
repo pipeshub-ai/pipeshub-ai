@@ -65,7 +65,7 @@ async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org: str, *, di
     await aql(f"REMOVE {{_key: @org}} IN {CollectionNames.ORGS.value} OPTIONS {{ignoreErrors: true}}", {"org": org})
     for docs in (
         CollectionNames.RECORDS.value, CollectionNames.MAILS.value, CollectionNames.TICKETS.value,
-        CollectionNames.USERS.value, CollectionNames.PEOPLE.value,
+        CollectionNames.USERS.value, CollectionNames.PEOPLE.value, CollectionNames.RECORD_GROUPS.value,
     ):
         await aql(f"FOR d IN {docs} FILTER d.orgId == @org REMOVE d IN {docs}", {"org": org})
 
@@ -254,6 +254,50 @@ async def _foreign_record_names_nobody(provider: Neo4jProvider | ArangoHTTPProvi
         "_from": f"records/{org}-foreign", "_to": f"users/{org}-bob", "edgeType": "ASSIGNED_TO", "createdAtTimestamp": 1,
     }])
     assert await provider.get_record_people(f"{org}-foreign", org) == []
+
+
+async def test_a_role_matches_whichever_way_its_edge_is_stored(backend) -> None:
+    """Record query matches a person's edge in either direction; a person
+    listing read only the stored direction of each type (ASSIGNED_TO record ->
+    person, MENTIONED_IN person -> record), so the two disagreed on an edge a
+    connector wrote the other way round. The far end must still be a person
+    node: a record group sharing the person's id is never followed."""
+    provider, org = backend
+    await provider.ensure_schema()
+    mail_id = await _seed(provider, org)
+    bob, conn = f"{org}-bob", f"{org}-conn"
+    await provider.batch_upsert_records([TicketRecord(
+        id=f"{org}-group-only", org_id=org, external_record_id=f"{org}-group-only", record_name="Case 2",
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_MAIL, connector_id=conn,
+        record_type=RecordType.CASE, version=1, source_created_at=1000, source_updated_at=1000,
+        indexing_status="COMPLETED",
+    )])
+    await provider.batch_upsert_nodes([{
+        "id": bob, "orgId": org, "groupName": "Bob's group", "groupType": "PROJECT",
+        "connectorName": Connectors.GOOGLE_MAIL.value, "connectorId": conn, "externalGroupId": bob,
+        "createdAtTimestamp": 1,
+    }], CollectionNames.RECORD_GROUPS.value)
+    await provider.batch_create_entity_relations([
+        {"_from": f"users/{bob}", "_to": f"records/{org}-case", "edgeType": "ASSIGNED_TO", "createdAtTimestamp": 1},
+        {"_from": f"records/{mail_id}", "_to": f"users/{bob}", "edgeType": "MENTIONED_IN", "createdAtTimestamp": 1},
+        {"_from": f"recordGroups/{bob}", "_to": f"records/{org}-group-only", "edgeType": "ASSIGNED_TO",
+         "createdAtTimestamp": 1},
+        {"_from": f"recordGroups/{bob}", "_to": f"records/{org}-group-only", "edgeType": "MENTIONED_IN",
+         "createdAtTimestamp": 1},
+    ])
+
+    async def listed(edge_types: list[str]) -> list[str]:
+        ref = {"id": bob, "type": "person", "connectorIds": [conn], "userIds": [bob], "edgeTypes": edge_types}
+        candidates = (await provider.get_entity_candidate_records([ref], org))[("person", bob)]
+        permitted = (await provider.get_permitted_entity_records(
+            [ref], org, f"{org}-ann", app_level_connector_ids=[conn],
+        ))[("person", bob)]
+        assert sorted(r["_key"] for r in permitted) == sorted(r["_key"] for r in candidates)
+        return sorted(r["_key"] for r in candidates)
+
+    assert await listed(["ASSIGNED_TO"]) == [f"{org}-case"]
+    assert await listed(["MENTIONED_IN"]) == [mail_id]
+    assert await listed(["ASSIGNED_TO", "MENTIONED_IN"]) == sorted([mail_id, f"{org}-case"])
 
 
 async def test_the_rebuild_reads_people_and_their_membership(backend) -> None:

@@ -21699,8 +21699,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         LIMIT @scan_cap
                         RETURN rec"""
         if entity_type == PERSON_ENTITY_TYPE:
-            # Both directions, the person always at the users or person end:
-            # a record group is also MENTIONED_IN a record. Distinct ids first, so a
+            # Each type in both directions, the person always at the users or
+            # person end: a record group is also MENTIONED_IN a record. Distinct ids first, so a
             # record linked twice (reporter and creator) is one candidate.
             relations = CollectionNames.ENTITY_RELATIONS.value
             # Only this org's nodes: a record of the org may name another org's user.
@@ -21714,11 +21714,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return scope, f"""(
                     FOR rec_id IN UNION_DISTINCT(
                         (FOR edge IN {relations}
-                            FILTER edge._to IN people AND edge.edgeType IN ref.outTypes
+                            FILTER edge._to IN people AND edge.edgeType IN ref.edgeTypes
                                 AND STARTS_WITH(edge._from, "{records}/")
                             RETURN edge._from),
                         (FOR edge IN {relations}
-                            FILTER edge._from IN people AND edge.edgeType IN ref.inTypes
+                            FILTER edge._from IN people AND edge.edgeType IN ref.edgeTypes
                                 AND STARTS_WITH(edge._to, "{records}/")
                             RETURN edge._to))
                         LET rec = DOCUMENT(rec_id)

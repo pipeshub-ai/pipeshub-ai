@@ -42,7 +42,7 @@ def _graph(rows: list[dict], **kwargs: object) -> MagicMock:
 
 
 class TestPersonListing:
-    async def test_the_ref_is_built_server_side_by_direction(self) -> None:
+    async def test_the_ref_is_built_server_side_from_the_allow_list(self) -> None:
         graph = _graph(_rows("r1"), permitted=("r1",))
         await list_accessible_person_records(
             graph, _context(), user_ids=["u1", "u2", "u1"],
@@ -51,7 +51,7 @@ class TestPersonListing:
         (ref,) = graph.get_permitted_entity_records.await_args.args[0]
         assert ref == {
             "id": "u1", "type": PERSON_ENTITY_TYPE, "userIds": ["u1", "u2"],
-            "outTypes": ["REPORTED_BY"], "inTypes": ["MENTIONED_IN"], "connectorIds": [JIRA],
+            "edgeTypes": ["REPORTED_BY", "MENTIONED_IN"], "connectorIds": [JIRA],
         }
 
     async def test_only_readable_records_are_listed_and_the_end_is_known(self) -> None:

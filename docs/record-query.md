@@ -56,10 +56,13 @@ editor `LAST_MODIFIED_BY`; recipient `ADDRESSED_TO`; lead `LEAD_BY`; mentioned
 question that means either of two roles ("who wrote it": creator or author)
 says so with `any_of`. `find_records_by_person` takes the same roles, and
 `involved`, its earlier name for participant. `MENTIONED_IN` and
-`INVOLVED_IN` are stored person -> record (`EDGES_FROM_PERSON`), every other
-role record -> person; the providers' direction tables
-(`PERSON_EDGES_TO_USER`, `PERSON_EDGES_FROM_USER`) are derived from that
-split. The eval harness (`kg_eval/facets.py`) files each connector slot under
+`INVOLVED_IN` are mostly stored person -> record (`EDGES_FROM_PERSON`), every
+other role record -> person, but a connector may write one the other way
+round. So every person path matches a role's edge type in either direction,
+with the far end required to be a person node (`users` or `person`), which
+keeps a record group's `MENTIONED_IN` out: record query, and the person
+listings (`person_query_ref`, one `edgeTypes` list for both directions of
+both providers' person branch), so the two never disagree on one edge. The eval harness (`kg_eval/facets.py`) files each connector slot under
 the role of the edge it writes, checked by a unit test.
 
 **A person is an email.** A human can be several graph nodes: one `users`

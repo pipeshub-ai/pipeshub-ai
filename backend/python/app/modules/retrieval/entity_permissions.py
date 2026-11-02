@@ -1076,9 +1076,9 @@ async def list_accessible_person_records(
     cursor: str | None = None,
 ) -> EntityRecordPage:
     """Records linked to a person (one or more User nodes of one email) by
-    ``edge_types`` that the user can access, paged and decided exactly as
-    :func:`list_accessible_entity_records`. Edge types outside the
-    person allow-list are dropped."""
+    ``edge_types`` in either direction that the user can access, paged and
+    decided exactly as :func:`list_accessible_entity_records`. Edge types
+    outside the person allow-list are dropped."""
     return await _list_ref_records(
         graph_provider, context, _person_ref(user_ids, edge_types),
         record_types=record_types, limit=limit, cursor=cursor,
@@ -1087,15 +1087,11 @@ async def list_accessible_person_records(
 
 def _person_ref(user_ids: Iterable[str], edge_types: Iterable[str]) -> dict[str, Any]:
     wanted = set(edge_types)
-    out_types = [t for t in PERSON_EDGES_TO_USER if t in wanted]
-    in_types = [t for t in PERSON_EDGES_FROM_USER if t in wanted]
+    allowed = [t for t in (*PERSON_EDGES_TO_USER, *PERSON_EDGES_FROM_USER) if t in wanted]
     ids = list(dict.fromkeys(i for i in user_ids if i))
-    if not ids or not (out_types or in_types):
+    if not ids or not allowed:
         raise ValueError("A person listing needs a user and at least one relation")
-    return {
-        "id": ids[0], "type": PERSON_ENTITY_TYPE, "userIds": ids,
-        "outTypes": out_types, "inTypes": in_types,
-    }
+    return {"id": ids[0], "type": PERSON_ENTITY_TYPE, "userIds": ids, "edgeTypes": allowed}
 
 
 async def first_readable_offsets(

@@ -251,24 +251,31 @@ class PermittedEntityRows(EntityCandidateRows):
 
 
 # A person as a listable entity: the connector-written relations linking a
-# person to a record, by the direction they are stored in (record_fields).
+# person to a record (record_fields), by the direction most connectors store
+# them in. Listings match either direction (``person_query_ref``).
 PERSON_ENTITY_TYPE = "person"
 PERSON_EDGES_TO_USER: tuple[str, ...] = PERSON_EDGES_TO_PERSON
 PERSON_EDGES_FROM_USER: tuple[str, ...] = PERSON_EDGES_FROM_PERSON
+_PERSON_EDGES: tuple[str, ...] = (*PERSON_EDGES_TO_USER, *PERSON_EDGES_FROM_USER)
 
 
 def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
     """The person fields of a ``person`` ref as a candidate query reads them:
-    its user ids, and its edge types kept to the allow-list of each direction
-    (Record->User ``outTypes``, User->Record ``inTypes``). A ref naming
-    neither (a person entity from search) links by every person relation."""
-    user_ids = list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i))
-    if "outTypes" not in ref and "inTypes" not in ref:
-        return {"userIds": user_ids, "outTypes": list(PERSON_EDGES_TO_USER), "inTypes": list(PERSON_EDGES_FROM_USER)}
+    its user ids, and its edge types (``edgeTypes``, or the older
+    ``outTypes``/``inTypes`` together) kept to the person allow-list. The
+    query matches each type in either direction, as record query does: a
+    connector may store a role the other way round, and the far end must be
+    a person node, which is what keeps a record group's MENTIONED_IN out. A
+    ref naming no edge types at all (a person entity from search) links by
+    every person relation."""
+    named = [*(ref.get("edgeTypes") or ()), *(ref.get("outTypes") or ()), *(ref.get("inTypes") or ())]
+    if not any(k in ref for k in ("edgeTypes", "outTypes", "inTypes")):
+        edge_types = list(_PERSON_EDGES)
+    else:
+        edge_types = [t for t in _PERSON_EDGES if t in named]
     return {
-        "userIds": user_ids,
-        "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
-        "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
+        "userIds": list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i)),
+        "edgeTypes": edge_types,
     }
 
 
