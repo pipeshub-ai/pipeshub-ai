@@ -128,9 +128,9 @@ export function Field({ id, field, value, error: given, changed, onChange }: Fie
           aria-labelledby={labelId}
           className="no-scrollbar"
           style={{
-            border: '1px solid var(--slate-a5)',
+            border: '1px solid var(--gray-a5)',
             borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-a2)',
+            backgroundColor: 'var(--gray-a2)',
             padding: 'var(--space-2)',
             maxHeight: 160,
             overflowY: 'auto',
@@ -152,7 +152,7 @@ export function Field({ id, field, value, error: given, changed, onChange }: Fie
   return (
     <Flex direction="column" gap="1">
       <Flex align="center" gap="2">
-        <Text as="label" id={labelId} htmlFor={field.control === 'json' ? undefined : id} size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
+        <Text as="label" id={labelId} htmlFor={field.control === 'json' ? undefined : id} size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
           {field.label}
           {field.required && <Text aria-hidden style={{ color: 'var(--red-11)' }}> *</Text>}
         </Text>
@@ -160,7 +160,7 @@ export function Field({ id, field, value, error: given, changed, onChange }: Fie
       </Flex>
       {control}
       {field.control === 'json' && (
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>{t('chat.toolApproval.readOnlyField')}</Text>
+        <Text size="1" style={{ color: 'var(--gray-10)' }}>{t('chat.toolApproval.readOnlyField')}</Text>
       )}
       {error && (
         <Text id={errorId} size="1" style={{ color: 'var(--red-11)' }}>{error}</Text>
