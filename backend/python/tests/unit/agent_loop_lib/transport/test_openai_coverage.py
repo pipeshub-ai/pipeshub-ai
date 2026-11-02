@@ -704,3 +704,90 @@ class TestRequestShapeRecoveryIsNotAzureOnly:
         with pytest.raises(Exception, match="rate limit"):
             [e async for e in transport.stream([UserMessage(content="hi")])]
         assert len(calls) == 1
+
+
+def _stream_api_error(message: str, body: dict | str | None = None) -> openai_sdk.APIError:
+    """What the SDK raises for an `error` event inside a stream that opened with HTTP 200."""
+    req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    return openai_sdk.APIError(message, request=req, body=body)
+
+
+class _FailingAfterChunks(_AsyncChunkIterator):
+    def __init__(self, chunks: list, exc: Exception) -> None:
+        super().__init__(chunks)
+        self._exc = exc
+
+    async def __anext__(self) -> SimpleNamespace:
+        if not self._chunks:
+            raise self._exc
+        return self._chunks.pop(0)
+
+
+class TestTransientStreamErrors:
+    @pytest.mark.parametrize("exc", [
+        _stream_api_error("upstream connect error or disconnect/reset before headers. reset reason: connection termination"),
+        _stream_api_error("The server had an error", body={"type": "server_error"}),
+        # A gateway's plain-text stream error reaches the SDK as a str body.
+        _stream_api_error(
+            "An error occurred during streaming",
+            body="upstream connect error or disconnect/reset before headers. reset reason: connection termination",
+        ),
+        _stream_api_error("Rate limited", body={"error": {"type": "rate_limit_exceeded", "message": "slow down"}}),
+        httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)"),
+    ])
+    def test_transient_stream_failures_are_retryable(self, exc: Exception) -> None:
+        assert _transport()._wrap_error(exc, "stream").retryable is True
+
+    @pytest.mark.parametrize("exc", [
+        _stream_api_error("Invalid prompt", body={"type": "invalid_request_error"}),
+        _stream_api_error("Quota", body={"error": {"type": "insufficient_quota", "message": "quota exceeded"}}),
+        _stream_api_error("Too long", body={"error": {"code": "context_length_exceeded", "message": "too long"}}),
+        # A label decides: the caller's bad URL stays non-retryable even if its message names a reset.
+        _stream_api_error("connection reset while fetching the image", body={"code": "invalid_image_url"}),
+    ])
+    def test_other_stream_errors_are_not_retryable(self, exc: Exception) -> None:
+        assert _transport()._wrap_error(exc, "stream").retryable is False
+
+    @pytest.mark.parametrize(("error", "transient"), [
+        ("upstream connect error or disconnect/reset before headers", True),   # Responses `error` data as a str
+        ({"code": "server_error", "message": "The server had an error"}, True),
+        (SimpleNamespace(type="error", code="server_error", message="oops"), True),
+        # A Responses `error` event: its type is the event kind, so the message decides.
+        (SimpleNamespace(type="error", code=None, message="upstream connect error or disconnect/reset"), True),
+        (SimpleNamespace(type="error", code="invalid_prompt", message="upstream connect error"), False),
+        ({"code": "invalid_prompt", "message": "upstream connect error"}, False),
+        ({"message": "something odd"}, False),
+        # LiteLLM-style gateway error: placeholder type, HTTP status as a string code.
+        ({"type": "None", "code": "500", "message": "litellm.InternalServerError: upstream connect error"}, True),
+        ({"type": None, "code": 500, "message": "upstream connect error"}, True),
+        ({"code": "429", "message": "slow down"}, True),
+        ({"code": "400", "message": "connection reset in your prompt"}, False),
+        ({"code": "InternalServerError", "message": "Azure had a problem"}, True),  # Azure casing
+        ({"code": "ServiceUnavailable", "message": "try later"}, True),
+        ({"type": "api_error", "message": "Internal server error"}, True),
+        (None, False),
+    ])
+    def test_classifier_on_responses_payload_shapes(self, error: object, transient: bool) -> None:
+        from app.agent_loop_lib.transport.openai import _is_transient_stream_error
+
+        assert _is_transient_stream_error(error) is transient
+
+    async def test_failure_before_any_output_stays_retryable(self) -> None:
+        transport = _transport()
+        exc = _stream_api_error("upstream connect error or disconnect/reset before headers")
+        transport._client.chat.completions.create = AsyncMock(return_value=_FailingAfterChunks([], exc))
+        with pytest.raises(TransportError) as info:
+            [e async for e in transport.stream([UserMessage(content="x")])]
+        assert info.value.retryable is True and info.value.partial_output is False
+
+    async def test_failure_after_output_waits_for_the_agent_to_retract_it(self) -> None:
+        transport = _transport()
+        exc = _stream_api_error("upstream connect error or disconnect/reset before headers")
+        transport._client.chat.completions.create = AsyncMock(
+            return_value=_FailingAfterChunks([_stream_chunk(content="Hel")], exc),
+        )
+        with pytest.raises(TransportError) as info:
+            [e async for e in transport.stream([UserMessage(content="x")])]
+        assert info.value.partial_output is True and info.value.retryable is False
+        info.value.discard_partial_output()
+        assert info.value.retryable is True
