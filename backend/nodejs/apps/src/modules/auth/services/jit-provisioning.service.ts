@@ -119,15 +119,18 @@ export class JitProvisioningService {
     userId: string,
     previous: Record<string, unknown>,
   ): Promise<void> {
+    const logFailure = (step: string, error: unknown): void => {
+      this.logger.error(`Undoing a failed Slack-only upgrade: ${step} failed`, {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
     try {
       await getGroupRepository().removeFromAll(orgId, userId, {
         everyGroup: true,
       });
     } catch (error) {
-      this.logger.error('Undoing a failed Slack-only upgrade: leaving the groups failed', {
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logFailure('leaving the groups', error);
     }
     try {
       await getUserRepository().updateProfile(orgId, userId, {
@@ -135,10 +138,7 @@ export class JitProvisioningService {
         kind: 'slack',
       });
     } catch (error) {
-      this.logger.error('Undoing a failed Slack-only upgrade: restoring the record failed', {
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logFailure('restoring the record', error);
     }
   }
 
