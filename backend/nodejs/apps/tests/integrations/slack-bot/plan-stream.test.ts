@@ -278,6 +278,9 @@ describe('slack-bot/utils/plan-stream', () => {
       ['xoxe-', 'xoxe-1-abc', '[redacted]'],
       ['sk-ant-', 'sk-ant-api03-abc', '[redacted]'],
       ['a password with spaces to the end of the line', 'password: correct horse battery\nnext', 'password: [redacted]\nnext'],
+      ['a --password flag', '--password=hunter2', '--password=[redacted]'],
+      ['a --token flag in a command', 'curl --token=abc123 x', 'curl --token=[redacted]'],
+      ['an --api-key flag', 'run --api-key=abc', 'run --api-key=[redacted]'],
     ];
     for (const [name, input, expected] of CASES) {
       it(`masks ${name}`, () => {
