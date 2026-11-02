@@ -39,8 +39,10 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+import regex
 from jsonschema import Draft202012Validator
-from jsonschema.validators import validator_for
+from jsonschema import ValidationError as SchemaValidationError
+from jsonschema.validators import extend, validator_for
 from pydantic import Field, ValidationError, model_validator
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
@@ -610,6 +612,27 @@ class EditError(MCPCamelModel):
 
 _KIND_RANK: dict[str, int] = {"read": 0, "write": 1, "destructive": 2}
 
+# All `pattern` checks of one edit share this budget: a server-supplied regex can backtrack for
+# ages, and the check runs on the event loop. A value left unchecked is the tool's to reject.
+_PATTERN_BUDGET_SECONDS = 0.2
+
+
+def _bounded_pattern_validator(base: Any) -> Any:  # noqa: ANN401
+    deadline = time.monotonic() + _PATTERN_BUDGET_SECONDS
+
+    def pattern(validator: Any, patrn: str, instance: Any, schema: Any):  # noqa: ANN202, ANN401
+        left = deadline - time.monotonic()
+        if not validator.is_type(instance, "string") or left <= 0:
+            return
+        try:
+            matched = regex.search(patrn, instance, timeout=left)
+        except TimeoutError:
+            return
+        if not matched:
+            yield SchemaValidationError(f"{instance!r} does not match {patrn!r}")
+
+    return extend(base, {"pattern": pattern})
+
 
 def check_edit(
     pending: PendingCall, edited: dict[str, Any], *, shown_hash: str, own_rule: Rule | None, enabled_on_project: bool = False,
@@ -626,7 +649,8 @@ def check_edit(
     try:
         validator_class = validator_for(schema, default=Draft202012Validator)
         validator_class.check_schema(schema)
-        errors = [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator_class(schema).iter_errors(edited)]
+        validator = _bounded_pattern_validator(validator_class)(schema)
+        errors = [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator.iter_errors(edited)]
     except Exception as e:  # a server's schema can be malformed: bad types, a $ref that can't be resolved
         logger.warning(f"The schema of {pending.tool_name} can't be used to check an edit: {e}")
         return [EditError(path="", message="This action can't be edited.")]
