@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import {
+  isHostedMcpPath,
+  mcpRootId,
   newAnonRoot,
   runWithRequestContext,
   sanitizeRootId,
@@ -40,7 +42,7 @@ declare global {
 }
 
 
-const resolveRequestId = (raw: string | undefined): string => {
+const resolveRequestId = (raw: string | undefined, path: string): string => {
   const sanitized = sanitizeRootId(raw);
   if (raw && sanitized !== raw) {
     Logger.getInstance().debug("Sanitized client-supplied x-request-id", {
@@ -48,6 +50,7 @@ const resolveRequestId = (raw: string | undefined): string => {
       sanitized: sanitized ?? "(empty, regenerated)",
     });
   }
+  if (isHostedMcpPath(path)) return mcpRootId(sanitized);
   return sanitized || newAnonRoot();
 };
 
@@ -61,7 +64,7 @@ const createRequestContext = (req: Request): RequestContext => {
     userAgent: req.get("user-agent") || "unknown",
     clientIp: req.ip || undefined,
     correlationId: req.get("X-Correlation-ID") || undefined,
-    requestId: resolveRequestId(req.get("X-Request-ID")),
+    requestId: resolveRequestId(req.get("X-Request-ID"), req.path),
     origin: req.get("origin") || undefined,
     referer: req.get("referer") || undefined,
     language: req.get("accept-language") || undefined,

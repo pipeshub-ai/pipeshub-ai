@@ -78,6 +78,27 @@ export function newAnonRoot(): string {
   return `anon-${randomUUID().replace(/-/g, '')}`;
 }
 
+/**
+ * The hosted MCP endpoint (`/mcp`), not `/api/v1/mcp-servers` or a
+ * `/.well-known/.../mcp` discovery path.
+ */
+export function isHostedMcpPath(path: string): boolean {
+  return path === '/mcp' || path.startsWith('/mcp/');
+}
+
+/**
+ * Root id for a hosted `/mcp` request. MCP clients rarely send an
+ * x-request-id, so the gateway gives every one the `mcp-` prefix the local MCP
+ * server and the SDKs (`sdk-<lang>-`) already stamp: telemetry, logs and the
+ * Python services can then tell the channel from the id alone. A client's own
+ * id is kept behind the prefix.
+ */
+export function mcpRootId(clientId: string | undefined): string {
+  if (!clientId) return `mcp-${randomUUID().replace(/-/g, '')}`;
+  if (clientId.startsWith('mcp-')) return clientId;
+  return `mcp-${clientId}`.slice(0, MAX_ROOT_ID_LEN);
+}
+
 /** The id stamped into log lines: `<root><service-suffix>` (node suffix is empty). */
 export function currentDisplayId(suffix = ''): string {
   const ctx = storage.getStore();

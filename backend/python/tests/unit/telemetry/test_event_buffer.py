@@ -2,7 +2,13 @@
 
 import threading
 
-from app.telemetry.event_buffer import MAX_EVENTS, EventBuffer, event_buffer, record_event
+from app.telemetry.event_buffer import (
+    MAX_EVENTS,
+    EventBuffer,
+    event_buffer,
+    record_event,
+)
+from app.utils.request_context import reset_context, set_context
 
 
 class TestEventBuffer:
@@ -62,7 +68,7 @@ class TestRecordEvent:
 
         [event] = event_buffer.drain()
         assert event["event"] == "search_performed"
-        assert event["props"] == {"domain": "acme.io"}
+        assert event["props"] == {"domain": "acme.io", "client": "other"}
         # ISO-8601 UTC timestamp
         assert event["timestamp"].endswith("+00:00")
 
@@ -70,4 +76,29 @@ class TestRecordEvent:
         record_event("agent_run")
 
         [event] = event_buffer.drain()
-        assert event["props"] == {}
+        assert event["props"] == {"client": "other"}
+
+    def test_stamps_client_and_sdk_language_of_the_request(self) -> None:
+        token = set_context("sdk-py-u1-abc")
+        try:
+            record_event("search_performed", {"orgId": "o1"})
+        finally:
+            reset_context(token)
+        token = set_context("mcp-abc")
+        try:
+            record_event("agent_run")
+        finally:
+            reset_context(token)
+
+        sdk, mcp = event_buffer.drain()
+        assert sdk["props"] == {"orgId": "o1", "client": "sdk", "sdk": "py"}
+        assert mcp["props"] == {"client": "mcp"}
+
+    def test_keeps_a_callers_own_client_prop(self) -> None:
+        token = set_context("mcp-abc")
+        try:
+            record_event("login", {"client": "slack"})
+        finally:
+            reset_context(token)
+
+        assert event_buffer.drain()[0]["props"] == {"client": "slack"}

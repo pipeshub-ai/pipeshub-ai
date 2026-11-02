@@ -4,6 +4,7 @@ import {
   recordEvent,
   BufferedEvent,
 } from '../../../../src/libs/services/telemetry/event-buffer';
+import { runWithRequestContext } from '../../../../src/libs/context/request-context';
 
 describe('telemetry event-buffer', () => {
   beforeEach(() => {
@@ -63,7 +64,7 @@ describe('telemetry event-buffer', () => {
 
       const [event] = eventBuffer.drain();
       expect(event!.event).to.equal('signup');
-      expect(event!.props).to.deep.equal({ domain: 'acme.io' });
+      expect(event!.props).to.deep.equal({ domain: 'acme.io', client: 'other' });
       expect(new Date(event!.timestamp).toISOString()).to.equal(
         event!.timestamp,
       );
@@ -74,7 +75,26 @@ describe('telemetry event-buffer', () => {
 
       const [event] = eventBuffer.drain();
       expect(event!.event).to.equal('login');
-      expect(event!.props).to.be.undefined;
+      expect(event!.props).to.deep.equal({ client: 'other' });
+    });
+
+    it('should stamp the client and SDK language of the request in flight', () => {
+      runWithRequestContext({ rootId: 'sdk-py-u1-abc' }, () =>
+        recordEvent('search_performed', { orgId: 'o1' }),
+      );
+      runWithRequestContext({ rootId: 'mcp-abc' }, () => recordEvent('agent_run'));
+
+      const [sdk, mcp] = eventBuffer.drain();
+      expect(sdk!.props).to.deep.equal({ orgId: 'o1', client: 'sdk', sdk: 'py' });
+      expect(mcp!.props).to.deep.equal({ client: 'mcp' });
+    });
+
+    it("should keep a caller's own client prop", () => {
+      runWithRequestContext({ rootId: 'mcp-abc' }, () =>
+        recordEvent('login', { client: 'slack' }),
+      );
+
+      expect(eventBuffer.drain()[0]!.props).to.deep.equal({ client: 'slack' });
     });
   });
 });

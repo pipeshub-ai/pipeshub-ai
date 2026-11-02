@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import { EventEmitter } from 'events';
 import { metricsMiddleware } from '../../../src/libs/middlewares/telemetry.middleware';
 import * as httpMetricsModule from '../../../src/libs/services/telemetry/modules/http-metrics';
+import * as clientMetricsModule from '../../../src/libs/services/telemetry/modules/client-metrics';
 
 type FinishableResponse = EventEmitter & { statusCode: number };
 
@@ -157,5 +158,63 @@ describe('telemetry middleware', () => {
     expect(next1.calledOnce).to.be.true;
     expect(next2.calledOnce).to.be.true;
     expect(recordStub.calledOnce).to.be.true;
+  });
+
+  describe('SDK and MCP clients', () => {
+    let clientStub: sinon.SinonStub;
+    let mcpStub: sinon.SinonStub;
+
+    beforeEach(() => {
+      clientStub = sandbox.stub(clientMetricsModule, 'recordClientRequest');
+      mcpStub = sandbox.stub(clientMetricsModule, 'recordMcpMessages');
+    });
+
+    it('should pass an SDK request to the client metrics with no MCP transport', () => {
+      const req = mockReq({
+        method: 'POST',
+        route: { path: '/api/v1/search' },
+        context: { requestId: 'sdk-ts-u1-abc' },
+      });
+      const res = mockRes(200);
+
+      metricsMiddleware()(req, res as any, sinon.stub());
+      res.emit('finish');
+
+      const [info, transport, route] = clientStub.firstCall.args;
+      expect(info).to.deep.equal({ client: 'sdk', sdk: 'ts' });
+      expect(transport).to.equal('none');
+      expect(route).to.equal('/api/v1/search');
+      expect(mcpStub.called).to.be.false;
+    });
+
+    it('should mark a hosted /mcp POST and count its JSON-RPC messages', () => {
+      const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_search' } };
+      const req = mockReq({
+        method: 'POST',
+        path: '/',
+        baseUrl: '/mcp',
+        route: { path: '/' },
+        body,
+        context: { requestId: 'mcp-abc' },
+      });
+      const res = mockRes(200);
+
+      metricsMiddleware()(req, res as any, sinon.stub());
+      res.emit('finish');
+
+      expect(clientStub.firstCall.args[1]).to.equal('hosted');
+      expect(mcpStub.calledOnceWith(body, 200)).to.be.true;
+    });
+
+    it('should mark REST calls from the local MCP server as local', () => {
+      const req = mockReq({ route: { path: '/api/v1/records' }, context: { requestId: 'mcp-u1-abc' } });
+      const res = mockRes(200);
+
+      metricsMiddleware()(req, res as any, sinon.stub());
+      res.emit('finish');
+
+      expect(clientStub.firstCall.args[1]).to.equal('local');
+      expect(mcpStub.called).to.be.false;
+    });
   });
 });

@@ -18,7 +18,7 @@ const httpRequestDuration = metricsBackend.createHistogram({
 const MAX_UNIQUE_ROUTES = 300;
 const seenRoutes = new Set<string>();
 
-function boundRoute(route: string): string {
+export function boundRoute(route: string): string {
   if (seenRoutes.has(route)) {
     return route;
   }

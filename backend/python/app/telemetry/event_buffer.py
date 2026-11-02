@@ -8,7 +8,9 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from app.telemetry.client import classify_request_id
 from app.telemetry.flag import telemetry_enabled
+from app.utils.request_context import get_context
 
 MAX_EVENTS = 5000
 
@@ -51,6 +53,20 @@ def record_event(event: str, props: dict[str, Any] | None = None) -> None:
         {
             "event": event,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "props": props or {},
+            "props": _with_client(props or {}),
         }
     )
+
+
+def _with_client(props: dict[str, Any]) -> dict[str, Any]:
+    """Stamp ``client`` (sdk, mcp or other) and, for the SDKs, ``sdk`` (the
+    language) from the request in flight, so usage dashboards can split product
+    events by channel. A caller's own ``client`` prop wins."""
+    if "client" in props:
+        return props
+    ctx = get_context()
+    client, sdk = classify_request_id(ctx.root_id if ctx else None)
+    stamped = {**props, "client": client}
+    if client == "sdk":
+        stamped["sdk"] = sdk
+    return stamped
