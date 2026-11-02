@@ -20437,20 +20437,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_v3_app_declared_scope(
         self, app_id: str, granted_ids: list[str], *, state: bool, transaction: str | None,
+        probe: dict[str, Any] | None = None,
     ) -> list[str]:
         """The ids of the groups the declared groups of the App granted to the viewer reach, themselves included:
         the scope a scoped browse carries, which the arrows of the App's own rows read as well, so that an
         arrow follows the same rule as the expansion it opens."""
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
-        rows = await self._kh_query(
-            f"""
+        query = f"""
         MATCH (app:App {{id: $app_id}})
         // The declared groups the App's own listing admits: granted to the viewer, or reached by the listing's
         // first hop (an App that opens everything admits all of them).
         MATCH (dg:RecordGroup)
         WHERE dg.connectorId = app.id AND dg.permissionModel = 'RECORD_GROUP_LEVEL'
           AND NOT {self._kh_hides("dg", state=state)} AND NOT {self._kh_deleted("dg", state=state)}
-          AND (dg.id IN $granted OR EXISTS {{
+          // As the flatten and the check: a declaration below a group that hides its children stays hidden.
+          AND NOT {self._kh_v3_hidden_above("dg", "d")}
+          AND (dg.id IN $grantedIds OR EXISTS {{
               (app)-[kh_ra:NODE_RELATION]->(dg)
               WHERE kh_ra.relationshipType {hierarchy}
                 AND {self._kh_v3_granted_hop("dg", "app", state=state, opens=_CYPHER_APP_OPENS)} }})
@@ -20463,9 +20465,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN collect(DISTINCT nb.id) AS ids
         }}
         RETURN ids
-            """,
-            parameters={"app_id": app_id, "granted": granted_ids, "grantedIds": granted_ids}, txn_id=transaction,
-        )
+            """
+        # In probe mode the grants are tested from the node, as everywhere else on the page.
+        parameters: dict[str, Any] = {"app_id": app_id, "grantedIds": granted_ids}
+        if probe:
+            query = self._kh_grants_by_probe(query)
+            parameters.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
+        rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return list(rows[0].get("ids") or []) if rows else []
 
     async def get_knowledge_hub_connector_page_v3(
@@ -20707,7 +20713,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A browse reads, beside the scope of its start, the scope of every declared group the App admits to
             # this viewer: the members of one are listed wherever the browse meets them, and the arrows say so.
             declared_scope = list(dict.fromkeys([*declared_scope, *await self._kh_v3_app_declared_scope(
-                app_id, granted_ids, state=state, transaction=transaction)]))
+                app_id, granted_ids, state=state, transaction=transaction, probe=probe)]))
         placed_ids: list[str] = []
         if wants_chain_tops:
             def chain_tops() -> "Awaitable[dict[str, list[dict[str, Any]]]]":

@@ -19919,9 +19919,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER kh_d.connectorId == @app_id AND kh_d.permissionModel == "RECORD_GROUP_LEVEL"
                     AND kh_d.isDeleted != true AND kh_d.hideChildren != true
                     AND (HAS(@granted, kh_d._key) OR kh_d._key IN kh_admitted)
+                    AND NOT {_aql_hidden_above("kh_d", "hd")}
                 FOR kh_v, kh_e IN 0..50 OUTBOUND kh_d {CollectionNames.NODE_RELATIONS.value}
                     PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {_HIERARCHY_AQL}
-                        OR NOT IS_SAME_COLLECTION("{groups}", kh_v) OR kh_v.hideChildren == true)
+                        OR NOT IS_SAME_COLLECTION("{groups}", kh_v) OR kh_v.isDeleted == true
+                        OR kh_v.hideChildren == true)
                     FILTER IS_SAME_COLLECTION("{groups}", kh_v) AND kh_v.isDeleted != true
                         AND (kh_e == null OR kh_e.relationshipType IN {_HIERARCHY_AQL})
                     RETURN DISTINCT kh_v._key

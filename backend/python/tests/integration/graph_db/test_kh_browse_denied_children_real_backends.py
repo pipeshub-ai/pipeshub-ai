@@ -76,6 +76,15 @@ def _more() -> tuple[list, list]:
         app("st", "Stubs", connector=DRIVE, app_group="G"),
         rg("st-S", "S", connectorId="st", **g),
         rec("st-f", "f", connector_id="st", rule="STRICT", isPlaceholder=True),
+        app("hh", "Hidden above", connector=DRIVE, app_group="G"),
+        rg("hh-hp", "hp", connectorId="hh", hideChildren=True, **g),
+        rg("hh-dg", "dg", permissionModel=RGL, connectorId="hh", **g),
+        rg("hh-q", "q", connectorId="hh", **g),
+        rec("hh-m", "m", connector_id="hh"),
+        app("pr", "Probe", connector=DRIVE, app_group="G"),
+        rg("pr-p", "p", connectorId="pr", **g),
+        rg("pr-g", "g", permissionModel=RGL, connectorId="pr", **g),
+        rec("pr-c", "c", connector_id="pr"),
         app("oa", "Opens", connector=DRIVE, app_group="G", permissionModel="APP_LEVEL"),
         rg("oa-g", "g", permissionModel=RGL, connectorId="oa", **g),
         rec("oa-m", "m", connector_id="oa"),
@@ -103,6 +112,13 @@ def _more() -> tuple[list, list]:
         nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
     ]
     edges += [
+        user_app(USER_U, "hh"), nr("hh", "hh-hp"), bt("hh-hp", "hh"), perm(GROUP_G, "hh-hp", grant_type="GROUP"),
+        nr("hh-hp", "hh-dg"), bt("hh-dg", "hh-hp"), perm(GROUP_G, "hh-dg", grant_type="GROUP"),
+        nr("hh", "hh-q"), bt("hh-q", "hh"), perm(GROUP_G, "hh-q", grant_type="GROUP"),
+        bt("hh-m", "hh-dg"), nr("hh-q", "hh-m"),
+        user_app(USER_U, "pr"), nr("pr", "pr-p"), bt("pr-p", "pr"), perm(GROUP_G, "pr-p", grant_type="GROUP"),
+        nr("pr", "pr-g"), bt("pr-g", "pr"), perm(GROUP_G, "pr-g", grant_type="GROUP"),
+        bt("pr-c", "pr-g"), nr("pr-p", "pr-c"),
         user_app(USER_U, "oa"), nr("oa", "oa-g"), bt("oa-g", "oa"), nr("oa-g", "oa-m"), bt("oa-m", "oa-g"),
         user_app(USER_U, "ct"), nr("ct", "ct-p"), bt("ct-p", "ct"), perm(GROUP_G, "ct-p", grant_type="GROUP"),
         nr("ct-p", "ct-n"), bt("ct-n", "ct-p"),
@@ -361,3 +377,25 @@ async def test_a_stub_is_listed_only_when_a_hierarchy_path_leads_to_something_re
 
     assert {row["id"] for row in page["rows"]} == set()
     assert page["total"] == 0
+
+
+async def test_a_declaration_below_a_group_that_hides_its_children_admits_no_member(world: _World) -> None:
+    page = await _page(world, "hh", flatten=False, start_id="hh-q", start_type="recordGroup")
+    ids = {row["id"] for row in page["rows"]}
+
+    # The check ignores hideChildren (it is navigation only), but a navigation, the flatten as the browse, keeps a
+    # declaration below a group that hides its children hidden.
+    assert "hh-m" not in ids
+    assert ids <= await _admitted(world, sorted(ids))
+
+
+async def test_a_member_of_a_declared_group_is_listed_when_the_grants_are_tested_from_the_node(world: _World) -> None:
+    access = await world.graph.get_knowledge_hub_access_v3(user_key=world.sid(USER_U), org_id=world.org)
+    page = await world.graph.get_knowledge_hub_connector_page_v3(
+        world.sid("pr"), world.org, access["grantee_ids"], access["gated_app_ids"], None, 50,
+        flatten=False, start_id=world.sid("pr-p"), start_type="recordGroup", user_key=world.sid(USER_U),
+    )
+    ids = {world.plain(row["id"]) for row in page["rows"]}
+
+    assert ids == {"pr-c"}
+    assert await _admitted(world, ["pr-c"]) == {"pr-c"}

@@ -188,6 +188,11 @@ async def _page(w: _World, app_id: str, viewer: str = USER_U, **kw: Any) -> dict
     return {**page, "rows": [{**r, "id": w.plain(r["id"])} for r in page["rows"]]}
 
 
+async def _admitted(w: _World, ids: list[str]) -> set[str]:
+    result = await w.graph.check_access(w.sid(USER_U), w.org, node_ids=[w.sid(i) for i in ids])
+    return {w.plain(i) for i in result.node_ids}
+
+
 @pytest.fixture(params=["neo4j", "arango"])
 async def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
     async with contextlib.AsyncExitStack() as cleanup:
@@ -221,6 +226,9 @@ async def _arrows_vs_expansions(w: _World, app_id: str) -> list[tuple[str, bool,
                 w, app_id, flatten=False, start_id=row["id"], start_type=node_type))["rows"]]
             if row["hasChildren"] != bool(opened):
                 wrong.append((row["id"], row["hasChildren"], opened))
+            denied = set(opened) - await _admitted(w, opened)
+            if denied:
+                wrong.append((row["id"], row["hasChildren"], ["denied", *sorted(denied)]))
             if opened:
                 queue.append((row["id"], node_type))
     return wrong
