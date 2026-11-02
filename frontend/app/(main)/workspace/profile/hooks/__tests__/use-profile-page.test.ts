@@ -128,6 +128,15 @@ describe('useProfilePage when the sign-in profile read failed', () => {
     expect(useUserStore.getState().profile?.designation).toBe('Engineer');
   });
 
+  it('also takes the role from that read, so an admin is not shown as a member', async () => {
+    signedIn({ fullName: null, designation: undefined, isAdmin: null });
+    api.getUser.mockResolvedValue({ fullName: 'A User', designation: '', role: 'admin' });
+    const { result } = await renderPage();
+
+    await waitFor(() => expect(result.current.role).toBe('Admin'));
+    expect(useUserStore.getState().profile?.isAdmin).toBe(true);
+  });
+
   it('shows the load error and never offers Save when that read fails too', async () => {
     signedIn({ fullName: null, designation: undefined });
     api.getUser.mockRejectedValue(new Error('500'));
@@ -151,7 +160,7 @@ describe('useProfilePage when the sign-in profile read failed', () => {
 });
 
 describe('useProfilePage writes back to the store', () => {
-  it('saving updates the name and designation in the store', async () => {
+  it('saving sends the name and designation (ProfileApi.updateUser updates the store)', async () => {
     signedIn();
     const { result } = await renderPage();
     act(() => {
@@ -165,20 +174,19 @@ describe('useProfilePage writes back to the store', () => {
     });
 
     expect(api.updateUser).toHaveBeenCalledWith('user-1', { fullName: 'New Name', designation: 'Lead' });
-    expect(useUserStore.getState().profile).toMatchObject({ fullName: 'New Name', designation: 'Lead' });
+    expect(result.current.isFormDirty).toBe(false);
   });
 
-  it('a failed save leaves the store unchanged', async () => {
-    signedIn();
-    api.updateUser.mockRejectedValue(new Error('500'));
+  it('a failed upload after an unprocessed one clears the picture instead of showing a revoked preview', async () => {
+    signedIn({ avatarUrl: 'blob:earlier-preview' });
+    api.uploadAvatar.mockRejectedValue(new Error('too large'));
     const { result } = await renderPage();
-    act(() => result.current.setField('fullName', 'New Name'));
 
     await act(async () => {
-      await result.current.handleSave();
+      await result.current.handleAvatarChange(fileChange());
     });
 
-    expect(useUserStore.getState().profile?.fullName).toBe('A User');
+    expect(result.current.avatarUrl).toBeNull();
   });
 
   it('an avatar upload shows the preview, then the processed picture, in the store', async () => {

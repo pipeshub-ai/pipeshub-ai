@@ -102,7 +102,12 @@ export function useProfilePage() {
         const fullName = userData.fullName ?? '';
         const designation = userData.designation ?? '';
         setForm({ fullName, designation });
-        updateUserProfile({ fullName: fullName || null, designation: userData.designation ?? null });
+        const role = typeof userData.role === 'string' ? userData.role.trim().toLowerCase() : null;
+        updateUserProfile({
+          fullName: fullName || null,
+          designation: userData.designation ?? null,
+          ...(role ? { isAdmin: role === 'admin' } : {}),
+        });
         setProfileLoaded(true);
       })
       .catch(() => {
@@ -142,7 +147,6 @@ export function useProfilePage() {
         designation: form.designation,
       });
       markSaved();
-      updateUserProfile({ fullName: form.fullName, designation: form.designation });
       addToast({
         variant: 'success',
         title: t('workspace.profile.toasts.saveSuccess'),
@@ -155,7 +159,7 @@ export function useProfilePage() {
         description: t('workspace.profile.toasts.saveErrorDescription'),
       });
     }
-  }, [form, userId, validate, markSaved, updateUserProfile, addToast]);
+  }, [form, userId, validate, markSaved, addToast]);
 
   // ── Password change ───────────────────────────────────────────
 
@@ -237,7 +241,8 @@ export function useProfilePage() {
       e.target.value = '';
 
       setAvatarUploading(true);
-      const previousUrl = avatarUrl;
+      // A blob: URL (an earlier preview) is revoked once replaced, so it cannot be restored.
+      const previousUrl = avatarUrl?.startsWith('blob:') ? null : avatarUrl;
       // The store revokes a replaced blob: URL, so the preview is freed when it is swapped out.
       setStoreAvatarUrl(URL.createObjectURL(file));
 

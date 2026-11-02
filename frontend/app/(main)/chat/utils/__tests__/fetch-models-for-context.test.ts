@@ -146,6 +146,21 @@ describe('fetchModelsForContext after an AI-model change in Settings', () => {
   });
 });
 
+describe('fetchModelsForContext: an agent with its own models during an AI-model change', () => {
+  it('keeps its answer and asks for the agent only once', async () => {
+    const pending = deferred<{ agent: unknown }>();
+    agentsApi.getAgent.mockReturnValueOnce(pending.promise);
+
+    const call = fetchModelsForContext('own');
+    revalidateSwrNamespace(SWR_NS.aiModelConfig);
+    pending.resolve({ agent: { models: [{ modelKey: 'x', modelName: 'x', provider: 'openAI' }] } });
+
+    expect(keys(await call)).toEqual(['x']);
+    expect(agentsApi.getAgent).toHaveBeenCalledTimes(1);
+    expect(keys(settings().availableModels.own.models)).toEqual(['x']);
+  });
+});
+
 describe('fetchModelsForContext at sign-out', () => {
   it("does not let the next user join the last user's request or see its answer", async () => {
     const lastUser = deferred<ReturnType<typeof orgList>>();

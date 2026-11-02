@@ -160,6 +160,36 @@ describe('org and logo cache (sidebar footer)', () => {
     expect(calls('/api/v1/org')).toBe(2);
   });
 
+  it('a failed logo read is not cached as "no logo": the next mount shows it', async () => {
+    logo = new Blob(['logo'], { type: 'image/png' });
+    api.get.mockImplementation(async (url: string) => {
+      if (url === '/api/v1/org/logo') throw new Error('down');
+      return { status: 200, data: org };
+    });
+    (await renderFooter()).unmount();
+    answerReads();
+
+    await renderFooter();
+
+    expect(footerLogo()).toBe(LOGO);
+    expect(calls('/api/v1/org/logo')).toBe(2);
+  });
+
+  it('an upload whose read-back fails still succeeds, and the logo is read again', async () => {
+    await renderFooter();
+    logo = new Blob(['logo'], { type: 'image/png' });
+    api.get.mockImplementationOnce(async () => {
+      throw new Error('down');
+    });
+
+    const upload = OrgApi.uploadLogo(new File(['logo'], 'logo.png', { type: 'image/png' }));
+    await settle(50);
+    await expect(upload).resolves.toBeNull();
+    await settle(50);
+
+    expect(footerLogo()).toBe(LOGO);
+  });
+
   it('an org switch rereads the org on screen and shows the new one', async () => {
     await renderFooter();
     org = { ...org, _id: 'o2', shortName: 'Globex' };

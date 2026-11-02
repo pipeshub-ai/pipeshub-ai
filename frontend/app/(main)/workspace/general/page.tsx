@@ -115,16 +115,24 @@ export default function GeneralPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { data: org, error: orgError } = useOrg();
-  const { data: savedLogoUrl } = useOrgLogo();
-  const { data: metrics, error: metricsError } = useOrgMetrics(isProfileInitialized && isAdmin === true);
+  const { data: org, error: orgError, isValidating: orgValidating, mutate: rereadOrg } = useOrg();
+  const { data: savedLogoUrl, isLoading: logoLoading } = useOrgLogo();
+  const {
+    data: metrics,
+    error: metricsError,
+    isValidating: metricsValidating,
+    mutate: rereadMetrics,
+  } = useOrgMetrics(isProfileInitialized && isAdmin === true);
   // Local preview of a logo while it uploads; the saved logo comes from the cache.
   const [previewLogoUrl, setPreviewLogoUrl] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoDeleting, setLogoDeleting] = useState(false);
   const logoUrl = previewLogoUrl ?? savedLogoUrl ?? null;
   const hasServerLogo = Boolean(savedLogoUrl);
-  const formSeededRef = useRef(false);
+  // Until the form holds the server's values, Save stays hidden: it would send blanks over them.
+  const [formSeeded, setFormSeeded] = useState(false);
+  const loadErrorShownRef = useRef(false);
+  const cachedErrorRetriedRef = useRef(false);
 
   // ── Store selectors ────────────────────────────────────────
   const form = useGeneralStore((s) => s.form);
@@ -149,27 +157,40 @@ export default function GeneralPage() {
     }
   }, []);
 
-  // ── Load org data on mount ─────────────────────────────────
+  // ── Fill the form from the cached org ──────────────────────
 
   // Seeded once per visit: later org/metrics refreshes (after Save) must not replace what is being edited.
   useEffect(() => {
     // isAdmin is null until the profile is initialized, which would pick the wrong branch.
-    if (!isProfileInitialized || formSeededRef.current) return;
-    if (orgError || metricsError) {
-      formSeededRef.current = true;
+    if (!isProfileInitialized || formSeeded) return;
+    if (org && !logoLoading && (!isAdmin || metrics)) {
+      setFormSeeded(true);
+      setForm(toGeneralForm(org, isAdmin ? metrics : null));
+      setLoading(false);
+      return;
+    }
+    const orgFailed = orgError && !org && !orgValidating;
+    const metricsFailed = isAdmin && metricsError && !metrics && !metricsValidating;
+    if (!orgFailed && !metricsFailed) return;
+    // An error left in the cache by an earlier read (the sidebar footer) is not this visit's answer:
+    // ask once more before reporting it.
+    if (!cachedErrorRetriedRef.current) {
+      cachedErrorRetriedRef.current = true;
+      if (orgFailed) void rereadOrg();
+      if (metricsFailed) void rereadMetrics();
+      return;
+    }
+    if (!loadErrorShownRef.current) {
+      loadErrorShownRef.current = true;
       addToast({
         variant: 'error',
         title: t('workspace.general.toasts.loadError'),
         description: t('workspace.general.toasts.loadErrorDescription'),
       });
-      setLoading(false);
-      return;
     }
-    if (!org || savedLogoUrl === undefined || (isAdmin && !metrics)) return;
-    formSeededRef.current = true;
-    setForm(toGeneralForm(org, isAdmin ? metrics : null));
     setLoading(false);
-  }, [isAdmin, isProfileInitialized, org, savedLogoUrl, metrics, orgError, metricsError, addToast, setForm, setLoading]);
+  }, [isAdmin, isProfileInitialized, formSeeded, org, logoLoading, metrics, orgError, orgValidating,
+    metricsError, metricsValidating, rereadOrg, rereadMetrics, addToast, setForm, setLoading]);
 
   // ── Handlers ───────────────────────────────────────────────
 
@@ -526,7 +547,7 @@ export default function GeneralPage() {
       />
 
       {/* ── Settings Save Bar (shown when dirty) ── */}
-      <SettingsSaveBar visible={isDirty()} onDiscard={handleDiscard} onSave={handleSave} />
+      <SettingsSaveBar visible={formSeeded && isDirty()} onDiscard={handleDiscard} onSave={handleSave} />
     </Box>
   );
 }

@@ -72,19 +72,16 @@ export const OrgApi = {
     return data;
   },
 
-  /** GET /api/v1/org/logo — download logo and return a data URL (null when the org has no logo, i.e. 204). */
+  /** GET /api/v1/org/logo — download logo and return a data URL (null when the org has no logo, i.e. 204); throws when the read fails. */
   async getLogoUrl(): Promise<string | null> {
-    try {
-      const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
-        responseType: 'blob',
-      });
-      if (response.status === 204) {
-        return null;
-      }
-      return response.data instanceof Blob ? await blobToDataUrl(response.data) : null;
-    } catch {
+    // A failed read throws, so the cache asks again instead of keeping "no logo" for the session.
+    const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
+      responseType: 'blob',
+    });
+    if (response.status === 204) {
       return null;
     }
+    return response.data instanceof Blob ? await blobToDataUrl(response.data) : null;
   },
 
   /** PUT /api/v1/org/ — update org fields, then refetch the cached org (the response is an envelope). */
@@ -100,7 +97,13 @@ export const OrgApi = {
     await apiClient.put(`${BASE_URL}/logo`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
-    return mutate(ORG_KEYS.logo, OrgApi.getLogoUrl(), { revalidate: false });
+    try {
+      return await mutate(ORG_KEYS.logo, OrgApi.getLogoUrl(), { revalidate: false });
+    } catch {
+      // The upload worked; only the read-back failed. Mark the cached logo stale so it is read again.
+      void mutate(ORG_KEYS.logo);
+      return null;
+    }
   },
 
   /** DELETE /api/v1/org/logo — remove org logo */

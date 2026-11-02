@@ -161,7 +161,8 @@ export async function fetchModelsForContext(
     // A response from before sign-out belongs to the last user: keep it out of the store.
     if (startedInSession !== sessionGeneration) return models;
     // The org's models changed while this was in flight: ask again instead of caching the old list.
-    if (startedInConfig !== configGeneration) {
+    // An agent's own models are not the org's, so they are kept.
+    if (startedInConfig !== configGeneration && (ctxKey === ASSISTANT_CTX || usesOrgList)) {
       if (inflight.get(ctxKey) === promise) inflight.delete(ctxKey);
       return fetchModelsForContext(ctxKey, opts);
     }

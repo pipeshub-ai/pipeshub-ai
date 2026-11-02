@@ -22,6 +22,12 @@ vi.mock('../../components', async (importActual) => ({
 }));
 
 import GeneralPage from '../page';
+import { useOrg } from '../use-org';
+
+function OrgReader() {
+  const { error } = useOrg();
+  return error ? <span>failed</span> : null;
+}
 import { useGeneralStore } from '../store';
 import { useUserStore } from '@/lib/store/user-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
@@ -173,14 +179,48 @@ describe('General settings page', () => {
     expect(screen.getByTestId('logo').getAttribute('data-src')).toBe('');
   });
 
-  it('a failed org read shows the load error and stops the spinner', async () => {
+  it('a failed org read shows the load error once, and never offers Save over blank fields', async () => {
     api.get.mockImplementation(async (url: string) => {
       if (url === '/api/v1/org') throw new Error('down');
       return { status: 204, data: new Blob([]) };
     });
 
     await renderPage();
+    act(() => useGeneralStore.getState().setField('city', 'Typed'));
 
+    expect(addToast).toHaveBeenCalledTimes(1);
     expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'workspace.general.toasts.loadError' }));
+    // The save bar stays rendered but hidden and inert.
+    const saveBar = screen.getByRole('button', { name: /save/i }).parentElement as HTMLElement;
+    expect(saveBar.style.pointerEvents).toBe('none');
+  });
+
+  it('an org read that failed before this visit is retried: the form fills and no load error shows', async () => {
+    // An earlier reader (the sidebar footer) left a failed read in the cache.
+    api.get.mockRejectedValueOnce(new Error('down'));
+    const footer = renderInTheme(<OrgReader />);
+    await screen.findByText('failed');
+    footer.unmount();
+
+    await renderPage();
+
+    expect(form().displayName).toBe('Acme');
+    expect(addToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'workspace.general.toasts.loadError' }));
+    act(() => useGeneralStore.getState().setField('city', 'Shelbyville'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(api.put).toHaveBeenCalled());
+    expect(api.put.mock.calls[0][1]).toMatchObject({ registeredName: 'Acme Inc', shortName: 'Acme', contactEmail: 'admin@acme.test' });
+  });
+
+  it('a logo that cannot be read leaves the page usable', async () => {
+    api.get.mockImplementation(async (url: string) => {
+      if (url === '/api/v1/org/logo') throw new Error('down');
+      return url === '/api/v1/org' ? { status: 200, data: org } : { status: 200, data: { enableMetricCollection: 'false' } };
+    });
+
+    await renderPage();
+
+    expect(form().displayName).toBe('Acme');
+    expect(screen.getByTestId('logo').getAttribute('data-src')).toBe('');
   });
 });
