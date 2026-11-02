@@ -34,11 +34,21 @@ const HEX24 = /^[0-9a-f]{24}$/;
 /** Two events that fold to one table id: the copy stops, because `ON CONFLICT DO NOTHING` would drop one of them unseen. */
 export class OutboxIdCollision extends Error {}
 
-/** What makes an event the same event on a retry: fields the dispatcher never changes (status and attempts move on). */
+/** A timestamp as epoch milliseconds, whether it is the ISO text the importer writes or the `Date` the driver reads back. */
+const timeOf = (v: unknown): number =>
+  v instanceof Date ? v.getTime() : Date.parse(String(v));
+
+/**
+ * What makes an event the same event on a retry: fields the dispatcher never changes (status and attempts move on). The table
+ * keys an event by organisation and id, so the same id in two organisations is two events. Every compared column is text except
+ * the time, which is compared as a number so that milliseconds survive the round trip.
+ */
 const sameEvent = (a: Row, b: Row): boolean =>
   ['org_id', 'topic', 'msg_key', 'ordering_key', 'value'].every(
     (c) => a[c] === b[c],
-  ) && Date.parse(String(a.created_at)) === Date.parse(String(b.created_at));
+  ) && timeOf(a.created_at) === timeOf(b.created_at);
+
+const keyOf = (r: Row): string => `${String(r.org_id)}/${String(r.id)}`;
 
 function orgOf(d: NeutralDoc): string | null {
   try {
@@ -64,6 +74,7 @@ export async function importOutboxDocs(
 ): Promise<ImportStats> {
   const stats = emptyStats(docs.length);
   const rows: Row[] = [];
+  const byKey = new Map<string, Row>();
   const hexOf = new Map<string, string>();
   // creation order, so the ids keep it even where two ObjectIds share a second
   const ordered = [...docs].sort((a, b) =>
@@ -98,20 +109,21 @@ export async function importOutboxDocs(
       d.status === 'publishing' || d.status === undefined
         ? 'pending'
         : d.status;
-    const id = outboxIdOf(hex);
-    const first = rows.find((x) => x.id === id);
+    const row = outboxRow(d, org, outboxIdOf(hex), status);
+    const key = keyOf(row);
+    const first = byKey.get(key);
     if (first) {
-      const row = outboxRow(d, org, id, status);
       // the same event twice in one batch is written once; two different events must not share an id
       if (sameEvent(first, row)) continue;
       throw new OutboxIdCollision(
-        `outbox events ${hexOf.get(id) ?? '?'} and ${hex} fold to the same table id ${id}`,
+        `outbox events ${hexOf.get(key) ?? '?'} and ${hex} fold to the same table id ${String(row.id)}`,
       );
     }
-    hexOf.set(id, hex);
-    rows.push(outboxRow(d, org, id, status));
+    byKey.set(key, row);
+    hexOf.set(key, hex);
+    rows.push(row);
   }
-  await refuseHeldIds(k, rows, hexOf);
+  await refuseHeldIds(k, rows, byKey, hexOf);
   await writePlan(k, [{ table: 'platform.outbox', rows }], stats);
   return stats;
 }
@@ -120,18 +132,19 @@ export async function importOutboxDocs(
 async function refuseHeldIds(
   k: KernelTx,
   rows: Row[],
+  byKey: Map<string, Row>,
   hexOf: Map<string, string>,
 ): Promise<void> {
   if (rows.length === 0) return;
   const { rows: held } = await k.query<Row>(
-    '/* pipeshub:import.outbox_held */ SELECT id::text AS id, org_id, topic, msg_key, ordering_key, value, created_at FROM platform.outbox WHERE id = ANY($1::bigint[])',
-    [rows.map((r) => r.id)],
+    '/* pipeshub:import.outbox_held */ SELECT t.id::text AS id, t.org_id, t.topic, t.msg_key, t.ordering_key, t.value, t.created_at FROM platform.outbox t JOIN unnest($1::text[], $2::bigint[]) AS w(org_id, id) ON t.org_id = w.org_id AND t.id = w.id',
+    [rows.map((r) => r.org_id), rows.map((r) => r.id)],
   );
   for (const h of held) {
-    const mine = rows.find((r) => r.id === h.id);
+    const mine = byKey.get(keyOf(h));
     if (!mine || !sameEvent(mine, h))
       throw new OutboxIdCollision(
-        `outbox event ${hexOf.get(String(h.id)) ?? '?'} folds to table id ${String(h.id)}, which another event already holds (topic ${String(h.topic)}, created ${String(h.created_at)}); nothing was dropped, the copy stopped`,
+        `outbox event ${hexOf.get(keyOf(h)) ?? '?'} folds to table id ${String(h.id)}, which another event already holds (topic ${String(h.topic)}, created ${String(h.created_at)}); nothing was dropped, the copy stopped`,
       );
   }
 }
