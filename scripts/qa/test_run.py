@@ -96,6 +96,13 @@ class TestResolve(RunCase):
             invs, _ = run.resolve(self.cfg, plan, self.rows, self.out)
         self.assertEqual(invs[0].cmd[-2:], ["--update-snapshots=missing", "--workers=1"])
 
+    def test_playwright_suite_env_reaches_the_invocation(self) -> None:
+        plan = plan_for([])
+        plan["tests"] = [{"id": "e2e:tests/e2e/login.spec.ts", "source": "floor", "why": ["x"], "grep": None}]
+        with mock.patch.dict(self.cfg.suite("e2e"), {"env": {"E2E_VISUAL": "true"}}):
+            invs, _ = run.resolve(self.cfg, plan, self.rows, self.out)
+        self.assertEqual(invs[0].env["E2E_VISUAL"], "true")
+
 
 class TestExternalStack(RunCase):
     def test_external_stack_runs_only_its_own_graph_db(self) -> None:

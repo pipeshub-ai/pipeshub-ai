@@ -268,8 +268,6 @@ jobs:
       actions: read
     timeout-minutes: 300
     env:
-      # Adds the Playwright visual project, which the e2e-visual suite (full runs only) selects.
-      E2E_VISUAL: 'true'
       DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       # One value for both sides: compose seeds the stack with it and the
@@ -517,6 +515,10 @@ jobs:
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
+          # The upgrade variant finds the previous release with git describe --tags on HEAD^.
+          # A string: the number 0 is falsy in an expression.
+          fetch-depth: ${{ matrix.variant == 'upgrade' && '0' || '1' }}
+          fetch-tags: ${{ matrix.variant == 'upgrade' }}
       - uses: actions/download-artifact@v4
         with:
           name: qa-plan-${{ inputs.edition }}
@@ -547,12 +549,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          WORKFLOW: ${{ github.workflow }}
           EDITION: ${{ inputs.edition }}
         run: |
           dir="$RUNNER_TEMP/visual-baseline"
           mkdir -p "$dir"
-          id=$(gh run list --workflow "$WORKFLOW" --branch main --event schedule --status completed --limit 1 --json databaseId -q '.[0].databaseId' || true)
+          # By artifact name, not by run: only a nightly uploads it (the Sunday weekly run does not).
+          id=$(gh api "repos/$GH_REPO/actions/artifacts?name=visual-baseline-$EDITION&per_page=20" \
+            -q '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "main")][0].workflow_run.id // empty' || true)
           if [[ -n "$id" ]]; then gh run download "$id" -n "visual-baseline-$EDITION" -D "$dir" || true; fi
           echo "VISUAL_BASELINE_DIR=$dir" >> "$GITHUB_ENV"
           echo "QA_PLAYWRIGHT_ARGS=--update-snapshots=missing" >> "$GITHUB_ENV"
@@ -582,10 +585,19 @@ jobs:
             qa-out/logs/
             qa-out/junit-*.xml
             frontend/test-results/**/*-diff.png
+            integration-tests/reports/perf/smoke/summary.json
           retention-days: 14
-      # One graph's screenshots are the next baseline: two jobs cannot share an artifact name.
+      # Only the job that ran the visual suite, on one graph, uploads the next baseline:
+      # two jobs cannot share an artifact name. It is tonight's screenshots: a shot that
+      # differs replaces the old one, so an intentional change is red for one night only.
+      - name: Make tonight's screenshots the next visual baseline
+        if: always() && github.event_name == 'schedule' && matrix.graph == 'neo4j' && matrix.variant == '' && hashFiles('qa-out/junit-e2e-visual*.xml') != ''
+        run: |
+          find frontend/test-results -name '*-actual.png' 2>/dev/null | while read -r f; do
+            cp "$f" "$RUNNER_TEMP/visual-baseline/$(basename "${f%-actual.png}").png"
+          done
       - uses: actions/upload-artifact@v4
-        if: always() && github.event_name == 'schedule' && matrix.graph == 'neo4j'
+        if: always() && github.event_name == 'schedule' && matrix.graph == 'neo4j' && matrix.variant == '' && hashFiles('qa-out/junit-e2e-visual*.xml') != ''
         with:
           name: visual-baseline-${{ inputs.edition }}
           path: ${{ runner.temp }}/visual-baseline

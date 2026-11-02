@@ -51,6 +51,12 @@ def _upgrade(current: str, wanted: str) -> str:
     return wanted if PROFILE_ORDER.index(wanted) > PROFILE_ORDER.index(current) else current
 
 
+def suite_in_profile(cfg: Config, suite_id: str, profile: str) -> bool:
+    """A suite with `profiles` runs only there; a profile with `suites` runs only those."""
+    allowed = (cfg.suite(suite_id) or {}).get("profiles")
+    return (not allowed or profile in allowed) and suite_id in cfg.profile(profile).get("suites", [suite_id])
+
+
 def effective_profile(cfg: Config, requested: str, branch: str) -> tuple[str, str | None]:
     for pattern, prof in cfg.always.get("branch_overrides", {}).items():
         if globs.match(branch, pattern):
@@ -118,12 +124,8 @@ def compute(
     profile, override = effective_profile(cfg, profile, changeset.get("branch", ""))
     prof = cfg.profile(profile)
 
-    suite_profiles = {s["id"]: s.get("profiles") for s in cfg.suites}
-
     def in_scope(row: dict[str, Any]) -> bool:
-        allowed = suite_profiles.get(row["suite"])
-        return ((scope == "all" or row["edition"] == scope) and row["suite"] in prof.get("suites", [row["suite"]])
-                and (not allowed or profile in allowed))
+        return (scope == "all" or row["edition"] == scope) and suite_in_profile(cfg, row["suite"], profile)
 
     floor = Floor(by_id, in_scope)
     files = [f["path"] for f in changeset["files"]]
@@ -131,9 +133,7 @@ def compute(
     notes: list[str] = [override] if override else []
 
     full_suites: dict[str, str] = {}
-    # A suite with `profiles` runs only there; a profile with `suites` runs only those in a full run.
-    all_suites = [s["id"] for s in cfg.suites
-                  if profile in s.get("profiles", [profile]) and s["id"] in prof.get("suites", [s["id"]])]
+    all_suites = [s["id"] for s in cfg.suites if suite_in_profile(cfg, s["id"], profile)]
     if prof.get("full"):
         full_suites.update({s: "full profile" for s in all_suites})
     if len(files) > cfg.always.get("max_files", 300):

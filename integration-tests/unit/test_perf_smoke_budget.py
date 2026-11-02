@@ -1,4 +1,4 @@
-"""The perf smoke's budget: fail only above twice the baseline, or on any error."""
+"""The perf smoke's budget: fail above twice the baseline, on a missing measurement, or on any error."""
 
 from __future__ import annotations
 
@@ -29,6 +29,11 @@ def test_budget_fails_only_above_twice_the_baseline() -> None:
 def test_any_error_fails_the_budget() -> None:
     got = smoke.budget_failures(result(error_rate=0.02), BASE)
     assert got and "error rate" in got[0]
+
+
+def test_unmeasured_operation_fails_with_or_without_a_baseline() -> None:
+    for baseline in (BASE, {}):
+        assert smoke.budget_failures(result(**{"chat p95": None}), baseline) == ["chat p95: not measured"]
 
 
 def test_missing_baseline_reports_only(capsys) -> None:

@@ -1,7 +1,8 @@
 """The weekly perf smoke: one small run of the indexing and query benchmarks, judged against a budget.
 
-It fails only when an operation's p95 is above `factor` times the committed baseline, or when
-anything errored. With no baseline file it reports and passes.
+It fails when an operation's p95 is above `factor` times the committed baseline, when an
+operation was not measured, or when anything errored. With no baseline file it judges only
+the last two.
 """
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ def budget_failures(result: dict[str, Any], baseline: dict[str, Any], factor: fl
     out = []
     for op in OPERATIONS:
         now, was = result.get(op), baseline.get(op)
-        if now is not None and was and now > factor * was:
+        if now is None:
+            out.append(f"{op}: not measured")
+        elif was and now > factor * was:
             out.append(f"{op}: {now}s is above {factor:g}x the baseline {was}s")
     if (result.get("error_rate") or 0) > 0:
         out.append(f"error rate {result['error_rate']} (must be 0)")

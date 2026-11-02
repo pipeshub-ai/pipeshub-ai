@@ -25,7 +25,7 @@ on:
         default: ''
       profile:
         type: choice
-        options: [standard, fast, conservative, full]
+        options: [standard, fast, conservative, full, weekly]
         default: standard
       plan_only:
         description: 'plan and report without running tests (/qa plan)'

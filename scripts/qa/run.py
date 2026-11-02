@@ -184,7 +184,7 @@ def resolve(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], 
                 if grep:
                     cmd += ["--grep", grep]
                 cmd += os.environ.get("QA_PLAYWRIGHT_ARGS", "").split()
-                env = {"PLAYWRIGHT_JUNIT_OUTPUT_NAME": str(gx), "PLAYWRIGHT_NO_SERVER": "true"}
+                env = {**suite.get("env", {}), "PLAYWRIGHT_JUNIT_OUTPUT_NAME": str(gx), "PLAYWRIGHT_NO_SERVER": "true"}
                 invocations.append(Invocation(label, suite_id, fam, cwd, cmd, [r["id"] for r in rs], gx, env=env, needs_stack=True))
         else:
             for i in ids:

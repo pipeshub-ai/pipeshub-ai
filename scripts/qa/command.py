@@ -23,7 +23,7 @@ COMMANDS: dict[str, dict[str, Any]] = {
     "range": {"min": "write", "mode": "range", "args": rf"(?P<base>{SHA})(?:\.\.(?P<head>{SHA}))?"},
     "full": {"min": "admin", "mode": "full", "args": r""},
 }
-PROFILE = re.compile(r"\s+--profile\s+(fast|standard|conservative)\b")
+PROFILE = re.compile(r"\s+--profile\s+(fast|standard|conservative|weekly)(?![\w-])")
 TRUSTED = re.compile(rf"\s+--trusted(?:\s+(?P<sha>{SHA})(?![0-9a-zA-Z]))?(?![\w-])")
 
 

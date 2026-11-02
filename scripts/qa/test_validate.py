@@ -93,6 +93,17 @@ class TestInvariants(ValidateCase):
         self.assertEqual(plan["profile"], "conservative")
         self.assertEqual(plan["stack"]["graph_db"], ["neo4j", "arango"])
 
+    def test_high_risk_keeps_a_weekly_plan_weekly(self) -> None:
+        self.plan_input = dict(self.plan_input, profile="weekly")
+        self.assertEqual(self.merge(self.llm(risk={"level": "high", "reasons": ["x"]}))["profile"], "weekly")
+
+    def test_addition_outside_its_suite_profiles_is_dropped(self) -> None:
+        weekly = "it:weekly/test_upgrade.py::test_counts_survive"
+        plan = self.merge(self.llm(add=[{"id": weekly, "reason": "upgrade", "confidence": 0.9}]))
+        self.assertNotIn(weekly, {t["id"] for t in plan["tests"]})
+        self.assertIn("does not run in profile standard", next(d["why"] for d in plan["dropped"] if d["id"] == weekly))
+        self.assertNotIn("upgrade", plan["stack"]["variants"])
+
     def test_model_text_cannot_inject_markup_or_mentions(self) -> None:
         plan = self.merge(self.llm(add=[{"id": SEARCH, "reason": "@everyone <img src=x> [click](https://evil) `rm -rf`"}]))
         reason = next(t for t in plan["tests"] if t["id"] == SEARCH)["why"][0]

@@ -96,6 +96,13 @@ class TestCommand(unittest.TestCase):
     def test_profile_flag(self) -> None:
         self.assertEqual(command.parse("/qa run --profile conservative", "write")["profile"], "conservative")
 
+    def test_weekly_profile_needs_write_and_an_exact_name(self) -> None:
+        self.assertEqual(command.parse("/qa run --profile weekly", "write")["profile"], "weekly")
+        for body, perm in (("/qa run --profile weekly", "read"), ("/qa run --profile weeklyx", "write"),
+                           ("/qa run --profile weekly-1", "write"), ("/qa run --profile full", "write")):
+            with self.assertRaises(command.CommandError, msg=body):
+                command.parse(body, perm)
+
 
 class TestHistory(unittest.TestCase):
     PLAN = {"head": "x", "branch": "main", "profile": "standard", "tests": [{"id": "a", "source": "floor"}], "planner": {}}

@@ -3,7 +3,7 @@
 Invariants (each has a unit test in test_validate.py):
 - every floor test is in the plan, whatever the model returned;
 - a model failure or malformed output means the floor alone;
-- an addition must be a catalog id in this run's edition and not quarantined;
+- an addition must be a catalog id in this run's edition and profile, and not quarantined;
 - the budget trims additions by confidence, never the floor.
 """
 
@@ -14,7 +14,7 @@ from typing import Any
 
 from qa import catalog, collect, schema
 from qa.config import Config
-from qa.impact import PROFILE_ORDER
+from qa.impact import PROFILE_ORDER, suite_in_profile
 
 LEVELS = {"unit", "integration", "e2e"}
 MAX_REASON = 200
@@ -72,6 +72,8 @@ def merge(
             dropped.append({"id": clean_text(tid), "why": "not in the catalog"})
         elif scope != "all" and row["edition"] != scope:
             dropped.append({"id": tid, "why": f"belongs to edition {row['edition']}, run is {scope}"})
+        elif not suite_in_profile(cfg, row["suite"], plan_input["profile"]):
+            dropped.append({"id": tid, "why": f"suite {row['suite']} does not run in profile {plan_input['profile']}"})
         elif tid in quarantined:
             dropped.append({"id": tid, "why": "quarantined"})
         elif row.get("status") == "planned":
@@ -109,7 +111,7 @@ def merge(
     profile = plan_input["profile"]
     if risk.get("level") == "high":
         i = PROFILE_ORDER.index(profile)
-        profile = PROFILE_ORDER[min(i + 1, PROFILE_ORDER.index("conservative"))] if profile != "full" else profile
+        profile = PROFILE_ORDER[min(i + 1, PROFILE_ORDER.index("conservative"))] if profile not in ("full", "weekly") else profile
 
     missing = list(plan_input.get("missing", []))
     for m in usable.get("missing", []):
