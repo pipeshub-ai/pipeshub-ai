@@ -6,12 +6,13 @@ import 'reflect-metadata';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { expect } from 'chai';
-import { ObjectId } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
+import { FENCED_APP_NAME } from '../../../src/libs/repositories/fence';
 import { bulk } from '../../../src/scripts/docstore-migrate/bulk';
 import { cancelDrain, drain } from '../../../src/scripts/docstore-migrate/drain';
 import { readMongoFence } from '../../../src/scripts/docstore-migrate/fence';
-import { MARKER_COLLECTION, follow, followStart } from '../../../src/scripts/docstore-migrate/follow';
+import { MARKER_COLLECTION, follow, followStart, resync } from '../../../src/scripts/docstore-migrate/follow';
 import { reset } from '../../../src/scripts/docstore-migrate/reset';
 import { postLoad, runMigrateJob } from '../../../src/scripts/docstore-migrate/schema';
 import { JobState, canon } from '../../../src/scripts/docstore-migrate/state';
@@ -93,6 +94,26 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await rows(), 'the delete reached the row').to.equal(0);
       });
 
+      it('a resync that cannot make the copy level fails, keeps the next run comparing, and finishes when the cause is gone', async () => {
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        await events.insertOne({ _id: new ObjectId(), topic: 'resync-probe', key: 'k', orderingKey: `org:${String(ORG_A)}`, value: JSON.stringify({ payload: { orgId: String(ORG_A) } }), status: 'pending', attempts: 0, nextAttemptAt: new Date('2026-10-01T10:00:00.000Z'), createdAt: new Date('2026-10-01T10:00:00.000Z'), updatedAt: new Date('2026-10-01T10:00:00.000Z'), __v: 0 } as never);
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        // an outbox row differing from MongoDB is something the repair does not touch: the compare stays red with nothing written
+        await sql("UPDATE platform.outbox SET topic = 'tampered'");
+        let err: Error | undefined;
+        await resync(w.rt, js, log).catch((e: Error) => (err = e));
+        expect(err?.message).to.contain('could not be brought level');
+        expect(js.progress.follow!.resyncs ?? 0, 'not reported as done').to.equal(0);
+        expect(js.progress.follow!.needsResync).to.equal(true);
+        await sql("UPDATE platform.outbox SET topic = 'resync-probe'");
+        const r = await follow(w.rt, js, { untilIdleMs: 1000, log });
+        expect(r.resyncs, 'the next run compares first').to.equal(1);
+        expect(js.progress.follow!.needsResync).to.equal(undefined);
+        expect(js.progress.follow!.resyncs).to.equal(1);
+      });
+
       it('refuses to run before a start has saved a position', async () => {
         const js = await JobState.attach(w.rt);
         let err: Error | undefined;
@@ -128,6 +149,30 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(forced).to.include({ ok: true, stoppedRuns: 1, forced: true });
         expect(await w.mongo.client.db(DB).collection('chatSessions').findOne({ _id } as never, { projection: { status: 1, failReason: 1 } })).to.include({ status: 'Stopped', failReason: 'interrupted' });
         await cancelDrain(w.rt);
+      });
+
+      it('does not drain while a connected application client does not carry the fence, unless told they all do', async () => {
+        const unarmed = await new MongoClient(w.mongo.uri, { appName: 'pipeshub-app' }).connect();
+        await unarmed.db(DB).command({ ping: 1 });
+        try {
+          const refused = await drain(w.rt, { waitMs: 0, force: false, log, settleMs: 0 });
+          expect(refused).to.include({ ok: false, fence: 'active' });
+          expect(refused.message).to.contain('do not carry the Mongo fence');
+          expect((await readMongoFence(w.rt)).mode, 'the fence did not move').to.equal('active');
+          const told = await drain(w.rt, { waitMs: 0, force: false, log, settleMs: 0, confirmArmed: true });
+          expect(told).to.include({ ok: true, fence: 'draining' });
+          await cancelDrain(w.rt);
+        } finally {
+          await unarmed.close();
+        }
+        const armed = await new MongoClient(w.mongo.uri, { appName: FENCED_APP_NAME }).connect();
+        await armed.db(DB).command({ ping: 1 });
+        try {
+          expect(await drain(w.rt, { waitMs: 0, force: false, log, settleMs: 0 })).to.include({ ok: true, fence: 'draining' });
+          await cancelDrain(w.rt);
+        } finally {
+          await armed.close();
+        }
       });
 
       it('does not move the fence of a store that was already moved', async () => {

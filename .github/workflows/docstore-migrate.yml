@@ -91,7 +91,7 @@ jobs:
         # the scale run is opt-in (MIGRATE_SCALE=1; its suite is named "timing")
         # --expect-suite pins the exact case count of each suite, so a suite that did not run fails the job; every PR that adds a suite adds its line
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/docstore-migrate-junit.xml" --allow "timing" --min-tests 70
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/docstore-migrate-junit.xml" --allow "timing" --min-tests 72
           --expect-suite 'docstore-migrate: identity collections=8'
           --expect-suite 'docstore-migrate: organisations=1'
           --expect-suite 'docstore-migrate: bulk copy=3'
@@ -102,5 +102,5 @@ jobs:
           --expect-suite 'docstore-migrate: table coverage=3'
           --expect-suite 'fence cutover waits for fenced writes=3'
           --expect-suite 'pre-flight _id check=1'
-          --expect-suite 'docstore-migrate: follow, drain, reset and schema=12'
+          --expect-suite 'docstore-migrate: follow, drain, reset and schema=14'
           --expect-suite 'docstore-migrate: pre-flight checks=14'
