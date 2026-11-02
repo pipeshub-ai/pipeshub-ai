@@ -73,9 +73,9 @@ describe('ComposerApprovalCard', () => {
   it('shows In "title", +N more steps through items', async () => {
     await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report')]);
     expect(screen.getByText(/In "Fix login"/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '+1 more' }));
+    fireEvent.click(screen.getByRole('button', { name: /\+1 more/ }));
     expect(screen.getByText(/In "Weekly report"/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '+1 more' }));
+    fireEvent.click(screen.getByRole('button', { name: /\+1 more/ }));
     expect(screen.getByText(/In "Fix login"/)).toBeTruthy();
   });
 
@@ -85,7 +85,7 @@ describe('ComposerApprovalCard', () => {
     await waitFor(() => expect(m.toast.success).toHaveBeenCalled());
     expect(m.answerElsewhere.mock.calls[0][1]).toMatchObject({ approvalId: 'a', decision: 'allow' });
     const [title, options] = m.toast.success.mock.calls[0];
-    expect(title).toBe('Allowed. Create an issue is running in Fix login.');
+    expect(title).toBe('Allowed. Create an issue is running in "Fix login".');
     expect(options.action.label).toBe('Open chat');
     options.action.onClick();
     expect(m.push).toHaveBeenCalledWith('/chat/?conversationId=conv-a');
@@ -95,14 +95,14 @@ describe('ComposerApprovalCard', () => {
   it('Deny → toast declinedIn', async () => {
     await show([item('a', 'conv-a', 'Fix login')]);
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
-    await waitFor(() => expect(m.toast.success).toHaveBeenCalledWith('Declined in Fix login.', expect.anything()));
+    await waitFor(() => expect(m.toast.success).toHaveBeenCalledWith('Declined in "Fix login".', expect.anything()));
   });
 
   it('stale item leaves', async () => {
     m.answerElsewhere.mockResolvedValue('stale');
     await show([item('a', 'conv-a', 'Fix login')]);
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
-    await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('That was already answered.'));
+    await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('This was already answered in that chat.'));
     expect(usePendingApprovals.getState().items).toEqual([]);
     expect(screen.queryByTestId('tool-approval-card')).toBeNull();
   });
@@ -146,11 +146,50 @@ describe('ComposerApprovalCard', () => {
 
   it('after an answer, the newest remaining call shows', async () => {
     await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report'), item('c', 'conv-c', 'Budget')]);
-    fireEvent.click(screen.getByRole('button', { name: '+2 more' }));
-    fireEvent.click(screen.getByRole('button', { name: '+2 more' }));
+    fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
+    fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
     expect(screen.getByText(/In "Budget"/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
     await waitFor(() => expect(screen.getByText(/In "Fix login"/)).toBeTruthy());
+  });
+
+  it('"+N more" names what it does', async () => {
+    await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report')]);
+    expect(screen.getByRole('button', { name: 'Show the next waiting approval (+1 more)' })).toBeTruthy();
+  });
+
+  it('Send suggestion → toast says the suggestion went, not Declined', async () => {
+    await show([item('a', 'conv-a', 'Fix login')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }));
+    fireEvent.change(screen.getByPlaceholderText('Tell PipesHub what to change'), { target: { value: 'Use the other board' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send suggestion' }));
+    await waitFor(() => expect(m.toast.success).toHaveBeenCalledWith('Sent your suggestion to "Fix login".', expect.anything()));
+    expect(m.answerElsewhere.mock.calls[0][1]).toMatchObject({ decision: 'deny', feedback: 'Use the other board' });
+  });
+
+  it('a failure that says why shows the reason', async () => {
+    m.answerElsewhere.mockResolvedValue({ failed: 'The tool server is down.' } as never);
+    await show([item('a', 'conv-a', 'Fix login')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(await screen.findByText('The tool server is down.')).toBeTruthy();
+    expect(usePendingApprovals.getState().items).toHaveLength(1);
+  });
+
+  it('a newer call arriving while you edit keeps the same card and your edits', async () => {
+    const editable = item('a', 'conv-a', 'Fix login');
+    editable.card = { ...editable.card, editable: true, argsHash: 'h', inputSchema: { type: 'object', properties: { title: { type: 'string' } } } };
+    await show([editable]);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Login fails on Safari' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }));
+
+    // A poll brings a newer call first, and the same call back as a fresh object.
+    act(() => usePendingApprovals.setState({ items: [item('b', 'conv-b', 'Weekly report'), { ...editable, card: { ...editable.card } }] }));
+
+    expect(screen.getByText(/In "Fix login"/)).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: 'Title' }) as HTMLInputElement).value).toBe('Login fails on Safari');
+    expect(screen.getByPlaceholderText('Tell PipesHub what to change')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /\+1 more/ })).toBeTruthy();
   });
 
   it('Open chat navigates', async () => {

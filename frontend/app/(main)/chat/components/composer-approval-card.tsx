@@ -10,34 +10,42 @@ import { buildChatHref } from '../build-chat-url';
 import { useOtherChatApprovals, usePendingApprovals, usePendingApprovalsSync } from '../pending-approvals-store';
 import { approvalToolLabel } from '../tool-approval';
 import type { PendingApprovalItem, ToolApprovalAnswer } from '../types';
-import { ToolApprovalCard } from './message-area/tool-approval-card';
+import { ToolApprovalCard, type AnswerResult } from './message-area/tool-approval-card';
 
-/** A call waiting in another of the person's chats, answered from above the composer; newest first. */
+/** A call waiting in another of the person's chats, answered from above the composer. The newest
+ * shows first; once shown it stays put until it leaves the list, so a new arrival only raises "+N more". */
 export function ComposerApprovalCard() {
   usePendingApprovalsSync();
   const { t } = useTranslation();
   const router = useRouter();
   const items = useOtherChatApprovals();
-  const [index, setIndex] = useState(0);
-  const order = items.map((i) => i.card.approvalId).join(' ');
-  // A call answered, added or sent back: show the newest again.
-  useEffect(() => setIndex(0), [order]);
-  if (items.length === 0) return null;
-  const item = items[index % items.length];
+  const [shownId, setShownId] = useState<string | null>(null);
+  // A refused edit comes back with the server's errors: a new card, opened on them.
+  const [refusals, setRefusals] = useState(0);
+  const item = items.find((i) => i.card.approvalId === shownId) ?? items[0];
+  const itemId = item?.card.approvalId ?? null;
+  useEffect(() => {
+    if (itemId !== shownId) setShownId(itemId);
+  }, [itemId, shownId]);
+  if (!item) return null;
   const title = item.conversationTitle ?? t('chat.newChat');
 
   const openChat = (target: PendingApprovalItem) =>
     router.push(buildChatHref({ agentId: target.agentId, conversationId: target.conversationId }));
 
-  const onAnswer = async (answer: ToolApprovalAnswer) => {
+  const onAnswer = async (answer: ToolApprovalAnswer): Promise<AnswerResult> => {
     const result = await answerElsewhere(item, answer);
-    // The card is back in the list with the server's errors, and shows them when it remounts.
-    if (result === 'refused') return 'sent' as const;
+    if (result === 'refused') {
+      setRefusals((n) => n + 1);
+      return 'sent';
+    }
     if (result === 'sent' || result === 'stale') usePendingApprovals.getState().drop(item.card.approvalId);
     if (result === 'sent') {
       const message = answer.decision === 'allow'
         ? t('chat.toolApproval.runningIn', { tool: approvalToolLabel(item.card), title })
-        : t('chat.toolApproval.declinedIn', { title });
+        : answer.feedback
+          ? t('chat.toolApproval.suggestionSentIn', { title })
+          : t('chat.toolApproval.declinedIn', { title });
       toast.success(message, { action: { label: t('chat.toolApproval.openChat'), onClick: () => openChat(item) } });
     } else if (result === 'stale') {
       toast.info(t('chat.toolApproval.alreadyAnswered'));
@@ -48,8 +56,8 @@ export function ComposerApprovalCard() {
   return (
     <Box mb="2">
       <ToolApprovalCard
-        // A refused edit comes back as a new card: remount so it opens with the errors.
-        key={`${item.card.approvalId}:${JSON.stringify(item.card.editErrors ?? [])}`}
+        // Only a refusal remounts it: a poll that brings the same call back keeps the edits in progress.
+        key={`${item.card.approvalId}:${refusals}`}
         approval={item.card}
         isLatest
         placement="composer"
@@ -57,7 +65,7 @@ export function ComposerApprovalCard() {
         onAnswer={onAnswer}
         onOpenChat={() => openChat(item)}
         moreCount={items.length - 1}
-        onMore={() => setIndex((i) => (i + 1) % items.length)}
+        onMore={() => setShownId(items[(items.indexOf(item) + 1) % items.length].card.approvalId)}
       />
     </Box>
   );
