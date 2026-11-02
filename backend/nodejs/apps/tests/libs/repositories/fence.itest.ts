@@ -28,14 +28,24 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     await mongo?.stop();
   });
 
+  // the deadline of a statement once the store is being moved is five seconds: the cut must land inside this window
+  const DEADLINE_MIN_MS = 4500;
+  const DEADLINE_MAX_MS = 7000;
+  let elapsedMs = 0;
   const slowUpdate = async (): Promise<number> => {
     const db = client.db('fence_deadline');
     await db.collection('t').drop().catch(() => undefined);
     await db.collection('t').insertMany(Array.from({ length: 30 }, (_, i) => ({ i })));
     const fenced = new Fenced(db, 't', {} as never);
     // server-side JS makes the statement last about 9 s, longer than the 5 s deadline
-    const r = await fenced.updateMany({ $where: 'sleep(300) || true' }, { $set: { done: true } });
-    return r.modifiedCount;
+    // only the statement is timed, not the set-up
+    const t0 = Date.now();
+    try {
+      const r = await fenced.updateMany({ $where: 'sleep(300) || true' }, { $set: { done: true } });
+      return r.modifiedCount;
+    } finally {
+      elapsedMs = Date.now() - t0;
+    }
   };
   const setMode = (mode: string) => client.db('fence_deadline').collection<any>('docstore_fence').replaceOne({ _id: 'fence' }, { _id: 'fence', mode, epoch: 1 }, { upsert: true });
 
@@ -50,5 +60,6 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     await slowUpdate().catch((e) => (err = e));
     expect(err, 'a deadline error').to.not.equal(undefined);
     expect(String(err.name) + String(err.message)).to.match(/time|Timeout|expired/i);
+    expect(elapsedMs, 'cut at the five second deadline, not earlier or later').to.be.within(DEADLINE_MIN_MS, DEADLINE_MAX_MS);
   });
 });
