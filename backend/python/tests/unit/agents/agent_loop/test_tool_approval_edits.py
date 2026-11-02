@@ -155,6 +155,18 @@ def test_unevaluated_with_pattern_properties_is_not_editable() -> None:
     assert approvals.schema_is_editable({"type": "object", "unevaluatedProperties": False}) is True
 
 
+def test_a_schema_too_deep_to_walk_is_not_editable() -> None:
+    deep: dict[str, Any] = {"type": "string"}
+    for _ in range(2000):
+        deep = {"type": "object", "properties": {"x": deep}}
+    assert approvals.schema_is_editable(deep) is False
+    p = _pending(arguments={"x": None}, input_schema=deep)
+    assert [e.message for e in _check(p, {"x": 1})] == ["This action can't be edited."]
+    # A subschema used in several places is walked once.
+    shared: dict[str, Any] = {"type": "object"}
+    assert approvals.schema_is_editable({"anyOf": [shared, shared, {"items": shared}]}) is True
+
+
 def test_key_patterns_still_apply() -> None:
     schema = {"type": "object", "patternProperties": {"^n_": {"type": "integer"}}, "additionalProperties": False}
     p = _pending(arguments={"n_a": 1}, input_schema=schema)
