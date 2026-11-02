@@ -1,7 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { ProjectsFeature } from '../../../../src/modules/projects/utils/projects-feature'
 import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
