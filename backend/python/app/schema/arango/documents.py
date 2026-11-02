@@ -388,6 +388,8 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Set by an API push (see Record.push_origin); absent on every other record.
+            "pushOrigin": {"type": "boolean"},
             # Permission traversal input, read per visited node. Per node and
             # mixable within a connector; RESTRICTED applies to the node it is
             # on and is never inherited by its children. Absent reads as OPEN,
@@ -1069,6 +1071,7 @@ named_entity_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1106,6 +1109,7 @@ value_mention_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},

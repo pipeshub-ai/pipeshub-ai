@@ -34,6 +34,8 @@ class MoneyValue(_Value):
     value_type: Literal["money"] = "money"
     amount: Decimal
     amount_float: float
+    # The high end of a range ("$5-10M"); ``amount`` is then its low end.
+    amount_high: Decimal | None = None
     currency: str
     currency_ambiguous: bool = False
 

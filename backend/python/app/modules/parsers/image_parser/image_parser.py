@@ -151,9 +151,11 @@ class ImageParser:
 
     @staticmethod
     async def _fetch_single_url(
-        fetcher: PublicUrlFetcher,
+        fetcher: PublicUrlFetcher | None,
         url: str,
         logger: logging.Logger | None = None,
+        *,
+        allow_remote_fetch: bool,
     ) -> str | None:
         log = logger or _logger
         try:
@@ -167,6 +169,10 @@ class ImageParser:
 
                 log.debug("URL is already base64 encoded")
                 return url
+
+            if not allow_remote_fetch or fetcher is None:
+                log.warning(f"⚠️ Remote image not fetched for this content: {redact_url(url)}")
+                return None
 
             # Validate URL format before attempting to fetch
             if not ImageParser._is_valid_image_url(url):
@@ -225,6 +231,8 @@ class ImageParser:
     async def urls_to_base64(
         urls: list[str],
         logger: logging.Logger | None = None,
+        *,
+        allow_remote_fetch: bool,
     ) -> list[str | None]:
         """
         Convert a list of image URLs to base64 encoded strings asynchronously.
@@ -236,11 +244,14 @@ class ImageParser:
         Args:
             urls: List of image URLs or base64 data URLs
             logger: Optional logger; defaults to module logger when omitted
+            allow_remote_fetch: Required, with no default: ``False`` leaves every
+                non-``data:`` URL unfetched (None). Content a caller pushed
+                passes ``False``; a call site that does not say is a TypeError.
 
         Returns:
             List of base64 encoded image strings (None for SVG images or failed conversions)
         """
-        fetcher = PublicUrlFetcher()
+        fetcher = PublicUrlFetcher() if allow_remote_fetch else None
         # Each image is held whole, and again as base64, until it is shrunk:
         # fetched all at once, a page of photos was held at full size together.
         slots = asyncio.Semaphore(_MAX_PARALLEL_IMAGE_FETCHES)
@@ -254,7 +265,9 @@ class ImageParser:
                 if kept >= INDEX_RECORD_IMAGE_BYTES:
                     skipped += 1
                     return None
-                uri = await ImageParser._fetch_single_url(fetcher, url, logger=logger)
+                uri = await ImageParser._fetch_single_url(
+                    fetcher, url, logger=logger, allow_remote_fetch=allow_remote_fetch
+                )
                 if uri is None:
                     return None
                 async with fitting:
