@@ -148,6 +148,17 @@ describe('answerElsewhere', () => {
     expect(m.stream).not.toHaveBeenCalled();
   });
 
+  it('a call a newer message passed over → stale, nothing sent', async () => {
+    slot({
+      messages: [
+        { id: 'u1', role: 'user', content: [] }, rowWith([waitingPart]),
+        { id: 'u3', role: 'user', content: [] }, rowWith([{ type: 'text', content: 'hi' } as MessagePart], 'row-4'),
+      ],
+    });
+    await expect(answerElsewhere(item, answer)).resolves.toBe('stale');
+    expect(m.stream).not.toHaveBeenCalled();
+  });
+
   it('a call the server no longer lists (answered elsewhere) → stale, nothing sent', async () => {
     slot();
     m.pending.mockResolvedValue([]);
