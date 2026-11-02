@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import {
+  FAILED_RESPONSE_GENERATION_MESSAGE,
   replaceStreamedAnswer,
   slackBlocksFallbackText,
   type TypedSlackClient,
@@ -55,13 +56,22 @@ describe('slack-bot final answer', () => {
       expect(c.chat.postMessage.calledBefore(c.apiCall)).to.equal(true);
     });
 
-    it('keeps the streamed messages when the post fails', async () => {
-      const c = client(sinon.stub().rejects(new Error('invalid_blocks')));
+    it('keeps the streamed messages and says the answer failed when the post fails', async () => {
+      const postMessage = sinon.stub();
+      postMessage.onFirstCall().rejects(new Error('invalid_blocks'));
+      postMessage.resolves({ ts: '9.9' });
+      const c = client(postMessage);
 
       const sent = await replaceStreamedAnswer(c as unknown as TypedSlackClient, 'C1', '1.1', ['2.1'], BLOCKS);
 
       expect(sent).to.equal(false);
       expect(c.apiCall.called).to.equal(false);
+      expect(postMessage.secondCall.args[0]).to.include({
+        channel: 'C1',
+        thread_ts: '1.1',
+        text: FAILED_RESPONSE_GENERATION_MESSAGE,
+      });
+      expect(postMessage.secondCall.args[0]).to.not.have.property('blocks');
     });
 
     it('still reports success when a streamed message is already gone', async () => {
