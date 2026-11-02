@@ -615,6 +615,10 @@ class TestEditableCard:
         details = await _toolset_card(_Store(), self.ARGS, {"type": "object", "description": "x" * 17000})
         assert "inputSchema" not in details and details["editable"] is False
 
+    async def test_card_not_editable_when_its_schema_cannot_be_checked_in_time(self) -> None:
+        schema = {"type": "object", "patternProperties": {"^m": {}}, "unevaluatedProperties": False}
+        assert (await _toolset_card(_Store(), self.ARGS, schema))["editable"] is False
+
     async def test_card_not_editable_when_edits_turned_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TOOL_APPROVAL_EDITS", "false")
         assert (await _toolset_card(_Store(), self.ARGS))["editable"] is False

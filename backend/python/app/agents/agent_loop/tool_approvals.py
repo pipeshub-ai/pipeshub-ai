@@ -630,21 +630,29 @@ def _path_to(root: Any, target: Any, path: tuple[Any, ...] = ()) -> tuple[Any, .
     return None
 
 
-def _bounded_validator(base: Any, schema: Any, edited: dict[str, Any], tool_path: str) -> Any:  # noqa: ANN401
+@dataclass
+class _PatternSkips:
+    """The regex checks of one edit that ran out of time: how many, and where the first was."""
+
+    count: int = 0
+    first: Any = None
+
+
+def _bounded_validator(base: Any, deadline: float, skips: _PatternSkips) -> Any:  # noqa: ANN401
     """The schema's validator with its regex keywords run under one shared time budget."""
-    deadline = time.monotonic() + _PATTERN_BUDGET_SECONDS
 
     def search(patrn: str, text: str, where: Any) -> bool | None:  # noqa: ANN401
         """Whether `patrn` matches `text`; None when it can't be told in time."""
-        left = deadline - time.monotonic()
-        if left > 0:
-            try:
-                return regex.search(patrn, text, timeout=left) is not None
-            except TimeoutError:
-                pass
-        logger.warning(
-            f"A pattern check of {tool_path} at {_pointer(_path_to(edited, where) or ())!r} was skipped: it ran out of time",
-        )
+        # Once the budget is spent, every later check is skipped with no work, however many there are.
+        if not skips.count:
+            left = deadline - time.monotonic()
+            if left > 0:
+                try:
+                    return regex.search(patrn, text, timeout=left) is not None
+                except TimeoutError:
+                    pass
+            skips.first = where
+        skips.count += 1
         return None
 
     def pattern(validator: Any, patrn: str, instance: Any, schema: Any):  # noqa: ANN202, ANN401
@@ -675,23 +683,19 @@ def _bounded_validator(base: Any, schema: Any, edited: dict[str, Any], tool_path
         elif not ap and extras:
             yield SchemaValidationError(f"Additional properties are not allowed ({', '.join(map(repr, extras))} unexpected)")
 
-    overrides = {"pattern": pattern, "patternProperties": pattern_properties, "additionalProperties": additional_properties}
-    # unevaluatedProperties matches keys against patternProperties with no time limit, and its
-    # bookkeeping is too involved to copy; where a schema has both, that keyword is the tool's.
-    if "unevaluatedProperties" in base.VALIDATORS and _has_key(schema, "patternProperties"):
-        def unevaluated_properties(validator: Any, up: Any, instance: Any, schema: Any):  # noqa: ANN202, ANN401
-            logger.warning(f"unevaluatedProperties of {tool_path} was not checked: the schema also has patternProperties")
-            return
-            yield
-
-        overrides["unevaluatedProperties"] = unevaluated_properties
-    return extend(base, overrides)
+    return extend(base, {"pattern": pattern, "patternProperties": pattern_properties, "additionalProperties": additional_properties})
 
 
 def _has_key(node: Any, key: str) -> bool:  # noqa: ANN401
     if isinstance(node, dict):
         return key in node or any(_has_key(v, key) for v in node.values())
     return isinstance(node, list) and any(_has_key(v, key) for v in node)
+
+
+def schema_is_editable(schema: dict[str, Any]) -> bool:
+    """Whether an edit can be checked against this schema in bounded time. unevaluatedProperties
+    matches keys against patternProperties with no time limit, so a schema with both is not."""
+    return not (_has_key(schema, "unevaluatedProperties") and _has_key(schema, "patternProperties"))
 
 
 def check_edit(
@@ -703,17 +707,22 @@ def check_edit(
     if shown_hash != args_hash(pending.arguments):
         return [EditError(path="", message="This request changed. Reload.")]
     # A call saved before edits existed has no tool path, and its kind is a default, not the tool's.
-    if not edits_enabled() or pending.input_schema is None or not pending.tool_path:
+    if not edits_enabled() or pending.input_schema is None or not pending.tool_path or not schema_is_editable(pending.input_schema):
         return [EditError(path="", message="This action can't be edited.")]
     schema = pending.input_schema
+    skips = _PatternSkips()
     try:
         validator_class = validator_for(schema, default=Draft202012Validator)
         validator_class.check_schema(schema)
-        validator = _bounded_validator(validator_class, schema, edited, pending.tool_path)(schema)
+        validator = _bounded_validator(validator_class, time.monotonic() + _PATTERN_BUDGET_SECONDS, skips)(schema)
         errors = [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator.iter_errors(edited)]
     except Exception as e:  # a server's schema can be malformed: bad types, a $ref that can't be resolved
         logger.warning(f"The schema of {pending.tool_name} can't be used to check an edit: {e}")
         return [EditError(path="", message="This action can't be edited.")]
+    if skips.count:
+        # Names the field, never its value.
+        where = _pointer(_path_to(edited, skips.first) or ())
+        logger.warning(f"{skips.count} pattern checks of {pending.tool_path} were skipped, from {where!r}: they ran out of time")
     if errors:
         return errors
     kind = kind_of_call(pending.kind, pending.tool_path, edited)
@@ -892,7 +901,7 @@ def _card_details(target: ApprovalTarget, pending: PendingCall) -> dict[str, Any
         "expiresAt": int(pending.expires_at * 1000), **card_arguments,
         "toolPath": pending.tool_path, "source": target.source, "argsHash": args_hash(pending.arguments),
         "displayName": target.tool.display_name,
-        "editable": edits_enabled() and card_arguments["arguments"] is not None and schema is not None,
+        "editable": edits_enabled() and card_arguments["arguments"] is not None and schema is not None and schema_is_editable(schema),
         **({"inputSchema": schema} if schema is not None else {}),
         **({"argsSummary": args_summary} if isinstance(args_summary, str) else {}),
     }
