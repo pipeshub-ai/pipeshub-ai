@@ -91,6 +91,7 @@ class TestAgentAnswerWithMetadataJSON:
 
     @pytest.mark.parametrize("level", ["Very High", "High", "Medium", "Low"])
     def test_all_confidence_values(self, level):
+        """Verify all confidence values behavior."""
         obj = AgentAnswerWithMetadataJSON(
             answer="x",
             confidence=level,
@@ -109,6 +110,7 @@ class TestAgentAnswerWithMetadataJSON:
         ],
     )
     def test_all_answer_match_types(self, match_type):
+        """Verify all answer match types behavior."""
         obj = AgentAnswerWithMetadataJSON(
             answer="x",
             confidence="High",
@@ -117,6 +119,7 @@ class TestAgentAnswerWithMetadataJSON:
         assert obj.answerMatchType == match_type
 
     def test_invalid_confidence_raises(self):
+        """Verify invalid confidence raises behavior."""
         with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
@@ -130,6 +133,7 @@ class TestAgentAnswerWithMetadataJSON:
         assert errors[0]["type"] == "literal_error"
 
     def test_invalid_answer_match_type_raises(self):
+        """Verify invalid answer match type raises behavior."""
         with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
@@ -143,6 +147,7 @@ class TestAgentAnswerWithMetadataJSON:
         assert errors[0]["type"] == "literal_error"
 
     def test_missing_required_answer_raises(self):
+        """Verify missing required answer raises behavior."""
         with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 confidence="High",
@@ -155,6 +160,7 @@ class TestAgentAnswerWithMetadataJSON:
         assert errors[0]["type"] == "missing"
 
     def test_missing_required_confidence_raises(self):
+        """Verify missing required confidence raises behavior."""
         with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
@@ -217,6 +223,7 @@ class TestAgentAnswerWithMetadataDict:
         ],
     )
     def test_all_answer_match_types_are_defined(self, match_type):
+        """Verify all answer match types are defined behavior."""
         d: AgentAnswerWithMetadataDict = {
             "answer": "x",
             "reason": "",

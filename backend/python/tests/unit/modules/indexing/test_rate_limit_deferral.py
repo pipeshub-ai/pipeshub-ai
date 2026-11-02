@@ -36,6 +36,7 @@ class TestRetryAfter:
         assert rate_limit_retry_after(ValueError("boom")) is None
 
     def test_found_under_a_wrapper(self) -> None:
+        """Verify found under a wrapper behavior."""
         inner = _limited(600)
 
         with pytest.raises(RuntimeError) as exc_info:

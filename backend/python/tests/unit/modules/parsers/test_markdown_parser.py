@@ -101,6 +101,7 @@ class TestDoclingParseFile:
         docling_parser.converter.convert.assert_called_once_with("/some/file.md")
 
     def test_parse_file_failure_raises_value_error(self, docling_parser):
+        """Verify parse file failure raises value error behavior."""
         mock_result = MagicMock()
         mock_result.status.value = "failure"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
@@ -111,6 +112,7 @@ class TestDoclingParseFile:
         assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_partial_success_raises(self, docling_parser):
+        """Verify parse file partial success raises behavior."""
         mock_result = MagicMock()
         mock_result.status.value = "partial_success"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
@@ -121,6 +123,7 @@ class TestDoclingParseFile:
         assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_error_status(self, docling_parser):
+        """Verify parse file error status behavior."""
         mock_result = MagicMock()
         mock_result.status.value = "error"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
@@ -131,6 +134,7 @@ class TestDoclingParseFile:
         assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_empty_status(self, docling_parser):
+        """Verify parse file empty status behavior."""
         mock_result = MagicMock()
         mock_result.status.value = ""
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
@@ -334,6 +338,7 @@ class TestMarkdownParserShim:
         assert hasattr(mp, "MarkdownParserProtocol")
 
     def test_protocol_extract_and_replace_images_body(self):
+        """Verify protocol extract and replace images body behavior."""
         from app.modules.parsers.markdown.markdown_parser import MarkdownParserProtocol
 
         class _Concrete(MarkdownParserProtocol):

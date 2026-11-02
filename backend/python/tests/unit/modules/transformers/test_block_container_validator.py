@@ -157,6 +157,7 @@ def _table_group_with_linked_row(
 
 
 def assert_raises_with_codes(container: BlocksContainer, *codes: str) -> None:
+    """Helper for assert raises with codes."""
     with pytest.raises(BlockContainerValidationError) as exc_info:
         _validator().validate(container)
     assert _error_codes(exc_info.value) == set(codes)
@@ -187,26 +188,32 @@ class TestIndexContiguity:
         assert _validator().validate(container) == []
 
     def test_block_index_null(self):
+        """Verify block index null behavior."""
         block = _block_construct(index=None)
         assert_raises_with_codes(_container(blocks=[block]), "INDEX_NULL")
 
     def test_block_group_index_null(self):
+        """Verify block group index null behavior."""
         group = BlockGroup.model_construct(index=None, type=GroupType.TEXT_SECTION)
         assert_raises_with_codes(_container(block_groups=[group]), "INDEX_NULL")
 
     def test_block_index_mismatch(self):
+        """Verify block index mismatch behavior."""
         container = _container(blocks=[_block(0), _block(5)])
         assert_raises_with_codes(container, "INDEX_MISMATCH")
 
     def test_block_group_index_mismatch(self):
+        """Verify block group index mismatch behavior."""
         container = _container(block_groups=[_block_group(0), _block_group(3)])
         assert_raises_with_codes(container, "INDEX_MISMATCH")
 
     def test_non_zero_starting_index(self):
+        """Verify non zero starting index behavior."""
         container = _container(blocks=[_block(1), _block(2)])
         assert_raises_with_codes(container, "INDEX_MISMATCH")
 
     def test_gap_in_block_indices(self):
+        """Verify gap in block indices behavior."""
         container = _container(blocks=[_block(0), _block(1), _block(3)])
         assert_raises_with_codes(container, "INDEX_MISMATCH")
 
@@ -266,6 +273,7 @@ class TestParentChildLinkage:
         assert _validator().validate(container) == []
 
     def test_block_parent_index_out_of_range(self):
+        """Verify block parent index out of range behavior."""
         container = _container(
             blocks=[_block(0, parent_index=5)],
             block_groups=[_block_group(0)],
@@ -273,18 +281,22 @@ class TestParentChildLinkage:
         assert_raises_with_codes(container, "PARENT_INDEX_OUT_OF_RANGE")
 
     def test_block_parent_index_negative(self):
+        """Verify block parent index negative behavior."""
         container = _container(blocks=[_block(0, parent_index=-1)])
         assert_raises_with_codes(container, "PARENT_INDEX_OUT_OF_RANGE")
 
     def test_group_parent_index_out_of_range(self):
+        """Verify group parent index out of range behavior."""
         container = _container(block_groups=[_block_group(0, parent_index=3)])
         assert_raises_with_codes(container, "PARENT_INDEX_OUT_OF_RANGE")
 
     def test_group_direct_self_reference_cycle(self):
+        """Verify group direct self reference cycle behavior."""
         container = _container(block_groups=[_block_group(0, parent_index=0)])
         assert_raises_with_codes(container, "PARENT_INDEX_CYCLE")
 
     def test_group_two_hop_cycle(self):
+        """Verify group two hop cycle behavior."""
         container = _container(
             block_groups=[
                 _block_group(0, parent_index=1),
@@ -327,6 +339,7 @@ class TestParentChildLinkage:
         assert _validator().validate(container) == []
 
     def test_children_block_range_out_of_range(self):
+        """Verify children block range out of range behavior."""
         children = BlockGroupChildren(block_ranges=[IndexRange(start=5, end=5)])
         container = _container(
             blocks=[_block(0)],
@@ -335,6 +348,7 @@ class TestParentChildLinkage:
         assert_raises_with_codes(container, "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE")
 
     def test_children_block_range_huge_end_single_error(self):
+        """Verify children block range huge end single error behavior."""
         children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=10**9)])
         container = _container(
             blocks=[_block(0)],
@@ -348,6 +362,7 @@ class TestParentChildLinkage:
         assert "[0, 1000000000]" in errors[0].message
 
     def test_children_block_range_inverted(self):
+        """Verify children block range inverted behavior."""
         children = BlockGroupChildren(block_ranges=[IndexRange(start=3, end=1)])
         container = _container(
             blocks=[_block(0), _block(1), _block(2)],
@@ -356,6 +371,7 @@ class TestParentChildLinkage:
         assert_raises_with_codes(container, "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE")
 
     def test_children_group_range_huge_end_single_error(self):
+        """Verify children group range huge end single error behavior."""
         children = BlockGroupChildren(block_group_ranges=[IndexRange(start=0, end=10**9)])
         container = _container(
             block_groups=[
@@ -371,6 +387,7 @@ class TestParentChildLinkage:
         assert "[0, 1000000000]" in errors[0].message
 
     def test_children_group_range_out_of_range(self):
+        """Verify children group range out of range behavior."""
         children = BlockGroupChildren(block_group_ranges=[IndexRange(start=2, end=2)])
         container = _container(block_groups=[_block_group(0, children=children)])
         assert_raises_with_codes(container, "CHILDREN_GROUP_INDEX_OUT_OF_RANGE")
@@ -447,18 +464,22 @@ class TestTextBlocks:
         assert _validator().validate(container) == []
 
     def test_text_data_not_string_none(self):
+        """Verify text data not string none behavior."""
         container = _container(blocks=[_text_block(0, data=None)])
         assert_raises_with_codes(container, "TEXT_DATA_NOT_STRING")
 
     def test_text_data_not_string_int(self):
+        """Verify text data not string int behavior."""
         container = _container(blocks=[_text_block(0, data=123)])
         assert_raises_with_codes(container, "TEXT_DATA_NOT_STRING")
 
     def test_text_data_not_string_dict(self):
+        """Verify text data not string dict behavior."""
         container = _container(blocks=[_text_block(0, data={"text": "x"})])
         assert_raises_with_codes(container, "TEXT_DATA_NOT_STRING")
 
     def test_text_data_not_string_list(self):
+        """Verify text data not string list behavior."""
         container = _container(blocks=[_text_block(0, data=["text"])])
         assert_raises_with_codes(container, "TEXT_DATA_NOT_STRING")
 
@@ -506,18 +527,21 @@ class TestImageBlocks:
         assert _validator().validate(container) == []
 
     def test_image_uri_invalid_https_url(self):
+        """Verify image uri invalid https url behavior."""
         container = _container(
             blocks=[_image_block(0, data={"uri": "https://example.com/img.png"})]
         )
         assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
     def test_image_uri_invalid_http_url(self):
+        """Verify image uri invalid http url behavior."""
         container = _container(
             blocks=[_image_block(0, data={"uri": "http://example.com/img.png"})]
         )
         assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
     def test_image_format_not_base64(self):
+        """Verify image format not base64 behavior."""
         container = _container(
             blocks=[
                 _image_block(0, fmt=DataFormat.TXT, data={"uri": self._VALID_DATA_URI})
@@ -526,6 +550,7 @@ class TestImageBlocks:
         assert_raises_with_codes(container, "IMAGE_FORMAT_NOT_BASE64")
 
     def test_image_format_none(self):
+        """Verify image format none behavior."""
         container = _container(
             blocks=[
                 _block_construct(
@@ -543,6 +568,7 @@ class TestImageBlocks:
         assert "IMAGE_DATA_MISSING" in _warning_codes(warnings)
 
     def test_image_data_raw_string_raises(self):
+        """Verify image data raw string raises behavior."""
         container = _container(blocks=[_image_block(0, data="iVBORw0KGgo=")])
         assert_raises_with_codes(container, "IMAGE_DATA_NOT_NORMALIZED")
 
@@ -557,28 +583,34 @@ class TestImageBlocks:
         assert "IMAGE_URI_EMPTY" in _warning_codes(warnings)
 
     def test_image_uri_invalid_type_bool(self):
+        """Verify image uri invalid type bool behavior."""
         container = _container(blocks=[_image_block(0, data={"uri": True})])
         assert_raises_with_codes(container, "IMAGE_URI_INVALID_TYPE")
 
     def test_image_uri_invalid_type_int(self):
+        """Verify image uri invalid type int behavior."""
         container = _container(blocks=[_image_block(0, data={"uri": 123})])
         assert_raises_with_codes(container, "IMAGE_URI_INVALID_TYPE")
 
     def test_image_uri_invalid_string(self):
+        """Verify image uri invalid string behavior."""
         container = _container(blocks=[_image_block(0, data={"uri": "not-a-url"})])
         assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
     def test_image_uri_invalid_ftp(self):
+        """Verify image uri invalid ftp behavior."""
         container = _container(
             blocks=[_image_block(0, data={"uri": "ftp://example.com/img.png"})]
         )
         assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
     def test_image_uri_invalid_data_url_missing_base64_marker(self):
+        """Verify image uri invalid data url missing base64 marker behavior."""
         container = _container(blocks=[_image_block(0, data={"uri": "data:image/png"})])
         assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
     def test_image_data_invalid_type(self):
+        """Verify image data invalid type behavior."""
         container = _container(blocks=[_image_block(0, data=123)])
         assert_raises_with_codes(container, "IMAGE_DATA_INVALID_TYPE")
 
@@ -616,6 +648,7 @@ class TestTableRowBlocks:
         assert _validator().validate(container) == []
 
     def test_table_row_format_not_json(self):
+        """Verify table row format not json behavior."""
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=1))]
         blocks = [
             _table_row_block(
@@ -637,6 +670,7 @@ class TestTableRowBlocks:
         assert "TABLE_ROW_NO_EMBEDDABLE_CONTENT" not in codes
 
     def test_table_row_data_not_dict(self):
+        """Verify table row data not dict behavior."""
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=1))]
         blocks = [_table_row_block(0, data="row text", parent_index=0)]
         assert_raises_with_codes(
@@ -645,6 +679,7 @@ class TestTableRowBlocks:
         )
 
     def test_table_row_parent_index_missing(self):
+        """Verify table row parent index missing behavior."""
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=1))]
         blocks = [_table_row_block(0, data={"cells": ["a"]}, parent_index=None)]
         assert_raises_with_codes(
@@ -653,6 +688,7 @@ class TestTableRowBlocks:
         )
 
     def test_table_row_parent_not_table(self):
+        """Verify table row parent not table behavior."""
         groups = [_block_group(0, group_type=GroupType.TEXT_SECTION)]
         blocks = [_table_row_block(0, data={"cells": ["a"]}, parent_index=0)]
         assert_raises_with_codes(
@@ -700,16 +736,19 @@ class TestTableRowBlocks:
         assert _error_codes(exc_info.value) == {"TABLE_ROW_CELLS_NOT_LIST"}
 
     def test_table_row_cell_not_string(self):
+        """Verify table row cell not string behavior."""
         container = self._valid_table_container(row_data={"cells": [1, 2]})
         assert_raises_with_codes(container, "TABLE_ROW_CELL_NOT_STRING")
 
     def test_table_row_text_not_string_with_cells(self):
+        """Verify table row text not string with cells behavior."""
         container = self._valid_table_container(
             row_data={"cells": ["a", "b"], "row_natural_language_text": 123}
         )
         assert_raises_with_codes(container, "TABLE_ROW_TEXT_NOT_STRING")
 
     def test_table_row_text_not_string_without_cells(self):
+        """Verify table row text not string without cells behavior."""
         container = self._valid_table_container(
             row_data={"row_natural_language_text": 123}
         )
@@ -749,6 +788,7 @@ class TestTableGroups:
         assert _validator().validate(_container(blocks=blocks, block_groups=groups)) == []
 
     def test_table_child_not_table_row(self):
+        """Verify table child not table row behavior."""
         children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=0)])
         groups = [_table_group(0, children=children, table_metadata=TableMetadata(num_of_cells=1))]
         blocks = [_text_block(0)]
@@ -768,6 +808,7 @@ class TestTableGroups:
         assert "TABLE_METADATA_NUM_CELLS_MISSING" in _warning_codes(warnings)
 
     def test_table_metadata_num_cells_invalid_negative(self):
+        """Verify table metadata num cells invalid negative behavior."""
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=-1))]
         assert_raises_with_codes(
             _container(block_groups=groups),
@@ -775,6 +816,7 @@ class TestTableGroups:
         )
 
     def test_table_metadata_num_cells_invalid_string(self):
+        """Verify table metadata num cells invalid string behavior."""
         groups = [
             _table_group(
                 0,
@@ -1025,6 +1067,7 @@ class TestContainsBase64Image:
 
 class TestTextContainsBase64Image:
     def test_text_block_with_embedded_png_errors(self):
+        """Verify text block with embedded png errors behavior."""
         import base64
 
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100).decode()
@@ -1092,6 +1135,7 @@ class TestQuotedBase64IsNotAnImage:
 
 
     def test_wrapped_smallest_png_with_padded_last_line_is_still_an_image(self) -> None:
+        """Verify wrapped smallest png with padded last line is still an image behavior."""
         import textwrap
 
         raw = "\n".join(textwrap.wrap(self._ONE_PIXEL_PNG, 76))

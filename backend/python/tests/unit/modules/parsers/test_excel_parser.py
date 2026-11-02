@@ -387,6 +387,7 @@ class TestBuiltinDateFormats:
 
     @pytest.mark.parametrize("code, fmt", BUILTIN_DATE_FORMATS.items())
     def test_values_are_strings(self, code, fmt):
+        """Verify values are strings behavior."""
         assert isinstance(fmt, str), f"Code {code} has non-string format"
 
 
@@ -396,6 +397,7 @@ class TestBuiltinDateFormats:
 class TestCommonFormatWhitelist:
     @pytest.mark.parametrize("key, val", COMMON_FORMAT_WHITELIST.items())
     def test_all_entries_are_tuples(self, key, val):
+        """Verify all entries are tuples behavior."""
         assert isinstance(val, tuple), f"Key {key} is not a tuple"
         assert len(val) == 2, f"Key {key} does not have exactly 2 elements"
 

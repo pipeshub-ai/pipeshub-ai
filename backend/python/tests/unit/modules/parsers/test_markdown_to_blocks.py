@@ -39,10 +39,12 @@ def _blocks_by_type(container: BlocksContainer, block_type: BlockType) -> list[B
 
 
 def _child_block_indices(group: BlockGroup) -> list[int]:
+    """Helper for child block indices."""
     return [i for r in group.children.block_ranges for i in range(r.start, r.end + 1)]
 
 
 def _child_group_indices(group: BlockGroup) -> list[int]:
+    """Helper for child group indices."""
     return [i for r in group.children.block_group_ranges for i in range(r.start, r.end + 1)]
 
 
@@ -61,6 +63,7 @@ def _is_empty_split_container(block: Block) -> bool:
 
 
 def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
+    """Helper for assert all blocks have data."""
     missing = [b for b in container.blocks if b.data is None]
     assert not missing, (
         "blocks with data=None: "

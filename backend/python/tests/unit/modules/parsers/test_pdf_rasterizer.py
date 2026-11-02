@@ -118,6 +118,7 @@ def test_worker_count_chars_from_bytes_with_reportlab_pdf() -> None:
     ids=["a4", "letter", "a2"],
 )
 def test_effective_resolution_leaves_standard_pages_untouched(width, height):
+    """Verify effective resolution leaves standard pages untouched behavior."""
     page = SimpleNamespace(width=width, height=height)
     assert rasterizer._effective_resolution(page, 150) == 150
 

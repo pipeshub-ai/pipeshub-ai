@@ -71,6 +71,7 @@ class TestParseBinary:
                 assert stream_arg.read() == b"test data"
 
     def test_failure_raises_value_error(self):
+        """Verify failure raises value error behavior."""
         mock_converter = MagicMock()
         mock_result = MagicMock()
         mock_result.status.value = "failure"
@@ -87,6 +88,7 @@ class TestParseBinary:
         assert exc_info.value.details == {"status": "failure"}
 
     def test_converter_exception_propagates(self):
+        """Verify converter exception propagates behavior."""
         converter_error = RuntimeError("Corrupt file")
         mock_converter = MagicMock()
         mock_converter.convert.side_effect = converter_error
@@ -136,6 +138,7 @@ class TestParseFile:
             mock_converter.convert.assert_called_once_with("/path/to/presentation.pptx")
 
     def test_failure_raises_value_error(self):
+        """Verify failure raises value error behavior."""
         mock_converter = MagicMock()
         mock_result = MagicMock()
         mock_result.status.value = "error"
@@ -151,6 +154,7 @@ class TestParseFile:
         assert exc_info.value.details == {"status": "error"}
 
     def test_file_not_found_propagates(self):
+        """Verify file not found propagates behavior."""
         converter_error = FileNotFoundError("No such file")
         mock_converter = MagicMock()
         mock_converter.convert.side_effect = converter_error

@@ -1249,6 +1249,7 @@ class TestRasterize:
         assert scale == 1.0
 
     def test_render_all_pages(self, tmp_path):
+        """Verify render all pages behavior."""
         pytest.importorskip("reportlab")
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -1658,6 +1659,7 @@ class TestCoveragePush:
         assert len(regions) >= 2
 
     def test_rasterize_page_with_pdf_path(self, tmp_path):
+        """Verify rasterize page with pdf path behavior."""
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
 
