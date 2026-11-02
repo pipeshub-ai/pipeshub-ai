@@ -57,7 +57,6 @@ from app.connectors.sources.salesforce.connector import (
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
-from app.utils.time_conversion import epoch_ms_to_iso
 from tests.support.data_store import runs_in_its_transaction
 
 # ===========================================================================

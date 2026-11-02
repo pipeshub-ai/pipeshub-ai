@@ -225,3 +225,28 @@ async def test_edge_deletes_are_made_in_one_lock_order() -> None:
     ], "permission")
 
     assert [(e["from_id"], e["to_id"]) for e in _sent(execute, "edges")] == [("u1", "r1"), ("u2", "r1")]
+
+@pytest.mark.asyncio
+async def test_a_people_upsert_that_lost_a_conflict_raises_for_its_block_to_re_run() -> None:
+    provider, execute = _provider()
+    execute.side_effect = deadlock()
+    person = MagicMock()
+    person.to_arango_person.return_value = {"_key": "p1", "email": "a@example.com"}
+
+    with pytest.raises(TransientError, match="DeadlockDetected"):
+        await provider.batch_upsert_people([person])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query, sends", [
+    ("MERGE (a)-[:R]->(b)", 1),
+    ("UNWIND $rows AS row CALL (row) { MERGE (n:X {id: row}) } IN TRANSACTIONS OF 100 ROWS", WRITE_CONFLICT_ATTEMPTS),
+])
+async def test_an_idempotent_write_spends_one_retry_budget(query, sends) -> None:
+    """The client resends a plain statement; the provider loop only re-runs a batched one."""
+    provider, execute = _provider()
+    execute.side_effect = deadlock()
+
+    with pytest.raises(TransientError):
+        await provider._run_idempotent_write(query, {})
+    assert execute.await_count == sends

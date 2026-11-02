@@ -61,7 +61,7 @@ WRITE_CONFLICT_CODES = frozenset({
 WRITE_CONFLICT_ATTEMPTS = 6
 # CALL { ... } IN TRANSACTIONS commits batch by batch, so a later batch's
 # conflict leaves the earlier ones written: such a statement is not sent again.
-_COMMITS_IN_BATCHES = re.compile(r"\}\s*IN\s+(?:\S+\s+)?(?:CONCURRENT\s+)?TRANSACTIONS\b", re.IGNORECASE)
+COMMITS_IN_BATCHES = re.compile(r"\}\s*IN\s+(?:\S+\s+)?(?:CONCURRENT\s+)?TRANSACTIONS\b", re.IGNORECASE)
 
 _T = TypeVar("_T")
 
@@ -673,7 +673,7 @@ class Neo4jClient:
 
             try:
                 # In an open transaction a conflict ended it: its owner runs it again.
-                once = tx is not None or _COMMITS_IN_BATCHES.search(query)
+                once = tx is not None or COMMITS_IN_BATCHES.search(query)
                 return await (run() if once else _until_no_conflict(run))
             except (ClientError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)
@@ -714,7 +714,7 @@ class Neo4jClient:
                 return await self._rows(result, plain=plain)
 
         try:
-            return await (run() if _COMMITS_IN_BATCHES.search(query) else _until_no_conflict(run))
+            return await (run() if COMMITS_IN_BATCHES.search(query) else _until_no_conflict(run))
         except (ClientError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)
             raise

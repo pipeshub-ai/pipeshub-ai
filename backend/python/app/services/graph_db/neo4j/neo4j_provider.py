@@ -206,6 +206,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.neo4j import kh_scope
 from app.services.graph_db.neo4j.neo4j_client import (
+    COMMITS_IN_BATCHES,
     DEFAULT_LIVENESS_CHECK_TIMEOUT,
     DEFAULT_MAX_CONNECTION_LIFETIME,
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
@@ -17768,7 +17769,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
             if not people:
-                return None
+                return
 
             collection = CollectionNames.PEOPLE.value
             people_dicts = [
@@ -17791,7 +17792,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Upserted {len(people)} people records")
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
-            return False
+            raise
 
     async def get_person_by_email(
         self,
@@ -22774,10 +22775,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
         """Run an auto-commit query that is safe to repeat, re-running it when
-        it collides with a concurrent writer."""
-        return await self._retry_idempotent_write(
-            lambda: self.client.execute_query(query, parameters=parameters), transaction=None,
-        )
+        it collides with a concurrent writer. The client resends a plain
+        statement itself; one that commits in batches it leaves to this loop."""
+        def write() -> "Awaitable[list[dict[str, Any]]]":
+            return self.client.execute_query(query, parameters=parameters)
+        if not COMMITS_IN_BATCHES.search(query):
+            return await write()
+        return await self._retry_idempotent_write(write, transaction=None)
 
     async def _retry_idempotent_write[T](
         self, write: Callable[[], Awaitable[T]], transaction: str | None,
