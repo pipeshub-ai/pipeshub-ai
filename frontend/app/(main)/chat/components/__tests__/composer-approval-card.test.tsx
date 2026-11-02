@@ -134,6 +134,37 @@ describe('ComposerApprovalCard', () => {
     }
   });
 
+  it('shows the bar or the card for a call, never both, and a remount starts folded', async () => {
+    // The browser's own [hidden] rule, then the theme's rule for Box, which beats it.
+    const style = document.createElement('style');
+    style.textContent = '[hidden] { display: none; } .rt-Box { display: block; }';
+    document.head.appendChild(style);
+    const shown = (el: Element) => {
+      for (let node: Element | null = el; node; node = node.parentElement) {
+        if (getComputedStyle(node).display === 'none') return false;
+      }
+      return true;
+    };
+    const onShow = () => [
+      ...screen.queryAllByTestId('composer-approval-bar'),
+      ...screen.queryAllByTestId('tool-approval-card'),
+    ].filter(shown);
+    try {
+      await showBar([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report')]);
+      expect(onShow().map((el) => el.dataset.testid)).toEqual(['composer-approval-bar']);
+      fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+      expect(onShow().map((el) => el.dataset.testid)).toEqual(['tool-approval-card']);
+
+      // A new page: the list is still in the store, the composer mounts again.
+      cleanup();
+      renderInTheme(<ComposerApprovalCard />);
+      await waitFor(() => expect(screen.queryByTestId('composer-approval-bar')).toBeTruthy());
+      expect(onShow().map((el) => el.dataset.testid)).toEqual(['composer-approval-bar']);
+    } finally {
+      style.remove();
+    }
+  });
+
   it('folds to the bar while this chat shows its own approval card', async () => {
     await show([item('a', 'conv-a', 'Fix login')]);
     expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();

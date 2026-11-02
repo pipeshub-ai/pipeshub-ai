@@ -184,7 +184,8 @@ export function ComposerApprovalCard() {
       {items.map((target) => {
         const id = target.card.approvalId;
         return (
-          <Box key={`${id}:${refusals[id] ?? 0}`} hidden={!expanded || id !== item.card.approvalId}>
+          // A plain div: Radix's Box sets `display: block`, which would undo `hidden`.
+          <div key={`${id}:${refusals[id] ?? 0}`} hidden={!expanded || id !== item.card.approvalId}>
             <ToolApprovalCard
               approval={target.card}
               isLatest
@@ -197,7 +198,7 @@ export function ComposerApprovalCard() {
               onMore={showNextCard}
               onHide={collapse}
             />
-          </Box>
+          </div>
         );
       })}
     </Box>
