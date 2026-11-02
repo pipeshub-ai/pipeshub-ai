@@ -203,6 +203,8 @@ class SandboxSettings(BaseModel):
     max_concurrent_per_request: int = 5
     max_lifetime_s: float = 1800.0
     provision_timeout_s: float = 60.0
+    # How long a code run waits for a free governor slot before it fails.
+    slot_wait_s: float = 120.0
     governor: GovernorSettings = Field(default_factory=GovernorSettings)
 
 
@@ -250,6 +252,7 @@ class EnvSandboxSettingsLoader:
     _ENV_MAX_CONCURRENT = "SANDBOX_MAX_CONCURRENT_PER_REQUEST"
     _ENV_MAX_LIFETIME_S = "SANDBOX_MAX_LIFETIME_S"
     _ENV_PROVISION_TIMEOUT_S = "SANDBOX_PROVISION_TIMEOUT_S"
+    _ENV_SLOT_WAIT_S = "SANDBOX_SLOT_WAIT_S"
 
     _DEFAULT_DOCKER_IMAGE = "pipeshub/sandbox:latest"
     _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
@@ -281,6 +284,7 @@ class EnvSandboxSettingsLoader:
             max_concurrent_per_request=_env_int(self._ENV_MAX_CONCURRENT, 5),
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),
+            slot_wait_s=_env_float(self._ENV_SLOT_WAIT_S, 120.0),
             governor=GovernorSettings(
                 max_total_sandboxes=_env_cap(self._ENV_MAX_TOTAL, 50),
                 max_per_org=_env_cap(self._ENV_MAX_PER_ORG, 10),

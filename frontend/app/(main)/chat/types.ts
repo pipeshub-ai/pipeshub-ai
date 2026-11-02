@@ -938,6 +938,10 @@ export interface StatusMessage {
   timestamp: string;
 }
 
+/** Status of a running tool that reported its own progress (e.g. "waiting in queue"):
+ * shown even when the tool's running row would otherwise stand in for the status. */
+export const TOOL_PROGRESS_STATUS = 'tool_progress';
+
 // Request payload for streaming API
 export interface StreamChatRequest {
   query: string;

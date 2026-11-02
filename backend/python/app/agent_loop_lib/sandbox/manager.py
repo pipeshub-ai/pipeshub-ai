@@ -4,7 +4,8 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -122,6 +123,16 @@ class _InstanceRecord:
     created_at: float
     last_used_at: float
     governor_lease: Any | None = None  # GovernorLease
+    org_id: str | None = None
+
+
+def _holds_slot_for_life(backend: Any) -> bool:
+    """A metered backend (a remote VM) costs for as long as it lives, so it
+    keeps its governor slot from creation to destroy. Any other backend
+    only uses resources while a call runs (Docker starts a container per
+    call), so it takes a slot per call in `SandboxManager.slot()`."""
+    caps = getattr(backend, "capabilities", None)
+    return getattr(caps, "is_metered", True)
 
 
 class SandboxManager:
@@ -129,10 +140,21 @@ class SandboxManager:
     lifecycle: creation via registered factories, concurrency/lifetime
     limits, and teardown."""
 
-    def __init__(self, *, governor: "SandboxResourceGovernor | None" = None) -> None:
+    def __init__(
+        self,
+        *,
+        governor: "SandboxResourceGovernor | None" = None,
+        slot_wait_s: float = 0.0,
+        on_slot_wait: Callable[..., Awaitable[None]] | None = None,
+    ) -> None:
         self._factories: dict[SandboxType, _FactoryEntry] = {}
         self._instances: dict[tuple[SandboxType, str], _InstanceRecord] = {}
         self._governor = governor
+        # How long a call waits for a free governor slot before it fails, and
+        # what it runs as (tool name, waiting) when it starts waiting and when
+        # the wait ends (e.g. show and clear a note for the user).
+        self._slot_wait_s = slot_wait_s
+        self._on_slot_wait = on_slot_wait
         self._lock = asyncio.Lock()
         # Creations that have reserved a slot but not yet finished
         # provisioning. `_instances` alone cannot bound concurrency: a
@@ -196,6 +218,7 @@ class SandboxManager:
         sandbox_id: str | None = None,
         *,
         ctx: "SandboxContext | None" = None,
+        tool: str = "run_code",
     ) -> tuple[str, Any]:
         """Resolve an existing sandbox by id, or create a new one when
         `sandbox_id` is `None`. Raises `UnknownSandboxError` for an
@@ -203,9 +226,9 @@ class SandboxManager:
         exceed `max_concurrent`, and `ValueError` if no factory is
         registered for `type`.
 
-        Both the per-manager `max_concurrent` and the process-wide governor
-        slot are reserved under `self._lock` BEFORE the provision await, and
-        given back if provision fails. Checking either against
+        The per-manager `max_concurrent` is reserved under `self._lock` and a
+        metered backend's governor slot (waited for outside it, shown as *tool*
+        waiting) BEFORE the provision await; both are given back if provision fails. Checking either against
         `self._instances` alone would be a TOCTOU: a backend only lands
         there after `provision()` returns, and provisioning is where the
         awaits are, so parallel tool calls would all pass an empty check."""
@@ -221,24 +244,21 @@ class SandboxManager:
             raise ValueError(f"no backend factory registered for sandbox type {type.value!r}")
 
         effective_ctx = ctx or entry.default_ctx
+        org_id = effective_ctx.org_id if effective_ctx else None
         lease = None
         async with self._lock:
             await self._sweep_stale(type, entry.limits)
             self._check_concurrency(type, entry.limits)
 
-            if self._governor is not None:
-                org_id = effective_ctx.org_id if effective_ctx else None
-                lease = await self._governor.acquire(org_id=org_id)
-
-            try:
-                backend = self._create_backend(entry, effective_ctx)
-            except Exception:
-                await self._release_lease(lease)
-                raise
+            backend = self._create_backend(entry, effective_ctx)
             self._in_flight[type] = self._in_flight.get(type, 0) + 1
 
-        started = time.monotonic()
         try:
+            # Outside the manager lock: a creation waiting for a slot must not
+            # hold up this chat's other sandbox calls.
+            if self._governor is not None and _holds_slot_for_life(backend):
+                lease = await self._acquire_slot(org_id, tool)
+            started = time.monotonic()
             backend = await self._provision(backend, entry.limits, type)
         except Exception:
             await self._release_lease(lease)
@@ -250,7 +270,7 @@ class SandboxManager:
         now = time.monotonic()
         record = _InstanceRecord(
             backend=backend, created_at=now, last_used_at=now,
-            governor_lease=lease,
+            governor_lease=lease, org_id=org_id,
         )
         for t in entry.capabilities:
             self._instances[(t, new_id)] = record
@@ -296,6 +316,46 @@ class SandboxManager:
                 f"sandbox provision failed for type {type.value!r}: "
                 f"{type_name(exc)}: {exc}"
             ) from exc
+
+    @asynccontextmanager
+    async def slot(self, type: SandboxType, sandbox_id: str, *, tool: str = "run_code") -> AsyncIterator[None]:
+        """Hold a governor slot while one call (of tool *tool*) runs on the sandbox.
+
+        Waits for a free slot (see `slot_wait_s`), then raises
+        `SandboxLimitExceeded`. A no-op for a sandbox that keeps its slot for
+        life (metered backends), an unknown id, or a manager with no governor.
+        """
+        record = self._instances.get((type, sandbox_id))
+        if record is None or self._governor is None or record.governor_lease is not None:
+            yield
+            return
+        lease = await self._acquire_slot(record.org_id, tool)
+        try:
+            yield
+        finally:
+            await self._release_lease(lease)
+
+    async def _acquire_slot(self, org_id: str | None, tool: str) -> Any:
+        """A governor slot, waiting up to `slot_wait_s`; the wait note is
+        shown when the wait starts and cleared once the slot is granted."""
+        notify = self._on_slot_wait
+        shown = False
+
+        async def on_wait() -> None:
+            nonlocal shown
+            shown = True
+            if notify is not None:
+                await notify(tool, waiting=True)
+
+        try:
+            return await self._governor.acquire(org_id=org_id, wait_s=self._slot_wait_s, on_wait=on_wait)
+        finally:
+            # Granted, timed out or cancelled: the note is taken down either way.
+            if shown and notify is not None:
+                try:
+                    await notify(tool, waiting=False)
+                except Exception:
+                    logger.warning("clearing the slot-wait note failed", exc_info=True)
 
     async def _release_lease(self, lease: Any | None) -> None:
         if lease is None:

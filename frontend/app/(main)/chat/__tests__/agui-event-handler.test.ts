@@ -539,6 +539,9 @@ describe('createAGUIEventHandler', () => {
     const label = messages[3];
     expect(label.endsWith('...')).toBe(true);
     expect(messages.slice(0, 3)).toEqual([`${label} 3/10`, `${label} 25%`, `${label} Reading page 3`]);
+    // A status carrying the tool's own progress is marked so the timeline keeps it in view.
+    const statuses = spies.onStatus.mock.calls.map(([update]: [{ status: string }]) => update.status);
+    expect(statuses).toEqual(['tool_progress', 'tool_progress', 'tool_progress', 'running_tool']);
   });
 
   it('reports `snapshot.final` as the settled answer and emits no progress status', () => {

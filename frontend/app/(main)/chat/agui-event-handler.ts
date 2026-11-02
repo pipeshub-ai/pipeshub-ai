@@ -19,6 +19,7 @@ import type {
   SSEChunkCitation,
   SSEConnectedEvent,
 } from './types';
+import { TOOL_PROGRESS_STATUS } from './types';
 import type { StreamMessageCallbacks } from './api';
 import { toolStatusLabel } from './utils/tool-display';
 import { ChatStreamError } from './stream-error';
@@ -658,10 +659,15 @@ export function createAGUIEventHandler(
         };
         let message = STATUS_MESSAGES[status];
         if (message) {
+          let shownStatus = status;
           if (status === 'running_tool' && typeof snapshot?.current_tool === 'string') {
-            message = `${toolStatusLabel(snapshot.current_tool)}...${toolProgressText(snapshot)}`;
+            const progress = toolProgressText(snapshot);
+            message = `${toolStatusLabel(snapshot.current_tool)}...${progress}`;
+            // The tool's own progress ("waiting in queue", "3/10") says more than its
+            // running row does, so the activity timeline keeps it visible.
+            if (progress) shownStatus = TOOL_PROGRESS_STATUS;
           }
-          callbacks.onStatus?.({ status, message });
+          callbacks.onStatus?.({ status: shownStatus, message });
         }
         break;
       }

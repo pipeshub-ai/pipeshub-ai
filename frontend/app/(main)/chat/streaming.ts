@@ -1183,6 +1183,8 @@ export async function streamMessageForSlot(
           timestamp: new Date().toISOString(),
         };
         if (data.status === 'calling_llm') {
+          // A tool's last progress still waiting out its dwell must not come back after this.
+          cancelPendingStatus();
           applyStatus(statusMessage);
         } else {
           scheduleStatus(statusMessage);
@@ -1889,6 +1891,8 @@ export async function streamRegenerateForSlot(
         timestamp: new Date().toISOString(),
       };
       if (data.status === 'calling_llm') {
+        // A tool's last progress still waiting out its dwell must not come back after this.
+        cancelPendingStatus();
         applyStatus(statusMessage);
       } else {
         scheduleStatus(statusMessage);
