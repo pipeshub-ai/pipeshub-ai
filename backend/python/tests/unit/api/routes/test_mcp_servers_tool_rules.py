@@ -176,5 +176,11 @@ class TestPendingList:
         assert caught.value.status_code == 403
 
     async def test_pending_route_ignores_query_user_id(self) -> None:
-        out = await self._list(self._store("user-2"), query_user="user-2")
-        assert out == {"items": []}
+        store = self._store("user-2")
+        mine = get_mcp_tool_approval_user_index_dir("org-1", "user-1")
+        store.data[f"{mine}/m"] = {
+            "approvalId": "m", "client": "pipeshub-ai", "conversationId": "c", "createdAt": 5,
+            "expiresAt": (time.time() + 60) * 1000, "card": {"approvalId": "m"},
+        }
+        out = await self._list(store, query_user="user-2")
+        assert [i["card"]["approvalId"] for i in out["items"]] == ["m"]
