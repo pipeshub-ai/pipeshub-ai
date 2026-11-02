@@ -4,7 +4,12 @@ import {
   type SlackBlock,
   type TypedSlackClient,
 } from '../helpers';
-import { extractToolsetLabel, isWebTool, toolGroupLabel } from './tool-display';
+import {
+  extractToolsetLabel,
+  groupToolsetLabel,
+  isWebTool,
+  toolGroupLabel,
+} from './tool-display';
 
 /** Title of the plan block that holds the steps. */
 export const SLACK_PLAN_TITLE = 'Thinking';
@@ -119,20 +124,41 @@ export function splitIntoRows(
   return rows;
 }
 
-const SECRET_ASSIGNMENT =
-  /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|client[_-]?secret|password|passwd|secret|token)\b(["']?\s*[:=]\s*["']?(?:bearer\s+)?)[^\s"',;)}]+/gi;
-const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
+/** A key whose name says it holds a secret: api_key, apiKey, bot-token, private_key, aws_secret_access_key… */
+const SECRET_KEY = String.raw`[A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|pwd|key|credential|auth)[A-Za-z0-9_-]*`;
+/** `"key": "value with spaces"` / `key='…'`: masked to the end of the quoted value. */
+const QUOTED_SECRET = new RegExp(
+  String.raw`(["']?)\b(${SECRET_KEY})\1(\s*[:=]\s*)(["'])(?:\\.|(?!\4)[^\\])*\4`,
+  'gi',
+);
+/** `?key=…&` in a URL: masked to the next parameter. */
+const QUERY_SECRET = new RegExp(
+  String.raw`([?&;])(${SECRET_KEY})=[^&#\s]*`,
+  'gi',
+);
+/** `Authorization: Basic|Bearer|Token …`: the whole value. */
+const AUTH_HEADER =
+  /\b(authorization\s*[:=]\s*)["']?(?:basic|bearer|token)\b[^\n"']*/gi;
+/** `key: value` / `key=value` unquoted: masked to the end of the line. */
+const PLAIN_SECRET = new RegExp(
+  String.raw`\b(${SECRET_KEY})(\s*[:=]\s*)(?![\s"'\[])[^\n]*`,
+  'gi',
+);
+const BEARER = /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/g;
+/** `https://user:pass@host`: the user info goes. */
+const URL_USERINFO = /\b(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
 const SECRET_TOKEN =
-  /\b(?:xox[abposr]-[\w-]+|sk-[A-Za-z0-9_-]{16,}|phpat_[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g;
+  /\b(?:xox[abeposr]-[\w-]+|sk-ant-[\w-]+|sk-[A-Za-z0-9_-]{16,}|phpat_[\w-]+|github_pat_\w+|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[\w-]{10,}|AKIA[0-9A-Z]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+)/g;
 
-/** Keys, tokens and passwords in a call's arguments never reach Slack. */
+/** Keys, tokens and passwords in what a call shows never reach Slack. */
 export function redactSecrets(text: string): string {
   return text
-    .replace(
-      SECRET_ASSIGNMENT,
-      (_match, key: string, sep: string) => `${key}${sep}[redacted]`,
-    )
-    .replace(BEARER, 'Bearer [redacted]')
+    .replace(URL_USERINFO, '$1***@')
+    .replace(AUTH_HEADER, '$1[redacted]')
+    .replace(QUOTED_SECRET, '$1$2$1$3$4[redacted]$4')
+    .replace(QUERY_SECRET, '$1$2=[redacted]')
+    .replace(PLAIN_SECRET, '$1$2[redacted]')
+    .replace(BEARER, '$1 [redacted]')
     .replace(SECRET_TOKEN, '[redacted]');
 }
 
@@ -163,7 +189,11 @@ export function compactArgs(raw: string): string {
         text.length > MAX_ARG_VALUE_CHARS
           ? `${text.slice(0, MAX_ARG_VALUE_CHARS).trimEnd()}…`
           : text;
-      return [`${key}: ${shown}`];
+      return [
+        new RegExp(String.raw`^${SECRET_KEY}$`, 'i').test(key)
+          ? `${key}: [redacted]`
+          : `${key}: ${shown}`,
+      ];
     },
   );
   const joined = redactSecrets(pairs.join(', '));
@@ -184,13 +214,6 @@ export function sqlQuery(
   } catch {
     return undefined;
   }
-}
-
-function indent(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => `    ${line}`)
-    .join('\n');
 }
 
 /** What a finished tool call reported: the server's one-line result and its view of what it found. */
@@ -480,15 +503,21 @@ export class SlackTaskPlan {
     return rows;
   }
 
-  /** Running rows among `ids` when the reply stops: Slack would leave them spinning. A wait for approval stays. */
+  /** Running rows among `ids` when the reply stops: Slack would leave them spinning. A wait for approval ends as said, not failed. */
   failRunning(ids: ReadonlySet<string>): SlackTaskChunk[] {
     const failed: SlackTaskChunk[] = [];
     for (const task of this.tasks.values()) {
-      if (
-        task.status === 'in_progress' &&
-        ids.has(task.id) &&
-        !this.waiting.has(task.id)
-      ) {
+      if (task.status !== 'in_progress' || !ids.has(task.id)) continue;
+      if (this.waiting.has(task.id)) {
+        // Nothing more happens in this reply: no spinner left behind, and it says what it waits for.
+        failed.push(
+          this.put({
+            ...task,
+            status: 'complete',
+            title: `${APPROVAL_OUTPUT}: ${task.title}`,
+          }),
+        );
+      } else {
         failed.push(this.put({ ...task, status: 'error' }));
       }
     }
@@ -521,7 +550,7 @@ export class SlackTaskPlan {
         call.status === 'running' || call.status === 'awaiting_approval'
           ? '•'
           : failed
-            ? '⚠'
+            ? '✗'
             : '✓';
       const chip = call.approvalAnswer
         ? APPROVAL_CHIPS[call.approvalAnswer]
@@ -535,22 +564,25 @@ export class SlackTaskPlan {
     const query = sqlQuery(call.toolName, call.raw);
     if (query) lines.push(`Query: ${redactSecrets(query)}`);
     if (call.status === 'running') {
-      if (call.progress) lines.push(`Progress: ${call.progress}`);
+      if (call.progress)
+        lines.push(`Progress: ${redactSecrets(call.progress)}`);
     } else if (call.status === 'awaiting_approval') {
       // A lone call already says it in its summary line.
       if (heading !== null) lines.push(`Result: ${APPROVAL_OUTPUT}`);
     } else if (call.status === 'blocked') {
-      lines.push(call.result ? `Blocked: ${call.result}` : 'Blocked');
+      lines.push(
+        call.result ? `Blocked: ${redactSecrets(call.result)}` : 'Blocked',
+      );
     } else if (call.status === 'failed') {
       const reason = call.result?.replace(/^Failed:\s*/i, '');
-      lines.push(reason ? `Result: Failed: ${reason}` : 'Result: Failed');
+      lines.push(
+        reason ? `Result: Failed: ${redactSecrets(reason)}` : 'Result: Failed',
+      );
     } else if (call.result) {
-      lines.push(`Result: ${call.result}`);
+      lines.push(`Result: ${redactSecrets(call.result)}`);
     }
-    const [first, ...rest] = lines;
-    return heading === null || first === undefined
-      ? lines
-      : [first, ...rest.map(indent)];
+    // A line per field, no leading spaces: Slack could show indented lines as code.
+    return lines;
   }
 
   /** One row for a group of calls (or a sub-agent), titled and listed like the dashboard's. */
@@ -558,30 +590,15 @@ export class SlackTaskPlan {
     const entry = this.groups.get(group);
     if (!entry) return [];
     const { calls, agent } = entry;
-    const tags = [
-      ...new Set(calls.map((call) => extractToolsetLabel(call.toolName))),
-    ];
-    const tag = agent || tags.length !== 1 ? undefined : tags[0];
+    const tag = agent
+      ? undefined
+      : groupToolsetLabel(calls.map((call) => call.toolName));
     const single = !agent && calls.length === 1 ? calls[0] : undefined;
-    const hosts = [
-      ...new Set(
-        calls.flatMap((call) =>
-          call.sources.map((source) => new URL(source.url).hostname),
-        ),
-      ),
-    ];
-    const pagesOnly =
-      calls.length > 1 &&
-      calls.every(
-        (call) => isWebTool(call.toolName) && !/search/i.test(call.toolName),
-      );
     const label = agent
       ? agent.role
       : single
         ? single.label
-        : pagesOnly
-          ? `Fetched ${String(calls.length)} pages${hosts.length > 0 ? `: ${hosts.join(', ')}` : ''}`
-          : toolGroupLabel(calls.map((call) => call.toolName));
+        : toolGroupLabel(calls.map((call) => call.toolName));
 
     const running = calls.filter((call) => call.status === 'running').length;
     const failedCount = calls.filter(
@@ -615,7 +632,9 @@ export class SlackTaskPlan {
     const blocks = single
       ? [this.callLines(single, null).join('\n')]
       : calls.map((call) => {
-          const callTag = tag ? undefined : extractToolsetLabel(call.toolName);
+          // A call's own app, unless the row's title already names it.
+          const own = extractToolsetLabel(call.toolName);
+          const callTag = own === tag ? undefined : own;
           const fetched =
             isWebTool(call.toolName) &&
             !/search/i.test(call.toolName) &&
@@ -633,9 +652,9 @@ export class SlackTaskPlan {
       const page = pages[last];
       if (
         page !== undefined &&
-        page.length + 1 + block.length <= MAX_TASK_OUTPUT_CHARS
+        page.length + 2 + block.length <= MAX_TASK_OUTPUT_CHARS
       ) {
-        pages[last] = `${page}\n${block}`;
+        pages[last] = `${page}\n\n${block}`;
       } else {
         pages.push(clip(block, MAX_TASK_OUTPUT_CHARS));
       }
@@ -723,7 +742,12 @@ export class SlackPlanStream {
       await this.append(chunks);
       this.track(chunks);
     } catch (error) {
-      if (slackErrorCode(error) !== 'message_not_in_streaming_state') {
+      const code = slackErrorCode(error);
+      if (code === 'msg_blocks_too_long' || code === 'msg_too_long') {
+        await this.retrySmaller(chunks);
+        return;
+      }
+      if (code !== 'message_not_in_streaming_state') {
         console.error('Error updating Slack steps:', error);
         return;
       }
@@ -731,6 +755,47 @@ export class SlackPlanStream {
       this.retire();
       await this.openWith(chunks);
     }
+  }
+
+  /**
+   * Slack found the rows too big: each row's output moves half into a
+   * "(continued)" row, then, if that still fails, the rows go without their
+   * output. A row is never lost.
+   */
+  private async retrySmaller(chunks: SlackTaskChunk[]): Promise<void> {
+    const halves = chunks.flatMap((chunk): SlackTaskChunk[] => {
+      const output = chunk.output ?? '';
+      if (output.length < 2) return [chunk];
+      const middle = output.lastIndexOf('\n\n', Math.floor(output.length / 2));
+      const cut = middle > 0 ? middle : Math.floor(output.length / 2);
+      return [
+        { ...chunk, output: output.slice(0, cut).trim() },
+        {
+          type: 'task_update',
+          id: `${chunk.id}-overflow`,
+          title: `${chunk.title} (continued)`,
+          status: chunk.status,
+          output: output.slice(cut).trim(),
+        },
+      ];
+    });
+    for (const attempt of [
+      halves,
+      chunks.map(({ output: _output, ...row }) => row),
+    ]) {
+      try {
+        await this.append(attempt);
+        this.track(attempt);
+        return;
+      } catch (error) {
+        const code = slackErrorCode(error);
+        if (code !== 'msg_blocks_too_long' && code !== 'msg_too_long') {
+          console.error('Error updating Slack steps:', error);
+          return;
+        }
+      }
+    }
+    console.error('Slack refused the steps even without their output');
   }
 
   /**

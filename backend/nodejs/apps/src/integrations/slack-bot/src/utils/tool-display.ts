@@ -55,6 +55,18 @@ export function extractToolsetLabel(
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
+/** A burst's app tag, as the dashboard's group shows it: the one app its tagged calls share. */
+export function groupToolsetLabel(toolNames: string[]): string | undefined {
+  const labels = [
+    ...new Set(
+      toolNames
+        .map((name) => extractToolsetLabel(name))
+        .filter((label): label is string => Boolean(label)),
+    ),
+  ];
+  return labels.length === 1 ? labels[0] : undefined;
+}
+
 /** A burst of tool calls with no text between them, labelled the way the dashboard groups them. */
 export function toolGroupLabel(toolNames: string[]): string {
   const count = toolNames.length;

@@ -66,6 +66,7 @@ import {
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
+  NARRATION_HOLD_CHARS,
   NO_UNFURL_OPTIONS,
   STREAM_FAILURE_MESSAGE,
   BACKEND_STREAM_TIMEOUT_MS,
@@ -435,7 +436,8 @@ async function processSlackMessage(
     email,
   );
   const answerPlan = new SlackTaskPlan();
-  // Numbers citation placeholders as [n] while the answer streams, to match the Sources list.
+  // Numbers citation placeholders as [n] while the answer streams, to match the
+  // Sources list: one counter for the reply, so a number never means two refs.
   const citationMarkers = new CitationMarkers();
   // Null when Slack can't stream here: the answer is then posted under a status message.
   let answerStream: SlackPlanStream | null = null;
@@ -786,17 +788,20 @@ async function processSlackMessage(
 
       streamTableProbeText += nextChunk;
       if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
+        // The text held before the table shows as text; the table goes below it as blocks.
+        flushPendingAppend(true);
         tableStreamingDisabled = true;
-        pendingAppendText = "";
-        heldAnswerText = "";
-        clearAnswerFlushTimer();
         return;
       }
 
       pendingAppendText += nextChunk;
       // Large buffer → flush now. Otherwise arm a short idle timer so a pause
       // in token arrival still pushes what's buffered (avoids multi-second stalls).
-      if (pendingAppendText.length >= STREAM_UPDATE_MAX_CHARS) {
+      // Until a model call's text is clearly the answer it waits, so text
+      // before a tool call can still become a row of the plan.
+      const flushAt =
+        pushedAnswerLength === 0 ? NARRATION_HOLD_CHARS : STREAM_UPDATE_MAX_CHARS;
+      if (pendingAppendText.length >= flushAt) {
         clearAnswerFlushTimer();
         flushPendingAppend();
         return;
@@ -928,7 +933,6 @@ async function processSlackMessage(
     }
 
     function startAnswerSegment(): void {
-      citationMarkers.reset();
       streamedBeforeSegment = answerTextStreamed;
       queuedStreamAppend = queuedStreamAppend
         .then(() => {

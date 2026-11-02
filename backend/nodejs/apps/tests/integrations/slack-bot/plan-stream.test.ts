@@ -76,7 +76,7 @@ describe('slack-bot/utils/plan-stream', () => {
         title: 'Explored 2 searches',
         status: 'error',
         details: '2 calls · 1 failed',
-        output: '✓ Searched the web\n    Result: 7 results\n⚠ Searched the web\n    Result: Failed: The search took too long',
+        output: '✓ Searched the web\nResult: 7 results\n\n✗ Searched the web\nResult: Failed: The search took too long',
       });
       expect((row!.details as string).length).to.be.at.most(256);
 
@@ -84,7 +84,7 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(plan.toolStarted('fetch_url', 'Read a web page', 'c3')[0]!.id).to.not.equal('tools-1');
     });
 
-    it('names the pages a burst of fetches read', () => {
+    it('labels a burst of page reads the way the dashboard does, naming each page', () => {
       const plan = new SlackTaskPlan();
       const page = (url: string) => ({ view: { kind: 'fields', fields: [{ label: 'Title', value: 'Page' }], url } });
       plan.toolStarted('fetch_url', 'Read a web page', 'c1');
@@ -93,8 +93,18 @@ describe('slack-bot/utils/plan-stream', () => {
       const [row] = plan.toolFinished('fetch_url', 'Read a web page', 'completed', 'c2', page('https://trustcenter.asana.com/'));
 
       expect(row).to.deep.include({
-        title: 'Fetched 2 pages: investors.asana.com, trustcenter.asana.com',
-        output: '✓ Read a web page (investors.asana.com)\n    Result: Read “Q3 results” (investors.asana.com)\n✓ Read a web page (trustcenter.asana.com)',
+        title: 'Ran 2 tools',
+        output: '✓ Read a web page (investors.asana.com)\nResult: Read “Q3 results” (investors.asana.com)\n\n✓ Read a web page (trustcenter.asana.com)',
+      });
+    });
+
+    it('tags the row with the one app its tagged calls share, as the dashboard does', () => {
+      const plan = new SlackTaskPlan();
+      plan.toolStarted('web_search', 'Searched the web', 'c1');
+      const [row] = plan.toolStarted('knowledgegraph__search', 'Searched the knowledge base', 'c2');
+      expect(row).to.deep.include({
+        title: 'Knowledgegraph: Explored 2 searches',
+        output: '• Searched the web\n\n• Searched the knowledge base',
       });
     });
 
@@ -102,7 +112,7 @@ describe('slack-bot/utils/plan-stream', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira__search_issues', 'Searched Jira', 'c1');
       const [row] = plan.toolStarted('confluence__get_page', 'Read a page', 'c2');
-      expect(row).to.deep.include({ title: 'Ran 2 tools', status: 'in_progress', output: '• Jira: Searched Jira\n• Confluence: Read a page' });
+      expect(row).to.deep.include({ title: 'Ran 2 tools', status: 'in_progress', output: '• Jira: Searched Jira\n\n• Confluence: Read a page' });
     });
 
     it('lists every call, continuing in another row rather than dropping or cutting one', () => {
@@ -134,7 +144,7 @@ describe('slack-bot/utils/plan-stream', () => {
       );
 
       const output = row!.output as string;
-      expect(output).to.include('Arguments: Querying the database\n    Query: SELECT 1');
+      expect(output).to.include('Arguments: Querying the database\nQuery: SELECT 1');
       expect(output).to.include('Arguments: title: Bug, token: [redacted], api_key: [redacted]');
       expect(output).to.not.include('ghp_').and.not.include('k-123').and.not.include('labels');
     });
@@ -147,20 +157,26 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(plan.toolFinished('mcp_jira_search', 'Searched Jira', 'completed', 'c1')[0]).to.not.have.property('output');
     });
 
-    it('keeps a tool waiting for approval in progress, saying so, and never fails it when the reply stops', () => {
+    it('keeps a tool waiting for approval in progress, then ends it as waiting, not failed, when the reply stops', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira_create', 'Created an issue', 'c1');
       expect(plan.toolFinished('jira_create', 'Created an issue', 'awaiting_approval', 'c1')[0]).to.deep.include({
         status: 'in_progress', details: 'Waiting for your approval',
       });
-      expect(plan.failRunning(new Set(['tools-1']))).to.deep.equal([]);
+      expect(plan.failRunning(new Set(['tools-1']))).to.deep.equal([{
+        type: 'task_update',
+        id: 'tools-1',
+        title: 'Waiting for your approval: Created an issue',
+        status: 'complete',
+        details: 'Waiting for your approval',
+      }]);
     });
 
     it('shows how an approval was settled, as the dashboard chips it', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira_create', 'Created an issue', 'c1', { approvalAnswer: 'allowed' });
       const [row] = plan.toolStarted('jira_create', 'Created an issue', 'c2', { approvalAnswer: 'declined' });
-      expect(row!.output).to.equal('• Created an issue · Approved\n• Created an issue · Declined');
+      expect(row!.output).to.equal('• Created an issue · Approved\n\n• Created an issue · Declined');
     });
 
     it('puts a sub-agent in a row of its own, with its own calls listed', () => {
@@ -173,7 +189,7 @@ describe('slack-bot/utils/plan-stream', () => {
         title: 'Researcher',
         status: 'complete',
         details: '1 call',
-        output: '✓ Searched the web\n    Result: 4 results',
+        output: '✓ Searched the web\nResult: 4 results',
       });
       expect(plan.subAgent('Writer', 'failed')[0]).to.deep.include({ title: 'Writer', status: 'error' });
     });
@@ -227,15 +243,47 @@ describe('slack-bot/utils/plan-stream', () => {
   });
 
   describe('compactArgs and redactSecrets', () => {
-    it('shows scalars as key: value, skips nested values and masks secrets', () => {
-      expect(compactArgs('{"project":"OPS","limit":5,"filter":{"a":1},"password":"hunter2"}')).to.equal(
-        'project: OPS, limit: 5, password: [redacted]',
+    it('shows scalars as key: value, skips nested values and masks secret keys', () => {
+      expect(compactArgs('{"project":"OPS","limit":5,"filter":{"a":1},"password":"hunter2","botToken":"abc"}')).to.equal(
+        'project: OPS, limit: 5, password: [redacted], botToken: [redacted]',
       );
       expect(compactArgs('not json')).to.equal('');
-      expect(redactSecrets('Authorization: Bearer abc.def.ghijklmnop and xoxb-123-456-abc')).to.equal(
-        'Authorization: Bearer [redacted] and [redacted]',
-      );
+    });
+
+    const CASES: [string, string, string][] = [
+      ['a JSON value with spaces', '{"api_key": "my secret value", "q": "x"}', '{"api_key": "[redacted]", "q": "x"}'],
+      ['snake, kebab and camel keys', 'auth_token=abc bot-token: def', 'auth_token=[redacted]'],
+      ['secret_key', 'secret_key: s3cr3t', 'secret_key: [redacted]'],
+      ['private_key', '"private_key": "-----BEGIN KEY-----"', '"private_key": "[redacted]"'],
+      ['aws_secret_access_key', 'aws_secret_access_key=wJalr', 'aws_secret_access_key=[redacted]'],
+      ['api-key', 'api-key: k-1', 'api-key: [redacted]'],
+      ['apiKey', "apiKey='k 2'", "apiKey='[redacted]'"],
+      ['a query parameter', 'Read https://api.test/v1?key=abc&q=x', 'Read https://api.test/v1?key=[redacted]&q=x'],
+      ['URL user info', 'Fetched https://user:pa55@host.test/a', 'Fetched https://***@host.test/a'],
+      ['an Authorization header', 'Authorization: Basic dXNlcjpwYXNz', 'Authorization: [redacted]'],
+      ['a bare bearer token', 'sent Bearer abcdefghijkl', 'sent Bearer [redacted]'],
+      ['github_pat_', 'github_pat_11ABCDEF_xyz', '[redacted]'],
+      ['ghp_', 'ghp_abcdefghijklmnopqrstuvwxyz01', '[redacted]'],
+      ['glpat-', 'glpat-abcdefghij1234', '[redacted]'],
+      ['xoxe-', 'xoxe-1-abc', '[redacted]'],
+      ['sk-ant-', 'sk-ant-api03-abc', '[redacted]'],
+      ['a password with spaces to the end of the line', 'password: correct horse battery\nnext', 'password: [redacted]\nnext'],
+    ];
+    for (const [name, input, expected] of CASES) {
+      it(`masks ${name}`, () => {
+        expect(redactSecrets(input)).to.equal(expected);
+      });
+    }
+
+    it('keeps ordinary words', () => {
       expect(redactSecrets('Searched for "password reset policy"')).to.equal('Searched for "password reset policy"');
+    });
+
+    it('masks secrets in results too', () => {
+      const plan = new SlackTaskPlan();
+      plan.toolStarted('http__get', 'Called an API', 'c1');
+      const [row] = plan.toolFinished('http__get', 'Called an API', 'completed', 'c1', { summary: 'Got token=abc123 back' });
+      expect(row!.output).to.equal('Result: Got token=[redacted]');
     });
   });
 
@@ -387,6 +435,22 @@ describe('slack-bot/utils/plan-stream', () => {
       c.apiCall.withArgs('chat.stopStream').rejects(expired());
 
       expect(await s.stop({ markdown: 'Something went wrong.' })).to.equal(false);
+    });
+
+    it('moves a row that Slack finds too big into a "(continued)" row instead of losing it', async () => {
+      const { c, s, plan } = stream();
+      await s.tasks(plan.toolStarted('search', 'Searched', 'c1'));
+      const tooLong = Object.assign(new Error('big'), { data: { error: 'msg_blocks_too_long' } });
+      c.apiCall.withArgs('chat.appendStream').onFirstCall().rejects(tooLong);
+      const row = { type: 'task_update' as const, id: 'tools-1', title: 'Searched', status: 'complete' as const, output: 'a\n\nb' };
+
+      await s.tasks([row]);
+
+      const [, retried] = calls(c, 'chat.appendStream');
+      expect(retried.chunks).to.deep.equal([
+        { ...row, output: 'a' },
+        { type: 'task_update', id: 'tools-1-overflow', title: 'Searched (continued)', status: 'complete', output: 'b' },
+      ]);
     });
 
     it('takes back a discarded call: reopens with the plan, every step at its final status, and the text before it', async () => {

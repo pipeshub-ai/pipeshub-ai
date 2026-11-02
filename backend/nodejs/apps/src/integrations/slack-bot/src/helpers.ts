@@ -169,6 +169,11 @@ export const FAILED_RESPONSE_GENERATION_MESSAGE = 'Something went wrong while ge
 export const STREAM_UPDATE_THROTTLE_MS = 400;
 /** Flush immediately once this much answer text is buffered (avoid huge appends). */
 export const STREAM_UPDATE_MAX_CHARS = 400;
+/**
+ * How much of a model call's text waits before it streams: text before a
+ * tool call is shown as a row of the plan, and narration is rarely this long.
+ */
+export const NARRATION_HOLD_CHARS = 1500;
 /** Activity message updates can be slower; they must not block answer appends. */
 export const SLACK_MAX_TEXT_LENGTH = 39000;
 export const SLACK_STREAM_MARKDOWN_LIMIT = 11500;

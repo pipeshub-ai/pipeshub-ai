@@ -381,7 +381,7 @@ export function describeAnswerWiring(
     });
 
     it('streams a long answer live, in several appends', async () => {
-      const answer = 'Asana grew revenue in the third quarter. '.repeat(40);
+      const answer = 'Asana grew revenue in the third quarter. '.repeat(100);
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
@@ -444,6 +444,24 @@ export function describeAnswerWiring(
       expect(everything).to.not.match(/ref\d+\.xyz|\(ref\d+\)/);
     });
 
+    it('never gives two different citations the same [n] in one reply', async () => {
+      const opening = 'The older filing [source](ref9) covers this. '.repeat(40);
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(opening, 40),
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(ANSWER),
+        finished(NORMALIZED_ANSWER, CITATIONS),
+      ]);
+
+      const text = visibleText(client);
+      expect(text).to.include('The older filing [1] covers this.');
+      expect(text.endsWith('Revenue grew 12% [2].')).to.equal(true);
+    });
+
     it('keeps line breaks, headings and ordinary links of a multi-paragraph answer streamed in small deltas', async () => {
       const answer = [
         '## Asana overview',
@@ -494,14 +512,16 @@ export function describeAnswerWiring(
         details: '3 calls · 1 failed',
         output: [
           '✓ Search',
-          '    Arguments: Searched for "Asana SOC 3"',
-          '    Result: 3 results',
-          '    Doc A',
-          '⚠ Search',
-          '    Arguments: Searched for "Asana revenue"',
-          '    Result: Failed: no results',
+          'Arguments: Searched for "Asana SOC 3"',
+          'Result: 3 results',
+          'Doc A',
+          '',
+          '✗ Search',
+          'Arguments: Searched for "Asana revenue"',
+          'Result: Failed: no results',
+          '',
           '✓ Semantic Search',
-          '    Arguments: Searched for "Q3"',
+          'Arguments: Searched for "Q3"',
         ].join('\n'),
       });
       expect(steps[1]).to.deep.equal({ type: 'task_update', id: steps[1].id, title: 'The first lookup was inconclusive.', status: 'complete' });
@@ -521,12 +541,10 @@ export function describeAnswerWiring(
       const [group] = [...finalSteps(client).values()];
       expect(group.title).to.equal('Explored 6 searches');
       expect(group.details).to.equal('6 calls');
-      expect((group.output as string).split('\n')).to.deep.equal(
-        Array.from({ length: 6 }, (_, i) => [
-          '✓ Web Search',
-          `    Arguments: Searched for "query ${String(i)}"`,
-          `    Result: ${String(i)} results`,
-        ]).flat(),
+      expect((group.output as string).split('\n\n')).to.deep.equal(
+        Array.from({ length: 6 }, (_, i) =>
+          ['✓ Web Search', `Arguments: Searched for "query ${String(i)}"`, `Result: ${String(i)} results`].join('\n'),
+        ),
       );
     });
 
@@ -606,8 +624,17 @@ export function describeAnswerWiring(
       expect(JSON.stringify(rows)).to.not.include('…');
     });
 
-    it('sends the end of a long opening, streamed token by token, before the step', async () => {
-      const opening = `${'Here is what I know so far about revenue. '.repeat(11)}It grew in Q3`;
+    it('shows an opening up to 1,500 characters before a step as rows of the plan, not answer text', async () => {
+      const opening = `${'Here is what I know so far about revenue. '.repeat(30)}It grew in Q3.`;
+      const client = await ask(answerFrames('completed', opening));
+
+      expect(visibleText(client)).to.equal(SHOWN_ANSWER);
+      const rows = [...finalSteps(client).values()].filter((t) => String(t.id).startsWith('note-'));
+      expect(rows.map((r) => r.title as string).join(' ')).to.equal(opening);
+    });
+
+    it('sends the end of a longer opening, streamed token by token, before the step', async () => {
+      const opening = `${'Here is what I know so far about revenue. '.repeat(40)}It grew in Q3`;
       const client = await ask(answerFrames('completed', opening));
 
       expect(visibleText(client)).to.equal(`${opening}\n\n${SHOWN_ANSWER}`);
@@ -629,7 +656,7 @@ export function describeAnswerWiring(
           status: 'completed',
         },
         { type: 'TEXT_MESSAGE_START', runId: 'r1', messageId: 'm1' },
-        ...tokens('Revenue fell, according to the old report. '.repeat(10)),
+        ...tokens('Revenue fell, according to the old report. '.repeat(40)),
         { type: 'TEXT_MESSAGE_END', runId: 'r1', messageId: 'm1' },
         {
           type: 'CUSTOM',
@@ -829,7 +856,12 @@ export function describeAnswerWiring(
         )
         .filter((c) => c.type === 'task_update');
       // Waiting is not failing: it stays in progress, saying why, even after the reply stops.
-      expect(states.pop()).to.deep.include({ status: 'in_progress', details: 'Waiting for your approval' });
+      // At the end of the reply no spinner is left: the row says what it waits for.
+      expect(states.pop()).to.deep.include({
+        status: 'complete',
+        title: 'Waiting for your approval: Jira Create',
+        details: 'Waiting for your approval',
+      });
     });
 
     it('replaces the status message with the failure notice when the posted answer is empty', async () => {
