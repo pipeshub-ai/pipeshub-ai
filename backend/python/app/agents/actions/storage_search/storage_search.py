@@ -1235,7 +1235,7 @@ def _available_cpus() -> int:
         if quota != "max":
             return max(-(-int(quota) // int(period)), 1)
     except (OSError, ValueError):
-        pass
+        pass  # no cgroup v2 quota file, or an unreadable one: fall back to the CPU affinity
     try:
         return len(os.sched_getaffinity(0)) or 1
     except (AttributeError, OSError):
@@ -2236,7 +2236,7 @@ class StoragePatternMatch:
             if stat.S_ISDIR(os.lstat(os.path.join(base_dir, connector_id)).st_mode):
                 return connector_dir, None
         except OSError:
-            pass
+            pass  # not there or unreadable: the full check below decides
 
         # Defense-in-depth against path traversal: even though connector_id is
         # already validated against a strict charset above, verify the resolved
