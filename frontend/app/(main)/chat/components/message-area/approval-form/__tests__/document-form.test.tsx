@@ -64,8 +64,10 @@ describe('DocumentForm', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).toHaveBeenLastCalledWith('to', ['U123', 'U456']);
 
-    const chip = screen.getByText('U123').parentElement as HTMLElement;
-    fireEvent.click(chip.lastElementChild as HTMLElement);
+    const remove = screen.getByRole('button', { name: 'Remove U123' });
+    remove.focus();
+    expect(document.activeElement).toBe(remove);
+    fireEvent.click(remove);
     expect(onChange).toHaveBeenLastCalledWith('to', ['U456']);
   });
 

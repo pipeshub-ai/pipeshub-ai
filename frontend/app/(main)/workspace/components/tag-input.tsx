@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { Box, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 // ========================================
@@ -306,6 +307,7 @@ function TagPill({
   onEdit: (id: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const isError = tag.isValid === false;
   const isHighlighted = tag.isHighlighted === true;
   const isEditing = tag.isEditing === true;
@@ -366,36 +368,22 @@ function TagPill({
         {tag.value}
       </Text>
 
-      {!disabled && (isError ? (
-        <Box
+      {!disabled && (
+        <IconButton
+          type="button"
+          size="1"
+          variant="ghost"
+          color="gray"
+          aria-label={t('workspace.connectors.schemaForm.removeTagAriaLabel', { tag: tag.value })}
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
           }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            flexShrink: 0,
-          }}
+          style={{ margin: 0, width: 'var(--space-4)', height: 'var(--space-4)', flexShrink: 0 }}
         >
           <MaterialIcon name="close" size={14} color={iconColor} />
-        </Box>
-      ) : (
-        <Box
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-        >
-          <MaterialIcon name="close" size={14} color={iconColor} />
-        </Box>
-      ))}
+        </IconButton>
+      )}
     </Flex>
   );
 }

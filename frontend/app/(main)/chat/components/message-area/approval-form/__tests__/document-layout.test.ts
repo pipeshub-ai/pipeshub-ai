@@ -64,6 +64,7 @@ describe('isLongText', () => {
     expect(one('notes', { type: 'string', maxLength: 1000 })).toBe(true);
     expect(one('notes', { type: 'string', format: 'html' })).toBe(true);
     expect(one('notes', { type: 'string' })).toBe(false);
-    expect(one('body', { type: 'string', maxLength: 50 })).toBe(false);
+    expect(one('message', { type: 'string', maxLength: 160 })).toBe(true);
+    expect(one('message_id', { type: 'string' })).toBe(false);
   });
 });

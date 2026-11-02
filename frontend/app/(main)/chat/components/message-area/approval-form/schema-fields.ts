@@ -13,12 +13,14 @@ export type FieldSpec = {
   schema: JsonSchema;
 };
 
-const LONG_TEXT_NAME = /body|description|content|message|comment|text|markdown|html/i;
+const LONG_TEXT_WORD = new Set(['body', 'description', 'content', 'message', 'text', 'comment', 'markdown', 'html']);
 const LONG_TEXT_FORMAT = new Set(['markdown', 'html', 'textarea']);
 
+/** The name's last word, so `email_body` and `issueDescription` match but `message_id` and `contentType` don't. */
+const lastWord = (name: string) => (name.split(/[_\-\s]+|(?<=[a-z0-9])(?=[A-Z])/).pop() ?? '').toLowerCase();
+
 function longText(name: string, schema: JsonSchema): boolean {
-  if (LONG_TEXT_FORMAT.has(schema.format ?? '')) return true;
-  return schema.maxLength !== undefined ? schema.maxLength > 200 : LONG_TEXT_NAME.test(name);
+  return LONG_TEXT_FORMAT.has(schema.format ?? '') || (schema.maxLength ?? 0) > 200 || LONG_TEXT_WORD.has(lastWord(name));
 }
 
 /** A string field that reads as a body of text: by its name, a `maxLength` over 200, or a markdown/html/textarea format. */
