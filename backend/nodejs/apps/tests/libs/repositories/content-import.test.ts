@@ -190,6 +190,11 @@ describe('content importers: documents become rows', () => {
     expect(err?.message).to.contain(hexB).and.to.contain('already holds')
     const same = capture((sql) => (sql.includes('outbox_held') ? [{ id: outboxIdOf(hexA), org_id: O, topic: 't', msg_key: 'a', ordering_key: 'global', value: ev(hexA, 'a').value, created_at: '2026-01-02T03:04:05+00:00' }] : []))
     await importOutboxDocs(same.tx, [ev(hexA, 'a')])
+    // an exact retry whose time has milliseconds: the table hands back a Date, the importer writes text
+    const withMs = ev(hexA, 'a')
+    withMs.createdAt = '2026-01-02T03:04:05.678Z'
+    const heldMs = capture((sql) => (sql.includes('outbox_held') ? [{ id: outboxIdOf(hexA), org_id: O, topic: 't', msg_key: 'a', ordering_key: 'global', value: withMs.value, created_at: new Date('2026-01-02T03:04:05.678Z') }] : []))
+    await importOutboxDocs(heldMs.tx, [withMs])
     // the verify: two source events with one table id, one row in PostgreSQL, is a difference
     const m = MAPPINGS.find((x) => x.collection === 'outbox_events')!
     const prepared = [ev(hexA, 'a'), ev(hexB, 'b')].map((d) => prepareSource(m, d, new SourceReport())!)
