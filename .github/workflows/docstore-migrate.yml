@@ -32,7 +32,8 @@ concurrency:
 
 jobs:
   migrate:
-    runs-on: ubuntu-latest
+    # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
