@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import random
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -32,6 +33,10 @@ _logger = logging.getLogger(__name__)
 
 # A PDF needs OCR when at least this share of its (sampled) pages do.
 OCR_PAGE_SHARE = 0.5
+
+# Pages with a text layer that are checked to decide whether a PDF needs OCR.
+OCR_SAMPLE_PAGES = 30
+
 
 
 @dataclass(frozen=True)
@@ -86,10 +91,19 @@ def needs_ocr_and_page_count(content: bytes) -> tuple[bool, int]:
     A page with no text layer always needs OCR (``needs_ocr`` sees zero text
     density), so pdfium's character counts settle those without pdfplumber,
     which can spend minutes walking a page whose glyphs are drawn as vector paths.
+    Of the pages that have text, at most ``OCR_SAMPLE_PAGES`` evenly spread ones
+    are checked, each released as soon as it is: pdfplumber keeps every parsed
+    char and layout of a page until it is closed, which for a long document
+    otherwise grows with the page count. A document of that many text pages or
+    fewer is checked in full, exactly as before. Past that, the verdict is an
+    estimate from the sample (a sampling limit: a document whose share of pages
+    needing OCR is near one half can be called either way). Pages without a text
+    layer are always counted exactly.
     """
     chars_per_page = text_layer_char_counts(content)
     with pdfplumber.open(io.BytesIO(content)) as pdf:
-        total = len(pdf.pages)
+        pages = pdf.pages
+        total = len(pages)
         if total == 0:
             return False, 0
         counts: Sequence[int | None] = chars_per_page or ()
@@ -98,28 +112,54 @@ def needs_ocr_and_page_count(content: bytes) -> tuple[bool, int]:
         textless = sum(1 for chars in counts if chars == 0)
         if textless / total >= OCR_PAGE_SHARE:
             return True, total
-        ocr_count = textless + sum(
-            1
-            for page, chars in zip(pdf.pages, counts)
-            if chars != 0 and OCRStrategy.needs_ocr(page, _logger)
+        with_text = [index for index, chars in enumerate(counts) if chars != 0]
+        sampled = [with_text[i] for i in sample_page_indices(len(with_text), OCR_SAMPLE_PAGES)]
+        sampled_ocr = 0
+        for index in sampled:
+            try:
+                if OCRStrategy.needs_ocr(pages[index], _logger):
+                    sampled_ocr += 1
+            finally:
+                pages[index].close()
+        # A sample stands for all the pages with text.
+        ocr_with_text = (
+            sampled_ocr if len(sampled) == len(with_text) else len(with_text) * sampled_ocr / len(sampled)
         )
-    return ocr_count / total >= OCR_PAGE_SHARE, total
+    return (textless + ocr_with_text) / total >= OCR_PAGE_SHARE, total
 
 
 def sample_page_indices(page_count: int, limit: int) -> list[int]:
-    """Every page up to *limit*; past it, *limit* pages evenly spread, first and last included.
+    """Every page up to *limit*; past it, *limit* distinct pages, first and last included.
 
     Deciding OCR from a sample keeps the cost of the decision flat: each page
     checked runs pdfminer's full layout analysis, and the decision can need
     half the pages of a long document.
+
+    The pages between come one from each of *limit* - 2 equal runs of pages,
+    at an offset drawn per run, not at a fixed stride or any other regular
+    sequence: a regular placement can line up with a layout that repeats (say
+    two scanned pages in every three) and see only one kind of page. A drawn
+    offset sees each page of its run equally often, so the share it finds is
+    the document's own on average, whatever the layout. The draw is seeded by
+    the page count, so a document always gets the same sample. The result is
+    still a sample: past *limit* pages the share is an estimate, and a document
+    whose true share sits near one half can be called either way.
     """
     limit = max(1, limit)
     if page_count <= limit:
         return list(range(page_count))
     if limit == 1:
         return [0]
-    step = (page_count - 1) / (limit - 1)
-    return [round(i * step) for i in range(limit)]
+    draw = random.Random(page_count)
+    runs = limit - 2
+    middle = page_count - 2
+    chosen = [0]
+    for run in range(runs):
+        start = 1 + run * middle // runs
+        end = 1 + (run + 1) * middle // runs
+        chosen.append(draw.randrange(start, end))
+    chosen.append(page_count - 1)
+    return chosen
 
 
 def pages_need_ocr(pages: Sequence[Page]) -> bool:
