@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 import pytest
+from yarl import URL
 
 from app.config.constants.service import config_node_constants
 from app.connectors.sources.localKB.push import contract as C
@@ -124,6 +125,10 @@ class Pushes:
 async def build(tmp: str, *, resolver_override: dict[str, str] | None = None, before_task=None) -> Pushes:
     config = _config_service()
     docs = StorageDocuments(config, logger)
+    if resolver_override is None and os.environ.get("ARTIFACTS_IT_S3_VHOST") and os.environ.get("STORAGE_IT_S3_VHOST_ADDR"):
+        # The virtual-hosted S3 leg: the signed URL names <bucket>.s3.<region>.amazonaws.com, which only the throwaway MinIO
+        # answers. The parent's tests pin that name in-process (vhost_pin.py); the spawned child needs the same through its seam.
+        resolver_override = {"*.amazonaws.com": os.environ["STORAGE_IT_S3_VHOST_ADDR"]}
     mat = Materialiser(resolver_override=resolver_override, ca_file=os.environ.get("SSL_CERT_FILE") if resolver_override else None,
                        allow_loopback=bool(resolver_override or STORAGE_URL.startswith("http://127.0.0.1")), before_task=before_task)
     graph = FakeGraph()
@@ -159,9 +164,16 @@ async def p() -> AsyncIterator[Pushes]:
 
 async def stored_text(p: Pushes, doc_id: str) -> bytes:
     token = await generate_jwt(_config_service(), {"orgId": ORG_ID, "scopes": ["storage:token"]})
-    async with aiohttp.ClientSession() as s, s.get(f"{API}/{doc_id}/download", headers={"Authorization": f"Bearer {token}"}) as r:
-        assert r.status == 200
-        return await r.read()
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{API}/{doc_id}/download", headers={"Authorization": f"Bearer {token}"}) as r:
+            assert r.status == 200
+            body = await r.read()
+        if STORAGE_TYPE == "local":
+            return body
+        # S3 and Azure answer ``{"signedUrl": ...}``: the document is what that URL serves (no Authorization header on it).
+        async with s.get(URL(json.loads(body)["signedUrl"], encoded=True)) as r:
+            assert r.status == 200
+            return await r.read()
 
 
 async def test_materialised_document_on_real_storage(p: Pushes) -> None:
@@ -285,5 +297,6 @@ async def test_signed_url_host_set_on_real_s3_and_azure(p: Pushes) -> None:
     info = (await p.docs.info_many(ORG_ID, [doc], verify=True))[doc]
     assert info.storage_vendor == {"local": "local", "s3": "s3", "azureBlob": "azureBlob"}[STORAGE_TYPE]
     if STORAGE_TYPE != "local":
-        assert urlsplit(info.object_url).scheme == "https" or os.environ.get("ARTIFACTS_IT_S3_VHOST")
+        # Real S3 URLs are https; the Azure leg runs Azurite, which serves plain http.
+        assert urlsplit(info.object_url).scheme in {"s3": ("https",), "azureBlob": ("http", "https")}[STORAGE_TYPE]
     assert (await p.push(body_with([doc]))).status == "created"

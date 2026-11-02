@@ -188,8 +188,9 @@ class PinnedResolver(aiohttp.abc.AbstractResolver):
         self._override = override or {}
 
     async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
-        if host in self._override:
-            addresses = [self._override[host]]
+        target = _override_for(self._override, host)
+        if target is not None:
+            addresses, port = [target[0]], target[1] or port
         else:
             loop = asyncio.get_running_loop()
             infos = await loop.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
@@ -207,10 +208,27 @@ class PinnedResolver(aiohttp.abc.AbstractResolver):
         return None
 
 
+def _split_target(value: str) -> tuple[str, int | None]:
+    """``"127.0.0.1"`` or ``"127.0.0.1:19143"`` (an IPv4 address and an optional port)."""
+    address, sep, port = value.partition(":")
+    return (address, int(port)) if sep else (address, None)
+
+
+def _override_for(override: dict[str, str], host: str) -> tuple[str, int | None] | None:
+    """The seam's target for ``host``: an exact key, or a ``*.suffix`` key (any host under that suffix)."""
+    key = host.lower().rstrip(".")
+    if host in override:
+        return _split_target(override[host])
+    for pattern, value in override.items():
+        if pattern.startswith("*.") and key.endswith(pattern[1:].lower()):
+            return _split_target(value)
+    return None
+
+
 def validate_override(override: dict[str, str] | None) -> None:
     """The resolver seam may only point at loopback."""
-    for host, address in (override or {}).items():
-        if not ipaddress.ip_address(address).is_loopback:
+    for host, value in (override or {}).items():
+        if not ipaddress.ip_address(_split_target(value)[0]).is_loopback:
             raise ValueError(f"resolver override for {host!r} is not a loopback address")
 
 
@@ -272,13 +290,13 @@ async def _fetch_one(session: aiohttp.ClientSession, task: dict[str, Any], ref: 
             raise fetch_failed("an image changed while the push ran; send the push again")
         if vendor == "local":
             if resp.status != 200:
-                raise fetch_failed("an image could not be fetched")
+                raise fetch_failed(f"an image could not be fetched (HTTP {resp.status})")
             got = await _read_body(resp, path, ref, totals)
             if not etag_matches(resp.headers.get("ETag"), etag):
                 raise fetch_failed("an image is not the object that was verified")
             return got
         if resp.status != 200:
-            raise fetch_failed("an image could not be fetched")
+            raise fetch_failed(f"an image could not be fetched (HTTP {resp.status})")
         raw = await resp.content.read(SIGNED_URL_JSON_MAX + 1)
         if len(raw) > SIGNED_URL_JSON_MAX:
             raise fetch_failed("the signed URL answer is too large")
@@ -296,7 +314,7 @@ async def _fetch_one(session: aiohttp.ClientSession, task: dict[str, Any], ref: 
             if resp.status == 412:
                 raise fetch_failed("an image changed while the push ran; send the push again")
             if resp.status != 200:
-                raise fetch_failed("an image could not be fetched")
+                raise fetch_failed(f"an image could not be fetched (signed URL answered HTTP {resp.status})")
             got = await _read_body(resp, path, ref, totals)
             if not etag_matches(resp.headers.get("ETag"), etag):
                 raise fetch_failed("an image is not the object that was verified")
@@ -377,7 +395,12 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
             except (aiohttp.ClientError, TimeoutError, OSError) as e:
                 if isinstance(e, OSError) and e.errno == 27:
                     raise too_large(totals.cap) from None
-                raise fetch_failed("an image could not be fetched") from None
+                # The class name and errno say what broke (refused, TLS, DNS, timeout); the text of the error can carry
+                # the URL and its signature, so it is never copied.
+                cause = type(e).__name__ + (f" errno {e.errno}" if isinstance(e, OSError) and e.errno else "")
+                sys.stderr.write(f"{LOG_PREFIX} fetch failed ({cause})\n")
+                sys.stderr.flush()
+                raise fetch_failed(f"an image could not be fetched ({cause})") from None
     return await asyncio.to_thread(_splice, task, files, totals)
 
 

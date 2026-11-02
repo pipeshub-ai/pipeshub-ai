@@ -69,6 +69,24 @@ async def go(task) -> object:
         return r
 
 
+class TestRefusalReasons:
+    """A failed fetch says why (status or error class), never the URL or its query string."""
+
+    async def test_a_download_status_is_in_the_message(self, tmp_path, store) -> None:
+        ref = ref_for(store, 1, PNG)
+        store.mode[doc_id(1)] = "500"
+        r = await go(make_task(tmp_path, store, [ref]))
+        assert isinstance(r, C.Refused) and r.reason == "IMAGE_FETCH_FAILED" and "HTTP 500" in r.message
+
+    async def test_a_connection_failure_names_its_class_and_not_the_url(self, tmp_path, store) -> None:
+        url = "http://127.0.0.1:1/org/key.png?X-Amz-Signature=secret"
+        ref = ref_for(store, 1, PNG, vendor="s3", object_url="http://127.0.0.1:1/org/key.png")
+        store.signed_override[doc_id(1)] = url
+        r = await go(make_task(tmp_path, store, [ref]))
+        assert isinstance(r, C.Refused) and "ClientConnectorError" in r.message
+        assert "secret" not in r.message and "127.0.0.1" not in r.message and "X-Amz" not in r.message
+
+
 class TestSplice:
     async def test_output_has_inlined_images_size_and_rev_match_the_bytes(self, tmp_path, store) -> None:
         refs = [ref_for(store, 1, PNG), ref_for(store, 2, JPEG)]
@@ -318,6 +336,18 @@ class TestResolverSeam:
             text = path.read_text()
             for name in ("resolver_override", "ca_file", "allow_loopback"):
                 assert f'environ.get("{name.upper()}' not in text and "os.getenv" not in text
+
+    async def test_override_can_name_a_port_and_a_suffix(self) -> None:
+        """A virtual-hosted bucket host (``<bucket>.s3.<region>.amazonaws.com``) reaches a local server on its own port."""
+        resolver = C.PinnedResolver(admit_non_public=True, override={"*.s3.us-east-1.amazonaws.com": "127.0.0.1:19143"})
+        [hit] = await resolver.resolve("bucket-1.s3.us-east-1.amazonaws.com", 443)
+        assert (hit["host"], hit["port"], hit["hostname"]) == ("127.0.0.1", 19143, "bucket-1.s3.us-east-1.amazonaws.com")
+        exact = C.PinnedResolver(admit_non_public=True, override={"a.example.com": "127.0.0.1"})
+        assert (await exact.resolve("a.example.com", 8443))[0]["port"] == 8443  # no port in the value: the URL's port stays
+        assert C.PinnedResolver(admit_non_public=True, override={"*.example.com": "127.0.0.1:1"})._override
+        with pytest.raises(ValueError):
+            M.Materialiser(resolver_override={"*.example.com": "10.0.0.1:19143"})
+        M.Materialiser(resolver_override={"*.example.com": "127.0.0.1:19143"})
 
     async def test_override_pins_the_address_keeps_host_for_tls_and_host_header(self, tmp_path, store) -> None:
         from aiohttp import web

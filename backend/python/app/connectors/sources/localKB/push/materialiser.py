@@ -179,6 +179,7 @@ class Materialiser:
                 return Materialised(payload["size"], payload["content_rev"])
             outcome = "refused"
             if kind == "refused":
+                logger.warning("the push materialiser refused a task: %s %s (%s)", payload.get("status"), payload.get("reason"), payload.get("message"))
                 raise _refusal(payload)
             await self._reap(self._kill(slot))  # an unexpected error: do not trust the process again
             raise PushRefusal(503, "PUSH_TIMEOUT", "The images could not be processed; retry.", extra={"retryAfter": 5})
