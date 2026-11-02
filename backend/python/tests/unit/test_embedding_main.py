@@ -5,7 +5,7 @@ import base64
 import struct
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
+    MAX_EMBEDDING_REQUEST_BYTES,
     DownloadStatus,
     EncodeGate,
     EncodePriority,
@@ -56,6 +57,8 @@ def _no_settings_lookup_at_startup() -> Iterator[None]:
 def client():
     mock_manager = MagicMock(spec=ModelManager)
     mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
+    mock_manager.max_seq_length.return_value = 512
+    mock_manager.prompt_tokens.return_value = 0
     mock_manager.encode = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
 
     mock_manager.warmup = AsyncMock()
@@ -80,6 +83,24 @@ class TestEmbeddingServerRoutes:
         body = response.json()
         assert body["object"] == "list"
         assert body["data"][0]["id"] == DEFAULT_EMBEDDING_MODEL
+        assert body["data"][0]["max_seq_length"] == 512
+
+    def test_tokenize_returns_the_counts(self, client) -> None:
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[3, 7])
+        response = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a", "b"]})
+        assert response.status_code == 200
+        assert response.json()["counts"] == [3, 7]
+
+    def test_tokenize_rejects_too_many_items_or_characters(self, client) -> None:
+        import app.embedding_main as em
+
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[1])
+        too_many = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * (em.TOKENIZE_MAX_ITEMS + 1)})
+        too_long = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": "a" * (em.TOKENIZE_MAX_CHARS + 1)})
+        assert (too_many.status_code, too_long.status_code) == (413, 413)
+        mock_manager.count_tokens.assert_not_awaited()
 
     def test_create_embeddings_single_input(self, client):
         test_client, mock_manager = client
@@ -126,6 +147,26 @@ class TestEmbeddingServerRoutes:
             json={"model": DEFAULT_EMBEDDING_MODEL, "input": []},
         )
         assert response.status_code == 400
+
+    def test_create_embeddings_too_many_inputs_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        with patch("app.embedding_main.MAX_EMBEDDING_INPUTS", 3):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * 4},
+            )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
+
+    def test_create_embeddings_oversized_body_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        big = "x" * (MAX_EMBEDDING_REQUEST_BYTES + 1)
+        response = test_client.post(
+            "/v1/embeddings",
+            json={"model": DEFAULT_EMBEDDING_MODEL, "input": big},
+        )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
 
     def test_create_embeddings_base64_format(self, client):
         test_client, mock_manager = client
@@ -294,6 +335,61 @@ class TestModelManager:
         manager = ModelManager()
         manager._models = {"model-a": MagicMock(), "model-b": MagicMock()}
         assert sorted(manager.list_loaded_models()) == ["model-a", "model-b"]
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_uses_the_models_own_tokenizer(self) -> None:
+        class Model:
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool) -> dict:
+                assert add_special_tokens and truncation is False
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        entered = []
+
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def slot(priority: object) -> AsyncIterator[None]:
+            entered.append(priority)
+            yield
+
+        gate = MagicMock()
+        gate.slot = slot
+        manager._encode_gate = gate
+        assert await manager.count_tokens("m", ["ab", "abcde"]) == [2, 5]
+        assert len(entered) == 1  # takes an encode slot like embeddings do
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_includes_the_default_prompt_encode_would_add(self) -> None:
+        seen: list[list[str]] = []
+
+        class Model:
+            default_prompt_name = "query"
+            prompts = {"query": "search: "}
+
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool = False) -> dict:
+                seen.append(texts)
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        assert await manager.count_tokens("m", ["ab"]) == [10]  # "search: ab"
+        assert manager.prompt_tokens("m") == 8
+
+    def test_a_model_without_a_default_prompt_adds_no_tokens(self) -> None:
+        manager = ModelManager()
+        manager._models = {"m": MagicMock(default_prompt_name=None, prompts={"query": "x"}), "n": MagicMock(spec=[])}
+        assert manager.prompt_tokens("m") == 0
+        assert manager.prompt_tokens("n") == 0
+        assert manager.prompt_tokens("not-loaded") == 0
+
+    def test_max_seq_length_reads_the_loaded_model(self) -> None:
+        manager = ModelManager()
+        manager._models = {"a": MagicMock(max_seq_length=384), "b": MagicMock(max_seq_length=None)}
+        assert manager.max_seq_length("a") == 384
+        assert manager.max_seq_length("b") is None
+        assert manager.max_seq_length("not-loaded") is None
 
     @pytest.mark.asyncio
     async def test_get_model_returns_cached_without_loading(self):

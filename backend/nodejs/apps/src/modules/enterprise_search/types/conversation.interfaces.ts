@@ -420,4 +420,6 @@ export interface IAIModel {
   modelFriendlyName?: string;
   /** Forwarded to the Python LLM factory. */
   reasoningEffort?: ReasoningEffort;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }

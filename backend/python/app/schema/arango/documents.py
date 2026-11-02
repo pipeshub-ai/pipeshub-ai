@@ -364,6 +364,8 @@ record_schema = {
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
+            # Classification waits for the record's first use (ENABLE_CLASSIFY_ON_FIRST_USE).
+            "extractionDeferred": {"type": "boolean"},
             # app.modules.indexing.duplicate_reconcile
             "duplicateReconcileAttempts": {"type": ["integer", "null"]},
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
@@ -386,6 +388,8 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Set by an API push (see Record.push_origin); absent on every other record.
+            "pushOrigin": {"type": "boolean"},
             # Permission traversal input, read per visited node. Per node and
             # mixable within a connector; RESTRICTED applies to the node it is
             # on and is never inherited by its children. Absent reads as OPEN,
@@ -658,6 +662,7 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
@@ -761,6 +766,7 @@ pull_request_record_schema = {
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
@@ -1065,6 +1071,7 @@ named_entity_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1102,6 +1109,7 @@ value_mention_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},

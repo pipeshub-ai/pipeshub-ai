@@ -75,6 +75,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'getFirstLive',
   'getForApprover',
   'getForEdit',
+  'getWithFingerprintState',
   'getLive',
   'getLiveByEmail',
   'getLiveById',
@@ -144,6 +145,13 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'searchArchived',
   'stats',
 ]);
+/**
+ * What of an answer is compared, per method, applied to BOTH answers before the diff. The write counters and tokens of a document
+ * are store-local by design (and the copy lags), so only the row of `getWithFingerprintState` is compared.
+ */
+export const COMPARE_VIEW: Record<string, (v: unknown) => unknown> = {
+  getWithFingerprintState: (v) => (v as { row?: unknown } | null)?.row ?? null,
+};
 export const isReadMethod = (name: string): boolean => READ_METHODS.has(name);
 
 export interface ShadowConfig {
@@ -256,7 +264,8 @@ async function shadowRead(
       count('timeout');
       return;
     }
-    let diffs = jsonDiff(left, right);
+    const view = COMPARE_VIEW[method] ?? ((v: unknown): unknown => v);
+    let diffs = jsonDiff(view(left), view(right));
     if (diffs.length > 0 && !args.some(isTx)) {
       // the copy may be a moment behind: look again, on both sides, before calling it a difference
       await new Promise((r) => setTimeout(r, cfg.settleMs));
@@ -266,7 +275,7 @@ async function shadowRead(
         count('timeout');
         return;
       }
-      diffs = jsonDiff(left, right);
+      diffs = jsonDiff(view(left), view(right));
     }
     if (diffs.length === 0) {
       count('equal');

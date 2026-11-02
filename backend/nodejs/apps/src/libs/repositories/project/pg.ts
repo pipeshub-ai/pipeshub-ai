@@ -28,6 +28,9 @@ import type {
   ProjectPatch,
   ProjectRepository,
 } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { writeProjects } from './pg-import';
+import { kernelTx } from '../pg';
 
 interface Row {
   id: string;
@@ -159,7 +162,15 @@ async function lockLive(k: PgKernelTx, id: string): Promise<Row | undefined> {
 
 const touchedAt = (): Date => new Date();
 
-export class PgProjectRepository implements ProjectRepository {
+export class PgProjectRepository implements ProjectRepository, Importable {
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    _collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return writeProjects(kernelTx(tx), docs);
+  }
   async getLive(id: string): Promise<ProjectDto | null> {
     return this.byId(id, 'live');
   }

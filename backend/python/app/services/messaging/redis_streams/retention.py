@@ -9,7 +9,9 @@ where the safe id is the lowest point any consumer group still needs:
 * its last-delivered id when nothing is pending.
 
 A stream with no consumer group yet has nothing to be behind, so it is capped at
-``no_group_maxlen`` entries (``XTRIM MAXLEN ~``), as every stream was before. A stream longer than
+``no_group_maxlen`` entries (``XTRIM MAXLEN ~``), as every stream was before. So is a stream
+whose every group is unread (no consumer has joined and the cursor is still ``0-0``), such as
+a group made only so another pool's backlog can be measured. A stream longer than
 ``alert_length``, or a group with no live consumer, logs a warning naming the
 group, so a stuck backlog is visible instead of lost. Groups are never deleted.
 Redis older than 6.2 has no ``MINID``: that is logged once and trimming stops.
@@ -117,6 +119,11 @@ class StreamRetention:
         return self._lowest(await self._group_floors(stream, groups))
 
     @staticmethod
+    def _unread(group: dict, floors: dict[str, str]) -> bool:
+        """No consumer has joined and nothing was delivered: the group holds nothing back yet."""
+        return int(_field(group, "consumers") or 0) == 0 and floors[_text(_field(group, "name"))] == "0-0"
+
+    @staticmethod
     def _lowest(floors: dict[str, str]) -> str | None:
         """The lowest floor of any group: nothing at or above it may be trimmed."""
         return min(floors.values(), key=_id_key) if floors else None
@@ -147,7 +154,7 @@ class StreamRetention:
                 groups = await self._redis.xinfo_groups(stream)  # type: ignore[union-attr]
                 floors = await self._group_floors(stream, groups)
                 floor = self._lowest(floors)
-                if not floors:
+                if not floors or all(self._unread(g, floors) for g in groups):
                     trimmed[stream] = int(
                         await self._redis.xtrim(stream, maxlen=self._no_group_maxlen, approximate=True)  # type: ignore[union-attr]
                     )
@@ -173,9 +180,17 @@ class StreamRetention:
                 stream, length, self._alert_length,
             )
         lowest = self._lowest(floors)
+        capped = bool(groups) and all(self._unread(g, floors) for g in groups)
         for group in groups:
             name = _text(_field(group, "name"))
-            if int(_field(group, "consumers") or 0) == 0:
+            if capped:
+                self._warn(
+                    f"unread:{stream}:{name}",
+                    "Consumer group %s on stream %s has no consumers and has read nothing; "
+                    "the stream is capped at %d entries until a consumer reads it",
+                    name, stream, self._no_group_maxlen,
+                )
+            elif int(_field(group, "consumers") or 0) == 0:
                 self._warn(
                     f"dead:{stream}:{name}",
                     "Consumer group %s on stream %s has no consumers; it holds back trimming "

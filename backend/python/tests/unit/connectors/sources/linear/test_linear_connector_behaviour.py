@@ -1524,3 +1524,78 @@ class TestUnsyncedParentTeams:
         assert {g.source_user_group_id for g, _ in user_groups} == {"team-web", "team-ops", "team-sec"}
         assert datasource.teams.await_count == 2
         assert datasource.teams.await_args.kwargs["filter"] == {"id": {"in": ["team-sec"]}}
+
+
+class TestChildMetByTwoWritersAtOnce:
+    """The sync's attachment pass and the stream of the attachment's issue (indexing
+    reads the issue while the sync goes on) can each look for the attachment before
+    either has stored it. Each then created its own record, so the graph held two
+    records for one attachment. The next full sync rewrote the one its lookup found
+    and unlinked the other, which lost its parent issue and the access it inherits."""
+
+    ATTACHMENT = {
+        "id": "att-1", "title": "ENG-3", "url": "https://linear.app/org/issue/ENG-3",
+        "createdAt": "2024-01-01T10:00:00.000Z", "updatedAt": "2024-06-01T10:00:00.000Z",
+        "issue": {"id": "issue-1", "identifier": "ENG-1", "team": {"id": "team-1"}},
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        connector = _make_connector()
+        processor = connector.data_entities_processor
+        stored: dict = {}
+
+        async def store(records_with_permissions) -> None:
+            for record, _ in records_with_permissions:
+                stored[record.id] = record
+
+        # Both writers look before either has stored the attachment.
+        processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: (
+                _ticket(external_record_id) if external_record_id == "issue-1" else None))
+        processor.on_new_records = AsyncMock(side_effect=store)
+        datasource = _use_datasource(connector, MagicMock())
+        datasource.attachments = AsyncMock(return_value=_ok({"attachments": _page([self.ATTACHMENT])}))
+
+        await connector._process_issue_attachments([self.ATTACHMENT], "issue-1", "node-issue-1", "team-1")
+        await connector._sync_attachments([(_team_rg(), [])])
+
+        assert [r.external_record_id for r in stored.values()] == ["att-1"], (
+            f"one attachment stored as {len(stored)} records: {sorted(stored)}")
+
+    def test_a_new_child_gets_the_same_id_from_every_writer(self) -> None:
+        first, second = _make_connector(), _make_connector()
+        document = {"id": "doc-1", "title": "Plan", "url": "https://linear.app/org/document/plan",
+                    "createdAt": "2024-01-01T10:00:00.000Z", "updatedAt": "2024-06-01T10:00:00.000Z"}
+
+        def ids(connector) -> list[str]:
+            return [
+                connector._transform_attachment_to_link_record(
+                    self.ATTACHMENT, "issue-1", "node-issue-1", "team-1").id,
+                connector._transform_document_to_webpage_record(
+                    document, "issue-1", "node-issue-1", "team-1").id,
+            ]
+
+        assert ids(first) == ids(second)
+        assert len(set(ids(first))) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_new_file_gets_the_same_id_from_every_writer(self) -> None:
+        first, second = _make_connector(), _make_connector()
+
+        async def file_id(connector) -> str:
+            record = await connector._transform_file_url_to_file_record(
+                file_url=UPLOAD, filename="spec.pdf", parent_external_id="issue-1",
+                parent_node_id="node-issue-1", parent_record_type=RecordType.TICKET, team_id="team-1")
+            return record.id
+
+        assert await file_id(first) == await file_id(second)
+
+    def test_a_stored_child_keeps_its_id(self) -> None:
+        connector = _make_connector()
+        stored = MagicMock(id="stored-node", version=2, source_updated_at=0)
+
+        link = connector._transform_attachment_to_link_record(
+            self.ATTACHMENT, "issue-1", "node-issue-1", "team-1", existing_record=stored)
+
+        assert link.id == "stored-node"

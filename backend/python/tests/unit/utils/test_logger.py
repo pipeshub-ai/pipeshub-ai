@@ -14,6 +14,8 @@ from app.utils.logger import (
     ColoredFormatter,
     HealthCheckFilter,
     HttpxSuccessFilter,
+    RedactingFormatter,
+    _route_root_handlers,
     create_logger,
 )
 
@@ -590,14 +592,12 @@ class TestCreateLoggerUsesProvider:
     def _logger(
         self, monkeypatch: pytest.MonkeyPatch, name: str, provider: _FakeProvider
     ) -> logging.Logger:
-        import app.utils.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "get_provider", lambda: provider)
+        monkeypatch.setattr("app.utils.logger.get_provider", lambda: provider)
         # Root routing has its own tests below.
         monkeypatch.setattr(logging.getLogger(), "handlers", [])
         logger = logging.getLogger(name)
         logger.handlers.clear()
-        return logger_module.create_logger(name)
+        return create_logger(name)
 
     def test_console_gets_provider_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
         custom = logging.Formatter("%(message)s")
@@ -659,7 +659,6 @@ class TestOrgOnRecord:
         return logging.getLogRecordFactory()("t", logging.INFO, "p.py", 1, "m", (), None)
 
     def test_provider_hash_is_stamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import app.utils.logger as logger_module
         from app.utils.request_context import (
             reset_context,
             set_context,
@@ -667,7 +666,7 @@ class TestOrgOnRecord:
         )
 
         monkeypatch.setattr(
-            logger_module, "get_provider", lambda: _FakeProvider(org_hash=lambda o: f"h:{o}")
+            "app.utils.logger.get_provider", lambda: _FakeProvider(org_hash=lambda o: f"h:{o}")
         )
         token = set_context("req-org")
         try:
@@ -677,14 +676,13 @@ class TestOrgOnRecord:
             reset_context(token)
 
     def test_no_attribute_when_provider_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import app.utils.logger as logger_module
         from app.utils.request_context import (
             reset_context,
             set_context,
             set_context_org,
         )
 
-        monkeypatch.setattr(logger_module, "get_provider", lambda: _FakeProvider())
+        monkeypatch.setattr("app.utils.logger.get_provider", _FakeProvider)
         token = set_context("req-org")
         try:
             set_context_org("org-1")
@@ -693,11 +691,10 @@ class TestOrgOnRecord:
             reset_context(token)
 
     def test_no_attribute_without_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import app.utils.logger as logger_module
         from app.utils.request_context import reset_context, set_context
 
         monkeypatch.setattr(
-            logger_module, "get_provider", lambda: _FakeProvider(org_hash=lambda o: "h")
+            "app.utils.logger.get_provider", lambda: _FakeProvider(org_hash=lambda o: "h")
         )
         token = set_context("req-noorg")
         try:
@@ -712,16 +709,14 @@ class TestRootHandlersUseProvider:
     def _run(
         self, monkeypatch: pytest.MonkeyPatch, provider: _FakeProvider, name: str
     ) -> tuple[logging.Handler, logging.Formatter]:
-        import app.utils.logger as logger_module
-
         root = logging.getLogger()
         handler = logging.StreamHandler()
         original = logging.Formatter("%(message)s")
         handler.setFormatter(original)
         monkeypatch.setattr(root, "handlers", [handler])
-        monkeypatch.setattr(logger_module, "get_provider", lambda: provider)
+        monkeypatch.setattr("app.utils.logger.get_provider", lambda: provider)
         logging.getLogger(name).handlers.clear()
-        logger = logger_module.create_logger(name)
+        logger = create_logger(name)
         logger.handlers.clear()
         return handler, original
 
@@ -732,13 +727,11 @@ class TestRootHandlersUseProvider:
     def test_default_provider_keeps_a_redacting_root_formatter_as_is(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import app.utils.logger as logger_module
-
         handler = logging.StreamHandler()
-        redacting = logger_module.RedactingFormatter("%(message)s")
+        redacting = RedactingFormatter("%(message)s")
         handler.setFormatter(redacting)
         monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
-        logger_module._route_root_handlers(_FakeProvider(files=False))
+        _route_root_handlers(_FakeProvider(files=False))
         assert handler.formatter is redacting
 
     def test_provider_formatter_reaches_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -762,21 +755,17 @@ class TestRootHandlersUseProvider:
     def test_handler_without_formatter_keeps_logging_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import app.utils.logger as logger_module
-
         handler = logging.StreamHandler()
         monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
-        logger_module._route_root_handlers(_FakeProvider(files=False))
+        _route_root_handlers(_FakeProvider(files=False))
         record = logging.LogRecord("x", logging.INFO, __file__, 1, "hello", None, None)
         assert handler.format(record) == "hello"
 
     def test_routed_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import app.utils.logger as logger_module
-
         provider = _FakeProvider(files=False)
         self._run(monkeypatch, provider, "t_root_once_a")
         calls = len(provider.defaults_seen)
         logging.getLogger("t_root_once_b").handlers.clear()
-        logger_module.create_logger("t_root_once_b").handlers.clear()
+        create_logger("t_root_once_b").handlers.clear()
         # One call for the new service logger, none for the root handlers again.
         assert len(provider.defaults_seen) == calls + 1

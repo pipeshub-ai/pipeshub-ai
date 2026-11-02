@@ -86,7 +86,7 @@ class TestArangoGetKnowledgeHubNodeAccess:
         )
         assert result == {**node, "userRole": None}     # a connector item carries no role
         arango.check_access.assert_awaited_once_with("user1", "org1", node_ids=["rec123"], transaction=None)
-        bind_vars = arango.http_client.execute_aql.call_args.kwargs["bind_vars"]
+        bind_vars = arango.http_client.execute_aql.call_args_list[0].kwargs["bind_vars"]
         assert bind_vars == {"node_id": "rec123", "org_id": "org1",
                              "folder_mime_types": ["application/vnd.folder"]}
 
@@ -144,7 +144,7 @@ def _link(record_id: str) -> dict:
 class TestArangoGetLinkedRecords:
     @pytest.mark.asyncio
     async def test_returns_only_the_accessible_links(self, arango) -> None:
-        arango.http_client.execute_aql = AsyncMock(return_value=[_link("rel1"), _link("rel2")])
+        arango.http_client.execute_aql = AsyncMock(side_effect=[[_link("rel1"), _link("rel2")], []])  # links, then no children
         arango.check_access = _allow("rel2")
         result = await arango.get_linked_records(
             record_id="rec123",
@@ -154,13 +154,13 @@ class TestArangoGetLinkedRecords:
             limit=10,
         )
         assert result == [_link("rel2")]
-        bind_vars = arango.http_client.execute_aql.call_args.kwargs["bind_vars"]
+        bind_vars = arango.http_client.execute_aql.call_args_list[0].kwargs["bind_vars"]
         assert bind_vars == {"record_id": "rec123", "org_id": "org1", "relation_types": ["LINKED_TO", "RELATED"]}
         arango.check_access.assert_awaited_once_with("user1", "org1", node_ids=["rel1", "rel2"], transaction=None)
 
     @pytest.mark.asyncio
     async def test_the_limit_applies_to_what_the_user_can_see(self, arango) -> None:
-        arango.http_client.execute_aql = AsyncMock(return_value=[_link(f"rel{i}") for i in range(4)])
+        arango.http_client.execute_aql = AsyncMock(side_effect=[[_link(f"rel{i}") for i in range(4)], []])
         arango.check_access = _allow("rel1", "rel2", "rel3")
         result = await arango.get_linked_records("rec1", "org1", "user1", ["LINKED_TO"], limit=2)
         assert [r["id"] for r in result] == ["rel1", "rel2"]

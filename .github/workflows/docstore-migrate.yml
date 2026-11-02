@@ -1,0 +1,100 @@
+name: docstore-migrate
+
+# The tool that copies an existing MongoDB install into PostgreSQL, against real servers: MongoDB (the tests start their own
+# single-member replica sets from the mongod binary), PostgreSQL 17 and 18 behind PgBouncer, and the migration tool that builds the
+# schema. A skip is a failure here: the suites skip only when a service is missing, which in CI means the workflow is broken.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/nodejs/apps/src/scripts/docstore-migrate/**'
+      - 'backend/nodejs/apps/src/scripts/docstore-migrate.ts'
+      - 'backend/nodejs/apps/tests/scripts/docstore-migrate/**'
+      - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/db/**'
+      - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/tests/stores/pg-store-harness.ts'
+      - 'backend/nodejs/apps/tests/libs/db/pg-harness.ts'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/db/**'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/docstore-migrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docstore-migrate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migrate:
+    # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+    env:
+      CI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PostgreSQL ${{ matrix.pg }}, PgBouncer, MongoDB and the migration tool
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}" pgbouncer mongodb-org-server
+          sudo systemctl stop postgresql || true
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Migration tool suites (test:docstore-migrate)
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          PG_TEST_WORK: ${{ runner.temp }}
+          MIGRATE_TEST_MONGOD: /usr/bin/mongod
+        run: npm run test:docstore-migrate -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-migrate-junit.xml"
+
+      - name: No unexpected skips
+        if: ${{ always() }}
+        # the scale run is opt-in (MIGRATE_SCALE=1; its suite is named "timing")
+        # --expect-suite pins the exact case count of each suite, so a suite that did not run fails the job; every PR that adds a suite adds its line
+        run: >
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/docstore-migrate-junit.xml" --allow "timing" --min-tests 30
+          --expect-suite 'docstore-migrate: identity collections=8'
+          --expect-suite 'docstore-migrate: organisations=1'
+          --expect-suite 'docstore-migrate: bulk copy=3'
+          --expect-suite 'docstore-migrate: conversation collections=4'
+          --expect-suite 'docstore-migrate: content mappings=2'
+          --expect-suite 'docstore-migrate: content, OAuth and platform data=12'

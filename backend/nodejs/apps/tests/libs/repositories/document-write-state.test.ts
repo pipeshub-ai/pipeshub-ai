@@ -38,6 +38,11 @@ describe('document write state is hidden', () => {
     const cols = /const COLS = `([^`]*)`/.exec(src)?.[1] ?? '';
     expect(cols).to.contain('updated_at');
     expect(cols).to.not.match(/write_seq|writers/);
-    expect(src).to.not.match(/write_seq|\bwriters\b/);
+    // the methods that read the state name the columns on their own; the row mapper and the patch builder never do
+    const fn = (name: string): string => new RegExp(`function ${name}\\b[\\s\\S]*?\\n}\\n`).exec(src)?.[0] ?? '';
+    for (const name of ['docOf', 'treeOf', 'setClauses']) {
+      expect(fn(name), `${name} is in pg.ts`).to.not.equal('');
+      expect(fn(name), `${name} must not name the write state`).to.not.match(/write_seq|\bwriters\b/);
+    }
   });
 });

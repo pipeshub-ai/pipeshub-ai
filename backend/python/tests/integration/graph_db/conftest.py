@@ -1,4 +1,5 @@
-"""A test marked ``arango_only`` is not collected on the Neo4j leg.
+"""A test marked ``arango_only`` is not collected on the Neo4j leg, and one marked ``neo4j_only`` is not
+collected on the ArangoDB leg.
 
 The backend-matrix job fails on any skip, because a skip is a test that did not run against the
 backend. A test that cannot apply to Neo4j is left out of its collection instead.
@@ -17,6 +18,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         item for item in items
         if item.get_closest_marker("arango_only") and getattr(item, "callspec", None) is not None
         and item.callspec.params.get("env") == "neo4j"
+    ]
+    left_out += [
+        item for item in items
+        if item.get_closest_marker("neo4j_only") and getattr(item, "callspec", None) is not None
+        and "arango" in item.callspec.params.values()
     ]
     if left_out:
         config.hook.pytest_deselected(items=left_out)

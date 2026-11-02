@@ -14,12 +14,15 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
+    cite_note,
+    listing_facts,
     record_line,
 )
 from app.agents.actions.knowledge_graph.views import _read_hint, _trunc
@@ -139,8 +142,17 @@ async def execute_find_records_by_person(
     shortener = get_record_id_shortener_if_enabled(state)
     frontend_url = await resolve_frontend_url(state.get("config_service"))
     who = _label(group)
-    lines = [f"Records linked to {who} as {' / '.join(wanted_roles or ROLE_EDGES)}, newest first:"]
-    lines.extend(record_line(record, context, shortener, frontend_url) for record in page.records)
+    # The roles asked for, as the header says them: a record's own role is not known here.
+    roles = wanted_roles or list(ROLE_EDGES)
+    linked = f"linked to {who} as {'one of ' if len(roles) > 1 else ''}{' / '.join(roles)}"
+    cite_refs = await cite_listed_records(
+        state, graph, context.org_id, {r["_key"]: listing_facts(r, linked) for r in page.records if r.get("_key")},
+    )
+    lines = [f"Records {linked}, newest first:", *cite_note(page.records, cite_refs)]
+    lines.extend(
+        record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
+        for record in page.records
+    )
     lines.append("")
     if len(people) > 1:
         # Only this person links to a readable record; the others stay unnamed.

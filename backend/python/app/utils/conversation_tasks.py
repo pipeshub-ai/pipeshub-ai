@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+from contextvars import ContextVar
 from typing import Any
 
 from app.utils.logger import create_logger
@@ -25,12 +26,29 @@ _MAX_DRAIN_PASSES = 10
 
 _conversation_tasks: dict[str, list[asyncio.Task]] = {}
 
+# The tasks registered by the run in flight. Set by `begin_run` inside the
+# run's own asyncio task, so every tool call of that run (and the tasks it
+# spawns, which copy the context) adds to the same set, and nothing else does.
+_run_tasks: ContextVar[set[asyncio.Task] | None] = ContextVar("conversation_run_tasks", default=None)
+
+
+def begin_run() -> None:
+    """Scope `discard_tasks` to the tasks this run registers.
+
+    Call it at the start of the run's own task. Two runs on the same
+    conversation then tear down only their own tasks.
+    """
+    _run_tasks.set(set())
+
 
 def register_task(conversation_id: str, task: asyncio.Task) -> None:
     """Append an asyncio.Task to the list for *conversation_id*."""
     if conversation_id not in _conversation_tasks:
         _conversation_tasks[conversation_id] = []
     _conversation_tasks[conversation_id].append(task)
+    run_tasks = _run_tasks.get()
+    if run_tasks is not None:
+        run_tasks.add(task)
     logger.info(
         "Registered task for conversation %s (total: %d)",
         conversation_id,
@@ -48,6 +66,37 @@ def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
 def pop_tasks(conversation_id: str) -> list[asyncio.Task]:
     """Remove and return all tasks for *conversation_id*."""
     return _conversation_tasks.pop(conversation_id, [])
+
+
+def discard_tasks(conversation_id: str | None) -> int:
+    """Drop and cancel whatever is still registered for *conversation_id*.
+
+    Run teardown calls this on every exit. The success path has already
+    drained the registry, so this is then a no-op; after an error or a cancel
+    nobody will collect the tasks, and the entry would otherwise live for the
+    life of the process.
+
+    Inside a run started with `begin_run`, only that run's tasks go; tasks
+    another run on the same conversation registered stay for that run.
+    """
+    if not conversation_id:
+        return 0
+    run_tasks = _run_tasks.get()
+    if run_tasks is None:
+        tasks = pop_tasks(conversation_id)
+    else:
+        registered = _conversation_tasks.get(conversation_id, [])
+        tasks = [t for t in registered if t in run_tasks]
+        kept = [t for t in registered if t not in run_tasks]
+        if kept:
+            _conversation_tasks[conversation_id] = kept
+        else:
+            _conversation_tasks.pop(conversation_id, None)
+        run_tasks.clear()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    return len(tasks)
 
 
 async def await_and_collect_results(conversation_id: str) -> list[dict[str, Any]]:

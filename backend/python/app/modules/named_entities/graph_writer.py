@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.named_entities.domain.kinds import (
+    ALIAS_KINDS,
     VALUE_KINDS,
     VECTOR_KINDS,
     EntityKind,
@@ -27,6 +29,7 @@ from app.modules.named_entities.domain.values import (
     QuantityValue,
 )
 from app.modules.named_entities.keys import KEY_SCHEME, value_mention_key
+from app.modules.named_entities.normalizers.names import canonical_name, norm_key_for
 from app.modules.named_entities.resolution import ResolvedEntity
 from app.modules.named_entities.write_retry import retry_named_entity_write
 from app.modules.transformers.edge_reconciler import EdgeReconciler
@@ -52,6 +55,7 @@ def _value_fields(entity: NamedEntity) -> dict[str, Any]:
         return {
             "amount": str(value.amount),
             "amountFloat": value.amount_float,
+            "amountHighFloat": None if value.amount_high is None else float(value.amount_high),
             "currency": value.currency,
             "numericValue": value.amount_float,
         }
@@ -87,6 +91,38 @@ def node_document(org_id: str, resolved: ResolvedEntity, now: int) -> dict[str, 
         "createdAtTimestamp": now,
         "updatedAtTimestamp": now,
     }
+
+
+_ALIAS_WRITES_AT_ONCE = 8
+# Two-letter acronyms ("IT", "HR") stand for too many things to link records by.
+_MIN_ACRONYM_ALIAS = 3
+
+
+def _aliases_to_write(item: ResolvedEntity) -> tuple[list[str], list[str]]:
+    displays, keys = learned_aliases(item.entity)
+    if item.merged_into:
+        # A resolver merge: the merged name is an alias of the node it joined.
+        return [item.entity.display_name, *displays], [item.entity.norm_key, *keys]
+    return displays, keys
+
+
+def learned_aliases(entity: NamedEntity) -> tuple[list[str], list[str]]:
+    """The short forms this record wrote the entity under (``coref`` folded them in:
+    extraction otherwise groups mentions by key), as display names and their keys."""
+    if entity.kind not in ALIAS_KINDS:
+        return [], []
+    displays: list[str] = []
+    keys: list[str] = []
+    for mention in entity.mentions:
+        display = canonical_name(mention.surface, entity.kind)
+        letters = display.replace("&", "").replace(".", "")
+        if letters.isupper() and len(letters) < _MIN_ACRONYM_ALIAS:
+            continue
+        key = norm_key_for(entity.kind, display, None)
+        if key != entity.norm_key and key not in keys:
+            displays.append(display[:256])
+            keys.append(key)
+    return displays, keys
 
 
 def edge_payload(org_id: str, entity: NamedEntity, now: int) -> dict[str, Any]:
@@ -189,15 +225,19 @@ class NamedEntityGraphWriter:
             # sweep deleting one of them; it runs again with the link on that conflict.
             if docs:
                 await self._graph.create_named_entities_if_absent(docs)
-                for item in resolved:
-                    if item.merged_into:
+                # Several at a time, so a record with many aliased names stays inside a retry's
+                # time budget without opening a connection per name; a node that already has
+                # every alias is not written (each query checks first).
+                writes = [(item, aliases) for item in resolved if (aliases := _aliases_to_write(item))[1]]
+                slots = asyncio.Semaphore(_ALIAS_WRITES_AT_ONCE)
+
+                async def add(item: ResolvedEntity, displays: list[str], keys: list[str]) -> None:
+                    async with slots:
                         await self._graph.add_named_entity_aliases(
-                            org_id,
-                            item.entity.kind.value,
-                            item.graph_key,
-                            [item.entity.display_name],
-                            [item.entity.norm_key],
+                            org_id, item.entity.kind.value, item.graph_key, displays, keys,
                         )
+
+                await asyncio.gather(*(add(item, *aliases) for item, aliases in writes))
             await self._reconcile(org_id, record_id, resolved, values, now, claim)
 
         await self._with_retry(claim_and_link)

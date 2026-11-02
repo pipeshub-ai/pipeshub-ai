@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import functools
 import logging
 import random
@@ -66,7 +67,8 @@ def ensure_written(result: bool | None, what: str) -> None:
         raise GraphWriteError(f"The graph database did not save {what}")
 
 
-_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b')
+# "[1200]" is how a batch reports one, e.g. "[1200] timeout waiting to lock key".
+_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b|\[1200\]')
 
 
 def is_write_conflict(exception: Exception) -> bool:
@@ -75,16 +77,17 @@ def is_write_conflict(exception: Exception) -> bool:
     return bool(_WRITE_CONFLICT.search(str(exception)))
 
 
+# The Neo4j conflicts with a concurrent writer that a re-run resolves.
+_NEO4J_CONFLICTS = ("DeadlockDetected", "LockAcquisitionTimeout")
+
+
 def _names_deadlock(exception: BaseException) -> bool:
-    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
-        return "DeadlockDetected" in str(exception)
-
     exception_str = str(exception)
-    exception_type = type(exception).__name__
+    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
+        return any(conflict in exception_str for conflict in _NEO4J_CONFLICTS)
 
-    return (
-        "TransientError" in exception_type and
-        "DeadlockDetected" in exception_str
+    return "TransientError" in type(exception).__name__ and any(
+        conflict in exception_str for conflict in _NEO4J_CONFLICTS
     )
 
 
@@ -125,6 +128,19 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+# False while retry_on_deadlock still has an attempt left after the current one.
+_ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "retry_on_deadlock_on_last_attempt", default=True
+)
+
+
+def will_retry(instance: object, exception: Exception) -> bool:
+    """Whether the retry_on_deadlock call this runs in will run again after this
+    failure. A handler inside one logs such a failure as a warning: the decorator
+    reports each retry, and an error there alerted on syncs that then succeeded."""
+    return not _ON_LAST_ATTEMPT.get() and _is_retryable(instance, exception)
+
+
 def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
     Decorator that retries an async function on deadlocks and write conflicts.
@@ -154,6 +170,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
             logger = logging.getLogger(func.__module__)
             last_exception = None
             for attempt in range(max_retries):
+                last_attempt = _ON_LAST_ATTEMPT.set(attempt == max_retries - 1)
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
@@ -176,6 +193,8 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
+                finally:
+                    _ON_LAST_ATTEMPT.reset(last_attempt)
 
             raise last_exception
         return wrapper
@@ -734,6 +753,8 @@ class GraphTransactionStore(TransactionStore):
             return True
 
         except Exception as e:
+            if self.graph_provider.is_transient_error(e) is True:
+                raise  # the transaction is aborted; its owner runs it again
             self.logger.error(
                 f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
                 exc_info=True
@@ -1196,6 +1217,10 @@ class GraphTransactionStore(TransactionStore):
         """Delete a record and all its relations"""
         self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
+
+    async def filter_linked_record_ids(self, record_ids: list[str]) -> list[str]:
+        """The ids among ``record_ids`` still in the hierarchy (see the graph provider)."""
+        return await self.graph_provider.filter_linked_record_ids(record_ids, transaction=self.txn)
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list, return_fields: list[str] = None

@@ -6,6 +6,8 @@ Every test runs on Neo4j and ArangoDB (NEO4J_IT_URI / ARANGO_IT_URL) against the
 GitHub in ``sim/``; see README.md.
 """
 
+from uuid import uuid4
+
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
@@ -341,6 +343,7 @@ async def test_upgrade_removes_url_keyed_attachments_without_waiting_for_the_iss
         legacy = world.connector.comments._attachment_file_update(
             {"type": name.rsplit(".", 1)[1], "href": link, "filename": name}, ticket, None, ticket.id).record
         legacy.external_record_id = link
+        legacy.id = str(uuid4())  # older versions gave every new record a random id
         await world.processor.on_new_records([(legacy, [])])
     await _forget_issue_total(world, repo)
     await world.sync()

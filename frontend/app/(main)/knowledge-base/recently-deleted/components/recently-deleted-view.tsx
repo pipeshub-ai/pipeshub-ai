@@ -297,7 +297,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
           padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--effects-translucent)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           flexShrink: 0,
         }}
       >

@@ -51,7 +51,7 @@ function PromptSectionCard({
         borderRadius: 'var(--radius-1)',
         overflow: 'hidden',
         backgroundColor: 'var(--olive-2)',
-        backdropFilter: 'blur(25px)',
+        backdropFilter: 'var(--frost-filter)',
       }}
     >
       {/* Card header row */}

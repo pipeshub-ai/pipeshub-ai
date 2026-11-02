@@ -6,16 +6,21 @@ from __future__ import annotations
 import base64
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.agents.actions.knowledge_graph.ops import values
 from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
+from app.modules.named_entities.linking.candidates import Candidate, CandidateSource
+from app.modules.named_entities.linking.service import Linking, LinkResult, LinkStatus
 from app.modules.retrieval.entity_permissions import EntityAccessContext
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 pytestmark = pytest.mark.asyncio
 
@@ -130,7 +135,8 @@ async def test_unreadable_records_are_never_named(env: AsyncMock) -> None:
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
     assert ok and _listed(body) == ["r001", "r005"]
     assert re.findall(r"doc-(r\d+)", body) == ["r001", "r005"]
-    graph.get_records_by_record_ids.assert_awaited_once_with(["r001", "r005"], "org")
+    # Loaded to list and again to cite, only ever for the readable ones.
+    assert {tuple(call.args[0]) for call in graph.get_records_by_record_ids.await_args_list} == {("r001", "r005")}
 
 
 async def test_record_types_are_kept_before_any_permission_check(env: AsyncMock) -> None:
@@ -331,3 +337,419 @@ async def test_a_turn_with_no_sources_and_none_named_just_matches_nothing(env: A
     env.return_value = _context(app_level_app_ids=frozenset())
     ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(3))), kinds=["date"])
     assert (ok, body) == (True, values.NO_MATCH_MSG)
+
+
+# --- the listed records can be cited ---------------------------------------------------
+
+async def test_a_citation_states_a_name_the_record_matched_beside_its_values(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cite = AsyncMock(return_value={})
+    monkeypatch.setattr(values, "cite_listed_records", cite)
+    # A name is linked to its entities first; the citation states the entity it matched.
+    _linker(monkeypatch, "matched", accepted=[_candidate("e-1", "Acme")])
+    graph = _graph(_rows(1))
+    graph.get_named_entity_values_in_records = AsyncMock(return_value={"r000": ["USD 1,250,000"]})
+    await values.execute_find_records_by_value(_state(graph), name="acme", amount_min=1_000_000)
+    assert cite.await_args.args[3]["r000"].startswith(
+        'matched amount_min=1000000, entity_ids=["e-1"] · extracted values: USD 1,250,000'
+    )
+
+
+async def test_listed_records_are_citable_for_the_values_they_matched(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.agents.actions.knowledge_graph import listing_citations
+    from app.utils.citations import (
+        RECORD_PAGE_LISTED_FACTS,
+        normalize_citations_and_chunks,
+    )
+
+    monkeypatch.setattr(listing_citations, "resolve_frontend_url", AsyncMock(return_value="https://ph.example"))
+    graph = _graph(_rows(2))
+    graph.get_named_entity_values_in_records = AsyncMock(return_value={"r000": ["USD 1,686,400"]})
+    state = _state(graph)
+
+    ok, body = await values.execute_find_records_by_value(state, amount_min=1_000_000, currency="USD")
+
+    assert ok and body.count("Cite a fact this listing states") == 1
+    refs = re.findall(r"cite=(\S+)", body)
+    assert len(refs) == 2
+    answers = (
+        f"Sales forecast Q1 states USD 1,686,400 [source]({refs[0]}).",
+        # A bare link to the record's page is resolved the same way.
+        "Sales forecast Q1 states USD 1,686,400 [doc](https://ph.example/record/r000).",
+    )
+    for answer in answers:
+        _, citations = normalize_citations_and_chunks(
+            answer, [], state["tool_records"], ref_to_url=state["citation_ref_mapper"].ref_to_url,
+        )
+        assert len(citations) == 1
+        assert citations[0]["metadata"]["blockType"] == RECORD_PAGE_LISTED_FACTS
+        assert citations[0]["content"].startswith(
+            'matched amount_min=1000000, currency="USD" · extracted values: USD 1,686,400',
+        )
+
+
+async def test_without_its_matched_values_a_citation_still_states_the_filter_matched(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cite = AsyncMock(return_value={})
+    monkeypatch.setattr(values, "cite_listed_records", cite)
+    graph = _graph(_rows(1))
+    graph.get_named_entity_values_in_records = AsyncMock(side_effect=RuntimeError("values lookup down"))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), amount_min=1_000_000, currency="USD")
+    assert ok and cite.await_args.args[3]["r000"].startswith('matched amount_min=1000000, currency="USD"')
+
+
+async def test_a_listing_whose_records_cannot_be_cited_is_shown_as_before(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    graph.get_records_by_record_ids = AsyncMock(side_effect=[
+        [{"_key": "r000", "recordName": "doc-r000", "recordType": "FILE", "connectorId": APP}],
+        RuntimeError("records store down"),
+    ])
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=1)
+    assert ok and _listed(body) == ["r000"] and "cite=" not in body and "Cite a fact" not in body
+
+
+async def test_a_zero_date_bound_is_neither_applied_nor_stated(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A strict tool schema sends every parameter, so an unused bound arrives as 0.
+    cite = AsyncMock(return_value={})
+    monkeypatch.setattr(values, "cite_listed_records", cite)
+    graph = _graph(_rows(1))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={})
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_700_000_000_000, date_to=0)
+    assert ok and "date_to" not in body.splitlines()[0]
+    assert "date_to" not in cite.await_args.args[3]["r000"]
+
+
+# --- an entity and a value in one call -------------------------------------------------
+
+def _candidate(entity_id: str, name: str, kind: str = "organization") -> Candidate:
+    return Candidate(entity_id, kind, name, CandidateSource.EXACT, (), False)
+
+
+def _linker(
+    monkeypatch: pytest.MonkeyPatch, status: str, *,
+    accepted: Sequence[Candidate] = (), namesakes: Sequence[Candidate] = (), timed_out: bool = False,
+) -> AsyncMock:
+    async def link(mentions: list, question: str) -> Linking:
+        result = LinkResult(mentions[0], LinkStatus(status), accepted=list(accepted), namesakes=list(namesakes))
+        names = {c.entity_id: c.name for c in [*accepted, *namesakes]}
+        return Linking([result], timed_out=timed_out, verifier_called=False, names=names)
+
+    linker = AsyncMock()
+    linker.link = AsyncMock(side_effect=link)
+    monkeypatch.setattr(values, "build_linker", lambda *_, **__: linker)
+    return linker.link
+
+
+def _query_arg(graph: AsyncMock) -> tuple[list[str] | None, Any]:
+    args = graph.get_records_for_named_entities.await_args.args
+    return args[1], args[2]
+
+
+async def test_entity_ids_and_an_amount_are_one_query_and_the_continue_call_keeps_the_ids(env: AsyncMock) -> None:
+    graph = _graph(_rows(30))
+    graph.get_named_entity_mentions_in_records = AsyncMock(return_value=[
+        {"entityId": "e-1", "recordId": "r000", "extractedNames": ["Pinecrest Hospitality"]},
+    ])
+    ok, body = await values.execute_find_records_by_value(
+        _state(graph), entity_ids=["e-1"], amount_min=80_000, currency="USD",
+    )
+    assert ok
+    ids, query = _query_arg(graph)
+    assert ids == ["e-1"] and query.amount_min == 80_000 and query.currency == "USD"
+    assert body.startswith("Records mentioning Pinecrest Hospitality and matching")
+    assert 'entity_ids=["e-1"]' in body.split("More records match: ")[1]
+
+
+async def test_a_short_id_from_search_entities_is_resolved(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = _graph(_rows(1))
+    shortener = type("S", (), {
+        "resolve": lambda self, short: {"E1": "e-full"}.get(short, short),
+        "get_or_create_short_id": lambda self, full: full,
+    })()
+    monkeypatch.setattr(values, "get_record_id_shortener_if_enabled", lambda _state: shortener)
+    await values.execute_find_records_by_value(_state(graph), entity_ids=["E1"], amount_min=1)
+    assert _query_arg(graph)[0] == ["e-full"]
+
+
+async def test_a_name_is_linked_and_every_accepted_entity_counts(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The full name and its short form, split into two nodes, both accepted.
+    link = _linker(monkeypatch, "checked", accepted=[_candidate("e-1", "Pinecrest Hospitality"), _candidate("e-2", "Pinecrest")])
+    graph = _graph(_rows(30))
+    ok, body = await values.execute_find_records_by_value(
+        _state(graph), name="Pinecrest Hospitality", amount_min=80_000, currency="USD",
+    )
+    assert ok and _query_arg(graph)[0] == ["e-1", "e-2"]
+    # The fake links any name: check it was asked about the one given.
+    assert [m.name for m in link.await_args.args[0]] == ["Pinecrest Hospitality"]
+    more = body.split("More records match: ")[1]
+    assert 'entity_ids=["e-1", "e-2"]' in more and "name=" not in more
+
+
+async def test_a_name_is_never_a_prefix(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    _linker(monkeypatch, "not_found")
+    graph = _graph(_rows(3))
+    ok, body = await values.execute_find_records_by_value(_state(graph), name="Lum", amount_min=1)
+    assert not ok and "no readable entity by this name" in body and "entity_ids" in body
+    graph.get_records_for_named_entities.assert_not_called()
+
+
+async def test_an_ambiguous_name_lists_who_it_may_be_and_lists_no_records(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _linker(monkeypatch, "ambiguous", namesakes=[_candidate("p-1", "Sam Lee", "person"), _candidate("p-2", "Sam Ito", "person")])
+    graph = _graph(_rows(3))
+    ok, body = await values.execute_find_records_by_value(_state(graph), name="Sam", amount_min=1)
+    assert not ok and "Sam Lee" in body and "Sam Ito" in body
+    assert 'pass its id as entity_ids: Sam Lee: "p-1"; Sam Ito: "p-2"' in body
+    graph.get_records_for_named_entities.assert_not_called()
+
+
+async def test_a_lookup_cut_short_is_not_reported_as_no_such_entity(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    _linker(monkeypatch, "not_found", timed_out=True)
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Pinecrest", amount_min=1)
+    assert (ok, body) == (False, values.NAME_TOO_SLOW_MSG)
+
+
+async def test_a_name_and_entity_ids_are_a_union(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    _linker(monkeypatch, "matched", accepted=[_candidate("e-2", "Pinecrest")])
+    graph = _graph(_rows(1))
+    await values.execute_find_records_by_value(_state(graph), name="Pinecrest", entity_ids=["e-1"], amount_min=1)
+    assert _query_arg(graph)[0] == ["e-1", "e-2"]
+
+
+async def test_an_entity_kind_does_not_narrow_ids_but_a_value_kind_still_does(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The linker may accept a product filed as its company; "organization" must not drop it.
+    link = _linker(monkeypatch, "matched", accepted=[_candidate("e-9", "Acme Cloud", "product")])
+    graph = _graph(_rows(1))
+    await values.execute_find_records_by_value(_state(graph), name="Acme Cloud", kinds=["organization", "currency"])
+    assert _query_arg(graph)[0] == ["e-9"] and _query_arg(graph)[1].kinds == ["currency"]
+    assert [m.name for m in link.await_args.args[0]] == ["Acme Cloud"]
+
+
+async def test_too_many_entity_ids_are_refused(env: AsyncMock) -> None:
+    ok, body = await values.execute_find_records_by_value(
+        _state(_graph([])), entity_ids=[f"e-{i}" for i in range(21)], amount_min=1,
+    )
+    assert not ok and "at most 20" in body
+
+
+async def test_an_entity_no_listed_record_spells_is_not_named(env: AsyncMock) -> None:
+    # A foreign or unreadable id: its stored name must never be shown. The fake spells it
+    # only on a record the user cannot read, so it would show if that record were asked about.
+    graph = _graph(_rows(1))
+
+    async def mentions(_org: str, entity_ids: list[str], record_ids: list[str]) -> list[dict[str, Any]]:
+        hidden = {"entityId": "e-x", "recordId": "r-hidden", "extractedNames": ["Secret Corp"]}
+        return [hidden] if "r-hidden" in record_ids else []
+
+    graph.get_named_entity_mentions_in_records = AsyncMock(side_effect=mentions)
+    ok, body = await values.execute_find_records_by_value(_state(graph), entity_ids=["e-x"], amount_min=1)
+    assert ok and body.startswith("Records matching") and "Secret Corp" not in body
+    assert graph.get_named_entity_mentions_in_records.await_args.args[2] == ["r000"]
+
+
+@pytest.mark.parametrize("error", [RuntimeError("verifier exploded"), TimeoutError()])
+async def test_a_name_lookup_that_fails_or_runs_out_of_time_is_a_failure_not_a_miss(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch, error: Exception,
+) -> None:
+    linker = AsyncMock()
+    linker.link = AsyncMock(side_effect=error)
+    monkeypatch.setattr(values, "build_linker", lambda *_, **__: linker)
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), name="Pinecrest", amount_min=1)
+    expected = values.NAME_TOO_SLOW_MSG if isinstance(error, TimeoutError) else LOOKUP_FAILED_MSG
+    assert (ok, body) == (False, expected)
+    graph.get_records_for_named_entities.assert_not_called()
+
+
+async def test_an_access_check_failure_while_linking_is_a_lookup_failure(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.retrieval.entity_permissions import EntityAccessError
+
+    linker = AsyncMock()
+    linker.link = AsyncMock(side_effect=EntityAccessError("down"))
+    monkeypatch.setattr(values, "build_linker", lambda *_, **__: linker)
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Pinecrest")
+    assert (ok, body) == (False, LOOKUP_FAILED_MSG)
+
+
+async def test_names_the_check_could_not_settle_are_refused_with_the_candidates(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.named_entities.linking.service import LinkResult
+
+    async def link(mentions: list, question: str) -> Linking:
+        unchecked = [_candidate("e-1", "Pinecrest Hospitality")]
+        result = LinkResult(mentions[0], LinkStatus.UNVERIFIED, unchecked=unchecked)
+        return Linking([result], timed_out=False, verifier_called=True, names={"e-1": "Pinecrest Hospitality"})
+
+    linker = AsyncMock()
+    linker.link = AsyncMock(side_effect=link)
+    monkeypatch.setattr(values, "build_linker", lambda *_, **__: linker)
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Pinecrest", amount_min=1)
+    assert not ok and "Pinecrest Hospitality" in body and "could not be checked" in body
+
+
+async def test_a_name_alone_lists_the_records_that_mention_it(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    _linker(monkeypatch, "matched", accepted=[_candidate("e-1", "Pinecrest")])
+    graph = _graph(_rows(2))
+    ok, body = await values.execute_find_records_by_value(_state(graph), name="Pinecrest")
+    ids, query = _query_arg(graph)
+    assert ok and ids == ["e-1"] and query is None and _listed(body) == ["r000", "r001"]
+
+
+async def test_entity_ids_with_only_entity_kinds_still_constrain_by_the_ids(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), entity_ids=["e-1"], kinds=["Organization"])
+    ids, query = _query_arg(graph)
+    assert ok and ids == ["e-1"] and query is None
+
+
+async def test_kinds_are_matched_whatever_their_case(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    link = _linker(monkeypatch, "matched", accepted=[_candidate("e-9", "Acme Cloud", "product")])
+    graph = _graph(_rows(1))
+    await values.execute_find_records_by_value(_state(graph), name="Acme Cloud", kinds=["Organization", "CURRENCY"])
+    assert _query_arg(graph)[1].kinds == ["currency"]
+    # The entity kind still steers the link.
+    assert link.await_args.args[0][0].kind_hint.value == "organization"
+
+
+async def test_an_unknown_kind_beside_entity_ids_still_points_to_record_types(env: AsyncMock) -> None:
+    ok, body = await values.execute_find_records_by_value(
+        _state(_graph(_rows(1))), entity_ids=["e-1"], kinds=["invoice"],
+    )
+    assert not ok and "record_types" in body
+
+
+async def test_what_an_accepted_name_may_leave_out_is_said(env: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.modules.named_entities.linking.service import LinkResult
+
+    async def link(mentions: list, question: str) -> Linking:
+        result = LinkResult(
+            mentions[0], LinkStatus.MATCHED, accepted=[_candidate("e-1", "Acme")],
+            left_out=[_candidate("e-2", "Acme Corp")],
+        )
+        return Linking([result], timed_out=False, verifier_called=True, names={"e-1": "Acme", "e-2": "Acme Corp"})
+
+    linker = AsyncMock()
+    linker.link = AsyncMock(side_effect=link)
+    monkeypatch.setattr(values, "build_linker", lambda *_, **__: linker)
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), name="Acme", amount_min=1)
+    assert ok and "Note on name: Other names that start with it, not included: Acme Corp" in body
+
+
+async def test_several_entities_are_named_as_one_of_them(env: AsyncMock) -> None:
+    """The ids match a record that mentions any one of them, so the header must not read as both."""
+    graph = _graph(_rows(2))
+    graph.get_named_entity_mentions_in_records = AsyncMock(return_value=[
+        {"entityId": "e-1", "recordId": "r000", "extractedNames": ["Acme"]},
+        {"entityId": "e-2", "recordId": "r001", "extractedNames": ["Contoso"]},
+    ])
+    ok, body = await values.execute_find_records_by_value(_state(graph), entity_ids=["e-1", "e-2"], amount_min=1)
+    assert ok and body.startswith("Records mentioning one of Acme, Contoso and matching")
+
+
+def test_entity_ids_with_a_value_kind_are_two_constraints_not_an_impossible_one() -> None:
+    from app.modules.named_entities.graph_ops import (
+        NamedEntityQuery,
+        filter_constraints,
+    )
+
+    constraints = filter_constraints(["e-1"], NamedEntityQuery(kinds=["currency"]))
+    assert [[(part.source, part.binds.get("ids") or part.binds.get("kinds")) for part in c] for c in constraints] == [
+        [("node", ["e-1"])], [("value", ["currency"])],
+    ]
+
+
+# --- a date listing names the day before the ranges that only cover it ----------------
+
+async def test_records_stating_a_date_inside_the_window_come_before_wider_ranges(env: AsyncMock) -> None:
+    # r000 is the newest but only covers the day through a year-long range.
+    graph = _graph(_rows(4))
+    day, year = 86_400_000, 365 * 86_400_000
+    # r000: a year-long range; r001: its quarter; r002, r003: name the day.
+    graph.get_named_entity_date_spans = AsyncMock(return_value={
+        "r000": (False, year), "r001": (False, 92 * day), "r002": (True, day), "r003": (True, day),
+    })
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    assert ok and _listed(body) == ["r002", "r003", "r001", "r000"]
+    assert "naming a date in the range first" in body.splitlines()[0]
+    org, ids, start, end = graph.get_named_entity_date_spans.await_args.args
+    assert (org, sorted(ids), start, end) == ("org", ["r000", "r001", "r002", "r003"], 1_000, 2_000)
+
+
+async def test_covering_dates_come_narrowest_span_first_whatever_their_age(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    day = 86_400_000
+    # r000 (newest) covers the day with a 30-day span, r001 with a 2-day trip; r002 names it.
+    graph.get_named_entity_date_spans = AsyncMock(return_value={
+        "r000": (False, 30 * day), "r001": (False, 2 * day), "r002": (True, day),
+    })
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    assert ok and _listed(body) == ["r002", "r001", "r000"]
+
+
+async def test_a_failed_date_span_read_is_a_lookup_failure_not_a_crash(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    graph.get_named_entity_date_spans = AsyncMock(side_effect=RuntimeError("driver down"))
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    assert (ok, body) == (False, values.LOOKUP_FAILED_MSG)
+
+
+async def test_pages_of_a_ranked_date_listing_run_across_tiers_without_repeats_or_gaps(env: AsyncMock) -> None:
+    graph = _graph(_rows(30))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={
+        f"r{i:03}": (i % 3 == 0, 86_400_000 if i % 3 == 0 else 400 * 86_400_000) for i in range(30)
+    })
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):
+        ok, body = await values.execute_find_records_by_value(
+            _state(graph), date_from=1_000, date_to=2_000, limit=7, cursor=cursor,
+        )
+        seen += _listed(body)
+        cursor = _cursor(body)
+        if cursor is None:
+            break
+    inside = [f"r{i:03}" for i in range(0, 30, 3)]
+    assert seen == inside + [f"r{i:03}" for i in range(30) if f"r{i:03}" not in inside]
+
+
+async def test_a_listing_without_a_date_window_is_not_ranked(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={})
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=1)
+    assert ok and _listed(body) == ["r000", "r001", "r002"] and "in the range first" not in body
+    graph.get_named_entity_date_spans.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("cursor", "resume"), [
+    ("9981:r019", (0, -9981, "r019")),
+    ("r1:9981:r019", (1, -9981, "r019")),
+    # A record id holding a colon still reads as the first tier's two-part form,
+    # even when its first part is a number.
+    ("9981:a:b", (0, -9981, "a:b")),
+    ("9981:2:abc", (0, -9981, "2:abc")),
+    ("40", 40),
+])
+def test_a_cursor_resumes_in_its_tier(cursor: str, resume: object) -> None:
+    assert values._parse_resume(cursor) == resume
+
+
+async def test_one_day_asked_as_a_point_is_the_whole_day(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={"r000": (True, 86_400_000)})
+    day = 1_751_932_800_000  # 2025-07-08 00:00 UTC
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=day, date_to=day)
+    query = graph.get_records_for_named_entities.await_args.args[2]
+    assert ok and (query.date_start_ms, query.date_end_ms) == (day, day + 86_400_000)
+    _, _, start, end = graph.get_named_entity_date_spans.await_args.args
+    assert (start, end) == (day, day + 86_400_000)
+    assert f"date_to={day + 86_400_000}" in body.splitlines()[0]

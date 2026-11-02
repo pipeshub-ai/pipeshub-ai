@@ -119,12 +119,15 @@ def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     Returns:
         String in format "Column1: value1, Column2: value2, ..."
     """
-    parts = []
+    # Pieces are joined once: an f-string per column would copy a large value one extra time.
+    parts: list[str] = []
     for key, value in row_data.items():
         # Convert value to string, handle None values
         value_str = str(value) if value is not None else "null"
-        parts.append(f"{key}: {value_str}")
-    return ", ".join(parts)
+        if parts:
+            parts.append(", ")
+        parts.extend((format(key), ": ", value_str))
+    return "".join(parts)
 
 
 def image_bytes_to_base64(image_bytes, extention) -> str:

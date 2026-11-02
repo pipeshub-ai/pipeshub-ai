@@ -144,3 +144,52 @@ def test_folded_mentions_are_kept_in_document_order() -> None:
 def test_an_entity_that_is_not_merged_is_embedded() -> None:
     survivor = ResolvedEntity(entity=_entity(K.ORGANIZATION, "Northwind Logistics"), graph_key="node-nwl")
     assert [(r.entity_id, r.name) for r in _embeddable("org", [survivor])] == [("node-nwl", "Northwind Logistics")]
+
+
+@pytest.mark.parametrize(("full", "short"), [
+    ("Pinecrest Hospitality", "Pinecrest"),
+    ("Zephyr Wind Energy", "Zephyr Wind"),
+    ("Tidewater Ports Authority", "Tidewater Ports"),
+    ("Stonegate Property Management", "Stonegate"),
+    ("Silverline Aviation Services", "Silverline Aviation"),
+])
+def test_a_trade_word_after_the_name_is_the_same_company(full: str, short: str) -> None:
+    entities = [_entity(K.ORGANIZATION, full), _entity(K.ORGANIZATION, short, block=1)]
+    assert _names(link_short_forms(entities)) == {full: [full, short]}
+
+
+def test_a_division_stays_apart_whichever_is_written_first() -> None:
+    # "Google Cloud ... Google": the full form first must not fold a parent into its division.
+    for order in ([("Google Cloud", 0), ("Google", 1)], [("Google", 0), ("Google Cloud", 1)]):
+        entities = [_entity(K.ORGANIZATION, name, block) for name, block in order]
+        assert set(_names(link_short_forms(entities))) == {"Google", "Google Cloud"}
+
+
+def test_a_product_written_without_its_brand_joins_the_branded_name() -> None:
+    entities = [_entity(K.PRODUCT, "Lumora Edge Pro"), _entity(K.PRODUCT, "Edge Pro", block=2)]
+    assert _names(link_short_forms(entities)) == {"Lumora Edge Pro": ["Lumora Edge Pro", "Edge Pro"]}
+
+
+@pytest.mark.parametrize("names", [
+    # One word is too common to be the branded product alone.
+    ["Microsoft Teams", "Teams"],
+    # Two branded products end the same way: the short form could be either.
+    ["Lumora Edge Pro", "Contoso Edge Pro", "Edge Pro"],
+])
+def test_an_unbranded_product_stays_apart_when_it_could_be_another(names: list[str]) -> None:
+    entities = [_entity(K.PRODUCT, name, block) for block, name in enumerate(names)]
+    assert set(_names(link_short_forms(entities))) == set(names)
+
+
+@pytest.mark.parametrize(("parent", "spin_off"), [
+    ("Siemens", "Siemens Energy"), ("GE", "GE Capital"), ("Uber", "Uber Freight"), ("Google", "Google Health"),
+])
+def test_a_parent_named_before_its_spin_off_stays_apart(parent: str, spin_off: str) -> None:
+    # "Siemens ... spun off Siemens Energy": a division's word folds only after the full name.
+    entities = [_entity(K.ORGANIZATION, parent, block=0), _entity(K.ORGANIZATION, spin_off, block=1)]
+    assert set(_names(link_short_forms(entities))) == {parent, spin_off}
+
+
+def test_a_safe_trade_word_folds_whichever_comes_first() -> None:
+    entities = [_entity(K.ORGANIZATION, "Pinecrest", block=0), _entity(K.ORGANIZATION, "Pinecrest Hospitality", block=1)]
+    assert _names(link_short_forms(entities)) == {"Pinecrest Hospitality": ["Pinecrest", "Pinecrest Hospitality"]}

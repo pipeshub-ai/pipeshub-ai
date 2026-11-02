@@ -27,6 +27,7 @@ from app.connectors.sources.microsoft.outlook.connector import (
     OutlookConnector,
     OutlookCredentials,
 )
+from tests.support.data_store import runs_in_its_transaction
 
 # Backwards compatibility aliases for tests
 STANDARD_OUTLOOK_FOLDERS = OutlookFolders.STANDARD_FOLDERS
@@ -70,7 +71,7 @@ def _make_mock_deps():
     data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=None)
     data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
-    data_store_provider = MagicMock()
+    data_store_provider = runs_in_its_transaction(MagicMock())
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -2470,7 +2471,7 @@ def _make_mock_deps_fullcov():
     data_entities_processor.delete_record_by_external_id = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
 
-    data_store_provider = MagicMock()
+    data_store_provider = runs_in_its_transaction(MagicMock())
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()

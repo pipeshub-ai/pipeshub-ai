@@ -31,9 +31,12 @@ on:
             - sharepoint
             - sharepoint_sim
             - bookstack_sim
+            - salesforce
+            - servicenow_sim
             - confluence
             - jira
             - zendesk
+            - servicenow
             - linear
             - github_teams
             - github
@@ -200,12 +203,12 @@ jobs:
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Four
+        # slow connector suites do not all serialize on one worker. Five
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
-        # CONN_SHARD_4 (one source of truth); "core" is everything those four
-        # and "demo" do not own, so the six partition -m "integration" exactly.
+        # CONN_SHARD_5 (one source of truth); "core" is everything those five
+        # and "demo" do not own, so the seven partition -m "integration" exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
         # "demo" runs only the Acme Corp demo questions, on a stack where no
@@ -217,11 +220,11 @@ jobs:
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
         # A pull request runs only the shards its changes can affect (the
-        # changes job above); it-all runs all six.
+        # changes job above); it-all runs all seven.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -396,6 +399,22 @@ jobs:
       CONNSIM_BOOKSTACK_REF: d7369757c0272ca4bfc706ecfe039c404b5584f8
       BOOKSTACK_SIM_IMAGE: pipeshub/connectors-simulator:bookstack-it
       NEEDS_BOOKSTACK_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'bookstack_sim')) && 'true' || 'false' }}
+      # The salesforce suite runs against the Salesforce simulator on shard 3: no secret, no dataset (the suite
+      # loads its own org). The connector reaches it by the alias salesforce-sim.internal, the instance URL the
+      # simulator hands out (docker-compose.integration.salesforce-sim.yml). CONNSIM_SALESFORCE_REF is a
+      # connectors-simulator commit with connsim/sources/salesforce and the behaviours a live org showed
+      # (wall clock, Chatter edits, SOQL faults; connectors-simulator #22).
+      CONNSIM_SALESFORCE_REF: c40c2911a800b46d87a47283c7197fe8c18e7ac2
+      SALESFORCE_SIM_IMAGE: pipeshub/connectors-simulator:salesforce-it
+      NEEDS_SALESFORCE_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'salesforce')) && 'true' || 'false' }}
+      # The servicenow_sim suite runs against the ServiceNow simulator on shard 4. It needs no secrets: the
+      # simulator generates its instance, and the connector reaches it by service name over http, which the
+      # override allows. So it never shares the live servicenow suite's shard 2, whose TC-SEC-01 must see an
+      # http instance URL refused. CONNSIM_SERVICENOW_REF is connectors-simulator's main with the ServiceNow simulator
+      # (pipeshub-ai/connectors-simulator#12).
+      CONNSIM_SERVICENOW_REF: 822e257268957c31ecfca5abb1c8acd7d911657e
+      SERVICENOW_SIM_IMAGE: pipeshub/connectors-simulator:servicenow-it
+      NEEDS_SERVICENOW_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'servicenow_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -408,6 +427,30 @@ jobs:
       SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
       SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
       ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
+      # ServiceNow (live instance, connectors/servicenow/README.md): an admin account, the OAuth app the
+      # connector signs in with (password grant), and the passwords of the instance's test users.
+      SERVICENOW_TEST_INSTANCE_URL: ${{ secrets.SERVICENOW_TEST_INSTANCE_URL }}
+      SERVICENOW_TEST_USERNAME: ${{ secrets.SERVICENOW_TEST_USERNAME }}
+      SERVICENOW_TEST_PASSWORD: ${{ secrets.SERVICENOW_TEST_PASSWORD }}
+      SERVICENOW_TEST_CLIENT_ID: ${{ secrets.SERVICENOW_TEST_CLIENT_ID }}
+      SERVICENOW_TEST_CLIENT_SECRET: ${{ secrets.SERVICENOW_TEST_CLIENT_SECRET }}
+      SERVICENOW_TEST_INTEGRATION_USERNAME: ${{ secrets.SERVICENOW_TEST_INTEGRATION_USERNAME }}
+      SERVICENOW_TEST_INTEGRATION_PASSWORD: ${{ secrets.SERVICENOW_TEST_INTEGRATION_PASSWORD }}
+      SERVICENOW_TEST_API_KEY: ${{ secrets.SERVICENOW_TEST_API_KEY }}
+      SERVICENOW_TEST_PERSONA_PLAIN_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_PLAIN_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_HR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_HR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ENG_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ENG_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ENG2_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ENG2_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_CONTRIB_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_CONTRIB_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KBMGR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KBMGR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_OWNER_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_OWNER_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KADMIN_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KADMIN_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KMANAGER_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KMANAGER_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_OGROUP_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_OGROUP_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_AUTHOR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_AUTHOR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ROLEDIRECT_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ROLEDIRECT_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ROLEC_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ROLEC_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_INACTIVE_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_INACTIVE_PASSWORD }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
@@ -462,24 +505,38 @@ jobs:
       SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
       SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these four and the `demo` shard do not own, built in the test step
+      # these five and the `demo` shard do not own, built in the test step
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
-      # one job, so a shard's wall clock is the sum of the two, and the job
-      # times out at 300 min): shard 1 ~194 min, shard 2 ~175 min, shard 3
-      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
-      # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
-      # and shard 3 zammad (zammad-source). The two Google Drive suites have
-      # shard 4: together they pushed shard 2 past the job timeout.
-      # A new connector suite goes on the lightest shard (outlook went on
-      # shard 2, which was lightest); check with scripts/shard_balance.py. The
-      # Gmail suites are on shard 2 too: they need the simulator image Jira's
-      # shard already builds, and no Google secrets.
-      # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
-      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
+      # one job, so a shard's wall clock is the sum of the two plus ~15 min of
+      # stack build and start-up, and the job times out at 300 min): shard 1
+      # ~238 min, shard 2 ~232 min, shard 3 ~230 min, shard 4 ~236 min,
+      # shard 5 ~238 min. Those totals count GitLab (shard 4) at ~33 min and
+      # Zendesk (shard 2) at ~15 min, what they take when they work; today
+      # their tests fail at setup and cost about a minute, so shards 2 and 4
+      # finish earlier until they are fixed. servicenow's 60 min (shard 2) and
+      # servicenow_sim's 25 min (shard 4, ~261 min with it) are still
+      # estimates.
+      # Shard 1 keeps nextcloud and bookstack, the only suites needing
+      # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
+      # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
+      # zendesk (its token is minted only there) and the Gmail suites (the
+      # Gmail simulator starts only there). Shard 3 keeps zammad
+      # (zammad-source), notion (notion-sim) and sharepoint_sim, whose
+      # simulator answers Microsoft's host names for the whole stack, so the
+      # live sharepoint and outlook suites must stay off shard 3. Jira and
+      # Confluence need the Atlassian simulators, which start on shards 2
+      # and 3 only. Shard 4 starts the ServiceNow simulator, which must stay
+      # off shard 2 (see NEEDS_SERVICENOW_SIM). Shard 5 starts nothing extra:
+      # google_drive_workspace alone is ~184 min, so it shares shard 5 with s3
+      # only.
+      # Rebalance with scripts/shard_balance.py when a suite grows, and keep
+      # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
+      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
+      CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
+      CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres or salesforce"
+      CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear or servicenow_sim"
+      CONN_SHARD_5: "google_drive_workspace or s3"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -669,6 +726,42 @@ jobs:
           echo "BOOKSTACK_SIM_COMPOSE=-f docker-compose.integration.bookstack-sim.yml" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/bookstack_sim.env >> "$GITHUB_ENV"
 
+      - name: Check out the Salesforce simulator
+        if: env.NEEDS_SALESFORCE_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_SALESFORCE_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-salesforce
+          persist-credentials: false
+
+      # No dataset: the suite loads its own org.
+      - name: Use the Salesforce simulator
+        if: env.NEEDS_SALESFORCE_SIM == 'true'
+        run: |
+          docker build -q -t "$SALESFORCE_SIM_IMAGE" connectors-simulator-salesforce
+          echo "SALESFORCE_SIM_COMPOSE=-f docker-compose.integration.salesforce-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/salesforce_sim.env >> "$GITHUB_ENV"
+
+      - name: Check out the ServiceNow simulator
+        if: env.NEEDS_SERVICENOW_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_SERVICENOW_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-servicenow
+          persist-credentials: false
+
+      # No dataset: the simulator generates its instance.
+      - name: Use the ServiceNow simulator
+        if: env.NEEDS_SERVICENOW_SIM == 'true'
+        run: |
+          docker build -q -t "$SERVICENOW_SIM_IMAGE" connectors-simulator-servicenow
+          echo "SERVICENOW_SIM_COMPOSE=-f docker-compose.integration.servicenow-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/servicenow_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
@@ -747,7 +840,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -846,7 +939,8 @@ jobs:
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-5) MARKERS="$CONN_SHARD_5" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -916,10 +1010,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -939,13 +1033,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -1051,7 +1145,8 @@ jobs:
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-5) MARKERS="$CONN_SHARD_5" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1089,10 +1184,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1112,7 +1207,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'

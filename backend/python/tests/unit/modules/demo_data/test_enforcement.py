@@ -173,10 +173,7 @@ async def test_lookup_record_drops_a_demo_match() -> None:
         graph_provider=graph, catalog=MagicMock(), org_id="org", user_id="u1", user_key="k",
         folder_mime_types=[], excluded_app_ids=OFF,
     )
-    resolver._fetch_candidates = AsyncMock(return_value=(
-        [_match("d", "PR #211"), _match("j", "Real")],
-        ["weburl"],
-    ))
+    resolver._execute_strategy = AsyncMock(return_value=[_match("d", "PR #211"), _match("j", "Real")])
     matches, _ = await resolver._resolve_one("https://github.acme-demo.example/svc-export/pull/211")
     assert [m.id for m in matches] == ["j"]
 

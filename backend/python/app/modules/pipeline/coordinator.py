@@ -99,12 +99,14 @@ class Coordinator:
         trigger: str,
         force: bool = False,
         keep_claim_on_publish_failure: bool = False,
+        defer: frozenset[str] = frozenset(),
     ) -> list[str]:
         """A prerequisite produced outside the stage runtime finished for this revision.
 
         ``keep_claim_on_publish_failure`` is for callers that cannot cheaply retry (the
         record is already searchable): a job the broker refused stays QUEUED for the
-        sweeper instead of failing the caller.
+        sweeper instead of failing the caller. Stages in ``defer`` are left without a
+        state, as if never reached, until something redrives them.
         """
         if not self._registry.is_external(stage):
             raise ValueError(f"{stage!r} is not an external prerequisite")
@@ -120,7 +122,7 @@ class Coordinator:
                     patch=StageStatePatch.dispatch(job),
                 )
         return await self._dispatch_after(
-            stage, view, priority=priority, force=force, keep_claim=keep_claim_on_publish_failure
+            stage, view, priority=priority, force=force, keep_claim=keep_claim_on_publish_failure, defer=defer
         )
 
     async def on_stage_done(self, job: StageJob, result: StageResult) -> list[str]:
@@ -250,7 +252,14 @@ class Coordinator:
         return SweepReport(scanned=scanned, republished=republished, reclaimed=reclaimed)
 
     async def _dispatch_after(
-        self, upstream: str, view: RecordView, *, priority: Priority, force: bool, keep_claim: bool = False
+        self,
+        upstream: str,
+        view: RecordView,
+        *,
+        priority: Priority,
+        force: bool,
+        keep_claim: bool = False,
+        defer: frozenset[str] = frozenset(),
     ) -> list[str]:
         policy = self._policy_for(view.org_id)
         published: list[str] = []
@@ -266,6 +275,8 @@ class Coordinator:
                     # The last prerequisite to finish dispatches it.
                     continue
                 evaluated.add(stage.name)
+                if stage.name in defer:
+                    continue
                 if not stage.applies(view, policy):
                     await self._skip(stage, view, priority=priority, trigger=done)
                     frontier.append(stage.name)

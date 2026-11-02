@@ -15,11 +15,14 @@ from app.models.entities import Record
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.models import Priority, RecordView
+from app.modules.transformers.transformer import EXTRACTION_DEFERRED_FIELD
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.resource_governor.tiers import classify as classify_tier
 
 EMBED = "embed"
+# ClassifyStage.name; the stage module imports the extraction stack, so not imported here.
+CLASSIFY = "classify"
 
 
 class StageIngress:
@@ -39,16 +42,23 @@ class StageIngress:
         self._forced.discard(record_id)
 
     async def redrive(
-        self, virtual_record_id: str | None, rev: str | None, stages: Sequence[str]
+        self,
+        virtual_record_id: str | None,
+        rev: str | None,
+        stages: Sequence[str],
+        *,
+        force: bool = True,
     ) -> list[str] | None:
         """Re-run ``stages`` for a record's current revision because someone asked to.
 
-        None when the runtime holds no state for that revision (content indexed before the
-        runtime existed); a full reindex covers that case."""
+        ``force=False`` (a record's first use) lets a stage whose output is
+        already current finish without work. None when the runtime holds no
+        state for that revision (content indexed before the runtime existed); a
+        full reindex covers that case."""
         if not virtual_record_id or not rev:
             return None
         return await self._coordinator.redrive_revision(
-            virtual_record_id, rev, stages, priority=Priority.INTERACTIVE, force=True
+            virtual_record_id, rev, stages, priority=Priority.INTERACTIVE, force=force
         )
 
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:
@@ -57,15 +67,22 @@ class StageIngress:
         and only re-running the record path dispatches its stages."""
         if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
             return False
-        if record.get("extractionStatus") != ProgressStatus.QUEUED.value:
+        extraction = record.get("extractionStatus")
+        # NOT_STARTED is final unless the indexed write deferred classification.
+        deferred = extraction == ProgressStatus.NOT_STARTED.value and record.get(EXTRACTION_DEFERRED_FIELD) is True
+        if extraction != ProgressStatus.QUEUED.value and not deferred:
             return False
         vrid, rev = record.get("virtualRecordId"), record.get("contentRev")
         if not vrid or not rev:
             return True
         return not await self._coordinator.has_seen_revision(str(vrid), str(rev))
 
-    async def on_indexed(self, record: Record, *, trigger: str | None) -> list[str]:
-        """Record ``embed`` for the record's revision and dispatch its successors."""
+    async def on_indexed(
+        self, record: Record, *, trigger: str | None, defer_classify: bool = False
+    ) -> list[str]:
+        """Record ``embed`` for the record's revision and dispatch its successors;
+        with ``defer_classify``, all but classification, which the record's first
+        use asks for (``first_use``)."""
         container = record.block_containers
         facts = content_facts(container)
         document = await self._graph.get_document(
@@ -104,4 +121,5 @@ class StageIngress:
             force=record.id in self._forced,
             # The record is already searchable; a broker hiccup must not fail it.
             keep_claim_on_publish_failure=True,
+            defer=frozenset({CLASSIFY}) if defer_classify else frozenset(),
         )

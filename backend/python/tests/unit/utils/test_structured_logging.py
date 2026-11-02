@@ -61,7 +61,7 @@ class TestGetProvider:
         assert len(calls) == 1
 
     def test_wrong_type_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(edition, "structured_logging_provider", lambda: object())
+        monkeypatch.setattr(edition, "structured_logging_provider", object)
         with pytest.raises(TypeError, match="StructuredLoggingProvider"):
             get_provider()
 

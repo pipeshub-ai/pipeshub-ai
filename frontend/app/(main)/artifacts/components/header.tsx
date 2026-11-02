@@ -8,6 +8,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useTranslation } from 'react-i18next';
 import type { ArtifactsViewMode } from '../types';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 
 // Same toolbar metrics as the Collections header, so the two pages match.
 const TEXT_BUTTON: React.CSSProperties = {
@@ -54,6 +55,8 @@ export function ArtifactsHeader({
       }}
     >
       <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+        {/* Restores a collapsed nav sidebar in place of the app-shell fallback over the title */}
+        <SidebarExpandButton placement="inline" />
         <h1
           style={{
             margin: 0,

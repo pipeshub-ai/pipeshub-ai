@@ -20,6 +20,10 @@ import {
   userActivitiesType,
 } from '../../utils/userActivities.utils';
 import type { ActivityDto, ActivityRepository, NewActivity } from './types';
+import type { Tx } from '../uow';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importActivityDocs } from './pg-import';
 
 const TYPES: ReadonlySet<string> = new Set(Object.values(userActivitiesType));
 const MODES: ReadonlySet<string> = new Set([
@@ -102,7 +106,15 @@ export async function recordBeforeOrg(entry: NewActivity): Promise<void> {
   );
 }
 
-export class PgActivityRepository implements ActivityRepository {
+export class PgActivityRepository implements ActivityRepository, Importable {
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importActivityDocs(kernelTx(tx), collection, docs);
+  }
   async record(entry: NewActivity): Promise<void> {
     await this.recordMany([entry]);
   }

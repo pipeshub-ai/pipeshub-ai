@@ -24,6 +24,7 @@ from app.agents.agent_loop.entity_search_tool import (
 _VARIED = {
     "knowledgegraph__search", "knowledgegraph__search_entities",
     "knowledgegraph__find_records_by_entity", "knowledgegraph__find_records_by_value",
+    "knowledgegraph__find_co_mentioned_entities",
 }
 
 
@@ -58,7 +59,10 @@ def test_not_offered_is_the_declared_toolset_without_the_tool(offered: bool | No
 def test_extraction_off_leaves_out_the_named_entity_tool_and_parameter(named: bool | None) -> None:
     """Shown with the flag off, they made the model call tools that could only fail."""
     declared, served = _tools(False, named=named)
-    left_out = {SEARCH_BY_ENTITIES_TOOL_NAME, "knowledgegraph__find_records_by_value"}
+    left_out = {
+        SEARCH_BY_ENTITIES_TOOL_NAME, "knowledgegraph__find_records_by_value",
+        "knowledgegraph__find_co_mentioned_entities",
+    }
     assert [t.name for t in served] == [t.name for t in declared if t.name not in left_out]
     by_name = {t.name: t for t in declared}
     for tool in served:
