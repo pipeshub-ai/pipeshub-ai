@@ -22,20 +22,20 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.agent_loop.entity_search_tool import (
     entity_search_offered_in,
     named_entities_enabled_in,
 )
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import (
@@ -1143,7 +1143,10 @@ class KnowledgeGraph:
         short_description="Find accessible records that mention a typed value",
         description=(
             "Find records the user can access that mention a typed value: a date range, "
-            "an amount in a currency, a quantity, or a percentage. Requires named-entity "
+            "an amount in a currency, a quantity, or a percentage. Use it when the question "
+            "is about a value rather than words (\"deals over $50k\", \"incidents in March "
+            "2026\", \"latency above 200 ms\"): it finds a record however the value is "
+            "written there. Requires named-entity "
             "extraction to be enabled. Lists readable records most recently modified first, "
             "each with the values that matched, in pages: continue with the call it prints. "
             "To look in one knowledge base or app (the Invoices knowledge base for \"invoices over "
@@ -1155,8 +1158,23 @@ class KnowledgeGraph:
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
             ToolParameter(name="name", type=ParameterType.STRING, description="Optional name of a company, person or product the records must mention; linked to its entities, not a prefix.", required=False),
             ToolParameter(name="entity_ids", type=ParameterType.ARRAY, description="Optional entity ids an entity search returned; records must mention one of them.", required=False, items={"type": "string"}),
-            ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
-            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds (exclusive). For one calendar day pass that day's local midnight as date_from and the next local midnight here (a day can be 23 or 25 hours); the same as date_from (or earlier) is the 24 hours from date_from.", required=False),
+            ToolParameter(
+                name="date_from", type=ParameterType.STRING,
+                description=(
+                    "Dates on or after this. ISO 8601: 'YYYY-MM-DD' (start of that day in UTC) or a "
+                    "full datetime with timezone (e.g. '2026-01-15T00:00:00Z'), not epoch milliseconds."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="date_to", type=ParameterType.STRING,
+                description=(
+                    "Dates on or before this, inclusive of the whole day for a date-only value. ISO 8601 "
+                    "like date_from. One day is date_from='2026-03-10', date_to='2026-03-10'; Q1 2026 is "
+                    "date_from='2026-01-01', date_to='2026-03-31'."
+                ),
+                required=False,
+            ),
             ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
             ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
             ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
@@ -1178,8 +1196,8 @@ class KnowledgeGraph:
         kinds: list[str] | None = None,
         name: str | None = None,
         entity_ids: list[str] | None = None,
-        date_from: int | None = None,
-        date_to: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
         amount_min: float | None = None,
         amount_max: float | None = None,
         currency: str | None = None,
