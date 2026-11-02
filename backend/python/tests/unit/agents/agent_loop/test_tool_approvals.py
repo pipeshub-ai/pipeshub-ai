@@ -681,6 +681,23 @@ class TestUserIndex:
         claim = await approvals.claim_pending(store, details["approvalId"], org_id="org-1", user_id="user-1", conversation_id="conv-1")  # type: ignore[arg-type]
         assert claim.status == "claimed" and await store.list_keys_in_directory(self._DIR) == []
 
+    async def test_a_new_message_passes_over_the_call_waiting_in_that_conversation(self) -> None:
+        store = _Store()
+        passed = await self._ask(store)
+        elsewhere = await self._ask(store, conversation_id="conv-2")
+        await approvals.pass_over_waiting_calls(_context(store))
+        assert [e["approvalId"] for e in await self._list(store)] == [elsewhere["approvalId"]]
+        claim = await approvals.claim_pending(store, passed["approvalId"], org_id="org-1", user_id="user-1", conversation_id="conv-1")  # type: ignore[arg-type]
+        assert claim.status == "used" and claim.outcome is not None and claim.outcome.ran is False
+
+    async def test_passing_over_leaves_a_call_already_answered_as_it_was(self) -> None:
+        store = _Store()
+        details = await self._ask(store)
+        claim_path = get_mcp_tool_approval_claim_path(details["approvalId"])
+        store.values[claim_path] = {"claimedAt": 1}
+        await approvals.pass_over_waiting_calls(_context(store))
+        assert store.values[claim_path] == {"claimedAt": 1}
+
     async def test_index_write_failure_does_not_block_the_card(self, caplog: pytest.LogCaptureFixture) -> None:
         store = _Store()
         real = store.set_config
@@ -984,6 +1001,18 @@ class TestAnsweringTheCard:
         assert started["approved"] is True
         (ended,) = again.events.of(EventType.TOOL_CALL_END, "c1")
         assert ended["status"] == ToolCallStatus.SUCCESS
+
+    async def test_an_answer_to_a_call_a_newer_message_passed_over_runs_nothing(self) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        await approvals.pass_over_waiting_calls(_context(store))
+
+        answered = await _answer(store, mcp, approval_id, "allow")
+
+        assert mcp.calls == []
+        assert "didn't run" in _result_of(answered.sent[0]).content
+        (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
+        assert ended["status"] == ToolCallStatus.BLOCKED
 
     async def test_an_answer_still_being_applied_isnt_applied_again(self) -> None:
         store, mcp = _Store(), _Server()

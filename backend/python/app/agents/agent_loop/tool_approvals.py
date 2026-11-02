@@ -473,6 +473,33 @@ async def list_pending_for(config_service: "ConfigurationService", *, org_id: st
     return sorted(entries, key=lambda e: e.get("createdAt", 0), reverse=True)
 
 
+async def pass_over_waiting_calls(context: "AgentContext") -> None:
+    """A new message in a conversation moves past the call waiting in it (the chat shows it as not
+    run): its claim says so, so a later answer from anywhere runs nothing, and it leaves the list."""
+    if not context.conversation_id:
+        return
+    index_dir = get_mcp_tool_approval_user_index_dir(context.org_id, context.user_id)
+    try:
+        for key in await context.config_service.list_keys_in_directory(f"{index_dir}/"):
+            approval_id = key.rsplit("/", 1)[-1]
+            entry = await _read(context.config_service, f"{index_dir}/{approval_id}")
+            if not isinstance(entry, dict) or entry.get("conversationId") != context.conversation_id:
+                continue
+            outcome = Outcome(
+                answer="expired", status="blocked", preview="A newer message was sent before this was answered.",
+                result="The user sent a new message instead of answering this approval request, so it didn't run. "
+                "If it's still needed, call the tool again to ask again.",
+            )
+            # If absent: an answer that claimed it first keeps its own outcome.
+            await context.config_service.create_config_if_absent(
+                get_mcp_tool_approval_claim_path(approval_id),
+                {"claimedAt": time.time(), "outcome": outcome.model_dump(by_alias=True)}, ttl_seconds=_RECORD_TTL_SECONDS,
+            )
+            await context.config_service.delete_config(f"{index_dir}/{approval_id}")
+    except Exception as e:
+        logger.warning(f"Couldn't pass over the waiting tool approvals of conversation {context.conversation_id}: {e}")
+
+
 def _outcome_of(raw: Any) -> Optional[Outcome]:  # noqa: ANN401
     try:
         return Outcome.model_validate(raw["outcome"]) if isinstance(raw, dict) and isinstance(raw.get("outcome"), dict) else None
