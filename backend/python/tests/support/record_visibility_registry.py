@@ -188,6 +188,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
     "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
     "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
+    "set_record_properties": (Rule.WRITE, "writes projected values onto a record the caller read live; on a trashed one they are inert"),
     "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "stage_states_delete_for_virtual_records": (
         Rule.WRITE,

@@ -19,6 +19,7 @@ import time
 import traceback
 import unicodedata
 import uuid
+from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -172,6 +173,13 @@ from app.services.graph_db.common.utils import (
     trash_purge_row,
     uploaded_document_id,
     within_param,
+)
+from app.services.graph_db.conditions import (
+    EQ,
+    IS_NULL,
+    NULL_OR_EQ,
+    Cond,
+    check_conditions,
 )
 from app.services.graph_db.dated_scope import (
     DatedRow,
@@ -4644,6 +4652,69 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return bool(rows)
+
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.update_node_fields_if`."""
+        check_conditions(conditions)
+        label = collection_to_label(collection)
+        neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+        self.validator.validate_node_update(collection, neo4j_updates)
+        parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
+        clauses = []
+        for i, cond in enumerate(conditions):
+            parameters[f"f{i}"] = cond.field
+            if cond.op == IS_NULL:
+                clauses.append(f"n[$f{i}] IS NULL")
+                continue
+            parameters[f"v{i}"] = cond.value
+            if cond.op == EQ:
+                clauses.append(f"n[$f{i}] = $v{i}")
+            elif cond.op == NULL_OR_EQ:
+                clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] = $v{i})")
+            else:
+                clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] <= $v{i})")
+        # The lock comes first so the conditions read a write that committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(clauses)}
+            SET n += $updates
+            {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+            RETURN 1 AS n
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.set_record_properties`. Flat ``p_<name>`` keys on the node."""
+        # `SET n += {p_old: null}` removes the key; a name still held is overwritten by its value.
+        updates: dict[str, Any] = {f"p_{name}": None for name in previous_names if name not in values}
+        updates.update({f"p_{name}": value for name, value in values.items()})
+        updates.update(controls)
+        return await self.update_node_fields_if(
+            key, CollectionNames.RECORDS.value, updates, conditions, transaction,
+        )
 
     async def create_node_if_absent(
         self,
