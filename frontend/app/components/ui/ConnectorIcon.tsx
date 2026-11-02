@@ -20,7 +20,8 @@ import { useThemeAppearance } from '@/app/components/theme-provider';
  * <ConnectorIcon type="jira" size={16} color="var(--slate-11)" />
  */
 
-export type ConnectorType = "intercom" |
+export type ConnectorType = 
+  | "intercom"
   // Communication & Collaboration
   | 'slack'
   | 'teams'
