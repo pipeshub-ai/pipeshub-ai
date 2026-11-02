@@ -14,6 +14,14 @@ const answered = new Map<string, number>();
 const CLAIM_GRACE_MS = 15_000;
 // Bumped by every refresh, put and drop: a fetch that finishes after a newer change is stale.
 let generation = 0;
+// Fetches still running. A poll waits for them rather than starting one that would make a slow
+// fetch (slower than the poll interval) stale every time.
+let inFlight = 0;
+
+/** A refresh from the poll, focus or the page being shown: skipped while a fetch is running. */
+function pollPendingApprovals(): void {
+  if (inFlight === 0) void usePendingApprovals.getState().refresh();
+}
 
 interface PendingApprovalsState {
   items: PendingApprovalItem[];
@@ -36,11 +44,14 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
   items: [],
   refresh: async () => {
     const mine = ++generation;
+    inFlight++;
     try {
       const items = await fetchPendingApprovals();
       if (mine === generation) set({ items: items.filter(live) });
     } catch {
       // A failed poll keeps the list it had; the next one tries again.
+    } finally {
+      inFlight = Math.max(0, inFlight - 1);
     }
   },
   drop: (approvalId) => {
@@ -65,7 +76,7 @@ export function usePendingApprovalsSync(): void {
   const items = usePendingApprovals((s) => s.items);
 
   useEffect(() => {
-    const refresh = () => void usePendingApprovals.getState().refresh();
+    const refresh = pollPendingApprovals;
     const visible = () => document.visibilityState === 'visible';
     const onVisibility = () => {
       if (visible()) refresh();
@@ -102,5 +113,6 @@ export function useOtherChatApprovals(): PendingApprovalItem[] {
 /** Test-only: forget what was answered. */
 export function resetPendingApprovalsForTest(): void {
   answered.clear();
+  inFlight = 0;
   usePendingApprovals.setState({ items: [], inlineOpen: 0 });
 }
