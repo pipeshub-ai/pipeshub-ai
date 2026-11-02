@@ -115,6 +115,25 @@ describe('ComposerApprovalCard', () => {
     }
   });
 
+  it('focus stays on what is on show for a call other than the first', async () => {
+    await showBar([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report'), item('c', 'conv-c', 'Budget')]);
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+      act(() => vi.runAllTimers());
+      expect(inCard(/In "Weekly report"/)).toBeTruthy();
+      expect(document.activeElement).toBe(within(card()).getByRole('button', { name: 'Hide' }));
+
+      fireEvent.click(within(card()).getByRole('button', { name: /\+2 more/ }));
+      act(() => vi.runAllTimers());
+      expect(inCard(/In "Budget"/)).toBeTruthy();
+      expect(document.activeElement).toBe(within(card()).getByRole('button', { name: /\+2 more/ }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('folds to the bar while this chat shows its own approval card', async () => {
     await show([item('a', 'conv-a', 'Fix login')]);
     expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();

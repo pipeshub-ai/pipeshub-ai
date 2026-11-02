@@ -314,6 +314,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         </Box>
         {moreCount > 0 && onMore && (
           <Button
+            data-approval-more=""
             size="1"
             variant="ghost"
             color="gray"
