@@ -16,7 +16,7 @@ from app.sources.client.smb.smb import (
     _vet_every_session,
     dial_address,
 )
-from app.utils.url_fetcher import PRIVATE_ADDRESS_SWITCH_ENV
+from app.utils.url_fetcher import PRIVATE_ADDRESS_SWITCH_ENV, public_address_refusal
 
 
 def _resolving_to(*addresses: str):  # noqa: ANN202 - a patch context manager
@@ -170,7 +170,9 @@ def test_a_dfs_referral_to_a_refused_address_never_opens_a_session() -> None:
         pool.register_session("dfs-target.example", username="u")
     original.assert_not_called()
 
-    with _resolving_to("10.0.0.7"):
+    # A team client holds its lock while it follows a referral: the deployment rule.
+    team = SmbClient(server="files.example", username="u", password="p")
+    with _resolving_to("10.0.0.7"), team._io_lock:
         pool.register_session("dfs-target.example", username="u")
     original.assert_called_once_with("10.0.0.7", username="u")
 
@@ -184,6 +186,18 @@ def test_a_lookup_that_hangs_times_out() -> None:
     ):
         dial_address("slow.example")
     release.set()
+
+
+def test_a_lookup_that_hangs_gets_the_same_refusal_for_a_personal_connector() -> None:
+    release = threading.Event()
+    with (
+        patch("app.sources.client.smb.smb.resolved_addresses", side_effect=lambda _: release.wait(5) and []),
+        patch("app.sources.client.smb.smb.LOOKUP_TIMEOUT_SECONDS", 0.05),
+        pytest.raises(NetworkShareAuthError) as refused,
+    ):
+        dial_address("slow.example", public_only=True)
+    release.set()
+    assert str(refused.value) == public_address_refusal("slow.example")
 
 
 def _listing_raising(exc: Exception):  # noqa: ANN202 - a patch context manager
