@@ -383,6 +383,45 @@ describe('JitProvisioningService - additional coverage', () => {
       expect(publish.firstCall.args[0].payload).to.include({ userId: user._id, email: user.email })
     })
 
+    it('puts the account back to Slack-only and rethrows when joining everyone fails', async () => {
+      const users = getUserRepository()
+      sinon.stub(users, 'upgradeSlackOnly').resolves(true)
+      sinon.stub(users, 'getLive').resolves({ ...user, fullName: '' } as any)
+      const profile = sinon.stub(users, 'updateProfile').resolves(null)
+      sinon.stub(getGroupRepository(), 'addToEveryone').rejects(new Error('groups down'))
+      const leave = sinon.stub(getGroupRepository(), 'removeFromAll').resolves()
+
+      let caught: unknown
+      try {
+        await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam Smith' }, 'google')
+      } catch (error) {
+        caught = error
+      }
+
+      expect((caught as Error).message).to.equal('groups down')
+      expect(leave.firstCall.args).to.deep.equal([user.orgId, user._id, { everyGroup: true }])
+      expect(profile.lastCall.args).to.deep.equal([user.orgId, user._id, { fullName: '', kind: 'slack' }])
+    })
+
+    it('still restores the record when leaving the groups fails too', async () => {
+      const users = getUserRepository()
+      sinon.stub(users, 'upgradeSlackOnly').resolves(true)
+      sinon.stub(users, 'getLive').resolves({ ...user, fullName: 'Sam' } as any)
+      const profile = sinon.stub(users, 'updateProfile').resolves(null)
+      sinon.stub(getGroupRepository(), 'addToEveryone').rejects(new Error('groups down'))
+      sinon.stub(getGroupRepository(), 'removeFromAll').rejects(new Error('still down'))
+
+      let caught: unknown
+      try {
+        await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam' }, 'google')
+      } catch (error) {
+        caught = error
+      }
+
+      expect((caught as Error).message).to.equal('groups down')
+      expect(profile.calledOnceWithExactly(user.orgId, user._id, { kind: 'slack' })).to.equal(true)
+    })
+
     it('does nothing more when another sign-in already upgraded it', async () => {
       sinon.stub(getUserRepository(), 'upgradeSlackOnly').resolves(false)
       const everyone = sinon.stub(getGroupRepository(), 'addToEveryone').resolves()

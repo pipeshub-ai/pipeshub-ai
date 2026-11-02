@@ -83,21 +83,63 @@ export class JitProvisioningService {
   ): Promise<void> {
     if (!(await upgradeSlackOnlyAccount(user._id, user.orgId))) return;
     const users = getUserRepository();
-    const current = await users.getLive(String(user.orgId), String(user._id));
-    if (current && (current.fullName ?? '') === '') {
-      await users.updateProfile(String(user.orgId), String(user._id), {
+    const orgId = String(user.orgId);
+    const userId = String(user._id);
+    const previous: Record<string, unknown> = {};
+    try {
+      const current = await users.getLive(orgId, userId);
+      if (current && (current.fullName ?? '') === '') {
+        previous.fullName = current.fullName;
+        await users.updateProfile(orgId, userId, {
+          fullName: userDetails.fullName,
+        });
+      }
+      this.logger.info(`Slack-only account upgraded via ${provider}`, {
+        userId: user._id,
+      });
+      await this.joinOrg({
+        _id: user._id,
+        orgId: user.orgId,
+        email: user.email,
         fullName: userDetails.fullName,
       });
+    } catch (error) {
+      await this.undoSlackOnlyUpgrade(orgId, userId, previous);
+      throw error;
     }
-    this.logger.info(`Slack-only account upgraded via ${provider}`, {
-      userId: user._id,
-    });
-    await this.joinOrg({
-      _id: user._id,
-      orgId: user.orgId,
-      email: user.email,
-      fullName: userDetails.fullName,
-    });
+  }
+
+  /**
+   * Puts a half-upgraded account back to Slack-only, so the next sign-in
+   * retries the whole upgrade. It held no group before, so it leaves every
+   * group. Each step is best effort on its own.
+   */
+  private async undoSlackOnlyUpgrade(
+    orgId: string,
+    userId: string,
+    previous: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await getGroupRepository().removeFromAll(orgId, userId, {
+        everyGroup: true,
+      });
+    } catch (error) {
+      this.logger.error('Undoing a failed Slack-only upgrade: leaving the groups failed', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
+      await getUserRepository().updateProfile(orgId, userId, {
+        ...previous,
+        kind: 'slack',
+      });
+    } catch (error) {
+      this.logger.error('Undoing a failed Slack-only upgrade: restoring the record failed', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** Adds a new member to the everyone group and tells the graph about them. */
