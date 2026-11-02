@@ -2,7 +2,7 @@
 
 import React, { useId, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Flex, Select, Switch, Text, TextArea, TextField } from '@radix-ui/themes';
+import { Box, Flex, Select, Switch, Text, TextArea, TextField } from '@radix-ui/themes';
 import { TagInput, type TagItem } from '@/app/(main)/workspace/components';
 import { EMAIL } from './check-args';
 import type { FieldSpec } from './schema-fields';
@@ -12,8 +12,6 @@ interface SchemaFormProps {
   values: Record<string, unknown>;
   /** A message per field name, already translated. */
   errors: Record<string, string>;
-  /** Field names whose value differs from the call as asked. */
-  changed?: Set<string>;
   onChange: (name: string, value: unknown) => void;
 }
 
@@ -44,7 +42,7 @@ function GrowingTextArea(props: React.ComponentProps<typeof TextArea>) {
 }
 
 /** The call's arguments as a form, one field per top-level property. */
-export function SchemaForm({ fields, values, errors, changed, onChange }: SchemaFormProps) {
+export function SchemaForm({ fields, values, errors, onChange }: SchemaFormProps) {
   const base = useId();
   return (
     <Flex direction="column" gap="3">
@@ -55,7 +53,6 @@ export function SchemaForm({ fields, values, errors, changed, onChange }: Schema
           field={field}
           value={values[field.name]}
           error={errors[field.name]}
-          changed={changed?.has(field.name) ?? false}
           onChange={(value) => onChange(field.name, value)}
         />
       ))}
@@ -68,12 +65,11 @@ export interface FieldProps {
   field: FieldSpec;
   value: unknown;
   error?: string;
-  changed: boolean;
   onChange: (value: unknown) => void;
 }
 
-/** One labelled field: the control for its kind, its Edited badge and its error. */
-export function Field({ id, field, value, error: given, changed, onChange }: FieldProps) {
+/** One labelled field: the control for its kind and its error. */
+export function Field({ id, field, value, error: given, onChange }: FieldProps) {
   const { t } = useTranslation();
   // A list of addresses is flagged as it is typed; ids in a recipients list are not addresses.
   const badAddress = field.control === 'chips' && field.schema.items?.format === 'email' && Array.isArray(value) && value.some((v) => !EMAIL.test(String(v)));
@@ -156,7 +152,6 @@ export function Field({ id, field, value, error: given, changed, onChange }: Fie
           {field.label}
           {field.required && <Text aria-hidden style={{ color: 'var(--red-11)' }}> *</Text>}
         </Text>
-        {changed && <Badge size="1" variant="soft" color="gray">{t('chat.toolApproval.edited')}</Badge>}
       </Flex>
       {control}
       {field.control === 'json' && (

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Button, Checkbox, Flex, Text, TextArea } from '@radix-ui/themes';
+import { Badge, Box, Button, Checkbox, Flex, Text, TextArea, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { validateApprovalEdits } from '../../api';
@@ -160,6 +160,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const hasFieldErrors = Object.keys(fieldErrors).length > 0;
 
   const lines = original ? approvalArgumentLines(values, { full: showAll }) : [];
+  const changeCount = t('chat.toolApproval.changeCount', { count: changed.size });
+  const changedLabels = [...changed].map((name) => fields.find((f) => f.name === name)?.label ?? name).join(', ');
   const anyCut = !showAll && lines.some((line) => line.cut);
 
   const answer = async (decision: ToolApprovalDecision, extra: { arguments?: Record<string, unknown>; feedback?: string } = {}) => {
@@ -291,16 +293,29 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           <ConnectorIcon type={server} size={15} />
         </Flex>
         <Box style={{ flex: 1, minWidth: 0 }}>
-          <Flex align="center" gap="2">
+          <Flex align="baseline" gap="2">
             <Text size="2" weight="medium" truncate title={approval.toolName} style={{ color: 'var(--gray-12)', minWidth: 0 }}>
               {t('chat.toolApproval.titleIn', { tool, server })}
             </Text>
+            {/* One status label for the whole edit, like a document's save status; the tooltip names the fields. */}
+            {edited && (
+              <Tooltip content={t('chat.toolApproval.receipt.changedFields', { fields: changedLabels })}>
+                <Text size="1" tabIndex={0} style={{ color: 'var(--gray-11)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                  {changeCount}
+                </Text>
+              </Tooltip>
+            )}
             {approval.kind === 'destructive' && (
               <Badge size="1" variant="soft" color="red" style={{ flexShrink: 0 }}>
                 {t('chat.toolApproval.cantBeUndone')}
               </Badge>
             )}
           </Flex>
+          {canEdit && (
+            <VisuallyHidden role="status" aria-live="polite">
+              {edited ? changeCount : ''}
+            </VisuallyHidden>
+          )}
           {approval.argsSummary && (
             <Text as="p" size="2" truncate style={{ color: 'var(--gray-11)' }}>
               {approval.argsSummary}
@@ -347,7 +362,6 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             fields={fields}
             values={values}
             errors={fieldErrors}
-            changed={changed}
             onChange={(name, value) => {
               setValues((prev) => ({ ...prev, [name]: value }));
               setRemember(false);

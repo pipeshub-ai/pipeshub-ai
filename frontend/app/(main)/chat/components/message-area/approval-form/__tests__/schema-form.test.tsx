@@ -46,12 +46,11 @@ describe('SchemaForm', () => {
     expect(onChange).toHaveBeenLastCalledWith('count', undefined);
   });
 
-  it('marks changed fields and links each error to its field', () => {
+  it('links each error to its field', () => {
     renderInTheme(
-      <SchemaForm fields={fields} values={values} changed={new Set(['title'])} errors={{ title: 'This field is required.' }} onChange={vi.fn()} />,
+      <SchemaForm fields={fields} values={values} errors={{ title: 'This field is required.' }} onChange={vi.fn()} />,
     );
 
-    expect(screen.getByText('Edited')).toBeTruthy();
     const title = screen.getByRole('textbox', { name: /Title/ });
     expect(title.getAttribute('aria-invalid')).toBe('true');
     expect(document.getElementById(title.getAttribute('aria-describedby') ?? '')?.textContent).toBe('This field is required.');
