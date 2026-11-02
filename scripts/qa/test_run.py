@@ -780,6 +780,19 @@ class TestShard(RunCase):
             run.run(self.cfg, self.managed_plan([ACL]), self.rows, self.out, stack_mode="managed", variant="solo", retry=False)
         start.assert_not_called()
 
+    def test_unknown_variant_exits_non_zero(self) -> None:
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}), contextlib.redirect_stderr(err):
+            code = qa_main.main(["--out", str(self.out), "run", "--ids", ACL, "--stack-variant", "typo"])
+        self.assertEqual(code, 2)
+        self.assertIn("unknown stack variant 'typo'; known: ", err.getvalue())
+
+    def test_a_fixed_compose_project_keeps_the_variant(self) -> None:
+        from qa import stack
+        with mock.patch.dict(os.environ, {"QA_COMPOSE_PROJECT": "mine"}):
+            self.assertEqual(stack.project_name("abc", "1", "neo4j", "solo"), "mine-solo-neo4j")
+            self.assertEqual(stack.project_name("abc", "1", "neo4j"), "mine-neo4j")
+
     def test_hooks_see_the_variant(self) -> None:
         os.environ.pop("QA_STACK_VARIANT", None)
         with mock.patch.object(run, "preflight", return_value=({}, [])), \

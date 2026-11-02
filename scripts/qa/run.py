@@ -593,7 +593,7 @@ def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, 
         # Someone else's stack has one graph DB; running the other pass against it would mislabel the results.
         graphs = [os.environ.get("QA_STACK_GRAPH_DB") or os.environ.get("TEST_GRAPH_DB_TYPE") or graphs[0]]
     stacks = [
-        Stack(cfg.root, mode, g, plan["stack"]["broker"], plan["stack"]["compose_profiles"], stack_mod.project_name(head, rid, g), url, log_dir, build and i == 0)
+        Stack(cfg.root, mode, g, plan["stack"]["broker"], plan["stack"]["compose_profiles"], stack_mod.project_name(head, rid, g, variant), url, log_dir, build and i == 0)
         for i, g in enumerate(graphs)
     ]
     if mode == "managed":

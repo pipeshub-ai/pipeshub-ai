@@ -69,9 +69,11 @@ def image_tag(head: str | None) -> str:
     return f"pipeshub-ai:qa-{(head or 'local')[:12]}"
 
 
-def project_name(head: str | None, run_id: str, graph: str) -> str:
-    """One compose project per commit, run and graph DB, so concurrent runs never share a stack."""
-    prefix = os.environ.get("QA_COMPOSE_PROJECT") or f"qa-{(head or 'local')[:12]}-{run_id}"
+def project_name(head: str | None, run_id: str, graph: str, variant: str = "") -> str:
+    """One compose project per commit, run, stack variant and graph DB, so concurrent runs never share a stack.
+    run_id already carries the variant; a fixed QA_COMPOSE_PROJECT does not, so it gets it here."""
+    fixed = os.environ.get("QA_COMPOSE_PROJECT")
+    prefix = f"{fixed}-{variant}" if fixed and variant else fixed or f"qa-{(head or 'local')[:12]}-{run_id}"
     return re.sub(r"[^a-z0-9_-]", "-", f"{prefix}-{graph}".lower())
 
 

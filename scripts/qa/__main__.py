@@ -216,6 +216,10 @@ def cmd_run(args) -> int:
         _dump(out / "plan.json", plan)
     else:
         plan = _load(Path(args.plan) if args.plan else out / "plan.json")
+    known = cfg.always.get("variants", {})
+    if args.stack_variant and args.stack_variant not in known:
+        print(f"unknown stack variant {args.stack_variant!r}; known: {', '.join(sorted(known)) or 'none'}", file=sys.stderr)
+        return 2
     if args.graph_db:
         plan["stack"]["graph_db"] = [args.graph_db] if args.graph_db != "both" else ["neo4j", "arango"]
     try:
