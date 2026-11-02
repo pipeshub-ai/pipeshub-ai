@@ -1745,8 +1745,9 @@ export function slackBlocksFallbackText(blocks: unknown[]): string {
  * Replace the streamed answer with its final blocks. Slack rejects a
  * chat.update from a streamed (rich text) message to section blocks with
  * `block_mismatch`, so the blocks go out as a new reply and the streamed
- * messages are deleted after it lands. If the post fails they stay, so the
- * thread still shows the answer. Returns whether the blocks were posted.
+ * messages are deleted after it lands. If the post fails they stay, followed
+ * by a failure notice, since a streamed answer can be cut short (e.g. at a
+ * table). Returns whether the blocks were posted.
  */
 export async function replaceStreamedAnswer(
   typedClient: TypedSlackClient,
@@ -1768,6 +1769,12 @@ export async function replaceStreamedAnswer(
       'Error posting the final Slack answer; keeping the streamed text:',
       error,
     );
+    await typedClient.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: FAILED_RESPONSE_GENERATION_MESSAGE,
+      ...NO_UNFURL_OPTIONS,
+    });
     return false;
   }
   for (const ts of streamedTs) {
