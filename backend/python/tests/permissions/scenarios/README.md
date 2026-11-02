@@ -1,7 +1,7 @@
 # Permission scenarios
 
-One corpus, three kinds of check, run against every layer that decides read access
-(today the graph check on Neo4j and ArangoDB). The oracle (`../oracle.py`) is the product's rule written once;
+One corpus, three kinds of check, meant to run against every layer that decides read access
+(so far only the oracle layer runs it). The oracle (`../oracle.py`) is the product's rule written once;
 a scenario lists what the *vendor* shows, and `deltas.yaml` lists every place the product knowingly differs.
 
 | Folder | Tier | What |
