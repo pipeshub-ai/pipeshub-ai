@@ -449,7 +449,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         process.env.DOC_STORE_FENCE = 'on'; // the drain check is part of the opt-in fence
         const mongoose = (await import('mongoose')).default;
         const { assertAcceptingRuns, MaintenanceError } = await import('../../../src/libs/repositories/drain');
-        await mongoose.connect(mongo.uri, { dbName: DB });
+        // an armed application names its connections so; drain refuses while a connected application client does not carry the fence
+        await mongoose.connect(mongo.uri, { dbName: DB, appName: 'pipeshub-fenced' });
         try {
           expect((await run(['drain', '--wait', '0'])).code).to.equal(0);
           process.env.DOC_STORE = 'mongo'; // the migrator sets postgres for itself
@@ -478,7 +479,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         process.env.DOC_STORE_FENCE = 'on'; // the drain check is part of the opt-in fence
         const mongoose = (await import('mongoose')).default;
         const es = await import('../../../src/modules/enterprise_search/controller/es_controller');
-        await mongoose.connect(mongo.uri, { dbName: DB });
+        await mongoose.connect(mongo.uri, { dbName: DB, appName: 'pipeshub-fenced' });
         try {
           expect((await run(['drain', '--wait', '0'])).code).to.equal(0);
           process.env.DOC_STORE = 'mongo';
