@@ -119,7 +119,7 @@ describe('approvalArgumentLines', () => {
     expect(approvalArgumentLines({ to: ['admins', 'owners'] })[0]!.value).toBe('admins, owners');
     expect(approvalArgumentLines({ to: ['a', ''] })[0]!.value).toBe('["a",""]');
     expect(approvalArgumentLines({ to: ['a', null] })[0]!.value).toBe('["a",null]');
-    expect(approvalArgumentLines({ to: [] })[0]!.value).toBe('[]');
+    expect(approvalArgumentLines({ to: [], subject: 'Hi' }).map((line) => line.name)).toEqual(['subject']);
     expect(approvalArgumentLines({ to: [1, true] })[0]!.value).toBe('[1,true]');
     expect(approvalArgumentLines({ to: ['1', 'true'] })[0]!.value).toBe('1, true');
   });
