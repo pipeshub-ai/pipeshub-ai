@@ -173,6 +173,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     if (!request) return;
     // Answered here: the list above the composer must not offer it once this chat is left.
     usePendingApprovals.getState().drop(approval.approvalId);
+    void usePendingApprovals.getState().refresh();
     void streamMessageForSlot(slotId, query, request, { reuseRowId: rowId });
   };
 

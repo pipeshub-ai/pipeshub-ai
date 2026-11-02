@@ -203,8 +203,9 @@ function buildFiltersPayload(
  */
 function buildAgentFiltersPayload(
   filters: Partial<ChatKnowledgeFilters> | null | undefined,
-): { filters: ChatKnowledgeFilters } {
-  return { filters: sanitizeFilters(filters) };
+): { filters?: ChatKnowledgeFilters } {
+  // A request built without filters (a chat answered in the background) asks for the agent's own.
+  return filters === undefined ? {} : { filters: sanitizeFilters(filters) };
 }
 
 // Chat API endpoints
@@ -1072,5 +1073,5 @@ export async function fetchPendingApprovals(): Promise<PendingApprovalItem[]> {
       card,
     });
   }
-  return items;
+  return items.sort((a, b) => b.createdAt - a.createdAt);
 }

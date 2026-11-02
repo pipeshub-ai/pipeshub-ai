@@ -35,11 +35,16 @@ export function conversationSlotPatch(detail: Awaited<ReturnType<typeof fetchCon
 }
 
 /** The slot holding this conversation, loading its history into a new one when no slot has it
- * yet. It never changes which chat is shown. */
-export async function loadConversationIntoSlot(convId: string, agentId: string | null): Promise<string> {
+ * yet; `refetch` loads it again into a slot that has it (unless that slot is streaming). It never
+ * changes which chat is shown. */
+export async function loadConversationIntoSlot(
+  convId: string,
+  agentId: string | null,
+  { refetch = false }: { refetch?: boolean } = {},
+): Promise<string> {
   const store = useChatStore.getState();
   const found = store.getSlotByConvId(convId, { forAgentId: agentId });
-  if (found?.slot.isInitialized) return found.slotId;
+  if (found?.slot.isInitialized && (!refetch || found.slot.isStreaming)) return found.slotId;
   const slotId = found?.slotId ?? store.createSlot(convId);
   if (!found && agentId) store.updateSlot(slotId, { threadAgentId: agentId });
   const detail = await fetchConversationDetail(convId, agentId);

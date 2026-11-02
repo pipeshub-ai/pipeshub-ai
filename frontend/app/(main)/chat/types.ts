@@ -953,7 +953,8 @@ export interface StreamChatRequest {
    * e.g. `agent:auto`, `agent:planExecute` (UI “Plan & Execute” strategy).
    */
   chatMode: StreamChatModePayload;
-  filters: ChatKnowledgeFilters;
+  /** Absent: the conversation's own saved scope (an agent's sources, all of them). */
+  filters?: ChatKnowledgeFilters;
   timezone?: string;
   currentTime?: string;
   appliedFilters?: AppliedFilters;
