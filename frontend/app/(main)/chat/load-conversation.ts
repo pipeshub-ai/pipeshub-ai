@@ -8,10 +8,9 @@ import type { ChatSlot } from './types';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 
 /** A conversation with its first page of messages, from the agent's route for an agent chat. */
-export function fetchConversationDetail(convId: string, agentId: string | null, { suppressErrorToast }: Pick<AxiosRequestConfig, 'suppressErrorToast'> = {}) {
-  return agentId
-    ? AgentsApi.fetchAgentConversation(agentId, convId, { suppressErrorToast })
-    : ChatApi.fetchConversation(convId, undefined, undefined, { suppressErrorToast });
+export function fetchConversationDetail(convId: string, agentId: string | null, quiet?: Pick<AxiosRequestConfig, 'suppressErrorToast'>) {
+  if (!quiet) return agentId ? AgentsApi.fetchAgentConversation(agentId, convId) : ChatApi.fetchConversation(convId);
+  return agentId ? AgentsApi.fetchAgentConversation(agentId, convId, quiet) : ChatApi.fetchConversation(convId, undefined, undefined, quiet);
 }
 
 /** A conversation that no longer exists (deleted): its loader says so, with no error toast. */
