@@ -20,6 +20,7 @@ import {
   MARKER_COLLECTION,
   follow,
   followStart,
+  isHistoryLost,
   majorityPoint,
 } from './follow';
 import { MAPPINGS } from './mapping';
@@ -95,10 +96,17 @@ export async function changedIds(
   const until = Date.now() + timeoutMs;
   try {
     while (Date.now() < until) {
-      const e = (await stream.tryNext()) as {
+      let e: {
         ns?: { coll: string };
         documentKey?: { _id: unknown };
       } | null;
+      try {
+        e = (await stream.tryNext()) as typeof e;
+      } catch (err) {
+        // the token has fallen out of the oplog: the changes since it cannot be listed, and the caller says to run a full verify
+        if (isHistoryLost(err)) return null;
+        throw err;
+      }
       if (!e) {
         await new Promise((r) => setTimeout(r, 100));
         continue;
@@ -130,18 +138,33 @@ export async function verifyConverge(
   rt: MigrationRuntime,
   js: JobState,
   log: Log,
-  scope: { sample?: number; ids?: Record<string, string[]> } = {},
+  scope: {
+    sample?: number;
+    /** The position of the last verified state: the documents that changed since it, up to the first catch-up, are the ones verified. */
+    since?: unknown;
+    /** A pass that checks only a sample must not move the verified position. */
+    noToken?: boolean;
+  } = {},
   rounds = 6,
 ): Promise<{
   ok: boolean;
   remaining: number;
   hot: number;
   rounds: number;
+  /** With `since`: how many documents changed since it (and were verified). */
+  changed?: number;
+  /** With `since`: the changes since it could not be listed (the position fell out of the oplog). */
+  unreadable?: boolean;
+  /** Findings of the last compare that are not about one document: counts, unmapped fields, invariants, global and isolation checks. */
+  failures: string[];
   report: VerifyReport;
   /** The differences that were not on their way (at most 20), so a failure names the documents. */
   left: Array<DocDiff & { collection: string }>;
 }> {
-  let pending: Record<string, string[]> | undefined = scope.ids;
+  let pending: Record<string, string[]> | undefined;
+  let changed: number | undefined;
+  let unreadable = false;
+  let failures: string[] = [];
   let first: unknown;
   let remaining = 0;
   let hot = 0;
@@ -153,6 +176,16 @@ export async function verifyConverge(
     await catchUp(rt, js, log, 120_000);
     const token = js.progress.follow?.resumeToken;
     first ??= token;
+    // the documents to verify are listed after the catch-up whose position is stored, so nothing the stored position covers is skipped
+    if (round === 1 && scope.since !== undefined) {
+      const ids = await changedIds(rt, scope.since, 300_000);
+      if (!ids) {
+        unreadable = true;
+        break;
+      }
+      pending = ids;
+      changed = Object.values(ids).reduce((a, l) => a + l.length, 0);
+    }
     const diffs = new Map<string, DocDiff[]>();
     report = await verifyAll(rt, {
       log,
@@ -164,6 +197,7 @@ export async function verifyConverge(
         diffs.set(c, [...(diffs.get(c) ?? []), d]);
       },
     });
+    failures = reportFailures(report);
     if (diffs.size === 0) {
       remaining = 0;
       hot = 0;
@@ -189,8 +223,8 @@ export async function verifyConverge(
     pending = next;
     if (remaining === 0 && hot === 0) break;
   }
-  const ok = remaining === 0;
-  if (ok && first !== undefined)
+  const ok = remaining === 0 && failures.length === 0 && !unreadable;
+  if (ok && first !== undefined && !scope.noToken)
     js.progress.verify = {
       at: new Date().toISOString(),
       ok: true,
@@ -203,9 +237,37 @@ export async function verifyConverge(
     remaining,
     hot,
     rounds: round,
+    ...(changed !== undefined ? { changed } : {}),
+    ...(unreadable ? { unreadable } : {}),
+    failures,
     report: report as VerifyReport,
     left: ok ? [] : left,
   };
+}
+
+/**
+ * What a compare found that is not a difference of one document, and that a pass over changed documents cannot call "on its way":
+ * counts that disagree, fields no mapping covers, stored nulls, a rule that does not hold, a failed global or isolation check.
+ */
+export function reportFailures(rep: VerifyReport): string[] {
+  const out: string[] = [];
+  for (const c of rep.collections) {
+    if (c.countMismatches.length)
+      out.push(`${c.collection}: row counts differ`);
+    if (c.unmappedPaths.length)
+      out.push(`${c.collection}: fields no mapping covers`);
+    if (c.nullInOmitField.length)
+      out.push(`${c.collection}: stored nulls in omitted fields`);
+    if (c.invariantViolations.length)
+      out.push(
+        `${c.collection}: ${c.invariantViolations.length} rule(s) do not hold`,
+      );
+  }
+  for (const g of rep.global)
+    if (!g.ok) out.push(`global check ${g.name} failed`);
+  if (rep.isolation && rep.isolation.failures.length > 0)
+    out.push(`isolation: ${rep.isolation.failures.length} failure(s)`);
+  return out;
 }
 
 export interface OnlineReport {
@@ -312,7 +374,7 @@ export async function onlineStart(
     lagMs: c.lagMs,
     message: v.ok
       ? 'copied and level with MongoDB; keep `follow run` going and run `cutover` when ready'
-      : `${String(v.remaining)} documents still differ after ${String(v.rounds)} rounds: read the verify report, repair, run verify again`,
+      : `${String(v.remaining)} documents still differ after ${String(v.rounds)} rounds${v.failures.length ? ` (${v.failures.join('; ')})` : ''}: read the verify report, repair, run verify again`,
   };
 }
 
@@ -330,26 +392,23 @@ export async function onlineVerify(
       message:
         'no verified state to continue from: `migrate --online` ends with one',
     };
-  const c = await catchUp(rt, js, o.log, 120_000);
-  if (!c.ok)
-    return {
-      ok: false,
-      stage: 'catch_up',
-      message: 'the copy did not catch up within two minutes',
-    };
-  const ids = await changedIds(rt, token, 300_000);
-  if (!ids)
+  // the first catch-up is the one whose position is stored, and the changes since the last verified position are listed after it
+  const v = await verifyConverge(rt, js, o.log, { since: token });
+  if (v.unreadable)
     return {
       ok: false,
       stage: 'changed_ids',
       message:
         'the changes since the last verify could not be read (the token may have fallen out of the oplog): run a full verify',
     };
-  const changed = Object.values(ids).reduce((a, l) => a + l.length, 0);
-  const v = await verifyConverge(rt, js, o.log, { ids });
+  const changed = v.changed ?? 0;
+  // a sample says nothing about what changed: it does not move the verified position
   const sampled =
     v.ok && o.sample !== undefined
-      ? await verifyConverge(rt, js, o.log, { sample: o.sample })
+      ? await verifyConverge(rt, js, o.log, {
+          sample: o.sample,
+          noToken: true,
+        })
       : undefined;
   const ok = v.ok && (sampled?.ok ?? true);
   return {
@@ -363,7 +422,7 @@ export async function onlineVerify(
     },
     message: ok
       ? `${String(changed)} changed documents verified`
-      : `${String(v.remaining + (sampled?.remaining ?? 0))} documents differ`,
+      : `${String(v.remaining + (sampled?.remaining ?? 0))} documents differ${[...v.failures, ...(sampled?.failures ?? [])].length ? ` (${[...v.failures, ...(sampled?.failures ?? [])].join('; ')})` : ''}`,
   };
 }
 
@@ -538,7 +597,30 @@ export async function cutover(
     };
 
   let frozenAt = 0;
+  // how far the flip got decides what an abort may do: `stuck` is PostgreSQL live with MongoDB frozen and PostgreSQL not closable again,
+  // `complete` is PostgreSQL live with MongoDB retired
+  let flip: 'none' | 'stuck' | 'complete' = 'none';
+  let epoch = 0;
   const abort = async (stage: string, why: string): Promise<CutoverReport> => {
+    if (flip === 'stuck')
+      return {
+        ok: false,
+        stage,
+        aborted: true,
+        steps,
+        ...(frozenAt ? { freezeMs: Date.now() - frozenAt } : {}),
+        precheck: pc,
+        message: `${why}. MANUAL REPAIR NEEDED: PostgreSQL is the live store (platform.store_epoch backend postgres, epoch ${String(epoch)}) and could not be closed again, and MongoDB is frozen (read-only, not retired). Nothing was unfrozen. Either retire MongoDB (fence mode retired) to finish the move, or set platform.store_epoch back to backend mongo, readonly true, epoch ${String(epoch - 1)} and then run unfreeze`,
+      };
+    if (flip === 'complete')
+      return {
+        ok: true,
+        stage: 'done',
+        steps,
+        ...(frozenAt ? { freezeMs: Date.now() - frozenAt } : {}),
+        precheck: pc,
+        message: `PostgreSQL is the live store at epoch ${String(epoch)} and MongoDB is retired; a later step failed (${why}) and the job record may be incomplete. The move is done: roll the application over to DOC_STORE=postgres now`,
+      };
     const unfrozen = await unfreeze(rt).catch(() => false);
     js.progress.cutover = {
       aborted: { stage, why, at: new Date().toISOString() },
@@ -642,10 +724,11 @@ export async function cutover(
         'the changes since the last verify could not be read',
       );
     const failed = v.rep.collections.reduce((a, c) => a + c.diffCount, 0);
-    if (failed > 0 || !v.rep.global.every((g) => g.ok))
+    const other = reportFailures(v.rep);
+    if (failed > 0 || other.length > 0)
       return await abort(
         'F7',
-        `the final verify found ${String(failed)} differing documents or a failed global check`,
+        `the final verify found ${String(failed)} differing documents${other.length ? ` and ${other.join('; ')}` : ''}`,
       );
     if (overBudget()) return await abort('F7', 'the freeze budget was used up');
 
@@ -681,24 +764,38 @@ export async function cutover(
         'SELECT epoch FROM platform.store_epoch',
       )
     ).rows[0];
-    const epoch = (pgBefore?.epoch ?? 1) + 1;
+    epoch = (pgBefore?.epoch ?? 1) + 1;
     await mark('F8 flip', async () => {
-      await rt.migratePool.query(
+      const up = await rt.migratePool.query(
         "UPDATE platform.store_epoch SET backend = 'postgres', epoch = $1, readonly = false, updated_at = now()",
         [epoch],
       );
-      try {
-        await setMongoFence(rt, 'retired', before.epoch + 1);
-      } catch (e) {
-        // MongoDB could not be retired: PostgreSQL goes back to closed, and the abort lets MongoDB write again
-        await rt.migratePool.query(
-          "UPDATE platform.store_epoch SET backend = 'mongo', epoch = $1, readonly = true, updated_at = now()",
-          [epoch - 1],
+      if (up.rowCount !== 1)
+        throw new Error(
+          `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
         );
+      try {
+        if (o.failAt === 'F8-retire') throw new Error('injected failure at F8');
+        await setMongoFence(rt, 'retired', before.epoch + 1);
+        flip = 'complete';
+      } catch (e) {
+        // MongoDB could not be retired: PostgreSQL goes back to closed, and the abort lets MongoDB write again; if it cannot be closed,
+        // MongoDB stays frozen and the abort says exactly where things stand
+        try {
+          const back = await rt.migratePool.query(
+            "UPDATE platform.store_epoch SET backend = 'mongo', epoch = $1, readonly = true, updated_at = now()",
+            [epoch - 1],
+          );
+          if (back.rowCount !== 1) flip = 'stuck';
+        } catch {
+          flip = 'stuck';
+        }
         throw e;
       }
     });
     const freezeMs = Date.now() - frozenAt;
+    if (o.failAt === 'F8-checkpoint')
+      throw new Error('injected failure after the flip');
     js.progress.phase = 'cutover_done';
     js.progress.flip = { at: new Date().toISOString(), backend: 'postgres' };
     js.progress.cutover = { freezeMs, epoch };
