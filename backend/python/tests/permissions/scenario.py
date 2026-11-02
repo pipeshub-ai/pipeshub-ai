@@ -248,6 +248,9 @@ def _expect(data: Data) -> Expect:
 
 
 def _mutation(data: Data) -> Mutation:
+    for key in ("kind", "node", "ref", "value"):
+        if key in data and not isinstance(data[key], str):
+            raise ValueError(f"mutation {key} must be a string, got {data[key]!r} (quote it: `value: \"true\"`)")
     m = _from_fields(Mutation, data, "mutation")
     if m.kind not in MUTATION_KINDS:
         raise ValueError(f"unknown mutation kind {m.kind!r}")
@@ -347,6 +350,8 @@ def _flow(obj: object) -> str:
 
 
 def _block(key: str, value: object, indent: str) -> list[str]:
+    if isinstance(value, dict) and not value:
+        return [f"{indent}{key}: {{}}"]       # a bare key would reload as null
     if isinstance(value, dict) and key == "world":
         lines = [f"{indent}{key}:"]
         for section, items in value.items():

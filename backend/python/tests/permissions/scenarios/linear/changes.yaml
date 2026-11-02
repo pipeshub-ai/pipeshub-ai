@@ -1,5 +1,5 @@
 - id: LIN-C-01
-  title: Team made private; Platform's grants are replaced and Ben loses its issues
+  title: Team made private; Platform's workspace-members grant is removed and only its own members keep its issues
   source: permission model doc, linear section
   rule: override
   world: golden/linear_teams

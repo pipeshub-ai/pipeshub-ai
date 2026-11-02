@@ -583,7 +583,7 @@
       - {id: u}
     nodes:
       - {id: A, kind: app}
-      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], hide_children: true}
       - {id: f, kind: record, connector: A, rule: STRICT, parents: [S], inherits: [S], belongs: [S]}
     grants:
       - [u, S]

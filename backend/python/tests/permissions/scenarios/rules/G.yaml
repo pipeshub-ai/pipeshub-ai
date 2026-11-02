@@ -103,7 +103,7 @@
     principals:
       - {id: u}
     nodes:
-      - {id: A, kind: app}
+      - {id: A, kind: app, active: false}
       - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
       - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
     grants:

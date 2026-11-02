@@ -24,7 +24,7 @@
   world:
     principals:
       - {id: u}
-      - {id: g, kind: group, org_member: false}
+      - {id: g, kind: group, org_member: false, deleted: true}
     nodes:
       - {id: A, kind: app}
       - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
@@ -373,7 +373,7 @@
   rule: any
   world:
     principals:
-      - {id: u}
+      - {id: u, active: false}
     nodes:
       - {id: A, kind: app}
       - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}

@@ -71,9 +71,9 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/jira_data_center` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
 | `atlassian/jira_cloud_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `atlassian/jira_data_center_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
-| `microsoft/sharepoint_online` | 3 | 1 | - | 2 | 2 | - | - | 4 | - | - | - |
+| `microsoft/sharepoint_online` | 3 | 1 | - | 2 | 2 | - | - | 3 | - | - | - |
 | `microsoft/onedrive` | gap | gap | - | gap | gap | - | - | gap | - | - | - |
-| `google/drive/team` | 7 | 2 | - | 3 | 1 | - | - | 1 | - | - | - |
+| `google/drive/team` | 5 | 2 | - | 3 | 1 | - | - | 1 | - | - | - |
 | `google/drive/individual` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `linear` | - | 2 | - | - | 1 | - | 1 | - | 2 | - | - |
 | `slack/team` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |

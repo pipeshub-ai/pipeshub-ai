@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from .model import HIERARCHY_RELATIONS, ORG_ID, Node, World
+from .model import HIERARCHY_RELATIONS, ORG_ID, Node, Principal, World
 
 Scalar = str | int | bool | None
 TS = 1_700_000_000_000
@@ -74,7 +74,7 @@ def compile_world(world: World, prefix: str) -> Graph:
                       "props": {"createdAtTimestamp": TS, **props}})
 
     for p in world.principals:
-        nodes.append(_principal_node(ns, p.id, p.kind, first_app))
+        nodes.append(_principal_node(ns, p, first_app))
         if p.kind == "user" and p.org_member:
             edge("BELONGS_TO", p.id, ORG_ID, entityType="ORGANIZATION")
     for n in world.nodes:
@@ -98,11 +98,14 @@ def compile_world(world: World, prefix: str) -> Graph:
     return {"nodes": nodes, "edges": edges}
 
 
-def _principal_node(ns: Namespace, pid: str, kind: str, first_app: str | None) -> NodeDict:
+def _principal_node(ns: Namespace, p: Principal, first_app: str | None) -> NodeDict:
+    pid, kind = p.id, p.kind
     sid = ns.id(pid)
     org = {"orgId": ns.org}
     if kind == "user":
         props: dict[str, Scalar] = {**org, "email": f"{pid}@{ns.prefix}.example", "fullName": pid, "userId": sid}
+        if not p.active:
+            props["isActive"] = False
         return {"kind": "User", "id": sid, "props": {"id": sid, **props}}
     if kind == "role":
         connector = ns.id(first_app) if first_app else "x"
@@ -110,7 +113,10 @@ def _principal_node(ns: Namespace, pid: str, kind: str, first_app: str | None) -
             "id": sid, **org, "name": pid, "externalRoleId": f"ext-{pid}", "connectorName": "DRIVE",
             "connectorId": connector, "createdAtTimestamp": TS}}
     label = "Teams" if kind == "team" else "Group"
-    return {"kind": label, "id": sid, "props": {"id": sid, **org, "name": pid}}
+    group_props: dict[str, Scalar] = {"id": sid, **org, "name": pid}
+    if p.deleted:
+        group_props["isDeleted"] = True
+    return {"kind": label, "id": sid, "props": group_props}
 
 
 def _node(ns: Namespace, n: Node, ids: set[str]) -> NodeDict:
@@ -119,14 +125,14 @@ def _node(ns: Namespace, n: Node, ids: set[str]) -> NodeDict:
     connector = None if n.connector is None else (ns.id(n.connector) if n.connector in ids else n.connector)
     if n.kind == "app":
         props = {**base, "name": n.id, "type": n.app_type, "appGroup": "Group", "scope": "team",
-                 "createdAtTimestamp": TS, "isActive": True}
+                 "createdAtTimestamp": TS, "isActive": n.active}
         if n.model:
             props["permissionModel"] = n.model
         return {"kind": "App", "id": sid, "props": props}
     if n.kind == "group":
         props = {**base, "groupName": n.id, "groupType": "CONFLUENCE_SPACES", "connectorName": "CONFLUENCE",
                  "createdAtTimestamp": TS, "accessRule": n.rule, "connectorId": connector,
-                 "isInternal": False, "hideChildren": False}
+                 "isInternal": False, "hideChildren": n.hide_children}
         if n.model:
             props["permissionModel"] = n.model
         if n.deleted:

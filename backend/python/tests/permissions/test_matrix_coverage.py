@@ -67,3 +67,21 @@ def test_coverage_gaps_are_reported() -> None:
     gaps = matrix.gaps(SCENARIOS)
     if gaps:
         pytest.xfail(f"{len(gaps)} matrix cells have no scenario yet (to become a failure once the corpus is complete); first: {gaps[:3]}")
+
+
+def test_a_scenario_with_two_tags_in_one_category_counts_once() -> None:
+    from .scenario import WorldStore, scenario_from_data
+
+    group, cat, kinds = next(
+        (g, cat, ks) for g in matrix.GROUPS for cat in matrix.CATEGORY
+        if len(ks := [k for _, k in matrix.cell_ids(g) if matrix.KIND_CATEGORY.get(k) == cat]) >= 2
+    )
+    world = {"principals": [{"id": "u"}], "nodes": [{"id": "A", "kind": "app"}]}
+    s = scenario_from_data({"id": "ONE", "title": "t", "world": world, "tags": [f"cell:{group}/{k}" for k in kinds[:2]]},
+                           WorldStore())
+    text = matrix.render([s])
+    lines = text[text.index("## Connector x change kind"):text.index("## Cells by group")].splitlines()
+    header = [h.strip() for h in next(ln for ln in lines if ln.startswith("| Connector | ")).split("|")[1:-1]]
+    connector = next(c for c in matrix.CONNECTORS if c.group == group)
+    row = next(ln for ln in lines if ln.startswith(f"| `{connector.path}` |"))
+    assert [x.strip() for x in row.split("|")[1:-1]][header.index(cat)] == "1"

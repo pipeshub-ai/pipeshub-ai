@@ -305,7 +305,7 @@ def render(scenarios: list[Scenario]) -> str:
             if not kinds:
                 cells.append("-")
                 continue
-            n = sum(len(found.get((c.group, k), [])) for k in set(kinds))
+            n = len({sid for k in set(kinds) for sid in found.get((c.group, k), [])})      # distinct scenarios, not tags
             cells.append(str(n) if n else "gap")
         out.append(f"| `{c.path}` | " + " | ".join(cells) + " |")
     out += ["", "## Cells by group", "", "| Group | Kind | Type | Scenarios |", "|---|---|---|---|"]

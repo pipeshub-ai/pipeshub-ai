@@ -29,6 +29,8 @@ class Principal:
     id: str
     kind: PrincipalKind = "user"
     org_member: bool = True  # users only: a BELONGS_TO edge to the organization
+    active: bool = True  # users only: User.isActive; the access check does not read it
+    deleted: bool = False  # groups only: Group.isDeleted; the access check does not read it
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,8 @@ class Node:
     belongs: tuple[str, ...] = ()  # BELONGS_TO edges to a group or the app
     deleted: bool = False
     placeholder: bool = False
+    active: bool = True  # apps only: App.isActive; the gate does not read it
+    hide_children: bool = False  # groups only: hideChildren; a display flag, not read for access
     model: str | None = None  # permissionModel: APP_LEVEL, RECORD_GROUP_LEVEL
     app_type: str = "DRIVE"  # apps only; KB opens everything
     origin: str | None = "CONNECTOR"  # records only; None means absent

@@ -8,7 +8,8 @@ a scenario lists what the *vendor* shows, and `deltas.yaml` lists every place th
 |---|---|---|
 | `rules/` | T1 | The 96 rule cases (principals, gates, grants, hops, seeds, record groups, uploads, citation), one file per letter |
 | `golden/` | T0 | Base worlds: the worked examples of each connector, written the way the connector writers write them. Not scenarios themselves |
-| `confluence/`, `sharepoint/`, `drive/`, `linear/` | T0 | `static.yaml` (verdict tables) and `changes.yaml` (one scenario per change row), each referencing a golden world |
+| `confluence/`, `sharepoint/`, `drive/`, `linear/` | T0 | `static.yaml` (verdict tables, where there is one) and `changes.yaml` (one scenario per change row), each referencing a golden world. Linear has `static.yaml` and `changes.yaml`; Drive and SharePoint the same; Confluence also has `deep.yaml` (a deep hierarchy) and `mixed.yaml` |
+| `gmail/`, `slack/`, `kb/` | T0 | One `scenarios.yaml` each (statics and changes together) |
 | `regressions/` | T2 | One scenario per bug. No fix merges without the scenario that fails before it |
 | `deltas.yaml` | | Product differs from the vendor: direction (over-share, under-share), reason, fix |
 | `MATRIX.md` | | Generated: connector x combining rule x change kind, covered or gap |
@@ -27,9 +28,9 @@ a scenario lists what the *vendor* shows, and `deltas.yaml` lists every place th
   expect:
     before: {dave: {page:2027-bands: deny}}          # optional: the same pairs before the change
     verdicts: {dave: {page:2027-bands: admit}}       # what the vendor shows after it
-    index_writes: 0                # 0 | 1 | subtree
-    during: fail_closed            # subtree rewrites: hidden for everyone until done
-    source_delta: DELTA-03          # only when the product differs; see deltas.yaml
+    index_writes: 0                # 0 | 1 | subtree | delete | unlink (the full-sync sweep unlinks the node)
+    during: fail_closed            # recorded on subtree rewrites: the subtree is hidden until the rewrite is done; the oracle layer does not evaluate it, a layer that rewrites an index does
+    source_delta: DELTA-02          # only when the product differs; see deltas.yaml (DELTA-02, DELTA-05, DELTA-17)
   tags: [confluence, "cell:confluence/restriction-change"]
 ```
 

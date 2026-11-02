@@ -111,3 +111,13 @@ def test_withdrawing_the_gate_of_a_person_changes_nothing_else() -> None:
                   nodes=(Node("A", "app"), Node("n", "record", "A", "OPEN")))
     after = mutations.apply(world, Mutation("gate_withdrawn", "u"))
     assert after.gates == (Gate("v", "A"),) and after.memberships == world.memberships and after.grants == world.grants
+
+
+def test_lifecycle_flags_reach_the_compiled_graph() -> None:
+    from .graph import compile_world
+
+    world = World(principals=(Principal("u", active=False), Principal("g", "group", deleted=True)),
+                  nodes=(Node("A", "app", active=False), Node("S", "group", "A", "OPEN", hide_children=True)))
+    by_kind = {n["kind"]: n["props"] for n in compile_world(world, "t")["nodes"]}
+    user, group, app, rg = by_kind["User"], by_kind["Group"], by_kind["App"], by_kind["RecordGroup"]
+    assert user["isActive"] is False and group["isDeleted"] is True and app["isActive"] is False and rg["hideChildren"] is True

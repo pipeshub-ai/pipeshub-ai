@@ -74,3 +74,24 @@ def test_mutations_edit_edges_and_leave_the_original() -> None:
         mutations.apply(world, Mutation("grant_removed", "n", "nobody"))
     with pytest.raises(ValueError):
         mutations.apply(world, Mutation("nonsense"))
+
+
+def test_an_empty_world_and_expect_round_trip(tmp_path: Path) -> None:
+    from .scenario import Scenario, scenario_from_data
+
+    data = {"id": "EMPTY", "title": "t", "world": {}, "expect": {}}
+    first = scenario_from_data(data, WorldStore())
+    assert isinstance(first, Scenario)
+    copy = tmp_path / "empty.yaml"
+    copy.write_text(dump_scenarios([first]))
+    assert load_scenarios(copy, WorldStore()) == [first]
+
+
+@pytest.mark.parametrize("bad", [{"value": True}, {"ref": 1}, {"node": None}])
+def test_a_mutation_field_that_is_not_text_is_refused(bad: dict[str, object]) -> None:
+    from .scenario import scenario_from_data
+
+    data = {"id": "BAD", "title": "t", "world": {"principals": [{"id": "u"}], "nodes": [{"id": "A", "kind": "app"}]},
+            "mutation": {"kind": "inherit_set", "node": "A", **bad}}
+    with pytest.raises(ValueError, match="must be a string"):
+        scenario_from_data(data, WorldStore())
