@@ -22,6 +22,8 @@ from app.services.graph_db.interface.graph_db_provider import AccessCheck
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from app.modules.named_entities.graph_ops import NamedEntityQuery
+
 pytestmark = pytest.mark.asyncio
 
 APP = "app-1"
@@ -44,6 +46,10 @@ def env(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return context
 
 
+# A date window in epoch ms (2026-03-01 to 2026-03-02 UTC).
+_WINDOW = (1_772_323_200_000, 1_772_409_600_000)
+
+
 def _graph(rows: list[dict[str, Any]], readable: set[str] | None = None) -> AsyncMock:
     """``rows``: hits ``{recordId, recordType, sortTs}``; every hit is readable unless ``readable`` says."""
     graph = AsyncMock()
@@ -58,6 +64,8 @@ def _graph(rows: list[dict[str, Any]], readable: set[str] | None = None) -> Asyn
         {"_key": i, "recordName": f"doc-{i}", "recordType": "FILE", "connectorId": APP} for i in ids
     ])
     graph.get_named_entity_values_in_records = AsyncMock(return_value={})
+    # A date window ranks its hits by their dates; no spans read leaves them unranked.
+    graph.get_named_entity_date_spans = AsyncMock(return_value={})
     return graph
 
 
@@ -678,11 +686,11 @@ async def test_records_stating_a_date_inside_the_window_come_before_wider_ranges
     graph.get_named_entity_date_spans = AsyncMock(return_value={
         "r000": (False, year), "r001": (False, 92 * day), "r002": (True, day), "r003": (True, day),
     })
-    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=_WINDOW[0], date_to=_WINDOW[1])
     assert ok and _listed(body) == ["r002", "r003", "r001", "r000"]
     assert "naming a date in the range first" in body.splitlines()[0]
     org, ids, start, end = graph.get_named_entity_date_spans.await_args.args
-    assert (org, sorted(ids), start, end) == ("org", ["r000", "r001", "r002", "r003"], 1_000, 2_000)
+    assert (org, sorted(ids), start, end) == ("org", ["r000", "r001", "r002", "r003"], *_WINDOW)
 
 
 async def test_covering_dates_come_narrowest_span_first_whatever_their_age(env: AsyncMock) -> None:
@@ -692,14 +700,14 @@ async def test_covering_dates_come_narrowest_span_first_whatever_their_age(env: 
     graph.get_named_entity_date_spans = AsyncMock(return_value={
         "r000": (False, 30 * day), "r001": (False, 2 * day), "r002": (True, day),
     })
-    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=_WINDOW[0], date_to=_WINDOW[1])
     assert ok and _listed(body) == ["r002", "r001", "r000"]
 
 
 async def test_a_failed_date_span_read_is_a_lookup_failure_not_a_crash(env: AsyncMock) -> None:
     graph = _graph(_rows(3))
     graph.get_named_entity_date_spans = AsyncMock(side_effect=RuntimeError("driver down"))
-    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=_WINDOW[0], date_to=_WINDOW[1])
     assert (ok, body) == (False, values.LOOKUP_FAILED_MSG)
 
 
@@ -712,7 +720,7 @@ async def test_pages_of_a_ranked_date_listing_run_across_tiers_without_repeats_o
     cursor = None
     for _ in range(10):
         ok, body = await values.execute_find_records_by_value(
-            _state(graph), date_from=1_000, date_to=2_000, limit=7, cursor=cursor,
+            _state(graph), date_from=_WINDOW[0], date_to=_WINDOW[1], limit=7, cursor=cursor,
         )
         seen += _listed(body)
         cursor = _cursor(body)
@@ -753,3 +761,193 @@ async def test_one_day_asked_as_a_point_is_the_whole_day(env: AsyncMock) -> None
     _, _, start, end = graph.get_named_entity_date_spans.await_args.args
     assert (start, end) == (day, day + 86_400_000)
     assert f"date_to={day + 86_400_000}" in body.splitlines()[0]
+
+
+# --- dates are ISO, and a date-only end takes in its whole day -------------------------
+
+_DAY = 86_400_000
+_MAR_1 = 1_772_323_200_000  # 2026-03-01T00:00:00Z
+
+
+def _window(graph: AsyncMock) -> tuple[int, int]:
+    query = graph.get_records_for_named_entities.await_args.args[2]
+    return query.date_start_ms, query.date_end_ms
+
+
+@pytest.mark.parametrize(("date_from", "date_to", "window"), [
+    # A month, both ends as dates: through the last millisecond of March 31.
+    ("2026-03-01", "2026-03-31", (_MAR_1, _MAR_1 + 31 * _DAY - 1)),
+    # One day asked as a point is that whole day.
+    ("2026-03-01", "2026-03-01", (_MAR_1, _MAR_1 + _DAY - 1)),
+    # A date-time end is used as given.
+    ("2026-03-01", "2026-03-02T00:00:00Z", (_MAR_1, _MAR_1 + _DAY)),
+    # An end past its month's last day is clamped, as the search tools do.
+    ("2026-02-01", "2026-02-30", (_MAR_1 - 28 * _DAY, _MAR_1 - 1)),
+    # A Python caller's epoch ms is unchanged.
+    (_MAR_1, _MAR_1 + _DAY, (_MAR_1, _MAR_1 + _DAY)),
+])
+async def test_dates_are_iso_and_a_date_only_end_is_the_whole_day(
+    env: AsyncMock, date_from: str | int, date_to: str | int, window: tuple[int, int],
+) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), date_from=date_from, date_to=date_to)
+    assert ok and _window(graph) == window
+
+
+@pytest.mark.parametrize(("date_from", "message"), [
+    ("2026-03-01T00:00:00", "has no timezone"),
+    ("March 1", "is not a date"),
+    ("1772323200000", "is not a date"),
+    ("2026-W10-1", "is not a date"),
+    # A compact date or a year sent as a number would search January 1970.
+    (20260301, "is not a date"),
+    (2026.0, "is not a date"),
+    (2026, "is not a date"),
+    (float("nan"), "is not a date"),
+    (float("inf"), "is not a date"),
+])
+async def test_a_date_that_does_not_read_is_refused_with_why(env: AsyncMock, date_from: str | float, message: str) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=date_from)
+    assert not ok and message in body and body.startswith("date_from")
+    graph.get_records_for_named_entities.assert_not_awaited()
+
+
+async def test_a_compact_date_is_refused_never_read_as_epoch_milliseconds(env: AsyncMock) -> None:
+    """"20260301" as digits would be 20,260,301 ms: a window in January 1970."""
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from="20260301")
+    assert (ok, body) == (False, "date_from: '20260301' is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone.")
+    graph.get_records_for_named_entities.assert_not_awaited()
+
+
+async def test_the_continue_call_repeats_the_dates_as_written_and_passes_the_schema(env: AsyncMock) -> None:
+    from app.agent_loop_lib.tools.toolset import ToolsetBuilder
+    from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+
+    graph = _graph(_rows(30))
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from="2026-03-01", date_to="2026-03-31")
+    assert ok and 'date_from="2026-03-01", date_to="2026-03-31"' in body
+    tools = ToolsetBuilder(KnowledgeGraph(state={}), name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
+    (tool,) = [t for t in tools if t.name == "knowledgegraph__find_records_by_value"]
+    tool.validate({"date_from": "2026-03-01", "date_to": "2026-03-31", "cursor": _cursor(body)})
+
+
+async def test_a_float_epoch_is_read_and_a_blank_end_is_left_open(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), date_from=float(_MAR_1), date_to="  ")
+    assert ok and _window(graph)[0] == _MAR_1
+
+
+async def test_an_inverted_date_range_names_its_fields(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from="2026-04-01", date_to="2026-03-01")
+    assert (ok, body) == (False, "date_from must be on or before date_to.")
+    graph.get_records_for_named_entities.assert_not_awaited()
+
+
+async def test_an_unset_end_sent_as_zero_or_blank_is_not_repeated(env: AsyncMock) -> None:
+    for unset in (0, "  "):
+        graph = _graph(_rows(30))
+        ok, body = await values.execute_find_records_by_value(_state(graph), date_from="2026-03-01", date_to=unset)
+        assert ok and "date_to" not in body and 'date_from="2026-03-01"' in body
+
+
+@pytest.mark.parametrize("epoch_ms", [-86_400_000, 86_400_000, 99_999_999_999, 12_345_678])
+async def test_epoch_ms_before_1973_and_before_1970_still_read(env: AsyncMock, epoch_ms: int) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), date_from=epoch_ms)
+    assert ok and _window(graph)[0] == epoch_ms
+
+
+
+# --- an unused end the strict schema sends as 0 -----------------------------------------
+
+def _query(graph: AsyncMock) -> NamedEntityQuery:
+    return graph.get_records_for_named_entities.await_args.args[2]
+
+
+async def test_above_a_value_with_a_zero_top_is_open_ended_not_an_error(env: AsyncMock) -> None:
+    """"Latency above 200 ms" arrives as 0.2 to 0 and was refused as an inverted range."""
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(
+        _state(graph), quantity_min=0.2, quantity_max=0, dimension="time",
+    )
+    assert ok and _query(graph).quantity_min == 0.2 and _query(graph).quantity_max > 1e300
+    assert "quantity_max" not in body
+
+
+async def test_a_currency_alone_is_any_amount_in_it_not_exactly_zero(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=0, amount_max=0, currency="USD")
+    query = _query(graph)
+    assert ok and query.amount_min < 0 < query.amount_max and query.currency == "USD"
+    assert "amount_min" not in body and values.UNCONVERTED_NOTE not in body
+
+
+async def test_a_negative_range_up_to_zero_is_kept(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), amount_min=-500, amount_max=0, currency="USD")
+    assert ok and (_query(graph).amount_min, _query(graph).amount_max) == (-500, 0)
+
+
+async def test_amounts_without_a_currency_say_they_are_not_converted(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=50_000)
+    assert ok and body.splitlines()[1] == values.UNCONVERTED_NOTE
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), amount_min=50_000, currency="USD")
+    assert ok and values.UNCONVERTED_NOTE not in body
+
+
+
+@pytest.mark.parametrize(("low", "high", "kept"), [
+    (0, 0, (None, None)),
+    (0.2, 0, (0.2, None)),
+    (0, 100, (0, 100)),
+    (0, -5, (None, -5)),
+    (-500, 0, (-500, 0)),
+    (5, 3, (5, 3)),  # backwards as given: refused by the resolver, not rewritten
+    (None, None, (None, None)),
+    # A caller that leaves the other end out means the 0: at least 0, at most 0.
+    (0, None, (0, None)),
+    (None, 0, (None, 0)),
+])
+def test_an_unused_zero_end_is_dropped_only_where_it_bounds_nothing(
+    low: float | None, high: float | None, kept: tuple[float | None, float | None],
+) -> None:
+    assert values._range(low, high) == kept
+
+
+async def test_above_a_percent_with_a_zero_top_is_open_ended(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), percent_min=0.2, percent_max=0)
+    assert ok and _query(graph).percent_min == 0.2 and _query(graph).percent_max > 1e300
+
+
+async def test_the_unconverted_note_repeats_on_later_pages(env: AsyncMock) -> None:
+    graph = _graph(_rows(30))
+    ok, first = await values.execute_find_records_by_value(_state(graph), amount_min=1)
+    ok, second = await values.execute_find_records_by_value(_state(graph), amount_min=1, cursor=_cursor(first))
+    assert ok and second.splitlines()[1] == values.UNCONVERTED_NOTE
+
+
+async def test_a_lone_zero_end_a_caller_sent_is_kept(env: AsyncMock) -> None:
+    """Only a strict schema fills the unused end with 0; a caller that leaves it out means the 0."""
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), amount_max=0)
+    assert ok and _query(graph).amount_max == 0 and _query(graph).amount_min < -1e300
+
+
+
+async def test_an_empty_answer_without_a_currency_still_says_amounts_were_not_converted(env: AsyncMock) -> None:
+    ok, body = await values.execute_find_records_by_value(_state(_graph([])), amount_min=50_000)
+    assert ok and body.startswith(values.NO_MATCH_MSG) and values.UNCONVERTED_NOTE in body
+    ok, body = await values.execute_find_records_by_value(_state(_graph([])), amount_min=50_000, currency="USD")
+    assert ok and values.UNCONVERTED_NOTE not in body
+
+
+
+async def test_a_blank_currency_is_no_currency(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=50_000, currency="   ")
+    assert ok and values.UNCONVERTED_NOTE in body and 'currency="' not in body

@@ -148,6 +148,8 @@ export interface FetchConversationsOptions {
   /** Leave out chats that belong to a project; they are listed under their project instead. */
   excludeProjectChats?: boolean;
   signal?: AbortSignal;
+  /** For callers that show the failure themselves. */
+  suppressErrorToast?: boolean;
 }
 
 /**
@@ -252,7 +254,7 @@ export const ChatApi = {
 
     const { data } = await apiClient.get<ConversationsListResponse>(
       `/api/v1/conversations`,
-      { params, signal: options.signal }
+      { params, signal: options.signal, suppressErrorToast: options.suppressErrorToast }
     );
 
     return {

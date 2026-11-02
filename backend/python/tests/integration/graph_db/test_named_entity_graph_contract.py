@@ -140,6 +140,20 @@ def _amount(org_id: str, amount: str, currency: str = "USD", high: str | None = 
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
 
 
+def _duration(org_id: str, surface: str) -> ResolvedEntity:
+    from app.modules.named_entities.normalizers.dates import (
+        NormalizationContext,
+        normalize_temporal,
+    )
+
+    value = normalize_temporal(EntityKind.DURATION, surface, NormalizationContext())
+    entity = NamedEntity(
+        kind=EntityKind.DURATION, display_name=surface, norm_key=f"duration:{value.iso}", value=value,
+        mentions=[_mention(surface)],
+    )
+    return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
+
+
 def _org(org_id: str, name: str) -> ResolvedEntity:
     entity = NamedEntity(kind=EntityKind.ORGANIZATION, display_name=name, norm_key=name.casefold(), mentions=[_mention(name)])
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
@@ -1359,3 +1373,28 @@ async def test_records_stating_a_date_inside_a_window_are_told_from_wider_ranges
     )
     assert {record for record, (named, _) in whole_quarter.items() if named} == {quarter_only, with_day}
     assert await provider.get_named_entity_date_spans(f"{org_id}-other", [with_day], _ms(2025, 8, 5), _ms(2025, 8, 6)) == {}
+
+
+async def test_a_duration_is_a_quantity_of_time_in_seconds(graph) -> None:
+    """"Latency above 200 ms" could never match: durations had no siValue or dimension."""
+    provider, org_id, _ = graph
+    fast, slow, months = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    await writer.write(org_id, fast, [_duration(org_id, "200 ms")])
+    await writer.write(org_id, slow, [_duration(org_id, "4 hours")])
+    # Months have no fixed length in seconds: never matched.
+    await writer.write(org_id, months, [_duration(org_id, "3 months")])
+
+    async def found(**query: object) -> set[str]:
+        hits = await provider.get_records_for_named_entities(org_id, None, NamedEntityQuery(**query))
+        return {hit["recordId"] for hit in hits["hits"]}
+
+    assert await found(quantity_min=0.1, quantity_max=1e18, dimension="time") == {fast, slow}
+    assert await found(quantity_min=3600, quantity_max=1e18, dimension="time") == {slow}
+    assert await found(quantity_min=-1e18, quantity_max=1, dimension="time") == {fast}
+    assert await found(quantity_min=0.1, quantity_max=1e18, dimension="length") == set()
+    assert await found(kinds=["duration"], quantity_min=3600, quantity_max=1e18, dimension="time") == {slow}
+    shown = await provider.get_named_entity_values_in_records(
+        org_id, NamedEntityQuery(quantity_min=0.1, quantity_max=1e18, dimension="time"), [fast, slow],
+    )
+    assert shown == {fast: ["200 ms"], slow: ["4 hours"]}
