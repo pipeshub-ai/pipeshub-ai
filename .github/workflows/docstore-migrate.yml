@@ -16,6 +16,9 @@ on:
       - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
       - 'backend/nodejs/apps/tests/stores/pg-store-harness.ts'
       - 'backend/nodejs/apps/tests/libs/db/pg-harness.ts'
+      - 'backend/nodejs/apps/tests/stores/mongo-fence.itest.ts'
+      - 'backend/nodejs/apps/tests/libs/repositories/fence.itest.ts'
+      - 'backend/nodejs/apps/tests/libs/db/store-fence.itest.ts'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'backend/db/**'
@@ -67,7 +70,7 @@ jobs:
           curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors https://pgp.mongodb.com/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
           echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}" pgbouncer mongodb-org-server
+          sudo apt-get install -y -qq -o Acquire::Retries=5 "postgresql-${{ matrix.pg }}" pgbouncer mongodb-org-server mongodb-mongosh
           sudo systemctl stop postgresql || true
           python -m venv "$RUNNER_TEMP/migrate-venv"
           "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
@@ -86,12 +89,47 @@ jobs:
           MIGRATE_TEST_MONGOD: /usr/bin/mongod
         run: npm run test:docstore-migrate -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-migrate-junit.xml"
 
+      - name: Start MongoDB for the fence tests (a replica set and a single server)
+        run: |
+          mkdir -p "$RUNNER_TEMP/mongo-rs" "$RUNNER_TEMP/mongo-single"
+          nohup mongod --dbpath "$RUNNER_TEMP/mongo-rs" --port 27018 --bind_ip 127.0.0.1 --replSet rs0 --setParameter enableTestCommands=1 > "$RUNNER_TEMP/mongo-rs.log" 2>&1 &
+          nohup mongod --dbpath "$RUNNER_TEMP/mongo-single" --port 27019 --bind_ip 127.0.0.1 --setParameter enableTestCommands=1 > "$RUNNER_TEMP/mongo-single.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            mongosh --quiet --port 27018 --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && mongosh --quiet --port 27019 --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          mongosh --quiet --port 27018 --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27018" }] })'
+          for _ in $(seq 1 30); do
+            [ "$(mongosh --quiet --port 27018 --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Fence suites on a replica set (test:docstore-fence)
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          PG_TEST_WORK: ${{ runner.temp }}
+          MIGRATE_TEST_MONGOD: /usr/bin/mongod
+          MONGO_IT_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+          REPLICA_SET_AVAILABLE: 'true'
+        run: npm run test:docstore-fence -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-fence-junit.xml"
+
+      - name: Mongo fence on a single server
+        working-directory: backend/nodejs/apps
+        env:
+          MONGO_IT_URI: mongodb://127.0.0.1:27019
+          REPLICA_SET_AVAILABLE: 'false'
+        run: npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000 --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-fence-single-junit.xml" tests/stores/mongo-fence.itest.ts
+
       - name: No unexpected skips
         if: ${{ always() }}
         # the scale run is opt-in (MIGRATE_SCALE=1; its suite is named "timing")
         # --expect-suite pins the exact case count of each suite, so a suite that did not run fails the job; every PR that adds a suite adds its line
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/docstore-migrate-junit.xml" --allow "timing" --min-tests 98
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/docstore-migrate-junit.xml" "$RUNNER_TEMP/docstore-fence-junit.xml" "$RUNNER_TEMP/mongo-fence-single-junit.xml" --allow "timing" --min-tests 133
           --expect-suite 'docstore-migrate: identity collections=8'
           --expect-suite 'docstore-migrate: organisations=1'
           --expect-suite 'docstore-migrate: bulk copy=3'
@@ -102,6 +140,9 @@ jobs:
           --expect-suite 'docstore-migrate: table coverage=3'
           --expect-suite 'fence cutover waits for fenced writes=3'
           --expect-suite 'pre-flight _id check=1'
+          --expect-suite 'Mongo store fence deadline=2'
+          --expect-suite 'store fence against PostgreSQL=15'
+          --expect-suite 'Mongo store fence against a real MongoDB=18'
           --expect-suite 'docstore-migrate: pre-flight checks=14'
           --expect-suite 'docstore-migrate: offline and online switch-over=16'
           --expect-suite 'docstore-migrate: command line gates=4'
