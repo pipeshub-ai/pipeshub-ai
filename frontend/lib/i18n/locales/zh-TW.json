@@ -1534,12 +1534,9 @@
         "changedFields": "已修改：{{fields}}"
       },
       "edit": "編輯",
-      "doneEditing": "完成編輯",
       "reset": "重設",
-      "changeSomethingElse": "修改其他內容",
       "feedbackPlaceholder": "告訴代理程式要修改什麼",
       "sendToAgent": "傳送給代理程式",
-      "changed": "已修改",
       "readOnlyField": "無法在此編輯",
       "editRejected": "請修正標示的欄位",
       "allowForConversation": "在此對話中允許",
@@ -1558,7 +1555,19 @@
         "pattern": "請使用預期的格式。",
         "email": "請輸入有效的電子郵件地址。",
         "requestChanged": "此請求已變更，請重新載入。"
-      }
+      },
+      "suggestChange": "建議修改",
+      "allowWithChanges": "允許修改後的內容",
+      "done": "完成",
+      "edited": "已編輯",
+      "inChat": "在「{{title}}」中",
+      "openChat": "開啟聊天",
+      "moreWaiting_one": "另外 {{count}} 個",
+      "moreWaiting_other": "另外 {{count}} 個",
+      "busyElsewhere": "該聊天仍在處理中。請稍後再試。",
+      "alreadyAnswered": "已經回覆過了。",
+      "runningIn": "已允許。{{tool}} 正在 {{title}} 中執行。",
+      "declinedIn": "已在 {{title}} 中拒絕。"
     },
     "selectedAlone": "{{name}}（僅此項目）",
     "noConnectorsFound": "找不到連接器",

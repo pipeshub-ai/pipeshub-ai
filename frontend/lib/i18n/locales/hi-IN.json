@@ -1448,12 +1448,9 @@
         "changedFields": "बदला गया: {{fields}}"
       },
       "edit": "संपादित करें",
-      "doneEditing": "संपादन पूरा",
       "reset": "रीसेट करें",
-      "changeSomethingElse": "कुछ और बदलें",
       "feedbackPlaceholder": "एजेंट को बताएँ कि क्या बदलना है",
       "sendToAgent": "एजेंट को भेजें",
-      "changed": "बदला गया",
       "readOnlyField": "यहाँ संपादित नहीं किया जा सकता",
       "editRejected": "हाइलाइट किए गए फ़ील्ड ठीक करें",
       "allowForConversation": "इस बातचीत के लिए अनुमति दें",
@@ -1472,7 +1469,19 @@
         "pattern": "अपेक्षित फ़ॉर्मैट इस्तेमाल करें।",
         "email": "मान्य ईमेल पता दर्ज करें।",
         "requestChanged": "यह अनुरोध बदल गया है। फिर से लोड करें।"
-      }
+      },
+      "suggestChange": "बदलाव सुझाएँ",
+      "allowWithChanges": "बदलावों के साथ अनुमति दें",
+      "done": "हो गया",
+      "edited": "संपादित",
+      "inChat": "\"{{title}}\" में",
+      "openChat": "चैट खोलें",
+      "moreWaiting_one": "+{{count}} और",
+      "moreWaiting_other": "+{{count}} और",
+      "busyElsewhere": "वह चैट अभी काम कर रही है। थोड़ी देर में फिर कोशिश करें।",
+      "alreadyAnswered": "इसका जवाब पहले ही दिया जा चुका है।",
+      "runningIn": "अनुमति दी गई। {{tool}}, {{title}} में चल रहा है।",
+      "declinedIn": "{{title}} में अस्वीकार किया गया।"
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",

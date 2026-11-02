@@ -1534,12 +1534,9 @@
         "changedFields": "已修改：{{fields}}"
       },
       "edit": "编辑",
-      "doneEditing": "完成编辑",
       "reset": "重置",
-      "changeSomethingElse": "修改其他内容",
       "feedbackPlaceholder": "告诉智能体要修改什么",
       "sendToAgent": "发送给智能体",
-      "changed": "已修改",
       "readOnlyField": "无法在此编辑",
       "editRejected": "请修正标出的字段",
       "allowForConversation": "在此对话中允许",
@@ -1558,7 +1555,19 @@
         "pattern": "请使用预期的格式。",
         "email": "请输入有效的电子邮件地址。",
         "requestChanged": "此请求已更改，请重新加载。"
-      }
+      },
+      "suggestChange": "建议修改",
+      "allowWithChanges": "允许修改后的内容",
+      "done": "完成",
+      "edited": "已编辑",
+      "inChat": "在“{{title}}”中",
+      "openChat": "打开聊天",
+      "moreWaiting_one": "另外 {{count}} 个",
+      "moreWaiting_other": "另外 {{count}} 个",
+      "busyElsewhere": "该聊天仍在处理中。请稍后再试。",
+      "alreadyAnswered": "已经回复过了。",
+      "runningIn": "已允许。{{tool}} 正在 {{title}} 中运行。",
+      "declinedIn": "已在 {{title}} 中拒绝。"
     },
     "selectedAlone": "{{name}}（仅此项目）",
     "noConnectorsFound": "未找到连接器",

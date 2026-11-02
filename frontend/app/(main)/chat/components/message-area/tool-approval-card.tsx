@@ -10,7 +10,7 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
-import type { EditError, ToolApprovalDecision, ToolApprovalDetails } from '../../types';
+import type { EditError, ToolApprovalAnswer, ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 import { checkArgs } from './approval-form/check-args';
 import { SchemaForm } from './approval-form/schema-form';
 import { schemaFields } from './approval-form/schema-fields';
@@ -33,7 +33,15 @@ interface ToolApprovalCardProps {
   isLatest: boolean;
   /** The reply's row: the answer carries it on. */
   rowId?: string;
+  /** "composer": a call waiting in another chat, shown above the composer. */
+  placement?: 'inline' | 'composer';
+  conversationTitle?: string | null;
+  /** Sends the answer in the call's own chat instead of the active one. */
+  onAnswer?: (answer: ToolApprovalAnswer) => Promise<'sent' | 'busy' | 'stale' | 'failed'>;
+  onOpenChat?: () => void;
 }
+
+const ANSWER_PROBLEM = { busy: 'busyElsewhere', stale: 'alreadyAnswered', failed: 'answerFailed' } as const;
 
 const MAX_FEEDBACK_CHARS = 2000;
 
@@ -51,7 +59,7 @@ function pointerField(path: string): string {
  * answer carries on this same reply, sending the approval id, the choice and, when the person
  * changed the call or wrote a note, those too. Where it can't be answered (expired, an older
  * reply, a conversation shared with the viewer) it is one line. */
-export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCardProps) {
+export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inline', conversationTitle, onAnswer, onOpenChat }: ToolApprovalCardProps) {
   const { t } = useTranslation();
   const minutesLeft = useMinutesLeft(approval.expiresAt);
   const original = approval.arguments ?? null;
@@ -65,10 +73,12 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const [note, setNote] = useState('');
   const [sending, setSending] = useState(false);
   const [focusTick, setFocusTick] = useState(0);
+  const [problem, setProblem] = useState<keyof typeof ANSWER_PROBLEM | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
-  // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  // Someone viewing a conversation shared with them can't send in it; onAnswer sends in the call's own chat.
+  const ownsActive = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const canSend = Boolean(onAnswer) || ownsActive;
 
   const canEdit = approval.editable === true && Boolean(approval.inputSchema) && original !== null;
   const fields = useMemo(() => (canEdit && approval.inputSchema ? schemaFields(approval.inputSchema) : []), [canEdit, approval.inputSchema]);
@@ -105,8 +115,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   if (expired || !isLatest || !canSend) {
     const notice = expired ? 'expired' : canSend ? 'passed' : 'waiting';
     return (
-      <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--slate-11)' }}>
-        <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--slate-9)" style={{ marginTop: 3 }} />
+      <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--gray-11)' }}>
+        <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--gray-9)" style={{ marginTop: 3 }} />
         <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server })}</Text>
       </Flex>
     );
@@ -127,20 +137,29 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const lines = original ? approvalArgumentLines(values, { full: showAll }) : [];
   const anyCut = !showAll && lines.some((line) => line.cut);
 
-  const answer = (decision: ToolApprovalDecision, extra: { arguments?: Record<string, unknown>; feedback?: string } = {}) => {
-    const slotId = useChatStore.getState().activeSlotId;
-    if (!slotId || useChatStore.getState().slots[slotId]?.isStreaming) return;
-    const query = toolApprovalResumeQuery(decision);
+  const answer = async (decision: ToolApprovalDecision, extra: { arguments?: Record<string, unknown>; feedback?: string } = {}) => {
     // An edit or a note is about this one call, so it never sets a lasting rule.
     const plain = !edited && !extra.arguments && !extra.feedback;
-    const request = buildStreamChatRequestForSlot(slotId, query, undefined, {
+    const payload: ToolApprovalAnswer = {
       approvalId: approval.approvalId,
       decision,
       ...(approval.argsHash ? { argsHash: approval.argsHash } : {}),
       ...extra,
       ...(plain && remember && approval.canRemember !== false ? { remember: true } : {}),
       ...(plain && forConversation && decision === 'allow' && approval.canRemember !== false ? { rememberForConversation: true } : {}),
-    });
+    };
+    if (onAnswer) {
+      setProblem(null);
+      setSending(true);
+      const result = await onAnswer(payload);
+      setSending(false);
+      if (result !== 'sent') setProblem(result);
+      return;
+    }
+    const slotId = useChatStore.getState().activeSlotId;
+    if (!slotId || useChatStore.getState().slots[slotId]?.isStreaming) return;
+    const query = toolApprovalResumeQuery(decision);
+    const request = buildStreamChatRequestForSlot(slotId, query, undefined, payload);
     if (!request) return;
     void streamMessageForSlot(slotId, query, request, { reuseRowId: rowId });
   };
@@ -153,7 +172,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
 
   const allow = async () => {
     if (!edited) {
-      answer('allow');
+      await answer('allow');
       return;
     }
     const local = checkArgs(fields, values);
@@ -176,7 +195,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
       return;
     }
     setErrors([]);
-    answer('allow', { arguments: args });
+    await answer('allow', { arguments: args });
   };
 
   const onFormKeyDown = (e: React.KeyboardEvent) => {
@@ -192,30 +211,39 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
     setNoteOpen(false);
   };
 
+  const expiry = minutesLeft <= 1 ? t('chat.toolApproval.expiresSoon') : t('chat.toolApproval.expiresIn', { count: minutesLeft });
+
   return (
     <Box
       ref={cardRef}
+      className="tool-approval-card"
       data-testid="tool-approval-card"
       role="group"
       aria-label={t('chat.toolApproval.needsApproval')}
+      p="3"
       style={{
-        border: '1px solid var(--amber-a6)',
-        borderRadius: 'var(--radius-4)',
-        backgroundColor: 'var(--amber-a2)',
-        padding: 'var(--space-3) var(--space-4) var(--space-4)',
+        border: '1px solid var(--gray-5)',
+        borderRadius: 'var(--radius-3)',
+        backgroundColor: 'var(--gray-2)',
       }}
     >
       <Flex gap="3" align="start">
         <Flex
           align="center"
           justify="center"
-          style={{ width: 32, height: 32, borderRadius: 'var(--radius-3)', backgroundColor: 'var(--amber-a4)', flexShrink: 0 }}
+          style={{
+            width: 'calc(var(--space-5) + var(--space-1) / 2)',
+            height: 'calc(var(--space-5) + var(--space-1) / 2)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--gray-4)',
+            flexShrink: 0,
+          }}
         >
-          <ConnectorIcon type={server} size={18} color="var(--amber-11)" />
+          <ConnectorIcon type={server} size={15} />
         </Flex>
         <Box style={{ flex: 1, minWidth: 0 }}>
           <Flex align="center" gap="2" wrap="wrap">
-            <Text size="3" weight="medium" title={approval.toolName} style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+            <Text size="2" weight="medium" title={approval.toolName} style={{ color: 'var(--gray-12)', overflowWrap: 'anywhere' }}>
               {tool}
             </Text>
             <Badge size="1" variant="soft" color="gray">{server}</Badge>
@@ -226,24 +254,22 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             )}
           </Flex>
           {approval.argsSummary && (
-            <Text as="p" size="2" style={{ color: 'var(--slate-11)', overflowWrap: 'anywhere' }}>
+            <Text as="p" size="2" truncate style={{ color: 'var(--gray-11)' }}>
               {approval.argsSummary}
             </Text>
           )}
-          <Text as="p" size="1" style={{ color: 'var(--slate-11)' }}>
-            {t('chat.toolApproval.needsApproval')}
-            {' · '}
-            {minutesLeft <= 1 ? t('chat.toolApproval.expiresSoon') : t('chat.toolApproval.expiresIn', { count: minutesLeft })}
+          <Text as="p" size="1" style={{ color: 'var(--gray-11)' }}>
+            {placement === 'composer' && conversationTitle ? `${t('chat.toolApproval.inChat', { title: conversationTitle })} · ${expiry}` : expiry}
           </Text>
         </Box>
       </Flex>
 
       <Box
         mt="3"
-        className="no-scrollbar"
+        className={showForm ? 'no-scrollbar tool-approval-editor' : 'no-scrollbar'}
         onKeyDown={showForm ? onFormKeyDown : undefined}
         style={{
-          border: '1px solid var(--slate-a5)',
+          border: '1px solid var(--gray-5)',
           borderRadius: 'var(--radius-3)',
           backgroundColor: 'var(--color-panel-solid)',
           padding: showForm ? 'var(--space-3)' : 'var(--space-2) var(--space-3)',
@@ -269,22 +295,22 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             <Text as="p" size="1" style={{ fontFamily: 'var(--code-font-family)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
               {approval.argumentsPreview}
             </Text>
-            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
+            <Text as="p" size="1" mt="1" style={{ color: 'var(--gray-10)' }}>
               {t('chat.toolApproval.partial')}
             </Text>
           </>
         ) : lines.length === 0 ? (
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-10)' }}>
             {t('chat.toolApproval.noArguments')}
           </Text>
         ) : (
           <Box style={{ display: 'grid', gridTemplateColumns: 'minmax(72px, max-content) 1fr', columnGap: 'var(--space-4)', rowGap: 'var(--space-1)' }}>
             {lines.map((line) => (
               <React.Fragment key={line.name}>
-                <Text size="1" style={{ color: 'var(--slate-10)', fontFamily: 'var(--code-font-family)', lineHeight: '20px' }}>
+                <Text size="1" style={{ color: 'var(--gray-10)', fontFamily: 'var(--code-font-family)', lineHeight: '20px' }}>
                   {line.name}
                 </Text>
-                <Text size="2" style={{ color: 'var(--slate-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: '20px' }}>
+                <Text size="2" style={{ color: 'var(--gray-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: '20px' }}>
                   {line.value}
                 </Text>
               </React.Fragment>
@@ -314,53 +340,77 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             rows={3}
             maxLength={MAX_FEEDBACK_CHARS}
             placeholder={t('chat.toolApproval.feedbackPlaceholder')}
-            aria-label={t('chat.toolApproval.changeSomethingElse')}
+            aria-label={t('chat.toolApproval.suggestChange')}
             value={note}
             onChange={(e) => setNote(e.target.value)}
           />
           <Flex gap="2">
-            <Button size="2" disabled={!note.trim()} onClick={() => answer('deny', { feedback: note.trim() })}>
+            <Button size="2" disabled={!note.trim()} loading={sending} onClick={() => void answer('deny', { feedback: note.trim() })}>
               {t('chat.toolApproval.sendToAgent')}
             </Button>
           </Flex>
         </Flex>
       )}
 
+      {problem && (
+        <Text as="p" size="1" mt="2" role="status" style={{ color: problem === 'failed' ? 'var(--red-11)' : 'var(--gray-11)' }}>
+          {t(`chat.toolApproval.${ANSWER_PROBLEM[problem]}`)}
+        </Text>
+      )}
+
       {/* The margin clears the sticky composer and the ghost buttons, which reach past the row. */}
-      <Flex ref={actionsRef} mt="3" align="center" gap="2" wrap="wrap" style={{ scrollMarginBottom: 'calc(var(--composer-dock-height, 0px) + var(--space-4))' }}>
-        <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} loading={sending} onClick={() => void allow()}>
-          {t('chat.toolApproval.allow')}
-        </Button>
-        {canEdit && (
-          <Button size="2" variant={showForm ? 'soft' : 'outline'} onClick={() => setEditing((value) => !value)}>
-            {showForm ? t('chat.toolApproval.doneEditing') : t('chat.toolApproval.edit')}
+      <Flex
+        ref={actionsRef}
+        data-testid="tool-approval-actions"
+        mt="3"
+        align="center"
+        justify="between"
+        gap="3"
+        wrap="wrap"
+        style={{ scrollMarginBottom: 'calc(var(--composer-dock-height, 0px) + var(--space-4))' }}
+      >
+        {/* Ghost buttons draw past their box; the margin keeps their hover inside the card. */}
+        <Flex className="tool-approval-card-group" align="center" gap="4" style={{ marginLeft: 'var(--space-2)' }}>
+          {canEdit && (
+            <Button size="2" variant="ghost" color="gray" onClick={() => setEditing((value) => !value)}>
+              {showForm ? t('chat.toolApproval.done') : t('chat.toolApproval.edit')}
+            </Button>
+          )}
+          {showForm && edited && (
+            <Button
+              size="2"
+              variant="ghost"
+              color="gray"
+              onClick={() => {
+                setValues({ ...(original ?? {}) });
+                setErrors([]);
+              }}
+            >
+              {t('chat.toolApproval.reset')}
+            </Button>
+          )}
+          <Button size="2" variant="ghost" color="gray" aria-expanded={noteOpen} onClick={() => setNoteOpen((value) => !value)}>
+            {t('chat.toolApproval.suggestChange')}
           </Button>
-        )}
-        {showForm && (
-          <Button
-            size="2"
-            variant="ghost"
-            color="gray"
-            disabled={!edited}
-            onClick={() => {
-              setValues({ ...(original ?? {}) });
-              setErrors([]);
-            }}
-          >
-            {t('chat.toolApproval.reset')}
+          {placement === 'composer' && onOpenChat && (
+            <Button size="2" variant="ghost" color="gray" onClick={onOpenChat}>
+              {t('chat.toolApproval.openChat')}
+            </Button>
+          )}
+        </Flex>
+        <Flex className="tool-approval-card-group" align="center" gap="2">
+          <Button size="2" variant="soft" color="gray" disabled={sending} onClick={() => void answer('deny')}>
+            {t('chat.toolApproval.deny')}
           </Button>
-        )}
-        <Button size="2" variant="soft" color="gray" onClick={() => answer('deny')}>
-          {t('chat.toolApproval.deny')}
-        </Button>
-        <Button size="2" variant="ghost" color="gray" aria-expanded={noteOpen} onClick={() => setNoteOpen((value) => !value)}>
-          {t('chat.toolApproval.changeSomethingElse')}
-        </Button>
+          <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} loading={sending} onClick={() => void allow()}>
+            {edited ? t('chat.toolApproval.allowWithChanges') : t('chat.toolApproval.allow')}
+          </Button>
+        </Flex>
       </Flex>
       {/* An admin owns the rule: neither choice is the person's to save. */}
       {!edited && approval.canRemember !== false && (
         <Flex mt="3" direction="column" gap="2">
-          <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
+          <Text as="label" size="1" style={{ color: 'var(--gray-11)', cursor: 'pointer' }}>
             <Flex gap="2" align="center">
               <Checkbox
                 size="1"
@@ -374,7 +424,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             </Flex>
           </Text>
           <Box>
-            <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
+            <Text as="label" size="1" style={{ color: 'var(--gray-11)', cursor: 'pointer' }}>
               <Flex gap="2" align="center">
                 <Checkbox
                   size="1"
@@ -388,7 +438,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
                 {t('chat.toolApproval.allowForConversation')}
               </Flex>
             </Text>
-            <Text as="p" id={`${approval.approvalId}-conversation-hint`} size="1" style={{ color: 'var(--slate-10)', paddingLeft: 'var(--space-5)' }}>
+            <Text as="p" id={`${approval.approvalId}-conversation-hint`} size="1" style={{ color: 'var(--gray-10)', paddingLeft: 'var(--space-5)' }}>
               {t('chat.toolApproval.allowForConversationHint')}
             </Text>
           </Box>
@@ -399,10 +449,11 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
 }
 
 const RECEIPT_ICON: Record<SettledToolApproval['answer'], { name: string; color: string }> = {
-  allowed: { name: 'check_circle', color: 'var(--green-9)' },
-  allowedNotRun: { name: 'block', color: 'var(--amber-9)' },
-  declined: { name: 'block', color: 'var(--slate-9)' },
-  expired: { name: 'timer_off', color: 'var(--slate-9)' },
+  allowed: { name: 'check_circle', color: 'var(--jade-9)' },
+  // A person stopped it.
+  allowedNotRun: { name: 'block', color: 'var(--orange-11)' },
+  declined: { name: 'block', color: 'var(--gray-9)' },
+  expired: { name: 'timer_off', color: 'var(--gray-9)' },
 };
 
 /** What was answered on this reply's cards, one line each, so the answer reads in order even
@@ -434,12 +485,12 @@ function Receipt({ item }: { item: SettledToolApproval }) {
             <MaterialIcon name={open ? 'expand_less' : 'expand_more'} size={16} />
           </Button>
         ) : (
-          <Text size="2" style={{ color: 'var(--slate-11)', overflowWrap: 'anywhere' }}>{text}</Text>
+          <Text size="2" style={{ color: 'var(--gray-11)', overflowWrap: 'anywhere' }}>{text}</Text>
         )}
         {item.server && <Badge size="1" variant="soft" color="gray">{item.server}</Badge>}
       </Flex>
       {open && item.changedFields && (
-        <Text as="p" size="1" style={{ color: 'var(--slate-10)', paddingLeft: 'var(--space-5)' }}>
+        <Text as="p" size="1" style={{ color: 'var(--gray-10)', paddingLeft: 'var(--space-5)' }}>
           {t('chat.toolApproval.receipt.changedFields', { fields: item.changedFields.join(', ') })}
         </Text>
       )}

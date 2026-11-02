@@ -926,13 +926,37 @@ li > blockquote {
   animation: activity-fade-in 200ms ease-out;
 }
 
+/* Tool approval card (tool-approval-card.tsx): fades in with no rise; its editor opens down.
+   Narrow, the action groups take their own line and split it evenly. */
+.tool-approval-card {
+  container-type: inline-size;
+  animation: msgActionsIn 200ms ease;
+}
+.tool-approval-editor {
+  animation: tool-approval-editor-in 200ms ease;
+}
+@keyframes tool-approval-editor-in {
+  from { opacity: 0; max-height: 0; }
+}
+@container (max-width: 460px) {
+  .tool-approval-card-group {
+    width: 100%;
+  }
+  .tool-approval-card-group > button {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .typing-cursor {
     animation: none;
     opacity: 1;
   }
 
-  .agent-activity-enter {
+  .agent-activity-enter,
+  .tool-approval-card,
+  .tool-approval-editor {
     animation: none;
   }
 

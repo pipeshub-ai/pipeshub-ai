@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
@@ -12,7 +14,12 @@ const chat = vi.hoisted(() => ({
   state: { activeSlotId: 'slot-1', slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } } },
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
-vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('@/app/components/ui/MaterialIcon', () => ({
+  MaterialIcon: ({ name, color }: { name: string; color?: string }) => <span data-icon={name} data-color={color ?? ''} />,
+}));
+vi.mock('@/app/components/ui/ConnectorIcon', () => ({
+  ConnectorIcon: ({ type, color }: { type: string; color?: string }) => <span data-testid="connector-icon" data-type={type} data-color={color ?? ''} />,
+}));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
 vi.mock('../../../streaming', () => ({ streamMessageForSlot: chat.streamMessageForSlot }));
@@ -28,7 +35,7 @@ vi.mock('../../../store', () => ({
   ),
 }));
 
-import { ToolApprovalCard } from '../tool-approval-card';
+import { ToolApprovalCard, ToolApprovalReceipts } from '../tool-approval-card';
 import { ChatResponse } from '../chat-response';
 
 function approval(overrides: Partial<ToolApprovalDetails> = {}): ToolApprovalDetails {
@@ -62,7 +69,7 @@ describe('ToolApprovalCard', () => {
 
     expect(screen.getByText('Create an issue').getAttribute('title')).toBe('create_issue');
     expect(screen.getByText('Jira')).toBeTruthy();
-    expect(screen.getByText(/^Needs your approval · expires in 15 min$/)).toBeTruthy();
+    expect(screen.getByText(/^Expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
     expect(screen.getByText('bug')).toBeTruthy();
     expect(screen.queryByText("Can't be undone")).toBeNull();
@@ -202,13 +209,13 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
 
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
-    expect(screen.getByText('Changed')).toBeTruthy();
+    expect(screen.getByText('Edited')).toBeTruthy();
     expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: 'Allow for this conversation' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect(titleField().value).toBe('Login fails');
-    expect(screen.queryByText('Changed')).toBeNull();
+    expect(screen.queryByText('Edited')).toBeNull();
     expect(screen.getByRole('checkbox', { name: "Don't ask again for this tool" })).toBeTruthy();
   });
 
@@ -239,7 +246,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     const noteField = screen.getByRole('textbox', { name: 'Note' });
     fireEvent.change(noteField, { target: { value: 'x' } });
     fireEvent.change(noteField, { target: { value: '' } });
-    expect(screen.queryByText('Changed')).toBeNull();
+    expect(screen.queryByText('Edited')).toBeNull();
   });
 
   it('reopens a refused edit on what the person sent, with the errors', () => {
@@ -250,17 +257,17 @@ describe('ToolApprovalCard: editing and notes', () => {
       />,
     );
     expect(titleField().value).toBe('Bug');
-    expect(screen.getByText('Changed')).toBeTruthy();
+    expect(screen.getByText('Edited')).toBeTruthy();
     expect(screen.getByText('Title is too vague')).toBeTruthy();
   });
 
-  it('reads "Done editing" while editing, and that leaves edit mode keeping the edit', () => {
+  it('reads "Done" while editing, and that leaves edit mode keeping the edit', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Done editing' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
     expect(screen.getByText('Login broken')).toBeTruthy();
   });
@@ -270,7 +277,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     Object.assign(Element.prototype, { scrollIntoView });
     renderInTheme(<ToolApprovalCard approval={editable({ editErrors: [{ path: '/title', message: 'Title is too vague' }] })} isLatest />);
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' }));
-    expect(scrollIntoView.mock.contexts.at(-1)).toBe(screen.getByRole('button', { name: 'Allow' }).parentElement);
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(screen.getByTestId('tool-approval-actions'));
   });
 
   it('brings its actions back into view when the server refuses an edit, and focuses the field without scrolling', async () => {
@@ -284,10 +291,10 @@ describe('ToolApprovalCard: editing and notes', () => {
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
     scrollIntoView.mockClear();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     expect(await screen.findByText('Title is too vague')).toBeTruthy();
-    const actions = screen.getByRole('button', { name: 'Allow' }).parentElement;
+    const actions = screen.getByTestId('tool-approval-actions');
     await waitFor(() => expect(scrollIntoView.mock.contexts).toContain(actions));
     expect(focus.mock.contexts.at(-1)).toBe(titleField());
     expect(focus.mock.calls.at(-1)).toEqual([{ preventScroll: true }]);
@@ -306,7 +313,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: '' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     expect(await screen.findByText('This field is required.')).toBeTruthy();
     expect(screen.getByText('Fix the highlighted fields')).toBeTruthy();
@@ -321,7 +328,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Bug' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     expect(await screen.findByText('Title is too vague')).toBeTruthy();
     expect(chat.validate).toHaveBeenCalledWith('ap-1', 'h1', { title: 'Bug', labels: ['bug'], meta: { a: 1 } });
@@ -333,7 +340,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Bug' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     expect(await screen.findByText('Unknown label')).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole('group', { name: 'Labels' }).querySelector('input'));
@@ -344,7 +351,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Bug' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     expect(await screen.findByText('This request changed. Reload.')).toBeTruthy();
     expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
@@ -355,7 +362,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
     expect(sent()).toEqual({
@@ -380,7 +387,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     const assignee = screen.getByRole('textbox', { name: /Assignee/ });
     fireEvent.change(assignee, { target: { value: 'sam' } });
     fireEvent.change(assignee, { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
     expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', arguments: { title: 'Login broken' } });
@@ -391,7 +398,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
     await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
     expect(sent()).toMatchObject({ decision: 'allow', arguments: { title: 'Login broken' } });
@@ -419,9 +426,9 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(screen.getByText('A rule blocks this action with these details.')).toBeTruthy();
   });
 
-  it('"Change something else" declines with a note for the agent', () => {
+  it('"Suggest a change" declines with a note for the agent', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change something else' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }));
     const note = screen.getByPlaceholderText('Tell the agent what to change');
     expect(note.getAttribute('maxlength')).toBe('2000');
 
@@ -466,6 +473,131 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.keyDown(titleField(), { key: 'Escape' });
     expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
     expect(screen.getByText('Login broken')).toBeTruthy();
+  });
+});
+
+describe('ToolApprovalCard: house style', () => {
+  const variant = (el: HTMLElement) => [...el.classList].find((c) => c.startsWith('rt-variant-'));
+
+  it('card has no amber styling', () => {
+    renderInTheme(<ToolApprovalCard approval={editable({ kind: 'destructive' })} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    expect(screen.getByTestId('tool-approval-card').outerHTML).not.toMatch(/amber/);
+  });
+
+  it('shows the app icon untinted', () => {
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
+    const icon = screen.getByTestId('connector-icon');
+    expect(icon.getAttribute('data-type')).toBe('Jira');
+    expect(icon.getAttribute('data-color')).toBe('');
+  });
+
+  it('Allow is solid and Deny soft', () => {
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
+    const allow = screen.getByRole('button', { name: 'Allow' });
+    const deny = screen.getByRole('button', { name: 'Deny' });
+    expect(variant(allow)).toBe('rt-variant-solid');
+    expect(allow.getAttribute('data-accent-color')).not.toBe('red');
+    expect(variant(deny)).toBe('rt-variant-soft');
+    expect(deny.getAttribute('data-accent-color')).toBe('gray');
+    cleanup();
+
+    renderInTheme(<ToolApprovalCard approval={approval({ kind: 'destructive' })} isLatest />);
+    expect(screen.getByRole('button', { name: 'Allow' }).getAttribute('data-accent-color')).toBe('red');
+  });
+
+  it('Edit and Suggest a change are ghost buttons on the left', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    const order = [...screen.getByTestId('tool-approval-actions').querySelectorAll('button')].map((b) => b.textContent);
+    expect(order).toEqual(['Edit', 'Suggest a change', 'Deny', 'Allow']);
+    expect(variant(screen.getByRole('button', { name: 'Edit' }))).toBe('rt-variant-ghost');
+    expect(variant(screen.getByRole('button', { name: 'Suggest a change' }))).toBe('rt-variant-ghost');
+  });
+
+  it('edit mode: Edit reads Done, Allow reads Allow with changes only after a change, Reset only after a change', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    expect(screen.getByRole('button', { name: 'Allow with changes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
+  });
+
+  it('changed field shows a gray Edited badge', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    const badge = screen.getByText('Edited');
+    expect(badge.getAttribute('data-accent-color')).toBe('gray');
+    expect(variant(badge)).toBe('rt-variant-soft');
+  });
+
+  it('receipt for allowedNotRun uses orange-11', () => {
+    renderInTheme(
+      <ToolApprovalReceipts items={[{ key: 'k', tool: 'Create an issue', server: 'Jira', answer: 'allowedNotRun' }] as never} />,
+    );
+    expect(screen.getByTestId('tool-approval-receipts').querySelector('[data-icon]')?.getAttribute('data-color')).toBe('var(--orange-11)');
+  });
+
+  it('reduced motion: no transition style', () => {
+    const matchMedia = vi.fn((query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    vi.stubGlobal('matchMedia', matchMedia);
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    // Motion lives only in the stylesheet, where reduced motion turns it off.
+    const card = screen.getByTestId('tool-approval-card');
+    for (const el of [card, ...card.querySelectorAll<HTMLElement>('[style]')]) {
+      expect(el.style.transition).toBe('');
+      expect(el.style.animation).toBe('');
+    }
+    const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{(?:(?!@media)[\s\S])*\.tool-approval-card,\s*\.tool-approval-editor\s*\{\s*animation: none;/);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('ToolApprovalCard above the composer', () => {
+  const composer = (onAnswer = vi.fn(async () => 'sent' as const), onOpenChat = vi.fn()) => {
+    renderInTheme(
+      <ToolApprovalCard approval={approval()} isLatest placement="composer" conversationTitle="Fix login" onAnswer={onAnswer} onOpenChat={onOpenChat} />,
+    );
+    return { onAnswer, onOpenChat };
+  };
+
+  it('names the chat before the expiry, and Open chat goes there', () => {
+    const { onOpenChat } = composer();
+    expect(screen.getByText('In "Fix login" · Expires in 15 min')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
+    expect(onOpenChat).toHaveBeenCalled();
+  });
+
+  it('has no Open chat inline', () => {
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
+    expect(screen.queryByRole('button', { name: 'Open chat' })).toBeNull();
+  });
+
+  it('answers through onAnswer, not the active chat', async () => {
+    chat.state.slots['slot-1'].isStreaming = true;
+    const { onAnswer } = composer();
+    fireEvent.click(screen.getByRole('checkbox', { name: "Don't ask again for this tool" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith({ approvalId: 'ap-1', decision: 'allow', remember: true }));
+    expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['busy', 'That chat is still working. Try again in a moment.'],
+    ['stale', 'That was already answered.'],
+    ['failed', "Couldn't send your answer. Try again."],
+  ] as const)('says so when the answer comes back %s, and keeps the card', async (result, text) => {
+    composer(vi.fn(async () => result));
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy();
   });
 });
 

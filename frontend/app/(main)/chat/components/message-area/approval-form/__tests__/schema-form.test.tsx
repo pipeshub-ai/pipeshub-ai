@@ -51,7 +51,7 @@ describe('SchemaForm', () => {
       <SchemaForm fields={fields} values={values} changed={new Set(['title'])} errors={{ title: 'This field is required.' }} onChange={vi.fn()} />,
     );
 
-    expect(screen.getByText('Changed')).toBeTruthy();
+    expect(screen.getByText('Edited')).toBeTruthy();
     const title = screen.getByRole('textbox', { name: /Title/ });
     expect(title.getAttribute('aria-invalid')).toBe('true');
     expect(document.getElementById(title.getAttribute('aria-describedby') ?? '')?.textContent).toBe('This field is required.');

@@ -137,7 +137,7 @@ function Field({ id, field, value, error, changed, onChange }: FieldProps) {
           {field.label}
           {field.required && <Text aria-hidden style={{ color: 'var(--red-11)' }}> *</Text>}
         </Text>
-        {changed && <Badge size="1" variant="soft" color="amber">{t('chat.toolApproval.changed')}</Badge>}
+        {changed && <Badge size="1" variant="soft" color="gray">{t('chat.toolApproval.edited')}</Badge>}
       </Flex>
       {control}
       {field.control === 'json' && (

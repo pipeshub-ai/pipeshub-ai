@@ -1534,12 +1534,9 @@
         "changedFields": "변경됨: {{fields}}"
       },
       "edit": "편집",
-      "doneEditing": "편집 완료",
       "reset": "초기화",
-      "changeSomethingElse": "다른 내용 변경",
       "feedbackPlaceholder": "에이전트에게 변경할 내용을 알려 주세요",
       "sendToAgent": "에이전트에게 보내기",
-      "changed": "변경됨",
       "readOnlyField": "여기서 편집할 수 없음",
       "editRejected": "표시된 필드를 수정하세요",
       "allowForConversation": "이 대화에서 허용",
@@ -1558,7 +1555,19 @@
         "pattern": "올바른 형식으로 입력하세요.",
         "email": "올바른 이메일 주소를 입력하세요.",
         "requestChanged": "요청이 변경되었습니다. 새로 고치세요."
-      }
+      },
+      "suggestChange": "변경 제안",
+      "allowWithChanges": "변경 사항과 함께 허용",
+      "done": "완료",
+      "edited": "편집됨",
+      "inChat": "\"{{title}}\"에서",
+      "openChat": "채팅 열기",
+      "moreWaiting_one": "+{{count}}개 더",
+      "moreWaiting_other": "+{{count}}개 더",
+      "busyElsewhere": "해당 채팅이 아직 작업 중입니다. 잠시 후 다시 시도하세요.",
+      "alreadyAnswered": "이미 응답했습니다.",
+      "runningIn": "허용했습니다. {{tool}}이(가) {{title}}에서 실행 중입니다.",
+      "declinedIn": "{{title}}에서 거부했습니다."
     },
     "selectedAlone": "{{name}} (이 항목만)",
     "noConnectorsFound": "커넥터를 찾을 수 없습니다",
