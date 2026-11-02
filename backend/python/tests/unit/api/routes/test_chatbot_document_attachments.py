@@ -714,6 +714,30 @@ class TestPdfAttachmentFailsOnItsOwn:
         assert submitted == [needs_ocr_and_page_count]
         assert exc.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_the_ocr_check_is_given_the_page_cap(self) -> None:
+        """So a PDF far past the cap is refused from its page count, not timed out
+        while every page's text is counted."""
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP, upload_chat_attachments
+
+        submitted: list[tuple[object, ...]] = []
+
+        async def fake_submit(_fn: object, *args: object, **_kwargs: object) -> tuple[bool, int]:
+            submitted.append(args)
+            raise RuntimeError("stop here")
+
+        gp = AsyncMock()
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+        with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+            "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+        ), patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor"), patch(
+            "app.api.routes.chatbot.parse_pool.submit", side_effect=fake_submit), pytest.raises(HTTPException):
+            mock_bs_cls.return_value = AsyncMock(save_binary_to_storage=AsyncMock(return_value=("ext", None)))
+            await upload_chat_attachments(_pdf_upload_request(), gp, AsyncMock())
+
+        # parse_pool.submit passes positional arguments only: (content, max_pages).
+        assert submitted[0][1] == CHAT_PDF_PAGE_CAP
+
 
 class TestLongPdfAttachment:
     """A PDF past the page cap is refused after the quick inspection, with what to do,

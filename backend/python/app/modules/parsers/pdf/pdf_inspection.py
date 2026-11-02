@@ -85,8 +85,13 @@ def text_layer_char_counts(content: bytes) -> list[int] | None:
         return None
 
 
-def needs_ocr_and_page_count(content: bytes) -> tuple[bool, int]:
+def needs_ocr_and_page_count(content: bytes, max_pages: int | None = None) -> tuple[bool, int]:
     """Whether at least half of *content*'s pages need OCR, and its page count.
+
+    A document of more than *max_pages* pages is answered ``(False, page count)``
+    from the page count alone: counting text-layer characters walks every page
+    (about 11 s for 4,000 pages), and a caller that refuses such a document needs
+    the count before its deadline, not the OCR verdict.
 
     A page with no text layer always needs OCR (``needs_ocr`` sees zero text
     density), so pdfium's character counts settle those without pdfplumber,
@@ -100,12 +105,14 @@ def needs_ocr_and_page_count(content: bytes) -> tuple[bool, int]:
     needing OCR is near one half can be called either way). Pages without a text
     layer are always counted exactly.
     """
-    chars_per_page = text_layer_char_counts(content)
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         pages = pdf.pages
         total = len(pages)
         if total == 0:
             return False, 0
+        if max_pages is not None and total > max_pages:
+            return False, total
+        chars_per_page = text_layer_char_counts(content)
         counts: Sequence[int | None] = chars_per_page or ()
         if len(counts) != total:
             counts = [None] * total

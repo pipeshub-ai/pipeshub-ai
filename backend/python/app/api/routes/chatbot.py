@@ -814,6 +814,7 @@ async def _upload_chat_attachments(
                     needs_ocr, page_count = await parse_pool.submit(
                         needs_ocr_and_page_count,
                         file_binary,
+                        CHAT_PDF_PAGE_CAP,
                         label=item.fileName,
                         size=len(file_binary),
                     )
