@@ -368,7 +368,9 @@ const contextFieldsSchema = {
               'Edited arguments go only with allow, and not with remember',
           });
         } else if (
-          JSON.stringify(answer.arguments).length > MAX_EDITED_ARGUMENT_CHARS
+          // Code points, not UTF-16 units, as Python's len() counts them.
+          Array.from(JSON.stringify(answer.arguments)).length >
+          MAX_EDITED_ARGUMENT_CHARS
         ) {
           ctx.addIssue({
             code: 'custom',

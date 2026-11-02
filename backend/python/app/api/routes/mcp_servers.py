@@ -2266,7 +2266,7 @@ class ToolApprovalValidateBody(BaseModel):
     @field_validator("arguments")
     @classmethod
     def _bounded_arguments(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if len(json.dumps(value, default=str, ensure_ascii=False)) > _MAX_EDITED_ARGUMENT_CHARS:
+        if len(json.dumps(value, separators=(",", ":"), default=str, ensure_ascii=False)) > _MAX_EDITED_ARGUMENT_CHARS:
             raise ValueError("The edited arguments are too large.")
         return value
 
