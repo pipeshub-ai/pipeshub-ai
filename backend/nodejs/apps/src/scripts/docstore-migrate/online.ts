@@ -516,13 +516,20 @@ export async function unfreeze(rt: MigrationRuntime): Promise<boolean> {
   return casMongoFence(rt, ['readonly', 'draining'], 'active');
 }
 
+/** How long the store row may take to read on a new connection: an unreachable PostgreSQL must not hold a frozen MongoDB for the OS timeout. */
+export const STORE_READ_TIMEOUT_MS = 10_000;
+
 /** The store row on a connection opened for the purpose, so a connection that failed at commit is not asked (`fail`: a test hook). */
-async function storeEpochOnFreshConnection(
+export async function storeEpochOnFreshConnection(
   rt: MigrationRuntime,
   fail: boolean,
 ): Promise<{ backend: string; epoch: number }> {
   if (fail) throw new Error('injected: the store row cannot be read');
-  const c = new Client({ connectionString: rt.cfg.pgMigrateUrl });
+  const c = new Client({
+    connectionString: rt.cfg.pgMigrateUrl,
+    connectionTimeoutMillis: STORE_READ_TIMEOUT_MS,
+    query_timeout: STORE_READ_TIMEOUT_MS,
+  });
   await c.connect();
   try {
     const { rows } = await c.query<{ backend: string; epoch: number }>(
@@ -619,9 +626,19 @@ export async function cutover(
   let frozenAt = 0;
   // how far the flip got decides what an abort may do: `stuck` is PostgreSQL live with MongoDB frozen and PostgreSQL not closable again,
   // `complete` is PostgreSQL live with MongoDB retired
-  let flip: 'none' | 'stuck' | 'complete' = 'none';
+  let flip: 'none' | 'stuck' | 'unknown' | 'complete' = 'none';
   let epoch = 0;
   const abort = async (stage: string, why: string): Promise<CutoverReport> => {
+    if (flip === 'unknown')
+      return {
+        ok: false,
+        stage,
+        aborted: true,
+        steps,
+        ...(frozenAt ? { freezeMs: Date.now() - frozenAt } : {}),
+        precheck: pc,
+        message: `${why}. MANUAL REPAIR NEEDED: the state of platform.store_epoch is unknown (it could not be read after the update to PostgreSQL failed), MongoDB is frozen (read-only, not retired) and nothing was unfrozen. Read the row first. If backend is postgres at epoch ${String(epoch)}: retire MongoDB (fence mode retired) to finish the move, or set the row back to backend mongo, readonly true, epoch ${String(epoch - 1)} and run unfreeze. If backend is mongo: run unfreeze`,
+      };
     if (flip === 'stuck')
       return {
         ok: false,
@@ -816,7 +833,7 @@ export async function cutover(
           rt,
           o.failAt === 'F8-reread-fails',
         ).catch(() => null);
-        if (now === null) flip = 'stuck';
+        if (now === null) flip = 'unknown';
         else if (now.backend === 'postgres' && !(await closePostgres()))
           flip = 'stuck';
         throw e;
