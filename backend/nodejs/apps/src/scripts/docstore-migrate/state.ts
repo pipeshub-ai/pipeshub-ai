@@ -55,6 +55,8 @@ export interface Progress {
     alarm?: boolean;
     /** Times the token had fallen out of the oplog and the copy was brought level by comparing. */
     resyncs?: number;
+    /** A resync was started and has not ended clean: the position is new but the copy is not known to be level, so the next run compares again. */
+    needsResync?: boolean;
   };
   /** `token`: the follower's position when the last clean verify pass began; the next incremental pass re-checks what changed after it. */
   verify?: { at: string; ok: boolean; diffs: number; token?: unknown };

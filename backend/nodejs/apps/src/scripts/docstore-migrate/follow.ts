@@ -19,7 +19,7 @@ import { syncAllCredentials, syncCredentials } from './credentials';
 import { repair } from './repair';
 import type { MigrationRuntime } from './runtime';
 import type { JobState } from './state';
-import { verifyAll } from './verify';
+import { VerifyReport, verifyAll } from './verify';
 
 const BY_NAME = new Map(MAPPINGS.map((m) => [m.collection, m]));
 const USERS = MAPPINGS.find(
@@ -140,6 +140,27 @@ export interface FollowResult {
   alarms: number;
 }
 
+/**
+ * What a change event means for the copy: the document to write, or that it is gone. An update can arrive without its full document
+ * (a change of the shard key, or the document was deleted before the lookup ran): the document is read again by its key, so the row is
+ * written from what MongoDB holds now, or removed when nothing is there.
+ */
+export async function resolveChange(
+  rt: MigrationRuntime,
+  e: ChangeStreamDocument<Record<string, unknown>>,
+): Promise<{ op: 'upsert'; doc: Record<string, unknown> } | { op: 'delete' }> {
+  if (e.operationType === 'delete') return { op: 'delete' };
+  const full = 'fullDocument' in e ? e.fullDocument : undefined;
+  if (full) return { op: 'upsert', doc: full };
+  const ns = (e as unknown as { ns: { db: string; coll: string } }).ns;
+  const key = (e as { documentKey: { _id: unknown } }).documentKey._id;
+  const now = await rt.mongo
+    .db(ns.db)
+    .collection(ns.coll)
+    .findOne({ _id: key } as never, { promoteLongs: false });
+  return now ? { op: 'upsert', doc: now } : { op: 'delete' };
+}
+
 type Apply = {
   m: CollectionMapping;
   upserts: Map<string, unknown>;
@@ -159,8 +180,12 @@ export async function resync(
     m: 'the saved resume token is no longer in the oplog: starting again from now and comparing everything',
   });
   await followStart(rt, js, true);
+  // the new position is saved before the compare; until the compare ends clean the next run must compare again, not follow on
+  if (js.progress.follow) js.progress.follow.needsResync = true;
+  await js.checkpoint();
   await syncAllCredentials(rt);
-  for (let pass = 1; pass <= 4; pass++) {
+  let last: VerifyReport | undefined;
+  for (let pass = 1; pass <= 5; pass++) {
     const diffs = new Map<string, DocDiff[]>();
     const rep = await verifyAll(rt, {
       log,
@@ -170,13 +195,33 @@ export async function resync(
         diffs.set(c, list);
       },
     });
-    if (diffs.size === 0 && rep.ok) break;
+    last = rep;
+    if (diffs.size === 0 && rep.ok) {
+      last = undefined;
+      break;
+    }
+    if (pass === 5) break;
     const r = await repair(rt, diffs, log);
     log('follow_repaired', { pass, ...r });
+    // nothing was written: another pass would find the same, and a check that has no differences to repair cannot be repaired here
     if (r.replaced + r.deleted === 0) break;
   }
-  if (js.progress.follow)
+  if (last)
+    throw new Error(
+      `the copy could not be brought level after the lost resume token: ${String(last.diffs)} differing documents; failed checks: ${
+        [
+          ...last.global.filter((g) => !g.ok).map((g) => g.name),
+          ...(last.isolation?.failures ?? []),
+          ...last.collections
+            .filter((c) => c.diffCount > 0)
+            .map((c) => c.collection),
+        ].join(', ') || 'none named'
+      }. Read the verify report, fix the cause and run follow again (it compares again first)`,
+    );
+  if (js.progress.follow) {
     js.progress.follow.resyncs = (js.progress.follow.resyncs ?? 0) + 1;
+    delete js.progress.follow.needsResync;
+  }
   await js.checkpoint();
 }
 
@@ -188,13 +233,16 @@ export async function follow(
   if (!js.progress.follow?.resumeToken)
     throw new Error('no resume token: run `follow start` before the copy');
   const alarmMs = o.alarmMs ?? rt.cfg.lagAlarmMs;
+  // an earlier resync that did not end clean is finished first
+  const unfinished = js.progress.follow.needsResync === true;
+  if (unfinished) await resync(rt, js, o.log);
   const res: FollowResult = {
     applied: 0,
     lagMs: 0,
     markerSeen: false,
     appEventsAfter: 0,
     stragglers: 0,
-    resyncs: 0,
+    resyncs: unfinished ? 1 : 0,
     maxLagMs: 0,
     alarms: 0,
   };
@@ -318,9 +366,10 @@ export async function follow(
         if (!m) continue;
         if (m.collection === 'userCredentials') {
           // a credential row is written after the batch from the user's credentials in MongoDB (see flush)
-          if (e.operationType === 'delete') credentialDeleted = true;
-          else if ('fullDocument' in e && e.fullDocument) {
-            const u = (e.fullDocument as { userId?: unknown }).userId;
+          const ch = await resolveChange(rt, e);
+          if (ch.op === 'delete') credentialDeleted = true;
+          else {
+            const u = (ch.doc as { userId?: unknown }).userId;
             if (typeof u === 'string') credentials.push(u);
           }
           res.applied += 1;
@@ -334,12 +383,13 @@ export async function follow(
         const id = String(
           (e.documentKey as { _id: unknown })._id,
         ).toLowerCase();
-        if (e.operationType === 'delete') {
+        const ch = await resolveChange(rt, e);
+        if (ch.op === 'delete') {
           current.upserts.delete(id);
           current.deletes.add(id);
-        } else if ('fullDocument' in e && e.fullDocument) {
+        } else {
           current.deletes.delete(id);
-          current.upserts.set(id, e.fullDocument);
+          current.upserts.set(id, ch.doc);
         }
         res.applied += 1;
       }
