@@ -176,23 +176,22 @@ export function rewriteCitationsForSlack(
   return stripTinyRefCitationLinks(text);
 }
 
+/** `[label](refN)` / `[label](https://refN.xyz)` with any label. */
+const PLACEHOLDER_REF_LINK =
+  /\[([^\]\n]*)\]\(\s*(?:https?:\/\/)?ref\d+(?:\.xyz)?(?:\/[^)\s]*)?\s*\)/gi;
+const BARE_PLACEHOLDER_REF = /\bhttps?:\/\/ref\d+\.xyz\/?/gi;
+const CITATION_ONLY_LABEL = /^\s*(?:source|\d+)?\s*$/i;
+
 /**
- * For streamed markdown, where citations are not known yet: `[N](record link)`
- * and `[N](refN)` become a plain `[N]` that matches the numbered sources
- * posted at the end, other tiny-ref links go, and web links stay.
+ * Citation placeholders (`refN`, `https://refN.xyz`) never reach Slack: a link
+ * with its own words keeps them, a bare citation or placeholder URL goes.
  */
-export function plainCitationMarkers(text: string): string {
-  if (!text) {
-    return '';
-  }
-  const marked = text.replace(
-    NUMBERED_MARKDOWN_LINK_PATTERN,
-    (match, citationNumber: string, target: string) =>
-      target.includes('/record/') || isTinyRefTarget(target)
-        ? `[${citationNumber}]`
-        : match,
-  );
-  return stripTinyRefCitationLinks(marked);
+export function withoutPlaceholderRefs(text: string): string {
+  return text
+    .replace(PLACEHOLDER_REF_LINK, (_match, label: string) =>
+      CITATION_ONLY_LABEL.test(label) ? '' : label,
+    )
+    .replace(BARE_PLACEHOLDER_REF, '');
 }
 
 /** An unfinished `[label](target)` at the end of a streamed piece, held until it closes. */
@@ -200,11 +199,14 @@ const OPEN_LINK_TAIL = /\[[^\]\n]*(?:\](?:\([^)\n]*)?)?$/;
 /** An unfinished `::artifact[name](url){meta}` (or a `:` that may start one), held until its `}`. */
 const OPEN_MARKER_TAIL =
   /:(?::[a-z_]*(?:\[[^\]\n]*(?:\](?:\([^)\n]*(?:\)(?:\{[^}\n]*)?)?)?)?)?)?$/;
+/** A bare URL still being written (a placeholder one becomes a marker once whole). */
+const OPEN_URL_TAIL =
+  /(?<=^|\s)h(?:t(?:t(?:p(?:s)?(?::(?:\/(?:\/\S*)?)?)?)?)?)?$/;
 const MAX_HELD_LINK_CHARS = 2000;
 
 /** Splits off a link or artifact marker still being written, so it is handled whole on the next piece. */
 export function splitOpenLinkTail(text: string): [string, string] {
-  const starts = [OPEN_LINK_TAIL, OPEN_MARKER_TAIL]
+  const starts = [OPEN_LINK_TAIL, OPEN_MARKER_TAIL, OPEN_URL_TAIL]
     .map((pattern) => pattern.exec(text)?.index)
     .filter((index): index is number => index !== undefined);
   if (starts.length === 0) {
@@ -215,6 +217,58 @@ export function splitOpenLinkTail(text: string): [string, string] {
     return [text, ''];
   }
   return [text.slice(0, start), text.slice(start)];
+}
+
+const PLACEHOLDER_REF_TARGET =
+  /^\s*(?:https?:\/\/)?(ref\d+)(?:\.xyz)?(?:\/[^)\s]*)?\s*$/i;
+/** `[label](target)`, a bare `https://refN.xyz`, or a bracketed `[refN]`. */
+const CITATION_TOKEN =
+  /\[([^\]\n]*)\]\(([^()\n]*)\)|\bhttps?:\/\/(ref\d+)\.xyz\/?|\[(ref\d+)\](?!\()/gi;
+
+/**
+ * Streamed answer text with each citation placeholder (`refN`,
+ * `https://refN.xyz`) as a plain `[n]` marker. Numbers go to distinct refs by
+ * first appearance, the way the backend numbers the finished answer, so they
+ * match the numbered Sources list. A link with its own words keeps them
+ * before the marker; other links stay as written. One instance per model
+ * call: `reset()` when its text starts over.
+ */
+export class CitationMarkers {
+  private numbers = new Map<string, number>();
+
+  reset(): void {
+    this.numbers = new Map();
+  }
+
+  mark(text: string): string {
+    return text.replace(
+      CITATION_TOKEN,
+      (
+        match,
+        label: string | undefined,
+        target: string | undefined,
+        bare?: string,
+        bracketed?: string,
+      ) => {
+        const ref =
+          bare ?? bracketed ?? PLACEHOLDER_REF_TARGET.exec(target ?? '')?.[1];
+        if (ref === undefined) return match;
+        const marker = `[${String(this.numberFor(ref.toLowerCase()))}]`;
+        return label !== undefined && !CITATION_ONLY_LABEL.test(label)
+          ? `${label} ${marker}`
+          : marker;
+      },
+    );
+  }
+
+  private numberFor(ref: string): number {
+    let n = this.numbers.get(ref);
+    if (n === undefined) {
+      n = this.numbers.size + 1;
+      this.numbers.set(ref, n);
+    }
+    return n;
+  }
 }
 
 const SOURCES_PER_BLOCK = 10;

@@ -93,6 +93,12 @@ _WEB_TOOL_SHORT_DESCRIPTIONS: dict[str, str] = {
     "fetch_url": "Fetch and extract text from a public webpage (unauthenticated GET).",
 }
 
+# What a step card calls each call. Without one, a client can only humanize the raw name ("Fetch Url").
+_WEB_TOOL_DISPLAY_NAMES: dict[str, str] = {
+    "web_search": "Searched the web",
+    "fetch_url": "Read a web page",
+}
+
 
 class WebToolAdapter(PipesHubStructuredToolAdapter):
     """Wraps the dynamic `web_search`/`fetch_url` `StructuredTool`s so their
@@ -124,6 +130,11 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
         # Strip the ``dynamic__`` prefix to look up the base tool name.
         base = self.name.split("__", 1)[-1] if "__" in self.name else self.name
         return _WEB_TOOL_SHORT_DESCRIPTIONS.get(base, super().short_description)
+
+    @property
+    def display_name(self) -> str | None:
+        base = self.name.split("__", 1)[-1] if "__" in self.name else self.name
+        return _WEB_TOOL_DISPLAY_NAMES.get(base)
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         output = await super().execute(**kwargs)

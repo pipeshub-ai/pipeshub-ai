@@ -23,7 +23,10 @@ import {
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { createSlackAGUIEventHandler } from "./utils/agui-stream";
-import { stripSlackActivityTimeline } from "./utils/activity-ui";
+import {
+  cleanNarration,
+  stripSlackActivityTimeline,
+} from "./utils/activity-ui";
 import {
   SlackPlanStream,
   SlackTaskPlan,
@@ -33,10 +36,7 @@ import {
   formatAskUserQuestionMrkdwn,
   type AskUserQuestionEvent,
 } from "./utils/ask-user-format";
-import {
-  toolActivityLabel,
-  toolStatusLabel,
-} from "./utils/tool-display";
+import { toolActivityLabel } from "./utils/tool-display";
 import {
   parseArtifactMarkers,
   stripArtifactMarkers,
@@ -44,8 +44,9 @@ import {
 import {
   rewriteCitationsForSlack,
   stripFragmentDirective,
-  plainCitationMarkers,
+  CitationMarkers,
   splitOpenLinkTail,
+  withoutPlaceholderRefs,
   buildNumberedSlackSources,
 } from "./utils/citations";
 
@@ -72,6 +73,7 @@ import {
   truncateForSlackStreamMarkdown,
   hasMarkdownTableStartOutsideCodeFences,
   buildFinalSlackChunks,
+  splitBeforeFirstTable,
   slackBlocksFallbackText,
   splitSlackBlocksByLimit,
   classifySlackFiles,
@@ -433,6 +435,8 @@ async function processSlackMessage(
     email,
   );
   const answerPlan = new SlackTaskPlan();
+  // Numbers citation placeholders as [n] while the answer streams, to match the Sources list.
+  const citationMarkers = new CitationMarkers();
   // Null when Slack can't stream here: the answer is then posted under a status message.
   let answerStream: SlackPlanStream | null = null;
   let waitingMessageTs: string | null = null;
@@ -646,10 +650,7 @@ async function processSlackMessage(
     let answerTextStreamed = false;
     // The end of a flushed piece that may be half a link, sent with the next one.
     let heldAnswerText = "";
-    // Shown text before a tool call stays; what follows starts a new paragraph.
-    let answerNeedsBreak = false;
-    // As they were when the current model call's text began, to restore on a discard.
-    let segmentNeedsBreak = false;
+    // As it was when the current model call's text began, to restore on a discard.
     let streamedBeforeSegment = false;
     let answerFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const postedArtifactKeys = new Set<string>();
@@ -699,19 +700,52 @@ async function processSlackMessage(
       }
     };
 
-    const pushPlan = (chunks: (SlackTaskChunk | null)[]): void => {
-      const ready = chunks.filter((chunk): chunk is SlackTaskChunk => chunk !== null);
+    let pendingStreamText = "";
+    let textSendQueued = false;
+    const pendingPlanRows = new Map<string, SlackTaskChunk>();
+    let planSendQueued = false;
+    const pushPlan = (
+      chunks: (SlackTaskChunk | SlackTaskChunk[] | null)[],
+    ): void => {
+      const ready = chunks
+        .flat()
+        .filter((chunk): chunk is SlackTaskChunk => chunk !== null);
       if (!answerStream || askUserShown || ready.length === 0) {
         return;
       }
+      // Rapid updates coalesce: one queued send carries each changed row's latest state.
+      for (const chunk of ready) {
+        pendingPlanRows.delete(chunk.id);
+        pendingPlanRows.set(chunk.id, chunk);
+      }
+      if (planSendQueued) {
+        return;
+      }
+      planSendQueued = true;
       queuedStreamAppend = queuedStreamAppend
         .then(async () => {
-          await answerStream?.tasks(ready);
+          planSendQueued = false;
+          const rows = [...pendingPlanRows.values()];
+          pendingPlanRows.clear();
+          await answerStream?.tasks(rows);
           await fallBackToStatusMessage();
         })
         .catch((error: unknown) => {
           console.error("Error updating Slack plan:", error);
         });
+    };
+
+    // Text the agent wrote before a step: its own rows in the plan, once, in full.
+    const pushNarration = (text: string): void => {
+      const narration = withoutPlaceholderRefs(
+        cleanNarration(parseArtifactMarkers(text).text),
+      );
+      answerPlan.endGroup();
+      if (!answerStream || askUserShown || narration === "") {
+        return;
+      }
+      // Reasoning came before this text, so its row goes first.
+      pushPlan([answerPlan.flushReasoning(), answerPlan.narration(narration)]);
     };
 
     const deleteStreamMessages = async (): Promise<void> => {
@@ -767,7 +801,7 @@ async function processSlackMessage(
         flushPendingAppend();
         return;
       }
-      // Text before a tool call becomes that step's details, so each model
+      // Text before a tool call becomes a row of the plan, so each model
       // call's short opening waits until it is clearly answer text.
       if (!answerFlushTimer && pushedAnswerLength > 0) {
         answerFlushTimer = setTimeout(() => {
@@ -884,7 +918,6 @@ async function processSlackMessage(
 
     // Text already shown stays (no delete and repost); the answer goes on after it.
     function resetAnswerStream(): void {
-      answerNeedsBreak = answerNeedsBreak || answerTextStreamed;
       clearAnswerFlushTimer();
       pendingAppendText = '';
       heldAnswerText = '';
@@ -895,7 +928,7 @@ async function processSlackMessage(
     }
 
     function startAnswerSegment(): void {
-      segmentNeedsBreak = answerNeedsBreak;
+      citationMarkers.reset();
       streamedBeforeSegment = answerTextStreamed;
       queuedStreamAppend = queuedStreamAppend
         .then(() => {
@@ -923,7 +956,6 @@ async function processSlackMessage(
       streamedAnswerLength = 0;
       pushedAnswerLength = 0;
       lastAnswerText = '';
-      answerNeedsBreak = segmentNeedsBreak;
       answerTextStreamed = streamedBeforeSegment;
       if (!shown) {
         return;
@@ -954,32 +986,37 @@ async function processSlackMessage(
         streamTableProbeText = '';
       },
       onNarration: (text) => {
-        // Already shown as answer text: don't repeat it in the step.
+        // Already shown as streamed text: don't repeat it.
         if (pushedAnswerLength === 0) {
-          answerPlan.narration(text);
+          pushNarration(text);
         }
       },
       onToolProgress: (toolName, progress) => {
         pushPlan([answerPlan.toolProgress(toolName, progress)]);
       },
-      onToolStart: (toolName, displayName, toolCallId) => {
+      onToolStart: (toolName, displayName, toolCallId, call) => {
+        // The dashboard's label from the start, so a row doesn't change its wording when the call ends.
         pushPlan([
           answerPlan.flushReasoning(),
           answerPlan.toolStarted(
             toolName,
-            toolStatusLabel(toolName, displayName),
+            toolActivityLabel(toolName, displayName),
             toolCallId,
+            call,
           ),
         ]);
       },
-      onToolResult: (toolName, displayName, status, toolCallId, content) => {
+      onToolArgs: (toolName, args, toolCallId) => {
+        pushPlan([answerPlan.toolArgs(toolName, args, toolCallId)]);
+      },
+      onToolResult: (toolName, displayName, status, toolCallId, result) => {
         pushPlan([
           answerPlan.toolFinished(
             toolName,
             toolActivityLabel(toolName, displayName),
             status,
             toolCallId,
-            content,
+            result,
           ),
         ]);
       },
@@ -1011,9 +1048,7 @@ async function processSlackMessage(
         return;
       }
 
-      // Slack renders markdown_text as markdown: send it as written, with
-      // record citations as plain [N] markers that match the sources.
-      text = plainCitationMarkers(text);
+      // Slack renders markdown_text as markdown: send it as written.
       text = stripArtifactMarkers(text);
       if (text.length === 0) {
         return;
@@ -1036,12 +1071,23 @@ async function processSlackMessage(
       }
 
       pushPlan([answerPlan.flushReasoning()]);
+      answerPlan.endGroup();
       pushedAnswerLength += textToAppend.length;
       answerTextStreamed = true;
-      const streamed = answerNeedsBreak ? `\n\n${textToAppend}` : textToAppend;
-      answerNeedsBreak = false;
+      // Numbered now, in order: a reset may come before this is sent.
+      pendingStreamText += citationMarkers.mark(textToAppend);
+      if (textSendQueued) {
+        return;
+      }
+      // Pieces that arrive while a send waits go out together in it.
+      textSendQueued = true;
       queuedStreamAppend = queuedStreamAppend
-        .then(async () => pushTextToSlackStream(streamed))
+        .then(async () => {
+          textSendQueued = false;
+          const text = pendingStreamText;
+          pendingStreamText = "";
+          await pushTextToSlackStream(text);
+        })
         .catch((error) => {
           console.error("Error appending Slack stream text:", error);
           if (!streamErrorMessage) {
@@ -1195,7 +1241,7 @@ async function processSlackMessage(
     ): ReturnType<typeof buildFinalSlackChunks> => {
       const text = parseArtifactMarkers(markdown).text;
       let body = plainMarkers
-        ? plainCitationMarkers(text)
+        ? citationMarkers.mark(text)
         : rewriteInlineRecordCitationsForSlack(text, botResponse.citations);
       body = removeContinuousDuplicateMarkdownLinks(body);
       body = addSpaceBetweenMarkdownLinks(body);
@@ -1207,8 +1253,16 @@ async function processSlackMessage(
     await queuedStreamAppend;
 
     if (answerStream && pushedAnswerLength === 0 && !tableStreamingDisabled && botResponse.content) {
-      pushedAnswerLength = botResponse.content.length;
-      await pushTextToSlackStream(botResponse.content);
+      // An answer that came only with the run's end still gets its tables as blocks.
+      const [beforeTable, fromTable] = splitBeforeFirstTable(botResponse.content);
+      if (fromTable !== "") {
+        tableStreamingDisabled = true;
+        lastAnswerText = botResponse.content;
+      }
+      pushedAnswerLength = beforeTable.length;
+      if (beforeTable.trim() !== "") {
+        await pushTextToSlackStream(citationMarkers.mark(beforeTable));
+      }
     }
 
     if (answerStream) {
