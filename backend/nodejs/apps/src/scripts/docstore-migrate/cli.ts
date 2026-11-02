@@ -86,6 +86,71 @@ const COMMANDS = new Set([
   'rollback',
 ]);
 
+/**
+ * The flags each command reads. A flag that is not in its command's list is refused: a typo such as `--dryrun` for `--dry-run` would
+ * otherwise be ignored and the command would run for real. `--help` is allowed everywhere.
+ */
+export const FLAGS: Record<string, string[]> = {
+  preflight: ['allow-clients'],
+  schema: [],
+  bulk: ['only', 'stop-after-batches'],
+  follow: ['until-idle'],
+  post_load: [],
+  verify: ['only', 'sample', 'incremental'],
+  drain: ['wait', 'force', 'confirm-fence-armed', 'cancel'],
+  migrate: [
+    'offline',
+    'online',
+    'dry-run',
+    'allow-clients',
+    'allow-writers',
+    'sample',
+  ],
+  cutover: [
+    'dry-run',
+    'drain-wait',
+    'force-drain',
+    'max-freeze',
+    'grace',
+    'max-lag',
+    'fence-armed',
+    'shadow-clean',
+    'fail-at',
+  ],
+  unfreeze: [],
+  reset: ['yes', 'force'],
+  status: [],
+  reverse: ['until-idle'],
+  rollback: [
+    'reverse',
+    'online',
+    'allow-clients',
+    'allow-writers',
+    'sample',
+    'max-freeze',
+  ],
+};
+
+/** What can be refused from the words alone: a flag the command does not have, a `follow` that is neither `start` nor `run`, and flags that exclude each other. */
+export function checkFlags(a: Args): void {
+  const allowed = FLAGS[a.cmd] ?? [];
+  for (const k of a.flags.keys())
+    if (k !== 'help' && !allowed.includes(k))
+      throw new UsageError(
+        `--${k} is not a flag of '${a.cmd}'${allowed.length ? ` (it has ${allowed.map((x) => `--${x}`).join(', ')})` : ' (it has none)'}`,
+      );
+  if (a.cmd === 'follow' && a.sub !== 'start' && a.sub !== 'run')
+    throw new UsageError('follow needs `start` or `run`');
+  if (a.cmd === 'migrate' && a.flags.has('offline') && a.flags.has('online'))
+    throw new UsageError(
+      'use `migrate --offline` or `migrate --online`, not both',
+    );
+  if (a.cmd === 'verify' && a.flags.has('incremental') && a.flags.has('only'))
+    throw new UsageError(
+      'an incremental verify has no collection scope: --only does not apply',
+    );
+}
+
 /** Everything a command reads from its flags, checked before a connection is opened. */
 function plan(a: Args): {
   only?: string[];
@@ -136,7 +201,7 @@ const log: Log = (event, data) =>
     `${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`,
   );
 
-const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, status
+export const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, status
 --confirm-fence-armed (drain): every application process runs with DOC_STORE_FENCE=on. Without it drain refuses while a connected
   application client does not name its connections pipeshub-fenced, because a process that does not wrap its writes keeps writing
   whatever the fence says.
@@ -176,6 +241,7 @@ export async function runCli(
   }
   let p: ReturnType<typeof plan>;
   try {
+    checkFlags(a);
     p = plan(a);
   } catch (e) {
     if (e instanceof UsageError) {
@@ -201,6 +267,7 @@ export async function runCli(
     switch (a.cmd) {
       case 'preflight': {
         const r = await preflight(rt, {
+          allowClients: a.flags.has('allow-clients'),
           log: (m) => {
             log('preflight', { m });
           },

@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { UsageError, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
+import { FLAGS, HELP, UsageError, checkFlags, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 
 const flag = (...argv: string[]) => parse(['drain', ...argv])
@@ -69,5 +69,62 @@ describe('what the command line refuses before it reads a configuration or opens
       ['cutover', '--max-freeze', 'Infinity'],
     ])
       expect(await run(...argv), argv.join(' ')).to.equal(2)
+  })
+})
+
+describe('flags the command line does not have, and words that do not go together', () => {
+  const ok = (...argv: string[]) => checkFlags(parse(argv))
+
+  it('every flag a command has is accepted, with --help allowed everywhere', () => {
+    for (const [cmd, flags] of Object.entries(FLAGS)) {
+      const sub = cmd === 'follow' ? ['run'] : []
+      ok(cmd, ...sub)
+      for (const f of flags) if (!(cmd === 'migrate' && f === 'online')) ok(cmd, ...sub, `--${f}`)
+      ok(cmd, ...sub, '--help')
+    }
+  })
+
+  it('every flag the help text documents belongs to a command', () => {
+    const documented = new Set([...HELP.matchAll(/--([a-z][a-z-]*)/g)].map((m) => m[1]!))
+    const known = new Set(Object.values(FLAGS).flat())
+    for (const f of documented) if (f !== 'help') expect(known.has(f), `--${f}`).to.equal(true)
+  })
+
+  it('a flag the command does not have is refused: a typo is not ignored', () => {
+    expect(() => ok('migrate', '--offline', '--dryrun')).to.throw(UsageError, "--dryrun is not a flag of 'migrate'")
+    expect(() => ok('bulk', '--onyl', 'x')).to.throw(UsageError, "--onyl is not a flag of 'bulk'")
+    expect(() => ok('verify', '--force')).to.throw(UsageError, "--force is not a flag of 'verify'")
+    expect(() => ok('status', '--yes')).to.throw(UsageError, 'it has none')
+  })
+
+  it('follow wants start or run, and migrate one mode, and an incremental verify has no collection scope', () => {
+    for (const bad of [['follow'], ['follow', 'stop']]) expect(() => ok(...bad), bad.join(' ')).to.throw(UsageError, 'follow needs')
+    expect(() => ok('migrate', '--offline', '--online')).to.throw(UsageError, 'not both')
+    expect(() => ok('verify', '--incremental', '--only', 'users')).to.throw(UsageError, 'no collection scope')
+    ok('follow', 'start')
+    ok('verify', '--incremental', '--sample', '0.1')
+  })
+
+  it('each of them exits 2 from the command line before anything is read', async () => {
+    const w = process.stdout.write
+    const e = process.stderr.write
+    process.stdout.write = (() => true) as never
+    process.stderr.write = (() => true) as never
+    try {
+      for (const argv of [
+        ['migrate', '--offline', '--dryrun'],
+        ['bulk', '--onyl', 'x'],
+        ['verify', '--force'],
+        ['follow'],
+        ['rollback', '--reversee'],
+        ['reverse', '--force'],
+        ['migrate', '--offline', '--online'],
+        ['verify', '--incremental', '--only', 'users'],
+      ])
+        expect(await runCli(argv, {}), argv.join(' ')).to.equal(2)
+    } finally {
+      process.stdout.write = w
+      process.stderr.write = e
+    }
   })
 })
