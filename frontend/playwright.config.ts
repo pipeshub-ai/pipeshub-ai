@@ -92,10 +92,28 @@ export default defineConfig({
     {
       name: 'responsive',
       testMatch: /responsive\/.*\.spec\.ts/,
+      testIgnore: /visual/,
       dependencies: ['setup', 'embedding-model'],
       use: {
         storageState: '.auth/user.json',
         // Its own screenshots go to EVIDENCE_DIR.
+        screenshot: 'off',
+        trace: 'off',
+      },
+    },
+
+    // Screenshots of the audited screens at 375px and 1440px, light and dark.
+    // With VISUAL_BASELINE_DIR set they are compared with that folder's PNGs;
+    // otherwise they are only saved to EVIDENCE_DIR.
+    {
+      name: 'visual',
+      testMatch: /responsive\/.*visual\.spec\.ts/,
+      dependencies: ['setup', 'embedding-model'],
+      snapshotPathTemplate: process.env.VISUAL_BASELINE_DIR
+        ? `${process.env.VISUAL_BASELINE_DIR}/{arg}{ext}`
+        : undefined,
+      use: {
+        storageState: '.auth/user.json',
         screenshot: 'off',
         trace: 'off',
       },

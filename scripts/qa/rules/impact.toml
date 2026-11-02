@@ -224,3 +224,9 @@ module = "frontend"
 names = ["agents", "auth", "chat", "groups", "knowledge-base", "teams", "users", "workspace"]
 paths = ["frontend/app/**/{name}/**"]
 tests = ["frontend/tests/e2e/{name}/**"]
+
+[[rule]]
+id = "visual"
+module = "frontend"
+paths = ["frontend/app/**", "frontend/styles/**"]
+tests = ["frontend/tests/e2e/responsive/visual.spec.ts"]
