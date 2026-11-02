@@ -84,7 +84,8 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
 }));
 
 // One person's waiting calls must never show to the next: reset on sign-out (every logout path
-// goes through the auth store's logout, before it navigates) and when the signed-in user changes.
+// goes through the auth store's logout, before it navigates), when the signed-in user changes, and
+// when the active workspace changes in a store that keeps one (`currentOrgId`).
 // Subscribed on the first refresh, the only way calls get on the list, not at import: '@/config'
 // re-exports chat components that import this module, so it may still be loading then.
 let watchingAuth = false;
@@ -94,7 +95,8 @@ function resetWhenTheSignedInPersonChanges(): void {
   useAuthStore.subscribe((state, prev) => {
     const signedOut = prev.isAuthenticated && !state.isAuthenticated;
     const otherUser = Boolean(prev.user && state.user && prev.user.id !== state.user.id);
-    if (signedOut || otherUser) usePendingApprovals.getState().reset();
+    const orgOf = (s: object) => (s as { currentOrgId?: string | null }).currentOrgId;
+    if (signedOut || otherUser || orgOf(prev) !== orgOf(state)) usePendingApprovals.getState().reset();
   });
 }
 

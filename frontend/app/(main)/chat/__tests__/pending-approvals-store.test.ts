@@ -222,6 +222,14 @@ describe('pending approvals store', () => {
       next.unmount();
     });
 
+    it('resets when the active workspace changes, in a store that keeps one', async () => {
+      api.fetchPendingApprovals.mockResolvedValue([item('b', 'conv-other')]);
+      await act(() => usePendingApprovals.getState().refresh());
+      act(() => useAuthStore.setState({ currentOrgId: 'org-2' } as never));
+      expect(usePendingApprovals.getState().items).toEqual([]);
+      act(() => useAuthStore.setState({ currentOrgId: undefined } as never));
+    });
+
     it('resets when a different person signs in', async () => {
       act(() => useAuthStore.getState().setUser({ id: 'u1' }));
       api.fetchPendingApprovals.mockResolvedValue([item('b', 'conv-other')]);
