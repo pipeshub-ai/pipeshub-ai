@@ -92,7 +92,7 @@ export async function answerElsewhere(item: PendingApprovalItem, answer: ToolApp
       if (live && !waiting(live)) finish('sent');
     });
     let reason = '';
-    void streamMessageForSlot(slotId, query, request, { reuseRowId: row.id, onApprovalFailed: (why) => { reason = why; } })
+    void streamMessageForSlot(slotId, query, request, { reuseRowId: row.id, quietFinish: true, onApprovalFailed: (why) => { reason = why; } })
       .catch(() => undefined)
       .then(async () => {
         const after = rowHolding(slotId, approvalId);

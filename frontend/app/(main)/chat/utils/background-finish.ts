@@ -28,7 +28,7 @@ function titleOf(conversationId: string): string | undefined {
  * Stopped runs and failures are not announced. `wasStopped` is read by the
  * caller before the run settles, because settling clears the flag.
  */
-export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boolean): void {
+export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boolean, { toast: withToast = true } = {}): void {
   if (wasStopped) return;
 
   const { slots, activeSlotId, markConversationUnread } = useChatStore.getState();
@@ -36,6 +36,7 @@ export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boo
   if (!slot?.convId || isSlotInView(slotId, activeSlotId)) return;
 
   markConversationUnread(slot.convId);
+  if (!withToast) return;
 
   const title = titleOf(slot.convId);
   toast.info(i18n.t('chat.answerReady.title'), {

@@ -86,7 +86,7 @@ describe('answerElsewhere', () => {
     await expect(answerElsewhere(item, answer)).resolves.toBe('sent');
     expect(m.load).toHaveBeenCalledWith('conv-bg', null);
     expect(m.build).toHaveBeenCalledWith('slot-bg', 'Tool approval: allow', undefined, answer, { agentMode: true, background: true });
-    expect(m.stream).toHaveBeenCalledWith('slot-bg', 'Tool approval: allow', { query: 'q' }, { reuseRowId: 'row-2', onApprovalFailed: expect.any(Function) });
+    expect(m.stream).toHaveBeenCalledWith('slot-bg', 'Tool approval: allow', { query: 'q' }, { reuseRowId: 'row-2', quietFinish: true, onApprovalFailed: expect.any(Function) });
     expect(m.state.activeSlotId).toBe('slot-here');
   });
 
