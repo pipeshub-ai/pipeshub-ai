@@ -406,9 +406,11 @@ def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container
     own = lambda var: f"NOT coalesce({var}.isDeleted, false) AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)}"  # noqa: E731
     group_child = (f"({declared} AND {v}.id IN $grantedIds AND kh_ch:RecordGroup AND NOT coalesce(kh_ch.isDeleted, false)"
                    f" AND NOT coalesce({v}.hideChildren, false))")
-    holds = (f"({declared} AND EXISTS {{ (kh_bm:Record)-[:BELONGS_TO]->({v}) WHERE {own('kh_bm')} }}) "
+    # A group that hides its children lists none of its records, so they light no arrow.
+    shown = f"NOT coalesce({v}.hideChildren, false)"
+    holds = (f"({shown} AND (({declared} AND EXISTS {{ (kh_bm:Record)-[:BELONGS_TO]->({v}) WHERE {own('kh_bm')} }}) "
              f"OR ({container} AND NOT {declared} AND EXISTS {{ (kh_bg:Record)-[:BELONGS_TO]->({v}) "
-             f"WHERE {own('kh_bg')} AND kh_bg.id IN $grantedIds }})") if exact else "false"
+             f"WHERE {own('kh_bg')} AND kh_bg.id IN $grantedIds }})))") if exact else "false"
     return (
         f"(CASE WHEN {'false' if exact else container} THEN true ELSE ({holds} OR "
         f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "

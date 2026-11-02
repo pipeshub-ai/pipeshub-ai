@@ -76,6 +76,14 @@ def _more() -> tuple[list, list]:
         app("st", "Stubs", connector=DRIVE, app_group="G"),
         rg("st-S", "S", connectorId="st", **g),
         rec("st-f", "f", connector_id="st", rule="STRICT", isPlaceholder=True),
+        app("hc", "Hides", connector=DRIVE, app_group="G"),
+        rg("hc-g", "g", permissionModel=RGL, connectorId="hc", hideChildren=True, **g),
+        rec("hc-m", "m", connector_id="hc"),
+        app("pp", "Way", connector=DRIVE, app_group="G"),
+        rg("pp-dir", "dir", connectorId="pp", **g),
+        rec("pp-stub", "stub", connector_id="pp", isPlaceholder=True),
+        rec("pp-mid", "mid", connector_id="pp"),
+        rec("pp-leaf", "leaf", connector_id="pp"),
         app("ch", "Hidden", connector=DRIVE, app_group="G"),
         rg("ch-chan", "chan", permissionModel=RGL, connectorId="ch", **g),
         rec("ch-msg", "msg", connector_id="ch"),
@@ -88,6 +96,11 @@ def _more() -> tuple[list, list]:
         nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
     ]
     edges += [
+        user_app(USER_U, "hc"), nr("hc", "hc-g"), bt("hc-g", "hc"), perm(GROUP_G, "hc-g", grant_type="GROUP"),
+        bt("hc-m", "hc-g"),
+        user_app(USER_U, "pp"), nr("pp", "pp-dir"), bt("pp-dir", "pp"), perm(GROUP_G, "pp-dir", grant_type="GROUP"),
+        nr("pp-dir", "pp-stub"), ip("pp-stub", "pp-dir"),
+        nr("pp-mid", "pp-leaf"), ip("pp-leaf", "pp-mid"), ip("pp-mid", "pp-dir"),
         user_app(USER_U, "mk"), nr("mk", "mk-box"), bt("mk-box", "mk"), perm(GROUP_G, "mk-box", grant_type="GROUP"),
         nr("mk-box", "mk-label"), ip("mk-label", "mk-box"), bt("mk-label", "mk-box"),
         user_app(USER_U, "mt"), nr("mt", "mt-chan"), bt("mt-chan", "mt"), perm(GROUP_G, "mt-chan", grant_type="GROUP"),
@@ -176,6 +189,20 @@ class _World:
             if rows:
                 assert await self.graph.batch_create_edges(rows, collection=collection)
 
+    async def seed_legacy_link(self) -> None:
+        """A non-hierarchy edge kept in the hierarchy collection, as data written before links had their own."""
+        src, dst = self.sid("pp-stub"), self.sid("pp-mid")
+        if hasattr(self.graph, "client"):
+            await self.graph.client.execute_query(
+                "MATCH (a:Record {id: $a}), (b:Record {id: $b}) "
+                "CREATE (a)-[:NODE_RELATION {relationshipType: 'SIBLING'}]->(b)", parameters={"a": src, "b": dst},
+            )
+            return
+        await self.graph.http_client.execute_aql(
+            "INSERT {_from: @a, _to: @b, relationshipType: 'SIBLING'} INTO nodeRelations",
+            {"a": f"records/{src}", "b": f"records/{dst}"},
+        )
+
     async def remove(self) -> None:
         nodes, _ = _graph()
         ids = [self.sid(n["id"]) for n in nodes]
@@ -212,6 +239,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         w = _World(graph, uuid.uuid4().hex[:10])
         cleanup.push_async_callback(w.remove)
         await w.seed()
+        await w.seed_legacy_link()
         yield w
 
 
@@ -293,7 +321,7 @@ async def _rows_and_expansions(world: _World, app_id: str) -> list[tuple[str, bo
     return seen
 
 
-@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st"])
+@pytest.mark.parametrize("app_id", ["bc", "bp", "kt", "ch", "ka", "kb", "mk", "mt", "st", "hc"])
 async def test_an_arrow_is_on_exactly_when_the_expansion_lists_something(world: _World, app_id: str) -> None:
     rows = await _rows_and_expansions(world, app_id)
 
@@ -315,3 +343,10 @@ async def test_a_filtered_browse_gives_a_group_with_no_visible_child_no_arrow(wo
     arrows = {row["id"]: row["hasChildren"] for row in page["rows"]}
 
     assert arrows == {"ch-chan": False}
+
+
+async def test_a_stub_is_listed_only_when_a_hierarchy_path_leads_to_something_readable(world: _World) -> None:
+    page = await _page(world, "pp", flatten=False, start_id="pp-dir", start_type="recordGroup")
+
+    assert {row["id"] for row in page["rows"]} == set()
+    assert page["total"] == 0

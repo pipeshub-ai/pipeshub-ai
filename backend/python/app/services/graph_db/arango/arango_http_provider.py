@@ -501,7 +501,11 @@ def _aql_way_below(v: str) -> str:
     """Whether a readable node lies below the stub ``v``: a browse shows a stub only as the way to one.
     shortcut: the hops between the stub and that node are not each tested, only the last, so a stub whose way
     is cut by a node the viewer cannot read is still shown; test every hop if that matters."""
-    return (f"LENGTH(FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+    # Only a stub starts the walk (the loop over an empty list reads nothing for any other node), and it follows
+    # hierarchy edges only: PRUNE stops it at any other.
+    return (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : [])"
+            f" FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+            f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
             f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
             f" AND {_aql_browse_child('kh_pd', 'DOCUMENT(kh_pe._from)', 'pb', 'false')}"
             f" LIMIT 1 RETURN 1) > 0")
@@ -682,7 +686,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
     filed = (f"FOR kh_bm IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
              f' FILTER IS_SAME_COLLECTION("{records}", kh_bm) AND kh_bm.isDeleted != true AND kh_bm.orgId == @org_id'
              f" AND {_aql_read_by_app('kh_bm')}"
-             + (f" AND ({declared} OR {record} OR HAS(@granted, kh_bm._key))" if exact else ""))
+             + (f" AND ({declared} OR {record} OR HAS(@granted, kh_bm._key)) AND {v}.hideChildren != true" if exact else ""))
     if not exact:
         return (
             f'({_aql_node_type(v)} != "record" ? true : (LENGTH({children} LIMIT 1 RETURN 1) > 0'
@@ -690,15 +694,9 @@ def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
             f" FILTER kh_bm.isDeleted != true AND kh_bm.orgId == @org_id AND {_aql_read_by_app('kh_bm')}"
             f" LIMIT 1 RETURN 1) > 0)))"
         )
-    if exact:
-        # A page's rows only: every kind of node (a folder is neither a group nor a record here) is asked.
-        return (f"({gated(f'{group} OR kh_opens', filed)}"
-                f" OR {gated('true', children)})")
-    return (
-        f'((NOT {declared} AND {_aql_node_type(v)} != "record")'
-        f" OR {gated(f'{declared} OR {record}', children)}"
-        f" OR {gated(f'{declared} OR (kh_opens AND {record})', filed)})"
-    )
+    # A page's rows only: every kind of node (a folder is neither a group nor a record here) is asked.
+    return (f"({gated(f'{group} OR kh_opens', filed)}"
+            f" OR {gated('true', children)})")
 
 
 # Edges one statement moves; a hub node's millions go in batches.
