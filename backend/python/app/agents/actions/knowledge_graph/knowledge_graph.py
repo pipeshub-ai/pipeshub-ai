@@ -1156,7 +1156,7 @@ class KnowledgeGraph:
             ToolParameter(name="name", type=ParameterType.STRING, description="Optional name of a company, person or product the records must mention; linked to its entities, not a prefix.", required=False),
             ToolParameter(name="entity_ids", type=ParameterType.ARRAY, description="Optional entity ids an entity search returned; records must mention one of them.", required=False, items={"type": "string"}),
             ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
-            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds.", required=False),
+            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds (exclusive). For one calendar day pass that day's local midnight as date_from and the next local midnight here (a day can be 23 or 25 hours); the same as date_from (or earlier) is the 24 hours from date_from.", required=False),
             ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
             ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
             ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),

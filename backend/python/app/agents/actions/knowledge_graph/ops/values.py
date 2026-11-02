@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_LIMIT = 50
+_DAY_MS = 86_400_000
 _DEFAULT_LIMIT = 20
 _MAX_READ_HINT_IDS = 8
 # Matched values shown per record: enough to tell a subtotal from a line item.
@@ -140,9 +142,13 @@ async def execute_find_records_by_value(
         given["entity_ids"] = asked_ids
     name = (name or "").strip()
     if _given(date_from, date_to):
-        raw["mentionedDate"] = {"from": date_from or None, "to": date_to or None}
-        # As the filter applies them: a 0 bound is no bound, so it is not stated either.
-        given.update(_pair("date_from", date_from or None, "date_to", date_to or None))
+        start, end = date_from or None, date_to or None
+        if isinstance(start, int) and isinstance(end, int) and end <= start:
+            # One day asked as a point (date_to = date_from): the 24 hours from it. As a zero-width
+            # window it matched only the ranges around the day, never the day itself.
+            end = start + _DAY_MS
+        raw["mentionedDate"] = {"from": start, "to": end}
+        given.update(_pair("date_from", start, "date_to", end))
     if _given(amount_min, amount_max) or currency:
         raw["amount"] = {"min": amount_min, "max": amount_max, "currency": currency or ""}
         given.update(_pair("amount_min", amount_min, "amount_max", amount_max, currency=currency))
@@ -226,6 +232,9 @@ async def execute_find_records_by_value(
         if not sources:
             return True, NO_SOURCE_MSG if wanted_sources else NO_MATCH_MSG
         hits = _ordered(match.hits, sources, wanted_types)
+        window = entity_query_from(raw) if "mentionedDate" in raw else None
+        if window is not None and window.date_start_ms is not None and hits:
+            hits = await _date_ranked(graph, org_id, hits, window.date_start_ms, window.date_end_ms)
         start = resume if isinstance(resume, int) else bisect.bisect_right([_sort_key(h) for h in hits], resume)
         page, next_cursor, budget_spent = await _readable_page(
             graph, context, hits, user_id, org_id, start, bounded_limit,
@@ -262,7 +271,12 @@ async def execute_find_records_by_value(
     })
     frontend_url = await resolve_frontend_url(state.get("config_service"))
     about = await _spelled(graph, org_id, raw.get("entityIds") or [], record_ids)
-    lines = [f"Records {about}matching {_args(given)}, newest first ({len(records)} shown):"]
+    order = (
+        "records naming a date in the range first, then those whose dates only span it, narrowest first; "
+        "newest first within each"
+        if "mentionedDate" in raw else "newest first"
+    )
+    lines = [f"Records {about}matching {_args(given)}, {order} ({len(records)} shown):"]
     if caveats:
         lines.append(f"Note on name: {caveats.strip()}")
     lines.extend(cite_note(records, cite_refs))
@@ -370,21 +384,56 @@ def _ordered(
     return sorted(unique.values(), key=_sort_key)
 
 
-def _sort_key(hit: EntityFilterHit) -> tuple[int, str]:
-    return -hit.sort_ts, hit.record_id
+async def _date_ranked(
+    graph: "IGraphDBProvider", org_id: str, hits: list[EntityFilterHit], start_ms: int, end_ms: int,
+) -> list[EntityFilterHit]:
+    """``hits`` with the records naming a date in the window first, then those whose dates
+    only span it, narrowest span first: on a one-day question, the records that name the
+    day, then its month, quarter and year, then the year-long contracts in force that day.
+    Ranked, not dropped: such a contract still matches. A failed read fails the page
+    rather than listing it unranked: a ranked cursor would skip hits in an unranked order."""
+    try:
+        spans = await graph.get_named_entity_date_spans(org_id, [hit.record_id for hit in hits], start_ms, end_ms)
+    except Exception as exc:
+        raise EntityFilterUnavailableError("named-entity date spans lookup failed") from exc
+    return sorted((replace(hit, rank=_rank(spans.get(hit.record_id))) for hit in hits), key=_sort_key)
+
+
+# Below every span a covering date can have: a hit whose dates were not read.
+_UNRANKED = 10**9
+
+
+def _rank(found: tuple[bool, int] | None) -> int:
+    """0 for a record naming a date in the window; otherwise 1 + the whole days its
+    narrowest covering date spans, so a 3-day trip comes before its month."""
+    if found is None:
+        return _UNRANKED
+    named, span = found
+    return 0 if named else min(1 + -(-span // _DAY_MS), _UNRANKED - 1)
+
+
+def _sort_key(hit: EntityFilterHit) -> tuple[int, int, str]:
+    return hit.rank, -hit.sort_ts, hit.record_id
 
 
 def _cursor_of(hit: EntityFilterHit) -> str:
-    return f"{hit.sort_ts}:{hit.record_id}"
+    # The first tier (every listing without a date window) keeps the two-part form;
+    # the "r" keeps a later tier's cursor apart from a two-part one whose id holds ":".
+    return f"{hit.sort_ts}:{hit.record_id}" if hit.rank == 0 else f"r{hit.rank}:{hit.sort_ts}:{hit.record_id}"
 
 
-def _parse_resume(cursor: str | None) -> tuple[int, str] | int:
-    """Where a page starts: after the ``"<sortTs>:<recordId>"`` this tool prints,
-    so records changed between pages neither repeat nor get skipped by a shifted
-    position; or a plain position, as other listings print one."""
-    head, sep, record_id = (cursor or "").strip().partition(":")
+def _parse_resume(cursor: str | None) -> tuple[int, int, str] | int:
+    """Where a page starts: after the ``"<sortTs>:<recordId>"`` (first tier) or
+    ``"r<rank>:<sortTs>:<recordId>"`` this tool prints, so records changed between pages
+    neither repeat nor get skipped by a shifted position; or a plain position, as
+    other listings print one."""
+    text = (cursor or "").strip()
+    parts = text.split(":", 2)
+    if len(parts) == 3 and parts[2] and parts[0][:1] == "r" and parts[0][1:].isdigit() and parts[1].lstrip("-").isdigit():
+        return int(parts[0][1:]), -int(parts[1]), parts[2]
+    head, sep, record_id = text.partition(":")
     if sep and record_id and head.lstrip("-").isdigit():
-        return -int(head), record_id
+        return 0, -int(head), record_id
     return parse_cursor(cursor)
 
 

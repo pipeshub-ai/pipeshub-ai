@@ -1326,3 +1326,36 @@ async def test_an_entity_with_a_value_kind_finds_the_records_that_have_both(grap
 
     hits = await provider.get_records_for_named_entities(org_id, [acme.graph_key], NamedEntityQuery(kinds=["currency"]))
     assert {hit["recordId"] for hit in hits["hits"]} == {both}
+
+
+async def test_records_stating_a_date_inside_a_window_are_told_from_wider_ranges(graph) -> None:
+    provider, org_id, _ = graph
+    quarter_only, with_day = await _records(provider, org_id, 2)
+    writer = _writer(provider)
+    day = NamedEntity(
+        kind=EntityKind.DATE, display_name="Aug 5, 2025", norm_key="2025-08-05",
+        value=DateRangeValue(start_ms=_ms(2025, 8, 5), end_ms=_ms(2025, 8, 6), granularity="day", timex="2025-08-05"),
+        mentions=[_mention("Aug 5, 2025")],
+    )
+    await writer.write(org_id, quarter_only, [_quarter(org_id)])
+    await writer.write(org_id, with_day, [
+        _quarter(org_id), ResolvedEntity(entity=day, graph_key=named_entity_key(org_id, "date", "2025-08-05")),
+    ])
+
+    day_ms = _ms(2025, 8, 6) - _ms(2025, 8, 5)
+    quarter_ms = _ms(2025, 10, 1) - _ms(2025, 7, 1)
+    spans = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day, f"{org_id}-missing"], _ms(2025, 8, 5), _ms(2025, 8, 6),
+    )
+    # The quarter covers the day but does not name it; the record naming the day does.
+    assert spans == {quarter_only: (False, quarter_ms), with_day: (True, day_ms)}
+    # A day asked with its end written as the last millisecond still counts the whole-day value.
+    last_ms = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day], _ms(2025, 8, 5), _ms(2025, 8, 6) - 1,
+    )
+    assert last_ms[with_day] == (True, day_ms)
+    whole_quarter = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day], _ms(2025, 7, 1), _ms(2025, 10, 1),
+    )
+    assert {record for record, (named, _) in whole_quarter.items() if named} == {quarter_only, with_day}
+    assert await provider.get_named_entity_date_spans(f"{org_id}-other", [with_day], _ms(2025, 8, 5), _ms(2025, 8, 6)) == {}

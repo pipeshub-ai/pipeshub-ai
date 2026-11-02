@@ -12,7 +12,7 @@ import calendar
 import re
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -21,6 +21,8 @@ from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.values import DateRangeValue, DurationValue
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from dateparser.conf import Settings
     from dateparser.date import DateDataParser
 
@@ -73,6 +75,10 @@ _RELATIVE = re.compile(
 class NormalizationContext:
     reference_time_ms: int | None = None
     tz: str = "UTC"
+    # Give a date written without a year ("September 10") the year nearest the
+    # reference time. Only where that time is when the text was written: a record's
+    # creation, never an upload's (its own date comes from its content, afterwards).
+    anchor_years: bool = False
 
 
 def _zone(name: str) -> ZoneInfo:
@@ -134,7 +140,7 @@ def normalize_temporal(
         month = _MONTHS[month_day.group("mon").casefold()]
         day = int(month_day.group("d"))
         if not year:
-            return DateRangeValue(timex=f"XXXX-{month:02d}-{day:02d}", ambiguous=True, granularity="day")
+            return _year_less_day(month, day, ctx)
         return _day(int(year), month, day, ctx, anchored=False)
     day_month = _DAY_MONTH.match(text)
     if day_month:
@@ -144,7 +150,7 @@ def normalize_temporal(
         if not 1 <= day <= 31:
             return None
         if not year:
-            return DateRangeValue(timex=f"XXXX-{month:02d}-{day:02d}", ambiguous=True, granularity="day")
+            return _year_less_day(month, day, ctx)
         return _day(int(year), month, day, ctx, anchored=False)
     if _RELATIVE.match(text):
         return _relative(text, ctx)
@@ -219,8 +225,16 @@ def _range(left: str, right: str, kind: EntityKind, ctx: NormalizationContext) -
     if month1 is None or month2 is None:
         return None
     backwards = (month1, day1 or 1) > (month2, day2 or 1)
+    anchor_source = "explicit"
     if year1 is None and year2 is None:
-        return _unanchored_range(month1, day1, month2, day2)
+        wraps = backwards and month1 != month2
+        # The end must exist too: "Feb 28 - Feb 29" anchors to a leap year.
+        year1 = _nearest_year(month1, day1 or 1, ctx, lambda year: _is_day(year + wraps, month2, day2 or 1))
+        if year1 is None:
+            return _unanchored_range(month1, day1, month2, day2)
+        # A range that wraps the year ("Dec 28 - Jan 3") ends in the next one.
+        year2 = year1 + 1 if backwards and month1 != month2 else year1
+        anchor_source = "record"
     if year1 is None:
         year1 = year2 - 1 if backwards and month1 != month2 else year2
     elif year2 is None:
@@ -237,8 +251,40 @@ def _range(left: str, right: str, kind: EntityKind, ctx: NormalizationContext) -
         timex=f"{first_value.timex}/{last_value.timex}",
         granularity=first_value.granularity,
         anchored=True,
-        anchor_source="explicit",
+        anchor_source=anchor_source,
     )
+
+
+def _year_less_day(month: int, day: int, ctx: NormalizationContext) -> DateRangeValue:
+    """A day written without a year: in the year nearest the reference when ``ctx``
+    anchors years and one fits, otherwise kept unresolved as before."""
+    year = _nearest_year(month, day, ctx)
+    anchored = _day(year, month, day, ctx, anchored=True) if year is not None else None
+    return anchored or DateRangeValue(timex=f"XXXX-{month:02d}-{day:02d}", ambiguous=True, granularity="day")
+
+
+def _nearest_year(
+    month: int, day: int, ctx: NormalizationContext, fits: Callable[[int], bool] = lambda _year: True,
+) -> int | None:
+    """The year that puts ``month``/``day`` nearest the reference day, in the record's
+    time zone, among the years ``fits`` accepts; a tie goes to the past. None when years
+    are not anchored, there is no reference, or no nearby year has the day (Feb 29)."""
+    if not ctx.anchor_years or not ctx.reference_time_ms:
+        return None
+    reference = _base(ctx, _zone(ctx.tz))[0].date()
+    found: list[tuple[int, date]] = []
+    for year in (reference.year - 1, reference.year, reference.year + 1):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if fits(year):
+            found.append((abs((candidate - reference).days), candidate))
+    return min(found)[1].year if found else None
+
+
+def _is_day(year: int, month: int, day: int) -> bool:
+    return 1 <= day <= calendar.monthrange(year, month)[1]
 
 
 def _unanchored_range(month1: int, day1: int | None, month2: int, day2: int | None) -> DateRangeValue | None:
