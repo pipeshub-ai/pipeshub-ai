@@ -924,7 +924,8 @@ class SalesforceConnector(BaseConnector):
 
         Raises:
             HTTPException (or RuntimeError when Salesforce gave no status) on any API
-                failure — initial query or any pagination page. The generator stops;
+                failure — initial query or any pagination page — and when a page says
+                ``done: false`` but gives no ``nextRecordsUrl``. The generator stops;
                 callers must not advance sync-point cursors when this generator raises.
         """
         if not self.data_source:
@@ -943,7 +944,19 @@ class SalesforceConnector(BaseConnector):
         while not response.data.get("done", True):
             next_url = response.data.get("nextRecordsUrl")
             if not next_url:
-                break
+                # Ending quietly here would let a caller treat a cut-off result as complete
+                # and move its sync cursor past rows it never read.
+                self.logger.error(
+                    "SOQL result truncated: done is false and there is no nextRecordsUrl (%s)",
+                    q[:300],
+                )
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message="SOQL result truncated: done is false and there is no nextRecordsUrl",
+                )
             response = await self.data_source.soql_query_next(next_url=next_url)
             if not response.success:
                 self._raise_failed_request(response, "SOQL pagination", next_url)

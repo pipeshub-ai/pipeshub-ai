@@ -2521,18 +2521,40 @@ class TestSoqlQueryPaginatedBranches:
         assert pages == [[{"Id": "A"}], [{"Id": "B"}]]
 
     @pytest.mark.asyncio
-    async def test_pagination_breaks_when_next_url_missing(self):
-        """If done=False but nextRecordsUrl is absent, loop should break."""
+    @pytest.mark.parametrize("missing_next", [{}, {"nextRecordsUrl": None}, {"nextRecordsUrl": ""}])
+    async def test_pagination_raises_when_first_page_has_no_next_url(self, missing_next):
+        """done=False with nothing to follow is a truncated result, not a finished one."""
         connector = _make_connector()
         connector.data_source = MagicMock()
-        page1 = _sf_response(True, {"records": [{"Id": "X"}], "done": False})
+        page1 = _sf_response(
+            True, {"records": [{"Id": "X"}], "done": False, **missing_next}, status_code=200,
+        )
         connector.data_source.soql_query = AsyncMock(return_value=page1)
-        pages = [
-            page async for page in connector._soql_query_paginated(
-                api_version="59.0", q="SELECT Id FROM Obj",
-            )
-        ]
-        assert pages == [[{"Id": "X"}]]
+        connector.data_source.soql_query_next = AsyncMock()
+        gen = connector._soql_query_paginated(api_version="59.0", q="SELECT Id FROM Obj")
+        assert await gen.__anext__() == [{"Id": "X"}]
+        with pytest.raises(RuntimeError, match="truncated"):
+            await gen.__anext__()
+        connector.data_source.soql_query_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pagination_raises_when_a_later_page_has_no_next_url(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        page1 = _sf_response(True, {
+            "records": [{"Id": "A"}],
+            "done": False,
+            "nextRecordsUrl": "/next",
+        })
+        page2 = _sf_response(True, {"records": [{"Id": "B"}], "done": False})
+        connector.data_source.soql_query = AsyncMock(return_value=page1)
+        connector.data_source.soql_query_next = AsyncMock(return_value=page2)
+        gen = connector._soql_query_paginated(api_version="59.0", q="SELECT Id FROM Obj")
+        assert await gen.__anext__() == [{"Id": "A"}]
+        assert await gen.__anext__() == [{"Id": "B"}]
+        with pytest.raises(RuntimeError, match="truncated"):
+            await gen.__anext__()
+        connector.data_source.soql_query_next.assert_awaited_once_with(next_url="/next")
 
     @pytest.mark.asyncio
     async def test_pagination_raises_on_failed_next_page(self):
