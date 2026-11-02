@@ -131,14 +131,31 @@ export const FLAGS: Record<string, string[]> = {
   ],
 };
 
+/** The flags that take a value; every other flag is a switch and takes none (`--force false` would otherwise turn force on). */
+export const VALUE_FLAGS = new Set([
+  'only',
+  'stop-after-batches',
+  'until-idle',
+  'sample',
+  'wait',
+  'drain-wait',
+  'max-freeze',
+  'grace',
+  'max-lag',
+  'fail-at',
+]);
+
 /** What can be refused from the words alone: a flag the command does not have, a `follow` that is neither `start` nor `run`, and flags that exclude each other. */
 export function checkFlags(a: Args): void {
   const allowed = FLAGS[a.cmd] ?? [];
-  for (const k of a.flags.keys())
+  for (const [k, v] of a.flags) {
     if (k !== 'help' && !allowed.includes(k))
       throw new UsageError(
         `--${k} is not a flag of '${a.cmd}'${allowed.length ? ` (it has ${allowed.map((x) => `--${x}`).join(', ')})` : ' (it has none)'}`,
       );
+    if (!VALUE_FLAGS.has(k) && v !== true)
+      throw new UsageError(`--${k} takes no value (got '${v}')`);
+  }
   if (a.cmd === 'follow' && a.sub !== 'start' && a.sub !== 'run')
     throw new UsageError('follow needs `start` or `run`');
   if (a.cmd === 'migrate' && a.flags.has('offline') && a.flags.has('online'))

@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { FLAGS, HELP, UsageError, checkFlags, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
+import { FLAGS, HELP, UsageError, VALUE_FLAGS, checkFlags, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 
 const flag = (...argv: string[]) => parse(['drain', ...argv])
@@ -95,6 +95,19 @@ describe('flags the command line does not have, and words that do not go togethe
     expect(() => ok('bulk', '--onyl', 'x')).to.throw(UsageError, "--onyl is not a flag of 'bulk'")
     expect(() => ok('verify', '--force')).to.throw(UsageError, "--force is not a flag of 'verify'")
     expect(() => ok('status', '--yes')).to.throw(UsageError, 'it has none')
+  })
+
+  it('a switch takes no value: --force false does not turn force on', () => {
+    expect(() => ok('reset', '--yes', '--force', 'false')).to.throw(UsageError, '--force takes no value')
+    expect(() => ok('migrate', '--offline', '--allow-writers', 'false')).to.throw(UsageError, '--allow-writers takes no value')
+    expect(() => ok('reset', '--yes', 'no')).to.throw(UsageError, '--yes takes no value')
+    ok('reset', '--yes', '--force')
+    // every flag of every command is either a switch or listed as taking a value, and each kind parses as such
+    for (const [cmd, flags] of Object.entries(FLAGS))
+      for (const k of flags) {
+        if (VALUE_FLAGS.has(k)) expect(() => ok(cmd, `--${k}`, 'x'), `${cmd} --${k} x`).to.not.throw(/takes no value/)
+        else expect(() => ok(cmd, `--${k}`, 'x'), `${cmd} --${k} x`).to.throw(UsageError, 'takes no value')
+      }
   })
 
   it('follow wants start or run, and migrate one mode, and an incremental verify has no collection scope', () => {
