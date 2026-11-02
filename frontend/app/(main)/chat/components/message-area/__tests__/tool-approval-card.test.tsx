@@ -36,6 +36,7 @@ vi.mock('../../../store', () => ({
 }));
 
 import { ToolApprovalCard, ToolApprovalReceipts } from '../tool-approval-card';
+import { usePendingApprovals } from '../../../pending-approvals-store';
 import { ChatResponse } from '../chat-response';
 
 function approval(overrides: Partial<ToolApprovalDetails> = {}): ToolApprovalDetails {
@@ -481,6 +482,15 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
     expect(screen.getByText('Login broken')).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }));
+  });
+
+  it('an open inline card is counted while it can be answered, so the composer list folds away', () => {
+    const { unmount } = renderInTheme(<ToolApprovalCard approval={approval()} isLatest rowId="row-1" />);
+    expect(usePendingApprovals.getState().inlineOpen).toBe(1);
+    unmount();
+    expect(usePendingApprovals.getState().inlineOpen).toBe(0);
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest={false} rowId="row-1" />);
+    expect(usePendingApprovals.getState().inlineOpen).toBe(0);
   });
 
   it('Esc on Done or Allow leaves edit mode too; Reset gives focus to Done', () => {

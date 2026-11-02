@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { JUMP_TO_NEWEST_THRESHOLD_PX, shouldShowJumpToNewest } from '../jump-to-newest';
+import { JUMP_TO_NEWEST_THRESHOLD_PX, shouldShowJumpToNewest, tailClearance } from '../jump-to-newest';
 
 describe('shouldShowJumpToNewest', () => {
   it('hides when there is no message', () => {
@@ -33,5 +33,13 @@ describe('shouldShowJumpToNewest', () => {
   it('respects a custom threshold', () => {
     expect(shouldShowJumpToNewest(560, 500, 50)).toBe(true);
     expect(shouldShowJumpToNewest(540, 500, 50)).toBe(false);
+  });
+});
+
+describe('tailClearance', () => {
+  it('scrolls by the part that went under the composer, only when the end was in view', () => {
+    expect(tailClearance(true, 700.4, 600)).toBe(101);
+    expect(tailClearance(true, 500, 600)).toBe(0);
+    expect(tailClearance(false, 700, 600)).toBe(0);
   });
 });
