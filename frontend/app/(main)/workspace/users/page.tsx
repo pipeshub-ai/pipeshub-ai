@@ -35,6 +35,7 @@ import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { dateFilterToRange } from './date-filter';
+import { inviteAvailability } from './invite-email';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
@@ -101,6 +102,10 @@ function UsersPageContent() {
     };
   }, []);
   const smtpBlocksInvite = isSmtpConfigured !== true;
+  const smtpInviteTooltip = t(
+    'workspace.users.inviteDisabledSmtp',
+    'SMTP is not configured. Set up email settings before inviting users.'
+  );
 
   const {
     users,
@@ -942,6 +947,7 @@ function UsersPageContent() {
             icon: 'send',
             label: t('workspace.users.actions.inviteSlackOnly'),
             onClick: () => handleInviteSlackOnly(user),
+            ...inviteAvailability(smtpBlocksInvite, smtpInviteTooltip),
           },
           isAdmin && {
             icon: 'person_remove',
@@ -1100,6 +1106,8 @@ function UsersPageContent() {
       requestChangeRole,
       handleResendInvite,
       handleInviteSlackOnly,
+      smtpBlocksInvite,
+      smtpInviteTooltip,
       handleEditInvite,
       requestCancelInvite,
       ROLE_SUB_MENU_OPTIONS,
@@ -1135,14 +1143,7 @@ function UsersPageContent() {
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
         ctaDisabled={smtpBlocksInvite}
-        ctaTooltip={
-          smtpBlocksInvite
-            ? t(
-                'workspace.users.inviteDisabledSmtp',
-                'SMTP is not configured. Set up email settings before inviting users.'
-              )
-            : undefined
-        }
+        ctaTooltip={smtpBlocksInvite ? smtpInviteTooltip : undefined}
         additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
 
