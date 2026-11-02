@@ -84,7 +84,7 @@ id = "permissions"
 title = "Permissions"
 priority = "P0"
 modules = ["graph-db", "retrieval", "user-management", "auth"]
-triggers = ["backend/python/app/services/graph_db/**", "backend/python/app/modules/retrieval/**", "backend/python/app/connectors/core/**", "backend/python/app/api/routes/records.py", "backend/python/app/api/routes/entity.py", "backend/python/app/api/routes/agent.py", "backend/python/app/api/routes/chatbot.py", "backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/modules/enterprise_search/**", "backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/src/libs/middlewares/**", "backend/nodejs/apps/src/modules/api-docs/**", "backend/nodejs/apps/src/**/api-docs/*-overlay.yaml"]
+triggers = ["backend/python/app/services/graph_db/**", "backend/python/app/modules/retrieval/**", "backend/python/app/connectors/core/**", "backend/python/app/api/routes/records.py", "backend/python/app/api/routes/entity.py", "backend/python/app/api/routes/agent.py", "backend/python/app/api/routes/chatbot.py", "backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/modules/enterprise_search/**", "backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/src/libs/middlewares/**", "backend/nodejs/apps/src/**/api-docs/**"]
 tests = ["integration-tests/permissions/**", "integration-tests/security/integration_test_unauthorized_reads.py", "integration-tests/response-validation/enterprise-search/search/integration_test_permission_matrix.py", "backend/python/tests/integration/graph_permissions/**", "backend/python/tests/unit/utils/test_record_access.py"]
 
 [[flow]]
