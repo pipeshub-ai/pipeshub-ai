@@ -13,6 +13,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         default_auth_mode=MCPAuthMode.OAUTH,
         supported_auth_modes=[MCPAuthMode.OAUTH],
         default_url="https://mcp.intercom.com/mcp",
+        # Live discovery source: https://mcp.intercom.com/.well-known/oauth-protected-resource/mcp
         authorization_url="https://mcp.intercom.com/authorize",
         token_url="https://mcp.intercom.com/token",
         default_scopes=[],
@@ -20,7 +21,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         documentation_url="https://developers.intercom.com/docs/guides/mcp",
         auth_hint=AuthHint(
             label="Intercom OAuth",
-            help_text="Sign in with your Intercom account.",
+            help_text="Sign in with your US Intercom workspace. (EU workspaces require regional endpoint adjustment).",
         ),
     )
 )
