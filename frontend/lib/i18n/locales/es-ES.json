@@ -1457,7 +1457,7 @@
       "notice": {
         "expired": "{{tool}} en {{server}} no se ejecutó: la solicitud caducó. Vuelve a pedirlo si aún lo necesitas.",
         "passed": "{{tool}} en {{server}} no se aprobó, así que no se ejecutó.",
-        "waiting": "{{tool}} en {{server}} espera la aprobación del propietario de la conversación."
+        "waiting": "{{tool}} en {{server}} espera la aprobación del propietario del chat."
       },
       "receipt": {
         "allowed": "Permitiste {{tool}}",
@@ -1470,11 +1470,10 @@
       },
       "edit": "Editar",
       "reset": "Restablecer",
-      "feedbackPlaceholder": "Dile al agente qué debe cambiar",
-      "sendToAgent": "Enviar al agente",
+      "feedbackPlaceholder": "Dile a PipesHub qué debe cambiar",
       "readOnlyField": "No se puede editar aquí",
       "editRejected": "Corrige los campos marcados",
-      "allowForConversation": "Permitir en esta conversación",
+      "allowForConversation": "Permitir en este chat",
       "allowForConversationHint": "No volverá a preguntar en este chat salvo que la herramienta cambie",
       "errors": {
         "required": "Este campo es obligatorio.",
@@ -1495,15 +1494,14 @@
       "allowWithChanges": "Permitir con cambios",
       "done": "Listo",
       "edited": "Editado",
-      "inChat": "En «{{title}}»",
       "openChat": "Abrir chat",
       "moreWaiting_one": "+{{count}} más",
       "moreWaiting_other": "+{{count}} más",
       "moreWaiting_many": "+{{count}} más",
       "busyElsewhere": "Ese chat sigue trabajando. Vuelve a intentarlo en un momento.",
-      "alreadyAnswered": "Eso ya se respondió.",
-      "runningIn": "Permitido. {{tool}} se está ejecutando en {{title}}.",
-      "declinedIn": "Denegado en {{title}}.",
+      "alreadyAnswered": "Esto ya se respondió en ese chat.",
+      "runningIn": "Permitido. {{tool}} se está ejecutando en «{{title}}».",
+      "declinedIn": "Denegado en «{{title}}».",
       "titleIn": "{{tool}} en {{server}}",
       "inChatExpiresIn_one": "En «{{title}}» · Caduca en {{count}} min",
       "inChatExpiresIn_other": "En «{{title}}» · Caduca en {{count}} min",
@@ -1511,8 +1509,13 @@
       "inChatExpiresSoon": "En «{{title}}» · Caduca en menos de un minuto",
       "moreFields": "Más campos",
       "pill": "{{label}}: {{value}}",
-      "pillEmpty": "{{label}}: añadir",
-      "pillError": "{{label}}: {{message}}"
+      "pillEmpty": "{{label}}: sin definir",
+      "pillError": "{{label}}: {{message}}",
+      "sendSuggestion": "Enviar sugerencia",
+      "suggestionSentIn": "Se envió tu sugerencia a «{{title}}».",
+      "moreWaitingLabel_one": "Mostrar la siguiente aprobación pendiente (+{{count}} más)",
+      "moreWaitingLabel_many": "Mostrar la siguiente aprobación pendiente (+{{count}} más)",
+      "moreWaitingLabel_other": "Mostrar la siguiente aprobación pendiente (+{{count}} más)"
     },
     "selectedAlone": "{{name}} (solo este elemento)",
     "noConnectorsFound": "No se encontraron conectores",
