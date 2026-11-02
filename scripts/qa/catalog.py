@@ -315,7 +315,8 @@ def _row(
 ) -> dict[str, Any]:
     rel = rel_to(path, suite.get("cwd", "."))
     ident = f"{PREFIX[suite['family']]}:{rel}" + (f"::{name}" if name else "")
-    needs = sorted(set(spec.needs) | set(extra_needs) | ({"service:stack"} if suite.get("stack") else set()))
+    by_marker = {n for m in markers if (n := suite.get("marker_needs", {}).get(m))}
+    needs = sorted(set(spec.needs) | set(extra_needs) | by_marker | ({"service:stack"} if suite.get("stack") else set()))
     row = {
         "id": ident,
         "suite": suite["id"],

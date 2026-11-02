@@ -81,7 +81,8 @@ if __name__ == "__main__":
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github/workflows"
 # Set by the engine per plan, or only meaningful to the integration workflow's shards.
-NOT_MIRRORED = {"MESSAGE_BROKER", "COMPOSE_PROFILES", "PIPESHUB_REQUIRE_CONNECTOR_SECRETS",
+# TEST_AI_MODEL_PROVIDER differs on purpose: a pull request's stack uses the stand-in model.
+NOT_MIRRORED = {"TEST_AI_MODEL_PROVIDER", "MESSAGE_BROKER", "COMPOSE_PROFILES", "PIPESHUB_REQUIRE_CONNECTOR_SECRETS",
                 "CONNECTORS_INPUT", "SHARD", "RUN_PLAYWRIGHT", "CONN_SHARD_1", "CONN_SHARD_2", "CONN_SHARD_3",
                 "CONN_SHARD_4", "DEMO_PACK_QUESTIONS", "NEEDS_GMAIL_SIM", "NEEDS_ATLASSIAN_SIM",
                 "NEEDS_NOTION_SIM", "NEEDS_SHAREPOINT_SIM",

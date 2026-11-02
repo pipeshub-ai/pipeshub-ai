@@ -295,6 +295,24 @@ directory and exits 0, and `shadow verdict` then reports `insufficient` (exit 2)
 If it exits 0, a maintainer sets the repository variable `QA_ENFORCE=true`.
 Nothing sets it automatically.
 
+### PR stacks use a stand-in model
+
+A pull request run has no model key. Its stack seeds the `web-fixtures`
+stand-in as the org's indexing models: the workflow sets
+`TEST_AI_MODEL_PROVIDER=standIn` and `TEST_STAND_IN_MODEL_ENDPOINT`, and
+`integration-tests/helper/ai_models_setup.py` adds both models as
+`openAICompatible` against it. The stand-in answers "OK" to every chat prompt
+and returns hash-derived embedding vectors, so indexing finishes but search
+ranking and chat answers mean nothing. Mark a test that asserts on either with
+`@pytest.mark.live_model`: it keeps the real-key need and is `not_run` on a PR.
+`integration-tests/unit/test_live_model_marks.py` fails when an unmarked test
+reads model output. Real keys with no forced provider never land on the stand-in.
+
+To use it locally, export the same two variables and point the endpoint at the
+stand-in as the stack reaches it. A test script can set replies and tool calls
+per prompt with `PUT /__fixtures__/openai/script` (see
+`integration-tests/web_fixtures/server.py`).
+
 ## Writing tests the engine understands
 
 Integration tests (and any test you want the planner to reason about) declare

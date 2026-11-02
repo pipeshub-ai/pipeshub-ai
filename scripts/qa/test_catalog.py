@@ -129,6 +129,17 @@ class TestBuild(unittest.TestCase):
         self.assertIn(llm, rows["it:indexing/test_index.py::test_indexed"]["needs"])
         self.assertNotIn(llm, rows["it:retrieval/test_search.py::test_ranking"]["needs"])
 
+    def test_marker_needs_add_to_row_needs(self) -> None:
+        testing.write(self.root, "integration-tests/search/test_live.py", (
+            "import pytest\n\n@pytest.mark.live_model\ndef test_ranked():\n    pass\n\n\ndef test_plain():\n    pass\n"
+        ))
+        config.clear_cache()
+        rows = catalog.index(catalog.build(self.cfg))
+        marked = rows["it:search/test_live.py::test_ranked"]["needs"]
+        self.assertIn("env:REAL_KEY", marked)
+        self.assertIn("service:stack", marked)
+        self.assertNotIn("env:REAL_KEY", rows["it:search/test_live.py::test_plain"]["needs"])
+
     def test_unit_tests_are_listed_per_file(self) -> None:
         self.assertIn("py:tests/unit/services/test_retrieval.py", self.rows)
         self.assertIn("node:tests/modules/auth/auth.controller.test.ts", self.rows)

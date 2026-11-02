@@ -155,6 +155,11 @@ journeys the tests protect.
 
   For `it-pytest`, a selected test in an ordered lifecycle module
   (`pytest.mark.order`) runs the whole module.
+  An `it-pytest` row's `needs` also come from the suite's `marker_needs` (marker to
+  need). `live_model` maps to the real-key need, so a test that asserts on a real
+  model's answers stays `not_run` on a PR stack, which indexes with the
+  stand-in model (`setup_test_indexing_models` also accepts
+  `TEST_STAND_IN_MODEL_ENDPOINT`) instead of failing against it.
 - **Stages.**
   1. Resolve.
   2. Preflight. A missing toolchain makes the test `not_run`; a missing `env:`

@@ -46,6 +46,8 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_operation,
 )
 
+pytestmark = pytest.mark.live_model
+
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip()
 

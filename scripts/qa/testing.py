@@ -59,6 +59,9 @@ catalog = "integration-tests/catalog"
 [suite.fixture_needs]
 setup_test_llm_model = "env:TEST_OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT"
 
+[suite.marker_needs]
+live_model = "env:REAL_KEY"
+
 [compose_profiles]
 kafka = ["requires_kafka"]
 """

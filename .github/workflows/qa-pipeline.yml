@@ -351,11 +351,16 @@ jobs:
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-      # Azure OpenAI is where the quota is, and TEST_AI_MODEL_PROVIDER names
-      # it outright: the helper falls back to the next provider on a health
+      # A pull request gets no model key (spec section 2, "LLM in tests"), so its stack
+      # indexes with the web-fixtures stand-in model. Tests that assert on a real
+      # model's answers carry the live_model marker and stay not_run there.
+      # Neither value is a secret.
+      TEST_AI_MODEL_PROVIDER: ${{ github.event_name == 'pull_request' && 'standIn' || 'azureOpenAI' }}
+      TEST_STAND_IN_MODEL_ENDPOINT: ${{ github.event_name == 'pull_request' && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
+      # Other events: Azure OpenAI is where the quota is, and TEST_AI_MODEL_PROVIDER
+      # names it outright: the helper falls back to the next provider on a health
       # check failure, so without this an Azure problem retries against the
       # OpenAI key and reports that instead.
-      TEST_AI_MODEL_PROVIDER: azureOpenAI
       # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
       # needs key, endpoint and deployment together — miss one and Azure is dropped
       # from the candidates silently, leaving OpenAI as the only provider tried.

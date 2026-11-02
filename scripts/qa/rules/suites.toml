@@ -7,6 +7,7 @@
 #          catalog lists every test function)
 # mirror   where the unit test for a source file is expected to live
 # stack    needs the docker-compose platform stack
+# marker_needs   pytest marker -> need added to every row carrying that marker
 # fixture_needs  helper function -> need; a test reaching a fixture that calls
 #          the helper inherits the need. In `env:` needs, `A|B+C` means A, or B and C.
 #
@@ -122,8 +123,13 @@ catalog = "integration-tests/catalog"
 
 [suite.fixture_needs]
 setup_test_llm_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_GEMINI_API_KEY|TEST_GROQ_API_KEY"
-setup_test_indexing_models = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
-setup_test_embedding_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME"
+setup_test_indexing_models = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_STAND_IN_MODEL_ENDPOINT"
+setup_test_embedding_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME|TEST_STAND_IN_MODEL_ENDPOINT"
+
+# A test marked live_model asserts on what a real model answers, so it keeps the
+# real-key need even where indexing alone can run on the stand-in model.
+[suite.marker_needs]
+live_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
 
 # Markers that need an extra docker-compose profile on the integration stack.
 [compose_profiles]
