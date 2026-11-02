@@ -29,6 +29,7 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 
 const logger = Logger.getInstance({
@@ -106,7 +107,14 @@ function proxyMcp(
   method: HttpMethodValue,
   pathBuilder: PathBuilder,
   action: string,
-  { sendsOnce = method !== HttpMethod.GET }: { sendsOnce?: boolean } = {},
+  {
+    sendsOnce = method !== HttpMethod.GET,
+    transform,
+  }: {
+    sendsOnce?: boolean;
+    /** Reshapes a successful answer before it is returned. */
+    transform?: (req: AuthenticatedUserRequest, data: any) => Promise<unknown>;
+  } = {},
 ) {
   return (appConfig: AppConfig) =>
     async (
@@ -136,6 +144,10 @@ function proxyMcp(
           // A resent write could create a second instance or start a second authorization.
           { timeoutMs: MCP_PROXY_TIMEOUT_MS, retries: sendsOnce ? 1 : 3 },
         );
+
+        if (transform && connectorResponse?.statusCode >= 200 && connectorResponse.statusCode < 300) {
+          connectorResponse.data = await transform(req, connectorResponse.data);
+        }
 
         handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
       } catch (error: any) {
@@ -323,6 +335,54 @@ export const validateMcpToolApproval = proxyMcp(
   (req) =>
     `/tool-approvals/${encodeURIComponent(String(req.params.approvalId))}/validate`,
   'Validate an edited tool call',
+);
+
+interface PendingApprovalEntry {
+  conversationId: string;
+  createdAt: number;
+  card: unknown;
+}
+
+/**
+ * The calls waiting on the signed-in person, each with its chat's title and agent. Python lists
+ * them; a call whose chat is not this person's (deleted, or another org's) is left out.
+ */
+async function withChatTitles(
+  req: AuthenticatedUserRequest,
+  data: { items?: PendingApprovalEntry[] },
+) {
+  const entries = data?.items ?? [];
+  const { userId, orgId } = req.user || {};
+  const rows = entries.length
+    ? await getConversationRepository().listVisibleSummaries(
+        String(orgId),
+        String(userId),
+        [...new Set(entries.map((e) => e.conversationId))],
+        [],
+      )
+    : [];
+  const byId = new Map(rows.map((r) => [r._id, r]));
+  return {
+    items: entries.flatMap((e) => {
+      const chat = byId.get(e.conversationId);
+      return chat
+        ? [{
+            conversationId: e.conversationId,
+            conversationTitle: chat.title ?? null,
+            agentId: chat.sessionType === 'agent' ? (chat.agentKey ?? null) : null,
+            createdAt: e.createdAt,
+            card: e.card,
+          }]
+        : [];
+    }),
+  };
+}
+
+export const listPendingToolApprovals = proxyMcp(
+  HttpMethod.GET,
+  () => '/tool-approvals/pending',
+  'List pending tool approvals',
+  { transform: withChatTitles },
 );
 
 export const getAgentMcpServers = proxyMcp(

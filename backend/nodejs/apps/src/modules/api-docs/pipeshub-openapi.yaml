@@ -2341,6 +2341,59 @@ components:
           type: string
           maxLength: 2000
           description: Why the person declined, passed to the model as an instruction.
+    PendingToolApproval:
+      type: object
+      description: A tool call waiting for the person's answer, with the chat it was asked in.
+      required: [conversationId, conversationTitle, agentId, createdAt, card]
+      properties:
+        conversationId:
+          type: string
+        conversationTitle:
+          type: string
+          nullable: true
+          description: The chat's title; null while it has none.
+        agentId:
+          type: string
+          nullable: true
+          description: The agent key when the chat is an agent chat, otherwise null.
+        createdAt:
+          type: integer
+          description: When the call was stopped for approval, epoch milliseconds.
+        card:
+          type: object
+          additionalProperties: true
+          description: |
+            The approval card the chat showed. `approvalId` is what a `ToolApprovalAnswer` and
+            the validate route take; `argsHash` names the arguments it showed.
+          required: [approvalId, toolName, kind, expiresAt, argsHash]
+          properties:
+            approvalId:
+              type: string
+            toolName:
+              type: string
+            toolTitle:
+              type: string
+            serverName:
+              type: string
+            kind:
+              type: string
+              enum: [read, write, destructive]
+            expiresAt:
+              type: integer
+              description: When the card stops being answerable, epoch milliseconds.
+            argsHash:
+              type: string
+            arguments:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: The arguments the model asked for; null when too large to show (see `argumentsPreview`).
+            argumentsPreview:
+              type: string
+            editable:
+              type: boolean
+            canRemember:
+              type: boolean
     McpToolRules:
       type: object
       properties:
@@ -59761,6 +59814,51 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/tool-approvals/pending:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the tool calls waiting for my approval
+      description: >-
+        The calls waiting on the caller in their chats in the app, newest first, each with its
+        chat's title and agent. Calls from Slack, expired or answered calls, and calls whose chat
+        isn't the caller's are left out. Available to a web sign-in only.
+      operationId: listPendingToolApprovals
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      responses:
+        '200':
+          description: The waiting calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PendingToolApproval'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller used an OAuth token or personal access token (only a web sign-in can answer an approval), or lacks the `mcp:read` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service
           content:
             application/json:
               schema:
