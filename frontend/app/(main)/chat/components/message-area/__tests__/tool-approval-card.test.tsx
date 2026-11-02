@@ -483,6 +483,18 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }));
   });
 
+  it('Esc on Done or Allow leaves edit mode too; Reset gives focus to Done', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Done' }));
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Allow' }), { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }));
+  });
+
   it('Esc in the note box closes it and gives focus back to Suggest a change', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }));

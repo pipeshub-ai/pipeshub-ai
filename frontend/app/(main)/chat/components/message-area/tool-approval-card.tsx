@@ -252,6 +252,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
       data-testid="tool-approval-card"
       role="group"
       aria-label={t('chat.toolApproval.needsApproval')}
+      // On the whole card, so Esc leaves edit mode from Done, Reset or Allow too.
+      onKeyDown={showForm ? onFormKeyDown : undefined}
       p="3"
       style={{
         border: '1px solid var(--gray-5)',
@@ -311,7 +313,6 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
       <Box
         mt="3"
         className={showForm ? 'no-scrollbar tool-approval-editor' : 'no-scrollbar'}
-        onKeyDown={showForm ? onFormKeyDown : undefined}
         style={{
           border: '1px solid var(--gray-5)',
           borderRadius: 'var(--radius-3)',
@@ -427,6 +428,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
               onClick={() => {
                 setValues({ ...(original ?? {}) });
                 setErrors([]);
+                // Reset leaves with the changes; Done is next to it.
+                editRef.current?.focus();
               }}
             >
               {t('chat.toolApproval.reset')}
