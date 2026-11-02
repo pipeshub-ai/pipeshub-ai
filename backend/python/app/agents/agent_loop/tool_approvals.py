@@ -614,7 +614,8 @@ _KIND_RANK: dict[str, int] = {"read": 0, "write": 1, "destructive": 2}
 
 # Every regex check of one edit (`pattern` on values, `patternProperties` and the regex part of
 # `additionalProperties` on keys) shares this budget: a server-supplied regex can backtrack for
-# ages, and the check runs on the event loop. What it can't check in time is the tool's to reject.
+# ages, and the check runs on the event loop. An edit it can't check in time is refused: the tool
+# doesn't check schema patterns itself.
 _PATTERN_BUDGET_SECONDS = 0.2
 
 
@@ -673,7 +674,7 @@ def _bounded_validator(base: Any, deadline: float, skips: _PatternSkips) -> Any:
             return
         properties = schema.get("properties", {})
         joined = "|".join(schema.get("patternProperties", {}))
-        # A key whose match can't be told in time counts as matched: the tool rejects it if it must.
+        # A key whose match can't be told in time counts as matched; the skip refuses the edit.
         extras = sorted(
             (k for k in instance if k not in properties and not (joined and search(joined, k, instance) is not False)),
             key=str,
@@ -738,6 +739,7 @@ def check_edit(
         # Names the field, never its value.
         where = _pointer(_path_to(edited, skips.first) or ())
         logger.warning("%d pattern checks of %s were skipped, from %r: they ran out of time", skips.count, pending.tool_path, where)
+        errors.append(EditError(path=where, message="This value couldn't be checked in time. Shorten it or allow the original."))
     if errors:
         return errors
     kind = kind_of_call(pending.kind, pending.tool_path, edited)
