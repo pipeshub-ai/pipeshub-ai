@@ -483,9 +483,49 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     return None
 
 
+# Providers whose endpoint the OpenAI SDK takes as base_url and appends the
+# operation path to. A pasted full URL (".../v1/responses") doubles that path,
+# and the provider's 404 then reads as "model not found".
+_OPENAI_SDK_BASE_URL_PROVIDERS = frozenset({
+    "openAI", "openAICompatible", "litellmProxy", "lmStudio", "together",
+})
+_OPENAI_OPERATION_PATHS = (
+    "/chat/completions", "/completions", "/responses", "/embeddings",
+    "/images/generations", "/audio/speech", "/audio/transcriptions",
+)
+
+
+def _endpoint_path_refusal(config: dict) -> JSONResponse | None:
+    """A 400 for an OpenAI-protocol endpoint that ends in an API operation path, else None."""
+    if config.get("provider") not in _OPENAI_SDK_BASE_URL_PROVIDERS:
+        return None
+    configuration = config.get("configuration")
+    endpoint = configuration.get("endpoint") if isinstance(configuration, dict) else None
+    if not isinstance(endpoint, str):
+        return None
+    endpoint = endpoint.strip()
+    try:
+        path = urlparse(endpoint).path.rstrip("/")
+    except ValueError:
+        return None
+    suffix = next((s for s in _OPENAI_OPERATION_PATHS if path.lower().endswith(s)), None)
+    if suffix is None:
+        return None
+    base = endpoint[: endpoint.lower().rindex(suffix)]
+    return _config_error(
+        f"The endpoint {endpoint!r} includes the API path \"{suffix}\". Enter only the base URL, "
+        f"{base!r}, in Workspace > AI Models; the path is added for each request.",
+        config, configuration.get("model", ""), error_code="invalid_endpoint_path",
+    )
+
+
 async def _settings_refusal(model_type: str, config: dict) -> JSONResponse | None:
     """A 400 for settings that need no provider call to reject, else None."""
-    return await _endpoint_refusal(config) or _missing_credential_refusal(model_type, config)
+    return (
+        _endpoint_path_refusal(config)
+        or await _endpoint_refusal(config)
+        or _missing_credential_refusal(model_type, config)
+    )
 
 
 def _missing_credential_refusal(model_type: str, config: dict) -> JSONResponse | None:
