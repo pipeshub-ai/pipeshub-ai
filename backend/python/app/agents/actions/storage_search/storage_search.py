@@ -1206,6 +1206,309 @@ def _stage_env() -> dict[str, str]:
     return {k: v for k in _STAGE_ENV_KEYS if (v := os.environ.get(k))}
 
 
+# grep stages run through ripgrep when it is installed and can reproduce the
+# stage exactly: it searches files on several threads, ~3x faster than GNU grep
+# on one search. Anything else (or no ripgrep) runs as GNU grep, as written.
+# Threads per ripgrep run: min(GREP_THREADS, CPUs / 2), or CPUs / 2 when unset,
+# so concurrent searches leave CPU for the event loop.
+# shortcut: threads print files in no fixed order, so a search cut short by a byte
+# cap or `head` can return a different subset each run; sort output if that matters.
+_GREP_THREADS_ENV = "GREP_THREADS"
+_CGROUP_CPU_MAX = "/sys/fs/cgroup/cpu.max"
+# grep short flags with an exact ripgrep equivalent ("" = ripgrep already does it).
+# A stage using any other flag runs as GNU grep.
+_RG_FOR_GREP_FLAG = {
+    "r": "", "E": "", "I": "", "i": "-i", "l": "-l", "c": "-c", "H": "-H", "F": "-F",
+    "w": "-w", "x": "-x", "Z": "-0", "L": "--files-without-match", "s": "--no-messages",
+}
+_RUST_REGEX_META = frozenset("\\.+*?()|[]{}^$#&-~")
+_REPETITION_RE = re.compile(r"(\d+)?(,)?(\d+)?")
+
+
+@functools.cache
+def _available_cpus() -> int:
+    """CPUs this process may use: the cgroup v2 quota when set, else its CPU affinity."""
+    # shortcut: cgroup v1 quotas are not read (affinity is used), fine while images run on cgroup v2 hosts.
+    try:
+        with open(_CGROUP_CPU_MAX, encoding="ascii") as f:
+            quota, period = f.read().split()[:2]
+        if quota != "max":
+            return max(-(-int(quota) // int(period)), 1)
+    except (OSError, ValueError):
+        pass
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
+def _grep_threads() -> int:
+    """Threads per ripgrep run: ``min(GREP_THREADS, CPUs // 2)``, or ``CPUs // 2`` when unset; at least 1."""
+    limit = max(_available_cpus() // 2, 1)
+    try:
+        wanted = int(os.environ.get(_GREP_THREADS_ENV, "").strip() or 0)
+    except ValueError:
+        wanted = 0
+    return min(wanted, limit) if wanted > 0 else limit
+
+
+@functools.cache
+def _rg_binary() -> str | None:
+    """ripgrep's path, only when it is under a system dir Landlock lets a stage execute."""
+    from app.agents.actions.storage_search.landlock_exec import SYSTEM_DIRS
+
+    rg = shutil.which("rg")
+    return rg if rg and rg.startswith(tuple(d + "/" for d in SYSTEM_DIRS)) else None
+
+
+def _parse_grep_stage(tokens: list[str]) -> tuple[str, list[str], list[str], list[str]] | None:
+    """(binary, short flags, patterns, operands) of a grep-family stage, or
+    None for anything but plain short flags, ``-e`` and ``--regexp``."""
+    if not tokens or tokens[0] not in ("grep", "egrep", "fgrep"):
+        return None
+    flags: list[str] = []
+    patterns: list[str] = []
+    operands: list[str] = []
+    args = iter(tokens[1:])
+    for arg in args:
+        if arg == "--":
+            operands.extend(args)
+            break
+        if arg.startswith("--regexp="):
+            patterns.append(arg.split("=", 1)[1])
+        elif arg == "--regexp":
+            patterns.append(next(args, ""))
+        elif arg.startswith("--"):
+            return None
+        elif arg.startswith("-") and len(arg) > 1:
+            for k, ch in enumerate(arg[1:], start=1):
+                if ch == "e":
+                    patterns.append(arg[k + 1:] or next(args, ""))
+                    break
+                if ch not in _RG_FOR_GREP_FLAG:
+                    return None
+                flags.append(ch)
+        else:
+            operands.append(arg)
+    if not patterns:
+        if not operands:
+            return None
+        patterns.append(operands.pop(0))
+    return tokens[0], flags, patterns, operands
+
+
+def _bracket_end(pattern: str, start: int) -> int | None:
+    """Index of the ``]`` closing the bracket expression at *start*."""
+    i = start + 1
+    if i < len(pattern) and pattern[i] == "^":
+        i += 1
+    if i < len(pattern) and pattern[i] == "]":
+        i += 1
+    while i < len(pattern):
+        if pattern.startswith("[:", i):
+            close = pattern.find(":]", i + 2)
+            if close < 0:
+                return None
+            i = close + 2
+            continue
+        if pattern[i] == "]":
+            return i
+        i += 1
+    return None
+
+
+def _posix_to_rust_regex(pattern: str, *, extended: bool) -> str | None:
+    """A GNU grep BRE/ERE as the same regex in ripgrep's syntax, or None when
+    it uses something the two may read differently (backreferences, buffer
+    anchors, word-start/end anchors, POSIX classes, which ripgrep keeps to
+    ASCII, collating elements, backslashes or set operators in brackets)."""
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    depth = 0  # open groups: GNU reads an ERE ")" with none open as a literal
+
+    def at_start() -> bool:
+        return not out or out[-1] in ("(", "|", "^")
+
+    def after_quantifier() -> bool:
+        # A quantifier on a quantifier: GNU reads "+?" as "optional", ripgrep as "lazy".
+        return bool(out) and (out[-1] in ("*", "+", "?") or (out[-1].startswith("{") and out[-1].endswith("}")))
+
+    def repetition(j: int, closer: str) -> tuple[str, int] | None:
+        m = _REPETITION_RE.match(pattern, j)
+        end = m.end()
+        if (m.group(1) or m.group(3)) and pattern.startswith(closer, end):
+            # GNU's "{,n}" is ripgrep's "{0,n}".
+            return "{" + (m.group(1) or "0") + (m.group(2) or "") + (m.group(3) or "") + "}", end + len(closer)
+        return None
+
+    while i < n:
+        c = pattern[i]
+        if c == "[":
+            j = _bracket_end(pattern, i)
+            if j is None:
+                return None
+            body = pattern[i + 1:j]
+            if "\\" in body or "[" in body or "&&" in body or "--" in body or "~~" in body:
+                return None
+            out.append(pattern[i:j + 1])
+            i = j + 1
+            continue
+        if c == "\\":
+            if i + 1 == n:
+                return None
+            d = pattern[i + 1]
+            i += 2
+            if not extended and d in "|()":
+                if d == "(":
+                    depth += 1
+                elif d == ")":
+                    if not depth:
+                        return None  # GNU refuses an unmatched \) too, with its own message
+                    depth -= 1
+                out.append(d)
+            elif not extended and d in "+?":
+                if not at_start() and after_quantifier():
+                    return None
+                out.append("\\" + d if at_start() else d)
+            elif not extended and d == "{":
+                rep = repetition(i, "\\}")
+                if rep is None or at_start() or after_quantifier():
+                    return None
+                out.append(rep[0])
+                i = rep[1]
+            elif d in "<>":
+                return None  # word start/end: a plain \b would also match "-" after a word
+            elif d in "wWsSbB":
+                out.append("\\" + d)
+            elif d.isdigit() or d in "`'":
+                return None
+            elif d.isalnum() or d == "_":
+                out.append(d)  # GNU grep reads a stray backslash before a letter as the letter
+            else:
+                out.append("\\" + d if d in _RUST_REGEX_META else d)
+            continue
+        if not extended and c in "(){}|+?":
+            out.append("\\" + c)
+        elif c == "*" and at_start():
+            if extended:
+                return None  # GNU applies a leading ERE "*" to an empty match; ripgrep reads a literal
+            out.append(r"\*")
+        elif c == "*" and after_quantifier():
+            return None
+        elif extended and c in "+?" and (at_start() or after_quantifier()):
+            return None  # as for "*" above
+        elif extended and c == "{":
+            if at_start() or pattern.startswith(",}", i + 1):
+                return None  # a leading "{", and "{,}" (GNU reads it as "{0,}")
+            rep = repetition(i + 1, "}")
+            if rep is not None and after_quantifier():
+                return None
+            if rep is None:
+                out.append(r"\{")
+                i += 1
+            else:
+                out.append(rep[0])
+                i = rep[1]
+            continue
+        elif c == "}":
+            out.append(r"\}")
+        elif extended and c == "(":
+            depth += 1
+            out.append(c)
+        elif extended and c == ")":
+            if depth:
+                depth -= 1
+                out.append(c)
+            else:
+                out.append(r"\)")
+        elif c == "^" and not extended and out and out[-1] == "^":
+            return None  # BRE "^^": GNU reads the second one as a literal
+        elif c == "^" and not at_start() and not extended:
+            out.append(r"\^")
+        elif c == "$" and not extended and i + 1 < n and not pattern.startswith(("\\)", "\\|"), i + 1):
+            out.append(r"\$")
+        elif c in "#&~":
+            out.append("\\" + c)
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _grep_stage_as_rg(tokens: list[str], *, via_xargs: bool) -> list[str] | None:
+    """*tokens* (a grep stage, or the grep after ``xargs``) as a ripgrep command
+    with the same output, or None to keep GNU grep."""
+    rg = _rg_binary()
+    parsed = _parse_grep_stage(tokens) if rg else None
+    if parsed is None:
+        return None
+    binary, flags, patterns, operands = parsed
+    # Without -r grep refuses a directory where ripgrep would search it.
+    if ("r" in flags) == via_xargs:
+        return None
+    # grep -r with no path searches "."; ripgrep would read the stage's empty stdin.
+    if not via_xargs and not operands:
+        return None
+    # Files xargs names are searched by ripgrep even when binary, which -I skips.
+    if via_xargs and "I" in flags:
+        return None
+    fixed = binary == "fgrep" or "F" in flags
+    extended = binary == "egrep" or "E" in flags
+    rg_patterns = [p if fixed else _posix_to_rust_regex(p, extended=extended) for p in patterns]
+    if any(p is None for p in rg_patterns):
+        return None
+    if "l" in flags or "L" in flags:
+        flags = [f for f in flags if f != "c"]  # grep: -l/-L win over -c
+    if "x" in flags:
+        flags = [f for f in flags if f != "w"]  # grep: -x wins over -w; ripgrep takes the last one
+    argv = [rg, "--no-config", "--no-ignore", "--hidden", f"-j{_grep_threads()}"]
+    if via_xargs:
+        # grep given a directory by xargs skips it ("Is a directory"); ripgrep would walk it.
+        argv += ["--max-depth", "0"]
+    argv += list(dict.fromkeys([*(m for f in flags if (m := _RG_FOR_GREP_FLAG[f])), *(["-F"] if fixed else [])]))
+    if "c" in flags:
+        argv.append("--include-zero")  # grep -c also prints files that matched 0 times
+    for p in rg_patterns:
+        argv += ["-e", p]
+    return [*argv, "--", *operands]
+
+
+def _rg_with_thread_cap(tokens: list[str]) -> list[str]:
+    """A ripgrep stage the model wrote, given the thread cap unless it sets its own."""
+    if any(t in ("-j", "--threads") or t.startswith(("-j", "--threads=")) for t in tokens[1:]):
+        return tokens
+    return [tokens[0], f"-j{_grep_threads()}", *tokens[1:]]
+
+
+def _xargs_no_empty_run(xargs_args: list[str]) -> list[str]:
+    """xargs's own arguments with -r: on empty input GNU xargs still runs its
+    command once with no files, and ripgrep given no file searches the whole
+    folder (grep reads /dev/null and finds nothing)."""
+    if "-r" in xargs_args or "--no-run-if-empty" in xargs_args:
+        return xargs_args
+    return [xargs_args[0], "-r", *xargs_args[1:]]
+
+
+def _with_ripgrep(stage_tokens: list[list[str]]) -> list[list[str]]:
+    """The pipeline with each file-searching grep stage run by ripgrep where it
+    gives the same output. Later stages that filter piped text stay GNU grep."""
+    out = []
+    for i, tokens in enumerate(stage_tokens):
+        if tokens and tokens[0] == "xargs" and i > 0:
+            sub = _find_xargs_sub_binary(tokens, 0)
+            sub_tokens = tokens[sub:] if sub is not None else []
+            if sub_tokens and sub_tokens[0] == "rg":
+                out.append(_xargs_no_empty_run(tokens[:sub]) + _rg_with_thread_cap(sub_tokens))
+                continue
+            rg = _grep_stage_as_rg(sub_tokens, via_xargs=True) if sub_tokens else None
+            out.append(_xargs_no_empty_run(tokens[:sub]) + rg if rg else tokens)
+        elif i == 0 and tokens and tokens[0] == "rg":
+            out.append(_rg_with_thread_cap(tokens))
+        else:
+            out.append((i == 0 and _grep_stage_as_rg(tokens, via_xargs=False)) or tokens)
+    return out
+
+
 async def _run_subprocess(
     command: str,
     *,
@@ -1247,6 +1550,7 @@ async def _run_subprocess(
         if not tokens:
             return False, "Error: blank pipeline stage"
         stage_tokens.append(tokens)
+    stage_tokens = _with_ripgrep(stage_tokens)
 
     procs: list[asyncio.subprocess.Process] = []
     loop = asyncio.get_event_loop()
@@ -1328,7 +1632,10 @@ async def _run_subprocess(
         if exit_code == 123:
             # xargs returns 123 when a child process (grep) exits non-zero.
             # In piped grep chains this means an intermediate grep found no
-            # matches — treat as "no matches", not a hard error.
+            # matches — treat as "no matches", not a hard error. Output means
+            # another run of the same grep (xargs splits long lists) matched.
+            if stdout.strip():
+                return True, _truncate(stdout, max_output_chars)
             return True, "No matches found."
 
         error_detail = stderr.strip() or stdout.strip() or f"exit code {exit_code}"

@@ -308,6 +308,11 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Stored-record cache: memory (default, per worker, up to 512 MiB) | redis.
+      - PIPESHUB_RECORD_CACHE_BACKEND=${PIPESHUB_RECORD_CACHE_BACKEND:-memory}
+      - PIPESHUB_RECORD_CACHE_BYTES=${PIPESHUB_RECORD_CACHE_BYTES:-}
+      # ripgrep threads per search; blank = half the container's CPUs (also the cap).
+      - GREP_THREADS=${GREP_THREADS:-}
       # Most characters one agent turn may stream before it is stopped as a
       # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}

@@ -349,7 +349,12 @@ def signed_url_cache_seconds() -> int:
 _RECORD_CACHE_ENV = "PIPESHUB_RECORD_CACHE_BYTES"
 # 512 MiB: at 1 worker / 64 users on a 9.6k-record corpus this held the
 # reuse (126 rpm vs 104 at 32 MiB) for ~0.2 GB more RSS; 1.5 GiB gained nothing.
+# Also the ceiling: the cache lives in every worker, so a larger setting is ignored.
 _RECORD_CACHE_BYTES_DEFAULT = 512 * 1024 * 1024
+# "memory" (default): decoded records in this process. "redis": the downloaded
+# JSON in Redis, shared by every worker and nothing held in process; a hit skips
+# the download but decodes again (~5% fewer answers/min than "memory" at 1 worker).
+_RECORD_CACHE_BACKEND_ENV = "PIPESHUB_RECORD_CACHE_BACKEND"
 # Backstop for writes that change a record's content without touching its
 # mapping (see _record_cache_key).
 _RECORD_CACHE_TTL_SECONDS = 60.0
@@ -365,14 +370,20 @@ def record_cache_bytes() -> int:
 
     Entries are charged their downloaded JSON length times
     ``_DECODED_BYTES_PER_JSON_BYTE``; compressed records are not cached.
+    Capped at ``_RECORD_CACHE_BYTES_DEFAULT``.
     """
     raw = os.getenv(_RECORD_CACHE_ENV)
     if raw is None:
         return _RECORD_CACHE_BYTES_DEFAULT
     try:
-        return max(int(raw), 0)
+        return min(max(int(raw), 0), _RECORD_CACHE_BYTES_DEFAULT)
     except ValueError:
         return _RECORD_CACHE_BYTES_DEFAULT
+
+
+def record_cache_in_redis() -> bool:
+    """Whether the record cache is kept in Redis instead of in this process."""
+    return os.getenv(_RECORD_CACHE_BACKEND_ENV, "memory").strip().lower() == "redis"
 
 
 class _DecodedRecordCache:
@@ -897,12 +908,59 @@ async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISign
         return cache
 
 
+# (client, key prefix) of the Redis record cache per loop; None once Redis was
+# found unreachable, so an outage costs one failed connect per loop.
+_record_redis: "dict[asyncio.AbstractEventLoop, tuple[Any, str] | None]" = {}
+# Largest JSON body kept in Redis: the decoded-record cache's per-entry cap.
+_REDIS_RECORD_MAX_BYTES = _RECORD_CACHE_MAX_ENTRY_BYTES // _DECODED_BYTES_PER_JSON_BYTE
+
+
+async def _record_redis_client(config_service: Any, logger: Any) -> "tuple[Any, str] | None":  # noqa: ANN401
+    """The Redis record cache's (bytes client, key prefix) for this loop, or None when Redis is unreachable."""
+    loop = asyncio.get_running_loop()
+    if loop in _record_redis:
+        return _record_redis[loop]
+    async with _redis_lock_for(loop):
+        if loop in _record_redis:
+            return _record_redis[loop]
+        for stale_loop in [lp for lp in _record_redis if lp.is_closed()]:
+            _record_redis.pop(stale_loop, None)
+        client = None
+        try:
+            cfg = await config_service.get_redis_config()
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
+                )
+            )
+            client = provider.create_client(
+                ClientOptions(
+                    decode_responses=False,
+                    socket_timeout_seconds=2.0,
+                    socket_connect_timeout_seconds=2.0,
+                )
+            )
+            await client.ping()
+            prefix = f"{provider.key_namespace}:" if provider.key_namespace else ""
+            _record_redis[loop] = (client, prefix + "reccache:")
+        except Exception as e:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.aclose()
+            _record_redis[loop] = None
+            logger.warning("Redis record cache unavailable, records are downloaded: %s", str(e))
+        return _record_redis[loop]
+
+
 async def close_shared_redis() -> None:
-    """Close the pooled signed-URL cache for the running loop; call from shutdown."""
+    """Close the pooled signed-URL cache and Redis record cache for the running loop; call from shutdown."""
     loop = asyncio.get_running_loop()
     cache = _shared_redis.pop(loop, None)
     if cache is not None:
         await cache.close()
+    record_redis = _record_redis.pop(loop, None)
+    if record_redis is not None:
+        await record_redis[0].aclose()
 
 
 class CustomMetadataEntry(TypedDict):
@@ -3291,6 +3349,8 @@ class BlobStorage(Transformer):
             return None
         max_bytes = record_cache_bytes()
         cache_key = _record_cache_key(org_id, virtual_record_id, lookup_result) if max_bytes else None
+        if cache_key is not None and record_cache_in_redis():
+            return await self._record_via_redis(cache_key, virtual_record_id, org_id, lookup_result, head_only=head_only)
         # A whole record serves a head_only call too; a head is never cached as a record.
         if cache_key is not None and (cached := _DECODED_RECORDS.get(cache_key)) is not None:
             return dict(cached)
@@ -3308,6 +3368,45 @@ class BlobStorage(Transformer):
         # Only the caller whose download ran knows its size; the others skip the put.
         if cache_key is not None and not head_only and isinstance(record, dict) and sizing.get("bytes"):
             _DECODED_RECORDS.put(cache_key, record, sizing["bytes"] * _DECODED_BYTES_PER_JSON_BYTE, max_bytes)
+        return dict(record) if isinstance(record, dict) else record
+
+    async def _record_via_redis(
+        self, cache_key: tuple, virtual_record_id: str, org_id: str, lookup_result: dict, *, head_only: bool,
+    ) -> dict | None:
+        """``get_record_from_storage`` with the record cache in Redis: the
+        downloaded JSON is kept for ``_RECORD_CACHE_TTL_SECONDS``; a hit skips
+        the download but is decoded again. Redis errors fall back to the download."""
+        redis = await _record_redis_client(self.config_service, self.logger)
+        key = "|".join(map(str, cache_key))
+
+        async def load() -> dict | None:
+            if redis is not None:
+                client, prefix = redis
+                try:
+                    raw = await client.get(prefix + key)
+                except Exception as e:
+                    self.logger.debug("Redis record cache read failed for %s: %s", virtual_record_id, str(e))
+                    raw = None
+                if raw:
+                    try:
+                        data = (_decode_record_head if head_only else _decode_json)(raw)
+                        if isinstance(data, dict) and data.get("record"):
+                            return self._process_downloaded_record(data)
+                    except Exception as e:  # a value this version cannot read: download instead
+                        self.logger.debug("Redis record cache entry unreadable for %s: %s", virtual_record_id, str(e))
+            sizing: dict = {"keep_raw": True}
+            record = await self._download_record(
+                virtual_record_id, org_id, lookup_result, head_only=head_only, sizing=sizing,
+            )
+            raw = sizing.get("raw")
+            if redis is not None and raw and len(raw) <= _REDIS_RECORD_MAX_BYTES:
+                try:
+                    await redis[0].set(redis[1] + key, raw, ex=int(_RECORD_CACHE_TTL_SECONDS))
+                except Exception as e:
+                    self.logger.debug("Redis record cache write failed for %s: %s", virtual_record_id, str(e))
+            return record
+
+        record = await memo(("stored_record", *cache_key, head_only), load)
         return dict(record) if isinstance(record, dict) else record
 
     async def _download_record(
@@ -3460,13 +3559,17 @@ class BlobStorage(Transformer):
                         "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
                     )
 
-            body_bytes: list[int] = []
-            if sizing is not None and not head_only:
+            # The length sizes the memory cache entry; only the Redis cache (keep_raw)
+            # keeps the body itself, also for a head_only read.
+            body_bytes: list[Any] = []
+            keep_raw = sizing is not None and bool(sizing.get("keep_raw"))
+            plain_decode = decode
+            if sizing is not None and (not head_only or keep_raw):
                 inner = decode
 
                 @functools.wraps(inner)
                 def decode(raw: bytes) -> Any:  # noqa: ANN401 - stored records are free-form
-                    body_bytes.append(len(raw))  # sizes the decoded-record cache entry
+                    body_bytes.append(raw if keep_raw else len(raw))
                     return inner(raw)
 
             data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id, decode)
@@ -3477,15 +3580,19 @@ class BlobStorage(Transformer):
                 record = await self._decode_record(data, lease)
                 if sizing is not None and not data.get("isCompressed") and body_bytes:
                     # Only inline JSON: its body length is what decoding cost.
-                    sizing["bytes"] = body_bytes[-1]
+                    body = body_bytes[-1]
+                    sizing["bytes"] = len(body) if keep_raw else body
+                    if keep_raw:
+                        sizing["raw"] = body
                 self.logger.debug(
                     "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
                     record.get("record_name"), virtual_record_id,
                 )
                 return record
             if data.get("signedUrl"):
+                # Not cached (no sizing), so its body need not be kept.
                 record = await self._record_from_signed_url(
-                    session, data["signedUrl"], file_size_bytes, virtual_record_id, lease, decode=decode,
+                    session, data["signedUrl"], file_size_bytes, virtual_record_id, lease, decode=plain_decode,
                 )
                 if record is not None:
                     return record

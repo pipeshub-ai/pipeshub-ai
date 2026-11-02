@@ -2760,7 +2760,11 @@ class TestFindRecordsBatch:
             single = _make_tool(connector_dir=str(dirs[cid]), graph_provider=self._tool().state["graph_provider"])
             ok, out = await single.find_records(cid, cmd)
             alone[cid] = json.loads(out)["records"] if ok else None
-        assert batch == alone
+
+        def by_id(found: dict) -> dict:  # ripgrep's threads print files in no fixed order
+            return {k: sorted(v, key=lambda r: r["virtual_record_id"]) if v else v for k, v in found.items()}
+
+        assert by_id(batch) == by_id(alone)
         assert {r["virtual_record_id"] for r in batch["c1"]} == {"a0a0a0a0", "a1a1a1a1", "a2a2a2a2", "b0b0b0b0"}
         assert [r["virtual_record_id"] for r in batch["c2"]] == ["c0c0c0c0"]
         graph = tool.state["graph_provider"]
