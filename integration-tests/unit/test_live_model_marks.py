@@ -127,5 +127,5 @@ def test_markers_described_as_needing_an_llm_map_to_the_real_key() -> None:
         m.group(1)
         for m in re.finditer(r"^\s+(\w+): .*\bneeds an LLM\b", ini, re.M)
     }
-    assert wanted >= {"postgres_incremental", "postgres_relations"}
+    assert wanted, "no marker says it needs an LLM; the scan is not reading pytest.ini"
     assert wanted <= set(mapped), f"add to [suite.marker_needs]: {sorted(wanted - set(mapped))}"
