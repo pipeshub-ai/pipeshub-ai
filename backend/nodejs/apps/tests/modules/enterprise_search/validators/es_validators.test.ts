@@ -375,6 +375,14 @@ describe('enterprise_search/validators/es_validators', () => {
           expect(parse({ approvalId: 'ap-1', ...answer }).success, name).to.be.false
         }
       })
+
+      it('counts the arguments limit in code points, as the Python service does', () => {
+        // Each emoji is two UTF-16 units but one code point: 32500 of them fit in 64000.
+        const emoji = { approvalId: 'ap-1', decision: 'allow', arguments: { v: '\u{1F600}'.repeat(32_500) } }
+        expect(parse(emoji).success).to.be.true
+        const over = { approvalId: 'ap-1', decision: 'allow', arguments: { v: '\u{1F600}'.repeat(64_000) } }
+        expect(parse(over).success).to.be.false
+      })
     })
 
     it('should leave the non-stream create schema backward compatible', () => {
