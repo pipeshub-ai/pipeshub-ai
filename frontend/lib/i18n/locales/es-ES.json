@@ -1486,7 +1486,6 @@
         "enum": "Elige uno de los valores de la lista.",
         "minLength": "Usa al menos {{min}} caracteres.",
         "maxLength": "Usa como máximo {{max}} caracteres.",
-        "pattern": "Usa el formato esperado.",
         "email": "Introduce una dirección de correo válida.",
         "requestChanged": "Esta solicitud ha cambiado. Recarga la página."
       },

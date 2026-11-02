@@ -21,13 +21,8 @@ function check(field: FieldSpec, value: unknown): Problem | null {
       if (schema.maxLength !== undefined && value.length > schema.maxLength)
         return problem('maxLength', `Use at most ${schema.maxLength} characters.`, { max: schema.maxLength });
       if (schema.format === 'email' && !EMAIL.test(value)) return problem('email', 'Enter a valid email address.');
-      if (schema.pattern) {
-        try {
-          if (!new RegExp(schema.pattern).test(value)) return problem('pattern', 'Use the expected format.');
-        } catch {
-          // A pattern this browser can't compile is left to the server.
-        }
-      }
+      // No `pattern` check here: a server's regex can run for ages, and a browser regex can't be
+      // stopped. The server checks it under a time limit.
       return null;
     }
     case 'integer':

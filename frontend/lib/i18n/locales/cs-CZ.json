@@ -1618,7 +1618,6 @@
         "enum": "Zvolte jednu z uvedených hodnot.",
         "minLength": "Použijte alespoň {{min}} znaků.",
         "maxLength": "Použijte nejvýše {{max}} znaků.",
-        "pattern": "Použijte očekávaný formát.",
         "email": "Zadejte platnou e-mailovou adresu.",
         "requestChanged": "Tento požadavek se změnil. Načtěte stránku znovu."
       },

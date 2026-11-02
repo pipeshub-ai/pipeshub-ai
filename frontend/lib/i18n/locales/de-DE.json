@@ -1465,7 +1465,6 @@
         "enum": "Wählen Sie einen der aufgeführten Werte.",
         "minLength": "Verwenden Sie mindestens {{min}} Zeichen.",
         "maxLength": "Verwenden Sie höchstens {{max}} Zeichen.",
-        "pattern": "Verwenden Sie das erwartete Format.",
         "email": "Geben Sie eine gültige E-Mail-Adresse ein.",
         "requestChanged": "Diese Anfrage hat sich geändert. Laden Sie neu."
       },
