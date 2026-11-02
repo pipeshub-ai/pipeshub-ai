@@ -22,6 +22,8 @@ from app.services.graph_db.interface.graph_db_provider import AccessCheck
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from app.modules.named_entities.graph_ops import NamedEntityQuery
+
 pytestmark = pytest.mark.asyncio
 
 APP = "app-1"
@@ -856,3 +858,96 @@ async def test_epoch_ms_before_1973_and_before_1970_still_read(env: AsyncMock, e
     graph = _graph(_rows(1))
     ok, _ = await values.execute_find_records_by_value(_state(graph), date_from=epoch_ms)
     assert ok and _window(graph)[0] == epoch_ms
+
+
+
+# --- an unused end the strict schema sends as 0 -----------------------------------------
+
+def _query(graph: AsyncMock) -> NamedEntityQuery:
+    return graph.get_records_for_named_entities.await_args.args[2]
+
+
+async def test_above_a_value_with_a_zero_top_is_open_ended_not_an_error(env: AsyncMock) -> None:
+    """"Latency above 200 ms" arrives as 0.2 to 0 and was refused as an inverted range."""
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(
+        _state(graph), quantity_min=0.2, quantity_max=0, dimension="time",
+    )
+    assert ok and _query(graph).quantity_min == 0.2 and _query(graph).quantity_max > 1e300
+    assert "quantity_max" not in body
+
+
+async def test_a_currency_alone_is_any_amount_in_it_not_exactly_zero(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=0, amount_max=0, currency="USD")
+    query = _query(graph)
+    assert ok and query.amount_min < 0 < query.amount_max and query.currency == "USD"
+    assert "amount_min" not in body and values.UNCONVERTED_NOTE not in body
+
+
+async def test_a_negative_range_up_to_zero_is_kept(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), amount_min=-500, amount_max=0, currency="USD")
+    assert ok and (_query(graph).amount_min, _query(graph).amount_max) == (-500, 0)
+
+
+async def test_amounts_without_a_currency_say_they_are_not_converted(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=50_000)
+    assert ok and body.splitlines()[1] == values.UNCONVERTED_NOTE
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), amount_min=50_000, currency="USD")
+    assert ok and values.UNCONVERTED_NOTE not in body
+
+
+
+@pytest.mark.parametrize(("low", "high", "kept"), [
+    (0, 0, (None, None)),
+    (0.2, 0, (0.2, None)),
+    (0, 100, (0, 100)),
+    (0, -5, (None, -5)),
+    (-500, 0, (-500, 0)),
+    (5, 3, (5, 3)),  # backwards as given: refused by the resolver, not rewritten
+    (None, None, (None, None)),
+    # A caller that leaves the other end out means the 0: at least 0, at most 0.
+    (0, None, (0, None)),
+    (None, 0, (None, 0)),
+])
+def test_an_unused_zero_end_is_dropped_only_where_it_bounds_nothing(
+    low: float | None, high: float | None, kept: tuple[float | None, float | None],
+) -> None:
+    assert values._range(low, high) == kept
+
+
+async def test_above_a_percent_with_a_zero_top_is_open_ended(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), percent_min=0.2, percent_max=0)
+    assert ok and _query(graph).percent_min == 0.2 and _query(graph).percent_max > 1e300
+
+
+async def test_the_unconverted_note_repeats_on_later_pages(env: AsyncMock) -> None:
+    graph = _graph(_rows(30))
+    ok, first = await values.execute_find_records_by_value(_state(graph), amount_min=1)
+    ok, second = await values.execute_find_records_by_value(_state(graph), amount_min=1, cursor=_cursor(first))
+    assert ok and second.splitlines()[1] == values.UNCONVERTED_NOTE
+
+
+async def test_a_lone_zero_end_a_caller_sent_is_kept(env: AsyncMock) -> None:
+    """Only a strict schema fills the unused end with 0; a caller that leaves it out means the 0."""
+    graph = _graph(_rows(1))
+    ok, _ = await values.execute_find_records_by_value(_state(graph), amount_max=0)
+    assert ok and _query(graph).amount_max == 0 and _query(graph).amount_min < -1e300
+
+
+
+async def test_an_empty_answer_without_a_currency_still_says_amounts_were_not_converted(env: AsyncMock) -> None:
+    ok, body = await values.execute_find_records_by_value(_state(_graph([])), amount_min=50_000)
+    assert ok and body.startswith(values.NO_MATCH_MSG) and values.UNCONVERTED_NOTE in body
+    ok, body = await values.execute_find_records_by_value(_state(_graph([])), amount_min=50_000, currency="USD")
+    assert ok and values.UNCONVERTED_NOTE not in body
+
+
+
+async def test_a_blank_currency_is_no_currency(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=50_000, currency="   ")
+    assert ok and values.UNCONVERTED_NOTE in body and 'currency="' not in body

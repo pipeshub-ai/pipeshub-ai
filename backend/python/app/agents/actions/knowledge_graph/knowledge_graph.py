@@ -1177,10 +1177,28 @@ class KnowledgeGraph:
             ),
             ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
             ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
-            ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
-            ToolParameter(name="quantity_min", type=ParameterType.FLOAT, description="Minimum quantity in SI units.", required=False),
-            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in SI units.", required=False),
-            ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
+            ToolParameter(
+                name="currency", type=ParameterType.STRING,
+                description=(
+                    "ISO-4217 currency code; pass it whenever the question names one ('$' is USD unless the "
+                    "question says otherwise). Without it amounts in every currency are compared unconverted."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="quantity_min", type=ParameterType.FLOAT,
+                description="Minimum quantity in SI units: metres, kilograms, bytes, kelvin; seconds for time (0.2 for 200 ms). Pass dimension so units compare.",
+                required=False,
+            ),
+            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in the same SI units.", required=False),
+            ToolParameter(
+                name="dimension", type=ParameterType.STRING,
+                description=(
+                    "Quantity dimension: length, weight, speed, temperature, data_size, tokens, or time "
+                    "(a duration such as '200 ms' or '4 hours'; months and years are not matched)."
+                ),
+                required=False,
+            ),
             ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Optional record types to keep, e.g. FILE, MAIL, TICKET.", required=False, items={"type": "string"}),

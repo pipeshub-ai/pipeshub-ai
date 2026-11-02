@@ -1638,6 +1638,7 @@
       "blockIndexes": [
        1
       ],
+      "dimension": "time",
       "durationIso": "P30D",
       "durationSeconds": 2592000.0,
       "extractedNames": [
@@ -1655,7 +1656,8 @@
       "normKey": "duration:P30D",
       "orgId": "org-golden",
       "recordId": "rec-contract",
-      "schemaVersion": 1
+      "schemaVersion": 1,
+      "siValue": 2592000.0
      },
      {
       "blockIds": [
@@ -2837,6 +2839,7 @@
       "blockIndexes": [
        2
       ],
+      "dimension": "time",
       "durationIso": "PT0.45S",
       "durationSeconds": 0.45,
       "extractedNames": [
@@ -2854,7 +2857,8 @@
       "normKey": "duration:PT0.45S",
       "orgId": "org-golden",
       "recordId": "rec-incident",
-      "schemaVersion": 1
+      "schemaVersion": 1,
+      "siValue": 0.45
      },
      {
       "blockIds": [
@@ -2863,6 +2867,7 @@
       "blockIndexes": [
        2
       ],
+      "dimension": "time",
       "durationIso": "P3D",
       "durationSeconds": 259200.0,
       "extractedNames": [
@@ -2880,7 +2885,8 @@
       "normKey": "duration:P3D",
       "orgId": "org-golden",
       "recordId": "rec-incident",
-      "schemaVersion": 1
+      "schemaVersion": 1,
+      "siValue": 259200.0
      },
      {
       "amount": "-300",

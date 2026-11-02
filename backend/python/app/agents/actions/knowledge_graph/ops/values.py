@@ -68,6 +68,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+UNCONVERTED_NOTE = "Amounts in every currency, not converted; pass currency to compare like with like."
+
 _MAX_LIMIT = 50
 _DAY_MS = 86_400_000
 _DEFAULT_LIMIT = 20
@@ -132,6 +134,11 @@ async def execute_find_records_by_value(
         return False, "Knowledge graph tool state not initialized."
     if not await _named_entities_enabled(state):
         return False, NAMED_ENTITIES_DISABLED_MSG
+    # A blank currency is none: the filter strips it, so the note must too.
+    currency, dimension = (currency or "").strip(), (dimension or "").strip()
+    amount_min, amount_max = _range(amount_min, amount_max)
+    quantity_min, quantity_max = _range(quantity_min, quantity_max)
+    percent_min, percent_max = _range(percent_min, percent_max)
     raw: dict[str, Any] = {}
     # The filter as the model gave it, repeated in the header and the continue call.
     given: dict[str, Any] = {}
@@ -162,13 +169,13 @@ async def execute_find_records_by_value(
         given.update(_pair(
             "date_from", date_from if start is not None else None, "date_to", date_to if end is not None else None,
         ))
-    if _given(amount_min, amount_max) or currency:
+    if amount_min is not None or amount_max is not None or currency:
         raw["amount"] = {"min": amount_min, "max": amount_max, "currency": currency or ""}
         given.update(_pair("amount_min", amount_min, "amount_max", amount_max, currency=currency))
-    if _given(quantity_min, quantity_max) or dimension:
+    if quantity_min is not None or quantity_max is not None or dimension:
         raw["quantity"] = {"min": quantity_min, "max": quantity_max, "dimension": dimension or ""}
         given.update(_pair("quantity_min", quantity_min, "quantity_max", quantity_max, dimension=dimension))
-    if _given(percent_min, percent_max):
+    if percent_min is not None or percent_max is not None:
         raw["percent"] = {"min": percent_min, "max": percent_max}
         given.update(_pair("percent_min", percent_min, "percent_max", percent_max))
     if not raw and not asked_ids and not name:
@@ -257,17 +264,21 @@ async def execute_find_records_by_value(
         logger.warning("find_records_by_value failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
     values = await _matched_values(graph, org_id, raw, records)
+    # Unconverted amounts both over- and under-match ("EUR 48,000" is not over 50,000),
+    # so the note goes with an empty answer too.
+    unconverted = UNCONVERTED_NOTE if "amount" in raw and not currency else ""
 
     if not records:
         if next_cursor is not None:
-            return True, (
+            return True, " ".join(filter(None, (
                 "No readable records in this part of the matches yet; more remain unchecked. "
-                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}"
-            )
+                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}",
+                unconverted,
+            )))
         if cursor:
-            return True, NO_FURTHER_RECORDS_MSG
+            return True, " ".join(filter(None, (NO_FURTHER_RECORDS_MSG, unconverted)))
         return True, " ".join(filter(None, (
-            NO_MATCH_MSG, _percent_hint(percent_min, percent_max), limited_scope_note(context),
+            NO_MATCH_MSG, unconverted, _percent_hint(percent_min, percent_max), limited_scope_note(context),
         )))
 
     record_ids = [r["_key"] for r in records]
@@ -292,6 +303,8 @@ async def execute_find_records_by_value(
     lines = [f"Records {about}matching {_args(given)}, {order} ({len(records)} shown):"]
     if caveats:
         lines.append(f"Note on name: {caveats.strip()}")
+    if unconverted:
+        lines.append(unconverted)
     lines.extend(cite_note(records, cite_refs))
     for record in records:
         line = record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
@@ -370,6 +383,20 @@ async def _spelled(graph: "IGraphDBProvider", org_id: str, entity_ids: list[str]
         return ""
     # The ids match a record mentioning any one of them, not all.
     return f"mentioning {names[0]} and " if len(names) == 1 else f"mentioning one of {', '.join(names)} and "
+
+
+def _range(low: float | None, high: float | None) -> tuple[float | None, float | None]:
+    """A range's ends with an unused 0 left out. A strict schema sends an unused end
+    as 0, so "above 0.2" arrives as 0.2 to 0: a 0 end is dropped where it would leave
+    the range empty or backwards, and kept where it bounds one ("0 to 100" leaves out
+    refunds, "-500 to 0" is losses)."""
+    if low == 0 and high == 0:
+        return None, None
+    if low == 0 and high is not None and high < 0:
+        low = None
+    if high == 0 and low is not None and low > 0:
+        high = None
+    return low, high
 
 
 def _given(low: float | None, high: float | None) -> bool:
