@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import { create } from 'zustand';
 import { fetchPendingApprovals } from './api';
+import { useAuthStore } from '@/config';
 import { useChatStore } from './store';
 import type { PendingApprovalItem } from './types';
 
@@ -17,6 +18,8 @@ let generation = 0;
 // Fetches still running. A poll waits for them rather than starting one that would make a slow
 // fetch (slower than the poll interval) stale every time.
 let inFlight = 0;
+// Bumped by reset: a fetch from before it neither writes nor counts as running any more.
+let session = 0;
 
 /** A refresh from the poll, focus or the page being shown: skipped while a fetch is running. */
 function pollPendingApprovals(): void {
@@ -26,6 +29,8 @@ function pollPendingApprovals(): void {
 interface PendingApprovalsState {
   items: PendingApprovalItem[];
   refresh: () => Promise<void>;
+  /** Forgets everything, including fetches still running: the signed-in person changed. */
+  reset: () => void;
   /** Takes a call off the list once it is answered. */
   drop: (approvalId: string) => void;
   /** Puts a call back, first, with the card the server sent last (a refused edit's errors). */
@@ -43,7 +48,9 @@ const live = (item: PendingApprovalItem) =>
 export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
   items: [],
   refresh: async () => {
+    resetWhenTheSignedInPersonChanges();
     const mine = ++generation;
+    const ours = session;
     inFlight++;
     try {
       const items = await fetchPendingApprovals();
@@ -51,8 +58,15 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
     } catch {
       // A failed poll keeps the list it had; the next one tries again.
     } finally {
-      inFlight = Math.max(0, inFlight - 1);
+      if (ours === session) inFlight--;
     }
+  },
+  reset: () => {
+    generation++;
+    session++;
+    inFlight = 0;
+    answered.clear();
+    set({ items: [], inlineOpen: 0 });
   },
   drop: (approvalId) => {
     answered.set(approvalId, Date.now());
@@ -68,6 +82,23 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
   inlineOpen: 0,
   markInline: (delta) => set((s) => ({ inlineOpen: Math.max(0, s.inlineOpen + delta) })),
 }));
+
+// One person's waiting calls must never show to the next: reset on sign-out (every logout path
+// goes through the auth store's logout, before it navigates), when the signed-in user changes, and
+// when the active workspace changes in a store that keeps one (`currentOrgId`).
+// Subscribed on the first refresh, the only way calls get on the list, not at import: '@/config'
+// re-exports chat components that import this module, so it may still be loading then.
+let watchingAuth = false;
+function resetWhenTheSignedInPersonChanges(): void {
+  if (watchingAuth) return;
+  watchingAuth = true;
+  useAuthStore.subscribe((state, prev) => {
+    const signedOut = prev.isAuthenticated && !state.isAuthenticated;
+    const otherUser = Boolean(prev.user && state.user && prev.user.id !== state.user.id);
+    const orgOf = (s: object) => (s as { currentOrgId?: string | null }).currentOrgId;
+    if (signedOut || otherUser || orgOf(prev) !== orgOf(state)) usePendingApprovals.getState().reset();
+  });
+}
 
 /** Keeps the list fresh while the composer is shown: on mount, on window focus, every 30s while
  * the page is visible (a call asked in another chat appears even when nothing waited), when the
@@ -112,7 +143,5 @@ export function useOtherChatApprovals(): PendingApprovalItem[] {
 
 /** Test-only: forget what was answered. */
 export function resetPendingApprovalsForTest(): void {
-  answered.clear();
-  inFlight = 0;
-  usePendingApprovals.setState({ items: [], inlineOpen: 0 });
+  usePendingApprovals.getState().reset();
 }
