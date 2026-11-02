@@ -256,6 +256,7 @@ const outbox: CollectionMapping = {
   table: 'platform.outbox',
   idCol: 'id',
   idType: 'bigint',
+  tableId: outboxTableId,
   sourceKey: (doc) => String(doc._id),
   orgPath: '__org',
   orgCol: 'org_id',

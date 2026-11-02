@@ -1,13 +1,14 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { FENCE_WAIT_QUEUE_MS } from '../../../src/libs/repositories/fence'
+import { FENCE_WAIT_QUEUE_MS, fenceCutoverWaitMs } from '../../../src/libs/repositories/fence'
 import { appClients, describeClients, fenceTuning, sleep } from '../../../src/scripts/docstore-migrate/fence'
 import { nonObjectIdSample } from '../../../src/scripts/docstore-migrate/preflight'
 
 /** A runtime whose MongoDB answers every `$currentOp` aggregate with `rows`. */
-const rtWith = (rows: unknown[], options: Record<string, unknown> = {}) => {
+const rtWith = (rows: unknown[], options: Record<string, unknown> = {}, mongoUri = 'mongodb://localhost:27017/es') => {
   const admin = { aggregate: () => ({ toArray: async () => rows }) }
   return {
+    cfg: { mongoUri },
     mongo: { db: () => admin },
     db: () => ({ client: { options, db: () => admin } }),
   } as never
@@ -21,14 +22,24 @@ describe('docstore-migrate fence helpers', () => {
       else process.env[k] = v
   })
 
-  it('the application\'s client options take the bounded wait queue of an armed fence', () => {
-    const o = fenceTuning.clientOptions(rtWith([], { connectTimeoutMS: 30000, waitQueueTimeoutMS: 0 }))
-    expect(o).to.include({ connectTimeoutMS: 30000, waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS })
+  it('the dwell is computed from the application\'s client options, not this tool\'s own client', () => {
+    // this tool's client does not retry writes and waits 8 s for a server; the application retries and waits 5 s
+    const tool = { connectTimeoutMS: 10000, serverSelectionTimeoutMS: 8000, retryWrites: false, waitQueueTimeoutMS: 0 }
+    const o = fenceTuning.clientOptions(rtWith([], tool))
+    expect(o).to.deep.equal({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS, connectTimeoutMS: 30000, serverSelectionTimeoutMS: 5000, retryWrites: true })
+    // 2.5 s for every writer to see the fence, then twice (a retry) the 30 s queue, 30 s connect and 5 s selection
+    expect(fenceCutoverWaitMs(o)).to.equal(132_500)
+  })
+
+  it('options in the URI that the application would also read count: a URI without write retries halves the send bound', () => {
+    const o = fenceTuning.clientOptions(rtWith([], {}, 'mongodb://localhost:27017/es?retryWrites=false&connectTimeoutMS=10000'))
+    expect(o).to.include({ retryWrites: false, connectTimeoutMS: 10000, serverSelectionTimeoutMS: 5000 })
+    expect(fenceCutoverWaitMs(o)).to.equal(2500 + 30000 + 10000 + 5000)
   })
 
   it('test hooks shorten the client options only when both variables are set', () => {
     process.env.MIGRATE_FENCE_CLIENT_OPTIONS = JSON.stringify({ waitQueueTimeoutMS: 100 })
-    expect(fenceTuning.clientOptions(rtWith([], { waitQueueTimeoutMS: 0 }))).to.include({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS })
+    expect(fenceTuning.clientOptions(rtWith([]))).to.include({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS })
     process.env.MIGRATE_TEST_HOOKS = '1'
     expect(fenceTuning.clientOptions(rtWith([]))).to.deep.equal({ waitQueueTimeoutMS: 100 })
   })
