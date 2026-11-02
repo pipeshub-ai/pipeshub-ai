@@ -231,6 +231,29 @@ class TestNeedsOcrAndPageCount:
         assert needs_ocr_and_page_count(broken_xref_pdf(1_000)) == (False, 0)
 
 
+class TestPageLimit:
+    """Counting text-layer characters walks every page (about 11 s for 4,000 pages):
+    a document past the caller's page limit is answered from the page count alone,
+    so the caller can refuse it before its deadline."""
+
+    def test_past_the_limit_only_the_page_count_is_read(self) -> None:
+        with patch(
+            "app.modules.parsers.pdf.pdf_inspection.text_layer_char_counts"
+        ) as char_counts, patch.object(OCRStrategy, "needs_ocr") as needs_ocr:
+            assert needs_ocr_and_page_count(text_pdf(pages=6), max_pages=5) == (False, 6)
+
+        char_counts.assert_not_called()
+        needs_ocr.assert_not_called()
+
+    def test_at_the_limit_the_document_is_checked(self) -> None:
+        with patch(
+            "app.modules.parsers.pdf.pdf_inspection.text_layer_char_counts", return_value=[0] * 5
+        ) as char_counts:
+            assert needs_ocr_and_page_count(text_pdf(pages=5), max_pages=5) == (True, 5)
+
+        char_counts.assert_called_once()
+
+
 def test_the_sample_is_thirty_pages() -> None:
     """The sample size is the memory and time bound of the check; changing it is a decision."""
     assert OCR_SAMPLE_PAGES == 30
