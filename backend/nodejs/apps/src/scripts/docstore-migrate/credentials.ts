@@ -244,10 +244,13 @@ export async function syncCredentials(
   const raws = await rt
     .db()
     .collection('userCredentials')
-    .find({ userId: { $in: sourceForms(list) }, isDeleted: { $ne: true } } as never, {
-      sort: { _id: 1 },
-      promoteLongs: false,
-    })
+    .find(
+      { userId: { $in: sourceForms(list) }, isDeleted: { $ne: true } } as never,
+      {
+        sort: { _id: 1 },
+        promoteLongs: false,
+      },
+    )
     .toArray();
   const rep = new SourceReport();
   const docs = raws.map((d) => toNeutral(d, rep, 'userCredentials'));
