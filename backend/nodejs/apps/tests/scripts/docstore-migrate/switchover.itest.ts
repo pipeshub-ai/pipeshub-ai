@@ -8,7 +8,7 @@ import { MongoClient } from 'mongodb';
 import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
 import { readMongoFence } from '../../../src/scripts/docstore-migrate/fence';
 import { migrateOffline } from '../../../src/scripts/docstore-migrate/offline';
-import { CutoverOptions, cutover, onlineStart, onlineVerify, verifyConverge } from '../../../src/scripts/docstore-migrate/online';
+import { CutoverOptions, cutover, onlineStart, onlineVerify, precheck, verifyConverge } from '../../../src/scripts/docstore-migrate/online';
 import { JobState } from '../../../src/scripts/docstore-migrate/state';
 import { contentDocs } from './fixtures/content';
 import { conversationDocs } from './fixtures/conversation';
@@ -179,6 +179,25 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const second = await onlineVerify(w.rt, { log });
         expect(second.ok, second.message).to.equal(true);
         expect(second.changed, 'the write is verified, by one pass or the other').to.be.greaterThan(0);
+      });
+
+      it('a sample that finds a difference in a document that did not change takes the verified state back: the pre-check refuses', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        expect((await onlineVerify(w.rt, { log })).ok, 'verified to begin with').to.equal(true);
+        const js = await JobState.attach(w.rt);
+        expect((await precheck(w.rt, js, { log, lagMaxMs: 60_000, fenceArmed: true, shadowClean: true })).items.find((i) => i.name === 'verified state')!.ok).to.equal(true);
+        // a document nobody wrote to is made to differ in PostgreSQL: only a sample of all documents can see it
+        await sql("UPDATE identity.users SET full_name = full_name || ' (tampered)' WHERE id = $1", [String(ADMIN_A)]);
+        const r = await onlineVerify(w.rt, { log, sample: 1 });
+        expect(r.ok).to.equal(false);
+        const after = await JobState.attach(w.rt);
+        expect(after.progress.verify).to.include({ ok: false });
+        expect(after.progress.verify!.token, 'the position is kept').to.not.equal(undefined);
+        const pre = await precheck(w.rt, after, { log, lagMaxMs: 60_000, fenceArmed: true, shadowClean: true });
+        expect(pre.items.find((i) => i.name === 'verified state')!.ok, 'the cut would refuse').to.equal(false);
+        const again = await onlineVerify(w.rt, { log });
+        expect(again.ok).to.equal(false);
+        expect(again.message).to.contain('no verified state').and.to.contain('migrate --online');
       });
 
       it('a verify that finds nothing wrong with any document, but a failed global check, is not clean', async () => {

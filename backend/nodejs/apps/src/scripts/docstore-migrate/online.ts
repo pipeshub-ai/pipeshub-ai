@@ -391,7 +391,7 @@ export async function onlineVerify(
       ok: false,
       stage: 'verify',
       message:
-        'no verified state to continue from: `migrate --online` ends with one',
+        'no verified state to continue from (there is none yet, or the last sample found differences): repair what the verify report names and run `migrate --online` again, which ends with a full verify and a new verified state',
     };
   // the first catch-up is the one whose position is stored, and the changes since the last verified position are listed after it
   const v = await verifyConverge(rt, js, o.log, { since: token });
@@ -412,6 +412,17 @@ export async function onlineVerify(
         })
       : undefined;
   const ok = v.ok && (sampled?.ok ?? true);
+  // the changes-only pass stored a verified state; a sample that found a difference in a document that did not change takes it back, so the
+  // cut's pre-check refuses and the next pass says there is no verified state (the cut only looks again at documents that changed)
+  if (sampled && !sampled.ok) {
+    js.progress.verify = {
+      ...js.progress.verify,
+      at: new Date().toISOString(),
+      ok: false,
+      diffs: sampled.remaining,
+    };
+    await js.checkpoint();
+  }
   return {
     ok,
     stage: 'verify',
