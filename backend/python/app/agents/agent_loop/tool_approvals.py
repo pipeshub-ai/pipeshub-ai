@@ -612,26 +612,86 @@ class EditError(MCPCamelModel):
 
 _KIND_RANK: dict[str, int] = {"read": 0, "write": 1, "destructive": 2}
 
-# All `pattern` checks of one edit share this budget: a server-supplied regex can backtrack for
-# ages, and the check runs on the event loop. A value left unchecked is the tool's to reject.
+# Every regex check of one edit (`pattern` on values, `patternProperties` and the regex part of
+# `additionalProperties` on keys) shares this budget: a server-supplied regex can backtrack for
+# ages, and the check runs on the event loop. What it can't check in time is the tool's to reject.
 _PATTERN_BUDGET_SECONDS = 0.2
 
 
-def _bounded_pattern_validator(base: Any) -> Any:  # noqa: ANN401
+def _path_to(root: Any, target: Any, path: tuple[Any, ...] = ()) -> tuple[Any, ...] | None:  # noqa: ANN401
+    """Where `target` (by identity) sits in `root`, for a log line that names a field, not a value."""
+    if root is target:
+        return path
+    children = root.items() if isinstance(root, dict) else enumerate(root) if isinstance(root, list) else ()
+    for key, child in children:
+        found = _path_to(child, target, (*path, key))
+        if found is not None:
+            return found
+    return None
+
+
+def _bounded_validator(base: Any, schema: Any, edited: dict[str, Any], tool_path: str) -> Any:  # noqa: ANN401
+    """The schema's validator with its regex keywords run under one shared time budget."""
     deadline = time.monotonic() + _PATTERN_BUDGET_SECONDS
 
-    def pattern(validator: Any, patrn: str, instance: Any, schema: Any):  # noqa: ANN202, ANN401
+    def search(patrn: str, text: str, where: Any) -> bool | None:  # noqa: ANN401
+        """Whether `patrn` matches `text`; None when it can't be told in time."""
         left = deadline - time.monotonic()
-        if not validator.is_type(instance, "string") or left <= 0:
-            return
-        try:
-            matched = regex.search(patrn, instance, timeout=left)
-        except TimeoutError:
-            return
-        if not matched:
+        if left > 0:
+            try:
+                return regex.search(patrn, text, timeout=left) is not None
+            except TimeoutError:
+                pass
+        logger.warning(
+            f"A pattern check of {tool_path} at {_pointer(_path_to(edited, where) or ())!r} was skipped: it ran out of time",
+        )
+        return None
+
+    def pattern(validator: Any, patrn: str, instance: Any, schema: Any):  # noqa: ANN202, ANN401
+        if validator.is_type(instance, "string") and search(patrn, instance, instance) is False:
             yield SchemaValidationError(f"{instance!r} does not match {patrn!r}")
 
-    return extend(base, {"pattern": pattern})
+    def pattern_properties(validator: Any, patterns: dict[str, Any], instance: Any, schema: Any):  # noqa: ANN202, ANN401
+        if not validator.is_type(instance, "object"):
+            return
+        for patrn, subschema in patterns.items():
+            for key, value in instance.items():
+                if search(patrn, key, instance):
+                    yield from validator.descend(value, subschema, path=key, schema_path=patrn)
+
+    def additional_properties(validator: Any, ap: Any, instance: Any, schema: Any):  # noqa: ANN202, ANN401
+        if not validator.is_type(instance, "object"):
+            return
+        properties = schema.get("properties", {})
+        joined = "|".join(schema.get("patternProperties", {}))
+        # A key whose match can't be told in time counts as matched: the tool rejects it if it must.
+        extras = sorted(
+            (k for k in instance if k not in properties and not (joined and search(joined, k, instance) is not False)),
+            key=str,
+        )
+        if validator.is_type(ap, "object"):
+            for extra in extras:
+                yield from validator.descend(instance[extra], ap, path=extra)
+        elif not ap and extras:
+            yield SchemaValidationError(f"Additional properties are not allowed ({', '.join(map(repr, extras))} unexpected)")
+
+    overrides = {"pattern": pattern, "patternProperties": pattern_properties, "additionalProperties": additional_properties}
+    # unevaluatedProperties matches keys against patternProperties with no time limit, and its
+    # bookkeeping is too involved to copy; where a schema has both, that keyword is the tool's.
+    if "unevaluatedProperties" in base.VALIDATORS and _has_key(schema, "patternProperties"):
+        def unevaluated_properties(validator: Any, up: Any, instance: Any, schema: Any):  # noqa: ANN202, ANN401
+            logger.warning(f"unevaluatedProperties of {tool_path} was not checked: the schema also has patternProperties")
+            return
+            yield
+
+        overrides["unevaluatedProperties"] = unevaluated_properties
+    return extend(base, overrides)
+
+
+def _has_key(node: Any, key: str) -> bool:  # noqa: ANN401
+    if isinstance(node, dict):
+        return key in node or any(_has_key(v, key) for v in node.values())
+    return isinstance(node, list) and any(_has_key(v, key) for v in node)
 
 
 def check_edit(
@@ -649,7 +709,7 @@ def check_edit(
     try:
         validator_class = validator_for(schema, default=Draft202012Validator)
         validator_class.check_schema(schema)
-        validator = _bounded_pattern_validator(validator_class)(schema)
+        validator = _bounded_validator(validator_class, schema, edited, pending.tool_path)(schema)
         errors = [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator.iter_errors(edited)]
     except Exception as e:  # a server's schema can be malformed: bad types, a $ref that can't be resolved
         logger.warning(f"The schema of {pending.tool_name} can't be used to check an edit: {e}")

@@ -1,6 +1,7 @@
 """Checking an edited tool call before it is approved, and answering a card with an edit or a note."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -91,6 +92,51 @@ def test_catastrophic_pattern_is_bounded(pattern: str) -> None:
     errors = _check(p, {"q": "a" * 40 + "!"})
     assert time.monotonic() - start < 1
     assert all(e.path == "/q" for e in errors)
+
+
+def test_one_budget_covers_every_pattern_and_skips_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    fields = [f"q{i}" for i in range(4)]
+    schema = {"type": "object", "properties": {f: {"type": "string", "pattern": "^(a|aa)+$"} for f in fields}}
+    p = _pending(arguments=dict.fromkeys(fields, "a"), input_schema=schema)
+    value = "a" * 40 + "!"
+    start = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger=approvals.__name__):
+        # Distinct strings, as parsed JSON gives: the log finds each field by its value's identity.
+        assert _check(p, {f: f"{value}{f}" for f in fields}) == []
+    # Four timeouts would take four budgets; one shared budget ends them all.
+    assert time.monotonic() - start < approvals._PATTERN_BUDGET_SECONDS * 2 + 0.3
+    for f in fields:
+        assert f"/{f}" in caplog.text
+    assert "/tools/gmail/send_email" in caplog.text
+    assert value not in caplog.text
+
+
+_KEY = "a" * 40 + "!"
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "patternProperties": {"^(a+)+$": {"type": "string"}}},
+        {"type": "object", "patternProperties": {"^(a+)+$": {"type": "string"}}, "additionalProperties": False},
+        {"type": "object", "patternProperties": {"^(a+)+$": {"type": "string"}}, "unevaluatedProperties": False},
+    ],
+    ids=["patternProperties", "additionalProperties", "unevaluatedProperties"],
+)
+def test_catastrophic_key_pattern_is_bounded(schema: dict[str, Any]) -> None:
+    # The keys of an edit are matched against the server's patterns too.
+    p = _pending(arguments={}, input_schema=schema)
+    start = time.monotonic()
+    _check(p, {_KEY: "x"})
+    assert time.monotonic() - start < 1
+
+
+def test_key_patterns_still_apply() -> None:
+    schema = {"type": "object", "patternProperties": {"^n_": {"type": "integer"}}, "additionalProperties": False}
+    p = _pending(arguments={"n_a": 1}, input_schema=schema)
+    assert _check(p, {"n_a": 2}) == []
+    assert _check(p, {"n_a": "x"})[0].path == "/n_a"
+    assert _check(p, {"other": 1}) != []
 
 
 def test_ref_and_anyof_schema_followed() -> None:
