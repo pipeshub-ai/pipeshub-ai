@@ -147,7 +147,7 @@ type Apply = {
 };
 
 const lagOf = (t: Timestamp | undefined): number =>
-  t ? Math.max(0, Date.now() - t.high * 1000) : 0;
+  t ? Math.max(0, Date.now() - t.t * 1000) : 0;
 
 /** Brings the copy level after the saved token has fallen out of the oplog: new token, full compare, repair, until clean. */
 export async function resync(
@@ -309,7 +309,7 @@ export async function follow(
           (e.clusterTime as Timestamp).greaterThan(o.watchAfter)
         ) {
           if (
-            (e.clusterTime as Timestamp).high - o.watchAfter.high <=
+            (e.clusterTime as Timestamp).t - o.watchAfter.t <=
             (o.stragglerSeconds ?? 3)
           )
             res.stragglers += 1;
