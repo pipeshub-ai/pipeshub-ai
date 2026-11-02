@@ -3,7 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import { create } from 'zustand';
 import { fetchPendingApprovals } from './api';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useChatStore } from './store';
 import type { PendingApprovalItem } from './types';
 
@@ -48,6 +48,7 @@ const live = (item: PendingApprovalItem) =>
 export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
   items: [],
   refresh: async () => {
+    resetWhenTheSignedInPersonChanges();
     const mine = ++generation;
     const ours = session;
     inFlight++;
@@ -84,11 +85,18 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
 
 // One person's waiting calls must never show to the next: reset on sign-out (every logout path
 // goes through the auth store's logout, before it navigates) and when the signed-in user changes.
-useAuthStore.subscribe((state, prev) => {
-  const signedOut = prev.isAuthenticated && !state.isAuthenticated;
-  const otherUser = Boolean(prev.user && state.user && prev.user.id !== state.user.id);
-  if (signedOut || otherUser) usePendingApprovals.getState().reset();
-});
+// Subscribed on the first refresh, the only way calls get on the list, not at import: '@/config'
+// re-exports chat components that import this module, so it may still be loading then.
+let watchingAuth = false;
+function resetWhenTheSignedInPersonChanges(): void {
+  if (watchingAuth) return;
+  watchingAuth = true;
+  useAuthStore.subscribe((state, prev) => {
+    const signedOut = prev.isAuthenticated && !state.isAuthenticated;
+    const otherUser = Boolean(prev.user && state.user && prev.user.id !== state.user.id);
+    if (signedOut || otherUser) usePendingApprovals.getState().reset();
+  });
+}
 
 /** Keeps the list fresh while the composer is shown: on mount, on window focus, every 30s while
  * the page is visible (a call asked in another chat appears even when nothing waited), when the
