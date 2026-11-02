@@ -46,7 +46,7 @@ a scenario lists what the *vendor* shows, and `deltas.yaml` lists every place th
 
 ```
 pytest tests/permissions -m "not integration"      # oracle, scenarios, round-trip, deltas, matrix; no services
-# stores: docker compose -p kh-perm -f tests/integration/graph_permissions/docker-compose.yml up -d
-pytest tests/permissions -m integration            # the graph check on Neo4j and ArangoDB (KH_PERM_* variables)
-PERM_GEN_WORLDS=600 PERM_GEN_SEED=11 pytest tests/permissions/test_gen_graph.py -m integration
 ```
+
+Only the oracle layer runs here so far. Running the same scenarios against the graph stores (Neo4j and ArangoDB) is
+not part of this corpus yet.
