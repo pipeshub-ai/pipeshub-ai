@@ -1429,6 +1429,8 @@ class TicketRecord(Record):
     creator_source_timestamp: int | None = None
     reporter_source_timestamp: int | None = None
     labels: list[str] | None = Field(default_factory=list)
+    # The source's milestone (GitHub), by its title: often the release an item is aimed at.
+    milestone: str | None = None
     is_email_hidden: bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
@@ -1507,6 +1509,9 @@ class TicketRecord(Record):
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
 
+        if self.milestone:
+            specific_lines.append(f"* Milestone: {self.milestone}")
+
         if specific_lines:
             lines.append("Ticket Information:")
             lines.extend(specific_lines)
@@ -1584,6 +1589,7 @@ class TicketRecord(Record):
             "creatorSourceTimestamp": self.creator_source_timestamp,
             "reporterSourceTimestamp": self.reporter_source_timestamp,
             "labels":self.labels ,
+            "milestone": self.milestone,
             "assignee_source_id": self.assignee_source_id ,
             "reporter_source_id": self.reporter_source_id,
             "is_email_hidden": self.is_email_hidden,
@@ -1657,6 +1663,7 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            milestone=ticket_doc.get("milestone"),
             # With it lost, the email fields (then the source's user ids) read as emails.
             is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
@@ -2676,6 +2683,8 @@ class PullRequestRecord(Record):
     mergeable: str | None = None
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
+    # The source's milestone (GitHub), by its title: often the release a PR is aimed at.
+    milestone: str | None = None
     last_commit_sha: str | None = Field(default=None)
     # Epoch ms the source merged the PR, or closed it unmerged; None while open.
     merged_at: int | None = None
@@ -2738,6 +2747,9 @@ class PullRequestRecord(Record):
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
 
+        if self.milestone:
+            specific_lines.append(f"* Milestone: {self.milestone}")
+
         if specific_lines:
             lines.append("Pull Request Information:")
             lines.extend(specific_lines)
@@ -2775,6 +2787,7 @@ class PullRequestRecord(Record):
             "mergeable": self.mergeable,
             "mergedBy": self.merged_by,
             "labels":self.labels ,
+            "milestone": self.milestone,
             "lastCommitSha": self.last_commit_sha,
             "mergedAtTimestamp": self.merged_at,
             "closedAtTimestamp": self.closed_at,
@@ -2824,6 +2837,7 @@ class PullRequestRecord(Record):
             mergeable=pr_doc.get("mergeable"),
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
+            milestone=pr_doc.get("milestone"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
             merged_at=pr_doc.get("mergedAtTimestamp"),
             closed_at=pr_doc.get("closedAtTimestamp"),
