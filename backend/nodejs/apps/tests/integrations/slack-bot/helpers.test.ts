@@ -1836,6 +1836,7 @@ describe('slack-bot/helpers', () => {
       botToken: 'xoxb-test',
       signingSecret: 'signing-secret',
       botId: 'B1',
+      approveActionsFromSlack: false,
     };
 
     it('returns the bot from the registry the caller passed in', async () => {

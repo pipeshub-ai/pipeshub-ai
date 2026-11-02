@@ -26,6 +26,83 @@ import { setContextOrgId } from '../context/request-context';
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
 export const TOKEN_CLIENT_NAME = 'api';
+export const SLACK_CLIENT_NAME = 'slack';
+// Slack questions already use `slack`; this name is the one that also lets Slack answer tool approvals.
+export const SLACK_APPROVALS_CLIENT_NAME = 'slack-approvals';
+
+/** Whether the Slack bot with this config id lets Slack answer tool approvals. */
+export type SlackBotApprovalLookup = (configId: string) => Promise<boolean>;
+
+/**
+ * A lookup over the saved bot configs, reloaded at most once per `ttlMs`. The first config with the id decides.
+ * A failed load throws and is not cached.
+ */
+export function cachedApprovalLookup(
+  loadConfigs: () => Promise<
+    ReadonlyArray<{ id: string; approveActionsFromSlack?: boolean }>
+  >,
+  ttlMs: number,
+): SlackBotApprovalLookup {
+  let loadedAt = -Infinity;
+  let configs: ReadonlyArray<{
+    id: string;
+    approveActionsFromSlack?: boolean;
+  }> = [];
+  // Lookups that miss while a load runs wait on it instead of starting their own.
+  let loading: Promise<void> | null = null;
+  return async (configId: string): Promise<boolean> => {
+    if (Date.now() - loadedAt >= ttlMs) {
+      loading ??= loadConfigs()
+        .then((loaded) => {
+          configs = loaded;
+          loadedAt = Date.now();
+        })
+        .finally(() => {
+          loading = null;
+        });
+      await loading;
+    }
+    return (
+      configs.find((c) => c.id === configId)?.approveActionsFromSlack === true
+    );
+  };
+}
+
+// A caller picks its own client-name header, so the names that unlock an approval surface are never taken from it.
+export const claimedClientName = (req: Request): string =>
+  String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase();
+export const isSlackClientName = (name: string): boolean =>
+  name === SLACK_CLIENT_NAME || name === SLACK_APPROVALS_CLIENT_NAME;
+export const claimsPrivilegedClientName = (req: Request): boolean => {
+  const name = claimedClientName(req);
+  return name === WEB_CLIENT_NAME || isSlackClientName(name);
+};
+
+/** Only the bot's own scoped token is Slack: `slack`, or `slack-approvals` when its bot opted in (a failed read stays `slack`). */
+export async function scopedClientName(
+  req: Request,
+  scope: string,
+  configId: unknown,
+  slackBotApproves: SlackBotApprovalLookup | undefined,
+  logger: Pick<Logger, 'error'>,
+): Promise<void> {
+  if (
+    scope === TokenScopes.CONVERSATION_CREATE &&
+    typeof configId === 'string'
+  ) {
+    let approves = false;
+    try {
+      approves = (await slackBotApproves?.(configId)) === true;
+    } catch (lookupError) {
+      logger.error('Failed to read Slack bot settings', lookupError);
+    }
+    req.headers[CLIENT_NAME_HEADER] = approves
+      ? SLACK_APPROVALS_CLIENT_NAME
+      : SLACK_CLIENT_NAME;
+  } else if (claimsPrivilegedClientName(req)) {
+    req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
+  }
+}
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -37,6 +114,7 @@ export class AuthMiddleware {
     @inject('Logger') private logger: Logger,
     @inject('AuthTokenService') private tokenService: AuthTokenService,
     private oauthTokenServiceFactory: OAuthTokenServiceFactory = resolveOAuthTokenService,
+    private slackBotApproves?: SlackBotApprovalLookup,
   ) {
     this.authenticate = this.authenticate.bind(this);
   }
@@ -127,6 +205,10 @@ export class AuthMiddleware {
     const refusal = await findSessionRefusal(decoded, this.logger);
     if (refusal) {
       throw new UnauthorizedError(refusal);
+    }
+
+    if (isSlackClientName(claimedClientName(req))) {
+      req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
     }
 
     this.logger.debug('User authenticated', decoded);
@@ -304,10 +386,7 @@ export class AuthMiddleware {
     setContextOrgId(orgId);
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
-    if (
-      String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() ===
-      WEB_CLIENT_NAME
-    ) {
+    if (claimsPrivilegedClientName(req)) {
       req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
     }
 
@@ -342,6 +421,12 @@ export class AuthMiddleware {
 
         this.logger.debug(
           `userId: ${userId}, orgId: ${orgId}, scope: ${scope}`,
+        );
+
+        await this.setScopedClientName(
+          req,
+          scope,
+          (decoded as Record<string, unknown>).configId,
         );
 
         if (
@@ -393,6 +478,20 @@ export class AuthMiddleware {
       }
     };
   };
+
+  private setScopedClientName(
+    req: Request,
+    scope: string,
+    configId: unknown,
+  ): Promise<void> {
+    return scopedClientName(
+      req,
+      scope,
+      configId,
+      this.slackBotApproves,
+      this.logger,
+    );
+  }
 
   extractToken(req: Request): string | null {
     const authHeader = req.headers.authorization;

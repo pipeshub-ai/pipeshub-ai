@@ -955,13 +955,13 @@ function ConnectorFilterTagInput({
 }) {
   const { t } = useTranslation();
   // Tags live in local state (not re-derived from `value` on every render) so that
-  // transient per-tag UI state (isHighlighted for backspace-to-delete, isEditing for
-  // click-to-edit) survives across renders — mirrors invite-users-sidebar's TagInput usage.
+  // transient per-tag UI state (isEditing for click-to-edit) survives across renders;
+  // TagInput keeps the backspace-to-delete highlight itself. Mirrors invite-users-sidebar.
   const [tags, setTags] = useState<TagItem[]>(() => tagItemsFromIds(listFilterIds(value)));
 
   // Re-sync only when the persisted value diverges from what we last committed (e.g. the
   // filter row was reset/reloaded externally). Our own commits round-trip to the same ids,
-  // so this intentionally does not fire on every isHighlighted/isEditing-only local change.
+  // so this intentionally does not fire on every isEditing-only local change.
   useEffect(() => {
     const incomingIds = listFilterIds(value);
     const currentIds = tags.map((t) => t.value);

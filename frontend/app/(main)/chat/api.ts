@@ -1,9 +1,11 @@
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient, streamSSERequest } from '@/lib/api';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
+  type EditError,
   Conversation,
   ConversationMessage,
   ConversationPagination,
@@ -29,7 +31,9 @@ import {
   AttachmentRef,
   type ChatKnowledgeFilters,
   CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
+  type PendingApprovalItem,
 } from './types';
+import { toolApprovalDetails } from './tool-approval';
 import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
@@ -202,8 +206,9 @@ function buildFiltersPayload(
  */
 function buildAgentFiltersPayload(
   filters: Partial<ChatKnowledgeFilters> | null | undefined,
-): { filters: ChatKnowledgeFilters } {
-  return { filters: sanitizeFilters(filters) };
+): { filters?: ChatKnowledgeFilters } {
+  // A request built without filters (a chat answered in the background) asks for the agent's own.
+  return filters === undefined ? {} : { filters: sanitizeFilters(filters) };
 }
 
 // Chat API endpoints
@@ -276,6 +281,7 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
+    { suppressErrorToast }: Pick<AxiosRequestConfig, 'suppressErrorToast'> = {},
   ): Promise<{
     conversation: {
       id: string;
@@ -317,6 +323,7 @@ export const ChatApi = {
       meta: Record<string, unknown>;
     }>(`/api/v1/conversations/${conversationId}/`, {
       params: { page, limit },
+      suppressErrorToast,
     });
 
     const pagination = data.conversation.pagination ?? {
@@ -961,6 +968,28 @@ export interface AiModelsConfigResponse {
 }
 
 /**
+ * Asks the server whether edited arguments would be accepted, without answering the card.
+ * A request that is gone (404) or already answered or expired (410) comes back as one
+ * whole-call error; any other failure throws so the card can send and let the server decide.
+ */
+export async function validateApprovalEdits(
+  approvalId: string,
+  argsHash: string,
+  args: Record<string, unknown>
+): Promise<EditError[]> {
+  const res = await apiClient.post<{ errors?: EditError[]; error?: { message?: string } }>(
+    `/api/v1/mcp-servers/tool-approvals/${encodeURIComponent(approvalId)}/validate`,
+    { argsHash, arguments: args },
+    { suppressErrorToast: true, validateStatus: (s) => s === 200 || s === 404 || s === 410 }
+  );
+  if (res.status === 200) return res.data.errors ?? [];
+  // The API answers a refusal as { error: { code, message } }.
+  const sent = res.data?.error?.message;
+  const message = typeof sent === 'string' && sent ? sent : 'This request is no longer available.';
+  return [{ path: '', code: 'requestChanged', message }];
+}
+
+/**
  * Fetch the org's AI model configuration.
  *
  * Returns the list of models available for chat (with their keys and names).
@@ -1028,4 +1057,26 @@ export function fetchOrgWithLogo(): Promise<{ org: OrgResponse | null; logoUrl: 
     );
   }
   return _orgWithLogoPromise;
+}
+
+/** The calls waiting for the person's approval in their chats, newest first. An item whose card
+ * isn't shaped like one is dropped. */
+export async function fetchPendingApprovals(): Promise<PendingApprovalItem[]> {
+  const { data } = await apiClient.get<{ items?: unknown[] }>('/api/v1/mcp-servers/tool-approvals/pending', {
+    suppressErrorToast: true,
+  });
+  const items: PendingApprovalItem[] = [];
+  for (const raw of Array.isArray(data?.items) ? data.items : []) {
+    const item = (raw ?? {}) as Record<string, unknown>;
+    const card = toolApprovalDetails(item.card);
+    if (!card || typeof item.conversationId !== 'string' || !item.conversationId) continue;
+    items.push({
+      conversationId: item.conversationId,
+      conversationTitle: typeof item.conversationTitle === 'string' && item.conversationTitle ? item.conversationTitle : null,
+      agentId: typeof item.agentId === 'string' && item.agentId ? item.agentId : null,
+      createdAt: typeof item.createdAt === 'number' ? item.createdAt : 0,
+      card,
+    });
+  }
+  return items.sort((a, b) => b.createdAt - a.createdAt);
 }

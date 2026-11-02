@@ -13,6 +13,7 @@ import {
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  GoneError,
   InternalServerError,
   NotFoundError,
   PaymentRequiredError,
@@ -105,6 +106,15 @@ describe('handleBackendError', () => {
       )
       expect(result).to.be.instanceOf(NotFoundError)
       expect(result.message).to.equal('That team no longer exists.')
+    })
+
+    it('passes on a 410 with its own words', () => {
+      const result = handleBackendError(
+        { statusCode: 410, data: { detail: 'This approval request has already been answered or has expired.' } },
+        'validate an edited tool call',
+      )
+      expect(result).to.be.instanceOf(GoneError)
+      expect(result.message).to.equal('This approval request has already been answered or has expired.')
     })
   })
 
@@ -321,7 +331,7 @@ describe('handleBackendError', () => {
 
     afterEach(() => sinon.restore())
 
-    for (const statusCode of [400, 401, 403, 404, 409, 422]) {
+    for (const statusCode of [400, 401, 403, 404, 409, 410, 422]) {
       it(`logs a ${String(statusCode)} from the service at warn`, () => {
         handleBackendError({ statusCode, data: { detail: 'refused' } }, 'create connector')
 

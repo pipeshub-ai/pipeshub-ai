@@ -687,6 +687,7 @@ describe('ConfigurationManager Controller', () => {
         'agentId',
         'botToken',
         'signingSecret',
+        'approveActionsFromSlack',
       ])
     })
 
@@ -5028,6 +5029,44 @@ describe('ConfigurationManager Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
+    })
+  })
+
+  describe('Slack bot approveActionsFromSlack', () => {
+    const stored = (configs: object[]) => mockEncService.encrypt(JSON.stringify({ configs }))
+    const base = { id: 'cfg-1', name: 'B', botToken: 'xoxb-a', signingSecret: 's-a', createdAt: 'x', updatedAt: 'x' }
+    const saved = () => JSON.parse(mockEncService.encrypt.lastCall.args[0]).configs
+
+    it('defaults to false in the internal view', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(stored([base])) })
+      const res = createMockResponse()
+      await getInternalSlackBotConfigs(kvs)(createMockRequest(), res, createMockNext())
+      expect(res.json.firstCall.args[0].configs[0].approveActionsFromSlack).to.equal(false)
+    })
+
+    it('keeps the setting on create', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(null), compareAndSet: sinon.stub().resolves(true) })
+      const res = createMockResponse()
+      await createSlackBotConfig(kvs)(
+        createMockRequest({ body: { name: 'B', botToken: 'xoxb-a', signingSecret: 's-a', approveActionsFromSlack: true } }),
+        res,
+        createMockNext(),
+      )
+      expect(saved()[0].approveActionsFromSlack).to.equal(true)
+      expect(res.json.firstCall.args[0].config.approveActionsFromSlack).to.equal(true)
+    })
+
+    it('saves the setting on update and turns it off when omitted', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(stored([{ ...base, approveActionsFromSlack: true }])),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      await updateSlackBotConfig(kvs)(
+        createMockRequest({ params: { configId: 'cfg-1' }, body: { name: 'B', botToken: 'xoxb-a', signingSecret: 's-a' } }),
+        createMockResponse(),
+        createMockNext(),
+      )
+      expect(saved()[0].approveActionsFromSlack).to.equal(false)
     })
   })
 

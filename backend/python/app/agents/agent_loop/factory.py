@@ -195,6 +195,7 @@ from app.agents.agent_loop.tool_approvals import (
     approval_gate,
     begin_resume,
     hold_history,
+    pass_over_waiting_calls,
     resume_parked_call,
 )
 from app.agents.agent_loop.tool_approvals import (
@@ -719,6 +720,8 @@ class PipesHubAgentFactory:
             resume_answers = query
         # An answer to a tool approval card carries on the turn that stopped on it.
         approval_resume = bool(context.previous_conversations) and begin_resume(context, query)
+        if context.previous_conversations and not approval_resume:
+            await pass_over_waiting_calls(context)
         goal_query = (
             last_real_user_query(
                 context.previous_conversations, query, answers="" if typed_reply else resume_answers,

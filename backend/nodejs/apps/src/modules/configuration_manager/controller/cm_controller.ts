@@ -137,6 +137,7 @@ type SlackBotConfigEntry = {
   botToken: string;
   signingSecret: string;
   agentId?: string;
+  approveActionsFromSlack?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -821,6 +822,7 @@ const slackBotConfig = (config: SlackBotConfigEntry, reveal = false) => {
     id: config.id,
     name: config.name,
     agentId: config.agentId ?? null,
+    approveActionsFromSlack: config.approveActionsFromSlack === true,
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
     botToken: config.botToken,
@@ -834,6 +836,7 @@ const slackBotConfig = (config: SlackBotConfigEntry, reveal = false) => {
 const slackBotInternalConfig = (config: SlackBotConfigEntry) => ({
   id: config.id,
   agentId: config.agentId ?? null,
+  approveActionsFromSlack: config.approveActionsFromSlack === true,
   botToken: config.botToken,
   signingSecret: config.signingSecret,
 });
@@ -883,7 +886,13 @@ export const createSlackBotConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, botToken, signingSecret, agentId } = req.body;
+      const {
+        name,
+        botToken,
+        signingSecret,
+        agentId,
+        approveActionsFromSlack,
+      } = req.body;
       const normalizedAgentId =
         typeof agentId === 'string' && agentId.trim().length > 0
           ? agentId.trim()
@@ -913,6 +922,7 @@ export const createSlackBotConfig =
             botToken,
             signingSecret,
             agentId: normalizedAgentId,
+            approveActionsFromSlack: approveActionsFromSlack === true,
             createdAt: timestamp,
             updatedAt: timestamp,
           };
@@ -940,7 +950,13 @@ export const updateSlackBotConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { configId } = req.params;
-      const { name, botToken, signingSecret, agentId } = req.body;
+      const {
+        name,
+        botToken,
+        signingSecret,
+        agentId,
+        approveActionsFromSlack,
+      } = req.body;
       const normalizedAgentId =
         typeof agentId === 'string' && agentId.trim().length > 0
           ? agentId.trim()
@@ -985,6 +1001,7 @@ export const updateSlackBotConfig =
             botToken: credentials.botToken,
             signingSecret: credentials.signingSecret,
             agentId: normalizedAgentId,
+            approveActionsFromSlack: approveActionsFromSlack === true,
             updatedAt: new Date().toISOString(),
           };
 

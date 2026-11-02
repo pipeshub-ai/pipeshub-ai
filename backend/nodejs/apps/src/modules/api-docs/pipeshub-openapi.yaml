@@ -2293,6 +2293,14 @@ components:
         shown (answerable for 15 minutes, settled once, bound to the asking user and
         conversation); only its id and the answer travel here. A reply that answered a card
         can't be regenerated.
+
+        An allow may carry an edit of the call's arguments (`arguments`, with the `argsHash` the
+        card showed). The edit is checked against the tool's input schema, the tool's rules and
+        what the call does to data before anything runs; an edit that fails a check runs nothing,
+        leaves the card open with `editErrors`, and the card can be answered again. A deny may
+        carry a note (`feedback`) for the model to follow. `arguments` goes only with `allow` and
+        not with `remember`; `feedback` goes only with `deny`; `rememberForConversation` goes only
+        with `allow`, and not with `remember` or `arguments`.
       required: [approvalId, decision]
       properties:
         approvalId:
@@ -2306,6 +2314,82 @@ components:
           description: |
             "Don't ask again for this tool": the answer becomes the person's own rule for the
             tool (Pre-approved for allow, Deny for deny).
+        rememberForConversation:
+          type: boolean
+          description: |
+            "Allow for this conversation": the tool runs without a card for the rest of the
+            conversation. It lapses if the tool's input schema changes, and does not cover a call
+            that does more to data than this one or a tool a rule blocks. Goes only with `allow`,
+            and not with `remember` or `arguments`.
+        argsHash:
+          type: string
+          maxLength: 64
+          description: The `argsHash` of the approval card the edit was made on.
+        arguments:
+          type: object
+          additionalProperties: true
+          description: |
+            The person's edit of the call's arguments, run in place of the ones asked for. At
+            most 64,000 characters as JSON. Arguments equal to the ones asked for are a plain allow.
+        feedback:
+          type: string
+          maxLength: 2000
+          description: Why the person declined, passed to the model as an instruction.
+    PendingToolApproval:
+      type: object
+      description: A tool call waiting for the person's answer, with the chat it was asked in.
+      required: [conversationId, conversationTitle, agentId, createdAt, card]
+      properties:
+        conversationId:
+          type: string
+        conversationTitle:
+          type: string
+          nullable: true
+          description: The chat's title; null while it has none.
+        agentId:
+          type: string
+          nullable: true
+          description: The agent key when the chat is an agent chat, otherwise null.
+        createdAt:
+          type: integer
+          description: When the call was stopped for approval, epoch milliseconds.
+        card:
+          type: object
+          additionalProperties: true
+          description: |
+            The approval card the chat showed. `approvalId` is what a `ToolApprovalAnswer` and
+            the validate route take; `argsHash` names the arguments it showed.
+          required: [approvalId, toolName, kind, expiresAt, argsHash]
+          properties:
+            approvalId:
+              type: string
+            toolName:
+              type: string
+            toolTitle:
+              type: string
+              nullable: true
+              description: The tool's title from its server; null when it has none.
+            serverName:
+              type: string
+            kind:
+              type: string
+              enum: [read, write, destructive]
+            expiresAt:
+              type: integer
+              description: When the card stops being answerable, epoch milliseconds.
+            argsHash:
+              type: string
+            arguments:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: The arguments the model asked for; null when too large to show (see `argumentsPreview`).
+            argumentsPreview:
+              type: string
+            editable:
+              type: boolean
+            canRemember:
+              type: boolean
     McpToolRules:
       type: object
       properties:
@@ -2318,6 +2402,32 @@ components:
           description: >-
             Tool name → rule, the person's own, applied in all their chats. A tool without one
             starts from its kind: `read` at allow, `write` at ask, `destructive` at block.
+    McpToolApprovalValidateRequest:
+      type: object
+      required: [argsHash, arguments]
+      properties:
+        argsHash:
+          type: string
+          description: The hash of the arguments the card showed (`argsHash` on the card).
+        arguments:
+          type: object
+          additionalProperties: true
+          description: The edited arguments, at most 64,000 characters of JSON.
+    McpToolApprovalValidateResponse:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path:
+                type: string
+                description: JSON pointer to the argument; empty for the call as a whole.
+              message:
+                type: string
     ToolsetToolRulesUpdate:
       type: object
       required: [tools]
@@ -23560,11 +23670,17 @@ components:
             Agent to link. It is stored as given (trimmed) and never looked up. An empty or
             whitespace-only value links no agent. `null` is refused. One agent can be linked to
             only one config: a second link answers `400 HTTP_BAD_REQUEST`.
+        approveActionsFromSlack:
+          type: boolean
+          default: false
+          description: |
+            Lets people answer tool approval cards in Slack. Leaving it out turns it off, as
+            for `agentId`. Slack must have interactivity turned on for the app.
     SlackBotConfig:
       type: object
       description: A Slack bot configuration as admins see it. Credentials are always masked.
       additionalProperties: false
-      required: [id, name, agentId, createdAt, updatedAt, botToken, signingSecret]
+      required: [id, name, agentId, approveActionsFromSlack, createdAt, updatedAt, botToken, signingSecret]
       properties:
         id:
           type: string
@@ -23576,6 +23692,10 @@ components:
           type: string
           nullable: true
           description: The linked agent, or null when none is linked.
+        approveActionsFromSlack:
+          type: boolean
+          default: false
+          description: Whether people can answer tool approval cards in Slack.
         createdAt:
           type: string
           format: date-time
@@ -59720,6 +59840,139 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/tool-approvals/pending:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the tool calls waiting for my approval
+      description: >-
+        The calls waiting on the caller in their chats in the app, newest first, each with its
+        chat's title and agent. Calls from Slack, expired or answered calls, and calls whose chat
+        isn't the caller's are left out.
+
+        **Session only.** The bearer token must be the user's interactive session JWT. OAuth
+        access tokens and personal access tokens (`phpat_...`) are rejected with `403`.
+      operationId: listPendingToolApprovals
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The waiting calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PendingToolApproval'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller used an OAuth access token or personal access token (only a web sign-in can answer an approval)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/tool-approvals/{approvalId}/validate:
+    post:
+      tags:
+        - MCP Server Instances
+      summary: Check edited arguments for a tool call waiting for approval
+      description: >-
+        Runs the checks on an edit without answering the approval, which stays open. The body
+        reaches the checks unchanged, as the answer does: the app-wide XSS filter does not check
+        or rewrite it.
+
+        **Session only.** The bearer token must be the user's interactive session JWT. OAuth
+        access tokens and personal access tokens (`phpat_...`) are rejected with `403`.
+      operationId: validateMcpToolApprovalEdit
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          description: The id of the waiting approval.
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolApprovalValidateRequest'
+      responses:
+        '200':
+          description: The problems found; empty when the edit can be approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolApprovalValidateResponse'
+        '400':
+          description: |
+            Refused before authentication (`HTTP_BAD_REQUEST`): a query string value looks like
+            markup to the app-wide XSS filter, or the JSON body does not parse. The body itself
+            is not checked by that filter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller used an OAuth access token or personal access token (only a web sign-in can answer an approval)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such approval for this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: The approval has expired or was already answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            The request is not a validate request: `approvalId` is longer than 64 characters,
+            `argsHash` or `arguments` is missing or of the wrong type, `argsHash` is longer than
+            64 characters, or `arguments` is longer than 64,000 characters as JSON. A valid request whose edit can't be approved is a `200`
+            with `errors`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service
           content:
             application/json:
               schema:

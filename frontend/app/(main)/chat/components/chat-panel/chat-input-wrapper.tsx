@@ -3,6 +3,7 @@
 import { useCallback, useEffect } from 'react';
 import { useAui } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
+import { ComposerApprovalCard } from '../composer-approval-card';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
@@ -244,13 +245,16 @@ export function ChatInputWrapper() {
   };
 
   return (
-    <ChatInput
-      onSend={handleSend}
-      onUploadFile={handleUploadFile}
-      onDeleteFile={handleDeleteFile}
-      isAgentChat={isAgentChat}
-      agentId={effectiveAgentId}
-      persistDraft
-    />
+    <>
+      <ComposerApprovalCard />
+      <ChatInput
+        onSend={handleSend}
+        onUploadFile={handleUploadFile}
+        onDeleteFile={handleDeleteFile}
+        isAgentChat={isAgentChat}
+        agentId={effectiveAgentId}
+        persistDraft
+      />
+    </>
   );
 }

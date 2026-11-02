@@ -4,6 +4,9 @@ import {
   isAskUserQuestionToolName,
   type AskUserQuestionEvent,
 } from "./ask-user-format";
+import type { ToolApprovalDetails } from './approval-card';
+
+const APPROVAL_ANSWERS = new Set(['allowed', 'declined', 'expired']);
 
 export interface AGUIJsonPatchOp {
   op: string;
@@ -78,6 +81,11 @@ export interface SlackAGUICallbacks {
   /** A model call failed mid-stream and is retried: drop what it streamed. */
   onModelCallDiscarded?: () => void;
   onAskUserQuestion?: (payload: AskUserQuestionEvent) => void;
+  onApprovalRequested?: (approval: ToolApprovalDetails) => void;
+  /** An answered approval's call row: `replayed` when it repeats an earlier answer. */
+  onApprovalSettled?: (answer: string, replayed: boolean) => void;
+  /** How that answered call's row ended (`blocked` when an allowed call didn't run). */
+  onApprovalCallEnded?: (status: string) => void;
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
   onComplete?: (conversation: SlackConversationComplete) => void;
@@ -228,6 +236,8 @@ export function createSlackAGUIEventHandler(
   const toolNameById = new Map<string, { name: string; displayName?: string }>();
   /** Full tool args by call id — TOOL_CALL_RESULT.content is truncated to 200 chars. */
   const toolArgsById = new Map<string, unknown>();
+  // The answered approval's call: the first settled row of the turn.
+  let settledCallId: string | undefined;
   const askUserEmittedForCall = new Set<string>();
 
   const emitAnswer = (): void => {
@@ -326,6 +336,16 @@ export function createSlackAGUIEventHandler(
         if (toolCallId) {
           toolNameById.set(toolCallId, { name: toolCallName, displayName });
         }
+        if (
+          typeof data?.approvalAnswer === 'string' &&
+          APPROVAL_ANSWERS.has(data.approvalAnswer)
+        ) {
+          if (settledCallId === undefined) settledCallId = toolCallId ?? '';
+          callbacks.onApprovalSettled?.(
+            data.approvalAnswer,
+            data.approvalReplayed === true,
+          );
+        }
 
         // Settle preamble into the activity timeline before the tool row so
         // narration appears above the tool (same order as the frontend).
@@ -378,6 +398,16 @@ export function createSlackAGUIEventHandler(
         const displayName = meta?.displayName;
         const status = typeof data?.status === "string" ? data.status : "completed";
         callbacks.onToolResult?.(toolCallName, displayName, status);
+        if (toolCallId !== undefined && toolCallId === settledCallId) {
+          callbacks.onApprovalCallEnded?.(status);
+        }
+        if (
+          status === 'awaiting_approval' &&
+          typeof data?.approval === 'object' &&
+          data.approval !== null
+        ) {
+          callbacks.onApprovalRequested?.(data.approval as ToolApprovalDetails);
+        }
 
         if (isAskUserQuestionToolName(toolCallName)) {
           // Prefer full args; content is a 200-char preview and usually invalid JSON.

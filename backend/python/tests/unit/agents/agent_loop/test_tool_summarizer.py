@@ -481,7 +481,8 @@ class TestInlineArgs:
         assert inline_args({"a": None, "b": True, "c": 1.5}) == "a: null, b: true, c: 1.5"
 
     def test_collections_are_summarized(self) -> None:
-        assert inline_args({"ids": [1, 2], "one": [1], "filter": {"x": 1}}) == 'ids: [2 items], one: [1 item], filter: {…}'
+        assert inline_args({"ids": [1, 2], "one": ["a@x.com"], "filter": {"x": 1}}) == 'ids: [1, 2], one: [a@x.com], filter: {…}'
+        assert inline_args({"cc": [], "many": [1, 2, 3, 4], "deep": [{"a": 1}]}) == "cc: none, many: [4 items], deep: [1 item]"
 
     def test_long_strings_are_truncated(self) -> None:
         text = inline_args({"q": "x" * 200})

@@ -1,5 +1,5 @@
 import { toolDisplayName } from '../workspace/mcp-servers/tool-rules';
-import type { MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
+import type { EditError, JsonSchema, MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
 
 const MAX_VALUE_CHARS = 300;
 // How the app's answer to a card starts (Python `TOOL_APPROVAL_RESUME_PREFIX`).
@@ -24,6 +24,11 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
   const toolName = text('toolName');
   if (!approvalId || !serverName || !toolName || typeof raw.expiresAt !== 'number') return null;
   const args = raw.arguments;
+  const schema = raw.inputSchema;
+  const edited = raw.editedArguments;
+  const editErrors = Array.isArray(raw.editErrors)
+    ? raw.editErrors.filter((e): e is EditError => !!e && typeof e.path === 'string' && typeof e.message === 'string')
+    : [];
   return {
     approvalId,
     instanceId: text('instanceId') ?? '',
@@ -37,6 +42,15 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     expiresAt: raw.expiresAt,
     arguments: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null,
     ...(text('argumentsPreview') ? { argumentsPreview: text('argumentsPreview') as string } : {}),
+    ...(text('toolPath') ? { toolPath: text('toolPath') as string } : {}),
+    ...(raw.source === 'mcp' || raw.source === 'toolset' ? { source: raw.source } : {}),
+    ...(schema && typeof schema === 'object' && !Array.isArray(schema) ? { inputSchema: schema as JsonSchema } : {}),
+    ...(text('argsHash') ? { argsHash: text('argsHash') as string } : {}),
+    ...(typeof raw.editable === 'boolean' ? { editable: raw.editable } : {}),
+    ...(text('argsSummary') ? { argsSummary: text('argsSummary') as string } : {}),
+    ...(text('displayName') ? { displayName: text('displayName') as string } : {}),
+    ...(editErrors.length ? { editErrors } : {}),
+    ...(edited && typeof edited === 'object' && !Array.isArray(edited) ? { editedArguments: edited as Record<string, unknown> } : {}),
   };
 }
 
@@ -70,7 +84,14 @@ export interface SettledToolApproval {
   server: string;
   /** `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). */
   answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun';
+  /** Allowed after the person changed these arguments. */
+  changedFields?: string[];
+  /** Declined with this note for the agent. */
+  note?: string;
 }
+
+// How the server words a decline with a note (Python `tool_approvals._settle`, `Outcome.preview`).
+const DECLINED_NOTE = /^Declined: ([\s\S]+)$/;
 
 /** The cards this reply answered, in order, at any depth. */
 export function settledToolApprovals(parts: MessagePart[] | undefined): SettledToolApproval[] {
@@ -79,11 +100,16 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
     for (const part of list ?? []) {
       if (part.type === 'tool_call' && part.approvalAnswer) {
         const details = toolApprovalDetails(part.approval);
+        // The preview is cut at the saved size; parts saved before the note was sent have only it.
+        const note = part.approvalAnswer === 'declined' ? part.approvalNote || DECLINED_NOTE.exec(part.resultPreview ?? '')?.[1] : undefined;
+        const answer = part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer;
         settled.push({
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
           server: details?.serverName ?? '',
-          answer: part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer,
+          answer,
+          ...(answer === 'allowed' && part.changedFields?.length ? { changedFields: part.changedFields } : {}),
+          ...(note ? { note } : {}),
         });
       }
       walk(part.parts);
@@ -151,7 +177,8 @@ export function approvalArgumentLines(
   args: Record<string, unknown>,
   { full = false }: { full?: boolean } = {}
 ): Array<{ name: string; value: string; cut: boolean }> {
-  return Object.entries(args).map(([name, value]) => {
+  // An empty list says nothing a person needs before approving.
+  return Object.entries(args).filter(([, value]) => !(Array.isArray(value) && value.length === 0)).map(([name, value]) => {
     const shown = argumentText(name, value);
     const cut = !full && shown.length > MAX_VALUE_CHARS;
     return { name, value: cut ? `${shown.slice(0, MAX_VALUE_CHARS)}…` : shown, cut };

@@ -13,13 +13,15 @@ admin-shared credentials are masked); the underlying `ConfigurationService` stor
 values at rest exactly like the toolsets/connectors credential paths.
 """
 import asyncio
+import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal, NamedTuple, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.agents.agent_loop import tool_approvals
@@ -31,6 +33,7 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_oauth_state_claim_path,
     get_mcp_oauth_state_path,
     get_mcp_shared_dcr_client_path,
+    get_mcp_tool_approval_claim_path,
     get_mcp_unhashed_oauth_state_claim_path,
     get_mcp_unhashed_oauth_state_path,
 )
@@ -70,6 +73,7 @@ from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.core.org_context import current_org_id
 from app.edition_config import (
     build_schedule_refresh_kwargs,
     can_reveal_secrets,
@@ -2253,3 +2257,58 @@ async def update_my_tool_rules(request: Request, instance_id: str, payload: Tool
     ):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the tool rules.")
     return {"tools": payload.tools}
+
+
+# Edits to a tool call waiting for approval (`tool_approvals.check_edit`).
+_MAX_EDITED_ARGUMENT_CHARS = 64_000
+
+
+class ToolApprovalValidateBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    args_hash: str = Field(alias="argsHash", max_length=64)
+    arguments: dict[str, Any]
+
+    @field_validator("arguments")
+    @classmethod
+    def _bounded_arguments(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, separators=(",", ":"), default=str, ensure_ascii=False)) > _MAX_EDITED_ARGUMENT_CHARS:
+            raise ValueError("The edited arguments are too large.")
+        return value
+
+
+@router.get("/tool-approvals/pending", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def list_pending_tool_approvals(request: Request) -> dict[str, Any]:
+    """The calls waiting on the signed-in person in their chats in the app, newest first."""
+    config_service = _get_config_service(request)
+    user_context = _get_user_context(request)
+    if (getattr(request.state, "user", None) or {}).get("isOAuth"):
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Tool approvals can only be answered from the PipesHub app.")
+    entries = await tool_approvals.list_pending_for(config_service, org_id=current_org_id(), user_id=user_context["user_id"])
+    return {"items": [
+        {"conversationId": e.get("conversationId", ""), "createdAt": e.get("createdAt"), "card": e["card"]}
+        for e in entries if e.get("client") == tool_approvals.WEB_CLIENT_NAME
+    ]}
+
+
+@router.post("/tool-approvals/{approval_id}/validate", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+async def validate_tool_approval_edit(
+    request: Request, payload: ToolApprovalValidateBody, approval_id: Annotated[str, Path(max_length=64)],
+) -> dict[str, Any]:
+    """Checks edited arguments for a waiting call without answering it: the approval stays open."""
+    config_service = _get_config_service(request)
+    user_context = _get_user_context(request)
+    # Only a web sign-in answers a card; an OAuth or personal access token never does.
+    if (getattr(request.state, "user", None) or {}).get("isOAuth"):
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Tool approvals can only be answered from the PipesHub app.")
+    pending = await tool_approvals.read_pending(config_service, approval_id)
+    if pending is None or (pending.org_id, pending.user_id) != (current_org_id(), user_context["user_id"]):
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="This approval request was not found.")
+    claim = await config_service.get_config(get_mcp_tool_approval_claim_path(approval_id), default=None, use_cache=False, raise_on_error=True, keep_in_cache=False)
+    if isinstance(claim, dict) or pending.expires_at <= time.time():
+        raise HTTPException(status_code=HttpStatusCode.GONE.value, detail="This approval request has already been answered or has expired.")
+    errors = tool_approvals.check_edit(
+        pending, payload.arguments, shown_hash=payload.args_hash, own_rule=await tool_approvals.own_rule_for(config_service, pending),
+        enabled_on_project=pending.enabled_on_project,
+    )
+    return {"errors": errors}
