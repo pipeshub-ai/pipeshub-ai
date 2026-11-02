@@ -652,17 +652,22 @@ def jira_issue_browse_url_regex(issue_key: str) -> str:
     return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"
 
 
-async def org_id_from_app_edge(graph_provider: "IGraphDBProvider", app_id: str) -> str | None:
+async def org_id_from_app_edge(
+    graph_provider: "IGraphDBProvider", app_id: str, *, raise_on_error: bool = False
+) -> str | None:
     """The org an app belongs to, from its org-app edge.
 
     Connector apps created before ``orgId`` was stored on the document have
     their org only on this edge. Neo4j returns a bare id in ``from_id``;
     Arango a document handle in ``_from`` ("organizations/<key>").
+    ``raise_on_error=True`` raises a failed edge read instead of answering None.
     """
-    edges = await graph_provider.get_edges_to_node(
-        f"{CollectionNames.APPS.value}/{app_id}",
-        CollectionNames.ORG_APP_RELATION.value,
-    )
+    node_id = f"{CollectionNames.APPS.value}/{app_id}"
+    # Only passed when set, so the default call is unchanged for every caller and test double.
+    if raise_on_error:
+        edges = await graph_provider.get_edges_to_node(node_id, CollectionNames.ORG_APP_RELATION.value, raise_on_error=True)
+    else:
+        edges = await graph_provider.get_edges_to_node(node_id, CollectionNames.ORG_APP_RELATION.value)
     for edge in edges or []:
         if not isinstance(edge, dict):
             continue
