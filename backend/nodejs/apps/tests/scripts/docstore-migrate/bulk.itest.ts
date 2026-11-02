@@ -23,6 +23,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     let rt: MigrationRuntime;
     const UPPER_USER = oid();
     const UPPER_CRED = oid();
+    const MIXED_USER = oid();
+    const MIXED_CRED = oid();
+    /** Letters alternate in case: neither the stored form nor its lower- or upper-case. */
+    const mixed = (id: string): string => id.split('').map((ch, i) => (i % 2 ? ch.toUpperCase() : ch.toLowerCase())).join('');
 
     /** MongoDB refuses U+0000 in a key, so fixture keys that have one are written without it. */
     const mongoSafe = (v: unknown): unknown => {
@@ -44,6 +48,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       docs.userCredentials.push({
         _id: UPPER_CRED, userId: String(UPPER_USER).toUpperCase(), orgId: String(ORG_A).toUpperCase(), ipAddress: '10.0.0.9',
         hashedPassword: '$2b$10$upperhash', createdAt: at('2026-01-08T00:00:00.000Z'), updatedAt: at('2026-01-08T00:00:00.000Z'), __v: 0,
+      });
+      docs.users.push({
+        _id: MIXED_USER, slug: 'user-1091', orgId: ORG_A, fullName: 'Mixed Case', email: 'mixed@acme.example',
+        createdAt: at('2026-01-09T00:00:00.000Z'), updatedAt: at('2026-01-09T00:00:00.000Z'), __v: 0,
+      });
+      docs.userCredentials.push({
+        _id: MIXED_CRED, userId: mixed(String(MIXED_USER)), orgId: mixed(String(ORG_A)), ipAddress: '10.0.0.10',
+        hashedPassword: '$2b$10$mixedhash', createdAt: at('2026-01-09T00:00:00.000Z'), updatedAt: at('2026-01-09T00:00:00.000Z'), __v: 0,
       });
       for (const [name, list] of Object.entries(docs))
         if (list.length) await mongo.client.db(DB).collection(name).insertMany(list.map(mongoSafe) as never[], { ordered: false });
@@ -131,6 +143,22 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const after = await verifyCredentials(rt);
       expect(after.diffs).to.deep.equal([]);
       expect(after.countMismatches).to.deep.equal([]);
+    });
+
+    it('a mixed-case id in the source: the follower keeps the row and the verify finds no difference', async () => {
+      const rows = async (): Promise<number> =>
+        Number((await stack.admin((c) => c.query('SELECT count(*) AS n FROM identity.user_credentials WHERE user_id = $1', [String(MIXED_USER)]))).rows[0].n);
+      expect(await rows()).to.equal(1);
+      expect(await verifyCredentialsFor(rt, [String(MIXED_CRED)])).to.deep.equal([]);
+      await syncCredentials(rt, [String(MIXED_USER)]);
+      expect(await rows(), 'the row is replaced, not dropped').to.equal(1);
+      const after = await verifyCredentials(rt);
+      expect(after.diffs).to.deep.equal([]);
+      expect(after.countMismatches).to.deep.equal([]);
+      // an id with no credential at all still has no row afterwards
+      const none = String(oid());
+      await syncCredentials(rt, [none]);
+      expect(Number((await stack.admin((c) => c.query('SELECT count(*) AS n FROM identity.user_credentials WHERE user_id = $1', [none]))).rows[0].n)).to.equal(0);
     });
   });
 }
