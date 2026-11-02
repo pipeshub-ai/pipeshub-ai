@@ -34,6 +34,7 @@ from app.modules.parsers.code_parser.lang_config import (
 )
 from app.modules.parsers.code_parser.models import DECLARATION, Relation
 from app.services.parsing.interface import ParseResult, ParserProvider
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -216,7 +217,7 @@ class CodeFileParser:
         if parse_pool.should_offload(len(content)):
             return await parse_pool.submit(
                 parse_code_to_blocks, content, record_name, file_path, language,
-                label=file_path or record_name, size=len(content),
+                label=file_path or record_name, size=len(content), kind=ParseKind.CODE,
             )
         return await asyncio.to_thread(
             self.parse_to_blocks, content, record_name, file_path, language
