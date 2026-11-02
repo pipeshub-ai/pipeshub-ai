@@ -567,11 +567,19 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
         "USD 1 to " * 20_000,
         "(USD): " * 20_000,
         "1-2-" * 20_000 + " EUR",
+        "1." * 20_000,
+        "H1 " * 20_000,
+        "1H " * 20_000,
+        "between March " * 5_000,
+        "between March 5 and " * 5_000,
+        "between 2026-01-01 and " * 5_000,
+        "1-Jan-" * 20_000,
     ],
     ids=[
         "space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix",
         "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes", "apostrophe-grouped",
         "money-range-dashes", "money-range-symbol-twice", "money-range-to", "header-currency", "trailing-range-dashes",
+        "dotted-run", "half-run", "half-first-run", "between-run", "between-day-run", "between-iso-run", "day-mon-run",
     ],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
@@ -880,3 +888,132 @@ def test_a_date_padded_with_spaces_normalizes_in_linear_time() -> None:
     start = time.process_time()
     normalize_temporal(EntityKind.DATE, "Jan" + " " * 16_000 + "5", NormalizationContext(tz="UTC"))
     assert time.process_time() - start < 1.0
+
+
+def _dates(text: str) -> list[tuple[str, str | None]]:
+    """Each date span with its value, through the recognizer and ``normalize_value``."""
+    from app.modules.named_entities.normalizers import normalize_value
+
+    kinds = frozenset({EntityKind.DATE, EntityKind.DATE_RANGE, EntityKind.DATE_TIME, EntityKind.DURATION})
+    found = []
+    for mention in ValueCandidateRecognizer(kinds).recognize([TextUnit(0, "b", text)]):
+        value = normalize_value(mention.kind, mention.surface, NormalizationContext(tz="UTC"))
+        found.append((mention.surface, value and (getattr(value, "timex", None) or value.iso)))
+    return found
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # Dotted dates are the European form, day first; dateparser read them month first.
+    ("Due 10.09.2026 per contract", [("10.09.2026", "2026-09-10")]),
+    ("Due 3.1.2026", [("3.1.2026", "2026-01-03")]),
+    ("Due 2026.09.10", [("2026.09.10", "2026-09-10")]),
+    ("Due 2026/09/10 per contract", [("2026/09/10", "2026-09-10")]),
+    ("Due 31-Dec-2026 per contract", [("31-Dec-2026", "2026-12-31")]),
+    # A two-digit year stays with dateparser, which keeps its century.
+    ("Due 1-Jan-99", [("1-Jan-99", "1999-01-01T00:00:00+00:00")]),
+    ("Revenue in H1 2026 grew", [("H1 2026", "2026-H1")]),
+    ("Revenue in 1H26 grew", [("1H26", "2026-H1")]),
+    ("Plan for H2 FY26", [("H2 FY26", "2026-H2")]),
+    ("Plan for H2 fy26", [("H2 fy26", "2026-H2")]),
+    ("H1'26 target", [("H1'26", "2026-H1")]),
+    ("Plan for 2H 2026", [("2H 2026", "2026-H2")]),
+    # A date that ends the sentence.
+    ("Signed 10.09.2026.", [("10.09.2026", "2026-09-10")]),
+    ("Released on 2026.09.10.", [("2026.09.10", "2026-09-10")]),
+    ("between March and May 2026", [("between March and May 2026", "2026-03/2026-05"), ("May 2026", "2026-05")]),
+    # Day and ISO ends, through extraction: one range span, the ends read as dates too.
+    ("Audit between March 5 and May 10, 2026.", [
+        ("between March 5 and May 10, 2026", "2026-03-05/2026-05-10"), ("March 5", "XXXX-03-05"),
+        ("May 10, 2026", "2026-05-10"),
+    ]),
+    ("Audit between Jan 5 and 10, 2026", [("between Jan 5 and 10, 2026", "2026-01-05/2026-01-10"), ("Jan 5", "XXXX-01-05")]),
+    ("Audit between 5 March and 10 May 2026", [
+        ("between 5 March and 10 May 2026", "2026-03-05/2026-05-10"), ("5 March", "XXXX-03-05"),
+        ("10 May 2026", "2026-05-10"),
+    ]),
+    ("Audit between 2026-01-01 and 2026-03-01", [
+        ("between 2026-01-01 and 2026-03-01", "2026-01-01/2026-03-01"), ("2026-01-01", "2026-01-01"),
+        ("2026-03-01", "2026-03-01"),
+    ]),
+    ("between March 2025 and May 2026", [
+        ("between March 2025 and May 2026", "2025-03/2026-05"), ("March 2025", "2025-03"), ("May 2026", "2026-05"),
+    ]),
+])
+def test_more_written_date_forms_read(text: str, expected: list[tuple[str, str | None]]) -> None:
+    assert _dates(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # Durations, not half-years.
+    ("Meeting ran 1h 30 min", [("30 min", "PT30M")]),
+    ("took 2h 15 minutes", [("15 minutes", "PT15M")]),
+    ("H1\n2026", []),
+    ("H2 20 units", []),
+    ("H3 2026", []),
+    ("H1N1 H2O H1B visa", []),
+    ("NVIDIA H100 and H200 GPUs", []),
+    ("part H120 and model H12026", []),
+    ("Ouverture à 1H00", []),
+    ("build 2026.09.10.4 and 10.09.2026.5", []),
+    # Version strings and addresses.
+    ("IntelliJ 2024.1.3", []),
+    ("ip 192.168.10.2026", []),
+    ("v1.2.2026.4", []),
+    ("10.09.26", []),
+    # Matched but no such day: no value.
+    ("2026/13/40", [("2026/13/40", None)]),
+    ("phone 12.34.5678", [("12.34.5678", None)]),
+    # "and" splits a range only after "between".
+    ("Smith and May 2026", [("May 2026", "2026-05")]),
+    ("2024-01-01 and later", [("2024-01-01", "2024-01-01")]),
+    ("between 3 and 5 people", []),
+    ("between May 2 and noon", [("May 2", "XXXX-05-02")]),
+])
+def test_lookalikes_are_not_read_as_new_date_forms(text: str, expected: list[tuple[str, str | None]]) -> None:
+    assert _dates(text) == expected
+
+
+def test_a_half_year_is_a_six_month_range_kept_through_normalize_value() -> None:
+    """"half" missing from the granularity type made every half-year fail validation, silently."""
+    from app.modules.named_entities.normalizers import normalize_value
+
+    value = normalize_value(EntityKind.DATE_RANGE, "H2 2026", NormalizationContext(tz="UTC"))
+    assert value is not None and value.granularity == "half"
+    assert (value.start_ms, value.end_ms) == (_ms(2026, 7, 1), _ms(2027, 1, 1))
+
+
+
+@pytest.mark.parametrize(("surface", "timex", "end"), [
+    # The end is exclusive: the day after the last day named.
+    ("between March 5 and May 10, 2026", "2026-03-05/2026-05-10", (2026, 5, 11)),
+    ("between Jan 5 and 10, 2026", "2026-01-05/2026-01-10", (2026, 1, 11)),
+    ("between 2026-01-01 and 2026-03-01", None, (2026, 3, 2)),
+])
+def test_a_between_range_with_day_ends_reads_whole(surface: str, timex: str | None, end: tuple[int, int, int]) -> None:
+    from app.modules.named_entities.normalizers import normalize_value
+
+    value = normalize_value(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    assert value is not None and value.start_ms is not None
+    assert value.end_ms == _ms(*end)
+    if timex:
+        assert value.timex == timex
+
+
+def test_a_half_by_name_through_normalize_value_rejects_product_codes() -> None:
+    from app.modules.named_entities.normalizers import normalize_value
+
+    for surface in ("H100", "H200", "H12026", "1H00"):
+        value = normalize_value(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+        assert value is None or value.granularity != "half", surface
+
+
+
+def test_a_between_span_padded_with_spaces_normalizes_in_linear_time() -> None:
+    import time
+
+    surface = "between March and May" + " " * 40_000 + "2026"
+    start = time.process_time()
+    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    # The " and " separator retried at every space took about 4 s here; guarded, milliseconds.
+    assert time.process_time() - start < 1.0
+    assert value is not None and value.timex == "2026-03/2026-05"
