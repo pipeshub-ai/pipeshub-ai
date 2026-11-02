@@ -30,6 +30,8 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    # Record names, published by connectors so a record is findable by name before it is indexed.
+    RECORD_TITLE_EVENTS = "record-title-events"
     CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
@@ -301,6 +303,18 @@ class MessagingEnvConfig:
         same ceiling faster.
         """
         return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "10"))
+
+    @property
+    def record_title_batch_size(self) -> int:
+        """Record names written per entity-index write by the title consumer."""
+        size = _env_int("RECORD_TITLE_BATCH_SIZE", 100)
+        return size if size >= 1 else 100
+
+    @property
+    def record_title_flush_seconds(self) -> float:
+        """How long a partial batch of record names waits for more before it is written."""
+        seconds = _env_seconds("RECORD_TITLE_FLUSH_SECONDS", 2.0)
+        return seconds if seconds >= 0.1 else 2.0
 
     @property
     def message_timeout_ms(self) -> int:

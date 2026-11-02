@@ -92,6 +92,10 @@ class TestRequiredTopics:
         assert Topic.SYNC_EVENTS.value in REQUIRED_TOPICS
         assert Topic.HEALTH_CHECK.value in REQUIRED_TOPICS
 
+    def test_record_title_events_topic(self):
+        assert Topic.RECORD_TITLE_EVENTS.value == "record-title-events"
+        assert Topic.RECORD_TITLE_EVENTS.value in REQUIRED_TOPICS
+
     def test_has_at_least_five_topics(self):
         assert len(REQUIRED_TOPICS) >= 5
 

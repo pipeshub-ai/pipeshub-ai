@@ -35,6 +35,8 @@ def _processor() -> DataSourceEntitiesProcessor:
     proc.org_id = "org-1"
     proc.messaging_producer = AsyncMock()
     proc.messaging_producer.send_messages = AsyncMock(side_effect=lambda topic, messages: [True] * len(messages))
+    # Title events have their own tests (test_dsp_record_title_events.py); here they would only share send_messages.
+    proc._publish_record_titles = AsyncMock()
     return proc
 
 
