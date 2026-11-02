@@ -385,6 +385,8 @@ Each one usually becomes one of the edits above.
 
 ## Environment variables
 
+A local `--stack managed` run needs the same non-secret settings the CI `run-stack` job sets in `.github/workflows/qa-pipeline.yml` (its `env:` block). At least `PIPESHUB_TEST_ENV=local`, or the integration tests stop before the first test; tests that read mail also need `SMTP_HOST` and `SMTP_PORT`. Secrets stay unset unless you mean to use them.
+
 | Variable | Default | Used for |
 | --- | --- | --- |
 | `QA_PYTHON` | current interpreter | Backend pytest suites (needs backend deps + pytest) |
