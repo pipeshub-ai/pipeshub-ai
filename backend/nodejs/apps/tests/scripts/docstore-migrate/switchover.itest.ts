@@ -200,6 +200,31 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(again.message).to.contain('no verified state').and.to.contain('migrate --online');
       });
 
+      it('a sample that does not finish takes the verified state back as well, and the error is the one that is reported', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        expect((await onlineVerify(w.rt, { log })).ok).to.equal(true);
+        // the connection is lost in the sample's catch-up: the third stream opened (the changes-only pass opens two)
+        const real = w.rt.mongo.watch.bind(w.rt.mongo);
+        let opened = 0;
+        (w.rt.mongo as any).watch = (...args: unknown[]) => {
+          opened += 1;
+          if (opened === 3) throw new Error('connection lost in the sample');
+          return (real as any)(...args);
+        };
+        let err: Error | undefined;
+        try {
+          await onlineVerify(w.rt, { log, sample: 1 }).catch((e: Error) => (err = e));
+        } finally {
+          (w.rt.mongo as any).watch = real;
+        }
+        expect(err?.message).to.equal('connection lost in the sample');
+        const js = await JobState.attach(w.rt);
+        expect(js.progress.verify).to.include({ ok: false });
+        expect(js.progress.verify!.token, 'the position is kept').to.not.equal(undefined);
+        const pre = await precheck(w.rt, js, { log, lagMaxMs: 60_000, fenceArmed: true, shadowClean: true });
+        expect(pre.items.find((i) => i.name === 'verified state')!.ok).to.equal(false);
+      });
+
       it('a verify that finds nothing wrong with any document, but a failed global check, is not clean', async () => {
         await onlineStart(w.rt, { dryRun: false, log });
         const js = await JobState.attach(w.rt);

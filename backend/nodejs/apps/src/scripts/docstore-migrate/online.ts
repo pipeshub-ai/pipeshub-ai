@@ -403,26 +403,34 @@ export async function onlineVerify(
         'the changes since the last verify could not be read (the token may have fallen out of the oplog): run a full verify',
     };
   const changed = v.changed ?? 0;
-  // a sample says nothing about what changed: it does not move the verified position
-  const sampled =
-    v.ok && o.sample !== undefined
-      ? await verifyConverge(rt, js, o.log, {
-          sample: o.sample,
-          noToken: true,
-        })
-      : undefined;
-  const ok = v.ok && (sampled?.ok ?? true);
-  // the changes-only pass stored a verified state; a sample that found a difference in a document that did not change takes it back, so the
-  // cut's pre-check refuses and the next pass says there is no verified state (the cut only looks again at documents that changed)
-  if (sampled && !sampled.ok) {
+  // The changes-only pass has stored a verified state. A sample that finds a difference in a document that did not change, or that does not
+  // finish, takes it back (the position is kept), so the cut's pre-check refuses and the next pass says there is no verified state.
+  const invalidate = async (diffs: number, quiet: boolean): Promise<void> => {
     js.progress.verify = {
       ...js.progress.verify,
       at: new Date().toISOString(),
       ok: false,
-      diffs: sampled.remaining,
+      diffs,
     };
-    await js.checkpoint();
+    const saved = js.checkpoint();
+    if (quiet) await saved.catch(() => undefined);
+    else await saved;
+  };
+  // a sample says nothing about what changed: it does not move the verified position
+  let sampled: Awaited<ReturnType<typeof verifyConverge>> | undefined;
+  if (v.ok && o.sample !== undefined) {
+    try {
+      sampled = await verifyConverge(rt, js, o.log, {
+        sample: o.sample,
+        noToken: true,
+      });
+    } catch (e) {
+      await invalidate(0, true); // the error is the one to see, not a failure to save
+      throw e;
+    }
   }
+  const ok = v.ok && (sampled?.ok ?? true);
+  if (sampled && !sampled.ok) await invalidate(sampled.remaining, false);
   return {
     ok,
     stage: 'verify',
