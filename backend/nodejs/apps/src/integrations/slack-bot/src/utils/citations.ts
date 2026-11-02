@@ -278,6 +278,31 @@ export class CitationMarkers {
   }
 }
 
+/**
+ * The finished answer's citation links (`[N](/record/…)`, as the backend
+ * numbers them) as plain `[N]` markers that match the numbered Sources list.
+ * Only numbers a citation carries change; other numbered links stay links.
+ */
+export function stripNumberedCitationLinkTargets(
+  text: string,
+  citations: SlackCitationLike[] | undefined,
+): string {
+  const numbers = new Set(
+    (citations ?? []).flatMap((citation) => {
+      const n = parseCitationNumber(citation.citationData.chunkIndex);
+      return n === null ? [] : [n];
+    }),
+  );
+  if (numbers.size === 0) return text;
+  return text.replace(
+    NUMBERED_MARKDOWN_LINK_PATTERN,
+    (match, citationNumber: string) =>
+      numbers.has(Number.parseInt(citationNumber, 10))
+        ? `[${citationNumber}]`
+        : match,
+  );
+}
+
 const SOURCES_PER_BLOCK = 10;
 
 /**

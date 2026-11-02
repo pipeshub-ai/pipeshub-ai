@@ -182,6 +182,15 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(row!.title.length).to.be.at.most(256);
     });
 
+    it('shows a blocked call as a Result, with its reason when there is one', () => {
+      const plan = new SlackTaskPlan();
+      plan.toolStarted('jira_create', 'Created an issue', 'c1');
+      plan.toolStarted('jira_create', 'Created an issue', 'c2');
+      plan.toolFinished('jira_create', 'Created an issue', 'blocked', 'c1');
+      const [row] = plan.toolFinished('jira_create', 'Created an issue', 'blocked', 'c2', { summary: 'Not allowed here' });
+      expect(row!.output).to.equal('✗ Created an issue\nResult: Blocked\n\n✗ Created an issue\nResult: Blocked: Not allowed here');
+    });
+
     it('shows how an approval was settled, as the dashboard chips it', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira_create', 'Created an issue', 'c1', { approvalAnswer: 'allowed' });

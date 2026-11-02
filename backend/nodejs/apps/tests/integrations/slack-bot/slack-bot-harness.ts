@@ -806,6 +806,20 @@ export function describeAnswerWiring(
       expect(JSON.stringify(stop.blocks)).to.include('That is all.');
     });
 
+    it('shows the citations of an answer that came only with the end of the run as [n], keeping other numbered links', async () => {
+      const answer = 'Revenue grew 12% [1](/record/rec-1). See item [7](https://example.com/list).';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
+        finished(answer, CITATIONS),
+      ]);
+
+      expect(visibleText(client)).to.equal('Revenue grew 12% [1]. See item [7](https://example.com/list).');
+      const [stop] = apiCalls(client, 'chat.stopStream');
+      expect(JSON.stringify(stop.blocks)).to.include('"[1] "').and.include('https://x.test/q3');
+    });
+
     it('shows no steps for a run with none', async () => {
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
