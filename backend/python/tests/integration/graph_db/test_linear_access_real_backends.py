@@ -138,6 +138,10 @@ class _Env:
         return [{**d, "id": d.get("id") or d.get("_key")} for d in docs
                 if not d.get("isPlaceholder") and not d.get("isDeleted")]
 
+    async def gate(self) -> set[str]:
+        """Emails of the users the connector is attached to (the app-user relation)."""
+        return {u.email for u in await self.processor.get_all_app_users(self.connector_id, raise_on_error=True)}
+
     async def ticket_names(self) -> set[str]:
         return {d["recordName"] for d in await self.records() if d["recordType"] == "TICKET"}
 
@@ -593,6 +597,30 @@ async def test_membership_and_visibility_changes_reach_access(env: _Env) -> None
 
     p["alice"].active = False  # suspended in Linear
     await env.sync()
+    await env.assert_matches_linear()
+
+
+async def test_a_deactivated_person_loses_the_connector_and_gets_it_back(env: _Env) -> None:
+    """A suspended Linear account is gone from Linear's user list. Its connector access goes
+    with it on the next sync; reactivating the account brings the access back."""
+    p = await _people(env, "alice", "bob")
+    ws = env.ws
+    eng = ws.team("ENG", members=[p["sync"], p["alice"], p["bob"]])
+    ws.issue(eng, "Roadmap")
+    await env.sync()
+    assert {p["alice"].email, p["bob"].email} <= await env.gate()
+    await env.assert_matches_linear()
+
+    p["alice"].active = False
+    await env.sync()
+    assert p["alice"].email not in await env.gate()
+    assert p["bob"].email in await env.gate()
+    assert not await env.readable(p["alice"].email)
+    await env.assert_matches_linear()
+
+    p["alice"].active = True
+    await env.sync()
+    assert p["alice"].email in await env.gate()
     await env.assert_matches_linear()
 
 
