@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import { UsageError, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
+import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 
 const flag = (...argv: string[]) => parse(['drain', ...argv])
 
@@ -57,6 +58,8 @@ describe('what the command line refuses before it reads a configuration or opens
       ['drain', '--wait', 'abc', '--force'],
       ['drain', '--wait', '-5'],
       ['bulk', '--only'],
+      ['verify', '--only', 'nosuch'],
+      ['bulk', '--only', `${MAPPINGS[0].collection}, nosuch`],
       ['follow', 'run', '--until-idle', 'abc'],
       ['reverse', '--until-idle', 'abc'],
       ['rollback', '--online', '--max-freeze', '-1'],

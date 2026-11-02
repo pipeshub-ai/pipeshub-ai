@@ -3,6 +3,7 @@ import { Log, bulk, StoppedForTest } from './bulk';
 import { cancelDrain, drain } from './drain';
 import { readMongoFence } from './fence';
 import { follow, followStart } from './follow';
+import { MAPPINGS } from './mapping';
 import { migrateOffline } from './offline';
 import { cutover, onlineStart, onlineVerify, unfreeze } from './online';
 import { preflight } from './preflight';
@@ -96,8 +97,19 @@ function plan(a: Args): {
   failAt?: string;
 } {
   const onlyRaw = strFlag(a, 'only');
-  const only = onlyRaw?.split(',').filter((x) => x.trim() !== '');
+  const only = onlyRaw
+    ?.split(',')
+    .map((x) => x.trim())
+    .filter((x) => x !== '');
   if (only?.length === 0) throw new UsageError('--only needs collection names');
+  // an unknown name would make bulk and verify do nothing and still succeed
+  const unknown = only?.filter(
+    (x) => !MAPPINGS.some((m) => m.collection === x),
+  );
+  if (unknown?.length)
+    throw new UsageError(
+      `--only names no known collection: ${unknown.join(', ')}`,
+    );
   const stop = numFlag(a, 'stop-after-batches', { min: 1, int: true });
   const idle = numFlag(a, 'until-idle', { min: 0 });
   const sample = numFlag(a, 'sample', { min: 0.000001, max: 1 });
