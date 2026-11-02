@@ -145,7 +145,6 @@ jobs:
           --expect-suite 'Mongo store fence against a real MongoDB=18'
           --expect-suite 'docstore-migrate: pre-flight checks=14'
           --expect-suite 'docstore-migrate: offline and online switch-over=20'
-          --expect-suite 'docstore-migrate: command line gates=4'
           --expect-suite 'docstore-migrate: follow, drain, reset and schema=15'
           --expect-suite 'docstore-migrate: command line gates=5'
           --expect-suite 'docstore-migrate: rollback and the reverse copy=10'
