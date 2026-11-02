@@ -339,8 +339,8 @@ describe('slack-bot/helpers', () => {
       it('asks auth.test once per bot', async () => {
         const apiCall = sinon.stub().resolves({ ok: true, user_id: 'UBOT', bot_id: 'BOWN' });
         const client = { apiCall } as unknown as TypedSlackClient;
-        expect(await resolveOwnBotIdentity(client, 'cache-test-1')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN' });
-        expect(await resolveOwnBotIdentity(client, 'cache-test-1')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN' });
+        expect(await resolveOwnBotIdentity(client, 'cache-test-1')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN', teamId: undefined });
+        expect(await resolveOwnBotIdentity(client, 'cache-test-1')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN', teamId: undefined });
         expect(apiCall.callCount).to.equal(1);
         expect(apiCall.firstCall.args[0]).to.equal('auth.test');
       });
@@ -356,7 +356,7 @@ describe('slack-bot/helpers', () => {
         } finally {
           errorStub.restore();
         }
-        expect(await resolveOwnBotIdentity(client, 'cache-test-2', 'UKNOWN')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN' });
+        expect(await resolveOwnBotIdentity(client, 'cache-test-2', 'UKNOWN')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN', teamId: undefined });
       });
     });
 
