@@ -12,6 +12,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Timestamp } from 'mongodb';
+import { Client } from 'pg';
 import { Log, bulk } from './bulk';
 import { drain } from './drain';
 import type { DocDiff } from './compare';
@@ -515,6 +516,25 @@ export async function unfreeze(rt: MigrationRuntime): Promise<boolean> {
   return casMongoFence(rt, ['readonly', 'draining'], 'active');
 }
 
+/** The store row on a connection opened for the purpose, so a connection that failed at commit is not asked (`fail`: a test hook). */
+async function storeEpochOnFreshConnection(
+  rt: MigrationRuntime,
+  fail: boolean,
+): Promise<{ backend: string; epoch: number }> {
+  if (fail) throw new Error('injected: the store row cannot be read');
+  const c = new Client({ connectionString: rt.cfg.pgMigrateUrl });
+  await c.connect();
+  try {
+    const { rows } = await c.query<{ backend: string; epoch: number }>(
+      'SELECT backend, epoch FROM platform.store_epoch',
+    );
+    if (!rows[0]) throw new Error('platform.store_epoch has no row');
+    return rows[0];
+  } finally {
+    await c.end().catch(() => undefined);
+  }
+}
+
 export interface CutoverOptions {
   log: Log;
   dryRun: boolean;
@@ -766,30 +786,49 @@ export async function cutover(
     ).rows[0];
     epoch = (pgBefore?.epoch ?? 1) + 1;
     await mark('F8 flip', async () => {
-      const up = await rt.migratePool.query(
-        "UPDATE platform.store_epoch SET backend = 'postgres', epoch = $1, readonly = false, updated_at = now()",
-        [epoch],
-      );
-      if (up.rowCount !== 1)
-        throw new Error(
-          `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
-        );
-      try {
-        if (o.failAt === 'F8-retire') throw new Error('injected failure at F8');
-        await setMongoFence(rt, 'retired', before.epoch + 1);
-        flip = 'complete';
-      } catch (e) {
-        // MongoDB could not be retired: PostgreSQL goes back to closed, and the abort lets MongoDB write again; if it cannot be closed,
-        // MongoDB stays frozen and the abort says exactly where things stand
+      // PostgreSQL goes back to closed; false when that could not be done (then MongoDB stays frozen and the abort says where things stand)
+      const closePostgres = async (): Promise<boolean> => {
         try {
           const back = await rt.migratePool.query(
             "UPDATE platform.store_epoch SET backend = 'mongo', epoch = $1, readonly = true, updated_at = now()",
             [epoch - 1],
           );
-          if (back.rowCount !== 1) flip = 'stuck';
+          return back.rowCount === 1;
         } catch {
-          flip = 'stuck';
+          return false;
         }
+      };
+      try {
+        const up = await rt.migratePool.query(
+          "UPDATE platform.store_epoch SET backend = 'postgres', epoch = $1, readonly = false, updated_at = now()",
+          [epoch],
+        );
+        if (o.failAt === 'F8-after-commit' || o.failAt === 'F8-reread-fails')
+          throw new Error('injected failure after the update committed');
+        if (up.rowCount !== 1)
+          throw new Error(
+            `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
+          );
+      } catch (e) {
+        // the update may have committed before the error reached us: the table is read again on a connection of its own, and MongoDB is
+        // unfrozen only when it says PostgreSQL is not live; when it cannot be read the state is unknown and nothing is unfrozen
+        const now = await storeEpochOnFreshConnection(
+          rt,
+          o.failAt === 'F8-reread-fails',
+        ).catch(() => null);
+        if (now === null) flip = 'stuck';
+        else if (now.backend === 'postgres' && !(await closePostgres()))
+          flip = 'stuck';
+        throw e;
+      }
+      try {
+        if (o.failAt === 'F8-retire') throw new Error('injected failure at F8');
+        await setMongoFence(rt, 'retired', before.epoch + 1);
+        flip = 'complete';
+      } catch (e) {
+        // MongoDB could not be retired: PostgreSQL goes back to closed and the abort lets MongoDB write again; if it cannot be closed,
+        // MongoDB stays frozen and the abort says exactly where things stand
+        if (!(await closePostgres())) flip = 'stuck';
         throw e;
       }
     });
