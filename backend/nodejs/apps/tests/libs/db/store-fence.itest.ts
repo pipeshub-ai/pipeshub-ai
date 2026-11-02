@@ -157,7 +157,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         // the freeze session is queued behind the writer: its exclusive request on the fence key is not granted
         let queued = false
         for (let i = 0; i < 200 && !queued; i++) {
-          if (freezeErr !== undefined) throw freezeErr
+          if (freezeErr !== undefined) throw freezeErr instanceof Error ? freezeErr : new Error(String(freezeErr))
           const r = await admin((c) => c.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND mode = 'ExclusiveLock' AND NOT granted", [FENCE_CLASS, FENCE_OBJECT]))
           queued = (r.rowCount ?? 0) > 0
           if (!queued) await sleep(50)
