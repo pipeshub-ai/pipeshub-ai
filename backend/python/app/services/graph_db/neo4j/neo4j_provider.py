@@ -392,40 +392,49 @@ def _cypher_read_by_app(v: str) -> str:
     return f"(NOT {v}:Record OR {v}.connectorId = app.id)"
 
 
-def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container: str, *, exact: bool = False) -> str:
+def _cypher_kh_has_children(
+    v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False,
+) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
     everything is open, a record filed in it. A container (``container``: a group
     or folder) always answers yes: finding out means reading every hidden child,
     which cost 3x a large folder's page, and a constant says nothing about what the
-    viewer cannot read. Its expansion may also list chain-tops. ``exact`` (a browse of a
-    page) answers a container from its children instead, so that an arrow is on exactly
-    when the expansion lists something: a declared group also lists the groups below it
-    and the records that belong to it (the rule reads a scope the app-level row does not
-    carry), and another container the records it holds that the viewer is granted (its
-    chain-tops)."""
+    viewer cannot read. Its expansion may also list chain-tops.
+
+    ``exact`` (a browse of a page) answers every container from the candidates its expansion draws
+    on, each held to the same tests, so that an arrow is on exactly when the expansion lists
+    something: a group that hides its children lists none; a hierarchy child must pass ``rule`` (a
+    declared group also lists the groups below it, as the rule reads a scope the app-level row does
+    not carry); a record that belongs to the container counts when the App opens everything or, as a chain-top,
+    when the viewer is granted it (a member of a declared group with no hierarchy edge is not listed by its
+    browse, so it lights no arrow);
+    and ``stub(node)`` hides a placeholder with nothing readable below it, wherever it comes from."""
     declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
                 f" AND coalesce({v}.connectorId, '') = app.id)") if exact else "false"
-    own = lambda var: f"NOT coalesce({var}.isDeleted, false) AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)}"  # noqa: E731
-    group_child = (f"({declared} AND {v}.id IN $grantedIds AND kh_ch:RecordGroup AND NOT coalesce(kh_ch.isDeleted, false)"
-                   f" AND NOT coalesce({v}.hideChildren, false))")
-    # A group that hides its children lists none of its records, so they light no arrow.
-    shown = f"NOT coalesce({v}.hideChildren, false)"
-    holds = (f"({shown} AND (({declared} AND EXISTS {{ (kh_bm:Record)-[:BELONGS_TO]->({v}) WHERE {own('kh_bm')} }}) "
-             f"OR ({container} AND NOT {declared} AND EXISTS {{ (kh_bg:Record)-[:BELONGS_TO]->({v}) "
-             f"WHERE {own('kh_bg')} AND kh_bg.id IN $grantedIds }})))") if exact else "false"
-    return (
-        f"(CASE WHEN {'false' if exact else container} THEN true ELSE ({holds} OR "
+    hides = f"coalesce({v}.hideChildren, false)"
+
+    def held(var: str, cond: str = "true") -> str:
+        """Some record belonging to ``v`` that the expansion would list, under ``cond``."""
+        return (f"EXISTS {{ ({var}:Record)-[:BELONGS_TO]->({v}) WHERE NOT coalesce({var}.isDeleted, false)"
+                f" AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)} {stub(var) if exact else ''}"
+                f" AND ({cond}) }}")
+
+    holds = (f"(coalesce({container}, false) AND {held('kh_bg', 'kh_bg.id IN $grantedIds')})") if exact else "false"
+    body = (
+        f"({holds} OR "
         f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
         f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
         # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
         f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
         f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}) "
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
-        f"{extra} AND ({rule} OR {group_child}) }} "
-        f"OR ({filed} AND EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
-        f"WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id AND {_cypher_read_by_app('kh_bc')} }})) END)"
+        f"{stub('kh_ch')} AND ({rule}) }} "
+        f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
+    if exact:
+        return f"(CASE WHEN {hides} THEN false ELSE {body} END)"
+    return f"(CASE WHEN {container} THEN true ELSE {body} END)"
 
 
 # Listing state: what the knowledge hub listing would otherwise re-derive for
@@ -20426,6 +20435,32 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return (rows or [{}])[0].get("items") or []
 
+    async def _kh_v3_app_declared_scope(
+        self, app_id: str, granted_ids: list[str], *, state: bool, transaction: str | None,
+    ) -> list[str]:
+        """The ids of the groups the declared groups of the App granted to the viewer reach, themselves included:
+        the scope a scoped browse carries, which the arrows of the App's own rows read as well, so that an
+        arrow follows the same rule as the expansion it opens."""
+        hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
+        rows = await self._kh_query(
+            f"""
+        MATCH (dg:RecordGroup)
+        WHERE dg.connectorId = $app_id AND dg.permissionModel = 'RECORD_GROUP_LEVEL' AND dg.id IN $granted
+          AND NOT {self._kh_deleted("dg", state=state)} AND NOT {self._kh_hides("dg", state=state)}
+        WITH collect(dg) AS declared
+        CALL (declared) {{
+            UNWIND declared AS db
+            MATCH (db) ((pb)-[kh_rb:NODE_RELATION]->(cb:RecordGroup)
+                  WHERE kh_rb.relationshipType {hierarchy} AND NOT {self._kh_deleted("cb", state=state)}
+                    AND NOT {self._kh_hides("pb", state=state)}){{0,50}} (nb:RecordGroup)
+            RETURN collect(DISTINCT nb.id) AS ids
+        }}
+        RETURN ids
+            """,
+            parameters={"app_id": app_id, "granted": granted_ids}, txn_id=transaction,
+        )
+        return list(rows[0].get("ids") or []) if rows else []
+
     async def get_knowledge_hub_connector_page_v3(
         self,
         app_id: str,
@@ -20637,7 +20672,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
             expr = _cypher_kh_has_children(
-                "node", rule, app_opens, placeholder_test("kh_ch"), container, exact=not flatten)
+                "node", rule, app_opens, placeholder_test, container, exact=not flatten)
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
             # cheap reject's alike, is read from the node.
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
@@ -20661,6 +20696,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._kh_v3_shared(("start-access", user_key, org_id, app_id, start_id), start_access)
                 if probe is not None and transaction is None else start_access()
             )
+        if start_is_app and not flatten:
+            declared_scope = await self._kh_v3_app_declared_scope(
+                app_id, granted_ids, state=state, transaction=transaction)
         placed_ids: list[str] = []
         if wants_chain_tops:
             def chain_tops() -> "Awaitable[dict[str, list[dict[str, Any]]]]":

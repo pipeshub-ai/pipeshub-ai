@@ -141,7 +141,7 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
     assert [row["id"] for row in page["rows"]] == ["r1"], "the listing stopped before its page"
     assert {"app", "slim", "check:targets"} <= hub.sent, hub.sent
     # A browse reads the exact arrows, a flatten the strict ones.
-    assert hub.sent & {"enrich", "enrich_exact"}, hub.sent
+    assert hub.sent & {"enrich", "enrich_exact"} == ({"enrich"} if flatten else {"enrich_exact"}), hub.sent
     for query, binds in hub.calls:
         assert _declared(query) == set(binds), query
 
