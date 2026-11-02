@@ -927,7 +927,8 @@ li > blockquote {
 }
 
 /* Tool approval card (tool-approval-card.tsx): fades in with no rise; its editor opens down.
-   Narrow, the action groups take their own line and split it evenly. */
+   Narrow, the action groups take their own line: Deny and Allow split theirs evenly, the
+   quiet actions wrap. */
 .tool-approval-card {
   container-type: inline-size;
   animation: msgActionsIn 200ms ease;
@@ -950,10 +951,22 @@ li > blockquote {
   .tool-approval-card-lead {
     margin-left: 0;
   }
-  .tool-approval-card-group > button {
+  .tool-approval-card-answer > button {
     flex: 1;
     min-width: 0;
   }
+}
+/* The document form's borderless headline field: the house focus ring, and a hairline when invalid. */
+.tool-approval-headline {
+  border-radius: var(--radius-2);
+  outline: none;
+}
+.tool-approval-headline:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 1px;
+}
+.tool-approval-headline[aria-invalid='true'] {
+  box-shadow: 0 0 0 1px var(--red-8);
 }
 
 @media (prefers-reduced-motion: reduce) {

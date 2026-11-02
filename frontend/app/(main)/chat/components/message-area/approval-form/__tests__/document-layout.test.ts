@@ -6,7 +6,7 @@ import type { JsonSchema } from '../../../../types';
 const names = (fields: { name: string }[]) => fields.map((f) => f.name);
 const layout = (schema: JsonSchema) => {
   const l = documentLayout(schemaFields(schema));
-  return { recipients: names(l.recipients), headline: l.headline?.name ?? null, pills: names(l.pills), body: names(l.body), more: names(l.more) };
+  return { recipients: names(l.recipients), headline: l.headline?.name ?? null, pills: names(l.pills), lists: names(l.lists), body: names(l.body), more: names(l.more) };
 };
 const strings = { type: 'array', items: { type: 'string' } } as const;
 
@@ -18,10 +18,16 @@ describe('documentLayout', () => {
         required: ['to', 'subject', 'body'],
         properties: { to: strings, cc: { type: 'array', items: { type: 'string', format: 'email' } }, subject: { type: 'string' }, body: { type: 'string' } },
       }),
-    ).toEqual({ recipients: ['to', 'cc'], headline: 'subject', pills: [], body: ['body'], more: [] });
+    ).toEqual({ recipients: ['to', 'cc'], headline: 'subject', pills: [], lists: [], body: ['body'], more: [] });
   });
 
-  it('jira-like: summary headline, priority/labels pills, description body', () => {
+  it('recipients match on the last word: mail_to, mail_cc, mail_bcc, mailTo', () => {
+    expect(
+      layout({ type: 'object', properties: { mail_to: strings, mail_cc: strings, mail_bcc: strings, mailTo: strings, to_do: strings } }),
+    ).toMatchObject({ recipients: ['mail_to', 'mail_cc', 'mail_bcc', 'mailTo'], lists: ['to_do'] });
+  });
+
+  it('jira-like: summary headline, project/priority pills, labels chip row, description body', () => {
     expect(
       layout({
         type: 'object',
@@ -33,12 +39,12 @@ describe('documentLayout', () => {
           labels: strings,
         },
       }),
-    ).toEqual({ recipients: [], headline: 'summary', pills: ['project', 'priority', 'labels'], body: ['description'], more: [] });
+    ).toEqual({ recipients: [], headline: 'summary', pills: ['project', 'priority'], lists: ['labels'], body: ['description'], more: [] });
   });
 
   it('slack-like: channel pill, message body', () => {
     expect(layout({ type: 'object', properties: { channel: { type: 'string' }, message: { type: 'string' } } })).toEqual({
-      recipients: [], headline: null, pills: ['channel'], body: ['message'], more: [],
+      recipients: [], headline: null, pills: ['channel'], lists: [], body: ['message'], more: [],
     });
   });
 

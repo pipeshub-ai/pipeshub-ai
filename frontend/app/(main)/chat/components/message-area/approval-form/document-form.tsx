@@ -21,7 +21,7 @@ interface DocumentFormProps {
 const blank = (v: unknown) => v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
 
 /** The call's arguments laid out as the thing it makes: recipients, a title, settings as pills,
- * the text, and anything else folded under "More fields". */
+ * other lists as chip rows, the text, and anything else folded under "More fields". */
 export function DocumentForm({ fields, values, errors, changed, onChange }: DocumentFormProps) {
   const { t } = useTranslation();
   const base = useId();
@@ -56,6 +56,7 @@ export function DocumentForm({ fields, values, errors, changed, onChange }: Docu
           ))}
         </Flex>
       )}
+      {layout.lists.map((field) => <Field key={field.name} {...props(field)} />)}
       {layout.body.map((field) => <Field key={field.name} {...props(field)} />)}
       {layout.more.length > 0 && (
         <Box>
@@ -84,6 +85,7 @@ function Headline({ id, field, value, error, changed, onChange }: RegionProps) {
       <Flex align="center" gap="2">
         <input
           id={id}
+          className="tool-approval-headline"
           type="text"
           aria-label={field.label}
           aria-invalid={error ? true : undefined}
@@ -116,36 +118,45 @@ function Headline({ id, field, value, error, changed, onChange }: RegionProps) {
 function pillValue(field: FieldSpec, value: unknown, t: (key: string) => string): string {
   if (field.control === 'switch') return t(value === true ? 'common.yes' : 'common.no');
   if (field.control === 'select') return field.options?.find((o) => o.value === value)?.label ?? String(value);
-  return Array.isArray(value) ? value.join(', ') : String(value);
+  return String(value);
 }
+
+// A Radix Button wearing the pill's own fill and hairline, so it stays a 28px metadata pill.
+const PILL_LOOK: React.CSSProperties = {
+  maxWidth: '100%',
+  height: 'calc(var(--space-6) - var(--space-1))',
+  paddingInline: 'var(--space-2)',
+  gap: 'var(--space-1)',
+  borderRadius: 'var(--radius-2)',
+  backgroundColor: 'var(--gray-2)',
+};
+
+type PillTriggerProps = React.ComponentProps<typeof Button> & { face: React.ReactNode; empty: boolean; error?: string; describedBy: string };
+
+const PillTrigger = React.forwardRef<HTMLButtonElement, PillTriggerProps>(function PillTrigger({ face, empty, error, describedBy, style, ...rest }, ref) {
+  return (
+    <Button
+      ref={ref}
+      size="1"
+      variant="soft"
+      color="gray"
+      aria-invalid={error ? true : undefined}
+      aria-describedby={error ? describedBy : undefined}
+      {...rest}
+      style={{ ...PILL_LOOK, border: `1px solid ${error ? 'var(--red-8)' : 'var(--gray-6)'}`, color: empty ? 'var(--gray-11)' : 'var(--gray-12)', ...style }}
+    >
+      {face}
+    </Button>
+  );
+});
 
 function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
   const { t } = useTranslation();
-  const empty = blank(value) && field.control !== 'switch';
+  // An optional field the call didn't set reads "not set", a yes/no one too: nothing is sent for it.
+  const empty = blank(value);
   const text = empty
     ? t('chat.toolApproval.pillEmpty', { label: field.label })
     : t('chat.toolApproval.pill', { label: field.label, value: pillValue(field, value, t) });
-  const look: React.CSSProperties = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 'var(--space-1)',
-    maxWidth: '100%',
-    height: 'calc(var(--space-6) - var(--space-1))',
-    padding: '0 var(--space-2)',
-    border: `1px solid ${error ? 'var(--red-8)' : 'var(--gray-6)'}`,
-    borderRadius: 'var(--radius-full)',
-    backgroundColor: 'var(--gray-2)',
-    color: empty ? 'var(--gray-11)' : 'var(--gray-12)',
-    fontFamily: 'var(--default-font-family)',
-    fontSize: 'var(--font-size-1)',
-    cursor: 'pointer',
-  };
-  const a11y = {
-    type: 'button' as const,
-    'aria-invalid': error ? true : undefined,
-    'aria-describedby': error ? `${id}-pill-error` : undefined,
-    style: look,
-  };
   const face = (icon: boolean) => (
     <>
       <Text truncate>{text}</Text>
@@ -153,13 +164,10 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
       {icon && <MaterialIcon name="expand_more" size={16} color="var(--gray-10)" />}
     </>
   );
+  const trigger = { empty, error, describedBy: `${id}-pill-error` };
 
   if (field.control === 'switch') {
-    return (
-      <button {...a11y} aria-pressed={value === true} onClick={() => onChange(value !== true)}>
-        {face(false)}
-      </button>
-    );
+    return <PillTrigger {...trigger} face={face(false)} aria-pressed={value === true} onClick={() => onChange(value !== true)} />;
   }
 
   if (field.control === 'select') {
@@ -168,7 +176,7 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
     return (
       <DropdownMenu.Root>
         <DropdownMenu.Trigger>
-          <button {...a11y}>{face(true)}</button>
+          <PillTrigger {...trigger} face={face(true)} />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content size="1">
           {/* Items are keyed by position so a numeric option is written back as the number it was. */}
@@ -177,6 +185,12 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
               <DropdownMenu.RadioItem key={i} value={String(i)}>{option.label}</DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
+          {!field.required && !empty && (
+            <>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item onSelect={() => onChange(undefined)}>{t('common.clear')}</DropdownMenu.Item>
+            </>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     );
@@ -185,7 +199,7 @@ function Pill({ id, field, value, error, changed, onChange }: RegionProps) {
   return (
     <Popover.Root>
       <Popover.Trigger>
-        <button {...a11y}>{face(true)}</button>
+        <PillTrigger {...trigger} face={face(true)} />
       </Popover.Trigger>
       <Popover.Content size="1" minWidth="calc(var(--space-9) * 4)" maxWidth="calc(var(--space-9) * 5)">
         <Field id={id} field={field} value={value} error={error} changed={changed} onChange={onChange} />

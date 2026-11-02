@@ -49,7 +49,7 @@ describe('DocumentForm', () => {
     expect(screen.getByRole('group', { name: 'To' })).toBeTruthy();
     expect((screen.getByRole('textbox', { name: 'Subject' }) as HTMLInputElement).value).toBe('Hello');
     expect((screen.getByRole('textbox', { name: 'Body' }) as HTMLTextAreaElement).value).toBe('Hi there');
-    expect(screen.getByRole('button', { name: 'Priority: add' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Priority: not set' })).toBeTruthy();
     expect(screen.queryByText("Can't be edited here")).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'More fields' }));
     expect(screen.getByText("Can't be edited here")).toBeTruthy();
@@ -87,7 +87,7 @@ describe('DocumentForm', () => {
     const onChange = vi.fn();
     renderInTheme(<Harness initial={{ to: [], subject: 'Hello' }} onChange={onChange} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Priority: add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Priority: not set' }));
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Priority' }), { target: { value: '3' } });
     expect(onChange).toHaveBeenLastCalledWith('priority', 3);
     expect(screen.getByRole('button', { name: /^Priority: 3/ })).toBeTruthy();
@@ -120,6 +120,54 @@ describe('DocumentForm', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: /^Level: 1/ }), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('menuitemradio', { name: '2' }));
     expect(onChange).toHaveBeenCalledWith('level', 2);
+  });
+
+  it('a pill is a Radix button with a 28px hairline, not a hand-rolled one', () => {
+    renderInTheme(<Harness initial={{ to: [], subject: 'Hello' }} />);
+    const pill = screen.getByRole('button', { name: 'Priority: not set' });
+    expect(pill.className).toMatch(/rt-Button/);
+    expect(pill.style.borderRadius).toBe('var(--radius-2)');
+    expect(pill.style.border).toContain('var(--gray-6)');
+  });
+
+  it('labels and other lists are a labelled chip row, never a pill, and never checked as addresses', () => {
+    const list = schemaFields({ type: 'object', properties: { labels: { type: 'array', items: { type: 'string' } } } });
+    renderInTheme(<DocumentForm fields={list} values={{ labels: ['bug', 'not an email'] }} errors={{}} onChange={vi.fn()} />);
+    const row = screen.getByRole('group', { name: 'Labels' });
+    expect(row.getAttribute('aria-invalid')).toBeNull();
+    expect(screen.getByText('bug')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Labels:/ })).toBeNull();
+  });
+
+  it('an unset optional yes/no pill says not set until it is changed', () => {
+    const toggle = schemaFields({ type: 'object', properties: { urgent: { type: 'boolean' } } });
+    const onChange = vi.fn();
+    renderInTheme(<DocumentForm fields={toggle} values={{}} errors={{}} onChange={onChange} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Urgent: not set' }));
+    expect(onChange).toHaveBeenCalledWith('urgent', true);
+  });
+
+  it('an optional enum pill can be cleared back to unset; a required one cannot', async () => {
+    const pick = schemaFields({
+      type: 'object',
+      required: ['kind'],
+      properties: { level: { type: 'string', enum: ['High', 'Low'] }, kind: { type: 'string', enum: ['Bug', 'Task'] } },
+    });
+    const onChange = vi.fn();
+    renderInTheme(<DocumentForm fields={pick} values={{ level: 'High', kind: 'Bug' }} errors={{}} onChange={onChange} />);
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Level: High/ }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Clear' }));
+    expect(onChange).toHaveBeenCalledWith('level', undefined);
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Kind: Bug/ }), { key: 'Enter' });
+    await screen.findByRole('menuitemradio', { name: 'Task' });
+    expect(screen.queryByRole('menuitem', { name: 'Clear' })).toBeNull();
+  });
+
+  it('an invalid headline is marked for its red hairline', () => {
+    renderInTheme(<Harness initial={{ to: [], subject: '' }} errors={{ subject: 'Required' }} />);
+    const headline = screen.getByRole('textbox', { name: 'Subject' });
+    expect(headline.className).toContain('tool-approval-headline');
+    expect(headline.getAttribute('aria-invalid')).toBe('true');
   });
 
   it('a yes/no pill toggles in place', () => {
