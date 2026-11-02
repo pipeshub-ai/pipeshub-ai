@@ -1,0 +1,34 @@
+# Linear teams (permission model doc, linear section), written the way the Linear connector writes it on main.
+#   team group: RECORD_GROUP_LEVEL, OPEN, does not inherit the app: linear/connector.py:951-967
+#   public team: an ORG grant; private team: a GROUP grant to the team's user group: connector.py:970-982
+#   issues: inherit the team (inherit_permissions=True): connector.py:1363
+principals:
+  - {id: ann}
+  - {id: ben}
+  - {id: gus}
+  - {id: g:team-platform, kind: group}
+  - {id: g:team-payments, kind: group}
+  - {id: g:team-support, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: LINEAR}
+  - {id: team:Platform, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app]}
+  - {id: team:Payments, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app]}
+  - {id: team:Support, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app]}
+  - {id: PLAT-7, kind: record, connector: app, rule: OPEN, parents: [team:Platform], inherits: [team:Platform], belongs: [team:Platform]}
+  - {id: PAY-12, kind: record, connector: app, rule: OPEN, parents: [team:Payments], inherits: [team:Payments], belongs: [team:Payments]}
+  - {id: SUP-3, kind: record, connector: app, rule: OPEN, parents: [team:Support], inherits: [team:Support], belongs: [team:Support]}
+grants:
+  - [org, team:Platform, ORG]
+  - [g:team-payments, team:Payments]
+  - [org, team:Support, ORG]
+memberships:
+  - [ann, g:team-platform]
+  - [ann, g:team-payments]
+  - [ann, g:team-support]
+  - [ben, g:team-platform]
+  - [ben, g:team-support]
+  - [gus, g:team-support]
+gates:
+  - [ann, app]
+  - [ben, app]
+  - [gus, app]

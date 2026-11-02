@@ -1,0 +1,137 @@
+# Every change row of permission model doc, confluence section. Confluence reports a change on the node that changed,
+# so each mutation is one edge or one node edit and the index-write count is 0 except for moves.
+- id: CONF-C-01
+  title: Space permission added; contractors see the Handbook but no restricted page
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: grant_added, node: space:HR, ref: g:contractors}
+  expect:
+    before: {cam: {page:Handbook: deny}}
+    verdicts:
+      cam: {page:Handbook: admit, page:Onboarding: admit, page:Compensation: deny, page:2027-bands: deny}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/space-grant"]
+- id: CONF-C-02
+  title: Space permission removed; everything in HR disappears, including pages the user is named on
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: grant_removed, node: space:HR, ref: g:hr-all}
+  expect:
+    before: {bob: {page:2027-bands: admit}}
+    verdicts:
+      bob: {page:Handbook: deny, page:Compensation: deny, page:2027-bands: deny}
+      dave: {page:Handbook: deny}
+      erin: {page:Handbook: deny}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/space-grant"]
+- id: CONF-C-03
+  title: Read restriction added to the Handbook restricts all descendants at once
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutations:
+    - {kind: rule_set, node: page:Handbook, value: RESTRICTED}
+    - {kind: grant_added, node: page:Handbook, ref: g:leads}
+  expect:
+    before: {erin: {page:Handbook: admit, page:Onboarding: admit}}
+    verdicts:
+      erin: {page:Handbook: deny, page:Onboarding: deny}
+      lia: {page:Handbook: admit, page:Onboarding: admit}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/restriction-change"]
+- id: CONF-C-04
+  title: Compensation restriction lifted; Dave, named on the bands, now sees them
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutations:
+    - {kind: rule_set, node: page:Compensation, value: STRICT}
+    - {kind: grant_removed, node: page:Compensation, ref: g:hr-comp}
+  expect:
+    before: {dave: {page:2027-bands: deny}}
+    verdicts:
+      dave: {page:2027-bands: admit, page:Compensation: admit}
+      erin: {page:2027-bands: deny, page:Compensation: admit}
+      carol: {page:2027-bands: deny}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/restriction-change"]
+- id: CONF-C-05
+  title: Restriction edited; Dave joins hr-comp and sees the bands once the membership is read
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: member_added, node: g:hr-comp, ref: dave}
+  expect:
+    before: {dave: {page:2027-bands: deny}}
+    verdicts:
+      dave: {page:2027-bands: admit, page:Compensation: admit}
+      erin: {page:2027-bands: deny}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/restriction-change", "cell:confluence/member-change"]
+- id: CONF-C-06
+  title: Edit-only restriction added; nothing changes for readers
+  source: permission model doc, confluence section
+  rule: intersection
+  comment: No graph change at all, which is what the writer does (an edit-only restriction stays STRICT).
+  world: golden/confluence_hr
+  expect:
+    verdicts:
+      erin: {page:Handbook: admit}
+      bob: {page:Handbook: admit}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/edit-only"]
+- id: CONF-C-07
+  title: Page moved within the space; the bands move under the Handbook
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: moved, node: page:2027-bands, ref: page:Handbook}
+  expect:
+    before: {dave: {page:2027-bands: deny}}
+    verdicts:
+      dave: {page:2027-bands: admit}
+      erin: {page:2027-bands: deny}
+      bob: {page:2027-bands: admit}
+      carol: {page:2027-bands: deny}
+    index_writes: subtree
+    during: fail_closed
+  tags: [confluence, "cell:confluence/move-in-space"]
+- id: CONF-C-08
+  title: Page moved to another space; readers of ALL gain the Handbook, HR-only readers lose it
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: moved, node: page:Handbook, ref: space:ALL, value: space:ALL}
+  expect:
+    before: {finn: {page:Handbook: deny}, erin: {page:Handbook: admit}}
+    verdicts:
+      finn: {page:Handbook: admit, page:Onboarding: admit}
+      erin: {page:Handbook: deny, page:Onboarding: deny}
+    index_writes: subtree
+    during: fail_closed
+  tags: [confluence, "cell:confluence/move-cross-space"]
+- id: CONF-C-09
+  title: User removed from a group; Bob leaves hr-comp
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: member_removed, node: g:hr-comp, ref: bob}
+  expect:
+    before: {bob: {page:Compensation: admit}}
+    verdicts:
+      bob: {page:Compensation: deny, page:2027-bands: deny, page:Handbook: admit}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/member-change", narrowing]
+- id: CONF-C-10
+  title: Page deleted; the bands and their attachment are gone, nothing else changes
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  mutation: {kind: deleted, node: page:2027-bands}
+  expect:
+    verdicts:
+      bob: {page:2027-bands: deny, att:bands: deny, page:Compensation: admit, page:Handbook: admit}
+    index_writes: delete
+  tags: [confluence, "cell:confluence/delete"]

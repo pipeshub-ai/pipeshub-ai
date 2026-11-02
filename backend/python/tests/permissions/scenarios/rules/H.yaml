@@ -1,0 +1,614 @@
+- id: RULE-H01
+  title: 'Confluence: space granted, STRICT page inherits'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: STRICT, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: admit}
+  tags: [rules, confluence]
+- id: RULE-H02
+  title: 'Confluence: space not granted (RESTRICTED + inherit needs a grant)'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: STRICT, parents: [S], inherits: [S], belongs: [S]}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: deny}
+  tags: [rules, confluence]
+- id: RULE-H03
+  title: 'Confluence: read-restricted page granted to U, space granted'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+      - [u, p]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: admit}
+  tags: [rules, confluence]
+- id: RULE-H04
+  title: 'Confluence: restricted page granted to U but space not granted (intersection)'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, p]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: deny}
+  tags: [rules, confluence]
+- id: RULE-H05
+  title: 'Confluence: STRICT child under a restricted parent U is not in'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [S], inherits: [S], belongs: [S]}
+      - {id: c, kind: record, connector: A, rule: STRICT, parents: [p], inherits: [p], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {c: deny}
+  tags: [rules, confluence]
+- id: RULE-H06
+  title: 'Confluence: restricted child granted, restricted parent not granted'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [S], inherits: [S], belongs: [S]}
+      - {id: c, kind: record, connector: A, rule: RESTRICTED, parents: [p], inherits: [p], belongs: [S]}
+    grants:
+      - [u, S]
+      - [u, c]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {c: deny}
+  tags: [rules, confluence]
+  comment: 'Inherited restrictions intersect: every ancestor''s restriction must admit.'
+- id: RULE-H07
+  title: 'Confluence: three restricted levels all granted (via different principals)'
+  source: rule cases R1-R13 (spec)
+  rule: confluence
+  world:
+    principals:
+      - {id: u}
+      - {id: g, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [S], inherits: [S], belongs: [S]}
+      - {id: c, kind: record, connector: A, rule: RESTRICTED, parents: [p], inherits: [p], belongs: [S]}
+    grants:
+      - [g, S]
+      - [u, p]
+      - [g, c]
+    memberships:
+      - [u, g]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {c: admit}
+  tags: [rules, confluence]
+- id: RULE-H08
+  title: RESTRICTED node granted but with no inherit edge is dead
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: RESTRICTED, parents: [S], belongs: [S]}
+    grants:
+      - [u, S]
+      - [u, p]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: deny}
+  tags: [rules, any]
+- id: RULE-H09
+  title: Unknown accessRule value is dead even with inherit and grant
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: WEIRD, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+      - [u, p]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: deny}
+  tags: [rules, any]
+  comment: Kept three-branch form so an unknown value fails closed (test_rule_equivalence.py).
+- id: RULE-H10
+  title: accessRule absent (null) reads as OPEN
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: admit}
+  tags: [rules, any]
+- id: RULE-H11
+  title: 'Broken inheritance: OPEN item, no inherit edge, no grant'
+  source: rule cases R1-R13 (spec)
+  rule: sharepoint
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: SHAREPOINT}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, sharepoint]
+- id: RULE-H12
+  title: 'Broken inheritance: unique-permission folder granted to U''s group; file inherits it'
+  source: rule cases R1-R13 (spec)
+  rule: sharepoint
+  world:
+    principals:
+      - {id: u}
+      - {id: g, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app, app_type: SHAREPOINT}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+      - {id: file, kind: record, connector: A, rule: OPEN, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [g, folder]
+    memberships:
+      - [u, g]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {file: admit}
+  tags: [rules, sharepoint]
+- id: RULE-H13
+  title: 'Site member without the unique folder''s grant: file below denied'
+  source: rule cases R1-R13 (spec)
+  rule: sharepoint
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: SHAREPOINT}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+      - {id: file, kind: record, connector: A, rule: OPEN, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {file: deny}
+  tags: [rules, sharepoint]
+- id: RULE-H14
+  title: Top group OPEN with inherit from app opens to everyone gated (Notion team workspace)
+  source: rule cases R1-R13 (spec)
+  rule: notion
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: NOTION}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S], belongs: [S]}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {p: admit}
+  tags: [rules, notion]
+  comment: 'Notion team: workspace group inherits from the app with [] grants (S/notion/connector.py:1600-1616).'
+- id: RULE-H15
+  title: Inherit edge to a node other than the hierarchy parent does not count
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: epic, kind: record, connector: A, rule: STRICT, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: story, kind: record, connector: A, rule: STRICT, parents: [epic], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {story: deny}
+  tags: [rules, jira]
+  comment: The probe is (child)-[:INHERIT_PERMISSIONS]->(that NODE_RELATION parent) (N:17630-17637).
+- id: RULE-H16
+  title: 'Multi-parent: one parent path fails, the other passes'
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: s1, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: s2, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, parents: [s1, s2], inherits: [s1], belongs: [s1]}
+    grants:
+      - [u, s1]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, drive]
+- id: RULE-H17
+  title: Deleted intermediate folder blocks the walk
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: STRICT, deleted: true, parents: [S], inherits: [S], belongs: [S]}
+      - {id: file, kind: record, connector: A, rule: STRICT, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {file: deny}
+  tags: [rules, any]
+- id: RULE-H18
+  title: Placeholder intermediate does not block (only targets are tested)
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: STRICT, placeholder: true, parents: [S], inherits: [S], belongs: [S]}
+      - {id: file, kind: record, connector: A, rule: STRICT, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {file: admit}
+  tags: [rules, any]
+- id: RULE-H19
+  title: 'Deleted target: denied'
+  source: rule cases R1-R13 (spec)
+  rule: lifecycle
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, deleted: true, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, lifecycle]
+- id: RULE-H20
+  title: 'Placeholder target: denied'
+  source: rule cases R1-R13 (spec)
+  rule: lifecycle
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, placeholder: true, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, lifecycle]
+- id: RULE-H21
+  title: 'Depth limit: target 50 hierarchy hops below the app is admitted'
+  source: rule cases R1-R13 (spec)
+  rule: depth
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: c0, kind: record, connector: A, rule: STRICT, parents: [S], inherits: [S], belongs: [S]}
+      - {id: c1, kind: record, connector: A, rule: STRICT, parents: [c0], inherits: [c0], belongs: [S]}
+      - {id: c2, kind: record, connector: A, rule: STRICT, parents: [c1], inherits: [c1], belongs: [S]}
+      - {id: c3, kind: record, connector: A, rule: STRICT, parents: [c2], inherits: [c2], belongs: [S]}
+      - {id: c4, kind: record, connector: A, rule: STRICT, parents: [c3], inherits: [c3], belongs: [S]}
+      - {id: c5, kind: record, connector: A, rule: STRICT, parents: [c4], inherits: [c4], belongs: [S]}
+      - {id: c6, kind: record, connector: A, rule: STRICT, parents: [c5], inherits: [c5], belongs: [S]}
+      - {id: c7, kind: record, connector: A, rule: STRICT, parents: [c6], inherits: [c6], belongs: [S]}
+      - {id: c8, kind: record, connector: A, rule: STRICT, parents: [c7], inherits: [c7], belongs: [S]}
+      - {id: c9, kind: record, connector: A, rule: STRICT, parents: [c8], inherits: [c8], belongs: [S]}
+      - {id: c10, kind: record, connector: A, rule: STRICT, parents: [c9], inherits: [c9], belongs: [S]}
+      - {id: c11, kind: record, connector: A, rule: STRICT, parents: [c10], inherits: [c10], belongs: [S]}
+      - {id: c12, kind: record, connector: A, rule: STRICT, parents: [c11], inherits: [c11], belongs: [S]}
+      - {id: c13, kind: record, connector: A, rule: STRICT, parents: [c12], inherits: [c12], belongs: [S]}
+      - {id: c14, kind: record, connector: A, rule: STRICT, parents: [c13], inherits: [c13], belongs: [S]}
+      - {id: c15, kind: record, connector: A, rule: STRICT, parents: [c14], inherits: [c14], belongs: [S]}
+      - {id: c16, kind: record, connector: A, rule: STRICT, parents: [c15], inherits: [c15], belongs: [S]}
+      - {id: c17, kind: record, connector: A, rule: STRICT, parents: [c16], inherits: [c16], belongs: [S]}
+      - {id: c18, kind: record, connector: A, rule: STRICT, parents: [c17], inherits: [c17], belongs: [S]}
+      - {id: c19, kind: record, connector: A, rule: STRICT, parents: [c18], inherits: [c18], belongs: [S]}
+      - {id: c20, kind: record, connector: A, rule: STRICT, parents: [c19], inherits: [c19], belongs: [S]}
+      - {id: c21, kind: record, connector: A, rule: STRICT, parents: [c20], inherits: [c20], belongs: [S]}
+      - {id: c22, kind: record, connector: A, rule: STRICT, parents: [c21], inherits: [c21], belongs: [S]}
+      - {id: c23, kind: record, connector: A, rule: STRICT, parents: [c22], inherits: [c22], belongs: [S]}
+      - {id: c24, kind: record, connector: A, rule: STRICT, parents: [c23], inherits: [c23], belongs: [S]}
+      - {id: c25, kind: record, connector: A, rule: STRICT, parents: [c24], inherits: [c24], belongs: [S]}
+      - {id: c26, kind: record, connector: A, rule: STRICT, parents: [c25], inherits: [c25], belongs: [S]}
+      - {id: c27, kind: record, connector: A, rule: STRICT, parents: [c26], inherits: [c26], belongs: [S]}
+      - {id: c28, kind: record, connector: A, rule: STRICT, parents: [c27], inherits: [c27], belongs: [S]}
+      - {id: c29, kind: record, connector: A, rule: STRICT, parents: [c28], inherits: [c28], belongs: [S]}
+      - {id: c30, kind: record, connector: A, rule: STRICT, parents: [c29], inherits: [c29], belongs: [S]}
+      - {id: c31, kind: record, connector: A, rule: STRICT, parents: [c30], inherits: [c30], belongs: [S]}
+      - {id: c32, kind: record, connector: A, rule: STRICT, parents: [c31], inherits: [c31], belongs: [S]}
+      - {id: c33, kind: record, connector: A, rule: STRICT, parents: [c32], inherits: [c32], belongs: [S]}
+      - {id: c34, kind: record, connector: A, rule: STRICT, parents: [c33], inherits: [c33], belongs: [S]}
+      - {id: c35, kind: record, connector: A, rule: STRICT, parents: [c34], inherits: [c34], belongs: [S]}
+      - {id: c36, kind: record, connector: A, rule: STRICT, parents: [c35], inherits: [c35], belongs: [S]}
+      - {id: c37, kind: record, connector: A, rule: STRICT, parents: [c36], inherits: [c36], belongs: [S]}
+      - {id: c38, kind: record, connector: A, rule: STRICT, parents: [c37], inherits: [c37], belongs: [S]}
+      - {id: c39, kind: record, connector: A, rule: STRICT, parents: [c38], inherits: [c38], belongs: [S]}
+      - {id: c40, kind: record, connector: A, rule: STRICT, parents: [c39], inherits: [c39], belongs: [S]}
+      - {id: c41, kind: record, connector: A, rule: STRICT, parents: [c40], inherits: [c40], belongs: [S]}
+      - {id: c42, kind: record, connector: A, rule: STRICT, parents: [c41], inherits: [c41], belongs: [S]}
+      - {id: c43, kind: record, connector: A, rule: STRICT, parents: [c42], inherits: [c42], belongs: [S]}
+      - {id: c44, kind: record, connector: A, rule: STRICT, parents: [c43], inherits: [c43], belongs: [S]}
+      - {id: c45, kind: record, connector: A, rule: STRICT, parents: [c44], inherits: [c44], belongs: [S]}
+      - {id: c46, kind: record, connector: A, rule: STRICT, parents: [c45], inherits: [c45], belongs: [S]}
+      - {id: c47, kind: record, connector: A, rule: STRICT, parents: [c46], inherits: [c46], belongs: [S]}
+      - {id: c48, kind: record, connector: A, rule: STRICT, parents: [c47], inherits: [c47], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {c48: admit}
+  tags: [rules, depth]
+- id: RULE-H22
+  title: 'Depth limit: target 51 hops below the app is denied (STRICT, no seed)'
+  source: rule cases R1-R13 (spec)
+  rule: depth
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: c0, kind: record, connector: A, rule: STRICT, parents: [S], inherits: [S], belongs: [S]}
+      - {id: c1, kind: record, connector: A, rule: STRICT, parents: [c0], inherits: [c0], belongs: [S]}
+      - {id: c2, kind: record, connector: A, rule: STRICT, parents: [c1], inherits: [c1], belongs: [S]}
+      - {id: c3, kind: record, connector: A, rule: STRICT, parents: [c2], inherits: [c2], belongs: [S]}
+      - {id: c4, kind: record, connector: A, rule: STRICT, parents: [c3], inherits: [c3], belongs: [S]}
+      - {id: c5, kind: record, connector: A, rule: STRICT, parents: [c4], inherits: [c4], belongs: [S]}
+      - {id: c6, kind: record, connector: A, rule: STRICT, parents: [c5], inherits: [c5], belongs: [S]}
+      - {id: c7, kind: record, connector: A, rule: STRICT, parents: [c6], inherits: [c6], belongs: [S]}
+      - {id: c8, kind: record, connector: A, rule: STRICT, parents: [c7], inherits: [c7], belongs: [S]}
+      - {id: c9, kind: record, connector: A, rule: STRICT, parents: [c8], inherits: [c8], belongs: [S]}
+      - {id: c10, kind: record, connector: A, rule: STRICT, parents: [c9], inherits: [c9], belongs: [S]}
+      - {id: c11, kind: record, connector: A, rule: STRICT, parents: [c10], inherits: [c10], belongs: [S]}
+      - {id: c12, kind: record, connector: A, rule: STRICT, parents: [c11], inherits: [c11], belongs: [S]}
+      - {id: c13, kind: record, connector: A, rule: STRICT, parents: [c12], inherits: [c12], belongs: [S]}
+      - {id: c14, kind: record, connector: A, rule: STRICT, parents: [c13], inherits: [c13], belongs: [S]}
+      - {id: c15, kind: record, connector: A, rule: STRICT, parents: [c14], inherits: [c14], belongs: [S]}
+      - {id: c16, kind: record, connector: A, rule: STRICT, parents: [c15], inherits: [c15], belongs: [S]}
+      - {id: c17, kind: record, connector: A, rule: STRICT, parents: [c16], inherits: [c16], belongs: [S]}
+      - {id: c18, kind: record, connector: A, rule: STRICT, parents: [c17], inherits: [c17], belongs: [S]}
+      - {id: c19, kind: record, connector: A, rule: STRICT, parents: [c18], inherits: [c18], belongs: [S]}
+      - {id: c20, kind: record, connector: A, rule: STRICT, parents: [c19], inherits: [c19], belongs: [S]}
+      - {id: c21, kind: record, connector: A, rule: STRICT, parents: [c20], inherits: [c20], belongs: [S]}
+      - {id: c22, kind: record, connector: A, rule: STRICT, parents: [c21], inherits: [c21], belongs: [S]}
+      - {id: c23, kind: record, connector: A, rule: STRICT, parents: [c22], inherits: [c22], belongs: [S]}
+      - {id: c24, kind: record, connector: A, rule: STRICT, parents: [c23], inherits: [c23], belongs: [S]}
+      - {id: c25, kind: record, connector: A, rule: STRICT, parents: [c24], inherits: [c24], belongs: [S]}
+      - {id: c26, kind: record, connector: A, rule: STRICT, parents: [c25], inherits: [c25], belongs: [S]}
+      - {id: c27, kind: record, connector: A, rule: STRICT, parents: [c26], inherits: [c26], belongs: [S]}
+      - {id: c28, kind: record, connector: A, rule: STRICT, parents: [c27], inherits: [c27], belongs: [S]}
+      - {id: c29, kind: record, connector: A, rule: STRICT, parents: [c28], inherits: [c28], belongs: [S]}
+      - {id: c30, kind: record, connector: A, rule: STRICT, parents: [c29], inherits: [c29], belongs: [S]}
+      - {id: c31, kind: record, connector: A, rule: STRICT, parents: [c30], inherits: [c30], belongs: [S]}
+      - {id: c32, kind: record, connector: A, rule: STRICT, parents: [c31], inherits: [c31], belongs: [S]}
+      - {id: c33, kind: record, connector: A, rule: STRICT, parents: [c32], inherits: [c32], belongs: [S]}
+      - {id: c34, kind: record, connector: A, rule: STRICT, parents: [c33], inherits: [c33], belongs: [S]}
+      - {id: c35, kind: record, connector: A, rule: STRICT, parents: [c34], inherits: [c34], belongs: [S]}
+      - {id: c36, kind: record, connector: A, rule: STRICT, parents: [c35], inherits: [c35], belongs: [S]}
+      - {id: c37, kind: record, connector: A, rule: STRICT, parents: [c36], inherits: [c36], belongs: [S]}
+      - {id: c38, kind: record, connector: A, rule: STRICT, parents: [c37], inherits: [c37], belongs: [S]}
+      - {id: c39, kind: record, connector: A, rule: STRICT, parents: [c38], inherits: [c38], belongs: [S]}
+      - {id: c40, kind: record, connector: A, rule: STRICT, parents: [c39], inherits: [c39], belongs: [S]}
+      - {id: c41, kind: record, connector: A, rule: STRICT, parents: [c40], inherits: [c40], belongs: [S]}
+      - {id: c42, kind: record, connector: A, rule: STRICT, parents: [c41], inherits: [c41], belongs: [S]}
+      - {id: c43, kind: record, connector: A, rule: STRICT, parents: [c42], inherits: [c42], belongs: [S]}
+      - {id: c44, kind: record, connector: A, rule: STRICT, parents: [c43], inherits: [c43], belongs: [S]}
+      - {id: c45, kind: record, connector: A, rule: STRICT, parents: [c44], inherits: [c44], belongs: [S]}
+      - {id: c46, kind: record, connector: A, rule: STRICT, parents: [c45], inherits: [c45], belongs: [S]}
+      - {id: c47, kind: record, connector: A, rule: STRICT, parents: [c46], inherits: [c46], belongs: [S]}
+      - {id: c48, kind: record, connector: A, rule: STRICT, parents: [c47], inherits: [c47], belongs: [S]}
+      - {id: c49, kind: record, connector: A, rule: STRICT, parents: [c48], inherits: [c48], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {c49: deny}
+  tags: [rules, depth]
+  comment: Real Confluence trees can be deeper than 50; deeper pages vanish (under-share).
+- id: RULE-H23
+  title: Non-hierarchy NODE_RELATION (link) is not walked
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, parents: [{id: S, rel: LINKED_TO}], inherits: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+- id: RULE-H24
+  title: ATTACHMENT edge is a hierarchy hop (Jira/Confluence attachment)
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: issue, kind: record, connector: A, rule: STRICT, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: att, kind: record, connector: A, rule: STRICT, parents: [{id: issue, rel: ATTACHMENT}], inherits: [issue]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {att: admit}
+  tags: [rules, jira]
+- id: RULE-H25
+  title: hideChildren on a group does not hide for access
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, parents: [S], inherits: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, any]
+- id: RULE-H26
+  title: Grant on a group node is not inherited by a child without an inherit edge
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, parents: [S], belongs: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]

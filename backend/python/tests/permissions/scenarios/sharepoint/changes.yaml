@@ -1,0 +1,71 @@
+- id: SP-C-01
+  title: Site permission changed; Auditors added to Finance see the forecast, not Payroll and not the board deck
+  source: permission model doc, sharepoint section
+  rule: override
+  comment: >
+    The doc listed the board deck for auditors. A file with unique permissions keeps its own list: SharePoint does not
+    push a later site grant into it (at most Limited Access), so the vendor hides the deck and the graph agrees.
+  world: golden/sharepoint_finance
+  mutation: {kind: grant_added, node: site:Finance, ref: g:auditors}
+  expect:
+    before: {audrey: {forecast: deny}}
+    verdicts:
+      audrey: {forecast: admit, folder:Payroll: deny, salaries: deny, board-deck: deny}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/site-grant"]
+- id: SP-C-02
+  title: Group membership changed; Bob joins HR-Payroll and sees the salaries
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutation: {kind: member_added, node: g:hr-payroll, ref: bob}
+  expect:
+    before: {bob: {salaries: deny}}
+    verdicts:
+      bob: {salaries: admit, forecast: admit}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/member-change"]
+- id: SP-C-05
+  title: Grant edited on a unique folder; the CFO added to Payroll sees the salaries at once
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutation: {kind: grant_added, node: folder:Payroll, ref: cfo}
+  expect:
+    before: {cfo: {salaries: deny}}
+    verdicts:
+      cfo: {salaries: admit, forecast: deny}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/unique-grant-change"]
+- id: SP-C-06
+  title: File shared with a person; the memo becomes its own scope and Alice sees it only
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: inherit_set, node: memo, ref: library:Docs, value: "false"}
+    - {kind: grant_added, node: memo, ref: alice}
+  expect:
+    before: {alice: {memo: deny}}
+    verdicts:
+      alice: {memo: admit, forecast: deny}
+      bob: {memo: admit}
+      hana: {memo: deny}
+    index_writes: 1
+  tags: [sharepoint, "cell:sharepoint/file-shared"]
+- id: SP-C-08
+  title: File moved; the salaries moved to the library root follow their new parent
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: moved, node: salaries, ref: library:Docs}
+    - {kind: grant_removed, node: salaries, ref: g:hr-payroll}
+    - {kind: grant_added, node: salaries, ref: g:finance-members}
+  expect:
+    before: {hana: {salaries: admit}}
+    verdicts:
+      bob: {salaries: admit}
+      hana: {salaries: deny}
+    index_writes: 1
+  tags: [sharepoint, "cell:sharepoint/move"]

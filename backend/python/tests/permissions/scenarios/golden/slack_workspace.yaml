@@ -1,0 +1,41 @@
+# Slack workspace: a public and a private channel, each with a message and a thread (container rule: the channel's
+# member list is the whole access list). Written the way the Slack team connector writes it on main.
+#   channel: RECORD_GROUP_LEVEL group, OPEN, does not inherit the app, hide_children: slack/team/connector.py:1331-1355
+#   public channel grants: the workspace_member role, plus the guests added to the channel: connector.py:1198-1225
+#   private channel grants: one user grant per member: connector.py:1229-1240
+#   thread: a SLACK_THREAD record group (RGL) under its channel, inheriting it: connector.py:1885-1899
+#   messages and thread replies: inherit their group (inherit_permissions=True): connector.py:2054
+# Every record is stamped "container": its access is its channel's.
+principals:
+  - {id: ann}
+  - {id: ben}
+  - {id: cat}
+  - {id: dan}
+  - {id: eve}
+  - {id: r:workspace_member, kind: role}
+nodes:
+  - {id: app, kind: app, app_type: SLACK}
+  - {id: channel:general, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app], stamp: container}
+  - {id: thread:general-1, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [channel:general], inherits: [channel:general], belongs: [channel:general], stamp: container}
+  - {id: msg:general-1, kind: record, connector: app, rule: OPEN, parents: [channel:general], inherits: [channel:general], belongs: [channel:general], stamp: container}
+  - {id: reply:general-1, kind: record, connector: app, rule: OPEN, parents: [thread:general-1], inherits: [thread:general-1], belongs: [thread:general-1], stamp: container}
+  - {id: channel:hr, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app], stamp: container}
+  - {id: thread:hr-1, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [channel:hr], inherits: [channel:hr], belongs: [channel:hr], stamp: container}
+  - {id: msg:hr-1, kind: record, connector: app, rule: OPEN, parents: [channel:hr], inherits: [channel:hr], belongs: [channel:hr], stamp: container}
+  - {id: reply:hr-1, kind: record, connector: app, rule: OPEN, parents: [thread:hr-1], inherits: [thread:hr-1], belongs: [thread:hr-1], stamp: container}
+grants:
+  - [r:workspace_member, channel:general]
+  - [cat, channel:general]
+  - [ann, channel:hr]
+  - [dan, channel:hr]
+memberships:
+  - [ann, r:workspace_member]
+  - [ben, r:workspace_member]
+  - [dan, r:workspace_member]
+  - [eve, r:workspace_member]
+gates:
+  - [ann, app]
+  - [ben, app]
+  - [cat, app]
+  - [dan, app]
+  - [eve, app]

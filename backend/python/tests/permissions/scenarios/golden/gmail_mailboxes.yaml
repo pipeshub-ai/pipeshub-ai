@@ -1,0 +1,25 @@
+# Gmail team mailboxes (container rule: the mailbox's owner grant is the whole access list), as the connector writes them.
+#   mailbox: RECORD_GROUP_LEVEL group, does not inherit the app, granted to its owner: google/gmail/team/connector.py:2325-2349
+#   labels INBOX, SENT, OTHERS: child groups inheriting the mailbox: connector.py:2336-2349
+#   mails: inherit their label group (inherit_permissions=True): connector.py:522
+principals:
+  - {id: ann}
+  - {id: bob}
+  - {id: cat}
+nodes:
+  - {id: app, kind: app, app_type: GMAIL}
+  - {id: mailbox:ann, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app], stamp: container}
+  - {id: label:ann-INBOX, kind: group, connector: app, rule: OPEN, parents: [mailbox:ann], inherits: [mailbox:ann], belongs: [mailbox:ann], stamp: container}
+  - {id: label:ann-SENT, kind: group, connector: app, rule: OPEN, parents: [mailbox:ann], inherits: [mailbox:ann], belongs: [mailbox:ann], stamp: container}
+  - {id: mail:ann-1, kind: record, connector: app, rule: OPEN, parents: [label:ann-INBOX], inherits: [label:ann-INBOX], belongs: [label:ann-INBOX], stamp: container}
+  - {id: mail:ann-2, kind: record, connector: app, rule: OPEN, parents: [label:ann-SENT], inherits: [label:ann-SENT], belongs: [label:ann-SENT], stamp: container}
+  - {id: mailbox:bob, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app], stamp: container}
+  - {id: label:bob-INBOX, kind: group, connector: app, rule: OPEN, parents: [mailbox:bob], inherits: [mailbox:bob], belongs: [mailbox:bob], stamp: container}
+  - {id: mail:bob-1, kind: record, connector: app, rule: OPEN, parents: [label:bob-INBOX], inherits: [label:bob-INBOX], belongs: [label:bob-INBOX], stamp: container}
+grants:
+  - [ann, mailbox:ann]
+  - [bob, mailbox:bob]
+gates:
+  - [ann, app]
+  - [bob, app]
+  - [cat, app]

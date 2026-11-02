@@ -1,0 +1,102 @@
+- id: SLK-S-01
+  title: Public and private channel with threads; the channel's member list decides every message
+  source: permission model doc, container rule (Slack channels)
+  rule: container
+  comment: cat is a guest added to the public channel only.
+  world: golden/slack_workspace
+  expect:
+    verdicts:
+      ann: {msg:general-1: admit, reply:general-1: admit, msg:hr-1: admit, reply:hr-1: admit}
+      ben: {msg:general-1: admit, reply:general-1: admit, msg:hr-1: deny, reply:hr-1: deny}
+      cat: {msg:general-1: admit, reply:general-1: admit, msg:hr-1: deny, reply:hr-1: deny}
+      dan: {msg:general-1: admit, reply:general-1: admit, msg:hr-1: admit, reply:hr-1: admit}
+      eve: {msg:general-1: admit, reply:general-1: admit, msg:hr-1: deny, thread:hr-1: deny}
+  tags: [slack, "cell:container/public-channel", "cell:container/private-channel", "cell:container/thread-under-channel", "cell:container/non-member"]
+- id: SLK-C-01
+  title: Member added to a private channel; Ben sees its messages and thread at once
+  source: permission model doc, container rule
+  rule: container
+  world: golden/slack_workspace
+  mutation: {kind: grant_added, node: channel:hr, ref: ben}
+  expect:
+    before: {ben: {msg:hr-1: deny}}
+    verdicts:
+      ben: {msg:hr-1: admit, reply:hr-1: admit}
+      eve: {msg:hr-1: deny}
+    index_writes: 0
+  tags: [slack, "cell:container/member-change"]
+- id: SLK-C-02
+  title: Member removed from a private channel; Dan loses its messages and thread
+  source: permission model doc, container rule
+  rule: container
+  world: golden/slack_workspace
+  mutation: {kind: grant_removed, node: channel:hr, ref: dan}
+  expect:
+    before: {dan: {msg:hr-1: admit}}
+    verdicts:
+      dan: {msg:hr-1: deny, reply:hr-1: deny, msg:general-1: admit}
+      ann: {msg:hr-1: admit}
+    index_writes: 0
+  tags: [slack, "cell:container/member-change", narrowing]
+- id: SLK-C-03
+  title: Channel made public; workspace members see its messages, the thread follows
+  source: permission model doc, container rule
+  rule: container
+  world: golden/slack_workspace
+  mutations:
+    - {kind: grant_removed, node: channel:hr, ref: ann}
+    - {kind: grant_removed, node: channel:hr, ref: dan}
+    - {kind: grant_added, node: channel:hr, ref: r:workspace_member}
+  expect:
+    before: {ben: {msg:hr-1: deny}}
+    verdicts:
+      ben: {msg:hr-1: admit, reply:hr-1: admit}
+      eve: {msg:hr-1: admit}
+      cat: {msg:hr-1: deny}
+    index_writes: 0
+  tags: [slack, "cell:container/visibility-change"]
+- id: SLK-C-04
+  title: Channel made private; Slack keeps its members, so the guest and Ann keep it and Ben and Eve lose it
+  source: permission model doc, container rule
+  rule: container
+  comment: >
+    A private channel is granted to each of its members (slack/team/connector.py:1229-1240). The members of the channel
+    before the change were Ann and the guest, so both stay; workspace members who had not joined lose it.
+  world: golden/slack_workspace
+  mutations:
+    - {kind: grant_removed, node: channel:general, ref: r:workspace_member}
+    - {kind: grant_added, node: channel:general, ref: ann}
+  expect:
+    before: {ben: {msg:general-1: admit}, cat: {msg:general-1: admit}}
+    verdicts:
+      ben: {msg:general-1: deny, reply:general-1: deny}
+      cat: {msg:general-1: admit}
+      ann: {msg:general-1: admit, reply:general-1: admit}
+    index_writes: 0
+  tags: [slack, "cell:container/visibility-change", narrowing]
+- id: SLK-C-05
+  title: Channel deleted; its messages and thread are gone for its members
+  source: permission model doc, container rule
+  rule: container
+  comment: A channel that is deleted or archived is unlinked by the full-sync sweep (services/graph_db/common/full_sync_unlink.py:18-26), not deleted.
+  world: golden/slack_workspace
+  mutation: {kind: deleted, node: channel:hr}
+  expect:
+    before: {ann: {msg:hr-1: admit}}
+    verdicts:
+      ann: {msg:hr-1: deny, reply:hr-1: deny, msg:general-1: admit}
+    index_writes: unlink
+  tags: [slack, "cell:container/delete", narrowing]
+- id: SLK-C-06
+  title: Person leaves the workspace; Eve loses the public channel
+  source: permission model doc, container rule
+  rule: container
+  world: golden/slack_workspace
+  mutation: {kind: member_removed, node: r:workspace_member, ref: eve}
+  expect:
+    before: {eve: {msg:general-1: admit}}
+    verdicts:
+      eve: {msg:general-1: deny, reply:general-1: deny}
+      ben: {msg:general-1: admit}
+    index_writes: 0
+  tags: [slack, "cell:container/member-change", narrowing]

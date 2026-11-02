@@ -1,0 +1,63 @@
+name: permission-conformance
+
+# The permission model has one executable rule (backend/python/tests/permissions/oracle.py). Every layer that
+# decides read access must give the same answer as that oracle on the shared scenario corpus.
+#
+#   oracle     scenarios, round-trip, deltas and coverage matrix; no services, every pull request.
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/python/app/**'
+      - 'backend/python/tests/permissions/**'
+      - 'backend/python/pyproject.toml'
+      - 'backend/python/pytest.ini'
+      - '.github/workflows/permission-conformance.yml'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/python/tests/permissions/**'
+      - '.github/workflows/permission-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: permission-conformance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run oracle, scenario and matrix tests
+        run: |
+          cd backend/python
+          pytest tests/permissions -m "not integration" -v -rx

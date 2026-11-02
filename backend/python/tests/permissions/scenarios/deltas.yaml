@@ -1,0 +1,29 @@
+# Where the product oracle (what the graph check does on main) differs from the source oracle (what the vendor
+# shows). A scenario lists the vendor's verdicts; every listed pair the oracle does not give must be named here with
+# its direction, and every entry must still be observed. test_scenarios_oracle.py fails on an unlisted difference and
+# on a stale entry.
+# direction: over-share (the product shows what the vendor hides) | under-share (it hides what the vendor shows).
+deltas:
+  - id: DELTA-02
+    direction: under-share
+    scenarios: [DRIVE-C-08]
+    pairs: [DRIVE-C-08/mo/roadmap]
+    reason: >
+      The Drive team connector drops a domain share (google/drive/team/connector.py:987-989, skipped at :1072-1074)
+      and an anyone-link (:1064-1066), so a discoverable domain share gives the org no grant. Safe but incomplete.
+    fix: "Write a discoverable domain share (and a discoverable anyone share) as an org grant after a verified-domain check; link-only shares stay ungranted."
+  - id: DELTA-05
+    direction: under-share
+    scenarios: [CONF-S-05]
+    pairs: [CONF-S-05/v/page:52]
+    reason: >
+      The walk up the hierarchy stops at 50 hops (rule R7), so a page nested deeper is hidden from everyone.
+    fix: "Raise the cap in check_access or flatten depth at write time; ticket candidate."
+  - id: DELTA-17
+    direction: under-share
+    scenarios: [GM-C-01]
+    pairs: [GM-C-01/cat/mail:ann-1, GM-C-01/cat/mail:ann-2]
+    reason: >
+      A Gmail delegate added at the source gets no access in PipesHub: the connector writes only the owner's grant
+      (google/gmail/team/connector.py:2325-2353); 'delegation' in that connector means domain-wide impersonation.
+    fix: "Read mailbox delegates and grant them the mailbox, or accept and document the gap."

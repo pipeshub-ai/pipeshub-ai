@@ -1,0 +1,36 @@
+# A Confluence space where most pages match the space and one subtree is restricted (written as confluence_hr is:
+# atlassian/confluence_cloud/connector.py:3414, :1786-1790). `stamp` is the rule a projector should give each node:
+# "container" when its access is its space's, "intersection" for the restricted subtree. The tests hold the stamps to
+# the oracle: a container node is admitted exactly when its space is, for every viewer; an intersection node differs
+# for at least one.
+principals:
+  - {id: ed}
+  - {id: eli}
+  - {id: lee}
+  - {id: olu}
+  - {id: g:eng, kind: group}
+  - {id: g:leads, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: CONFLUENCE}
+  - {id: space:ENG, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app], stamp: container}
+  - {id: page:Home, kind: record, connector: app, rule: STRICT, parents: [space:ENG], inherits: [space:ENG], belongs: [space:ENG], stamp: container}
+  - {id: page:Runbooks, kind: record, connector: app, rule: STRICT, parents: [page:Home], inherits: [page:Home], belongs: [space:ENG], stamp: container}
+  - {id: page:Oncall, kind: record, connector: app, rule: STRICT, parents: [page:Runbooks], inherits: [page:Runbooks], belongs: [space:ENG], stamp: container}
+  - {id: att:oncall, kind: record, connector: app, rule: OPEN, parents: [{id: page:Oncall, rel: ATTACHMENT}], inherits: [page:Oncall], belongs: [space:ENG], stamp: container}
+  - {id: page:Design, kind: record, connector: app, rule: STRICT, parents: [space:ENG], inherits: [space:ENG], belongs: [space:ENG], stamp: container}
+  - {id: page:Salaries, kind: record, connector: app, rule: RESTRICTED, parents: [space:ENG], inherits: [space:ENG], belongs: [space:ENG], stamp: intersection}
+  - {id: page:Salaries-2027, kind: record, connector: app, rule: STRICT, parents: [page:Salaries], inherits: [page:Salaries], belongs: [space:ENG], stamp: intersection}
+  - {id: att:salaries, kind: record, connector: app, rule: OPEN, parents: [{id: page:Salaries-2027, rel: ATTACHMENT}], inherits: [page:Salaries-2027], belongs: [space:ENG], stamp: intersection}
+grants:
+  - [g:eng, space:ENG]
+  - [g:leads, page:Salaries]
+memberships:
+  - [ed, g:eng]
+  - [eli, g:eng]
+  - [lee, g:eng]
+  - [lee, g:leads]
+gates:
+  - [ed, app]
+  - [eli, app]
+  - [lee, app]
+  - [olu, app]

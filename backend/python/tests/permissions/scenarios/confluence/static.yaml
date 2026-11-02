@@ -1,0 +1,82 @@
+- id: CONF-S-01
+  title: Salary bands, the worked example (Bob, Dave, Carol, Erin)
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  expect:
+    verdicts:
+      bob: {space:HR: admit, page:Compensation: admit, page:Handbook: admit, page:2027-bands: admit}
+      dave: {space:HR: admit, page:Compensation: deny, page:Handbook: admit, page:2027-bands: deny}
+      carol: {space:HR: deny, page:Compensation: deny, page:Handbook: deny, page:2027-bands: deny}
+      erin: {space:HR: admit, page:Compensation: deny, page:Handbook: admit, page:2027-bands: deny}
+  tags: [confluence, "cell:confluence/space-only", "cell:confluence/restricted-page", "cell:confluence/nested-restrictions", "cell:confluence/named-no-space"]
+- id: CONF-S-02
+  title: Child page follows its parent page; a reader of another space sees nothing
+  source: permission model doc, confluence section
+  rule: intersection
+  world: golden/confluence_hr
+  expect:
+    verdicts:
+      erin: {page:Onboarding: admit}
+      finn: {page:Onboarding: deny, page:Handbook: deny, space:ALL: admit}
+  tags: [confluence, "cell:confluence/space-only"]
+- id: CONF-S-03
+  title: Attachment follows its page
+  source: permission model doc, confluence section (attachments follow the page)
+  rule: intersection
+  world: golden/confluence_hr
+  expect:
+    verdicts:
+      bob: {att:bands: admit}
+      dave: {att:bands: deny}
+      erin: {att:bands: deny}
+      carol: {att:bands: deny}
+  tags: [confluence, "cell:confluence/attachment-comment"]
+- id: CONF-S-04
+  title: Edit-only restriction does not change who can view
+  source: permission model doc, confluence section (edit restrictions do not affect viewing)
+  rule: intersection
+  comment: The writer keeps the page STRICT for an edit-only restriction (connector.py:1786-1790), so the graph is the base world.
+  world: golden/confluence_hr
+  expect:
+    verdicts:
+      erin: {page:Handbook: admit}
+      dave: {page:Handbook: admit}
+  tags: [confluence, "cell:confluence/edit-only"]
+- id: CONF-S-07
+  title: Page restricted so the sync account loses it; the removal sweep deletes it, so it is not readable
+  source: permission model doc, confluence section (a page restriction applies at once); checked by the permission harness
+  rule: intersection
+  comment: >
+    The sync account gets 404 for the page and its space listing no longer includes it, so the connector's removal sweep
+    deletes the record and its attachment (confluence_cloud/connector.py:2165-2177, :2063-2065). The harness measured
+    it on the perm preset: 20 new restrictions, 0 wrong pairs after one incremental sync (an earlier reading of 89 wrong
+    pairs came from a simulator without the listing route).
+  world:
+    principals:
+      - {id: ed}
+      - {id: owner}
+      - {id: g:eng, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: space:ENG, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: page:Secret, kind: record, connector: app, rule: STRICT, parents: [space:ENG], inherits: [space:ENG], belongs: [space:ENG]}
+      - {id: att:secret, kind: record, connector: app, rule: OPEN, parents: [{id: page:Secret, rel: ATTACHMENT}], inherits: [page:Secret], belongs: [space:ENG]}
+    grants:
+      - [g:eng, space:ENG]
+    memberships:
+      - [ed, g:eng]
+      - [owner, g:eng]
+    gates:
+      - [ed, app]
+      - [owner, app]
+  mutations:
+    - {kind: deleted, node: page:Secret}
+    - {kind: deleted, node: att:secret}
+  expect:
+    before: {ed: {page:Secret: admit}}
+    verdicts:
+      ed: {page:Secret: deny, att:secret: deny}
+      owner: {page:Secret: deny, att:secret: deny}
+    index_writes: delete
+  tags: [confluence, "cell:confluence/restricted-away-from-sync-account"]
