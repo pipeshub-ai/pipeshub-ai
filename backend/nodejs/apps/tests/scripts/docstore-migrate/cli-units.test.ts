@@ -95,6 +95,14 @@ describe('flags the command line does not have, and words that do not go togethe
     expect(() => ok('status', '--yes')).to.throw(UsageError, 'it has none')
   })
 
+  it('a flag given twice, or a word the command does not take, is refused: the last one would otherwise win', () => {
+    expect(() => ok('reset', '--yes', '--force', 'false', '--force')).to.throw(UsageError, '--force is given more than once')
+    expect(() => ok('bulk', '--only', 'users', '--only', 'orgs')).to.throw(UsageError, '--only is given more than once')
+    expect(() => ok('reset', 'now', '--yes')).to.throw(UsageError, "'reset' does not take 'now'")
+    expect(() => ok('follow', 'run', 'start')).to.throw(UsageError, "'follow' does not take 'start'")
+    ok('follow', 'run', '--until-idle', '5')
+  })
+
   it('a switch takes no value: --force false does not turn force on', () => {
     expect(() => ok('reset', '--yes', '--force', 'false')).to.throw(UsageError, '--force takes no value')
     expect(() => ok('migrate', '--offline', '--allow-writers', 'false')).to.throw(UsageError, '--allow-writers takes no value')

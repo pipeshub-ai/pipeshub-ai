@@ -17,23 +17,37 @@ export interface Args {
   cmd: string;
   sub?: string;
   flags: Map<string, string | true>;
+  /** Flags given more than once and words after the first: refused by `checkFlags` (the last of a repeated flag would win). */
+  repeated?: string[];
+  extra?: string[];
 }
 
 export function parse(argv: string[]): Args {
   const [cmd = 'help', ...rest] = argv;
   const flags = new Map<string, string | true>();
+  const repeated: string[] = [];
+  const extra: string[] = [];
   let sub: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i] as string;
     if (a.startsWith('--')) {
+      const k = a.slice(2);
+      if (flags.has(k)) repeated.push(k);
       const next = rest[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
-        flags.set(a.slice(2), next);
+        flags.set(k, next);
         i += 1;
-      } else flags.set(a.slice(2), true);
-    } else sub ??= a;
+      } else flags.set(k, true);
+    } else if (sub === undefined) sub = a;
+    else extra.push(a);
   }
-  return { cmd, ...(sub ? { sub } : {}), flags };
+  return {
+    cmd,
+    ...(sub ? { sub } : {}),
+    flags,
+    ...(repeated.length ? { repeated } : {}),
+    ...(extra.length ? { extra } : {}),
+  };
 }
 
 /** A command line that cannot be run as written: exit 2, before anything is touched. */
@@ -137,6 +151,14 @@ export const VALUE_FLAGS = new Set([
 /** What can be refused from the words alone: a flag the command does not have, a `follow` that is neither `start` nor `run`, and flags that exclude each other. */
 export function checkFlags(a: Args): void {
   const allowed = FLAGS[a.cmd] ?? [];
+  if (a.repeated?.length)
+    throw new UsageError(`--${a.repeated[0]} is given more than once`);
+  // only follow takes a word (start or run); any other word is a mistake, not something to ignore
+  const words = [...(a.sub !== undefined ? [a.sub] : []), ...(a.extra ?? [])];
+  if (words.length > (a.cmd === 'follow' ? 1 : 0))
+    throw new UsageError(
+      `'${a.cmd}' does not take '${words[words.length - 1]}'`,
+    );
   for (const [k, v] of a.flags) {
     if (k !== 'help' && !allowed.includes(k))
       throw new UsageError(
