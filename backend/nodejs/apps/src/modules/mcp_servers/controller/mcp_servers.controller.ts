@@ -29,6 +29,7 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import { isValidId } from '../../../libs/repositories/ids';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 
@@ -113,7 +114,10 @@ function proxyMcp(
   }: {
     sendsOnce?: boolean;
     /** Reshapes a successful answer before it is returned. */
-    transform?: (req: AuthenticatedUserRequest, data: any) => Promise<unknown>;
+    transform?: (
+      req: AuthenticatedUserRequest,
+      data: unknown,
+    ) => Promise<unknown>;
   } = {},
 ) {
   return (appConfig: AppConfig) =>
@@ -145,7 +149,11 @@ function proxyMcp(
           { timeoutMs: MCP_PROXY_TIMEOUT_MS, retries: sendsOnce ? 1 : 3 },
         );
 
-        if (transform && connectorResponse?.statusCode >= 200 && connectorResponse.statusCode < 300) {
+        if (
+          transform &&
+          connectorResponse.statusCode >= 200 &&
+          connectorResponse.statusCode < 300
+        ) {
           connectorResponse.data = await transform(req, connectorResponse.data);
         }
 
@@ -349,31 +357,35 @@ interface PendingApprovalEntry {
  */
 async function withChatTitles(
   req: AuthenticatedUserRequest,
-  data: { items?: PendingApprovalEntry[] },
-) {
-  const entries = data?.items ?? [];
-  const { userId, orgId } = req.user || {};
-  const rows = entries.length
+  data: unknown,
+): Promise<{ items: object[] }> {
+  const entries = (data as { items?: PendingApprovalEntry[] }).items ?? [];
+  const { userId, orgId } = req.user ?? {};
+  // Python can send an entry without a chat id; the lookup throws on one that is not an id.
+  const askable = entries.filter((e) => isValidId(e.conversationId));
+  const rows = askable.length
     ? await getConversationRepository().listVisibleSummaries(
         String(orgId),
         String(userId),
-        [...new Set(entries.map((e) => e.conversationId))],
+        [...new Set(askable.map((e) => e.conversationId))],
         [],
       )
     : [];
   const byId = new Map(rows.map((r) => [r._id, r]));
   return {
-    items: entries.flatMap((e) => {
+    items: askable.flatMap((e) => {
       const chat = byId.get(e.conversationId);
-      return chat
-        ? [{
-            conversationId: e.conversationId,
-            conversationTitle: chat.title ?? null,
-            agentId: chat.sessionType === 'agent' ? (chat.agentKey ?? null) : null,
-            createdAt: e.createdAt,
-            card: e.card,
-          }]
-        : [];
+      if (!chat) return [];
+      return [
+        {
+          conversationId: e.conversationId,
+          conversationTitle: chat.title ?? null,
+          agentId:
+            chat.sessionType === 'agent' ? (chat.agentKey ?? null) : null,
+          createdAt: e.createdAt,
+          card: e.card,
+        },
+      ];
     }),
   };
 }
