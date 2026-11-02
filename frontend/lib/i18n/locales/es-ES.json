@@ -1503,7 +1503,12 @@
       "busyElsewhere": "Ese chat sigue trabajando. Vuelve a intentarlo en un momento.",
       "alreadyAnswered": "Eso ya se respondió.",
       "runningIn": "Permitido. {{tool}} se está ejecutando en {{title}}.",
-      "declinedIn": "Denegado en {{title}}."
+      "declinedIn": "Denegado en {{title}}.",
+      "titleIn": "{{tool}} en {{server}}",
+      "inChatExpiresIn_one": "En «{{title}}» · Caduca en {{count}} min",
+      "inChatExpiresIn_other": "En «{{title}}» · Caduca en {{count}} min",
+      "inChatExpiresIn_many": "En «{{title}}» · Caduca en {{count}} min",
+      "inChatExpiresSoon": "En «{{title}}» · Caduca en menos de un minuto"
     },
     "selectedAlone": "{{name}} (solo este elemento)",
     "noConnectorsFound": "No se encontraron conectores",

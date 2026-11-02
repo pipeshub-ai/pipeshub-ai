@@ -151,8 +151,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     if (onAnswer) {
       setProblem(null);
       setSending(true);
-      const result = await onAnswer(payload);
-      setSending(false);
+      let result: 'sent' | 'busy' | 'stale' | 'failed' = 'failed';
+      try {
+        result = await onAnswer(payload);
+      } catch {
+        // Treated as 'failed': the card stays so the person can try again.
+      } finally {
+        setSending(false);
+      }
       if (result !== 'sent') setProblem(result);
       return;
     }
@@ -211,7 +217,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     setNoteOpen(false);
   };
 
-  const expiry = minutesLeft <= 1 ? t('chat.toolApproval.expiresSoon') : t('chat.toolApproval.expiresIn', { count: minutesLeft });
+  const soon = minutesLeft <= 1;
+  const expiry = placement === 'composer' && conversationTitle
+    ? soon
+      ? t('chat.toolApproval.inChatExpiresSoon', { title: conversationTitle })
+      : t('chat.toolApproval.inChatExpiresIn', { title: conversationTitle, count: minutesLeft })
+    : soon
+      ? t('chat.toolApproval.expiresSoon')
+      : t('chat.toolApproval.expiresIn', { count: minutesLeft });
 
   return (
     <Box
@@ -242,13 +255,12 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           <ConnectorIcon type={server} size={15} />
         </Flex>
         <Box style={{ flex: 1, minWidth: 0 }}>
-          <Flex align="center" gap="2" wrap="wrap">
-            <Text size="2" weight="medium" title={approval.toolName} style={{ color: 'var(--gray-12)', overflowWrap: 'anywhere' }}>
-              {tool}
+          <Flex align="center" gap="2">
+            <Text size="2" weight="bold" truncate title={approval.toolName} style={{ color: 'var(--gray-12)', minWidth: 0 }}>
+              {t('chat.toolApproval.titleIn', { tool, server })}
             </Text>
-            <Badge size="1" variant="soft" color="gray">{server}</Badge>
             {approval.kind === 'destructive' && (
-              <Badge size="1" variant="soft" color="red">
+              <Badge size="1" variant="soft" color="red" style={{ flexShrink: 0 }}>
                 {t('chat.toolApproval.cantBeUndone')}
               </Badge>
             )}
@@ -259,7 +271,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             </Text>
           )}
           <Text as="p" size="1" style={{ color: 'var(--gray-11)' }}>
-            {placement === 'composer' && conversationTitle ? `${t('chat.toolApproval.inChat', { title: conversationTitle })} · ${expiry}` : expiry}
+            {expiry}
           </Text>
         </Box>
       </Flex>
@@ -369,8 +381,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         wrap="wrap"
         style={{ scrollMarginBottom: 'calc(var(--composer-dock-height, 0px) + var(--space-4))' }}
       >
-        {/* Ghost buttons draw past their box; the margin keeps their hover inside the card. */}
-        <Flex className="tool-approval-card-group" align="center" gap="4" style={{ marginLeft: 'var(--space-2)' }}>
+        <Flex className="tool-approval-card-group tool-approval-card-lead" align="center" gap="4">
           {canEdit && (
             <Button size="2" variant="ghost" color="gray" onClick={() => setEditing((value) => !value)}>
               {showForm ? t('chat.toolApproval.done') : t('chat.toolApproval.edit')}

@@ -1567,7 +1567,11 @@
       "busyElsewhere": "해당 채팅이 아직 작업 중입니다. 잠시 후 다시 시도하세요.",
       "alreadyAnswered": "이미 응답했습니다.",
       "runningIn": "허용했습니다. {{tool}}이(가) {{title}}에서 실행 중입니다.",
-      "declinedIn": "{{title}}에서 거부했습니다."
+      "declinedIn": "{{title}}에서 거부했습니다.",
+      "titleIn": "{{server}}에서 {{tool}}",
+      "inChatExpiresIn_one": "\"{{title}}\"에서 · {{count}}분 후 만료",
+      "inChatExpiresIn_other": "\"{{title}}\"에서 · {{count}}분 후 만료",
+      "inChatExpiresSoon": "\"{{title}}\"에서 · 1분 이내 만료"
     },
     "selectedAlone": "{{name}} (이 항목만)",
     "noConnectorsFound": "커넥터를 찾을 수 없습니다",

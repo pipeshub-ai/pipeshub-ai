@@ -1567,7 +1567,11 @@
       "busyElsewhere": "该聊天仍在处理中。请稍后再试。",
       "alreadyAnswered": "已经回复过了。",
       "runningIn": "已允许。{{tool}} 正在 {{title}} 中运行。",
-      "declinedIn": "已在 {{title}} 中拒绝。"
+      "declinedIn": "已在 {{title}} 中拒绝。",
+      "titleIn": "在 {{server}} 中{{tool}}",
+      "inChatExpiresIn_one": "在“{{title}}”中 · {{count}} 分钟后过期",
+      "inChatExpiresIn_other": "在“{{title}}”中 · {{count}} 分钟后过期",
+      "inChatExpiresSoon": "在“{{title}}”中 · 不到一分钟后过期"
     },
     "selectedAlone": "{{name}}（仅此项目）",
     "noConnectorsFound": "未找到连接器",

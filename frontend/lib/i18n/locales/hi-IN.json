@@ -1481,7 +1481,11 @@
       "busyElsewhere": "वह चैट अभी काम कर रही है। थोड़ी देर में फिर कोशिश करें।",
       "alreadyAnswered": "इसका जवाब पहले ही दिया जा चुका है।",
       "runningIn": "अनुमति दी गई। {{tool}}, {{title}} में चल रहा है।",
-      "declinedIn": "{{title}} में अस्वीकार किया गया।"
+      "declinedIn": "{{title}} में अस्वीकार किया गया।",
+      "titleIn": "{{server}} में {{tool}}",
+      "inChatExpiresIn_one": "\"{{title}}\" में · {{count}} मिनट में समाप्त",
+      "inChatExpiresIn_other": "\"{{title}}\" में · {{count}} मिनट में समाप्त",
+      "inChatExpiresSoon": "\"{{title}}\" में · एक मिनट से कम में समाप्त"
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",

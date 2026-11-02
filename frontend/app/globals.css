@@ -935,12 +935,20 @@ li > blockquote {
 .tool-approval-editor {
   animation: tool-approval-editor-in 200ms ease;
 }
+/* Ghost buttons draw past their box; the margin keeps their hover inside the card. */
+.tool-approval-card-lead {
+  margin-left: var(--space-2);
+}
 @keyframes tool-approval-editor-in {
   from { opacity: 0; max-height: 0; }
 }
 @container (max-width: 460px) {
   .tool-approval-card-group {
     width: 100%;
+  }
+  /* At full width a margin would push the group past the card. */
+  .tool-approval-card-lead {
+    margin-left: 0;
   }
   .tool-approval-card-group > button {
     flex: 1;

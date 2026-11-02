@@ -67,8 +67,11 @@ describe('ToolApprovalCard', () => {
   it('shows what would run, where, and for how long it can be answered', () => {
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
 
-    expect(screen.getByText('Create an issue').getAttribute('title')).toBe('create_issue');
-    expect(screen.getByText('Jira')).toBeTruthy();
+    const title = screen.getByText('Create an issue in Jira');
+    expect(title.getAttribute('title')).toBe('create_issue');
+    expect(title.className).toMatch(/rt-r-weight-bold/);
+    expect(title.className).toMatch(/rt-truncate/);
+    expect(screen.queryByText('Jira')).toBeNull();
     expect(screen.getByText(/^Expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
     expect(screen.getByText('bug')).toBeTruthy();
@@ -77,7 +80,7 @@ describe('ToolApprovalCard', () => {
 
   it('names a tool without a title readably', () => {
     renderInTheme(<ToolApprovalCard approval={approval({ toolTitle: null, toolName: 'createConfluencePage' })} isLatest />);
-    expect(screen.getByText('Create Confluence Page')).toBeTruthy();
+    expect(screen.getByText('Create Confluence Page in Jira')).toBeTruthy();
   });
 
   it('marks a tool that deletes data', () => {
@@ -536,6 +539,17 @@ describe('ToolApprovalCard: house style', () => {
     expect(variant(badge)).toBe('rt-variant-soft');
   });
 
+  it('narrow: the action groups take full width with no margin pushing past the card', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    for (const group of screen.getByTestId('tool-approval-actions').children) {
+      expect((group as HTMLElement).style.marginLeft).toBe('');
+    }
+    const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+    const narrow = css.match(/@container \(max-width: 460px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(narrow).toMatch(/\.tool-approval-card-group \{\s*width: 100%;/);
+    expect(narrow).toMatch(/\.tool-approval-card-lead \{\s*margin-left: 0;/);
+  });
+
   it('receipt for allowedNotRun uses orange-11', () => {
     renderInTheme(
       <ToolApprovalReceipts items={[{ key: 'k', tool: 'Create an issue', server: 'Jira', answer: 'allowedNotRun' }] as never} />,
@@ -578,6 +592,15 @@ describe('ToolApprovalCard above the composer', () => {
   it('has no Open chat inline', () => {
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
     expect(screen.queryByRole('button', { name: 'Open chat' })).toBeNull();
+  });
+
+  it('keeps the card and says so when onAnswer throws', async () => {
+    composer(vi.fn(async () => {
+      throw new Error('offline');
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    expect(await screen.findByText("Couldn't send your answer. Try again.")).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Deny' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('answers through onAnswer, not the active chat', async () => {

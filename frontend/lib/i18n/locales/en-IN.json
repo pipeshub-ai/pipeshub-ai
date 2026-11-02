@@ -1481,7 +1481,11 @@
       "busyElsewhere": "That chat is still working. Try again in a moment.",
       "alreadyAnswered": "That was already answered.",
       "runningIn": "Allowed. {{tool}} is running in {{title}}.",
-      "declinedIn": "Declined in {{title}}."
+      "declinedIn": "Declined in {{title}}.",
+      "titleIn": "{{tool}} in {{server}}",
+      "inChatExpiresIn_one": "In \"{{title}}\" · Expires in {{count}} min",
+      "inChatExpiresIn_other": "In \"{{title}}\" · Expires in {{count}} min",
+      "inChatExpiresSoon": "In \"{{title}}\" · Expires in under a minute"
     },
     "selectedAlone": "{{name}} (this item only)",
     "noConnectorsFound": "No connectors found",

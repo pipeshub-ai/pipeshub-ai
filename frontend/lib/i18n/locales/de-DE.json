@@ -1481,7 +1481,11 @@
       "busyElsewhere": "Dieser Chat arbeitet noch. Versuchen Sie es gleich noch einmal.",
       "alreadyAnswered": "Das wurde bereits beantwortet.",
       "runningIn": "Zugelassen. {{tool}} läuft in {{title}}.",
-      "declinedIn": "Abgelehnt in {{title}}."
+      "declinedIn": "Abgelehnt in {{title}}.",
+      "titleIn": "{{tool}} in {{server}}",
+      "inChatExpiresIn_one": "In „{{title}}“ · Läuft in {{count}} Min. ab",
+      "inChatExpiresIn_other": "In „{{title}}“ · Läuft in {{count}} Min. ab",
+      "inChatExpiresSoon": "In „{{title}}“ · Läuft in weniger als einer Minute ab"
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
     "noConnectorsFound": "Keine Konnektoren gefunden",

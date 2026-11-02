@@ -606,7 +606,7 @@ def check_edit(
         return errors
     kind = kind_of_call(pending.kind, pending.tool_path, edited)
     if _KIND_RANK[kind] > _KIND_RANK[pending.kind]:
-        return [EditError(path="", message="This change makes the action riskier, so it can't be made here. Use Change something else.")]
+        return [EditError(path="", message="This change makes the action riskier, so it can't be made here. Use Suggest a change.")]
     verdict = decide(own=own_rule, kind=kind, source=pending.source, watched=True, approved_call=False, enabled_on_project=enabled_on_project)
     if verdict.rule == "block":
         return [EditError(path="", message="A rule blocks this action with these details.")]

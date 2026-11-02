@@ -1636,7 +1636,13 @@
       "busyElsewhere": "Tento chat ještě pracuje. Zkuste to za chvíli znovu.",
       "alreadyAnswered": "Na to už bylo odpovězeno.",
       "runningIn": "Povoleno. {{tool}} běží v {{title}}.",
-      "declinedIn": "Zamítnuto v {{title}}."
+      "declinedIn": "Zamítnuto v {{title}}.",
+      "titleIn": "{{tool}} v {{server}}",
+      "inChatExpiresIn_one": "V „{{title}}“ · Vyprší za {{count}} min",
+      "inChatExpiresIn_few": "V „{{title}}“ · Vyprší za {{count}} min",
+      "inChatExpiresIn_many": "V „{{title}}“ · Vyprší za {{count}} min",
+      "inChatExpiresIn_other": "V „{{title}}“ · Vyprší za {{count}} min",
+      "inChatExpiresSoon": "V „{{title}}“ · Vyprší za méně než minutu"
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
     "noConnectorsFound": "Nebyly nalezeny žádné konektory",
