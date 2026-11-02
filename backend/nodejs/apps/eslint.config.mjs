@@ -112,6 +112,8 @@ export default tseslint.config(
       '@typescript-eslint/no-confusing-void-expression': 'off',
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/no-dynamic-delete': 'off',
+      // the change-stream resume token is a driver Timestamp whose `high` part is read on purpose
+      '@typescript-eslint/no-deprecated': 'off',
       // Style rules that flag how tests log, build messages and stub: not worth rewriting every catch callback and template.
       '@typescript-eslint/use-unknown-in-catch-callback-variable': 'off',
       '@typescript-eslint/restrict-template-expressions': 'off',
