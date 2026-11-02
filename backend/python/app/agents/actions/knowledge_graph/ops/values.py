@@ -3,6 +3,7 @@ first, paged by cursor, each with the values that matched."""
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import logging
 from typing import TYPE_CHECKING, Any
@@ -22,10 +23,19 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     listing_facts,
     record_line,
 )
+from app.agents.actions.knowledge_graph.ops.entity_search import (
+    DEADLINE_SECONDS,
+    accepted_caveats,
+    build_linker,
+    unlinked_line,
+)
 from app.agents.actions.knowledge_graph.views import _read_hint
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.config import load_named_entity_config
+from app.modules.named_entities.domain.kinds import VALUE_KINDS, EntityKind
+from app.modules.named_entities.linking.mentions import parse_mentions
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     UNKNOWN_KIND_PREFIX,
@@ -39,6 +49,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     admitted_node_ids,
     parse_cursor,
+    readable_spellings,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import (
@@ -73,6 +84,10 @@ NO_MATCH_MSG = "No accessible records matched."
 NO_FURTHER_RECORDS_MSG = "No further readable records match - the previous page was the last."
 _RECORD_TYPES_HINT = " To keep only some records, pass record_types=[...] (FILE, MAIL, TICKET, ...) or use search."
 _RECORD_TYPES = frozenset(record_type.value for record_type in RecordType)
+_MAX_ENTITY_IDS = 20
+_NODE_KINDS = frozenset(kind.value for kind in EntityKind) - {kind.value for kind in VALUE_KINDS}
+NOTHING_TO_MATCH_MSG = "Pass entity_ids, a name, a kind, a date, an amount, a quantity, or a percentage."
+NAME_TOO_SLOW_MSG = "The name lookup took too long; try again, or pass entity_ids an entity search returned."
 NO_SOURCE_MSG = (
     "None of the named sources is available in this conversation; omit source_ids to look in every "
     "source, or pass an app or knowledge base id that list_files or navigate shows."
@@ -91,6 +106,7 @@ async def execute_find_records_by_value(
     *,
     kinds: list[str] | None = None,
     name: str | None = None,
+    entity_ids: list[str] | None = None,
     date_from: int | None = None,
     date_to: int | None = None,
     amount_min: float | None = None,
@@ -114,9 +130,15 @@ async def execute_find_records_by_value(
     # The filter as the model gave it, repeated in the header and the continue call.
     given: dict[str, Any] = {}
     if kinds:
-        raw["kinds"] = given["kinds"] = kinds
-    if name:
-        raw["name"] = given["name"] = name
+        given["kinds"] = kinds
+        # Kinds are matched folded, as the shared filter folds them.
+        raw["kinds"] = kinds = [str(kind).strip().casefold() for kind in kinds]
+    asked_ids = list(dict.fromkeys(str(item).strip() for item in (entity_ids or []) if str(item).strip()))
+    if len(asked_ids) > _MAX_ENTITY_IDS:
+        return False, f"Pass at most {_MAX_ENTITY_IDS} entity_ids."
+    if asked_ids:
+        given["entity_ids"] = asked_ids
+    name = (name or "").strip()
     if _given(date_from, date_to):
         raw["mentionedDate"] = {"from": date_from or None, "to": date_to or None}
         # As the filter applies them: a 0 bound is no bound, so it is not stated either.
@@ -130,8 +152,8 @@ async def execute_find_records_by_value(
     if _given(percent_min, percent_max):
         raw["percent"] = {"min": percent_min, "max": percent_max}
         given.update(_pair("percent_min", percent_min, "percent_max", percent_max))
-    if not raw:
-        return False, "Pass a kind, name, date, amount, quantity, or percentage."
+    if not raw and not asked_ids and not name:
+        return False, NOTHING_TO_MATCH_MSG
     wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()]
     unknown_types = sorted(set(wanted_types) - _RECORD_TYPES)
     if unknown_types:
@@ -152,12 +174,29 @@ async def execute_find_records_by_value(
     org_id = state.get("org_id") or ""
     user_id = state.get("user_id") or ""
     graph = state["graph_provider"]
+    shortener = get_record_id_shortener_if_enabled(state)
+    ids = [shortener.resolve(item) if shortener is not None else item for item in asked_ids]
+    caveats = ""
     try:
+        context = await load_entity_access_context(state)
+        if name:
+            linked, failure, caveats = await _link_name(state, graph, context, name, kinds)
+            if failure:
+                return False, failure
+            ids.extend(linked)
+            # Later pages list the same entities without linking the name again.
+            given["entity_ids"] = list(dict.fromkeys([*asked_ids, *linked]))
+        if ids:
+            raw["entityIds"] = list(dict.fromkeys(ids))
+            # The ids name their entities: an entity kind would only drop one the linker took
+            # under a related kind, or a merge survivor of another kind. Value kinds still apply.
+            rest = [kind for kind in raw.pop("kinds", None) or [] if kind not in _NODE_KINDS]
+            if rest:
+                raw["kinds"] = rest
         resolver = EntityFilterResolver(graph)
         match = await resolver.match(org_id, raw)
         if not match.error and not match.constrained:
-            return False, "Pass a kind, name, date, amount, quantity, or percentage."
-        context = await load_entity_access_context(state)
+            return False, NOTHING_TO_MATCH_MSG
         if match.error == TOO_BROAD_MESSAGE:
             # Too broad across the org says nothing yet about what this user may
             # read. List more matches; each page checks only its own window.
@@ -221,9 +260,12 @@ async def execute_find_records_by_value(
         ))))
         for r in records
     })
-    shortener = get_record_id_shortener_if_enabled(state)
     frontend_url = await resolve_frontend_url(state.get("config_service"))
-    lines = [f"Records matching {_args(given)}, newest first ({len(records)} shown):", *cite_note(records, cite_refs)]
+    about = await _spelled(graph, org_id, raw.get("entityIds") or [], record_ids)
+    lines = [f"Records {about}matching {_args(given)}, newest first ({len(records)} shown):"]
+    if caveats:
+        lines.append(f"Note on name: {caveats.strip()}")
+    lines.extend(cite_note(records, cite_refs))
     for record in records:
         line = record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
         matched = values.get(record["_key"])
@@ -241,6 +283,66 @@ async def execute_find_records_by_value(
         "knowledgegraph__navigate(node_id=...) to see where a record sits."
     )
     return True, "\n".join(lines)
+
+
+async def _link_name(
+    state: "ChatState", graph: "IGraphDBProvider", context: EntityAccessContext, name: str, kinds: list[str] | None,
+) -> tuple[list[str], str | None, str]:
+    """The entity ids ``name`` links to, as ``search_by_entities`` links it, or why it links
+    to none; and what the accepted ones may leave out (namesakes, longer names not included).
+    A name is never a prefix here: "Lum" must not list every Lumora record."""
+    hint = [kind for kind in kinds or [] if kind in _NODE_KINDS]
+    parsed = parse_mentions([{"name": name, **({"kind": hint[0]} if len(hint) == 1 else {})}])
+    if not parsed.mentions:
+        return [], " ".join([*parsed.notes, "Pass the entity's name, or entity_ids an entity search returned."]), ""
+    try:
+        config = await load_named_entity_config(state.get("config_service"))
+        linking = await asyncio.wait_for(
+            build_linker(state, graph, context, aliases=config.link_aliases).link(
+                parsed.mentions, question=str(state.get("query") or ""),
+            ),
+            timeout=DEADLINE_SECONDS,
+        )
+    except TimeoutError:
+        return [], NAME_TOO_SLOW_MSG, ""
+    except EntityAccessError:
+        raise
+    except Exception:
+        logger.warning("find_records_by_value: name lookup failed", exc_info=True)
+        return [], LOOKUP_FAILED_MSG, ""
+    result = linking.results[0]
+    if result.accepted:
+        caveats = accepted_caveats(result, linking.names)
+        if linking.timed_out:
+            caveats += " Access checks were cut short, so other entities by this name may be missing; retry."
+        return [candidate.entity_id for candidate in result.accepted], None, caveats
+    if linking.timed_out:
+        # Access checks were cut short, so "no such entity" is not known.
+        return [], NAME_TOO_SLOW_MSG, ""
+    # The ones it may be, with the ids to pass; each passed the permission check to be offered.
+    options = [*result.namesakes, *result.unchecked]
+    ids = "; ".join(f'{linking.names.get(c.entity_id, c.name)}: "{c.entity_id}"' for c in options)
+    return [], (
+        f"name was not used: {unlinked_line(result, linking.names).removeprefix('- ')} "
+        + (f"To use one, pass its id as entity_ids: {ids}." if ids else "Or pass entity_ids an entity search returned.")
+    ), ""
+
+
+async def _spelled(graph: "IGraphDBProvider", org_id: str, entity_ids: list[str], record_ids: list[str]) -> str:
+    """"mentioning <names> and " for the listed entities, as the listed records spell them;
+    an entity none of them spells is not named. Only shown, so a failed lookup shows nothing."""
+    if not entity_ids:
+        return ""
+    try:
+        spelled = await readable_spellings(graph, org_id, entity_ids, record_ids)
+    except Exception:
+        logger.warning("find_records_by_value: entity names lookup failed", exc_info=True)
+        return ""
+    names = list(dict.fromkeys(spelled[i] for i in entity_ids if spelled.get(i)))
+    if not names:
+        return ""
+    # The ids match a record mentioning any one of them, not all.
+    return f"mentioning {names[0]} and " if len(names) == 1 else f"mentioning one of {', '.join(names)} and "
 
 
 def _given(low: float | None, high: float | None) -> bool:

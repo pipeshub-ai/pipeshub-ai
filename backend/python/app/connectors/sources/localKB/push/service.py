@@ -418,6 +418,7 @@ class KbPushService:
                 uploaded_by=user_id, is_file=True, extension=None, created_at=now, updated_at=now,
                 fetch_signed_url=f"{storage_url}/api/v1/document/internal/{new_doc}/download",
                 source_timestamp_origin=upload_origin(source_ts, now).value,
+                push_origin=True,
             )
             expected, new = None, PushSet(new_doc, v.version)
             outcome = await processor.on_pushed_record(record, expected=expected, new=new, content_changed=True)
@@ -429,6 +430,7 @@ class KbPushService:
         record.record_name = v.record_name
         record.version = v.version
         record.updated_at = now
+        record.push_origin = True
         if source_ts:
             record.source_updated_at = source_ts
         if action == "content":

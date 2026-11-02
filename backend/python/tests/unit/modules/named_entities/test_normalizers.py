@@ -262,6 +262,184 @@ def test_an_indian_amount_reaches_the_indexed_values() -> None:
     assert normalize_money(found[0].surface).amount == 185297
 
 
+def _money_values(text: str) -> list[tuple[str, str | None]]:
+    """Each money span with its value, a range as "CUR:low..high"."""
+    found = []
+    for mention in ValueCandidateRecognizer(frozenset({EntityKind.CURRENCY})).recognize([TextUnit(0, "b", text)]):
+        value = normalize_money(mention.surface)
+        key = value and f"{value.currency}:{value.amount:f}"
+        if value and value.amount_high is not None:
+            key += f"..{value.amount_high:f}"
+        found.append((mention.surface, key))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Swiss grouping, with either apostrophe.
+        ("Fee CHF 1'250.50 due", [("CHF 1'250.50", "CHF:1250.50")]),
+        ("Fee CHF 1’250.50 due", [("CHF 1’250.50", "CHF:1250.50")]),
+        ("Total 1'250'000 CHF", [("1'250'000 CHF", "CHF:1250000")]),
+        ("Q1'25 revenue $5", [("$5", "USD:5")]),
+        ("it's 5 USD", [("5 USD", "USD:5")]),
+        ("price='$500'", [("$500", "USD:500")]),
+        # German scale words, with their dot.
+        ("Umsatz € 2.5 Mio.", [("€ 2.5 Mio", "EUR:2500000.0")]),
+        ("Umsatz 2,5 Mrd. €", [("2,5 Mrd. €", "EUR:2500000000.0")]),
+        ("Umsatz 2,5 Mio. €", [("2,5 Mio. €", "EUR:2500000.0")]),
+        ("Budget EUR 300 Tsd.", [("EUR 300 Tsd", "EUR:300000")]),
+        # Lower-case codes after a number; codes that are words stay out.
+        ("Paid 1500 usd", [("1500 usd", "USD:1500")]),
+        ("Paid 200 eur", [("200 eur", "EUR:200")]),
+        ("Paid 1500 USD", [("1500 USD", "USD:1500")]),
+        ("Give it 5 try", []),
+        ("Bought 3 pen", []),
+        ("See 10 top", []),
+        ("Sent 12 cad drawings", []),
+    ],
+)
+def test_amounts_written_the_swiss_german_or_lower_case_way(text, expected) -> None:
+    assert _money_values(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Deal size $5-10M", [("$5-10M", "USD:5000000..10000000")]),
+        ("Deal size $5–10 million", [("$5–10 million", "USD:5000000..10000000")]),
+        ("Deal size USD 5 to 10M", [("USD 5 to 10M", "USD:5000000..10000000")]),
+        ("Deal size €2M-3M", [("€2M-3M", "EUR:2000000..3000000")]),
+        # The symbol written again on the high end is still one range.
+        ("Deal size €2M-€3M", [("€2M-€3M", "EUR:2000000..3000000")]),
+        ("Deal size $5M - $10M", [("$5M - $10M", "USD:5000000..10000000")]),
+        ("Deal size $500K-1M", [("$500K-1M", "USD:500000..1000000")]),
+        ("Deal size $1.5-2bn", [("$1.5-2bn", "USD:1500000000.0..2000000000")]),
+        ("Fee Rs. 5-10 lakh", [("Rs. 5-10 lakh", "INR:500000..1000000")]),
+        ("Range USD 1'000-2'000k", [("USD 1'000-2'000k", "USD:1000000..2000000")]),
+        # The currency after both ends.
+        ("Cost 500-1000 EUR", [("500-1000 EUR", "EUR:500..1000")]),
+        ("Cost 5 to 10 million dollars", [("5 to 10 million dollars", "USD:5000000..10000000")]),
+        # Both ends name a currency, and not the same one: no range.
+        ("Deal $5M - €10M", [("$5M", "USD:5000000"), ("€10M", "EUR:10000000")]),
+        # A loss of a range runs between the negated ends.
+        ("Loss -$5-10M", [("-$5-10M", "USD:-10000000..-5000000")]),
+        # Without a shared scale each amount stands alone, as before.
+        ("Price $5-10", [("$5", "USD:5")]),
+        ("Price $5 - $10", [("$5", "USD:5"), ("$10", "USD:10")]),
+        ("Call USD 555-1234", [("USD 555", "USD:555")]),
+        ("Plan $5-10Mbps", [("$5", "USD:5")]),
+        # A range that runs backwards is no range.
+        ("Deal $10-5M", [("$10-5M", None)]),
+        ("Deal $500-1M", [("$500-1M", None)]),
+        # A span of years before a code is no amount: "The 2019-2021 USD figures".
+        ("The 2019-2021 USD figures", [("2019-2021 USD", None)]),
+        ("From 2024-2025 eur budget lines", [("2024-2025 eur", None)]),
+        ("Budget 2000-2500 EUR", [("2000-2500 EUR", "EUR:2000..2500")]),
+    ],
+)
+def test_a_money_range_keeps_both_ends_with_its_shared_scale(text, expected) -> None:
+    """"$5-10M" was stored as $5: off by a million, and its high end lost."""
+    assert _money_values(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Item: Widget, Price (INR): 500, Qty: 3", [("(INR): 500", "INR:500")]),
+        ("Amount (USD): 1,250.00", [("(USD): 1,250.00", "USD:1250.00")]),
+        ("Price(USD): 500", [("(USD): 500", "USD:500")]),
+        ("Cost (usd): 5", [("(usd): 5", "USD:5")]),
+        ("Cost ($): 5", [("($): 5", "USD:5")]),
+        ("Revenue (USD): -50", [("(USD): -50", "USD:-50")]),
+        ("Price (USD): 5-10M", [("(USD): 5-10M", "USD:5000000..10000000")]),
+        ("Loss (USD): (1,200)", [("(USD): (1,200)", "USD:-1200")]),
+        ("Discount (%): 5", []),
+        # A scaled header is not read: its scale would be lost.
+        ("Revenue (USD m): 5", []),
+        ("Revenue (USD '000): 5", []),
+        ("Revenue (USD) 500", []),
+    ],
+)
+def test_a_currency_named_in_a_header_reaches_the_amount(text, expected) -> None:
+    """A table row reads "Header: value", so a currency in the header never sat next to the number."""
+    assert _money_values(text) == expected
+
+
+def _money(surface: str) -> str | None:
+    value = normalize_money(surface)
+    if value is None:
+        return None
+    key = f"{value.currency}:{value.amount:f}"
+    return key if value.amount_high is None else f"{key}..{value.amount_high:f}"
+
+
+@pytest.mark.parametrize(
+    ("surface", "expected"),
+    [
+        # A surface a model hands over is not always a bare amount: a later dash is no range.
+        ("$500 - 20% discount", "USD:500"),
+        ("$1,200 (2-3 units)", "USD:1200"),
+        ("USD 500 on 2024-01-15", "USD:500"),
+        ("€500 – 2025 budget", "EUR:500"),
+        ("1-800-555-1234 USD", "USD:1"),
+        ("USD 555-1234", "USD:555"),
+        ("$5-10 per seat", "USD:5"),
+        ("$500 - $20 discount", "USD:500"),
+        # A range with the currency or scale on both ends, or in front of both.
+        ("$5M - $10M", "USD:5000000..10000000"),
+        ("€2M-€3M", "EUR:2000000..3000000"),
+        ("1-2 million USD", "USD:1000000..2000000"),
+        ("($5-10M)", "USD:-10000000..-5000000"),
+        # The high end never borrows the low end's scale: "5k - 10 USD" runs backwards.
+        ("5k - 10 USD", None),
+        # A header: its sign survives, and one that is not just a currency gives nothing.
+        ("(USD): (500)", "USD:-500"),
+        ("(₹): 500", "INR:500"),
+        ("(EUR): 2,5 Mio.", "EUR:2500000.0"),
+        ("(USD m): 5", None),
+        ("(USD '000): 5", None),
+        ("(USD 000): 5", None),
+    ],
+)
+def test_a_model_supplied_surface_reads_as_one_amount_unless_it_is_a_bare_range(surface, expected) -> None:
+    assert _money(surface) == expected
+
+
+@pytest.mark.parametrize(("text", "surface"), [
+    ("{'growth': '12%', 'weight': '5 kg'}", ["12%", "5 kg"]),
+    ("a margin of '12.5%'", ["12.5%"]),
+])
+def test_a_quoted_percent_or_quantity_is_still_read(text, surface) -> None:
+    kinds = frozenset({EntityKind.DIMENSION, EntityKind.PERCENTAGE})
+    assert sorted(m.surface for m in ValueCandidateRecognizer(kinds).recognize([TextUnit(0, "b", text)])) == sorted(surface)
+
+
+def test_a_range_key_never_merges_with_its_low_end() -> None:
+    from app.modules.named_entities.merge import entity_identity
+
+    _, range_key, _ = entity_identity(EntityKind.CURRENCY, "$5-10M", NormalizationContext())
+    _, exact_key, _ = entity_identity(EntityKind.CURRENCY, "$5M", NormalizationContext())
+    assert (range_key, exact_key) == ("money:USD:5000000..10000000", "money:USD:5000000")
+
+
+@pytest.mark.parametrize(
+    ("surface", "unit", "si"),
+    [("450 MWh", "mwh", 1.62e12), ("12 kWh", "kwh", 4.32e7), ("5 wh", "wh", 18_000.0), ("2 GWh", "gwh", 7.2e12)],
+)
+def test_energy_is_a_quantity_in_joules(surface, unit, si) -> None:
+    mentions = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", f"Used {surface} in May")])
+    assert [m.surface for m in mentions] == [surface]
+    value = normalize_quantity(surface)
+    assert (value.unit, value.dimension, value.si_value) == (unit, "energy", si)
+
+
+@pytest.mark.parametrize("text", ["WhatsApp 5 users", "Shipped 1'250 kg", "Margin 1'250%"])
+def test_no_quantity_is_read_from_a_word_or_the_tail_of_a_grouped_number(text) -> None:
+    kinds = frozenset({EntityKind.DIMENSION, EntityKind.PERCENTAGE})
+    assert ValueCandidateRecognizer(kinds).recognize([TextUnit(0, "b", text)]) == []
+
+
 def test_celsius_converts_to_kelvin():
     value = normalize_quantity("20 °C")
     assert value is not None
@@ -383,10 +561,17 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
         "May 1-" * 10_000,
         "1 May - " * 10_000,
         "2025-01-01-" * 10_000,
+        "1" + "'000" * 20_000 + " x",
+        "$1-" * 20_000,
+        "$1M-$" * 20_000,
+        "USD 1 to " * 20_000,
+        "(USD): " * 20_000,
+        "1-2-" * 20_000 + " EUR",
     ],
     ids=[
         "space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix",
-        "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes",
+        "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes", "apostrophe-grouped",
+        "money-range-dashes", "money-range-symbol-twice", "money-range-to", "header-currency", "trailing-range-dashes",
     ],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):

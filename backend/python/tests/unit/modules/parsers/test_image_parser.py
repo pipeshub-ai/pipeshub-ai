@@ -171,14 +171,14 @@ class TestFetchSingleUrl:
     async def test_data_image_url_returned_as_is(self, parser):
         fetcher = _fetcher()
         data_url = "data:image/png;base64,iVBORw0KGgo="
-        result = await parser._fetch_single_url(fetcher, data_url)
+        result = await parser._fetch_single_url(fetcher, data_url, allow_remote_fetch=True)
         assert result == data_url
         fetcher.get.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_data_image_non_svg_returned_as_is(self, parser):
         data_url = "data:image/jpeg;base64,/9j/4AAQ"
-        result = await parser._fetch_single_url(_fetcher(), data_url)
+        result = await parser._fetch_single_url(_fetcher(), data_url, allow_remote_fetch=True)
         assert result == data_url
 
     @pytest.mark.asyncio
@@ -187,42 +187,43 @@ class TestFetchSingleUrl:
         svg_data_url = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
 
         with patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)) as mock_convert:
-            result = await parser._fetch_single_url(_fetcher(), svg_data_url)
+            result = await parser._fetch_single_url(_fetcher(), svg_data_url, allow_remote_fetch=True)
             mock_convert.assert_called_once_with(svg_data_url)
             assert result == f"data:image/png;base64,{fake_png_b64}"
 
     @pytest.mark.asyncio
     async def test_invalid_url_returns_none(self, parser):
         fetcher = _fetcher()
-        result = await parser._fetch_single_url(fetcher, "ftp://not-http.com/img.png")
+        result = await parser._fetch_single_url(fetcher, "ftp://not-http.com/img.png", allow_remote_fetch=True)
         assert result is None
         fetcher.get.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_http_url_success(self, parser):
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="png"):
-            result = await parser._fetch_single_url(_fetcher(), "https://example.com/image.png")
+            result = await parser._fetch_single_url(_fetcher(), "https://example.com/image.png", allow_remote_fetch=True)
 
         assert result == f"data:image/png;base64,{base64.b64encode(b'fake-image-data').decode()}"
 
     @pytest.mark.asyncio
     async def test_http_url_invalid_content_type(self, parser):
         result = await parser._fetch_single_url(
-            _fetcher(content_type="text/html"), "https://example.com/not-image"
+            _fetcher(content_type="text/html"), "https://example.com/not-image",
+            allow_remote_fetch=True
         )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_http_url_empty_content(self, parser):
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="png"):
-            result = await parser._fetch_single_url(_fetcher(content=b""), "https://example.com/empty.png")
+            result = await parser._fetch_single_url(_fetcher(content=b""), "https://example.com/empty.png", allow_remote_fetch=True)
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_http_url_no_extension(self, parser):
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value=None):
-            result = await parser._fetch_single_url(_fetcher(), "https://example.com/img")
+            result = await parser._fetch_single_url(_fetcher(), "https://example.com/img", allow_remote_fetch=True)
 
         assert result is None
 
@@ -236,18 +237,18 @@ class TestFetchSingleUrl:
 
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="svg"), \
              patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)):
-            result = await parser._fetch_single_url(fetcher, "https://example.com/icon.svg")
+            result = await parser._fetch_single_url(fetcher, "https://example.com/icon.svg", allow_remote_fetch=True)
 
         assert result == f"data:image/png;base64,{fake_png_b64}"
 
     @pytest.mark.asyncio
     async def test_http_403_returns_none(self, parser):
-        result = await parser._fetch_single_url(_fetcher(status=403), "https://example.com/protected.png")
+        result = await parser._fetch_single_url(_fetcher(status=403), "https://example.com/protected.png", allow_remote_fetch=True)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_http_404_returns_none(self, parser):
-        result = await parser._fetch_single_url(_fetcher(status=404), "https://example.com/missing.png")
+        result = await parser._fetch_single_url(_fetcher(status=404), "https://example.com/missing.png", allow_remote_fetch=True)
         assert result is None
 
     @pytest.mark.asyncio
@@ -255,7 +256,7 @@ class TestFetchSingleUrl:
         fetcher = MagicMock()
         fetcher.get = AsyncMock(side_effect=PublicFetchError("connection refused"))
 
-        result = await parser._fetch_single_url(fetcher, "https://example.com/img.png", logger=parser.logger)
+        result = await parser._fetch_single_url(fetcher, "https://example.com/img.png", logger=parser.logger, allow_remote_fetch=True)
         assert result is None
         assert "Network error" in parser.logger.warning.call_args[0][0]
 
@@ -264,7 +265,7 @@ class TestFetchSingleUrl:
         fetcher = MagicMock()
         fetcher.get = AsyncMock(side_effect=Exception("unexpected"))
 
-        result = await parser._fetch_single_url(fetcher, "https://example.com/img.png")
+        result = await parser._fetch_single_url(fetcher, "https://example.com/img.png", allow_remote_fetch=True)
         assert result is None
 
 
@@ -309,7 +310,7 @@ class TestFetchSingleUrlBlocksInternalHosts:
     async def test_internal_address_is_never_requested(self, parser, fake_dns, url):
         fetcher, seen = _recording_fetcher(lambda r: httpx.Response(200, headers={"content-type": "image/png"}, content=b"x"))
 
-        result = await parser._fetch_single_url(fetcher, url)
+        result = await parser._fetch_single_url(fetcher, url, allow_remote_fetch=True)
 
         assert result is None
         assert seen == []
@@ -320,7 +321,7 @@ class TestFetchSingleUrlBlocksInternalHosts:
             lambda r: httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/x.png"})
         )
 
-        result = await parser._fetch_single_url(fetcher, "https://cdn.example.com/logo.png")
+        result = await parser._fetch_single_url(fetcher, "https://cdn.example.com/logo.png", allow_remote_fetch=True)
 
         assert result is None
         assert len(seen) == 1
@@ -331,7 +332,7 @@ class TestFetchSingleUrlBlocksInternalHosts:
             lambda r: httpx.Response(200, headers={"content-type": "image/png"}, content=b"png-bytes")
         )
 
-        result = await parser._fetch_single_url(fetcher, "https://cdn.example.com/logo.png")
+        result = await parser._fetch_single_url(fetcher, "https://cdn.example.com/logo.png", allow_remote_fetch=True)
 
         assert result == f"data:image/png;base64,{base64.b64encode(b'png-bytes').decode()}"
         assert len(seen) == 1
@@ -346,7 +347,7 @@ class TestUrlsToBase64:
         """Multiple URLs processed concurrently."""
         fake_b64 = "data:image/png;base64,abc"
         with patch.object(ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake_b64):
-            result = await parser.urls_to_base64(["https://a.com/1.png", "https://b.com/2.png"])
+            result = await parser.urls_to_base64(["https://a.com/1.png", "https://b.com/2.png"], allow_remote_fetch=True)
         assert len(result) == 2
         assert all(r == fake_b64 for r in result)
 
@@ -355,14 +356,14 @@ class TestUrlsToBase64:
         """Mix of successful and failed URL fetches."""
         call_count = [0]
 
-        async def mock_fetch(fetcher, url, logger=None):
+        async def mock_fetch(fetcher, url, logger=None, *, allow_remote_fetch):
             call_count[0] += 1
             if "fail" in url:
                 return None
             return "data:image/png;base64,abc"
 
         with patch.object(ImageParser, "_fetch_single_url", side_effect=mock_fetch):
-            result = await parser.urls_to_base64(["https://ok.com/1.png", "https://fail.com/2.png", "https://ok.com/3.png"])
+            result = await parser.urls_to_base64(["https://ok.com/1.png", "https://fail.com/2.png", "https://ok.com/3.png"], allow_remote_fetch=True)
         assert len(result) == 3
         assert result[0] == "data:image/png;base64,abc"
         assert result[1] is None
@@ -371,7 +372,7 @@ class TestUrlsToBase64:
     @pytest.mark.asyncio
     async def test_empty_urls(self, parser):
         """Empty URL list returns empty list."""
-        result = await parser.urls_to_base64([])
+        result = await parser.urls_to_base64([], allow_remote_fetch=True)
         assert result == []
 
     @pytest.mark.asyncio
@@ -379,7 +380,7 @@ class TestUrlsToBase64:
         """Already-base64 URLs pass through."""
         data_url = "data:image/png;base64,iVBORw0KGgo="
         with patch.object(ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=data_url):
-            result = await parser.urls_to_base64([data_url])
+            result = await parser.urls_to_base64([data_url], allow_remote_fetch=True)
         assert result[0] == data_url
 
 

@@ -1062,6 +1062,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
                 "labels": graph_doc.get("labels"),
+                "milestone": graph_doc.get("milestone"),
                 "resolved_at": graph_doc.get("resolvedAtTimestamp"),
                 "due_date": graph_doc.get("dueDateTimestamp"),
             }
@@ -1172,6 +1173,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "review_name": graph_doc.get("reviewName"),
                 "review_email": graph_doc.get("reviewEmail"),
                 "labels": graph_doc.get("labels"),
+                "milestone": graph_doc.get("milestone"),
                 "last_commit_sha": graph_doc.get("lastCommitSha"),
                 "merged_at": graph_doc.get("mergedAtTimestamp"),
                 "closed_at": graph_doc.get("closedAtTimestamp"),

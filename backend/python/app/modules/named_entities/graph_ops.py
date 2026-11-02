@@ -48,14 +48,14 @@ WHERE (size($kinds) = 0 OR n.kind IN $kinds)
 _VALUE_FILTERS_AQL = """\
   FILTER LENGTH(@kinds) == 0 OR v.kind IN @kinds
   FILTER @dateStart == null OR (v.startMs < @dateEnd AND v.endMs > @dateStart)
-  FILTER @amountMin == null OR ((@currency == "" OR v.currency == @currency) AND v.amountFloat >= @amountMin AND v.amountFloat <= @amountMax)
+  FILTER @amountMin == null OR ((@currency == "" OR v.currency == @currency) AND NOT_NULL(v.amountHighFloat, v.amountFloat) >= @amountMin AND v.amountFloat <= @amountMax)
   FILTER @quantityMin == null OR ((@dimension == "" OR v.dimension == @dimension) AND v.siValue >= @quantityMin AND v.siValue <= @quantityMax)
   FILTER @percentMin == null OR (v.kind == "percentage" AND v.numericValue >= @percentMin AND v.numericValue <= @percentMax)"""
 
 _VALUE_FILTERS_CYPHER = """\
 WHERE (size($kinds) = 0 OR v.kind IN $kinds)
   AND ($dateStart IS NULL OR (v.startMs < $dateEnd AND v.endMs > $dateStart))
-  AND ($amountMin IS NULL OR (($currency = "" OR v.currency = $currency) AND v.amountFloat >= $amountMin AND v.amountFloat <= $amountMax))
+  AND ($amountMin IS NULL OR (($currency = "" OR v.currency = $currency) AND coalesce(v.amountHighFloat, v.amountFloat) >= $amountMin AND v.amountFloat <= $amountMax))
   AND ($quantityMin IS NULL OR (($dimension = "" OR v.dimension = $dimension) AND v.siValue >= $quantityMin AND v.siValue <= $quantityMax))
   AND ($percentMin IS NULL OR (v.kind = "percentage" AND v.numericValue >= $percentMin AND v.numericValue <= $percentMax))"""
 
@@ -344,7 +344,7 @@ FOR v IN {_VALUES}
   FILTER v.recordId IN @recordIds AND v.orgId == @orgId AND v.name != null
 {_VALUE_FILTERS_AQL}
   COLLECT recordId = v.recordId INTO named = {{
-    name: v.name, size: NOT_NULL(v.amountFloat, v.siValue, v.numericValue, v.startMs, 0)
+    name: v.name, size: NOT_NULL(v.amountHighFloat, v.amountFloat, v.siValue, v.numericValue, v.startMs, 0)
   }}
   RETURN {{
     recordId: recordId,
@@ -357,7 +357,7 @@ MATCH (v:{_VALUE_LABEL})
 WHERE v.recordId IN $recordIds AND v.orgId = $orgId AND v.name IS NOT NULL
 WITH v
 {_VALUE_FILTERS_CYPHER}
-WITH v ORDER BY coalesce(v.amountFloat, v.siValue, v.numericValue, v.startMs, 0) DESC, v.name
+WITH v ORDER BY coalesce(v.amountHighFloat, v.amountFloat, v.siValue, v.numericValue, v.startMs, 0) DESC, v.name
 WITH v.recordId AS recordId, collect(v.name) AS named
 RETURN recordId, named[0..$perRecord] AS names
 """
@@ -1423,11 +1423,11 @@ def filter_constraints(entity_ids: list[str] | None, query: NamedEntityQueryLike
     consumed: set[str] = set()
     constraints: list[list[_Part]] = []
     if ids or prefix:
+        # A name or an id only ever matches an entity node, so only node kinds narrow it;
+        # a value kind is a constraint of its own below ("records about Acme that state an
+        # amount": entity_ids with kinds=["currency"]).
         consumed.update(node_kinds)
-        # A name or an id only ever matches an entity node, so a filter whose kinds
-        # are all values leaves this constraint unsatisfiable.
-        possible = not kinds or bool(node_kinds)
-        constraints.append([_Part("node", {"ids": ids, "kinds": node_kinds, "prefix": prefix})] if possible else [])
+        constraints.append([_Part("node", {"ids": ids, "kinds": node_kinds, "prefix": prefix})])
     if query is not None:
         typed = {
             "date": query.date_start_ms is not None and {"dateStart": query.date_start_ms, "dateEnd": query.date_end_ms},
