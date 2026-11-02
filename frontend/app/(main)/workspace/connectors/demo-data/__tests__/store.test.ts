@@ -44,53 +44,23 @@ beforeEach(() => {
   useDemoDataStore.getState().reset();
 });
 
-describe('loadDemoConnectors', () => {
-  it('finds the active Demo connector and remembers it', async () => {
-    getActiveConnectors.mockResolvedValue(listing(connector('demo', 'Demo'), connector('slack', 'Slack')));
-
-    await useDemoDataStore.getState().loadDemoConnectors();
-    await useDemoDataStore.getState().loadDemoConnectors();
+describe('setTeamConnectors', () => {
+  it('keeps the Demo connector instances and nothing else', () => {
+    useDemoDataStore.getState().setTeamConnectors([connector('demo', 'Demo'), connector('slack', 'Slack')]);
 
     expect(useDemoDataStore.getState().demoConnectors.map((c) => c._key)).toEqual(['demo']);
-    expect(getActiveConnectors).toHaveBeenCalledTimes(1);
   });
 
-  it('asks again next time when there was no demo, since it may be turned on later', async () => {
-    getActiveConnectors.mockResolvedValueOnce(listing()).mockResolvedValueOnce(listing(connector('demo', 'Demo')));
-
-    await useDemoDataStore.getState().loadDemoConnectors();
-    expect(useDemoDataStore.getState().demoConnectors).toEqual([]);
-    await useDemoDataStore.getState().loadDemoConnectors();
+  it('keeps a disabled demo, whose records are still searchable', () => {
+    useDemoDataStore.getState().setTeamConnectors([connector('demo', 'Demo', { isActive: false })]);
 
     expect(useDemoDataStore.getState().demoConnectors.map((c) => c._key)).toEqual(['demo']);
-    expect(getActiveConnectors).toHaveBeenCalledTimes(2);
   });
 
-  it('shares one lookup between callers that ask at the same time', async () => {
-    getActiveConnectors.mockResolvedValue(listing(connector('demo', 'Demo')));
+  it('forgets a demo that is no longer listed', () => {
+    useDemoDataStore.getState().setTeamConnectors([connector('demo', 'Demo')]);
+    useDemoDataStore.getState().setTeamConnectors([connector('slack', 'Slack')]);
 
-    await Promise.all([
-      useDemoDataStore.getState().loadDemoConnectors(),
-      useDemoDataStore.getState().loadDemoConnectors(),
-    ]);
-
-    expect(getActiveConnectors).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps a disabled demo, whose records are still searchable, and asks again next time', async () => {
-    getActiveConnectors.mockResolvedValue(listing(connector('demo', 'Demo', { isActive: false })));
-
-    await useDemoDataStore.getState().loadDemoConnectors();
-    await useDemoDataStore.getState().loadDemoConnectors();
-
-    expect(useDemoDataStore.getState().demoConnectors.map((c) => c._key)).toEqual(['demo']);
-    expect(getActiveConnectors).toHaveBeenCalledTimes(2);
-  });
-
-  it('treats a failed lookup as no demo, without throwing', async () => {
-    getActiveConnectors.mockRejectedValue(new Error('offline'));
-
-    await expect(useDemoDataStore.getState().loadDemoConnectors()).resolves.toBeUndefined();
     expect(useDemoDataStore.getState().demoConnectors).toEqual([]);
   });
 });
@@ -169,18 +139,6 @@ describe('checkRealData', () => {
 });
 
 describe('reset', () => {
-  it('drops the answer of a lookup that was still running, so a removed demo stays gone', async () => {
-    let answer!: (value: ReturnType<typeof listing>) => void;
-    getActiveConnectors.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
-    const pending = useDemoDataStore.getState().loadDemoConnectors();
-
-    useDemoDataStore.getState().reset();
-    answer(listing(connector('demo', 'Demo')));
-    await pending;
-
-    expect(useDemoDataStore.getState().demoConnectors).toEqual([]);
-  });
-
   it('drops a real-data answer that arrives after it', async () => {
     let answer!: (value: { items: unknown[] }) => void;
     searchAllRecords.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)) as never);
@@ -194,8 +152,7 @@ describe('reset', () => {
   });
 
   it('forgets the demo, so the chat landing drops its demo extras straight away', async () => {
-    getActiveConnectors.mockResolvedValue(listing(connector('demo', 'Demo')));
-    await useDemoDataStore.getState().loadDemoConnectors();
+    useDemoDataStore.getState().setTeamConnectors([connector('demo', 'Demo')]);
 
     useDemoDataStore.getState().reset();
 

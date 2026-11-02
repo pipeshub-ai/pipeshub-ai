@@ -1444,7 +1444,7 @@ _VALUE_KIND_NAMES = frozenset(kind.value for kind in VALUE_KINDS)
 _TYPED_CONSTRAINT_KINDS = {
     "date": _DATE_KINDS,
     "amount": frozenset({EntityKind.CURRENCY.value}),
-    "quantity": frozenset({EntityKind.DIMENSION.value, EntityKind.AGE.value}),
+    "quantity": frozenset({EntityKind.DIMENSION.value, EntityKind.AGE.value, EntityKind.DURATION.value}),
     "percent": frozenset({EntityKind.PERCENTAGE.value}),
 }
 _NO_VALUE = {

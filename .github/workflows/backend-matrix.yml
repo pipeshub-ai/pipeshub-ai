@@ -179,7 +179,8 @@ jobs:
     name: ${{ matrix.suite }} · ${{ matrix.backend }}
     needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The graph jobs take 27-28 minutes of a 30-minute limit, so any new graph test pushed them over it.
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false

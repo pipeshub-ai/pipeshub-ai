@@ -9,6 +9,8 @@ describe('resolveConnectorType', () => {
 
   it('leaves app slugs to their own icons', () => {
     expect(resolveConnectorType('jira')).toBe('jira');
+    expect(resolveConnectorType('docusign')).toBe('docusign');
+    expect(resolveConnectorType('okta')).toBe('okta');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {

@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 import bisect
 import logging
+import math
+import re
 from dataclasses import replace
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
@@ -30,6 +33,7 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
     build_linker,
     unlinked_line,
 )
+from app.agents.actions.knowledge_graph.ops.time_range import parse_iso_to_epoch_ms
 from app.agents.actions.knowledge_graph.views import _read_hint
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
@@ -63,6 +67,8 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
+
+UNCONVERTED_NOTE = "Amounts in every currency, not converted; pass currency to compare like with like."
 
 _MAX_LIMIT = 50
 _DAY_MS = 86_400_000
@@ -109,8 +115,8 @@ async def execute_find_records_by_value(
     kinds: list[str] | None = None,
     name: str | None = None,
     entity_ids: list[str] | None = None,
-    date_from: int | None = None,
-    date_to: int | None = None,
+    date_from: str | int | None = None,
+    date_to: str | int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     currency: str | None = None,
@@ -128,6 +134,11 @@ async def execute_find_records_by_value(
         return False, "Knowledge graph tool state not initialized."
     if not await _named_entities_enabled(state):
         return False, NAMED_ENTITIES_DISABLED_MSG
+    # A blank currency is none: the filter strips it, so the note must too.
+    currency, dimension = (currency or "").strip(), (dimension or "").strip()
+    amount_min, amount_max = _range(amount_min, amount_max)
+    quantity_min, quantity_max = _range(quantity_min, quantity_max)
+    percent_min, percent_max = _range(percent_min, percent_max)
     raw: dict[str, Any] = {}
     # The filter as the model gave it, repeated in the header and the continue call.
     given: dict[str, Any] = {}
@@ -142,20 +153,29 @@ async def execute_find_records_by_value(
         given["entity_ids"] = asked_ids
     name = (name or "").strip()
     if _given(date_from, date_to):
-        start, end = date_from or None, date_to or None
-        if isinstance(start, int) and isinstance(end, int) and end <= start:
-            # One day asked as a point (date_to = date_from): the 24 hours from it. As a zero-width
-            # window it matched only the ranges around the day, never the day itself.
-            end = start + _DAY_MS
+        start, start_error = _date_bound(date_from, upper=False)
+        end, end_error = _date_bound(date_to, upper=True)
+        if start_error or end_error:
+            return False, start_error or end_error
+        if isinstance(date_from, int) and isinstance(date_to, int) and start is not None and end is not None and end <= start:
+            # One day asked as a point in epoch ms (date_to = date_from): the 24 hours from it.
+            # As a zero-width window it matched only the ranges around the day, never the day itself.
+            # Stated as applied, so the header shows the day the window covers.
+            date_to = end = start + _DAY_MS
+        if start is not None and end is not None and start > end:
+            return False, "date_from must be on or before date_to."
         raw["mentionedDate"] = {"from": start, "to": end}
-        given.update(_pair("date_from", start, "date_to", end))
-    if _given(amount_min, amount_max) or currency:
+        # An unset end the schema sent as 0 or blank is not repeated.
+        given.update(_pair(
+            "date_from", date_from if start is not None else None, "date_to", date_to if end is not None else None,
+        ))
+    if amount_min is not None or amount_max is not None or currency:
         raw["amount"] = {"min": amount_min, "max": amount_max, "currency": currency or ""}
         given.update(_pair("amount_min", amount_min, "amount_max", amount_max, currency=currency))
-    if _given(quantity_min, quantity_max) or dimension:
+    if quantity_min is not None or quantity_max is not None or dimension:
         raw["quantity"] = {"min": quantity_min, "max": quantity_max, "dimension": dimension or ""}
         given.update(_pair("quantity_min", quantity_min, "quantity_max", quantity_max, dimension=dimension))
-    if _given(percent_min, percent_max):
+    if percent_min is not None or percent_max is not None:
         raw["percent"] = {"min": percent_min, "max": percent_max}
         given.update(_pair("percent_min", percent_min, "percent_max", percent_max))
     if not raw and not asked_ids and not name:
@@ -244,17 +264,21 @@ async def execute_find_records_by_value(
         logger.warning("find_records_by_value failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
     values = await _matched_values(graph, org_id, raw, records)
+    # Unconverted amounts both over- and under-match ("EUR 48,000" is not over 50,000),
+    # so the note goes with an empty answer too.
+    unconverted = UNCONVERTED_NOTE if "amount" in raw and not currency else ""
 
     if not records:
         if next_cursor is not None:
-            return True, (
+            return True, " ".join(filter(None, (
                 "No readable records in this part of the matches yet; more remain unchecked. "
-                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}"
-            )
+                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}",
+                unconverted,
+            )))
         if cursor:
-            return True, NO_FURTHER_RECORDS_MSG
+            return True, " ".join(filter(None, (NO_FURTHER_RECORDS_MSG, unconverted)))
         return True, " ".join(filter(None, (
-            NO_MATCH_MSG, _percent_hint(percent_min, percent_max), limited_scope_note(context),
+            NO_MATCH_MSG, unconverted, _percent_hint(percent_min, percent_max), limited_scope_note(context),
         )))
 
     record_ids = [r["_key"] for r in records]
@@ -279,6 +303,8 @@ async def execute_find_records_by_value(
     lines = [f"Records {about}matching {_args(given)}, {order} ({len(records)} shown):"]
     if caveats:
         lines.append(f"Note on name: {caveats.strip()}")
+    if unconverted:
+        lines.append(unconverted)
     lines.extend(cite_note(records, cite_refs))
     for record in records:
         line = record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
@@ -359,6 +385,20 @@ async def _spelled(graph: "IGraphDBProvider", org_id: str, entity_ids: list[str]
     return f"mentioning {names[0]} and " if len(names) == 1 else f"mentioning one of {', '.join(names)} and "
 
 
+def _range(low: float | None, high: float | None) -> tuple[float | None, float | None]:
+    """A range's ends with an unused 0 left out. A strict schema sends an unused end
+    as 0, so "above 0.2" arrives as 0.2 to 0: a 0 end is dropped where it would leave
+    the range empty or backwards, and kept where it bounds one ("0 to 100" leaves out
+    refunds, "-500 to 0" is losses)."""
+    if low == 0 and high == 0:
+        return None, None
+    if low == 0 and high is not None and high < 0:
+        low = None
+    if high == 0 and low is not None and low > 0:
+        high = None
+    return low, high
+
+
 def _given(low: float | None, high: float | None) -> bool:
     """Whether a range was asked for. A strict tool schema makes the model send
     every parameter, so an unused range arrives as 0 to 0, not as absent."""
@@ -369,6 +409,47 @@ def _pair(low_name: str, low: object, high_name: str, high: object, **extra: obj
     """A range's ends, and its unit, as given (an unused end left out)."""
     ends = {low_name: low, high_name: high, **extra}
     return {key: value for key, value in ends.items() if value is not None and value != ""}
+
+
+_EXTENDED_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|[T ])")
+
+
+def _date_bound(value: str | float | None, *, upper: bool) -> tuple[int | None, str | None]:
+    """Epoch ms for a bound the model wrote as an ISO date or date-time; a date-only
+    end takes in its whole day. A number (a Python caller, or a call replayed from
+    before dates were ISO) is epoch ms. A strict schema sends an unused end as 0 or ""."""
+    label = "date_to" if upper else "date_from"
+    if not isinstance(value, str):
+        if not value:
+            return None, None
+        if not math.isfinite(value) or _written_as_digits(value):
+            return None, f"{label}: {value!r} is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone."
+        return int(value), None
+    text = value.strip()
+    if not text:
+        return None, None
+    if not _EXTENDED_DATE.match(text):
+        # "20260301" would otherwise read as a date-time with no timezone.
+        return None, f"{label}: {text!r} is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone."
+    return parse_iso_to_epoch_ms(text, is_upper_bound=upper, field_label=label)
+
+
+def _written_as_digits(value: float) -> bool:
+    """A year (2026) or a compact date (20260301) sent as a number: as epoch ms either
+    is a moment on 1 January 1970, never what was meant. Any other number is epoch ms,
+    including a date before 1970."""
+    if value != int(value):
+        return False
+    digits = str(int(value))
+    if len(digits) == 4:
+        return True
+    if len(digits) != 8:
+        return False
+    try:
+        date(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
+    except ValueError:
+        return False
+    return True
 
 
 def _ordered(

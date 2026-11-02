@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
@@ -469,7 +470,10 @@ function emptyPagination(): AgentsListPagination {
 }
 
 export const AgentsApi = {
-  async getAgents(params?: AgentsListParams): Promise<AgentsListResult> {
+  async getAgents(
+    params?: AgentsListParams,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentsListResult> {
     const query: Record<string, string | number> = {};
     if (params?.page != null) query.page = params.page;
     if (params?.limit != null) query.limit = params.limit;
@@ -477,7 +481,10 @@ export const AgentsApi = {
     if (params?.sort) query.sort_by = params.sort;
     if (params?.order) query.sort_order = params.order;
 
-    const { data } = await apiClient.get<AgentsListApiResponse>(AGENTS_BASE_URL, { params: query });
+    const { data } = await apiClient.get<AgentsListApiResponse>(AGENTS_BASE_URL, {
+      params: query,
+      suppressErrorToast: options?.suppressErrorToast,
+    });
     return {
       agents: data?.agents ?? [],
       pagination: data?.pagination ?? emptyPagination(),
@@ -714,6 +721,8 @@ export const AgentsApi = {
   /** POST /api/v1/agents/create */
   async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
     const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
+    // The request succeeded, so the agent may exist even if the body lacks it.
+    revalidateSwrNamespace(SWR_NS.agentLists);
     if (!data?.agent) throw new Error('Create agent failed');
     return data.agent;
   },
@@ -725,6 +734,7 @@ export const AgentsApi = {
   async updateAgent(agentKey: string, payload: Partial<AgentFormPayload>): Promise<AgentDetail> {
     const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
 
+    revalidateSwrNamespace(SWR_NS.agentLists);
     if (data?.agent && typeof data.agent === 'object') {
       return data.agent;
     }
@@ -741,6 +751,7 @@ export const AgentsApi = {
   /** DELETE /api/v1/agents/:agentKey */
   async deleteAgent(agentKey: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
+    revalidateSwrNamespace(SWR_NS.agentLists);
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */

@@ -150,17 +150,6 @@ _VARIANTS: dict[str, _Variant] = {
             ),)),
         ),
     ),
-    FIND_RECORDS_BY_VALUE_TOOL_NAME: _Variant(
-        description=(
-            _Edit(
-                "an amount in a currency, a quantity, or a percentage. Requires",
-                "an amount in a currency, a quantity, or a percentage. Use it when the question "
-                "is about a value rather than words (\"deals over $50k\", \"incidents in March "
-                "2026\", \"latency above 200 ms\"): it finds a record however the value is "
-                "written there. Requires",
-            ),
-        ),
-    ),
 }
 
 
