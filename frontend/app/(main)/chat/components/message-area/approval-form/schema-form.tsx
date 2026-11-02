@@ -117,7 +117,7 @@ export function Field({ id, field, value, error: given, changed, onChange }: Fie
     case 'chips':
       control = (
         <Box role="group" aria-labelledby={labelId} aria-describedby={a11y['aria-describedby']} aria-invalid={a11y['aria-invalid']}>
-          <TagInput compact freeText tags={toTags(value)} onTagsChange={(tags) => onChange(tags.map((tag) => tag.value))} />
+          <TagInput id={id} compact freeText tags={toTags(value)} onTagsChange={(tags) => onChange(tags.map((tag) => tag.value))} />
         </Box>
       );
       break;

@@ -93,6 +93,8 @@ describe('SchemaForm', () => {
     fireEvent.change(input, { target: { value: 'login, web' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).toHaveBeenLastCalledWith('labels', ['bug', 'auth', 'login, web']);
+    // The field's label names the chip input itself, not only its group.
+    expect(screen.getByRole('textbox', { name: 'Labels' })).toBe(input);
   });
 
   it('marks required fields for assistive technology', () => {
