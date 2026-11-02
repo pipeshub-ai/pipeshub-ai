@@ -21,6 +21,15 @@ from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.record_metadata.builtin import ticket_metadata
+from app.modules.record_metadata.projection import (
+    NOT_PROVIDED,
+    PROJECTION_TIMEOUT_SECONDS,
+    PROVIDED_PROPERTIES,
+    default_union_cache,
+    project_properties,
+    projection_enabled,
+)
+from app.modules.record_metadata.schemas import MetadataSchemaRegistry
 from app.modules.transformers.blob_storage import (
     STORED_RECORD_FIELDS,
     STORED_REV,
@@ -61,7 +70,10 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
-from app.telemetry.modules.record_storage_metrics import record_artifact_write
+from app.telemetry.modules.record_storage_metrics import (
+    record_artifact_write,
+    record_property_projection,
+)
 from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -262,6 +274,7 @@ class SinkOrchestrator(Transformer):
                 await self._flip_revision_pointer(ctx.record, written, ctx.settings[STORED_WRITE].run)
 
         if skip_vector_store:
+            await self._project_properties(ctx, record_doc)
             success = await self.graph_provider.batch_update_nodes(
                 [
                     {
@@ -308,6 +321,33 @@ class SinkOrchestrator(Transformer):
                 await self._save_reconciliation_metadata(ctx)
             with stage("entities.identity"):
                 await self._sync_record_identity_entities(ctx)
+        # Also reached when the record was already COMPLETED and nothing was re-indexed.
+        await self._project_properties(ctx, record_doc)
+
+    async def _project_properties(self, ctx: TransformContext, record_doc: dict[str, Any]) -> None:
+        """Write the record's filterable property values onto the record (``RECORD_PROPERTY_PROJECTION``).
+
+        Never fails or delays indexing: a refusal, an error or a timeout is logged by type, counted, and
+        left to the sweep that converges records; the record is searchable either way.
+        """
+        if not projection_enabled():
+            return
+        try:
+            async with asyncio.timeout(PROJECTION_TIMEOUT_SECONDS):
+                await project_properties(
+                    graph=self.graph_provider,
+                    registry=MetadataSchemaRegistry(self.config_service),
+                    cache=default_union_cache(),
+                    record=ctx.record,
+                    record_doc=record_doc,
+                    provided=ctx.settings.get(PROVIDED_PROPERTIES, NOT_PROVIDED),
+                    logger=self.logger,
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "Properties of record %s not projected; indexing goes on: %s", ctx.record.id, type(exc).__name__,
+            )
+            record_property_projection("error")
 
     async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
         """Write the record's own entity points, its title and its record group

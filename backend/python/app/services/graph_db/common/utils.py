@@ -422,7 +422,9 @@ TRASH_STATE_FIELDS = (
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
 # when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
-# taxonomy copy, and the mark a push leaves for indexing. No client reads them, and the record endpoint's response
+# taxonomy copy, the mark a push leaves for indexing, and the projected property values with their controls
+# (`recordProps`, `propsSet`, `propsGen`, `propsSrc`, `propsVer`; on Neo4j the values are flat `p_<name>` keys,
+# dropped by `api_record` too). No client reads them, and the record endpoint's response
 # schema rejects fields it does not list, so the endpoint leaves these out.
 # `deletedByUserId` predates the trash and is documented, so it stays in.
 INTERNAL_RECORD_FIELDS = frozenset({
@@ -440,12 +442,23 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "extractionDeferred",
     "duplicateReconcileDueAt",
     "pushOrigin",
+    "recordProps",
+    "propsSet",
+    "propsGen",
+    "propsSrc",
+    "propsVer",
 })
+
+#: A projected property value on a Neo4j record node (``p_<name>``); never part of a record the API returns.
+_PROJECTED_PROPERTY_KEY = re.compile(r"^p_[a-zA-Z0-9_]{1,64}$")
 
 
 def api_record(record: dict[str, Any]) -> dict[str, Any]:
     """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
-    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+    return {
+        key: value for key, value in record.items()
+        if key not in INTERNAL_RECORD_FIELDS and not _PROJECTED_PROPERTY_KEY.match(key)
+    }
 
 
 # A Recently deleted row for a multi-select delete names this many of its other items.

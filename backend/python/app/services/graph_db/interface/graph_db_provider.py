@@ -27,6 +27,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.conditions import Cond
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
@@ -2219,6 +2220,52 @@ class IGraphDBProvider(ABC):
             Exception: on query failure.
         """
         pass
+
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into the node only while every condition holds, in
+        one statement. ``update_node_fields_if_match`` with named operators
+        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``) instead of
+        equality only, so "unset or not newer than" can be asked. A ``None`` in
+        ``updates`` removes or nulls the field.
+
+        Returns:
+            True iff the write applied.
+
+        Raises:
+            ValueError: when ``conditions`` is empty.
+            NotImplementedError: from a provider without it.
+            Exception: on query failure.
+        """
+        raise NotImplementedError
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """Replace (not merge) the projected property values of a record, and set
+        ``controls`` beside them, only while ``conditions`` hold, in one statement.
+
+        ``values`` maps property name to its stored value. The values the record
+        held before and that are not in ``values`` (``previous_names``) are
+        removed, so a property the record lost does not linger.
+
+        Returns:
+            True iff the write applied.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def create_node_if_absent(

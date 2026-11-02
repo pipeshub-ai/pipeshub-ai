@@ -20,6 +20,7 @@ import traceback
 import unicodedata
 import uuid
 from collections import defaultdict
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar, override
@@ -252,6 +253,13 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
+from app.services.graph_db.conditions import (
+    EQ,
+    IS_NULL,
+    NULL_OR_EQ,
+    Cond,
+    check_conditions,
+)
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
@@ -6333,6 +6341,76 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             transaction,
         )
         return bool(rows)
+
+    @staticmethod
+    def _condition_filters(conditions: Sequence[Cond]) -> tuple[list[str], dict[str, Any]]:
+        """``FILTER`` lines and bind variables for ``conditions`` (field names are bound, never inlined)."""
+        filters: list[str] = []
+        bind_vars: dict[str, Any] = {}
+        for i, cond in enumerate(conditions):
+            bind_vars[f"f{i}"] = cond.field
+            if cond.op == IS_NULL:
+                filters.append(f"FILTER doc[@f{i}] == null")
+                continue
+            bind_vars[f"v{i}"] = cond.value
+            if cond.op == EQ:
+                filters.append(f"FILTER doc[@f{i}] == @v{i}")
+            elif cond.op == NULL_OR_EQ:
+                filters.append(f"FILTER doc[@f{i}] == null || doc[@f{i}] == @v{i}")
+            else:
+                # AQL orders a boolean below every number, so the type is checked: a non-number is never "not newer".
+                filters.append(f"FILTER doc[@f{i}] == null || (IS_NUMBER(doc[@f{i}]) && doc[@f{i}] <= @v{i})")
+        return filters, bind_vars
+
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+        *,
+        replace_objects: bool = False,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.update_node_fields_if`.
+
+        ``replace_objects``: a sub-document in ``updates`` replaces the stored one
+        instead of being merged into it, and a ``None`` removes the attribute.
+        """
+        check_conditions(conditions)
+        filters, condition_vars = self._condition_filters(conditions)
+        bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates), **condition_vars}
+        options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else ""
+        newline = "\n                "
+        query = f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {newline.join(filters)}
+                UPDATE doc WITH @updates IN @@collection{options}
+                RETURN 1
+            """
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
+            transaction,
+        )
+        return bool(rows)
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.set_record_properties`. One ``recordProps`` sub-document, replaced whole."""
+        del previous_names  # the sub-document is replaced, so nothing lingers
+        return await self.update_node_fields_if(
+            key, CollectionNames.RECORDS.value, {"recordProps": dict(values), **controls}, conditions,
+            transaction, replace_objects=True,
+        )
 
     async def create_node_if_absent(
         self,
