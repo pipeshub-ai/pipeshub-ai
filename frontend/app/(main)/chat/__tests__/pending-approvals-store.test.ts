@@ -14,7 +14,7 @@ vi.mock('../store', () => ({
   }),
 }));
 
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import {
   resetPendingApprovalsForTest,
   useOtherChatApprovals,
