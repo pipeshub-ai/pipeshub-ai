@@ -1286,3 +1286,17 @@ async def test_mentions_from_records_list_every_live_entity_of_only_those_record
     await _merge(provider, backend, initech.graph_key, acme.graph_key)
     rows = await provider.get_named_entity_mentions_from_records(org_id, [second])
     assert {row["entityId"] for row in rows} == {acme.graph_key}
+
+
+async def test_an_entity_with_a_value_kind_finds_the_records_that_have_both(graph) -> None:
+    """entity_ids with kinds=["currency"] matched nothing: the value kind made the entity part empty."""
+    provider, org_id, _ = graph
+    both, entity_only, amount_only = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    acme = _org(org_id, "Acme")
+    await writer.write(org_id, both, [acme, _amount(org_id, "1250")])
+    await writer.write(org_id, entity_only, [acme])
+    await writer.write(org_id, amount_only, [_amount(org_id, "900")])
+
+    hits = await provider.get_records_for_named_entities(org_id, [acme.graph_key], NamedEntityQuery(kinds=["currency"]))
+    assert {hit["recordId"] for hit in hits["hits"]} == {both}
