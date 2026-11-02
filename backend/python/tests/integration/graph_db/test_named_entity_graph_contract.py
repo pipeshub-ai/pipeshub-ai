@@ -125,13 +125,16 @@ def _quarter(org_id: str) -> ResolvedEntity:
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
 
 
-def _amount(org_id: str, amount: str, currency: str = "USD") -> ResolvedEntity:
+def _amount(org_id: str, amount: str, currency: str = "USD", high: str | None = None) -> ResolvedEntity:
     value = Decimal(amount)
     entity = NamedEntity(
         kind=EntityKind.CURRENCY,
-        display_name=f"{currency} {amount}",
-        norm_key=f"{currency}:{amount}",
-        value=MoneyValue(amount=value, amount_float=float(value), currency=currency),
+        display_name=f"{currency} {amount}" + (f"-{high}" if high else ""),
+        norm_key=f"{currency}:{amount}" + (f"..{high}" if high else ""),
+        value=MoneyValue(
+            amount=value, amount_float=float(value), currency=currency,
+            amount_high=Decimal(high) if high else None,
+        ),
         mentions=[_mention(f"{currency} {amount}")],
     )
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
@@ -264,6 +267,29 @@ async def test_range_and_overlap_queries_return_the_same_records(graph) -> None:
         amount_min=90_000, amount_max=90_000, date_start_ms=_ms(2025, 8, 1), date_end_ms=_ms(2025, 8, 2),
     )
     assert (await provider.get_records_for_named_entities(org_id, None, no_record_has_both))["hits"] == []
+
+
+async def test_an_amount_range_matches_any_window_it_overlaps(graph) -> None:
+    provider, org_id, _ = graph
+    ranged, exact = await _records(provider, org_id, 2)
+    writer = _writer(provider)
+    # "$5-10M" and an exact $5M.
+    await writer.write(org_id, ranged, [_amount(org_id, "5000000", high="10000000")])
+    await writer.write(org_id, exact, [_amount(org_id, "5000000")])
+
+    async def found(low: float, high: float) -> set[str]:
+        query = NamedEntityQuery(kinds=["currency"], amount_min=low, amount_max=high, currency="USD")
+        return {hit["recordId"] for hit in (await provider.get_records_for_named_entities(org_id, None, query))["hits"]}
+
+    assert await found(8_000_000, 12_000_000) == {ranged}
+    assert await found(4_000_000, 5_000_000) == {ranged, exact}
+    assert await found(10_000_000, 10_000_000) == {ranged}
+    assert await found(11_000_000, 20_000_000) == set()
+    assert await found(1_000_000, 4_999_999) == set()
+    in_window = await provider.get_named_entity_values_in_records(
+        org_id, NamedEntityQuery(amount_min=8_000_000, amount_max=9_000_000), [ranged, exact],
+    )
+    assert set(in_window) == {ranged}
 
 
 async def test_name_filter_narrows_and_an_oversized_match_is_truncated(graph) -> None:
