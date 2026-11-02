@@ -622,15 +622,16 @@ _KIND_RANK: dict[str, int] = {"read": 0, "write": 1, "destructive": 2}
 _PATTERN_BUDGET_SECONDS = 0.2
 
 
-def _path_to(root: Any, target: Any, path: tuple[Any, ...] = ()) -> tuple[Any, ...] | None:  # noqa: ANN401
-    """Where `target` (by identity) sits in `root`, for a log line that names a field, not a value."""
-    if root is target:
-        return path
-    children = root.items() if isinstance(root, dict) else enumerate(root) if isinstance(root, list) else ()
-    for key, child in children:
-        found = _path_to(child, target, (*path, key))
-        if found is not None:
-            return found
+def _path_to(root: Any, target: Any) -> tuple[Any, ...] | None:  # noqa: ANN401
+    """Where `target` (by identity) sits in `root`, for a log line that names a field, not a value.
+    Walked with a stack, so a deeply nested edit can't overflow it."""
+    stack: list[tuple[Any, tuple[Any, ...]]] = [(root, ())]
+    while stack:
+        node, path = stack.pop()
+        if node is target:
+            return path
+        children = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        stack.extend((child, (*path, key)) for key, child in reversed(list(children)))
     return None
 
 
@@ -690,16 +691,30 @@ def _bounded_validator(base: Any, deadline: float, skips: _PatternSkips) -> Any:
     return extend(base, {"pattern": pattern, "patternProperties": pattern_properties, "additionalProperties": additional_properties})
 
 
-def _has_key(node: Any, key: str) -> bool:  # noqa: ANN401
-    if isinstance(node, dict):
-        return key in node or any(_has_key(v, key) for v in node.values())
-    return isinstance(node, list) and any(_has_key(v, key) for v in node)
+# Deeper than this, checking an edit would overflow the validator's recursion.
+_MAX_SCHEMA_DEPTH = 200
 
 
 def schema_is_editable(schema: dict[str, Any]) -> bool:
-    """Whether an edit can be checked against this schema in bounded time. unevaluatedProperties
-    matches keys against patternProperties with no time limit, so a schema with both is not."""
-    return not (_has_key(schema, "unevaluatedProperties") and _has_key(schema, "patternProperties"))
+    """Whether an edit can be checked against this schema in bounded time and depth. unevaluatedProperties
+    matches keys against patternProperties with no time limit, so a schema with both is not, and
+    neither is one nested too deep. Walked with a stack, each object once."""
+    found: set[str] = set()
+    seen: set[int] = set()
+    stack: list[tuple[Any, int]] = [(schema, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if not isinstance(node, (dict, list)) or id(node) in seen:
+            continue
+        if depth > _MAX_SCHEMA_DEPTH:
+            return False
+        seen.add(id(node))
+        if isinstance(node, dict):
+            found.update(k for k in ("unevaluatedProperties", "patternProperties") if k in node)
+            stack.extend((v, depth + 1) for v in node.values())
+        else:
+            stack.extend((v, depth + 1) for v in node)
+    return len(found) < 2
 
 
 def check_edit(
@@ -726,7 +741,7 @@ def check_edit(
     if skips.count:
         # Names the field, never its value.
         where = _pointer(_path_to(edited, skips.first) or ())
-        logger.warning(f"{skips.count} pattern checks of {pending.tool_path} were skipped, from {where!r}: they ran out of time")
+        logger.warning("%d pattern checks of %s were skipped, from %r: they ran out of time", skips.count, pending.tool_path, where)
     if errors:
         return errors
     kind = kind_of_call(pending.kind, pending.tool_path, edited)

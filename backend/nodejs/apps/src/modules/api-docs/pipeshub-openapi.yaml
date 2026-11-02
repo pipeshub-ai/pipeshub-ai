@@ -59900,6 +59900,7 @@ paths:
           description: The id of the waiting approval.
           schema:
             type: string
+            maxLength: 64
       requestBody:
         required: true
         content:
@@ -59948,9 +59949,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: |
-            The body is not a validate request: `argsHash` or `arguments` is missing or of the
-            wrong type, `argsHash` is longer than 64 characters, or `arguments` is longer than
-            64,000 characters as JSON. A valid request whose edit can't be approved is a `200`
+            The request is not a validate request: `approvalId` is longer than 64 characters,
+            `argsHash` or `arguments` is missing or of the wrong type, `argsHash` is longer than
+            64 characters, or `arguments` is longer than 64,000 characters as JSON. A valid request whose edit can't be approved is a `200`
             with `errors`.
           content:
             application/json:
