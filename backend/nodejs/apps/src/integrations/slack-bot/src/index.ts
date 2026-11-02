@@ -48,6 +48,7 @@ import {
   splitOpenLinkTail,
   withoutPlaceholderRefs,
   buildNumberedSlackSources,
+  stripNumberedCitationLinkTargets,
 } from "./utils/citations";
 
 import {
@@ -1266,10 +1267,15 @@ async function processSlackMessage(
 
     if (answerStream && pushedAnswerLength === 0 && !tableStreamingDisabled && botResponse.content) {
       // An answer that came only with the run's end still gets its tables as blocks.
-      const [beforeTable, fromTable] = splitBeforeFirstTable(botResponse.content);
+      // The finished answer's citations are links already; as [n] they match the Sources list.
+      const finalText = stripNumberedCitationLinkTargets(
+        botResponse.content,
+        botResponse.citations,
+      );
+      const [beforeTable, fromTable] = splitBeforeFirstTable(finalText);
       if (fromTable !== "") {
         tableStreamingDisabled = true;
-        lastAnswerText = botResponse.content;
+        lastAnswerText = finalText;
       }
       pushedAnswerLength = beforeTable.length;
       if (beforeTable.trim() !== "") {

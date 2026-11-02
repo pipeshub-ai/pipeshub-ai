@@ -4,6 +4,7 @@ import {
   buildNumberedSlackSources,
   CitationMarkers,
   splitOpenLinkTail,
+  stripNumberedCitationLinkTargets,
   withoutPlaceholderRefs,
 } from '../../../src/integrations/slack-bot/src/utils/citations';
 import {
@@ -35,6 +36,18 @@ describe('slack-bot streamed markdown', () => {
       expect(markers.mark('[source](ref9)')).to.equal('[2]');
       markers.rollback();
       expect(markers.mark('[source](ref7) and [source](ref4)')).to.equal('[2] and [1]');
+    });
+  });
+
+  describe('stripNumberedCitationLinkTargets', () => {
+    it('turns only the citations\' numbered links into [n], leaving other numbered links', () => {
+      expect(
+        stripNumberedCitationLinkTargets(
+          'Up [1](/record/r1/preview#blockIndex=2), see [7](https://example.com/list).',
+          [cite(1, 'Q3', 'https://x.test/q3')],
+        ),
+      ).to.equal('Up [1], see [7](https://example.com/list).');
+      expect(stripNumberedCitationLinkTargets('No [1](https://a.test)', [])).to.equal('No [1](https://a.test)');
     });
   });
 

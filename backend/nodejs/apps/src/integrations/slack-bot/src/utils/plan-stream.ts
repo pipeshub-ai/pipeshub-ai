@@ -641,7 +641,9 @@ export class SlackTaskPlan {
       if (heading !== null) lines.push(`Result: ${APPROVAL_OUTPUT}`);
     } else if (call.status === 'blocked') {
       lines.push(
-        call.result ? `Blocked: ${redactSecrets(call.result)}` : 'Blocked',
+        call.result
+          ? `Result: Blocked: ${redactSecrets(call.result)}`
+          : 'Result: Blocked',
       );
     } else if (call.status === 'failed') {
       const reason = call.result?.replace(/^Failed:\s*/i, '');
