@@ -86,6 +86,7 @@ def make_service(claim_error: Exception | None, *, clock: list[float] | None = N
     graph.get_record_parent_info = AsyncMock(return_value=None)
     graph.find_file_by_name_in_parent = AsyncMock(return_value=None)
     storage = MagicMock()
+    storage.upload_limit = AsyncMock(return_value=30 << 20)
     storage.create = AsyncMock(return_value="doc-new")
     processor = MagicMock()
     processor.on_pushed_record = AsyncMock(side_effect=claim_error)

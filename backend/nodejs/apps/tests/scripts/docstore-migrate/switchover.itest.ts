@@ -8,7 +8,7 @@ import { MongoClient } from 'mongodb';
 import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
 import { readMongoFence } from '../../../src/scripts/docstore-migrate/fence';
 import { migrateOffline } from '../../../src/scripts/docstore-migrate/offline';
-import { CutoverOptions, cutover, onlineStart } from '../../../src/scripts/docstore-migrate/online';
+import { CutoverOptions, cutover, onlineStart, onlineVerify, precheck, verifyConverge } from '../../../src/scripts/docstore-migrate/online';
 import { JobState } from '../../../src/scripts/docstore-migrate/state';
 import { contentDocs } from './fixtures/content';
 import { conversationDocs } from './fixtures/conversation';
@@ -86,6 +86,37 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       });
     });
 
+    describe('offline, when PostgreSQL cannot be made the store', () => {
+      it('a failing store_epoch update stops the move before MongoDB is retired, and the job stays open', async () => {
+        await sql("CREATE FUNCTION platform.t_refuse_epoch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused by the test'; END $$");
+        await sql('CREATE TRIGGER t_refuse_epoch BEFORE UPDATE ON platform.store_epoch FOR EACH ROW EXECUTE FUNCTION platform.t_refuse_epoch()');
+        try {
+          let err: Error | undefined;
+          await migrateOffline(w.rt, { dryRun: false, allowWriters: false, log }).catch((e: Error) => (err = e));
+          expect(err?.message).to.contain('refused by the test');
+          expect(await mode(), 'MongoDB is not retired').to.not.equal('retired');
+          expect((await JobState.current(w.rt))?.status, 'the job can be resumed or rolled back').to.equal('running');
+        } finally {
+          await sql('DROP TRIGGER t_refuse_epoch ON platform.store_epoch');
+          await sql('DROP FUNCTION platform.t_refuse_epoch()');
+        }
+      });
+
+      it('a store_epoch without exactly one row is refused: the update that changed nothing is not a flip', async () => {
+        const saved = (await sql('SELECT * FROM platform.store_epoch'))[0];
+        await sql('DELETE FROM platform.store_epoch');
+        try {
+          let err: Error | undefined;
+          await migrateOffline(w.rt, { dryRun: false, allowWriters: false, log }).catch((e: Error) => (err = e));
+          expect(err?.message).to.contain('has 0 rows, not one');
+          expect(await mode()).to.not.equal('retired');
+        } finally {
+          const cols = Object.keys(saved);
+          await sql(`INSERT INTO platform.store_epoch (${cols.join(', ')}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`, cols.map((c) => saved[c]));
+        }
+      });
+    });
+
     describe('online', () => {
       it('start refuses a fence that is not active', async () => {
         await w.mongo.client.db(DB).collection<any>('docstore_fence').replaceOne({ _id: 'fence' }, { _id: 'fence', mode: 'draining', epoch: 1, at: new Date() }, { upsert: true });
@@ -119,6 +150,184 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(r.precheck!.items.filter((i) => !i.ok).map((i) => i.name)).to.deep.equal(['every writer carries the Mongo fence (attested)']);
         expect(await mode()).to.equal('active');
         expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('a change made after the list of changed documents was read is still verified by the next pass', async () => {
+        const started = await onlineStart(w.rt, { dryRun: false, log });
+        expect(started.ok).to.equal(true);
+        // the write lands when the first listing of changes closes: after its marker, before the next catch-up the stored position covers
+        const real = w.rt.mongo.watch.bind(w.rt.mongo);
+        let armed = true;
+        (w.rt.mongo as any).watch = (pipeline: unknown, options: Record<string, unknown>) => {
+          const stream = (real as any)(pipeline, options);
+          if (armed && options && !('fullDocument' in options)) {
+            armed = false;
+            const close = stream.close.bind(stream);
+            stream.close = async () => {
+              await close();
+              await w.mongo.client.db(DB).collection('users').updateOne({ _id: ADMIN_A } as never, { $set: { fullName: 'Written In The Gap' } });
+            };
+          }
+          return stream;
+        };
+        try {
+          const first = await onlineVerify(w.rt, { log });
+          expect(first.ok, first.message).to.equal(true);
+        } finally {
+          (w.rt.mongo as any).watch = real;
+        }
+        const second = await onlineVerify(w.rt, { log });
+        expect(second.ok, second.message).to.equal(true);
+        expect(second.changed, 'the write is verified, by one pass or the other').to.be.greaterThan(0);
+      });
+
+      it('a sample that finds a difference in a document that did not change takes the verified state back: the pre-check refuses', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        expect((await onlineVerify(w.rt, { log })).ok, 'verified to begin with').to.equal(true);
+        const js = await JobState.attach(w.rt);
+        expect((await precheck(w.rt, js, { log, lagMaxMs: 60_000, fenceArmed: true, shadowClean: true })).items.find((i) => i.name === 'verified state')!.ok).to.equal(true);
+        // a document nobody wrote to is made to differ in PostgreSQL: only a sample of all documents can see it
+        await sql("UPDATE identity.users SET full_name = full_name || ' (tampered)' WHERE id = $1", [String(ADMIN_A)]);
+        const r = await onlineVerify(w.rt, { log, sample: 1 });
+        expect(r.ok).to.equal(false);
+        const after = await JobState.attach(w.rt);
+        expect(after.progress.verify).to.include({ ok: false });
+        expect(after.progress.verify!.token, 'the position is kept').to.not.equal(undefined);
+        const pre = await precheck(w.rt, after, { log, lagMaxMs: 60_000, fenceArmed: true, shadowClean: true });
+        expect(pre.items.find((i) => i.name === 'verified state')!.ok, 'the cut would refuse').to.equal(false);
+        const again = await onlineVerify(w.rt, { log });
+        expect(again.ok).to.equal(false);
+        expect(again.message).to.contain('no verified state').and.to.contain('migrate --online');
+      });
+
+      it('a sample that does not finish takes the verified state back as well, and the error is the one that is reported', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        expect((await onlineVerify(w.rt, { log })).ok).to.equal(true);
+        // the connection is lost in the sample's catch-up: the third stream opened (the changes-only pass opens two)
+        const real = w.rt.mongo.watch.bind(w.rt.mongo);
+        let opened = 0;
+        (w.rt.mongo as any).watch = (...args: unknown[]) => {
+          opened += 1;
+          if (opened === 3) throw new Error('connection lost in the sample');
+          return (real as any)(...args);
+        };
+        let err: Error | undefined;
+        try {
+          await onlineVerify(w.rt, { log, sample: 1 }).catch((e: Error) => (err = e));
+        } finally {
+          (w.rt.mongo as any).watch = real;
+        }
+        expect(err?.message).to.equal('connection lost in the sample');
+        const js = await JobState.attach(w.rt);
+        expect(js.progress.verify).to.include({ ok: false });
+        expect(js.progress.verify!.token, 'the position is kept').to.not.equal(undefined);
+        const pre = await precheck(w.rt, js, { log, lagMaxMs: 60_000, fenceArmed: true, shadowClean: true });
+        expect(pre.items.find((i) => i.name === 'verified state')!.ok).to.equal(false);
+      });
+
+      it('a verify that finds nothing wrong with any document, but a failed global check, is not clean', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const js = await JobState.attach(w.rt);
+        expect((await verifyConverge(w.rt, js, log)).ok, 'clean to begin with').to.equal(true);
+        // a table in a document schema that the row-level security registry does not know: every document still matches its row
+        await sql('CREATE TABLE identity.rogue_probe (org_id text)');
+        try {
+          const v = await verifyConverge(w.rt, js, log);
+          expect(v.remaining).to.equal(0);
+          expect(v.ok).to.equal(false);
+          expect(v.failures.join(' ')).to.contain('global check catalog rls_violations is empty failed');
+        } finally {
+          await sql('DROP TABLE identity.rogue_probe');
+        }
+      });
+
+      it('retiring MongoDB fails at the flip and PostgreSQL can be closed again: both stores are as they were', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-retire' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MongoDB is the store and writable again');
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('retiring MongoDB fails and PostgreSQL cannot be closed again: MongoDB stays frozen and the report says what to repair', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        await sql("CREATE FUNCTION platform.t_no_way_back() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.backend = 'mongo' AND OLD.backend = 'postgres' THEN RAISE EXCEPTION 'blocked by the test'; END IF; RETURN NEW; END $$");
+        await sql('CREATE TRIGGER t_no_way_back BEFORE UPDATE ON platform.store_epoch FOR EACH ROW EXECUTE FUNCTION platform.t_no_way_back()');
+        try {
+          const r = await cut({ failAt: 'F8-retire' });
+          expect(r).to.include({ ok: false, aborted: true });
+          expect(r.message).to.contain('MANUAL REPAIR NEEDED').and.to.contain('PostgreSQL is the live store').and.to.contain('MongoDB is frozen');
+          expect(await mode(), 'MongoDB was not unfrozen').to.equal('readonly');
+          expect(await store()).to.include({ backend: 'postgres', readonly: false });
+        } finally {
+          await sql('DROP TRIGGER t_no_way_back ON platform.store_epoch');
+          await sql('DROP FUNCTION platform.t_no_way_back()');
+        }
+      });
+
+      it('the update commits and the connection fails: PostgreSQL is read again, closed again, and MongoDB is unfrozen', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-after-commit' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('injected failure after the update committed').and.to.contain('MongoDB is the store and writable again');
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('the update commits, the connection fails and PostgreSQL cannot be closed again: MongoDB is not unfrozen while PostgreSQL is live', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        await sql("CREATE FUNCTION platform.t_no_way_back() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.backend = 'mongo' AND OLD.backend = 'postgres' THEN RAISE EXCEPTION 'blocked by the test'; END IF; RETURN NEW; END $$");
+        await sql('CREATE TRIGGER t_no_way_back BEFORE UPDATE ON platform.store_epoch FOR EACH ROW EXECUTE FUNCTION platform.t_no_way_back()');
+        try {
+          const r = await cut({ failAt: 'F8-after-commit' });
+          expect(r).to.include({ ok: false, aborted: true });
+          expect(r.message).to.contain('MANUAL REPAIR NEEDED');
+          expect(await mode(), 'MongoDB was not unfrozen').to.equal('readonly');
+          expect(await store()).to.include({ backend: 'postgres', readonly: false });
+        } finally {
+          await sql('DROP TRIGGER t_no_way_back ON platform.store_epoch');
+          await sql('DROP FUNCTION platform.t_no_way_back()');
+        }
+      });
+
+      it('the update commits and the store row cannot be read again: the state is unknown, so MongoDB stays frozen and the repair is named', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-reread-fails' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MANUAL REPAIR NEEDED').and.to.contain('state of platform.store_epoch is unknown').and.to.contain('Read the row first').and.to.contain('If backend is mongo: run unfreeze');
+        expect(r.message, 'neither store is claimed to be live').to.not.contain('is the live store');
+        expect(await mode()).to.equal('readonly');
+        expect(await store()).to.include({ backend: 'postgres', readonly: false });
+      });
+
+      it('the rollback of the flip commits and then fails on the client: the row is read again, PostgreSQL is closed, and MongoDB is unfrozen', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-back-commit' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MongoDB is the store and writable again');
+        expect(r.message).to.not.contain('is the live store');
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('the rollback of the flip fails and the row cannot be read again: unknown state, MongoDB stays frozen, neither store is claimed live', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-back-reread-fails' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MANUAL REPAIR NEEDED').and.to.contain('state of platform.store_epoch is unknown');
+        expect(r.message).to.not.contain('is the live store');
+        expect(await mode()).to.equal('readonly');
+        expect(await store(), 'the rollback did commit').to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('a failure after a successful flip is reported as done: PostgreSQL live, MongoDB retired, nothing unfrozen', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-checkpoint' });
+        expect(r.ok).to.equal(true);
+        expect(r.message).to.contain('PostgreSQL is the live store').and.to.contain('MongoDB is retired');
+        expect(await mode()).to.equal('retired');
+        expect(await store()).to.include({ backend: 'postgres', readonly: false });
       });
 
       it('aborts a failed cut and gives MongoDB back to the application', async () => {

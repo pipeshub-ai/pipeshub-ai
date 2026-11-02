@@ -19,6 +19,7 @@ import time
 import traceback
 import unicodedata
 import uuid
+from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -173,6 +174,13 @@ from app.services.graph_db.common.utils import (
     uploaded_document_id,
     within_param,
 )
+from app.services.graph_db.conditions import (
+    EQ,
+    IS_NULL,
+    NULL_OR_EQ,
+    Cond,
+    check_conditions,
+)
 from app.services.graph_db.dated_scope import (
     DatedRow,
     frozen_filters,
@@ -194,6 +202,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
+    REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -1147,6 +1156,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_external_parent_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.externalParentId, n.connectorId)"
+        )
+
+        # SINGLE: externalRecordId alone (the push's storage-reference lookup). The composite above is used only
+        # when every property is in the predicate, so an id-only lookup would scan the records.
+        indexes.append(
+            "CREATE INDEX record_external_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.externalRecordId)"
         )
 
         # SINGLE: File.path (get_records_by_file_path: a delete reported by path only)
@@ -4672,6 +4688,69 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return bool(rows)
+
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.update_node_fields_if`."""
+        check_conditions(conditions)
+        label = collection_to_label(collection)
+        neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+        self.validator.validate_node_update(collection, neo4j_updates)
+        parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
+        clauses = []
+        for i, cond in enumerate(conditions):
+            parameters[f"f{i}"] = cond.field
+            if cond.op == IS_NULL:
+                clauses.append(f"n[$f{i}] IS NULL")
+                continue
+            parameters[f"v{i}"] = cond.value
+            if cond.op == EQ:
+                clauses.append(f"n[$f{i}] = $v{i}")
+            elif cond.op == NULL_OR_EQ:
+                clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] = $v{i})")
+            else:
+                clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] <= $v{i})")
+        # The lock comes first so the conditions read a write that committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(clauses)}
+            SET n += $updates
+            {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+            RETURN 1 AS n
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.set_record_properties`. Flat ``p_<name>`` keys on the node."""
+        # `SET n += {p_old: null}` removes the key; a name still held is overwritten by its value.
+        updates: dict[str, Any] = {f"p_{name}": None for name in previous_names if name not in values}
+        updates.update({f"p_{name}": value for name, value in values.items()})
+        updates.update(controls)
+        return await self.update_node_fields_if(
+            key, CollectionNames.RECORDS.value, updates, conditions, transaction,
+        )
 
     async def create_node_if_absent(
         self,
@@ -12497,6 +12576,43 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"get_node_depths_batch failed: {e}")
             return {}
+
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # Per document, so a document with many links cannot push another document's only link out of the result.
+        # coalesce: the predicate is null for a record with no origin or connector name, and Neo4j
+        # sorts null first in a descending order, ahead of the knowledge-base upload.
+        records = await self.client.execute_query(
+            """
+            UNWIND $ids AS doc
+            CALL (doc) {
+              MATCH (r:Record {externalRecordId: doc})
+              RETURN r ORDER BY coalesce(r.origin = $upload AND r.connectorName = $kb, false) DESC, r.id LIMIT $per_doc
+            }
+            RETURN doc AS docId, r.id AS recordId, 'externalRecordId' AS kind, r.origin AS origin,
+                   r.connectorName AS connectorName, r.connectorId AS connectorId
+            """,
+            parameters={"ids": doc_ids, "per_doc": REF_LINKS_PER_DOC, "upload": OriginTypes.UPLOAD.value, "kb": Connectors.KNOWLEDGE_BASE.value},
+        )
+        files = await self.client.execute_query(
+            """
+            UNWIND $paths AS path
+            CALL (path) {
+              MATCH (f:File {path: path})
+              RETURN f ORDER BY f.id LIMIT 1
+            }
+            RETURN substring(path, 10) AS docId, f.id AS recordId, 'files.path' AS kind,
+                   null AS origin, null AS connectorName, null AS connectorId
+            """,
+            parameters={"paths": [f"storage://{d}" for d in doc_ids]},
+        )
+        return [dict(r) for r in (records or []) + (files or [])]
+
+    async def _ref_access_hint(self, user_key: str, org_id: str, connector_ids: set[str]) -> dict[str, Any] | None:
+        # The same single-connector probe the one-record check uses (``check_record_access_with_details``).
+        (connector_id,) = connector_ids
+        gate = await self.get_knowledge_hub_access_context_v2(user_key, org_id)
+        grantees = await self._kh_v3_connector_grantees(user_key, connector_id, None) if connector_id in gate["gated_app_ids"] else []
+        return {**gate, "by_connector": {}, "probe": {"connector_id": connector_id, "grantees": grantees}}
 
     async def check_record_access_with_details(
         self,

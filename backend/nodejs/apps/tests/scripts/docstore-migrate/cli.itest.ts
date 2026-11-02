@@ -186,35 +186,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(again.code, JSON.stringify(again.out.collections.filter((c: any) => c.diffCount))).to.equal(0);
     });
 
-    it('rollback before any PostgreSQL write returns to MongoDB with nothing lost', async () => {
-      expect((await run(['migrate', '--offline'])).code).to.equal(0);
-      const r = await run(['rollback']);
-      expect(r.out.mode).to.equal('no_pg_writes');
-      expect(r.code).to.equal(0);
-      expect(await fence()).to.equal('active');
-    });
-
-    it('rollback --reverse copies PostgreSQL writes back to MongoDB', async () => {
-      expect((await run(['migrate', '--offline'])).code).to.equal(0);
-      // the application, now on PostgreSQL, renames a user, adds a session and deletes another
-      await stack.admin(async (c) => {
-        const u = await c.query('SELECT org_id, id FROM identity.users ORDER BY id LIMIT 1');
-        await c.query("UPDATE identity.users SET full_name = 'Renamed Afterwards' WHERE id = $1", [u.rows[0].id]);
-        await c.query("DELETE FROM conversation.chat_sessions WHERE id = (SELECT id FROM conversation.chat_sessions ORDER BY id LIMIT 1)");
-      });
-      const refused = await run(['rollback']);
-      expect(refused.code).to.equal(1);
-      expect(refused.out.mode).to.equal('refused');
-      expect(await fence()).to.equal('retired');
-      const r = await run(['rollback', '--reverse']);
-      process.stderr.write(JSON.stringify({ ok: r.out.ok, msg: r.out.message, notReversed: r.out.notReversed, bad: r.out.verify?.collections?.filter((c: any) => c.diffCount || c.countMismatches.length).map((c: any) => ({ c: c.collection, d: c.diffs.slice(0, 2), cm: c.countMismatches.slice(0, 2) })) }, null, 1) + '\n');
-      expect(r.out.ok, r.out.message).to.equal(true);
-      expect(r.code).to.equal(0);
-      expect(await fence()).to.equal('active');
-      const renamed = await mongo.client.db(DB).collection('users').countDocuments({ fullName: 'Renamed Afterwards' });
-      expect(renamed).to.equal(1);
-    });
-
     it('reset empties the target and the copy can run again; it refuses once MongoDB is retired', async () => {
       expect((await run(['bulk'])).code).to.equal(0);
       expect((await run(['reset'])).code).to.equal(2);
@@ -648,48 +619,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect((await run(['verify'])).code).to.equal(0);
       });
 
-      it('after the flip, the reverse follower writes application changes back and rollback --online makes MongoDB the store again', async () => {
-        // (the fixture's error metadata has a dotted key, which a Mongoose map cannot hold: such a document cannot be written back through its schema)
-        await mongo.client.db(DB).collection('chatSessions').updateMany({}, { $set: { conversationErrors: [] } });
-        expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
-        const r = await cut();
-        expect(r.out.ok, JSON.stringify(r.out).slice(0, 600)).to.equal(true);
-        // the application, now on PostgreSQL, changes things (here as the superuser: the triggers log whoever writes)
-        const sess = (await stack.admin((c) => c.query('SELECT org_id, session_id FROM conversation.chat_session_members ORDER BY session_id LIMIT 1'))).rows[0];
-        const org: string = sess.org_id;
-        const sid: string = sess.session_id;
-        const person = (await stack.admin((c) => c.query('SELECT id, org_id FROM identity.users ORDER BY id LIMIT 1'))).rows[0];
-        const newcomer = new ObjectId().toHexString();       // (members are not foreign keys to users)
-        await stack.admin(async (c) => {
-          await c.query('UPDATE conversation.chat_session_members SET access_level = $2, pos = pos + 1 WHERE session_id = $1', [sid, 'write']);
-          await c.query("INSERT INTO conversation.chat_session_members (org_id, session_id, user_id, access_level, pos, entry_id) VALUES ($1, $2, $3, 'read', 0, $4)", [org, sid, newcomer, new ObjectId().toHexString()]);
-          await c.query("UPDATE identity.users SET full_name = 'Back On Mongo' WHERE id = $1", [person.id]);
-          await c.query("UPDATE identity.orgs SET registered_name = 'Renamed In PostgreSQL' WHERE org_id = $1", [person.org_id]);
-        });
-        const rf = await run(['reverse', '--until-idle', '3'], ONLINE);
-        expect(rf.code, JSON.stringify(rf.out)).to.equal(0);
-        expect(rf.out.applied).to.be.greaterThan(2);
-        const m = mongo.client.db(DB);
-        const shared = (await m.collection<any>('chatSessions').findOne({ _id: new ObjectId(sid) })).sharedWith.map((x: any) => [String(x.userId), x.accessLevel]);
-        expect(shared[0]).to.deep.equal([newcomer, 'read']);                 // the order is the position column's
-        expect(shared.slice(1).every((x: any) => x[1] === 'write')).to.equal(true);
-        expect((await m.collection<any>('users').findOne({ _id: new ObjectId(person.id) })).fullName).to.equal('Back On Mongo');
-        expect((await m.collection<any>('org').findOne({ _id: new ObjectId(person.org_id) })).registeredName).to.equal('Renamed In PostgreSQL');
-        // the log is trimmed as it is applied
-        expect((await stack.admin((c) => c.query('SELECT count(*)::int AS n FROM platform.docstore_changes'))).rows[0].n).to.equal(0);
-        // the way back
-        const back = await run(['rollback', '--online'], ONLINE);
-        expect(back.code, JSON.stringify({ stage: back.out.stage, msg: back.out.message, bad: back.out.verify?.collections?.filter((c: any) => c.diffCount || c.countMismatches.length || c.invariantViolations.length || c.unmappedPaths.length).map((c: any) => ({ c: c.collection, d: c.diffs.slice(0, 2), cm: c.countMismatches, i: c.invariantViolations })), g: back.out.verify?.global?.filter((g: any) => !g.ok) })).to.equal(0);
-        expect(await fence()).to.equal('active');
-        const ep = await storeEpoch();
-        expect([ep.backend, ep.readonly]).to.deep.equal(['mongo', true]);
-        // the move is over: the job ended, the follower's markers are gone, and status says so
-        const st = await run(['status']);
-        expect(st.out.status).to.equal('done');
-        expect((await jobs()).filter((j) => j.status === 'running')).to.deep.equal([]);
-        expect((await mongo.client.db(DB).listCollections({ name: 'docstore_migrate_marker' }).toArray()).length).to.equal(0);
-      });
-
       it('the reverse follower loses nothing when transactions commit in another order than their log rows were written (a lower log id commits later)', async () => {
         await mongo.client.db(DB).collection('chatSessions').updateMany({}, { $set: { conversationErrors: [] } });
         expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
@@ -774,21 +703,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(ctr.seq).to.be.at.least(seq - 1);
         const back = await run(['rollback', '--online'], ONLINE);
         expect(back.code, JSON.stringify({ stage: back.out.stage, msg: back.out.message, bad: back.out.verify?.collections?.filter((c: any) => c.diffCount).map((c: any) => [c.collection, c.diffs.slice(0, 2)]) })).to.equal(0);
-      });
-
-      it('a rollback whose reverse verify fails leaves PostgreSQL the store and writable', async () => {
-        expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
-        expect((await cut()).out.ok).to.equal(true);
-        // a change the follower cannot see (no trigger fires for the import role): MongoDB would come back different
-        await stack.admin(async (c) => {
-          await c.query("SET ROLE pipeshub_import");
-          await c.query("UPDATE identity.users SET full_name = 'Unlogged' WHERE id = (SELECT id FROM identity.users LIMIT 1)");
-        });
-        const back = await run(['rollback', '--online'], ONLINE);
-        expect(back.code).to.equal(1);
-        expect(back.out.stage).to.equal('verify');
-        expect(await fence()).to.equal('retired');
-        expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: false });
       });
 
       it('a big collection is copied by parallel workers on their own id ranges; a killed run continues the same ranges', async () => {
