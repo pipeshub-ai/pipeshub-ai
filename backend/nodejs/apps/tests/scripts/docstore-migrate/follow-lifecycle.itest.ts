@@ -16,7 +16,8 @@ import { MARKER_COLLECTION, follow, followStart, resync } from '../../../src/scr
 import { reset } from '../../../src/scripts/docstore-migrate/reset';
 import { postLoad, runMigrateJob } from '../../../src/scripts/docstore-migrate/schema';
 import { JobState, canon } from '../../../src/scripts/docstore-migrate/state';
-import { ADMIN_A, ORG_A, SERVICE_A, identityDocs } from './fixtures/identity';
+import { ADMIN_A, ORG_A, ORG_B, SERVICE_A, identityDocs } from './fixtures/identity';
+
 import { haveMongod } from './mongo-harness';
 import { World, startWorld } from './world';
 
@@ -92,6 +93,26 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const r = await follow(w.rt, js, { untilIdleMs: 1500, log });
         expect(r.applied).to.equal(1);
         expect(await rows(), 'the delete reached the row').to.equal(0);
+      });
+
+      it('does not guess which organisation an outbox delete meant when two hold the same folded id: both rows stay and the clash is named', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        // same seconds and same low 21 bits of the counter: one table id, two organisations
+        const hexA = (1577836800 + 400_000_000).toString(16).padStart(8, '0') + 'abcdef0123' + '000005';
+        const hexB = hexA.slice(0, 18) + '800005';
+        const event = (id: string, org: unknown) => ({ _id: new ObjectId(id), topic: 'clash-probe', key: 'k', orderingKey: 'global', value: JSON.stringify({ payload: { orgId: String(org) } }), status: 'pending', attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date(), __v: 0 });
+        await events.insertMany([event(hexA, ORG_A), event(hexB, ORG_B)] as never[]);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        const rows = async (): Promise<number> => Number((await sql("SELECT count(*)::int AS n FROM platform.outbox WHERE topic = 'clash-probe'"))[0].n);
+        expect(await rows()).to.equal(2);
+        await events.deleteOne({ _id: new ObjectId(hexA) } as never);
+        let err: Error | undefined;
+        await follow(w.rt, js, { untilIdleMs: 1500, log }).catch((e: Error) => (err = e));
+        expect(err?.message).to.contain('more than one organisation').and.to.contain(String(ORG_A)).and.to.contain(String(ORG_B)).and.to.contain(hexA);
+        expect(await rows(), 'neither row was deleted').to.equal(2);
       });
 
       it('a resync that cannot make the copy level fails, keeps the next run comparing, and finishes when the cause is gone', async () => {
