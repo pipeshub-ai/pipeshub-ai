@@ -45,6 +45,9 @@ const log: Log = (event, data) =>
   );
 
 const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, status
+--confirm-fence-armed (drain): every application process runs with DOC_STORE_FENCE=on. Without it drain refuses while a connected
+  application client does not name its connections pipeshub-fenced, because a process that does not wrap its writes keeps writing
+  whatever the fence says.
 --allow-clients (migrate --offline, preflight): go on although an application is still connected to MongoDB. WRITES THAT APPLICATION
   MAKES AFTER THE COPY BEGINS CAN BE LOST (they are fenced off or land after the copy read the data). Stop the application instead.`;
 
@@ -178,6 +181,7 @@ export async function runCli(
         const r = await drain(rt, {
           waitMs: wait,
           force: a.flags.has('force'),
+          confirmArmed: a.flags.has('confirm-fence-armed'),
           log,
         });
         out(r);
