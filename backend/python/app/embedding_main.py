@@ -35,6 +35,8 @@ from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_PRIORITY_QUERY,
     EMBEDDING_SERVER_PORT,
+    TOKENIZE_MAX_CHARS,
+    TOKENIZE_MAX_ITEMS,
 )
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
@@ -296,6 +298,11 @@ class EmbeddingRequest(BaseModel):
     trust_remote_code: bool = False
 
 
+class TokenizeResponse(BaseModel):
+    model: str
+    counts: list[int]
+
+
 class EmbeddingData(BaseModel):
     object: str = "embedding"
     embedding: list[float] | str
@@ -319,6 +326,10 @@ class ModelListItem(BaseModel):
     object: str = "model"
     created: int
     owned_by: str = "pipeshub"
+    # Longest input in tokens; longer text is silently cut by the model.
+    max_seq_length: int | None = None
+    # Tokens the model adds to every input from its default prompt; they count against max_seq_length.
+    prompt_tokens: int = 0
 
 
 class ModelListResponse(BaseModel):
@@ -526,6 +537,25 @@ class ModelManager:
 
     def list_loaded_models(self) -> list[str]:
         return list(self._models)
+
+    @staticmethod
+    def _default_prompt(model: object) -> str:
+        """The prompt ``encode`` puts in front of every text, as it resolves it."""
+        name = getattr(model, "default_prompt_name", None)
+        prompts = getattr(model, "prompts", None)
+        prompt = prompts.get(name) if name and isinstance(prompts, dict) else None
+        return prompt if isinstance(prompt, str) else ""
+
+    def prompt_tokens(self, model_name: str) -> int:
+        model = self._models.get(self._cache_key(model_name))
+        prompt = self._default_prompt(model) if model is not None else ""
+        if not prompt:
+            return 0
+        return len(model.tokenizer([prompt], add_special_tokens=False)["input_ids"][0])
+
+    def max_seq_length(self, model_name: str) -> int | None:
+        limit = getattr(self._models.get(self._cache_key(model_name)), "max_seq_length", None)
+        return limit if isinstance(limit, int) and limit > 0 else None
 
     def is_ready(self, model_name: str) -> bool:
         return model_name in self.list_loaded_models()
@@ -755,6 +785,21 @@ class ModelManager:
             logger.info("Embedding model '%s' loaded", model_name)
             return model
 
+    async def count_tokens(
+        self, model_name: str, texts: list[str], *, trust_remote_code: bool = False,
+    ) -> list[int]:
+        """Tokens the model itself reads for each text, special tokens included."""
+        async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
+            prompt = self._default_prompt(model)
+
+            def _count() -> list[int]:
+                # What encode reads: the default prompt, then the text.
+                ids = model.tokenizer([prompt + t for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
+                return [len(i) for i in ids]
+
+            async with self._encode_gate.slot(EncodePriority.BULK):
+                return await asyncio.to_thread(_count)
+
     async def encode(
         self,
         model_name: str,
@@ -967,7 +1012,10 @@ async def health_check() -> JSONResponse:
 async def list_models() -> ModelListResponse:
     created = int(time.time())
     models = [
-        ModelListItem(id=name, created=created)
+        ModelListItem(
+            id=name, created=created, max_seq_length=model_manager.max_seq_length(name),
+            prompt_tokens=model_manager.prompt_tokens(name),
+        )
         for name in model_manager.list_loaded_models()
     ]
     if not models:
@@ -1085,6 +1133,28 @@ async def create_embeddings(
             total_tokens=token_estimate,
         ),
     )
+
+
+@app.post("/v1/tokenize")
+async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
+    """Token counts under the model's own tokenizer, so a caller can size its inputs exactly."""
+    if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Model '{request.model}' is not in the server's allowed model list.",
+        )
+    if request.trust_remote_code and not ALLOW_REMOTE_CODE:
+        raise HTTPException(status_code=403, detail="trust_remote_code is disabled on this server.")
+    texts = _normalize_input(request.input)
+    if len(texts) > TOKENIZE_MAX_ITEMS or sum(len(t) for t in texts) > TOKENIZE_MAX_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Send at most {TOKENIZE_MAX_ITEMS} texts and {TOKENIZE_MAX_CHARS} characters at a time.",
+        )
+    counts = await model_manager.count_tokens(
+        request.model, texts, trust_remote_code=request.trust_remote_code,
+    )
+    return TokenizeResponse(model=request.model, counts=counts)
 
 
 def run(

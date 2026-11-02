@@ -1227,6 +1227,24 @@ class TestEpicsReadAgainNextSync:
                        for call in c.issues_sync_point.update_sync_point.await_args_list)
 
 
+class TestReindexFollowsTheCurrentIssueType:
+    @staticmethod
+    async def _reindexed(parent: dict) -> TicketRecord:
+        c = _reindex_connector(_issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000"), [])
+        sub = _issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000")
+        sub["fields"].update(issuetype={"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}, parent=parent)
+        c._get_fresh_datasource.return_value.get_issue.return_value = _resp(200, sub)
+        c._load_issue_security = AsyncMock(return_value=_present())
+        record, _ = await c._check_and_fetch_updated_issue(_stored_ticket(external_record_id="1002"), {}, {"PROJ": _present()})
+        return record
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent", [{"id": "1001", "key": "PROJ-1"}, {"id": "1001"}])
+    async def test_a_story_that_became_a_sub_task_is_filed_under_its_parent(self, parent: dict) -> None:
+        """The stored copy had no parent (a story the sync did not file under it); a sub-task always follows its parent."""
+        assert (await self._reindexed(parent)).parent_external_record_id == "1001"
+
+
 class TestReindexPlacesTheStoryAgain:
     """A reindex runs between syncs, so it reads the epic's level afresh."""
 

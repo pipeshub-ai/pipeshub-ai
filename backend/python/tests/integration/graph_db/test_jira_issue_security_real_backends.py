@@ -376,3 +376,53 @@ async def test_a_story_stored_under_its_project_moves_under_its_epic_when_read_a
     readers = {issue["key"]: who for issue, who in ISSUES.values()}
     assert not await _mismatches(world, readers, by_key)
     assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
+
+
+async def _reindex(world: dict[str, Any], issue: dict) -> None:
+    """Re-index the stored copy of ``issue`` against the source's current state of it."""
+    connector = world["connector"]
+    ds = MagicMock()
+    ds.get_issue = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=issue)))
+    parents = [i for i, _ in ISSUES.values() if i["id"] == (issue["fields"]["parent"] or {}).get("id")]
+    ds.bulk_fetch_issues = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={"issues": parents})))
+    connector._get_fresh_datasource = AsyncMock(return_value=ds)
+    connector.data_source = ds
+    connector._load_issue_security = AsyncMock(return_value=connector._issue_security[PROJECT_ID])
+    connector.indexing_filters = MagicMock()
+    stored = await world["processor"].get_record_by_external_id(
+        connector_id=world["connector_id"], external_record_id=issue["id"])
+    await connector.reindex_records([stored])
+
+
+@pytest.mark.parametrize("level", ["10101", None], ids=["parent_level", "no_level"])
+@pytest.mark.parametrize("parent_has_key", [True, False])
+async def test_a_story_that_became_a_sub_task_is_read_as_one_after_a_reindex(
+    world: dict[str, Any], parent_has_key: bool, level: str | None,
+) -> None:
+    """Its access follows its leveled parent, not the project's browsers the story was read as.
+
+    Jira sends a sub-task its parent's level; the payload without one is kept too, since only the
+    parent edge then keeps the sub-task from being read as project-open."""
+    await _sync_project(world)
+    await _write(world, [_issue("20", "PROJ-20", "Story", parent="7")])
+    sub = _issue("20", "PROJ-20", "Sub-task", level=level, parent="7")
+    sub["fields"]["updated"] = "2024-07-01T10:00:00.000+0000"
+    if not parent_has_key:
+        sub["fields"]["parent"] = {"id": "7"}
+    await _reindex(world, sub)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: who for issue, who in ISSUES.values()} | {"PROJ-20": {"alice"}}
+    assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-20"] in await _listed_under(world, "alice", by_key["PROJ-7"])
+
+
+async def test_a_sub_task_that_became_a_story_is_read_as_one_after_a_reindex(world: dict[str, Any]) -> None:
+    await _sync_project(world)
+    await _write(world, [_issue("21", "PROJ-21", "Sub-task", level="10101", parent="7")])
+    story = _issue("21", "PROJ-21", "Story")
+    story["fields"]["updated"] = "2024-07-01T10:00:00.000+0000"
+    await _reindex(world, story)
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: who for issue, who in ISSUES.values()} | {"PROJ-21": PROJECT_READERS}
+    assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-21"] not in await _listed_under(world, "alice", by_key["PROJ-7"])
