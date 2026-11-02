@@ -72,6 +72,8 @@ import {
   splitByLengthPreferringNewlines,
   hasMarkdownTableStartOutsideCodeFences,
   buildFinalSlackChunks,
+  replaceStreamedAnswer,
+  slackBlocksFallbackText,
   splitSlackBlocksByLimit,
   classifySlackFiles,
   resolveSkippedAttachmentsAfterUpload,
@@ -511,7 +513,7 @@ async function processSlackMessage(
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: "",
+        text: slackBlocksFallbackText(chunk),
         blocks: chunk,
         ...NO_UNFURL_OPTIONS,
       });
@@ -1423,78 +1425,20 @@ async function processSlackMessage(
 
       if (streamTs) {
         await stopSlackStream();
-
-        // Delete any earlier rolled-over stream messages — the final blocks
-        // represent the full answer so those partial-text messages are redundant.
-        for (const oldTs of rolledOverStreamTs) {
-          try {
-            await typedClient.apiCall("chat.delete", {
-              channel: typedMessage.channel!,
-              ts: oldTs,
-            });
-          } catch (deleteError) {
-            const code = (deleteError as { data?: { error?: string } }).data?.error;
-            if (code !== "message_not_found") {
-              console.error("Error deleting rolled-over stream message:", deleteError);
-            }
-          }
-        }
-        rolledOverStreamTs = [];
-
-        try {
-          await typedClient.chat.update({
-            channel: typedMessage.channel!,
-            ts: streamTs,
-            text: "",
-            blocks: firstFinalChunk,
-            ...NO_UNFURL_OPTIONS,
-          });
-          firstChunkSent = true;
-        } catch (updateError) {
-          console.error(
-            "Error updating final streamed Slack message with blocks, trying delete and repost:",
-            updateError,
-          );
-          try {
-            try {
-              await typedClient.apiCall("chat.delete", {
-                channel: typedMessage.channel!,
-                ts: streamTs,
-              });
-            } catch (deleteError) {
-              // If the message is already gone, we can still post a fresh one
-              const code = (deleteError as { data?: { error?: string } }).data?.error;
-              if (code !== "message_not_found") {
-                throw deleteError;
-              }
-            }
-            await typedClient.chat.postMessage({
-              channel: typedMessage.channel!,
-              thread_ts: threadId,
-              text: "",
-              blocks: firstFinalChunk,
-              ...NO_UNFURL_OPTIONS,
-            });
-            firstChunkSent = true;
-          } catch (replacementError) {
-            console.error(
-              "Error replacing failed streamed Slack message, sending fallback error message:",
-              replacementError,
-            );
-            await typedClient.chat.postMessage({
-              channel: typedMessage.channel!,
-              thread_ts: threadId,
-              text: FAILED_RESPONSE_GENERATION_MESSAGE,
-              ...NO_UNFURL_OPTIONS,
-            });
-          }
-        }
+        // Rolled-over parts go too: the final blocks hold the whole answer.
+        firstChunkSent = await replaceStreamedAnswer(
+          typedClient,
+          typedMessage.channel!,
+          threadId,
+          [...rolledOverStreamTs, streamTs],
+          firstFinalChunk,
+        );
       } else {
         // Post answer as a new message so the activity timeline stays above it.
         await typedClient.chat.postMessage({
           channel: typedMessage.channel!,
           thread_ts: threadId,
-          text: "",
+          text: slackBlocksFallbackText(firstFinalChunk),
           blocks: firstFinalChunk,
           ...NO_UNFURL_OPTIONS,
         });

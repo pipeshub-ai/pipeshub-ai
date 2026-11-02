@@ -1707,6 +1707,82 @@ export async function buildFinalSlackChunks(
   return splitSlackBlocksByLimit(combinedBlocks);
 }
 
+const SLACK_FALLBACK_TEXT_LIMIT = 3000;
+
+function collectSlackBlockText(node: unknown, out: string[]): void {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectSlackBlockText(child, out);
+    }
+    return;
+  }
+  if (node === null || typeof node !== 'object') {
+    return;
+  }
+  const record = node as Record<string, unknown>;
+  if (typeof record.text === 'string') {
+    out.push(record.text);
+  } else {
+    collectSlackBlockText(record.text, out);
+  }
+  collectSlackBlockText(record.elements, out);
+  collectSlackBlockText(record.rows, out);
+  collectSlackBlockText(record.fields, out);
+}
+
+/** Top-level `text` for a blocks message: Slack shows it in notifications and to screen readers. */
+export function slackBlocksFallbackText(blocks: unknown[]): string {
+  const parts: string[] = [];
+  collectSlackBlockText(blocks, parts);
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+  return truncateFromEnd(
+    text === '' ? 'Reply' : text,
+    SLACK_FALLBACK_TEXT_LIMIT,
+  );
+}
+
+/**
+ * Replace the streamed answer with its final blocks. Slack rejects a
+ * chat.update from a streamed (rich text) message to section blocks with
+ * `block_mismatch`, so the blocks go out as a new reply and the streamed
+ * messages are deleted after it lands. If the post fails they stay, so the
+ * thread still shows the answer. Returns whether the blocks were posted.
+ */
+export async function replaceStreamedAnswer(
+  typedClient: TypedSlackClient,
+  channel: string,
+  threadTs: string,
+  streamedTs: string[],
+  blocks: unknown[],
+): Promise<boolean> {
+  try {
+    await typedClient.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: slackBlocksFallbackText(blocks),
+      blocks: blocks as SlackBlock[],
+      ...NO_UNFURL_OPTIONS,
+    });
+  } catch (error) {
+    console.error(
+      'Error posting the final Slack answer; keeping the streamed text:',
+      error,
+    );
+    return false;
+  }
+  for (const ts of streamedTs) {
+    try {
+      await typedClient.apiCall('chat.delete', { channel, ts });
+    } catch (error) {
+      const code = (error as { data?: { error?: string } }).data?.error;
+      if (code !== 'message_not_found') {
+        console.error('Error deleting streamed Slack message:', error);
+      }
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // User / thread helpers
 // ---------------------------------------------------------------------------
