@@ -444,6 +444,53 @@ export function describeAnswerWiring(
       expect(everything).to.not.match(/ref\d+\.xyz|\(ref\d+\)/);
     });
 
+    it('starts streaming a multi-paragraph answer after its first paragraph', async () => {
+      const answer = [
+        'Asana grew revenue in the third quarter.',
+        '',
+        'Operating margin improved for the fourth quarter in a row.',
+        '',
+        'Cash flow was positive.',
+      ].join('\n');
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 3),
+        finished(answer),
+      ]);
+
+      const pieces = [...apiCalls(client, 'chat.startStream'), ...apiCalls(client, 'chat.appendStream')]
+        .flatMap((c) => (c.chunks as AnyArgs[]).filter((ch) => ch.type === 'markdown_text').map((ch) => ch.text as string));
+      expect(pieces.length).to.be.greaterThan(1);
+      expect(pieces[0]!.startsWith('Asana grew revenue in the third quarter.\n\n')).to.equal(true);
+      expect(pieces[0]!.length).to.be.lessThan(answer.length);
+      expect(visibleText(client)).to.equal(answer);
+    });
+
+    it('streams an answer that starts with a heading right away', async () => {
+      const answer = '## Asana overview\nAsana is a work-management platform used by many teams.';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 3),
+        finished(answer),
+      ]);
+
+      const pieces = [...apiCalls(client, 'chat.startStream'), ...apiCalls(client, 'chat.appendStream')]
+        .flatMap((c) => (c.chunks as AnyArgs[]).filter((ch) => ch.type === 'markdown_text').map((ch) => ch.text as string));
+      expect(pieces.length).to.be.greaterThan(1);
+      expect(pieces[0]!.startsWith('## ')).to.equal(true);
+      expect(visibleText(client)).to.equal(answer);
+    });
+
+    it('keeps a one-paragraph opening, even ending in a blank line, as a row when a tool follows', async () => {
+      const client = await ask(answerFrames('completed', 'I will look up the third-quarter filing first.\n\n'));
+
+      const rows = [...finalSteps(client).values()];
+      expect(rows[0]).to.deep.include({ title: 'I will look up the third-quarter filing first.', status: 'complete' });
+      expect(visibleText(client)).to.equal(SHOWN_ANSWER);
+    });
+
     it('never gives two different citations the same [n] in one reply', async () => {
       const opening = 'The older filing [source](ref9) covers this. '.repeat(40);
       const client = await ask([

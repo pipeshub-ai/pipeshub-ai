@@ -5,6 +5,7 @@ import {
   SlackPlanStream,
   SlackTaskPlan,
   compactArgs,
+  isSecretKey,
   openFence,
   redactSecrets,
   splitIntoRows,
@@ -277,6 +278,23 @@ describe('slack-bot/utils/plan-stream', () => {
 
     it('keeps ordinary words', () => {
       expect(redactSecrets('Searched for "password reset policy"')).to.equal('Searched for "password reset policy"');
+    });
+
+    const KEPT = ['monkey: banana', 'keyboard=qwerty', 'author: Jane Doe', 'authority: FDA', 'title: Bug, labels: a'];
+    for (const input of KEPT) {
+      it(`keeps "${input}": no segment of the key names a secret`, () => {
+        expect(redactSecrets(input)).to.equal(input);
+      });
+    }
+
+    it('reads key names by segment', () => {
+      for (const name of ['api_key', 'apiKey', 'x-api-key', 'secret_key', 'APIKey', 'clientSecret', 'auth.token', 'credentials']) {
+        expect(isSecretKey(name), name).to.equal(true);
+      }
+      for (const name of ['monkey', 'keyboard', 'author', 'authority', 'tokenizer', 'keyword']) {
+        expect(isSecretKey(name), name).to.equal(false);
+      }
+      expect(redactSecrets('title: Bug, token: abc')).to.equal('title: Bug, token: [redacted]');
     });
 
     it('masks secrets in results too', () => {
