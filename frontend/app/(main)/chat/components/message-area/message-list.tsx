@@ -22,7 +22,7 @@ import { buildMessagePairs } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
-import { shouldShowJumpToNewest } from './jump-to-newest';
+import { shouldShowJumpToNewest, tailClearance } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -631,6 +631,29 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     syncStreamingMessageTail,
   ]);
 
+  // ── Keep a growing tail clear of the composer dock ────────────────
+  // The newest message can grow after its run ends (this chat's own approval card arrives) while
+  // the dock covers the bottom of the scroller. If its end was in view, keep it in view; a reader
+  // up-thread or at the top of a long answer stays put.
+  const tailInViewRef = useRef(false);
+  const keepTailInView = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const key = lastMessageKeyRef.current;
+    const lastEl = key ? messageRefs.current.get(key) : null;
+    if (!container || !lastEl) return;
+    const visibleBottom = container.getBoundingClientRect().bottom - (composerDockRef.current?.offsetHeight ?? 0);
+    const tailBottom = lastEl.getBoundingClientRect().bottom;
+    const by = isScrolledUpRef.current ? 0 : tailClearance(tailInViewRef.current, tailBottom, visibleBottom);
+    if (by > 0) {
+      isAutoScrollingRef.current = true;
+      container.scrollTop += by;
+      queueMicrotask(() => {
+        isAutoScrollingRef.current = false;
+      });
+    }
+    tailInViewRef.current = tailBottom - by <= visibleBottom + 1;
+  }, []);
+
   // ── rAF-coalesced resize handler for ResizeObserver ───────────────
   // Spacer + tail on size changes that are not always tied to store updates
   // (code blocks, images, fonts). While streaming, tail sync also runs from
@@ -647,10 +670,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         } else {
           recalcSpacerHeight();
         }
+        keepTailInView();
         updateJumpToNewestVisibility();
       });
     };
-  }, [recalcSpacerHeight, syncStreamingMessageTail, updateJumpToNewestVisibility]);
+  }, [recalcSpacerHeight, syncStreamingMessageTail, updateJumpToNewestVisibility, keepTailInView]);
 
   // ── Cleanup auto-scroll timeout on unmount ──
   useEffect(() => {

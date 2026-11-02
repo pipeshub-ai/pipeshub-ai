@@ -1580,7 +1580,14 @@
       "sendSuggestion": "Send suggestion",
       "suggestionSentIn": "Sent your suggestion to \"{{title}}\".",
       "moreWaitingLabel_one": "Show the next waiting approval (+{{count}} more)",
-      "moreWaitingLabel_other": "Show the next waiting approval (+{{count}} more)"
+      "moreWaitingLabel_other": "Show the next waiting approval (+{{count}} more)",
+      "waitingIn": "{{tool}} is waiting in \"{{title}}\"",
+      "review": "Review",
+      "hide": "Hide",
+      "askedJustNow": "Asked just now",
+      "askedAgo_one": "Asked {{count}} min ago",
+      "askedAgo_other": "Asked {{count}} min ago",
+      "chatDeleted": "That chat was deleted."
     },
     "selectedAlone": "{{name}} (this item only)",
     "noConnectorsFound": "No connectors found",

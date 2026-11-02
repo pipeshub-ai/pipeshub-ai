@@ -1650,7 +1650,16 @@
       "moreWaitingLabel_one": "Zobrazit další čekající schválení (+{{count}} další)",
       "moreWaitingLabel_few": "Zobrazit další čekající schválení (+{{count}} další)",
       "moreWaitingLabel_many": "Zobrazit další čekající schválení (+{{count}} další)",
-      "moreWaitingLabel_other": "Zobrazit další čekající schválení (+{{count}} další)"
+      "moreWaitingLabel_other": "Zobrazit další čekající schválení (+{{count}} další)",
+      "waitingIn": "{{tool}} čeká v „{{title}}“",
+      "review": "Zkontrolovat",
+      "hide": "Skrýt",
+      "askedJustNow": "Dotaz právě teď",
+      "askedAgo_one": "Dotaz před {{count}} min",
+      "askedAgo_few": "Dotaz před {{count}} min",
+      "askedAgo_many": "Dotaz před {{count}} min",
+      "askedAgo_other": "Dotaz před {{count}} min",
+      "chatDeleted": "Tento chat byl smazán."
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
     "noConnectorsFound": "Nebyly nalezeny žádné konektory",

@@ -22,6 +22,9 @@ interface PendingApprovalsState {
   put: (item: PendingApprovalItem) => void;
   /** Drops the calls whose time ran out. */
   prune: () => void;
+  /** How many of the current chat's own approval cards are open, so the composer's list stays out of their way. */
+  inlineOpen: number;
+  markInline: (delta: 1 | -1) => void;
 }
 
 const live = (item: PendingApprovalItem) =>
@@ -46,6 +49,8 @@ export const usePendingApprovals = create<PendingApprovalsState>((set) => ({
     set((s) => ({ items: [item, ...s.items.filter((i) => i.card.approvalId !== item.card.approvalId)] }));
   },
   prune: () => set((s) => ({ items: s.items.filter(live) })),
+  inlineOpen: 0,
+  markInline: (delta) => set((s) => ({ inlineOpen: Math.max(0, s.inlineOpen + delta) })),
 }));
 
 /** Keeps the list fresh while the composer is shown: on mount, on window focus, every 30s while
@@ -85,5 +90,5 @@ export function useOtherChatApprovals(): PendingApprovalItem[] {
 /** Test-only: forget what was answered. */
 export function resetPendingApprovalsForTest(): void {
   answered.clear();
-  usePendingApprovals.setState({ items: [] });
+  usePendingApprovals.setState({ items: [], inlineOpen: 0 });
 }

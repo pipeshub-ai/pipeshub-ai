@@ -1491,7 +1491,14 @@
       "sendSuggestion": "Vorschlag senden",
       "suggestionSentIn": "Ihr Vorschlag wurde an „{{title}}“ gesendet.",
       "moreWaitingLabel_one": "Nächste wartende Freigabe anzeigen (+{{count}} weitere)",
-      "moreWaitingLabel_other": "Nächste wartende Freigabe anzeigen (+{{count}} weitere)"
+      "moreWaitingLabel_other": "Nächste wartende Freigabe anzeigen (+{{count}} weitere)",
+      "waitingIn": "{{tool}} wartet in „{{title}}“",
+      "review": "Prüfen",
+      "hide": "Ausblenden",
+      "askedJustNow": "Gerade eben gefragt",
+      "askedAgo_one": "Vor {{count}} Min. gefragt",
+      "askedAgo_other": "Vor {{count}} Min. gefragt",
+      "chatDeleted": "Dieser Chat wurde gelöscht."
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
     "noConnectorsFound": "Keine Konnektoren gefunden",

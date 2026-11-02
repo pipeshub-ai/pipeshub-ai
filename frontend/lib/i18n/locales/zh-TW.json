@@ -1577,7 +1577,14 @@
       "sendSuggestion": "傳送建議",
       "suggestionSentIn": "已將你的建議傳送到「{{title}}」。",
       "moreWaitingLabel_one": "顯示下一個待核准項目（另外 {{count}} 個）",
-      "moreWaitingLabel_other": "顯示下一個待核准項目（另外 {{count}} 個）"
+      "moreWaitingLabel_other": "顯示下一個待核准項目（另外 {{count}} 個）",
+      "waitingIn": "{{tool}} 正在「{{title}}」中等待",
+      "review": "查看",
+      "hide": "隱藏",
+      "askedJustNow": "剛剛請求",
+      "askedAgo_one": "{{count}} 分鐘前請求",
+      "askedAgo_other": "{{count}} 分鐘前請求",
+      "chatDeleted": "該聊天已被刪除。"
     },
     "selectedAlone": "{{name}}（僅此項目）",
     "noConnectorsFound": "找不到連接器",

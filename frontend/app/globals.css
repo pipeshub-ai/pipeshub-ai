@@ -956,6 +956,27 @@ li > blockquote {
     min-width: 0;
   }
 }
+/* Narrow, Deny and Allow may wrap their words, but never clip them. */
+@container (max-width: 460px) {
+  .tool-approval-card-answer > button {
+    white-space: normal;
+    height: auto;
+    min-height: var(--base-button-height);
+  }
+}
+/* A call from another chat, above the composer (composer-approval-card.tsx). Opened, it scrolls
+   inside its cap; narrow, the cap leaves the transcript about 40% of the screen. */
+.composer-approval {
+  container: composer-approval / inline-size;
+}
+.composer-approval .tool-approval-card {
+  max-height: 60vh;
+}
+@container composer-approval (max-width: 600px) {
+  .composer-approval .tool-approval-card {
+    max-height: max(calc(var(--space-9) * 2), calc(60dvh - var(--space-9) * 3));
+  }
+}
 /* The document form's borderless headline field: the house focus ring, and a hairline when invalid. */
 .tool-approval-headline {
   border-radius: var(--radius-2);

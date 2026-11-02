@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { PendingApprovalItem } from '../../types';
@@ -47,11 +47,21 @@ function item(id: string, conversationId: string, title: string, patch: Partial<
   };
 }
 
+/** Shows the list and opens the full card (it starts as a one-line bar). */
 async function show(items: PendingApprovalItem[]) {
+  await showBar(items);
+  fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+}
+
+async function showBar(items: PendingApprovalItem[]) {
   m.fetchPending.mockResolvedValue(items);
   renderInTheme(<ComposerApprovalCard />);
-  await waitFor(() => expect(screen.queryAllByTestId('tool-approval-card').length).toBeGreaterThan(0));
+  await waitFor(() => expect(screen.queryByTestId('composer-approval-bar')).toBeTruthy());
 }
+
+/** The card on show; the others stay mounted, hidden, to keep their edits. */
+const card = () => screen.getAllByTestId('tool-approval-card').find((el) => !el.closest('[hidden]')) as HTMLElement;
+const inCard = (text: RegExp | string) => within(card()).getByText(text);
 
 beforeEach(() => {
   installBrowserShims();
@@ -67,16 +77,68 @@ describe('ComposerApprovalCard', () => {
     m.fetchPending.mockResolvedValue([item('a', 'conv-here', 'This chat')]);
     renderInTheme(<ComposerApprovalCard />);
     await act(async () => {});
-    expect(screen.queryByTestId('tool-approval-card')).toBeNull();
+    expect(screen.queryByTestId('composer-approval-bar')).toBeNull();
+  });
+
+  it('starts as a one-line bar with no Allow or Deny; Review opens the card, Hide and Esc fold it', async () => {
+    await showBar([item('a', 'conv-a', 'Fix login', { createdAt: Date.now() - 3 * 60_000 }), item('b', 'conv-b', 'Weekly report')]);
+    // After the list loads: waitFor needs real timers.
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      const bar = screen.getByTestId('composer-approval-bar');
+      expect(bar.textContent).toContain('Create an issue is waiting in "Fix login" · Asked 3 min ago');
+      expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      expect(within(bar).getByRole('button', { name: 'Open chat' })).toBeTruthy();
+      expect(within(bar).getByRole('button', { name: /\+1 more/ })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+      act(() => vi.runAllTimers());
+      expect(screen.queryByTestId('composer-approval-bar')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+      expect(inCard(/In "Fix login" · Expires in 12 min · Asked 3 min ago/)).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Hide' }));
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Allow' }), { key: 'Escape' });
+      act(() => vi.runAllTimers());
+      expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Review' }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+      expect(screen.getByTestId('composer-approval-bar')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('folds to the bar while this chat shows its own approval card', async () => {
+    await show([item('a', 'conv-a', 'Fix login')]);
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+    act(() => usePendingApprovals.getState().markInline(1));
+    expect(screen.getByTestId('composer-approval-bar')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
   });
 
   it('shows In "title", +N more steps through items', async () => {
     await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report')]);
-    expect(screen.getByText(/In "Fix login"/)).toBeTruthy();
+    expect(inCard(/In "Fix login"/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /\+1 more/ }));
-    expect(screen.getByText(/In "Weekly report"/)).toBeTruthy();
+    expect(inCard(/In "Weekly report"/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /\+1 more/ }));
-    expect(screen.getByText(/In "Fix login"/)).toBeTruthy();
+    expect(inCard(/In "Fix login"/)).toBeTruthy();
+  });
+
+  it('stepping away and back keeps an edit in progress', async () => {
+    const editable = item('a', 'conv-a', 'Fix login');
+    editable.card = { ...editable.card, editable: true, argsHash: 'h', inputSchema: { type: 'object', properties: { title: { type: 'string' } } } };
+    await show([editable, item('b', 'conv-b', 'Weekly report')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Login fails on Safari' } });
+    fireEvent.click(screen.getByRole('button', { name: /\+1 more/ }));
+    expect(inCard(/In "Weekly report"/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /\+1 more/ }));
+    expect((screen.getByRole('textbox', { name: 'Title' }) as HTMLInputElement).value).toBe('Login fails on Safari');
   });
 
   it('Allow → toast runningIn with Open chat', async () => {
@@ -87,6 +149,7 @@ describe('ComposerApprovalCard', () => {
     const [title, options] = m.toast.success.mock.calls[0];
     expect(title).toBe('Allowed. Create an issue is running in "Fix login".');
     expect(options.action.label).toBe('Open chat');
+    expect(options.placement).toBe('top');
     options.action.onClick();
     expect(m.push).toHaveBeenCalledWith('/chat/?conversationId=conv-a');
     expect(screen.queryByTestId('tool-approval-card')).toBeNull();
@@ -102,7 +165,7 @@ describe('ComposerApprovalCard', () => {
     m.answerElsewhere.mockResolvedValue('stale');
     await show([item('a', 'conv-a', 'Fix login')]);
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
-    await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('This was already answered in that chat.'));
+    await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('This was already answered in that chat.', expect.anything()));
     expect(usePendingApprovals.getState().items).toEqual([]);
     expect(screen.queryByTestId('tool-approval-card')).toBeNull();
   });
@@ -148,9 +211,9 @@ describe('ComposerApprovalCard', () => {
     await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report'), item('c', 'conv-c', 'Budget')]);
     fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
     fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
-    expect(screen.getByText(/In "Budget"/)).toBeTruthy();
+    expect(inCard(/In "Budget"/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
-    await waitFor(() => expect(screen.getByText(/In "Fix login"/)).toBeTruthy());
+    await waitFor(() => expect(inCard(/In "Fix login"/)).toBeTruthy());
   });
 
   it('"+N more" names what it does', async () => {
@@ -186,14 +249,14 @@ describe('ComposerApprovalCard', () => {
     // A poll brings a newer call first, and the same call back as a fresh object.
     act(() => usePendingApprovals.setState({ items: [item('b', 'conv-b', 'Weekly report'), { ...editable, card: { ...editable.card } }] }));
 
-    expect(screen.getByText(/In "Fix login"/)).toBeTruthy();
+    expect(inCard(/In "Fix login"/)).toBeTruthy();
     expect((screen.getByRole('textbox', { name: 'Title' }) as HTMLInputElement).value).toBe('Login fails on Safari');
     expect(screen.getByPlaceholderText('Tell PipesHub what to change')).toBeTruthy();
     expect(screen.getByRole('button', { name: /\+1 more/ })).toBeTruthy();
   });
 
   it('Open chat navigates', async () => {
-    await show([item('a', 'conv-a', 'Fix login', { agentId: 'agent-7' })]);
+    await showBar([item('a', 'conv-a', 'Fix login', { agentId: 'agent-7' })]);
     fireEvent.click(screen.getByRole('button', { name: 'Open chat' }));
     expect(m.push).toHaveBeenCalledWith('/chat/?agentId=agent-7&conversationId=conv-a');
   });

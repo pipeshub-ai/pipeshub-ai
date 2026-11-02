@@ -1577,7 +1577,14 @@
       "sendSuggestion": "제안 보내기",
       "suggestionSentIn": "\"{{title}}\"에 제안을 보냈습니다.",
       "moreWaitingLabel_one": "다음 대기 중인 승인 보기 (+{{count}}개 더)",
-      "moreWaitingLabel_other": "다음 대기 중인 승인 보기 (+{{count}}개 더)"
+      "moreWaitingLabel_other": "다음 대기 중인 승인 보기 (+{{count}}개 더)",
+      "waitingIn": "{{tool}}이(가) \"{{title}}\"에서 기다리고 있어요",
+      "review": "검토",
+      "hide": "숨기기",
+      "askedJustNow": "방금 요청됨",
+      "askedAgo_one": "{{count}}분 전 요청됨",
+      "askedAgo_other": "{{count}}분 전 요청됨",
+      "chatDeleted": "해당 채팅이 삭제되었어요."
     },
     "selectedAlone": "{{name}} (이 항목만)",
     "noConnectorsFound": "커넥터를 찾을 수 없습니다",

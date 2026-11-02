@@ -44,6 +44,10 @@ interface ToolApprovalCardProps {
   /** Composer: how many more calls wait behind this one; `onMore` shows the next. */
   moreCount?: number;
   onMore?: () => void;
+  /** Composer: folds the card back to its one-line bar. */
+  onHide?: () => void;
+  /** Composer: when the call was asked ("Asked 3 min ago"), to tell same-titled chats apart. */
+  asked?: string | null;
 }
 
 export type AnswerResult = 'sent' | 'busy' | 'stale' | 'failed' | { failed: string };
@@ -67,7 +71,7 @@ function pointerField(path: string): string {
  * answer carries on this same reply, sending the approval id, the choice and, when the person
  * changed the call or wrote a note, those too. Where it can't be answered (expired, an older
  * reply, a conversation shared with the viewer) it is one line. */
-export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inline', conversationTitle, onAnswer, onOpenChat, moreCount = 0, onMore }: ToolApprovalCardProps) {
+export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inline', conversationTitle, onAnswer, onOpenChat, moreCount = 0, onMore, onHide, asked }: ToolApprovalCardProps) {
   const { t } = useTranslation();
   const minutesLeft = useMinutesLeft(approval.expiresAt);
   const original = approval.arguments ?? null;
@@ -124,8 +128,16 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const tool = approvalToolLabel(approval);
   const server = approval.serverName;
   const expired = minutesLeft === 0;
+  const answerable = !expired && isLatest && canSend;
 
-  if (expired || !isLatest || !canSend) {
+  // The composer's list of other chats' calls folds away while this chat asks its own.
+  useEffect(() => {
+    if (placement !== 'inline' || !answerable) return;
+    usePendingApprovals.getState().markInline(1);
+    return () => usePendingApprovals.getState().markInline(-1);
+  }, [placement, answerable]);
+
+  if (!answerable) {
     const notice = expired ? 'expired' : canSend ? 'passed' : 'waiting';
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--gray-11)' }}>
@@ -244,6 +256,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     : soon
       ? t('chat.toolApproval.expiresSoon')
       : t('chat.toolApproval.expiresIn', { count: minutesLeft });
+  const detail = asked ? `${expiry} · ${asked}` : expiry;
 
   return (
     <Box
@@ -259,7 +272,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         border: '1px solid var(--gray-5)',
         borderRadius: 'var(--radius-3)',
         backgroundColor: 'var(--gray-2)',
-        ...(placement === 'composer' ? { boxShadow: 'var(--shadow-4)', maxHeight: '60vh', overflowY: 'auto' } : {}),
+        // Its height cap is in globals.css (.composer-approval): it depends on the composer's width.
+        ...(placement === 'composer' ? { boxShadow: 'var(--shadow-4)', overflowY: 'auto' } : {}),
       }}
     >
       <Flex gap="3" align="start">
@@ -293,7 +307,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             </Text>
           )}
           <Text as="p" size="1" style={{ color: 'var(--gray-11)' }}>
-            {expiry}
+            {detail}
           </Text>
         </Box>
         {moreCount > 0 && onMore && (
@@ -306,6 +320,11 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             onClick={onMore}
           >
             {t('chat.toolApproval.moreWaiting', { count: moreCount })}
+          </Button>
+        )}
+        {onHide && (
+          <Button data-approval-hide="" size="1" variant="ghost" color="gray" style={{ flexShrink: 0 }} onClick={onHide}>
+            {t('chat.toolApproval.hide')}
           </Button>
         )}
       </Flex>

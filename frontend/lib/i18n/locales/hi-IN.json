@@ -1491,7 +1491,14 @@
       "sendSuggestion": "सुझाव भेजें",
       "suggestionSentIn": "आपका सुझाव \"{{title}}\" में भेज दिया गया।",
       "moreWaitingLabel_one": "अगली प्रतीक्षारत अनुमति दिखाएँ (+{{count}} और)",
-      "moreWaitingLabel_other": "अगली प्रतीक्षारत अनुमति दिखाएँ (+{{count}} और)"
+      "moreWaitingLabel_other": "अगली प्रतीक्षारत अनुमति दिखाएँ (+{{count}} और)",
+      "waitingIn": "{{tool}} \"{{title}}\" में प्रतीक्षा कर रहा है",
+      "review": "समीक्षा करें",
+      "hide": "छिपाएँ",
+      "askedJustNow": "अभी पूछा गया",
+      "askedAgo_one": "{{count}} मिनट पहले पूछा गया",
+      "askedAgo_other": "{{count}} मिनट पहले पूछा गया",
+      "chatDeleted": "वह चैट हटा दी गई थी।"
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",

@@ -1515,7 +1515,15 @@
       "suggestionSentIn": "Se envió tu sugerencia a «{{title}}».",
       "moreWaitingLabel_one": "Mostrar la siguiente aprobación pendiente (+{{count}} más)",
       "moreWaitingLabel_many": "Mostrar la siguiente aprobación pendiente (+{{count}} más)",
-      "moreWaitingLabel_other": "Mostrar la siguiente aprobación pendiente (+{{count}} más)"
+      "moreWaitingLabel_other": "Mostrar la siguiente aprobación pendiente (+{{count}} más)",
+      "waitingIn": "{{tool}} está esperando en «{{title}}»",
+      "review": "Revisar",
+      "hide": "Ocultar",
+      "askedJustNow": "Pedido ahora mismo",
+      "askedAgo_one": "Pedido hace {{count}} min",
+      "askedAgo_many": "Pedido hace {{count}} min",
+      "askedAgo_other": "Pedido hace {{count}} min",
+      "chatDeleted": "Ese chat se eliminó."
     },
     "selectedAlone": "{{name}} (solo este elemento)",
     "noConnectorsFound": "No se encontraron conectores",
