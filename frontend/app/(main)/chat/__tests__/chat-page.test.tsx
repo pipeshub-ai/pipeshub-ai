@@ -891,6 +891,7 @@ describe('Chat page — agent chats', () => {
     expect(await screen.findByText('Support Bot')).toBeTruthy();
     await waitFor(() => expect(listInstances).toHaveBeenCalledTimes(1));
     cleanup();
+    expect(useChatStore.getState().agentContextDisplayName).toBeNull();
 
     openWithSidebar();
     expect(await screen.findByText('Support Bot')).toBeTruthy();
@@ -898,6 +899,24 @@ describe('Chat page — agent chats', () => {
 
     expect(listInstances).toHaveBeenCalledTimes(2);
     expect(getAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the agent's fields when the user leaves the chat page", async () => {
+    getAgent.mockResolvedValue({ agent: AGENT_WITH_TOOLS, toolFullNames: ['jira.search'] });
+    renderPage('agentId=agent-a');
+    await waitFor(() => expect(useChatStore.getState().agentChatToolGroups).toHaveLength(1));
+    act(() => useChatStore.getState().setAgentKnowledgeScope({ apps: ['app-1'], kb: [] }));
+
+    cleanup();
+
+    const state = useChatStore.getState();
+    expect(state.agentToolCatalogFullNames).toEqual([]);
+    expect(state.agentChatToolGroups).toEqual([]);
+    expect(state.agentKnowledgeScope).toBeNull();
+    expect(state.agentDeprecatedToolNames).toEqual([]);
+    expect(state.agentContextDisplayName).toBeNull();
+    expect(state.agentContextCreatedBy).toBeNull();
+    expect(state.agentContextAccess).toBeNull();
   });
 
   it('after the user fixes and saves the agent, coming back shows the saved agent and no stale warning', async () => {

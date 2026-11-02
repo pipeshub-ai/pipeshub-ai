@@ -71,6 +71,15 @@ import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydrati
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
 import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
 
+/** Empties the agent fields the chat page fills from the agent detail. */
+function clearAgentContext(): void {
+  const store = useChatStore.getState();
+  store.hydrateAgentChatResources(null);
+  store.setAgentContextDisplayName(null);
+  store.setAgentContextCreatedBy(null);
+  store.setAgentContextAccess(null);
+}
+
 function deprecatedAgentToolNames(agent: GetAgentResult['agent']): string[] {
   return (agent?.toolsets ?? [])
     .flatMap((ts) => ts.tools ?? [])
@@ -375,12 +384,6 @@ function ChatContent() {
   useEffect(() => {
     let cancelled = false;
     const store = useChatStore.getState();
-    const clearAgentContext = () => {
-      store.hydrateAgentChatResources(null);
-      store.setAgentContextDisplayName(null);
-      store.setAgentContextCreatedBy(null);
-      store.setAgentContextAccess(null);
-    };
 
     if (!agentId?.trim()) {
       clearAgentContext();
@@ -473,6 +476,10 @@ function ChatContent() {
       cancelled = true;
     };
   }, [agentId, agentDetail, agentUnavailable, apiActionsEnabled, router, t]);
+
+  // Leaving the chat page drops the agent's fields, as the agent sidebar's unmount used to.
+  // Unmount only: clearing in the effect above would also run before each re-fill.
+  useEffect(() => clearAgentContext, []);
 
   // Warn when any tool attached to this agent has been removed from server code
   // since the agent was last saved (deprecated=true is stamped by the GET
