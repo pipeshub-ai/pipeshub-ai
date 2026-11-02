@@ -21,6 +21,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.image_admission import ImageAdmission
+from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
 from tests.integration.graph_db import test_kb_push_real_backends as base
 from tests.integration.graph_db.test_kb_push_real_backends import Env, record_keys
 
@@ -111,6 +112,21 @@ async def test_a_flooded_document_cannot_hide_another_documents_link(env: Env) -
     assert await env.graph.batch_upsert_nodes(rows, CollectionNames.RECORDS.value)
     got = await env.graph.get_ref_access(env.user_id, env.org_id, [flooded, victim_doc, own_doc])
     assert {flooded, victim_doc, own_doc} <= got.linked and got.readable == {own_doc}
+
+
+async def test_upload_records_without_a_connector_name_cannot_hide_the_kb_upload(env: Env) -> None:
+    """Neo4j sorts null first in a descending order, and ``origin = upload AND connectorName = kb``
+    is null, not false, for a record with no connector name: a full page of those must not push
+    the document's own knowledge-base upload out of its per-document rows."""
+    if not type(env.graph).__name__.startswith("Neo4j"):
+        pytest.skip("ArangoDB's record schema requires connectorName, and its == on a missing field is false")
+    _record_id, own_doc = await pushed_document(env)
+    rows = [{"id": f"noname-{i}-{uuid.uuid4().hex[:6]}", "orgId": env.org_id, "externalRecordId": own_doc, "origin": "UPLOAD",
+             "recordName": "noname", "recordType": "FILE", "createdAtTimestamp": 1} for i in range(REF_LINKS_PER_DOC)]
+    env.seeded[CollectionNames.RECORDS.value].extend(r["id"] for r in rows)
+    assert await env.graph.batch_upsert_nodes(rows, CollectionNames.RECORDS.value)
+    got = await env.graph.get_ref_access(env.user_id, env.org_id, [own_doc])
+    assert got.readable == {own_doc}
 
 
 async def test_one_check_access_call_per_push(env: Env) -> None:

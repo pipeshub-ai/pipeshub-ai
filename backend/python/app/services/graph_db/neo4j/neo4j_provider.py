@@ -12480,12 +12480,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
         # Per document, so a document with many links cannot push another document's only link out of the result.
+        # coalesce: the predicate is null for a record with no origin or connector name, and Neo4j
+        # sorts null first in a descending order, ahead of the knowledge-base upload.
         records = await self.client.execute_query(
             """
             UNWIND $ids AS doc
             CALL (doc) {
               MATCH (r:Record {externalRecordId: doc})
-              RETURN r ORDER BY (r.origin = $upload AND r.connectorName = $kb) DESC, r.id LIMIT $per_doc
+              RETURN r ORDER BY coalesce(r.origin = $upload AND r.connectorName = $kb, false) DESC, r.id LIMIT $per_doc
             }
             RETURN doc AS docId, r.id AS recordId, 'externalRecordId' AS kind, r.origin AS origin,
                    r.connectorName AS connectorName, r.connectorId AS connectorId
