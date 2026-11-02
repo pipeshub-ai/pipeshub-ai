@@ -93,4 +93,27 @@ describe('pending approvals store', () => {
     await act(() => usePendingApprovals.getState().refresh());
     expect(usePendingApprovals.getState().items).toEqual([]);
   });
+
+  it('a refresh that started before a put does not overwrite the card it put back', async () => {
+    let finish!: (items: PendingApprovalItem[]) => void;
+    api.fetchPendingApprovals.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const inFlight = usePendingApprovals.getState().refresh();
+    const refused = { ...item('b', 'conv-other'), card: { ...item('b', 'conv-other').card, editErrors: [{ path: '', message: 'No' }] } };
+    act(() => usePendingApprovals.getState().put(refused));
+    finish([item('b', 'conv-other')]);
+    await act(() => inFlight);
+    expect(usePendingApprovals.getState().items).toEqual([refused]);
+  });
+
+  it('an older refresh that finishes last does not overwrite a newer one', async () => {
+    let finishOld!: (items: PendingApprovalItem[]) => void;
+    api.fetchPendingApprovals
+      .mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }))
+      .mockResolvedValueOnce([item('new', 'conv-other')]);
+    const older = usePendingApprovals.getState().refresh();
+    await act(() => usePendingApprovals.getState().refresh());
+    finishOld([item('old', 'conv-other')]);
+    await act(() => older);
+    expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['new']);
+  });
 });
