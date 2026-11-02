@@ -222,6 +222,40 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         }
       });
 
+      it('the update commits and the connection fails: PostgreSQL is read again, closed again, and MongoDB is unfrozen', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-after-commit' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('injected failure after the update committed').and.to.contain('MongoDB is the store and writable again');
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
+      });
+
+      it('the update commits, the connection fails and PostgreSQL cannot be closed again: MongoDB is not unfrozen while PostgreSQL is live', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        await sql("CREATE FUNCTION platform.t_no_way_back() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.backend = 'mongo' AND OLD.backend = 'postgres' THEN RAISE EXCEPTION 'blocked by the test'; END IF; RETURN NEW; END $$");
+        await sql('CREATE TRIGGER t_no_way_back BEFORE UPDATE ON platform.store_epoch FOR EACH ROW EXECUTE FUNCTION platform.t_no_way_back()');
+        try {
+          const r = await cut({ failAt: 'F8-after-commit' });
+          expect(r).to.include({ ok: false, aborted: true });
+          expect(r.message).to.contain('MANUAL REPAIR NEEDED');
+          expect(await mode(), 'MongoDB was not unfrozen').to.equal('readonly');
+          expect(await store()).to.include({ backend: 'postgres', readonly: false });
+        } finally {
+          await sql('DROP TRIGGER t_no_way_back ON platform.store_epoch');
+          await sql('DROP FUNCTION platform.t_no_way_back()');
+        }
+      });
+
+      it('the update commits and the store row cannot be read again: the state is unknown, so MongoDB stays frozen and the repair is named', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'F8-reread-fails' });
+        expect(r).to.include({ ok: false, aborted: true });
+        expect(r.message).to.contain('MANUAL REPAIR NEEDED');
+        expect(await mode()).to.equal('readonly');
+        expect(await store()).to.include({ backend: 'postgres', readonly: false });
+      });
+
       it('a failure after a successful flip is reported as done: PostgreSQL live, MongoDB retired, nothing unfrozen', async () => {
         await onlineStart(w.rt, { dryRun: false, log });
         const r = await cut({ failAt: 'F8-checkpoint' });
