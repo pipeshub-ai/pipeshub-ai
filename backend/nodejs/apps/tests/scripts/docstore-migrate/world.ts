@@ -72,7 +72,7 @@ export async function startWorld(bin: string, pgDb: string, mongoDb: string, ext
       });
     },
     async stop() {
-      await rt.close();
+      await this.rt.close(); // the current one: a suite that ran a command reopened it
       await mongo.stop();
       await stack.stop();
     },
