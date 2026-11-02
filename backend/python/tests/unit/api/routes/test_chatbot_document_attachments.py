@@ -617,7 +617,7 @@ class TestPdfAttachmentFailsOnItsOwn:
     The parse now runs in a parse worker under a deadline, and the user is told."""
 
     @staticmethod
-    async def _upload(pdf_processor: MagicMock, timeout_s: float = 50) -> HTTPException:
+    async def _upload(pdf_processor: MagicMock, timeout_s: float = 50, page_count: int = 40) -> HTTPException:
         from app.api.routes.chatbot import upload_chat_attachments
 
         gp = AsyncMock()
@@ -627,7 +627,7 @@ class TestPdfAttachmentFailsOnItsOwn:
         ), patch(
             "app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pdf_processor
         ), patch(
-            "app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, 80)
+            "app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, page_count)
         ), patch("app.api.routes.chatbot._CHAT_ATTACHMENT_UPLOAD_BUDGET_S", timeout_s), pytest.raises(HTTPException) as exc:
             mock_bs_cls.return_value = AsyncMock(save_binary_to_storage=AsyncMock(return_value=("ext", None)))
             await upload_chat_attachments(_pdf_upload_request(), gp, AsyncMock())
@@ -647,7 +647,27 @@ class TestPdfAttachmentFailsOnItsOwn:
 
         assert loop.time() - started < 5
         assert error.status_code == 422
-        assert error.detail.startswith("deck.pdf is too large or complex to read right now, so it wasn't attached.")
+        assert error.detail == (
+            "deck.pdf took too long to read, so it wasn't attached. "
+            "Try again, attach fewer pages, or add it to a knowledge base."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_of_the_cap_that_overruns_the_deadline_is_told_it_took_too_long(self) -> None:
+        """The cap bounds memory, not time: the largest allowed file can still hit the
+        deadline on a busy host, and then the user gets the actionable message."""
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+        async def never_finishes(*_: object) -> None:
+            await asyncio.sleep(30)
+
+        processor = MagicMock(parse_document=AsyncMock(side_effect=never_finishes))
+
+        error = await self._upload(processor, timeout_s=0.2, page_count=CHAT_PDF_PAGE_CAP)
+
+        assert error.status_code == 422
+        assert "took too long to read" in error.detail
+        assert "pages a PDF can have" not in error.detail
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cause", ["timed_out", "crashed", "renderer died", "memory"])
@@ -695,6 +715,60 @@ class TestPdfAttachmentFailsOnItsOwn:
         assert exc.value.status_code == 400
 
 
+class TestLongPdfAttachment:
+    """A PDF past the page cap is refused after the quick inspection, with what to do,
+    rather than read for the whole upload budget and then killed."""
+
+    @staticmethod
+    async def _upload(needs_ocr: bool, page_count: int) -> tuple[HTTPException | None, MagicMock, AsyncMock]:
+        from app.api.routes.chatbot import upload_chat_attachments
+
+        processor = MagicMock(
+            parse_document=AsyncMock(side_effect=RuntimeError("stop here")),
+        )
+        render = AsyncMock(side_effect=RuntimeError("stop here"))
+        gp = AsyncMock()
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+
+        async def submit(fn: object, *_args: object, **_kwargs: object) -> object:
+            if getattr(fn, "__name__", "") == "render_all_pages_as_png":
+                return await render()
+            return needs_ocr, page_count
+
+        with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+            "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+        ), patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=processor), patch(
+            "app.api.routes.chatbot.parse_pool.submit", side_effect=submit
+        ), pytest.raises(HTTPException) as exc:
+            mock_bs_cls.return_value = AsyncMock(save_binary_to_storage=AsyncMock(return_value=("ext", None)))
+            await upload_chat_attachments(_pdf_upload_request("report.pdf"), gp, AsyncMock())
+        return exc.value, processor, render
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("needs_ocr", [False, True], ids=["text", "scanned"])
+    async def test_a_pdf_past_the_cap_is_refused_and_never_parsed(self, needs_ocr: bool) -> None:
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+        error, processor, render = await self._upload(needs_ocr, CHAT_PDF_PAGE_CAP + 1)
+
+        assert error.status_code == 400
+        assert error.detail == (
+            f"report.pdf has {CHAT_PDF_PAGE_CAP + 1} pages, more than the {CHAT_PDF_PAGE_CAP} pages "
+            "a PDF can have when attached to a message. Attach a part of it, or split it into smaller files."
+        )
+        processor.parse_document.assert_not_called()
+        render.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_of_exactly_the_cap_is_still_parsed(self) -> None:
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+        error, processor, _ = await self._upload(False, CHAT_PDF_PAGE_CAP)
+
+        processor.parse_document.assert_awaited_once()
+        assert "pages a PDF can have" not in str(error.detail)
+
+
 @pytest.mark.asyncio
 async def test_describing_images_never_runs_past_the_upload_budget() -> None:
     """A proxy drops an upload that stays silent past 60s, so reading the files
@@ -729,3 +803,10 @@ async def test_describing_images_never_runs_past_the_upload_budget() -> None:
         await upload_chat_attachments(req, gp, AsyncMock())
 
     assert 0 < contexts[0]["settings"][IMAGE_DESCRIPTION_BUDGET_S] <= 2.0
+
+
+def test_the_chat_pdf_page_cap_is_fifty_pages() -> None:
+    """The cap bounds a chat upload's parse memory; changing it is a decision."""
+    from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+    assert CHAT_PDF_PAGE_CAP == 50
