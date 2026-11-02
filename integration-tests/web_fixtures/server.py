@@ -13,6 +13,7 @@ filesystem shared between the test runner and this container.
                                         a stand-in OpenAI-compatible model
     POST   /__fixtures__/openai/v1/embeddings
                                         a stand-in OpenAI-compatible embedding model
+    PUT    /__fixtures__/openai/script  script the stand-in model; DELETE clears it
     PUT    /__fixtures__/faults/<path>  misbehave at /<path>; JSON body, see Fault
     GET    /__fixtures__/faults/<path>  that fault, with how many requests it hit
     DELETE /__fixtures__/faults/<path>  behave again at /<path>
@@ -24,7 +25,13 @@ each other's, and ``reset`` clears them all. Faults answer GET only.
 
 The stand-in model lets a test configure an AI model through the product's
 own form, health check included, without a paid provider account. It answers
-every prompt with the same short reply, streamed or not, and ignores tools.
+every prompt with the same short reply, streamed or not, unless a script says
+otherwise: ``PUT /__fixtures__/openai/script`` (or ``--script FILE``) takes
+``{"rules": [...]}``, each rule a ``match`` regex run against the last user
+message plus a ``reply`` text or ``tool_calls``. The first match wins. With no
+match, a ``json_schema`` request gets the smallest instance of its schema and
+anything else gets the short reply. ``DELETE`` on the script URL and ``reset``
+clear it.
 Its embeddings are small fixed-size vectors derived from each input's hash, so
 the same text always gets the same vector.
 
@@ -40,12 +47,14 @@ import argparse
 import hashlib
 import json
 import mimetypes
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 CONTROL = "/__fixtures__"
@@ -185,8 +194,101 @@ class Faults:
             return Fault(**asdict(fault))
 
 
-def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
+def minimal_instance(schema: dict) -> Any:
+    """The smallest JSON value that satisfies ``schema`` (required fields only)."""
+    for key in ("anyOf", "oneOf"):
+        if schema.get(key):
+            return minimal_instance(schema[key][0])
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        kind = next((k for k in kind if k != "null"), "null")
+    if kind == "object":
+        props = schema.get("properties") or {}
+        return {name: minimal_instance(props.get(name) or {}) for name in schema.get("required") or []}
+    if kind == "array":
+        return []
+    if kind == "string":
+        return (schema.get("enum") or [""])[0]
+    if kind in ("integer", "number"):
+        return 0
+    if kind == "boolean":
+        return False
+    return None
+
+
+def _user_text(request: dict) -> str:
+    for message in reversed(request.get("messages") or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            return " ".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
+        return str(content or "")
+    return ""
+
+
+class Script:
+    """Rules that decide what the stand-in model answers; the first match wins."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rules: list[dict] = []
+
+    def clear(self) -> None:
+        self.set([])
+
+    def set(self, rules: list[dict]) -> None:
+        """Raises ValueError for a bad shape or regex, leaving the old rules."""
+        if not isinstance(rules, list):
+            raise ValueError("rules is a list")
+        checked = []
+        for rule in rules:
+            if not isinstance(rule, dict) or not isinstance(rule.get("match"), str):
+                raise ValueError("a rule is an object with a string match")
+            if ("reply" in rule) == ("tool_calls" in rule):
+                raise ValueError("a rule has either reply or tool_calls")
+            if "reply" in rule and not isinstance(rule["reply"], str):
+                raise ValueError("reply is a string")
+            for call in rule.get("tool_calls") or []:
+                if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+                    raise ValueError("a tool call is an object with a name")
+                if not isinstance(call.get("arguments", {}), dict):
+                    raise ValueError("tool call arguments are an object")
+            checked.append({**rule, "_re": re.compile(rule["match"], re.I)})
+        with self._lock:
+            self._rules = checked
+
+    def answer(self, request: dict) -> dict:
+        """The assistant message for this request."""
+        text = _user_text(request)
+        with self._lock:
+            rules = list(self._rules)
+        for rule in rules:
+            if not rule["_re"].search(text):
+                continue
+            if "tool_calls" in rule:
+                calls = [
+                    {
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {"name": c["name"], "arguments": json.dumps(c.get("arguments", {}))},
+                    }
+                    for i, c in enumerate(rule["tool_calls"])
+                ]
+                return {"role": "assistant", "content": None, "tool_calls": calls}
+            return {"role": "assistant", "content": rule["reply"]}
+        fmt = request.get("response_format") or {}
+        if fmt.get("type") == "json_schema":
+            schema = (fmt.get("json_schema") or {}).get("schema") or {}
+            return {"role": "assistant", "content": json.dumps(minimal_instance(schema))}
+        return {"role": "assistant", "content": STAND_IN_REPLY}
+
+
+def make_handler(
+    site: Site, base_url: str, script: Script | None = None
+) -> type[BaseHTTPRequestHandler]:
     faults = Faults()
+    script = script or Script()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "pipeshub-web-fixtures"
@@ -284,6 +386,18 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
 
         def do_PUT(self) -> None:  # noqa: N802
             path = self._path()
+            if path == f"{CONTROL}/openai/script":
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    body = json.loads(self.rfile.read(length) or b"null")
+                    if not isinstance(body, dict):
+                        raise ValueError("the body is an object with rules")
+                    script.set(body.get("rules"))
+                except (TypeError, ValueError, re.error) as exc:
+                    self._send(HTTPStatus.BAD_REQUEST, str(exc).encode())
+                    return
+                self._send(HTTPStatus.NO_CONTENT)
+                return
             fault_key = self._control_fault_key(path)
             if fault_key is not None:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -304,6 +418,10 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:  # noqa: N802
             path = self._path()
+            if path == f"{CONTROL}/openai/script":
+                script.clear()
+                self._send(HTTPStatus.NO_CONTENT)
+                return
             fault_key = self._control_fault_key(path)
             if fault_key is not None:
                 self._send(HTTPStatus.NO_CONTENT if faults.delete(fault_key) else HTTPStatus.NOT_FOUND)
@@ -327,6 +445,7 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
                 return
             site.reset()
             faults.clear()
+            script.clear()
             self._send(HTTPStatus.NO_CONTENT)
 
         def _chat_completion(self) -> None:
@@ -338,30 +457,29 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
                 return
             model = str(request.get("model") or "stand-in")
             base = {"id": "chatcmpl-fixture", "created": 0, "model": model}
+            message = script.answer(request)
+            calls = message.get("tool_calls")
+            finish = "tool_calls" if calls else "stop"
             if not request.get("stream"):
                 body = {
                     **base,
                     "object": "chat.completion",
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": STAND_IN_REPLY},
-                        "finish_reason": "stop",
-                    }],
+                    "choices": [{"index": 0, "message": message, "finish_reason": finish}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                 }
                 self._send(HTTPStatus.OK, json.dumps(body).encode(), "application/json")
                 return
-            chunks = [
-                {"role": "assistant", "content": STAND_IN_REPLY},
-                {},
-            ]
+            if calls:
+                deltas = [{"role": "assistant", "content": None, "tool_calls": [{**c, "index": i} for i, c in enumerate(calls)]}]
+            else:
+                deltas = [{"role": "assistant", "content": message["content"]}]
+            deltas.append({})
             events = []
-            for i, delta in enumerate(chunks):
-                finish = "stop" if i == len(chunks) - 1 else None
+            for i, delta in enumerate(deltas):
                 chunk = {
                     **base,
                     "object": "chat.completion.chunk",
-                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish if i == len(deltas) - 1 else None}],
                 }
                 events.append(f"data: {json.dumps(chunk)}\n\n")
             events.append("data: [DONE]\n\n")
@@ -403,8 +521,12 @@ def main() -> None:
     parser.add_argument("--seed", type=Path, default=Path(__file__).parent / "seed")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--base-url", default="http://web-fixtures:8080")
+    parser.add_argument("--script", type=Path, help="JSON file with the stand-in model's rules: {\"rules\": [...]}")
     args = parser.parse_args()
-    handler = make_handler(Site(args.seed), args.base_url.rstrip("/"))
+    script = Script()
+    if args.script:
+        script.set(json.loads(args.script.read_text())["rules"])
+    handler = make_handler(Site(args.seed), args.base_url.rstrip("/"), script)
     server = ThreadingHTTPServer(("0.0.0.0", args.port), handler)  # noqa: S104
     server.serve_forever()
 
