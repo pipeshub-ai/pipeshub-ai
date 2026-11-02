@@ -173,7 +173,7 @@ export default function GeneralPage() {
     const metricsFailed = isAdmin && metricsError && !metrics && !metricsValidating;
     if (!orgFailed && !metricsFailed) return;
     // An error left in the cache by an earlier read (the sidebar footer) is not this visit's answer:
-    // ask once more before reporting it.
+    // ask once more before reporting it. So a real outage makes two reads before the toast.
     if (!cachedErrorRetriedRef.current) {
       cachedErrorRetriedRef.current = true;
       if (orgFailed) void rereadOrg();
@@ -207,7 +207,8 @@ export default function GeneralPage() {
   }, [form.contactEmail, form.zipCode, setErrors]);
 
   const handleSave = useCallback(async () => {
-    if (!validate()) return;
+    // Before the form holds the server's values, a save would send blanks over them.
+    if (!formSeeded || !validate()) return;
     try {
       // 1. Update org details
       await OrgApi.updateOrg({
@@ -242,7 +243,7 @@ export default function GeneralPage() {
         description: t('workspace.general.toasts.saveErrorDescription'),
       });
     }
-  }, [form, savedForm, validate, markSaved, addToast]);
+  }, [formSeeded, form, savedForm, validate, markSaved, addToast]);
 
   const handleDiscard = useCallback(() => {
     setDiscardDialogOpen(true);

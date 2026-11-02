@@ -190,9 +190,14 @@ describe('General settings page', () => {
 
     expect(addToast).toHaveBeenCalledTimes(1);
     expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'workspace.general.toasts.loadError' }));
-    // The save bar stays rendered but hidden and inert.
-    const saveBar = screen.getByRole('button', { name: /save/i }).parentElement as HTMLElement;
-    expect(saveBar.style.pointerEvents).toBe('none');
+    // The save bar stays rendered but hidden, out of the tab order, and Save does nothing.
+    const save = screen.getByRole('button', { name: /save/i });
+    expect(save.closest('[inert]')).not.toBeNull();
+    fireEvent.click(save);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.put).not.toHaveBeenCalled();
   });
 
   it('an org read that failed before this visit is retried: the form fills and no load error shows', async () => {

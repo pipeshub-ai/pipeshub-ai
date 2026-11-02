@@ -148,6 +148,12 @@ describe('useProfilePage when the sign-in profile read failed', () => {
       expect.objectContaining({ variant: 'error', title: 'workspace.profile.toasts.loadError' }),
     );
     expect(result.current.isFormDirty).toBe(false);
+
+    // A keyboard user reaching the hidden Save still sends nothing.
+    await act(async () => {
+      await result.current.handleSave();
+    });
+    expect(api.updateUser).not.toHaveBeenCalled();
   });
 
   it('makes no request when the designation is known to be empty', async () => {

@@ -140,7 +140,8 @@ export function useProfilePage() {
   }, [form.fullName, setErrors]);
 
   const handleSave = useCallback(async () => {
-    if (!validate() || !userId) return;
+    // Before the form holds the server's values, a save would overwrite the stored designation.
+    if (!profileLoaded || !validate() || !userId) return;
     try {
       await ProfileApi.updateUser(userId, {
         fullName: form.fullName,
@@ -159,7 +160,7 @@ export function useProfilePage() {
         description: t('workspace.profile.toasts.saveErrorDescription'),
       });
     }
-  }, [form, userId, validate, markSaved, addToast]);
+  }, [profileLoaded, form, userId, validate, markSaved, addToast]);
 
   // ── Password change ───────────────────────────────────────────
 
