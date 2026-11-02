@@ -302,8 +302,9 @@ class TestLiveConcurrency:
     async def test_governor_bounds_sandboxes_across_separate_managers(
         self, tmp_path, no_leaked_containers,
     ) -> None:
-        """Two per-request managers, one process ceiling — the multi-chat
-        case that per-manager limits cannot bound."""
+        """Separate per-request managers, one process ceiling — the multi-chat
+        case that per-manager limits cannot bound. Docker is not metered, so
+        a sandbox takes a slot only while a call runs on it."""
         _require_docker()
         provider = DockerClientProvider(max_workers=4)
         governor = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=2))
@@ -319,11 +320,15 @@ class TestLiveConcurrency:
             managers.append(mgr)
 
         try:
-            await managers[0].get_or_create(SandboxType.CODING)
-            await managers[1].get_or_create(SandboxType.CODING)
-            with pytest.raises(SandboxLimitExceeded):
-                await managers[2].get_or_create(SandboxType.CODING)
-            assert governor.snapshot()["total"] == 2
+            ids = [(await mgr.get_or_create(SandboxType.CODING))[0] for mgr in managers]
+            assert governor.snapshot()["total"] == 0  # idle sandboxes hold no slot
+            async with managers[0].slot(SandboxType.CODING, ids[0]), \
+                    managers[1].slot(SandboxType.CODING, ids[1]):
+                assert governor.snapshot()["total"] == 2
+                with pytest.raises(SandboxLimitExceeded):
+                    async with managers[2].slot(SandboxType.CODING, ids[2]):
+                        pass
+            assert governor.snapshot()["total"] == 0
         finally:
             for mgr in managers:
                 await mgr.destroy_all()
