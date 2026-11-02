@@ -71,6 +71,21 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(await w.mongo.client.db(DB).collection('docstore_fence').countDocuments()).to.equal(0);
     });
 
+    it('preflight is red while an application is connected, and --allow-clients makes that a warning', async () => {
+      const app = await new MongoClient(w.mongo.uri, { appName: 'pipeshub-app' }).connect();
+      await app.db(DB).command({ ping: 1 });
+      try {
+        const red = await run(['preflight']);
+        expect(red.code).to.equal(1);
+        expect(red.out.red.map((x: any) => x.check)).to.include('app_running');
+        const allowed = await run(['preflight', '--allow-clients']);
+        expect(allowed.code, JSON.stringify(allowed.out.red)).to.equal(0);
+        expect(allowed.out.yellow.map((x: any) => x.check)).to.include('app_running');
+      } finally {
+        await app.close();
+      }
+    });
+
     it('post_load exits 0 on a target that checks out, and 1 with the problem when a constraint is left unvalidated', async () => {
       const ok = await run(['post_load']);
       expect(ok.code).to.equal(0);
