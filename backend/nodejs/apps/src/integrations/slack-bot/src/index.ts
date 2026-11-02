@@ -67,6 +67,7 @@ import {
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
   NARRATION_HOLD_CHARS,
+  looksLikeAnswer,
   NO_UNFURL_OPTIONS,
   STREAM_FAILURE_MESSAGE,
   BACKEND_STREAM_TIMEOUT_MS,
@@ -798,10 +799,14 @@ async function processSlackMessage(
       // Large buffer → flush now. Otherwise arm a short idle timer so a pause
       // in token arrival still pushes what's buffered (avoids multi-second stalls).
       // Until a model call's text is clearly the answer it waits, so text
-      // before a tool call can still become a row of the plan.
-      const flushAt =
-        pushedAnswerLength === 0 ? NARRATION_HOLD_CHARS : STREAM_UPDATE_MAX_CHARS;
-      if (pendingAppendText.length >= flushAt) {
+      // before a tool call can still become a row of the plan. Its first
+      // paragraph break, heading, list, table or fence releases it early.
+      const held = pushedAnswerLength === 0;
+      const flushAt = held ? NARRATION_HOLD_CHARS : STREAM_UPDATE_MAX_CHARS;
+      if (
+        pendingAppendText.length >= flushAt ||
+        (held && looksLikeAnswer(heldAnswerText + pendingAppendText))
+      ) {
         clearAnswerFlushTimer();
         flushPendingAppend();
         return;

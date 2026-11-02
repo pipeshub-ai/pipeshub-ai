@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import {
   buildFinalSlackChunks,
+  looksLikeAnswer,
   slackBlocksFallbackText,
 } from '../../../src/integrations/slack-bot/src/helpers';
 
@@ -36,6 +37,17 @@ describe('slack-bot final answer blocks', () => {
     expect(sections.length).to.be.greaterThan(1);
     for (const section of sections) {
       expect(section.expand).to.equal(true);
+    }
+  });
+});
+
+describe('slack-bot held text', () => {
+  it('looks like an answer at its first paragraph break, heading, list, table or fence', () => {
+    for (const text of ['One.\n\nTwo', '## Title', 'Intro\n- item', '1. first', '| a | b |', '```ts', '~~~']) {
+      expect(looksLikeAnswer(text), text).to.equal(true);
+    }
+    for (const text of ['Let me check the filings.', 'One paragraph.\n\n', 'Costs fell 5% - mostly in Q3.']) {
+      expect(looksLikeAnswer(text), text).to.equal(false);
     }
   });
 });

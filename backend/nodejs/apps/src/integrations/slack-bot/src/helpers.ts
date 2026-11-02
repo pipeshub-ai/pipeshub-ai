@@ -174,6 +174,19 @@ export const STREAM_UPDATE_MAX_CHARS = 400;
  * tool call is shown as a row of the plan, and narration is rarely this long.
  */
 export const NARRATION_HOLD_CHARS = 1500;
+
+/**
+ * Held text that is clearly the answer, so it streams before the hold is
+ * full: a second paragraph has begun, or a heading, list item, table row or
+ * code fence starts a line. Narration before a tool call is one plain
+ * paragraph.
+ */
+const ANSWER_SHAPE =
+  /\n[ \t]*\n[ \t]*\S|(?:^|\n)[ \t]*(?:#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]|\||```|~~~)/;
+
+export function looksLikeAnswer(text: string): boolean {
+  return ANSWER_SHAPE.test(text);
+}
 /** Activity message updates can be slower; they must not block answer appends. */
 export const SLACK_MAX_TEXT_LENGTH = 39000;
 export const SLACK_STREAM_MARKDOWN_LIMIT = 11500;

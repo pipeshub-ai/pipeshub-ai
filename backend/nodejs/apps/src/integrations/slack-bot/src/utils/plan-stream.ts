@@ -124,42 +124,96 @@ export function splitIntoRows(
   return rows;
 }
 
-/** A key whose name says it holds a secret: api_key, apiKey, bot-token, private_key, aws_secret_access_key… */
-const SECRET_KEY = String.raw`[A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|pwd|key|credential|auth)[A-Za-z0-9_-]*`;
+/** Name segments that say a key holds a secret. */
+const SECRET_SEGMENTS = new Set([
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'pwd',
+  'key',
+  'credential',
+  'credentials',
+  'auth',
+  'authorization',
+  'apikey',
+  'privatekey',
+]);
+
+/**
+ * Whether a key name says it holds a secret, read by its segments (split at
+ * `_ - .`, spaces and camelCase): api_key, apiKey, x-api-key and secret_key
+ * do; monkey, keyboard, author and authority don't.
+ */
+export function isSecretKey(name: string): boolean {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[\s_.-]+/)
+    .some((segment) => SECRET_SEGMENTS.has(segment.toLowerCase()));
+}
+
+const KEY_NAME = String.raw`[A-Za-z][A-Za-z0-9_.-]*`;
 /** `"key": "value with spaces"` / `key='…'`: masked to the end of the quoted value. */
-const QUOTED_SECRET = new RegExp(
-  String.raw`(["']?)\b(${SECRET_KEY})\1(\s*[:=]\s*)(["'])(?:\\.|(?!\4)[^\\])*\4`,
-  'gi',
+const QUOTED_VALUE = new RegExp(
+  String.raw`(["']?)\b(${KEY_NAME})\1(\s*[:=]\s*)(["'])(?:\\.|(?!\4)[^\\])*\4`,
+  'g',
 );
 /** `?key=…&` in a URL: masked to the next parameter. */
-const QUERY_SECRET = new RegExp(
-  String.raw`([?&;])(${SECRET_KEY})=[^&#\s]*`,
-  'gi',
+const QUERY_VALUE = new RegExp(
+  String.raw`([?&;])(${KEY_NAME})=([^&#\s]*)`,
+  'g',
 );
+/** `key: value` / `key=value` unquoted. */
+const PLAIN_KEY = new RegExp(String.raw`\b(${KEY_NAME})(\s*[:=]\s*)`, 'g');
 /** `Authorization: Basic|Bearer|Token …`: the whole value. */
 const AUTH_HEADER =
   /\b(authorization\s*[:=]\s*)["']?(?:basic|bearer|token)\b[^\n"']*/gi;
-/** `key: value` / `key=value` unquoted: masked to the end of the line. */
-const PLAIN_SECRET = new RegExp(
-  String.raw`\b(${SECRET_KEY})(\s*[:=]\s*)(?![\s"'\[])[^\n]*`,
-  'gi',
-);
 const BEARER = /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/g;
 /** `https://user:pass@host`: the user info goes. */
 const URL_USERINFO = /\b(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
 const SECRET_TOKEN =
   /\b(?:xox[abeposr]-[\w-]+|sk-ant-[\w-]+|sk-[A-Za-z0-9_-]{16,}|phpat_[\w-]+|github_pat_\w+|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[\w-]{10,}|AKIA[0-9A-Z]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+)/g;
+const REDACTED = '[redacted]';
+
+/** An unquoted secret value is masked to the end of its line. */
+function maskPlainSecrets(text: string): string {
+  let out = '';
+  let from = 0;
+  PLAIN_KEY.lastIndex = 0;
+  for (let match = PLAIN_KEY.exec(text); match; match = PLAIN_KEY.exec(text)) {
+    const valueAt = match.index + match[0].length;
+    const next = text[valueAt] ?? '';
+    if (!isSecretKey(match[1] ?? '') || next === '' || /["'[\n]/.test(next)) {
+      continue;
+    }
+    const lineEnd = text.indexOf('\n', valueAt);
+    const end = lineEnd === -1 ? text.length : lineEnd;
+    out += `${text.slice(from, valueAt)}${REDACTED}`;
+    from = end;
+    PLAIN_KEY.lastIndex = end;
+  }
+  return out + text.slice(from);
+}
 
 /** Keys, tokens and passwords in what a call shows never reach Slack. */
 export function redactSecrets(text: string): string {
-  return text
+  const masked = text
     .replace(URL_USERINFO, '$1***@')
-    .replace(AUTH_HEADER, '$1[redacted]')
-    .replace(QUOTED_SECRET, '$1$2$1$3$4[redacted]$4')
-    .replace(QUERY_SECRET, '$1$2=[redacted]')
-    .replace(PLAIN_SECRET, '$1$2[redacted]')
-    .replace(BEARER, '$1 [redacted]')
-    .replace(SECRET_TOKEN, '[redacted]');
+    .replace(AUTH_HEADER, `$1${REDACTED}`)
+    .replace(
+      QUOTED_VALUE,
+      (match, quote: string, key: string, sep: string, valueQuote: string) =>
+        isSecretKey(key)
+          ? `${quote}${key}${quote}${sep}${valueQuote}${REDACTED}${valueQuote}`
+          : match,
+    )
+    .replace(QUERY_VALUE, (match, lead: string, key: string) =>
+      isSecretKey(key) ? `${lead}${key}=${REDACTED}` : match,
+    );
+  return maskPlainSecrets(masked)
+    .replace(BEARER, `$1 ${REDACTED}`)
+    .replace(SECRET_TOKEN, REDACTED);
 }
 
 /**
@@ -189,11 +243,7 @@ export function compactArgs(raw: string): string {
         text.length > MAX_ARG_VALUE_CHARS
           ? `${text.slice(0, MAX_ARG_VALUE_CHARS).trimEnd()}…`
           : text;
-      return [
-        new RegExp(String.raw`^${SECRET_KEY}$`, 'i').test(key)
-          ? `${key}: [redacted]`
-          : `${key}: ${shown}`,
-      ];
+      return [isSecretKey(key) ? `${key}: [redacted]` : `${key}: ${shown}`];
     },
   );
   const joined = redactSecrets(pairs.join(', '));
