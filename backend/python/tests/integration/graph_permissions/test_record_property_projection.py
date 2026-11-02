@@ -87,6 +87,22 @@ async def test_each_condition_means_on_the_engine_what_it_means_in_the_reference
     assert (await _doc(provider, key)).get("propsGen") == (9 if expected else None)
 
 
+@pytest.mark.parametrize(("field", "stored"), [("isDirty", True), ("isDirty", False), ("recordName", "text")])
+async def test_null_or_le_rejects_a_stored_boolean_or_string_like_the_reference(provider, field, stored) -> None:
+    """AQL orders a boolean below any number; the reference (and Python's bool-is-an-int trap) must agree
+    with both engines that a non-number is never "not newer"."""
+    t = _ticket()
+    key = await _seed(provider, t, **{field: stored})
+    cond = Cond(field, "null_or_le", 5)
+    expected = holds(cond, {field: stored})
+    assert expected is False
+
+    applied = await provider.update_node_fields_if(key, RECORDS, {"propsGen": 9}, [cond])
+
+    assert applied is expected
+    assert (await _doc(provider, key)).get("propsGen") is None
+
+
 async def test_all_conditions_must_hold_and_none_is_unset(provider) -> None:
     key = await _seed(provider, _ticket(), propsSrc=5, propsVer=2)
     assert not await provider.update_node_fields_if(key, RECORDS, {"propsGen": 1}, [
@@ -179,17 +195,28 @@ async def test_two_concurrent_writers_with_one_counter_exactly_one_applies(provi
 # ---- the migration of a populated Arango collection ------------------------------------------------------
 
 
-async def test_arango_migrates_a_populated_collection(arango_provider) -> None:
-    """A deployment that already holds records has the closed schema without the projection fields; boot
-    re-applies the current schema (``update_collection_schema``) and projections then land."""
+@pytest.fixture
+async def downgraded_arango_schema(arango_provider):  # noqa: ANN201 - yields once the records schema lacks the projection fields
+    """The records schema as a deployment that predates the projection has it; always put back."""
     client = arango_provider.http_client
     old = copy.deepcopy(record_schema)
     for name in ("recordProps", "propsSet", "propsGen", "propsSrc", "propsVer"):
         old["rule"]["properties"].pop(name)
-    assert await client.update_collection_schema(RECORDS, old)
+    try:
+        assert await client.update_collection_schema(RECORDS, old)
+        yield client
+    finally:
+        # Even when the test fails: the module's later tests need the current schema.
+        assert await client.update_collection_schema(RECORDS, record_schema)
+
+
+async def test_arango_migrates_a_populated_collection(arango_provider, downgraded_arango_schema) -> None:
+    """A deployment that already holds records has the closed schema without the projection fields; boot
+    re-applies the current schema (``update_collection_schema``) and projections then land."""
+    client = downgraded_arango_schema
     key = await _seed(arango_provider, _ticket())
     args = {"values": {"a": "1"}, "previous_names": (), "controls": CONTROLS, "conditions": [Cond("propsVer", "is_null")]}
-    with pytest.raises(Exception):  # noqa: B017 - the closed schema refuses fields it does not name
+    with pytest.raises(Exception):  # noqa: B017, PT011 - the closed schema refuses fields it does not name
         await arango_provider.set_record_properties(key, **args)
 
     assert await client.update_collection_schema(RECORDS, record_schema)

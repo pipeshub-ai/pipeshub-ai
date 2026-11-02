@@ -6283,8 +6283,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             elif cond.op == NULL_OR_EQ:
                 filters.append(f"FILTER doc[@f{i}] == null || doc[@f{i}] == @v{i}")
             else:
-                # A string is greater than any number in AQL's ordering, so a stray non-number never passes.
-                filters.append(f"FILTER doc[@f{i}] == null || doc[@f{i}] <= @v{i}")
+                # AQL orders a boolean below every number, so the type is checked: a non-number is never "not newer".
+                filters.append(f"FILTER doc[@f{i}] == null || (IS_NUMBER(doc[@f{i}]) && doc[@f{i}] <= @v{i})")
         return filters, bind_vars
 
     async def update_node_fields_if(

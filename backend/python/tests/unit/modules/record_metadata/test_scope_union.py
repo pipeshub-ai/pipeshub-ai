@@ -107,6 +107,31 @@ async def test_union_sees_v3_after_v1_reregistered() -> None:
     assert len(config.reads) <= 2
 
 
+async def test_versions_read_before_a_failed_probe_still_reach_the_union() -> None:
+    """v1 is read, the probe for v2 fails: v1 is cached, so the union must include it (not stay empty until
+    a v2 is registered or the process restarts)."""
+    reg, config = registry()
+    await reg.register("org-1", "kb-1", defs(("a", PropertyType.STRING)))
+    cache, clock = _cache()
+    original = config.get_config
+
+    async def v2_probe_fails(key: str, *args: object, **kwargs: object) -> object:
+        if key.endswith("/metadataSchemas/2"):
+            config.reads.append(key)
+            raise RuntimeError("transient")
+        return await original(key, *args, **kwargs)
+
+    config.get_config = v2_probe_fails  # type: ignore[method-assign]
+    during = await cache.union_for(reg, "org-1", "kb-1", KB)
+    config.get_config = original  # type: ignore[method-assign]
+    clock.now += 61
+
+    after = await cache.union_for(reg, "org-1", "kb-1", KB)
+
+    assert after.gen == 1 and set(after.types) == {"a"}
+    assert during.gen == 1, "the failed probe must not hide the version already read"
+
+
 async def test_a_local_registration_invalidates_at_once() -> None:
     reg, _ = registry()
     await reg.register("org-1", "kb-1", defs(("a", PropertyType.STRING)))

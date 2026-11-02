@@ -242,16 +242,17 @@ class ScopeUnionCache:
     @staticmethod
     async def _advance(registry: MetadataSchemaRegistry, org_id: str, connector_id: str, entry: _Entry) -> None:
         version = max(entry.versions, default=0)
-        changed = False
-        while True:
-            version += 1
-            schema: MetadataSchema | None = await registry.get(org_id, connector_id, version)
-            if schema is None:
-                break
-            entry.versions[version] = schema.properties
-            changed = True
-        if changed:
-            entry.union = union_of(entry.versions.items())
+        try:
+            while True:
+                version += 1
+                schema: MetadataSchema | None = await registry.get(org_id, connector_id, version)
+                if schema is None:
+                    break
+                entry.versions[version] = schema.properties
+        finally:
+            # Also after a failed read: versions already cached must reach the union.
+            if entry.versions and entry.union.gen < max(entry.versions):
+                entry.union = union_of(entry.versions.items())
 
 
 _DEFAULT_CACHE: Final = ScopeUnionCache()
