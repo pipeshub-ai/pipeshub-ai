@@ -17,7 +17,18 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     client = await new MongoClient(mongo.uri).connect();
     // a subclass, so the process's own Collection is left alone; the module is loaded afresh so that it wraps once more
     delete require.cache[require.resolve('../../../src/libs/repositories/fence')];
-    Fenced = class extends Collection {};
+    // the subclass times its own driver call: the fence wraps `updateMany`, reads the fence first (up to its own two second deadline) and
+    // then calls this, so what is measured here is the statement and nothing else
+    Fenced = class extends Collection {
+      async updateMany(...args: Parameters<Collection['updateMany']>): ReturnType<Collection['updateMany']> {
+        const t0 = Date.now();
+        try {
+          return await super.updateMany(...args);
+        } finally {
+          elapsedMs = Date.now() - t0;
+        }
+      }
+    };
     const fresh = require('../../../src/libs/repositories/fence');
     fresh.setFenceTrustMsForTests(0);
     fresh.installMongoFence(Fenced);
@@ -28,6 +39,10 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     await mongo?.stop();
   });
 
+  // the deadline of a statement once the store is being moved is five seconds: the cut must land inside this window
+  const DEADLINE_MIN_MS = 4500;
+  const DEADLINE_MAX_MS = 7000;
+  let elapsedMs = 0;
   const slowUpdate = async (): Promise<number> => {
     const db = client.db('fence_deadline');
     await db.collection('t').drop().catch(() => undefined);
@@ -50,5 +65,6 @@ suite('Mongo store fence deadline (real MongoDB)', function () {
     await slowUpdate().catch((e) => (err = e));
     expect(err, 'a deadline error').to.not.equal(undefined);
     expect(String(err.name) + String(err.message)).to.match(/time|Timeout|expired/i);
+    expect(elapsedMs, 'cut at the five second deadline, not earlier or later').to.be.within(DEADLINE_MIN_MS, DEADLINE_MAX_MS);
   });
 });

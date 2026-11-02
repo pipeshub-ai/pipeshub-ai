@@ -45,10 +45,12 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     const admin = <T>(fn: (c: Client) => Promise<T>) => cluster.admin(fn, DB)
     const setFence = (backend: string, epoch: number, readonly: boolean) =>
       admin((c) => c.query('UPDATE platform.store_epoch SET backend = $1, epoch = $2, readonly = $3', [backend, epoch, readonly]))
-    const insert = (rt: PgRuntime, id: string, hold = 0) =>
+    /** `hold` keeps the unit open after its insert: a pause in milliseconds, or a function that returns when the unit may end. */
+    const insert = (rt: PgRuntime, id: string, hold: number | (() => Promise<void>) = 0) =>
       inOrg(() => rt.withUow({ write: true }, async (tx) => {
         await tx.query(Q('t.ins', 'INSERT INTO kt.docs (org_id, id, body) VALUES ($1, $2, $3)'), [tx.orgId, id, 'x'])
-        if (hold) await sleep(hold)
+        if (typeof hold === 'function') await hold()
+        else if (hold) await sleep(hold)
       }))
 
     /** What the migrator does at the freeze at the cutover freeze: exclusive barrier and the UPDATE in one transaction. */
@@ -129,23 +131,48 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
     it('a writer that passed the fence finishes first; the freeze waits for it; no write commits after the freeze', async () => {
       const rt = runtime()
-      const slow = insert(rt, 'slow', 1500)
-      // wait until the slow writer really holds the shared fence lock (a fixed pause is too short on a loaded host)
-      let held = false
-      for (let i = 0; i < 200 && !held; i++) {
-        const r = await admin((c) => c.query(
-          "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND mode = 'ShareLock' AND granted",
-          [FENCE_CLASS, FENCE_OBJECT],
-        ))
-        held = (r.rowCount ?? 0) > 0
-        if (!held) await sleep(25)
+      // the writer says when it is inside its unit (so it holds the shared fence key) and then waits to be let go: no durations to race
+      let inside!: () => void
+      const insideP = new Promise<void>((r) => (inside = r))
+      let release!: () => void
+      const releaseP = new Promise<void>((r) => (release = r))
+      const slow = insert(rt, 'slow', async () => {
+        inside()
+        await releaseP
+      })
+      let freezing: Promise<Date> | undefined
+      try {
+        // (if the writer fails before it is inside, its error surfaces here instead of a wait that never ends)
+        await Promise.race([insideP, slow])
+        expect(
+          (await admin((c) => c.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND mode = 'ShareLock' AND granted", [FENCE_CLASS, FENCE_OBJECT]))).rowCount,
+          'the writer holds the shared fence lock',
+        ).to.equal(1)
+        freezing = freeze()
+        // a freeze that fails before it queues is seen at once, not after the polling below has run out
+        let freezeErr: Error | undefined
+        freezing.catch((e: unknown) => {
+          freezeErr = e instanceof Error ? e : new Error(`the freeze failed: ${JSON.stringify(e)}`)
+        })
+        // the freeze session is queued behind the writer: its exclusive request on the fence key is not granted
+        let queued = false
+        for (let i = 0; i < 200 && !queued; i++) {
+          if (freezeErr !== undefined) throw freezeErr
+          const r = await admin((c) => c.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND objsubid = 2 AND mode = 'ExclusiveLock' AND NOT granted", [FENCE_CLASS, FENCE_OBJECT]))
+          queued = (r.rowCount ?? 0) > 0
+          if (!queued) await sleep(50)
+        }
+        expect(queued, 'the freeze is waiting for the key').to.equal(true)
+        // and it has not finished while the writer holds the key (a slow host can only make this check weaker, never fail it)
+        const state = await Promise.race([freezing.then(() => 'settled'), sleep(500).then(() => 'waiting')])
+        expect(state, 'the freeze waits for the writer').to.equal('waiting')
+      } finally {
+        release() // whatever happened, the writer ends its unit, so nothing holds a transaction open
       }
-      expect(held, 'slow writer holds the shared fence lock').to.equal(true)
-      const t0 = Date.now()
-      const frozenAt = await freeze()
-      const waited = Date.now() - t0
-      await slow
-      expect(waited).to.be.greaterThan(900) // the exclusive key was granted only after the writer committed
+      const [frozen, written] = await Promise.allSettled([freezing ?? Promise.resolve(new Date(0)), slow])
+      if (frozen.status === 'rejected') throw frozen.reason
+      if (written.status === 'rejected') throw written.reason
+      const frozenAt = frozen.value
       const [row] = await commitTimes('slow')
       expect(row.ts.getTime()).to.be.at.most(frozenAt.getTime())
       expect(await insert(rt, 'late').catch((x) => x)).to.be.instanceOf(DbReadOnly)

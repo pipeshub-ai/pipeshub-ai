@@ -142,15 +142,15 @@ export async function migrateOffline(
         'verify found differences; the flip is aborted and MongoDB stays the store',
     };
   }
-  await rt.migratePool
-    .query(
-      "UPDATE platform.store_epoch SET backend = 'postgres', readonly = false, updated_at = now()",
-    )
-    .catch((e: unknown) => {
-      say(
-        `store_epoch not updated: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    });
+  // PostgreSQL becomes the store before MongoDB is retired, and only if exactly one row says so: a failure here leaves MongoDB read-only
+  // and the job running, so the move can be repeated or rolled back, instead of ending with no store that is live
+  const flip = await rt.migratePool.query(
+    "UPDATE platform.store_epoch SET backend = 'postgres', readonly = false, updated_at = now()",
+  );
+  if (flip.rowCount !== 1)
+    throw new Error(
+      `platform.store_epoch has ${String(flip.rowCount)} rows, not one: PostgreSQL was not made the store and MongoDB is not retired (it stays read-only; run rollback to reopen it)`,
+    );
   await setMongoFence(rt, 'retired', fenceBefore.epoch + 1);
   js.progress.phase = 'done';
   js.progress.flip = { at: new Date().toISOString(), backend: 'postgres' };
