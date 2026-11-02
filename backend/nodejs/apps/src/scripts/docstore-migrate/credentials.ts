@@ -49,12 +49,42 @@ async function liveUsers(
 const stored = (v: string): string => idText(v) ?? v;
 
 /**
- * The forms a user id may have in MongoDB, for a `$in` (a text id is matched exactly there).
- * shortcut: all-lower and all-upper hex only; a mixed-case id is not found, none is known to exist. Upgrade with a collation query if one does.
+ * The credentials of these users as MongoDB holds them, whatever the case of the stored `userId`: the exact, lower- and upper-case forms
+ * are one indexed query; an id that finds nothing there is asked again, alone, with a case-insensitive collation, so an id is taken as
+ * absent only when neither finds it.
  */
-const sourceForms = (ids: Iterable<string>): string[] => [
-  ...new Set([...ids].flatMap((u) => [u, u.toLowerCase(), u.toUpperCase()])),
-];
+async function credentialsOf(
+  rt: MigrationRuntime,
+  ids: Iterable<string>,
+  filter: Record<string, unknown> = {},
+): Promise<Array<Record<string, unknown>>> {
+  const want = [...new Set(ids)];
+  const col = rt.db().collection('userCredentials');
+  const ask = (
+    list: string[],
+    collation?: { locale: string; strength: number },
+  ): Promise<Array<Record<string, unknown>>> =>
+    col
+      .find({ ...filter, userId: { $in: list } } as never, {
+        promoteLongs: false,
+        ...(collation ? { collation } : {}),
+      })
+      .toArray();
+  const found = await ask([
+    ...new Set(want.flatMap((u) => [u, u.toLowerCase(), u.toUpperCase()])),
+  ]);
+  const have = new Set(found.map((d) => stored(String(d.userId))));
+  const lost = want.filter((u) => !have.has(stored(u)));
+  const seen = new Set(found.map((d) => String(d._id)));
+  const more = lost.length
+    ? (await ask(lost, { locale: 'en', strength: 2 })).filter(
+        (d) => !seen.has(String(d._id)),
+      )
+    : [];
+  return [...found, ...more].sort((a, b) =>
+    String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0,
+  );
+}
 
 const accountOf = (c: Record<string, unknown>): string =>
   `${String(c.orgId)}/${String(c.userId)}`.toLowerCase();
@@ -96,13 +126,12 @@ async function expectedRows(
   const rep = new SourceReport();
   const live = await liveUsers(rt, userIds);
   const best = new Map<string, Doc>();
-  const cursor = rt
-    .db()
-    .collection('userCredentials')
-    .find(userIds ? { userId: { $in: sourceForms(userIds) } } : {}, {
-      sort: { _id: 1 },
-      promoteLongs: false,
-    });
+  const cursor = userIds
+    ? await credentialsOf(rt, userIds)
+    : rt
+        .db()
+        .collection('userCredentials')
+        .find({}, { sort: { _id: 1 }, promoteLongs: false });
   for await (const raw of cursor) {
     const c = toCanonical(raw, rep, 'userCredentials');
     if (c.isDeleted === true || typeof c.userId !== 'string') continue;
@@ -241,17 +270,7 @@ export async function syncCredentials(
     Boolean,
   );
   if (list.length === 0) return 0;
-  const raws = await rt
-    .db()
-    .collection('userCredentials')
-    .find(
-      { userId: { $in: sourceForms(list) }, isDeleted: { $ne: true } } as never,
-      {
-        sort: { _id: 1 },
-        promoteLongs: false,
-      },
-    )
-    .toArray();
+  const raws = await credentialsOf(rt, list, { isDeleted: { $ne: true } });
   const rep = new SourceReport();
   const docs = raws.map((d) => toNeutral(d, rep, 'userCredentials'));
   // one unit: the rows of these users are replaced by what MongoDB says (none for an account that is gone)
