@@ -17,7 +17,7 @@ const LONG_TEXT_WORD = new Set(['body', 'description', 'content', 'message', 'te
 const LONG_TEXT_FORMAT = new Set(['markdown', 'html', 'textarea']);
 
 /** The name's last word, so `email_body` and `issueDescription` match but `message_id` and `contentType` don't. */
-const lastWord = (name: string) => (name.split(/[_\-\s]+|(?<=[a-z0-9])(?=[A-Z])/).pop() ?? '').toLowerCase();
+export const lastWord = (name: string) => (name.split(/[_\-\s]+|(?<=[a-z0-9])(?=[A-Z])/).pop() ?? '').toLowerCase();
 
 function longText(name: string, schema: JsonSchema): boolean {
   return LONG_TEXT_FORMAT.has(schema.format ?? '') || (schema.maxLength ?? 0) > 200 || LONG_TEXT_WORD.has(lastWord(name));
