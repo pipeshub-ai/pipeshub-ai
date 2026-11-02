@@ -88,6 +88,7 @@ class TestMCPRegistry:
         assert "vercel" in type_ids
         assert "docusign" in type_ids
         assert "okta" in type_ids
+        assert "zoom" in type_ids
 
     def test_okta_and_docusign_catalog_entries(self) -> None:
         """Okta's address is per org, so it has no fixed URL and always asks for an OAuth app.
@@ -116,6 +117,25 @@ class TestMCPRegistry:
             "spring_read",
             "spring_write",
             "cors",
+        }
+
+    def test_zoom_catalog_entry(self) -> None:
+        """Zoom is one official host, no DCR, and the admin pastes a Marketplace app."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        zoom = registry.get_template("zoom")
+        assert zoom is not None
+        assert zoom.default_url == "https://mcp.zoom.us/mcp/zoom/streamable"
+        assert zoom.supports_dcr is False
+        assert zoom.authorization_url == "https://zoom.us/oauth/authorize"
+        assert zoom.token_url == "https://zoom.us/oauth/token"
+        assert set(zoom.default_scopes) == {
+            "meeting:read:search",
+            "meeting:write:meeting",
+            "meeting:read:assets",
+            "meeting:update:meeting",
+            "meeting:delete:meeting",
+            "meeting:update:in_meeting_controls",
         }
 
     def test_auto_discover_templates_are_well_formed(self) -> None:

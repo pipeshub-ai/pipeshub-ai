@@ -42,6 +42,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
   });
 
+  it("shows Zoom's catalog logo", () => {
+    expect(logo(<McpServerIcon typeId="zoom" name="Zoom" />)).toBe('zoom icon');
+  });
+
   it("shows Hugging Face's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
     expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
