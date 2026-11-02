@@ -91,6 +91,8 @@ export type ConnectorType =
   | 'exa'
   | 'context7'
   | 'huggingface'
+  | 'square'
+  | 'paypal'
   | 'atlassian'
   | 'discord'
   | 'posthog'
@@ -191,6 +193,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'exa': { svg: svg('exa'), fallback: 'travel_explore' },
   'context7': { svg: svg('context7'), fallback: 'menu_book' },
   'huggingface': { svg: svg('huggingface'), fallback: 'smart_toy' },
+  'square': { svg: svg('square'), fallback: 'credit_card', needDarkModeInvert: true },
+  'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: null, fallback: 'insights' },
@@ -258,6 +262,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['atlassian', 'atlassian'], ['rovo', 'atlassian'],
   ['exa', 'exa'], ['discord', 'discord'], ['posthog', 'posthog'],
   ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
+  ['square', 'square'],
+  ['paypal', 'paypal'],
   ['brave', 'brave'],
   ['stripe', 'stripe'],
   // Broad fallbacks (last — only match if nothing specific matched)

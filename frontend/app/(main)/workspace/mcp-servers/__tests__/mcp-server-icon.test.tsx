@@ -42,6 +42,16 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
   });
 
+  it("shows Square's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="square" name="Square" />)).toBe('square icon');
+    expect(logo(<McpServerIcon typeId={null} name="Square" />)).toBe('square icon');
+  });
+
+  it("shows PayPal's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="paypal" name="PayPal" />)).toBe('paypal icon');
+    expect(logo(<McpServerIcon typeId={null} name="PayPal" />)).toBe('paypal icon');
+  });
+
   it('keeps the MCP mark for a custom server with no logo, not a stock icon', () => {
     const { container } = render(<McpServerIcon name="Acme internal" />);
 
