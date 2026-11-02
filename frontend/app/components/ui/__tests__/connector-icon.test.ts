@@ -17,4 +17,9 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('Docs')).toBe('google-docs');
     expect(resolveConnectorType('drive')).toBe('google-drive');
   });
+
+  it('maps Vercel MCP servers to the Vercel logo', () => {
+    expect(resolveConnectorType('vercel')).toBe('vercel');
+    expect(resolveConnectorType('Vercel MCP')).toBe('vercel');
+  });
 });

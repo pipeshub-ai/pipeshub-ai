@@ -66,6 +66,32 @@ async def test_a_metadata_only_change_keeps_the_stored_document_and_revision() -
     assert record.external_record_id == "doc-old" and record.external_revision_id.startswith("pb1:" + "c")
 
 
+async def run_create() -> FileRecord:
+    storage = MagicMock()
+    storage._storage_url = AsyncMock(return_value="http://storage.test")
+    svc = KbPushService(
+        graph_provider=MagicMock(), kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
+        storage=storage, worker=MagicMock(), spool=MagicMock(), publish_event=AsyncMock(),
+    )
+    processor = MagicMock()
+    processor.on_pushed_record = AsyncMock(return_value=MagicMock(event="newRecord", published=True))
+    await svc._claim_and_write(
+        processor, None, "create", validated(), "rid", "kb", "o", "u", None, "doc-new", C.revision_id("a" * 64, "b" * 16),
+    )
+    return processor.on_pushed_record.await_args.args[0]
+
+
+async def test_a_created_record_is_marked_as_pushed() -> None:
+    """Indexing reads the mark to refuse a remote image fetch for the record's content."""
+    assert (await run_create()).push_origin is True
+
+
+@pytest.mark.parametrize("action", ["content", "metadata"])
+async def test_an_updated_record_is_marked_as_pushed(action: str) -> None:
+    """A record written before the mark existed gains it on its next push."""
+    assert (await run_update(action, md5="abc123")).push_origin is True
+
+
 def _service(graph: MagicMock) -> KbPushService:
     return KbPushService(
         graph_provider=graph, kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),

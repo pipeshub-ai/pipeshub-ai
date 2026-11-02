@@ -25,6 +25,7 @@ from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import run_sync_task
+from tests.support.data_store import runs_in_its_transaction
 
 _LOG = logging.getLogger("test")
 _OWED = ConnectorStateKeys.PENDING_FULL_SYNC
@@ -235,7 +236,7 @@ class TestWhatTheProcessorNotes:
     """Seen only once its write committed; first visit replaces, later ones add."""
 
     def _processor(self, transaction) -> DataSourceEntitiesProcessor:
-        store = MagicMock()
+        store = runs_in_its_transaction(MagicMock())
         store.transaction = transaction
         return DataSourceEntitiesProcessor(_LOG, store, MagicMock())
 

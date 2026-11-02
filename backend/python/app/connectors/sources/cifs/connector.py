@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
@@ -254,6 +255,7 @@ class CifsConnector(BaseConnector):
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
+                public_only=public_only_for_scope(self.scope),
             )
             self.data_source = CifsDataSource(client)
             self.sync_filters, self.indexing_filters = await load_connector_filters(

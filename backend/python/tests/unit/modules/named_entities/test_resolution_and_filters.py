@@ -15,6 +15,7 @@ from app.modules.named_entities.graph_ops import (
     REDIRECTS_AQL,
     NamedEntityGraph,
     NamedEntityQuery,
+    filter_constraints,
 )
 from app.modules.named_entities.graph_writer import NamedEntityGraphWriter
 from app.modules.named_entities.keys import named_entity_key
@@ -303,11 +304,13 @@ async def test_a_kind_of_the_typed_constraint_narrows_it_and_others_stand_alone(
     assert (amount["kinds"], standalone["kinds"]) == (["currency"], ["date"])
 
 
-async def test_a_name_with_only_value_kinds_matches_nothing():
-    graph, calls = _value_graph({"amount": [], "date": [], "kinds": []})
-    result = await graph.records_for("org", None, NamedEntityQuery(kinds=["currency"], name_prefix="acme"), limit=10)
-    assert result == {"hits": [], "truncated": False}
-    assert not any(call["statement"] == MATCHED_KEYS_AQL for call in calls)
+def test_a_name_with_only_value_kinds_is_the_name_and_a_value_of_that_kind():
+    """A name only matches an entity node, so a value kind is a constraint of its own:
+    records naming Acme that also state an amount, not an impossible filter."""
+    constraints = filter_constraints(None, NamedEntityQuery(kinds=["currency"], name_prefix="acme"))
+    assert [[(part.source, part.binds.get("prefix") or part.binds.get("kinds")) for part in c] for c in constraints] == [
+        [("node", "acme")], [("value", ["currency"])],
+    ]
 
 
 async def test_records_for_skips_the_lookup_when_nothing_matched():

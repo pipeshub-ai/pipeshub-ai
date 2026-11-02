@@ -45,6 +45,10 @@ class EntityFilterHit:
     record_type: str = ""
     # Last source modification (else last update), for newest-first listings.
     sort_ts: int = 0
+    # A date listing's tier: 0 when the record names a date in the asked window (one that
+    # starts in it and is no longer than it), 1 when its dates only span it (a year-long
+    # contract on a one-day question).
+    rank: int = 0
 
 
 @dataclass(frozen=True, slots=True)

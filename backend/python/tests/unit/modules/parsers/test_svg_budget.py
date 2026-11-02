@@ -92,4 +92,4 @@ def test_an_ordinary_svg_still_rasterises() -> None:
 @pytest.mark.asyncio
 async def test_a_hostile_data_uri_gives_no_image_through_the_url_path() -> None:
     uri = "data:image/svg+xml;base64," + _b64(HOSTILE["use chain"])
-    assert await ImageParser.urls_to_base64([uri]) == [None]
+    assert await ImageParser.urls_to_base64([uri], allow_remote_fetch=True) == [None]
