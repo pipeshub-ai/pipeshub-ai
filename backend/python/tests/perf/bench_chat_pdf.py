@@ -97,7 +97,16 @@ def _run(checkout: str, step: str, pdf: Path, tmp: Path) -> dict:
     out = proc.stdout.read()
     _, status, usage = os.wait4(proc.pid, 0)
     wall = time.monotonic() - started
-    return {"ok": status == 0, "wall_s": wall, "peak_rss_mib": usage.ru_maxrss / 1024, **json.loads(out.strip().splitlines()[-1])}
+    run = {"ok": status == 0, "wall_s": wall, "peak_rss_mib": usage.ru_maxrss / 1024}
+    if os.WIFSIGNALED(status):
+        run["signal"] = os.WTERMSIG(status)
+    lines = out.strip().splitlines()
+    try:
+        return {**run, **json.loads(lines[-1])}
+    except (IndexError, ValueError):
+        # A child killed before it printed (an OOM kill of a checkout without the bound,
+        # say) is a failed run to report, not a reason to stop the benchmark.
+        return {**run, "ok": False}
 
 
 def main() -> None:
