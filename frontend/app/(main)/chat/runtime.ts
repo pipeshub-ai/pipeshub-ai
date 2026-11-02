@@ -192,14 +192,14 @@ export function resolveAssistantFiltersForChatSubmit(
   return resolveAssistantFiltersFromSlot(slot, settings);
 }
 
-/** The agent a slot talks to: the thread's own, else the one in the URL. */
-function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
+/** The agent a slot talks to: the thread's own, else (for the chat on screen) the one in the URL.
+ * A chat answered in the background is not the URL's. */
+function effectiveAgentIdForSlot(slot: ChatSlot, onScreen = true): string | undefined {
+  const slotAgent = slot.threadAgentId?.trim() || null;
+  if (slotAgent || !onScreen) return slotAgent ?? undefined;
   const urlParams =
     typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-  const rawUrlAgent = urlParams?.get('agentId');
-  const agentIdFromUrl = rawUrlAgent?.trim() || undefined;
-  const slotAgent = slot.threadAgentId?.trim() || null;
-  return slotAgent ?? agentIdFromUrl ?? undefined;
+  return urlParams?.get('agentId')?.trim() || undefined;
 }
 
 /**
@@ -227,7 +227,8 @@ export function buildStreamChatRequestForSlot(
     outgoingMessage
   );
 
-  const effectiveAgentId = effectiveAgentIdForSlot(currentSlot);
+  const onScreen = currentState.activeSlotId === slotId;
+  const effectiveAgentId = effectiveAgentIdForSlot(currentSlot, onScreen);
 
   const isUniversalAgentMode =
     !effectiveAgentId &&
@@ -239,8 +240,9 @@ export function buildStreamChatRequestForSlot(
     ? null
     : currentSlot.projectId ?? projectScope?.projectId ?? null;
 
+  // The page's tool picker is for the agent on screen; a chat in the background keeps its own.
   const toolsSel = effectiveAgentId
-    ? currentState.agentStreamTools
+    ? onScreen ? currentState.agentStreamTools : currentSlot.agentStreamTools
     : isUniversalAgentMode
       ? projectScope
         ? currentState.projectStreamTools

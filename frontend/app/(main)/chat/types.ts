@@ -1076,6 +1076,16 @@ export interface ToolApprovalDetails {
   editedArguments?: Record<string, unknown>;
 }
 
+/** A call waiting for the person's approval in one of their chats (newest first from the server). */
+export interface PendingApprovalItem {
+  conversationId: string;
+  conversationTitle: string | null;
+  agentId: string | null;
+  /** Epoch milliseconds. */
+  createdAt: number;
+  card: ToolApprovalDetails;
+}
+
 /**
  * Builds mode-related fields for stream/regenerate payloads from settings.
  *

@@ -30,7 +30,9 @@ import {
   AttachmentRef,
   type ChatKnowledgeFilters,
   CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
+  type PendingApprovalItem,
 } from './types';
+import { toolApprovalDetails } from './tool-approval';
 import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
@@ -1049,4 +1051,26 @@ export function fetchOrgWithLogo(): Promise<{ org: OrgResponse | null; logoUrl: 
     );
   }
   return _orgWithLogoPromise;
+}
+
+/** The calls waiting for the person's approval in their chats, newest first. An item whose card
+ * isn't shaped like one is dropped. */
+export async function fetchPendingApprovals(): Promise<PendingApprovalItem[]> {
+  const { data } = await apiClient.get<{ items?: unknown[] }>('/api/v1/mcp-servers/tool-approvals/pending', {
+    suppressErrorToast: true,
+  });
+  const items: PendingApprovalItem[] = [];
+  for (const raw of Array.isArray(data?.items) ? data.items : []) {
+    const item = (raw ?? {}) as Record<string, unknown>;
+    const card = toolApprovalDetails(item.card);
+    if (!card || typeof item.conversationId !== 'string' || !item.conversationId) continue;
+    items.push({
+      conversationId: item.conversationId,
+      conversationTitle: typeof item.conversationTitle === 'string' && item.conversationTitle ? item.conversationTitle : null,
+      agentId: typeof item.agentId === 'string' && item.agentId ? item.agentId : null,
+      createdAt: typeof item.createdAt === 'number' ? item.createdAt : 0,
+      card,
+    });
+  }
+  return items;
 }
