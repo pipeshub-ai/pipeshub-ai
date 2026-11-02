@@ -237,7 +237,9 @@ That is all the registration there is: no list to edit, and no route or Node cha
 | `default_auth_mode`, `supported_auth_modes` | The modes the person adding the server may pick, and the one selected first. |
 | `command`, `args` | STDIO only: the exact command to run. |
 | `required_env`, `optional_env` | STDIO only: env var names the user fills in. The first required name receives the API token. |
-| `default_url` | HTTP only: the server's URL. Every instance of this entry connects to it. |
+| `default_url` | HTTP only: the server's URL. Every instance of this entry connects to it, unless `url_editable` is set. |
+| `url_editable` | The admin types the server URL on setup. Only for a server whose address differs per customer. Transport, command and args stay locked. Authorize and token URLs still come from discovery at sign-in. |
+| `require_oauth_client` | The setup form always asks for a client ID and secret. For a provider that advertises registration but rejects anonymous clients. |
 | `authorization_url`, `token_url` | OAuth only: the fallback endpoints when discovery finds none. |
 | `default_scopes` | Scopes to request at sign-in. `[]` lets the server's own 401 or metadata decide. |
 | `authorization_params` | Extra query parameters on the authorize URL. It can't override the protocol's own (`client_id`, `redirect_uri`, `response_type`, `state`, `scope`, PKCE, `resource`). |
@@ -253,10 +255,10 @@ That is all the registration there is: no list to edit, and no route or Node cha
 - **`type_id`.** Lowercase snake_case, unique, and short. Tools reach the model as `mcp_{type_id}_{tool}`, and a name over 64 characters gets shortened with a hash (`naming.py`).
 - **Never rename or delete a shipped entry.** Instances store its `type_id`, and agents store tool names built from it. Retire an entry with `replaced_by` and keep its module, as `slack.py` does.
 - **No secrets.** `GET /catalog` sends every template to every signed-in user. Never put a key, secret or customer-specific value in one.
-- **One URL for everyone.** A catalog instance always connects to the template's `default_url`, and the admin can't change it. A server whose address differs per customer (`https://<your-instance>.service-now.com/…`, self-managed GitLab, a regional host) can't be a working catalog entry today; people add it as a custom server instead.
+- **One URL for everyone.** A catalog instance connects to the template's `default_url`, and the admin can't change it, unless the template sets `url_editable`. That flag is for a server whose address differs per customer (Okta's `https://<org>.okta.com/mcp`). The admin types that one URL; transport, command and args stay locked, and sign-in discovers the authorize and token endpoints from it. A server that also needs per-customer authorize or token URLs typed by hand (ServiceNow, self-managed GitLab) still can't be a catalog entry.
 - **Pin STDIO packages to an exact version**, such as `exa-mcp-server@3.4.1`, never `@latest`. `npx -y` and `uvx` run whatever was published last.
 - **Env var names must pass `stdio_policy.is_allowed_env_name`.** That means upper case, and not a name that changes how a process loads (`PATH`, `HOME`, `LD_*`, `NODE_*`, `NPM_CONFIG_*`, `PYTHON*`, `UV_*`, …). A name that fails is dropped at launch without an error.
-- **The test checks these** (`test_auto_discover_templates_are_well_formed`): `default_auth_mode` is in `supported_auth_modes`; an HTTP entry has `default_url`; a STDIO entry has `command`; a STDIO entry whose default is `API_TOKEN` lists `required_env`; an OAuth entry has `authorization_url` and `token_url`.
+- **The test checks these** (`test_auto_discover_templates_are_well_formed`): `default_auth_mode` is in `supported_auth_modes`; an HTTP entry has `default_url` unless `url_editable`; a STDIO entry has `command`; a STDIO entry whose default is `API_TOKEN` lists `required_env`; an OAuth entry has `authorization_url` and `token_url` unless `url_editable` (those come from discovery).
 - **Say where each fact came from**, in a comment such as "Confirmed live via …", as the existing templates do, so a later reader can check it again.
 - **No per-server code.** Routes, the client and sign-in never branch on a `type_id`. Anything specific to one server is a template field. If a server needs something no field covers, that is a change to the framework (`models.py` and everything that reads it): raise it in the issue before writing it.
 
@@ -275,7 +277,7 @@ The UI finds logos in two ways, so there are two places to update:
 
 ## Re-enabling a disabled entry
 
-Fourteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `docusign`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow` and `zoom`.
+Thirteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow` and `zoom`.
 
 To bring one back, uncomment it and run the discovery from step 1 again. Vendors change their servers, and the "Confirmed live" comments are only as current as the day they were written. Fix whatever changed, then do steps 3 and 4. Two things to watch for:
 

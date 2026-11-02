@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "agent_today_start",
+    "parse_iso_to_epoch_ms",
     "parse_time_range",
     "time_range_to_kh_filters",
     "upper_bounds_before_today",
@@ -78,7 +79,7 @@ def _calendar_date(value: str, *, is_upper_bound: bool) -> datetime | None:
     return first.replace(day=last_day) + timedelta(days=1)
 
 
-def _parse_iso_to_epoch_ms(
+def parse_iso_to_epoch_ms(
     value: str, *, is_upper_bound: bool, field_label: str
 ) -> tuple[int | None, str | None]:
     """Parse a single ISO 8601 date/datetime string to epoch milliseconds.
@@ -91,12 +92,12 @@ def _parse_iso_to_epoch_ms(
     be UTC, since that assumption is a common source of off-by-hours bugs
     when the caller actually meant the user's local timezone.
 
-    Returns (epoch_ms, None) on success, (None, error_json) on failure.
+    Returns (epoch_ms, None) on success, (None, message) on failure.
     """
     if _DATE_ONLY_RE.match(value):
         dt = _calendar_date(value, is_upper_bound=is_upper_bound)
         if dt is None:
-            return None, _error(f"{field_label}: invalid calendar date {value!r}.")
+            return None, f"{field_label}: invalid calendar date {value!r}."
         if is_upper_bound:
             # Not "+1 day -1 ms": that overflows datetime on 9999-12-31.
             dt = dt.replace(hour=23, minute=59, second=59, microsecond=999_000)
@@ -106,14 +107,14 @@ def _parse_iso_to_epoch_ms(
     try:
         dt = datetime.fromisoformat(normalized)
     except ValueError:
-        return None, _error(
+        return None, (
             f"{field_label}: {value!r} is not a valid ISO 8601 date. "
             "Use 'YYYY-MM-DD' or a full datetime with a timezone offset "
             "(e.g. '2026-01-15T00:00:00Z')."
         )
 
     if dt.tzinfo is None:
-        return None, _error(
+        return None, (
             f"{field_label}: {value!r} has no timezone. Use 'YYYY-MM-DD' or "
             "include a timezone offset (e.g. '2026-01-15T08:00:00-07:00' or "
             "'2026-01-15T00:00:00Z')."
@@ -176,11 +177,11 @@ def parse_time_range(
         if value is None:
             continue
         is_upper_bound = field.endswith("_before")
-        epoch_ms, error = _parse_iso_to_epoch_ms(
+        epoch_ms, error = parse_iso_to_epoch_ms(
             value, is_upper_bound=is_upper_bound, field_label=_FIELD_LABELS[field]
         )
         if error is not None:
-            return None, error
+            return None, _error(error)
         epoch_values[field] = epoch_ms
 
     range_error = _validate_range(

@@ -489,14 +489,44 @@ def _aql_in_scope(c: str, p: str) -> str:
             f" LIMIT 1 RETURN 1) > 0)))")
 
 
-def _aql_browse_child(c: str, p: str, tag: str, from_app: str) -> str:
+def _aql_is_member(p: str, after: str = "true") -> str:
+    """Whether record ``p`` belongs to a group of the declared scope (``@kh_scope``). ``after`` names a loop
+    variable the test must wait for: the optimizer would otherwise lift it above that loop, and a node with no
+    child would pay for it."""
+    return (f'(IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {p}) AND LENGTH(FOR kh_mg IN 1..1 OUTBOUND {p}'
+            f" {CollectionNames.BELONGS_TO.value} FILTER {after} != null AND HAS(@kh_scope, kh_mg._key) LIMIT 1 RETURN 1) > 0)")
+
+
+def _aql_way_below(v: str) -> str:
+    """Whether a readable node lies below the stub ``v``: a browse shows a stub only as the way to one.
+    shortcut: the hops between the stub and that node are not each tested, only the last, so a stub whose way
+    is cut by a node the viewer cannot read is still shown; test every hop if that matters."""
+    # Only a stub starts the walk (the loop over an empty list reads nothing for any other node), and it follows
+    # hierarchy edges only: PRUNE stops it at any other.
+    return (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : [])"
+            f" FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+            f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
+            f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
+            f" LET kh_pp = DOCUMENT(kh_pe._from)"
+            f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', 'false')}"
+            f" LIMIT 1 RETURN 1) > 0")
+
+
+def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | None = None) -> str:
     """Whether child ``c`` is listed under ``p`` when browsing: the hop where the walk from the App (or an
     open App) reaches ``p``, OPEN nodes only below a seed, and the declared scope either way. Written once:
     the expansion and a row's arrow both read it, so an arrow means the expansion lists something.
     ``kh_opens``, ``@granted`` and ``@kh_scope`` must be in scope."""
-    return (f"({_aql_read_by_app(c)} AND ((({from_app}) OR kh_opens) ? ({_aql_granted_hop(c, p, tag + 'h', navigation=True)} ? true"
-            f" : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')})"
-            f" ? true : ({_aql_in_scope(c, p)})))))")
+    # The check does not walk through a declared group of this App, whether or not the App opens everything: a
+    # child below one is read by its membership (the scope arm) or its own grant, not by inheriting from the group.
+    # Nor does it walk on from a member of one: what hangs under a member inherits from it only below a grant.
+    walk = (f'(NOT ({p}.permissionModel == "RECORD_GROUP_LEVEL" AND {p}.connectorId == @app_id)'
+            f" OR HAS(@granted, {c}._key))")
+    # ``p_member`` is that test already made for ``p`` (a walk makes it once per parent, not per child).
+    below_member = f"(NOT {p_member or _aql_is_member(p)} OR HAS(@granted, {p}._key) OR HAS(@granted, {c}._key))"
+    return (f"({_aql_read_by_app(c)} AND ((({from_app}) OR kh_opens) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
+            f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
+            f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})))))")
 
 
 # Arango's write-write conflict (errorNum 1200), as the HTTP client reports it.
@@ -612,25 +642,70 @@ def _aql_kh_date(v: str, source: str, ingest: str) -> str:
             f" : NOT_NULL({v}.{source}, {v}.{ingest}, 0))")
 
 
-def _aql_kh_has_children(v: str) -> str:
+def _aql_kh_has_children(v: str, *, exact: bool = False) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes the browse's own rule
     (``_aql_browse_child``), or, where the App opens everything, a record filed in it. A group or folder
     always answers yes: finding out means reading every hidden child, which cost far more than the page
     itself on a large folder, and a constant says nothing about what the viewer cannot read. Its expansion
-    may also list chain-tops. ``kh_opens`` and the binds ``@granted``, ``@kh_scope``,
-    ``@kh_from_app`` (false below a seed) and ``@kh_seeded`` (rows that are seeds) must be in scope."""
-    rule = _aql_browse_child("kh_ch", v, "hc", f"@kh_from_app AND {v}._id NOT IN @kh_seeded")
-    return (
-        f'({_aql_node_type(v)} != "record" ? true : ('
-        f"LENGTH(FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
-        f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
-        f' FILTER (IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", kh_ch)'
-        f' OR IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", kh_ch))'
-        f" AND kh_ch.orgId == @org_id AND (@kh_placeholders OR kh_ch.isPlaceholder != true)"
-        f" FILTER {rule} LIMIT 1 RETURN 1) > 0"
-        f" OR (kh_opens AND LENGTH(FOR kh_ch IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
-        f" FILTER kh_ch.isDeleted != true AND kh_ch.orgId == @org_id AND {_aql_read_by_app('kh_ch')} LIMIT 1 RETURN 1) > 0)))"
-    )
+    may also list chain-tops. A declared group is the exception: it is answered like a record, with the records
+    that belong to it, so an arrow is not lit by children the expansion hides. ``kh_opens`` and the binds
+    ``@granted``, ``@kh_scope``, ``@kh_from_app`` (false below a seed) and ``@kh_seeded`` (rows that are seeds)
+    must be in scope. ``exact`` answers a declared group too, which costs every row several subqueries, so it is
+    asked of a page's rows and not of every node the sidebar filter reads."""
+    rule = _aql_browse_child("kh_ch", v, "hc", f"@kh_from_app AND {v}._id NOT IN @kh_seeded", "kh_pm")
+    records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+    declared = f'(IS_SAME_COLLECTION("{groups}", {v}) AND {v}.permissionModel == "RECORD_GROUP_LEVEL" AND {v}.connectorId == @app_id)'
+
+    def gated(gate: str, body: str) -> str:
+        """A subquery that reads the graph only when ``gate`` holds: AQL runs a subquery for every row, so the
+        loop over an empty list is what keeps it from reading anything."""
+        return f"LENGTH(FOR kh_g IN ({gate} ? [1] : []) {body} LIMIT 1 RETURN 1) > 0"
+
+    # shortcut: the sidebar, which reads this for every node, costs about 1.6x main at 10,000 members (290 against
+    # 180 ms), the rest of it the connector test and the rule's longer text per row; next, read the arrow of the
+    # rows the page keeps only, after the sort, as the page's own rows already do.
+    group = f'IS_SAME_COLLECTION("{groups}", {v})'
+    # The membership of ``v`` is tested after the first child is found, so a node with no child never pays for it.
+    # The way-below test of a stub is a subquery, so it follows the rule's filter and runs only for a child that
+    # passed it.
+    def children_of(passes: str) -> str:
+        return (
+            f"FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+            f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
+            f" LET kh_pm = {_aql_is_member(v, 'kh_ce')}"
+            f' FILTER (IS_SAME_COLLECTION("{records}", kh_ch) OR IS_SAME_COLLECTION("{groups}", kh_ch))'
+            f" AND kh_ch.orgId == @org_id"
+            f" FILTER {passes}"
+            f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch')})"
+        )
+
+    children = children_of(rule)
+    # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
+    # the records that belong to it are what the rule reads from the scope an expansion carries.
+    in_scope = children_of(
+        f'({rule} OR (kh_ch.isDeleted != true AND (IS_SAME_COLLECTION("{groups}", kh_ch) OR LENGTH('
+        f"FOR kh_sg IN 1..1 OUTBOUND kh_ch {CollectionNames.BELONGS_TO.value} FILTER kh_sg._id == {v}._id"
+        f" LIMIT 1 RETURN 1) > 0)))")
+    record = f'{_aql_node_type(v)} == "record" AND NOT {declared}'
+    # What belongs to ``v``: for a declared group its members, and where the App opens everything a record filed
+    # in a record (one subquery for both, as every row pays for each).
+    # A group that is not declared lists the records it holds only as chain-tops, which are granted ones.
+    filed = (f"FOR kh_bm IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
+             f' FILTER IS_SAME_COLLECTION("{records}", kh_bm) AND kh_bm.isDeleted != true AND kh_bm.orgId == @org_id'
+             f" AND {_aql_read_by_app('kh_bm')}"
+             + (f" AND ({record} OR HAS(@granted, kh_bm._key))"
+                f" FILTER kh_bm.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_bm')})" if exact else ""))
+    if not exact:
+        return (
+            f'({_aql_node_type(v)} != "record" ? true : (LENGTH({children} LIMIT 1 RETURN 1) > 0'
+            f" OR (kh_opens AND LENGTH(FOR kh_bm IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
+            f" FILTER kh_bm.isDeleted != true AND kh_bm.orgId == @org_id AND {_aql_read_by_app('kh_bm')}"
+            f" LIMIT 1 RETURN 1) > 0)))"
+        )
+    # A page's rows only: every kind of node (a folder is neither a group nor a record here) is asked. A group that
+    # hides its children lists none, whatever belongs to it; a stub is held to the stub test wherever it comes from.
+    return (f"({v}.hideChildren != true AND ({gated(f'{group} OR kh_opens', filed)}"
+            f" OR {gated(f'NOT {declared}', children)} OR {gated(declared, in_scope)}))")
 
 
 # Edges one statement moves; a hub node's millions go in batches.
@@ -19613,6 +19688,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "granted": bind["granted"], "kh_scope": {}, "kh_from_app": browsing_app,
             "kh_seeded": placed if browsing_app else [],
         }
+        app_scope = dict.fromkeys(await self._kh_v3_app_declared_scope(
+            app_id, granted_ids, transaction=transaction), True) if not flatten else {}
+        row_ctx["kh_scope"] = app_scope
         if not start_is_app:
             admitted, admitted_ancestors, declared_scope = await self._kh_v3_scoped_start_access(
                 start_id, app_id, org_id, grantee_ids, gated_app_ids,
@@ -19626,7 +19704,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not starts:
                 return empty()
             payload.update(crumbNodes=starts[0]["crumbNodes"], crumbEdges=starts[0]["crumbEdges"])
-            row_ctx.update(kh_scope=dict.fromkeys(declared_scope, True), kh_from_app=bool(starts[0]["fromApp"]))
+            # A browse reads, beside the scope of its start, the scope of every declared group the App admits to
+            # this viewer: the members of one are listed wherever the browse meets them, and the arrows say so.
+            row_ctx.update(kh_scope={**app_scope, **dict.fromkeys(declared_scope, True)},
+                           kh_from_app=bool(starts[0]["fromApp"]))
             walked = await self._kh_v3_walk(
                 [starts[0]["handle"]], "step_browse",
                 {"kh_opens": bind["kh_opens"], "app_id": app_id, **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}},
@@ -19658,6 +19739,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
             after=after, direction=direction, filters=filters or {},
             lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
+            exact_arrows=not flatten,
             row_ctx=row_ctx, transaction=transaction,
         ))
         self.logger.debug(
@@ -19824,6 +19906,40 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             found.extend(frontier)
         return found
 
+    async def _kh_v3_app_declared_scope(
+        self, app_id: str, granted_ids: list[str], *, transaction: str | None,
+    ) -> list[str]:
+        """The keys of the groups the declared groups of the App granted to the viewer reach, themselves included:
+        the scope a scoped browse carries, which the arrows of the App's own rows read as well, so that an
+        arrow follows the same rule as the expansion it opens."""
+        groups = CollectionNames.RECORD_GROUPS.value
+        # The declared groups the App's own listing admits: granted to the viewer, or reached by the listing's first
+        # hop (an App that opens everything admits all of them).
+        return await self.http_client.execute_aql(
+            f"""
+            LET kh_app = DOCUMENT("{CollectionNames.APPS.value}", @app_id)
+            LET kh_opens = {_AQL_APP_OPENS}
+            LET kh_admitted = (
+                FOR kh_p, kh_pe IN 1..1 OUTBOUND kh_app {CollectionNames.NODE_RELATIONS.value}
+                    FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL}
+                    FILTER IS_SAME_COLLECTION("{groups}", kh_p) AND {_aql_granted_hop("kh_p", "kh_app", "sc", navigation=True)}
+                    RETURN kh_p._key)
+            FOR kh_d IN {groups}
+                FILTER kh_d.connectorId == @app_id AND kh_d.permissionModel == "RECORD_GROUP_LEVEL"
+                    AND kh_d.isDeleted != true AND kh_d.hideChildren != true
+                    AND (HAS(@granted, kh_d._key) OR kh_d._key IN kh_admitted)
+                    AND NOT {_aql_hidden_above("kh_d", "hd")}
+                FOR kh_v, kh_e IN 0..50 OUTBOUND kh_d {CollectionNames.NODE_RELATIONS.value}
+                    PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {_HIERARCHY_AQL}
+                        OR NOT IS_SAME_COLLECTION("{groups}", kh_v) OR kh_v.isDeleted == true
+                        OR kh_v.hideChildren == true)
+                    FILTER IS_SAME_COLLECTION("{groups}", kh_v) AND kh_v.isDeleted != true
+                        AND (kh_e == null OR kh_e.relationshipType IN {_HIERARCHY_AQL})
+                    RETURN DISTINCT kh_v._key
+            """,
+            bind_vars={"app_id": app_id, "granted": dict.fromkeys(granted_ids, True)}, txn_id=transaction,
+        )
+
     async def _kh_v3_page_rows(
         self,
         visible: "_Visible",
@@ -19837,6 +19953,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         direction: str,
         filters: dict[str, Any],
         lists_placeholders: bool,
+        exact_arrows: bool,
         row_ctx: dict[str, Any],
         transaction: str | None,
     ) -> dict[str, Any]:
@@ -19862,17 +19979,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         slim: list[list[Any]] = []
         restricted = visible.only is not None
+        sidebar = any("node.hasChildren" in c for c in conditions)
         if (visible.nodes or visible.member_groups or visible.collection) and visible.only != []:
             slim = await self.http_client.execute_aql(
-                self._kh_v3_slim_aql(tuple(conditions), sort_field, restricted=restricted),
+                self._kh_v3_slim_aql(tuple(conditions), sort_field, restricted=restricted, stubs=lists_placeholders),
                 bind_vars={
                     **params, "kh_nodes": visible.nodes, "kh_member_groups": visible.member_groups,
                     "kh_collection": visible.collection, "org_id": org_id, "app_id": app_id,
                     "kh_unplaced_only": visible.unplaced_members_only,
                     "kh_placed": visible.placed, "kh_placed_groups": visible.placed_groups,
-                    "kh_placeholders": lists_placeholders,
-                    # Declared only when the sidebar filter reads hasChildren; an unused bind fails the statement.
-                    **(row_ctx if any("node.hasChildren" in c for c in conditions) else {}),
+                    # The stub pass reads these; the rest only when the sidebar filter reads hasChildren
+                    # (an unused bind fails the statement).
+                    **({"kh_placeholders": lists_placeholders, "granted": row_ctx["granted"],
+                        "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or sidebar else {}),
+                    **(row_ctx if sidebar else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
                 txn_id=transaction,
@@ -19897,7 +20017,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows: list[dict[str, Any]] = []
         if window:
             built = await self._kh_v3_run(
-                "enrich", {"kh_page": [r[1] for r in window], "app_id": app_id, "org_id": org_id,
+                "enrich_exact" if exact_arrows else "enrich", {"kh_page": [r[1] for r in window], "app_id": app_id, "org_id": org_id,
                            "kh_placeholders": lists_placeholders, **row_ctx}, transaction,
             )
             by_index = {b["i"]: b["row"] for b in built}
@@ -20050,7 +20170,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     @staticmethod
     @functools.cache
-    def _kh_v3_slim_aql(conditions: tuple[str, ...], sort_field: str, *, restricted: bool = False) -> str:
+    def _kh_v3_slim_aql(
+        conditions: tuple[str, ...], sort_field: str, *, restricted: bool = False, stubs: bool = False,
+    ) -> str:
         """What the filters and the sort read, for every visible node: the
         filters see the same fields as Neo4j's slim map. The declared scope's
         records and a collection's are read here from the edge index, once.
@@ -20072,14 +20194,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             _aql_kh_has_children("kh_n") if any("node.hasChildren" in c for c in conditions) else "false"
         )
 
-        def rows(collection: str) -> str:
+        below = _aql_way_below("kh_n")
+
+        def rows(collection: str, *, stubs: bool = False) -> str:
+            # Stubs are read apart so that the way-below test, a subquery, runs for them alone.
+            stub_filter = ("kh_n.isPlaceholder == true AND @kh_placeholders" if stubs else "kh_n.isPlaceholder != true")
+            way = f"\n                    FILTER {below}" if stubs else ""
             return f"""(
                 FOR kh_h IN kh_handles
                     FILTER STARTS_WITH(kh_h, "{collection}/")
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
-                            AND kh_n.isDeleted != true AND (@kh_placeholders OR kh_n.isPlaceholder != true)
-                            AND {_aql_read_by_app("kh_n")}
+                            AND kh_n.isDeleted != true AND {stub_filter}
+                            AND {_aql_read_by_app("kh_n")}{way}
                     LET node = {{
                         id: kh_n._key,
                         name: NOT_NULL(kh_n.name, kh_n.recordName, kh_n.groupName),
@@ -20098,6 +20225,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     LET sortKey = {key_expr}
                     RETURN [kh_h, node.nodeType, sortKey]
             )"""
+
+        # A browse also lists the stubs that lead to something readable; no other listing reads that pass.
+        stub_rows = f", {rows(records, stubs=True)}" if stubs else ""
 
         # A bounded flatten counts a member by its hierarchy hops, so a record the
         # hierarchy places is not listed here for belonging to a near group. An
@@ -20127,7 +20257,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET kh_app = DOCUMENT("{apps}", @app_id)
             LET kh_opens = {opens}
             LET kh_handles = UNION_DISTINCT(@kh_nodes, {belonging}, {placed})
-            FOR kh_row IN UNION({rows(records)}, {rows(groups)})
+            FOR kh_row IN UNION({rows(records)}, {rows(groups)}{stub_rows})
                 RETURN kh_row
         """
         return f"""
@@ -20146,7 +20276,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN kh_be._from) : []),
                 {placed}
             )
-            FOR kh_row IN UNION({rows(records)}, {rows(groups)})
+            FOR kh_row IN UNION({rows(records)}, {rows(groups)}{stub_rows})
                 RETURN kh_row
         """
 
@@ -20162,11 +20292,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hierarchy = _HIERARCHY_AQL
         listable = f'(IS_SAME_COLLECTION("{records}", kh_c) OR IS_SAME_COLLECTION("{groups}", kh_c))'
 
-        def children(parent_filter: str, child_filter: str) -> str:
+        def children(parent_filter: str, child_filter: str, parent_let: str = "") -> str:
             return f"""
             FOR kh_ph IN @kh_frontier
                 LET kh_p = DOCUMENT(kh_ph)
-                FILTER kh_p != null{parent_filter}
+                FILTER kh_p != null{parent_filter}{parent_let}
                 FOR kh_c, kh_e IN 1..1 OUTBOUND kh_p {relations}
                     FILTER kh_e.relationshipType IN {hierarchy}
                     FILTER {listable}
@@ -20220,7 +20350,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     AND kh_p.permissionModel == "RECORD_GROUP_LEVEL" AND kh_p.connectorId == @app_id)"""
         open_parent = "\n                FILTER kh_p.hideChildren != true"
         open_hop = _aql_open_hop("kh_c", "kh_p", "o")
-        return {
+        queries = {
             "app": f"""
             FOR a IN {apps}
                 FILTER a._key == @app_id AND a.orgId == @org_id
@@ -20496,7 +20626,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }}
             """,
             # Below a browse start: what a row's arrow reads too.
-            "step_browse": "LET kh_opens = @kh_opens" + children("", _aql_browse_child("kh_c", "kh_p", "b", "@kh_from_app")),
+            "step_browse": "LET kh_opens = @kh_opens" + children(
+                "", _aql_browse_child("kh_c", "kh_p", "b", "@kh_from_app", "kh_pm"),
+                f"\n                LET kh_pm = {_aql_is_member('kh_p')}"),
             "enrich": f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
             LET kh_opens = {_AQL_APP_OPENS}
@@ -20538,13 +20670,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     isInternal: CURRENT.isInternal == true,
                     ownGroup: true
                 }}])
-                RETURN {{i: kh_i, row: MERGE({ArangoHTTPProvider._kh_v3_row_aql()}, {{parentOptions: kh_options}})}}
+                RETURN {{i: kh_i, row: MERGE(KH_ROW_FIELDS, {{parentOptions: kh_options}})}}
             """,
         }
+        # A browse answers a declared group's arrow exactly; a flatten reads arrows by the stricter rule.
+        queries["enrich_exact"] = queries["enrich"].replace("KH_ROW_FIELDS", ArangoHTTPProvider._kh_v3_row_aql(exact=True))
+        queries["enrich"] = queries["enrich"].replace("KH_ROW_FIELDS", ArangoHTTPProvider._kh_v3_row_aql(exact=False))
+        return queries
 
     @staticmethod
-    def _kh_v3_row_aql() -> str:
-        """The page row, the v2 projection with the listing's computed fields."""
+    @functools.cache
+    def _kh_v3_row_aql(*, exact: bool = False) -> str:
+        """The page row, the v2 projection with the listing's computed fields. ``exact`` is asked of a browse."""
         _records, _groups, _apps = (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                  CollectionNames.APPS.value)
         return ArangoHTTPProvider._kh_v2_projection_aql(
@@ -20565,7 +20702,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "sizeInBytes": (f"(node.sizeInBytes != null ? node.sizeInBytes"
                                 f" : FIRST(FOR kh_f IN 1..1 OUTBOUND node {CollectionNames.IS_OF_TYPE.value}"
                                 f" RETURN kh_f.sizeInBytes))"),
-                "hasChildren": _aql_kh_has_children("node"),
+                "hasChildren": _aql_kh_has_children("node", exact=exact),
             },
             include_comparator=False,
         )
