@@ -938,6 +938,7 @@ async function processSlackMessage(
     }
 
     function startAnswerSegment(): void {
+      citationMarkers.checkpoint();
       streamedBeforeSegment = answerTextStreamed;
       queuedStreamAppend = queuedStreamAppend
         .then(() => {
@@ -966,6 +967,8 @@ async function processSlackMessage(
       pushedAnswerLength = 0;
       lastAnswerText = '';
       answerTextStreamed = streamedBeforeSegment;
+      // The discarded call's numbers are free again, so [n] keeps matching the Sources list.
+      citationMarkers.rollback();
       if (!shown) {
         return;
       }

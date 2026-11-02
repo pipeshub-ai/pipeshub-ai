@@ -154,9 +154,16 @@ export function isSecretKey(name: string): boolean {
 }
 
 const KEY_NAME = String.raw`[A-Za-z][A-Za-z0-9_.-]*`;
+/**
+ * A key name starts only where one can't continue: a plain `\b` would also
+ * try every letter inside a long `a.a.a…` run, which turns quadratic.
+ */
+const KEY_START = String.raw`(?<![A-Za-z0-9_.-])`;
+/** Text a row can show, plus room for a value cut at the edge: nothing longer is scanned. */
+const MAX_REDACT_CHARS = MAX_TASK_OUTPUT_CHARS + 200;
 /** `"key": "value with spaces"` / `key='…'`: masked to the end of the quoted value. */
 const QUOTED_VALUE = new RegExp(
-  String.raw`(["']?)\b(${KEY_NAME})\1(\s*[:=]\s*)(["'])(?:\\.|(?!\4)[^\\])*\4`,
+  String.raw`(["']?)${KEY_START}(${KEY_NAME})\1(\s*[:=]\s*)(["'])(?:\\.|(?!\4)[^\\])*\4`,
   'g',
 );
 /** `?key=…&` in a URL: masked to the next parameter. */
@@ -165,7 +172,10 @@ const QUERY_VALUE = new RegExp(
   'g',
 );
 /** `key: value` / `key=value` unquoted. */
-const PLAIN_KEY = new RegExp(String.raw`\b(${KEY_NAME})(\s*[:=]\s*)`, 'g');
+const PLAIN_KEY = new RegExp(
+  String.raw`${KEY_START}(${KEY_NAME})(\s*[:=]\s*)`,
+  'g',
+);
 /** `Authorization: Basic|Bearer|Token …`: the whole value. */
 const AUTH_HEADER =
   /\b(authorization\s*[:=]\s*)["']?(?:basic|bearer|token)\b[^\n"']*/gi;
@@ -199,6 +209,7 @@ function maskPlainSecrets(text: string): string {
 /** Keys, tokens and passwords in what a call shows never reach Slack. */
 export function redactSecrets(text: string): string {
   const masked = text
+    .slice(0, MAX_REDACT_CHARS)
     .replace(URL_USERINFO, '$1***@')
     .replace(AUTH_HEADER, `$1${REDACTED}`)
     .replace(
@@ -564,7 +575,10 @@ export class SlackTaskPlan {
           this.put({
             ...task,
             status: 'complete',
-            title: `${APPROVAL_OUTPUT}: ${task.title}`,
+            title: clip(
+              `${APPROVAL_OUTPUT}: ${task.title}`,
+              MAX_TASK_TITLE_CHARS,
+            ),
           }),
         );
       } else {
@@ -577,6 +591,11 @@ export class SlackTaskPlan {
   /** A row's latest state, to show it again in a replaced message. */
   current(id: string): SlackTaskChunk | undefined {
     return this.tasks.get(id);
+  }
+
+  /** A row the stream made itself (the overflow of one Slack found too big). */
+  remember(task: SlackTaskChunk): void {
+    this.put(task);
   }
 
   private findCall(
@@ -768,6 +787,8 @@ export class SlackPlanStream {
   private everOpened = false;
   private earlier: string[] = [];
   private taskIds = new Set<string>();
+  /** Overflow rows made when Slack found a row too big, by the row they continue. */
+  private readonly overflowOf = new Map<string, string>();
   /** Each message's text and steps in order (steps by id), to show them again if part is taken back. */
   private logs: ({ text: string } | { task: string })[][] = [];
   private afterTask = false;
@@ -836,6 +857,15 @@ export class SlackPlanStream {
       try {
         await this.append(attempt);
         this.track(attempt);
+        for (const row of attempt) {
+          const parent = row.id.endsWith('-overflow')
+            ? row.id.slice(0, -'-overflow'.length)
+            : undefined;
+          if (parent !== undefined) {
+            this.plan.remember(row);
+            this.overflowOf.set(row.id, parent);
+          }
+        }
         return;
       } catch (error) {
         const code = slackErrorCode(error);
@@ -916,7 +946,26 @@ export class SlackPlanStream {
   ): Promise<boolean> {
     const nothingToDeliver = !options.markdown && !options.blocks?.length;
     if (!this.ts || this.stopped || this.unavailable) return nothingToDeliver;
-    const chunks: SlackStreamChunk[] = [...this.plan.failRunning(this.taskIds)];
+    const settled = this.plan.failRunning(
+      new Set([...this.taskIds].filter((id) => !this.overflowOf.has(id))),
+    );
+    // An overflow row ends as its row does, so none keeps spinning.
+    for (const [overflow, parent] of this.overflowOf) {
+      const row = this.plan.current(overflow);
+      const status = this.plan.current(parent)?.status;
+      if (
+        row &&
+        status &&
+        row.status !== status &&
+        this.taskIds.has(overflow) &&
+        !settled.some((chunk) => chunk.id === overflow)
+      ) {
+        const updated = { ...row, status };
+        this.plan.remember(updated);
+        settled.push(updated);
+      }
+    }
+    const chunks: SlackStreamChunk[] = [...settled];
     if (options.markdown) {
       chunks.push({ type: 'markdown_text', text: options.markdown });
     }

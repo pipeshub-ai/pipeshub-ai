@@ -173,6 +173,15 @@ describe('slack-bot/utils/plan-stream', () => {
       }]);
     });
 
+    it('keeps the waiting title within the title limit', () => {
+      const plan = new SlackTaskPlan();
+      plan.toolStarted('jira_create', 'x'.repeat(300), 'c1');
+      plan.toolFinished('jira_create', 'x'.repeat(300), 'awaiting_approval', 'c1');
+      const [row] = plan.failRunning(new Set(['tools-1']));
+      expect(row!.title.startsWith('Waiting for your approval: x')).to.equal(true);
+      expect(row!.title.length).to.be.at.most(256);
+    });
+
     it('shows how an approval was settled, as the dashboard chips it', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira_create', 'Created an issue', 'c1', { approvalAnswer: 'allowed' });
@@ -275,6 +284,15 @@ describe('slack-bot/utils/plan-stream', () => {
         expect(redactSecrets(input)).to.equal(expected);
       });
     }
+
+    it('stays fast on long runs of dots and dashes', () => {
+      for (const unit of ['a.', 'ab-']) {
+        const text = unit.repeat(Math.ceil(100_000 / unit.length));
+        const started = Date.now();
+        redactSecrets(text);
+        expect(Date.now() - started, unit).to.be.below(100);
+      }
+    });
 
     it('keeps ordinary words', () => {
       expect(redactSecrets('Searched for "password reset policy"')).to.equal('Searched for "password reset policy"');
@@ -469,6 +487,22 @@ describe('slack-bot/utils/plan-stream', () => {
         { ...row, output: 'a' },
         { type: 'task_update', id: 'tools-1-overflow', title: 'Searched (continued)', status: 'complete', output: 'b' },
       ]);
+    });
+
+    it('ends an overflow row the way its row ends, so nothing keeps spinning after the reply', async () => {
+      const { c, s, plan } = stream();
+      await s.tasks(plan.toolStarted('search', 'Searched', 'c1'));
+      const tooLong = Object.assign(new Error('big'), { data: { error: 'msg_blocks_too_long' } });
+      c.apiCall.withArgs('chat.appendStream').onFirstCall().rejects(tooLong);
+      await s.tasks([{ type: 'task_update', id: 'tools-1', title: 'Searched', status: 'in_progress', output: 'a\n\nb' }]);
+      await s.tasks(plan.toolFinished('search', 'Searched', 'completed', 'c1'));
+
+      await s.stop();
+
+      const [stop] = calls(c, 'chat.stopStream');
+      expect(stop.chunks).to.deep.include({
+        type: 'task_update', id: 'tools-1-overflow', title: 'Searched (continued)', status: 'complete', output: 'b',
+      });
     });
 
     it('takes back a discarded call: reopens with the plan, every step at its final status, and the text before it', async () => {
