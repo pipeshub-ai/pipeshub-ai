@@ -439,6 +439,15 @@ def build_registry(pdf_parser: str, ocr_latency: float, scan_route: str = "ocr")
     from app.modules.parsers.csv.csv_parser import CSVParser
     from app.modules.parsers.excel.excel_parser import ExcelParser
 
+    # Table and sheet summaries call a model; the bench has none (as skip_table_enrichment does for PDFs).
+    from app.modules.parsers.csv import csv_parser as csv_module
+    from app.modules.parsers.excel import excel_parser as excel_module
+
+    async def no_llm(*_args: object, **_kwargs: object) -> tuple[None, None]:
+        return None, None
+
+    csv_module.get_llm_for_role = no_llm  # type: ignore[assignment]
+    excel_module.get_llm_for_role = no_llm  # type: ignore[assignment]
     registry.register("code", ParserProvider.DEFAULT, CodeFileParser())
     registry.register("csv", ParserProvider.DEFAULT, CSVParser(config_service=None))
     registry.register("xlsx", ParserProvider.DEFAULT, ExcelParser(log, None))
