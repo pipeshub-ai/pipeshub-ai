@@ -17,7 +17,7 @@
     verdicts:
       u: {i: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:523-526 (STRICT)
+  comment: jira_issue_security.py:627-634 (apply_issue_access_settled, STRICT)
 - id: RULE-J02
   title: 'Jira: issue with a level, U is a level holder, Browse granted'
   source: rule cases R1-R13 (spec)
@@ -38,7 +38,7 @@
     verdicts:
       u: {i: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:559-561
+  comment: jira_issue_security.py, apply_issue_access
 - id: RULE-J03
   title: 'Jira: level holder without Browse on the project'
   source: rule cases R1-R13 (spec)
@@ -96,7 +96,7 @@
     verdicts:
       u: {i: deny}
   tags: [rules, jira]
-  comment: jira_issue_security.py:516-521, 528-529
+  comment: jira_issue_security.py:516-519 (ANYONE_AUTHENTICATED_SCOPE)
 - id: RULE-J06
   title: 'Jira: sub-task of a leveled parent, U holds the level (both granted)'
   source: rule cases R1-R13 (spec)
@@ -119,7 +119,7 @@
     verdicts:
       u: {sub: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:507-511
+  comment: jira_issue_security.py:507-509 (group holders)
 - id: RULE-J07
   title: 'Jira: sub-task granted but parent issue not (parent''s level excludes U)'
   source: rule cases R1-R13 (spec)
@@ -142,7 +142,7 @@
       u: {sub: deny}
   tags: [rules, jira]
 - id: RULE-J08
-  title: 'Jira (W5a write shape): unleveled story under an epic in a scheme project'
+  title: 'Jira (inherit edge to the project): unleveled story under an epic in a scheme project'
   source: rule cases R1-R13 (spec)
   rule: jira
   world:
@@ -161,7 +161,7 @@
     verdicts:
       u: {story: deny}
   tags: [rules, jira]
-  comment: "W5a writes inherit->project but the hierarchy parent stays the epic (DSEP:755-769, :1494-1495). Jira shows the story to Browse holders; PipesHub hides it. See spec \xA76 B1 (verified through DSEP in run_dsep_jira.py)."
+  comment: "An inherit edge to the project while the hierarchy parent stays the epic does not count (data_source_entities_processor.py:1537-1544). Jira shows the story to Browse holders; PipesHub hides it."
 - id: RULE-J09
   title: Jira attachment of a leveled issue follows the issue (STRICT, inherits)
   source: rule cases R1-R13 (spec)
@@ -182,4 +182,4 @@
     verdicts:
       u: {att: deny}
   tags: [rules, jira]
-  comment: apply_attachment_access, jira_issue_security.py:564-569; U not in the level.
+  comment: apply_attachment_access, jira_issue_security.py:700-704; U not in the level.

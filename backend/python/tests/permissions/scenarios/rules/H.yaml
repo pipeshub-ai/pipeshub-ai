@@ -279,7 +279,7 @@
     verdicts:
       u: {p: admit}
   tags: [rules, notion]
-  comment: 'Notion team: workspace group inherits from the app with [] grants (S/notion/connector.py:1600-1616).'
+  comment: 'Notion team: workspace group inherits from the app with [] grants (notion/connector.py:2288-2301).'
 - id: RULE-H15
   title: Inherit edge to a node other than the hierarchy parent does not count
   source: rule cases R1-R13 (spec)
@@ -300,7 +300,7 @@
     verdicts:
       u: {story: deny}
   tags: [rules, jira]
-  comment: The probe is (child)-[:INHERIT_PERMISSIONS]->(that NODE_RELATION parent) (N:17630-17637).
+  comment: The probe is (child)-[:INHERIT_PERMISSIONS]->(that NODE_RELATION parent).
 - id: RULE-H16
   title: 'Multi-parent: one parent path fails, the other passes'
   source: rule cases R1-R13 (spec)

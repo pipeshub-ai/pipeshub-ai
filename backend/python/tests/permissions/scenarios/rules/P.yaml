@@ -130,7 +130,7 @@
     verdicts:
       u: {f: deny}
   tags: [rules, any]
-  comment: Only PERMISSION{type:'USER'} user->group counts; DSEP writes USER (DSEP:5440-5461).
+  comment: Only PERMISSION{type:'USER'} user->group counts; the processor writes USER (data_source_entities_processor.py:2279-2285).
 - id: RULE-P07
   title: BELONGS_TO user->group (legacy membership shape) is not membership for the verifier
   source: rule cases R1-R13 (spec)
@@ -153,7 +153,7 @@
     verdicts:
       u: {f: deny}
   tags: [rules, any]
-  comment: The legacy enumeration reads BELONGS_TO->Group (N:6573-6576); the verifier does not. Prefilter superset, no leak.
+  comment: The legacy enumeration reads BELONGS_TO->Group; the verifier does not. Prefilter superset, no leak.
 - id: RULE-P08
   title: Org-wide grant typed ORG (SharePoint 'Everyone', Jira 'anyone', GitHub public)
   source: rule cases R1-R13 (spec)
@@ -211,7 +211,7 @@
     verdicts:
       u: {f: deny}
   tags: [rules, drive]
-  comment: DSEP drops DOMAIN/ANYONE/LINK before writing (DSEP:2084-2101); an edge that slipped through still grants nothing.
+  comment: The processor drops DOMAIN/ANYONE/LINK before writing (data_source_entities_processor.py:2313-2331); an edge that slipped through still grants nothing.
 - id: RULE-P11
   title: User who is not BELONGS_TO the org does not get the org grant
   source: rule cases R1-R13 (spec)
@@ -252,7 +252,7 @@
     verdicts:
       u: {f: deny}
   tags: [rules, drive]
-  comment: ANYONE/ANYONE_WITH_LINK write no edge; Drive gives the listing user a USER grant (DT:1063-1065, 1201-1209).
+  comment: ANYONE/ANYONE_WITH_LINK write no edge; Drive gives the listing user a USER grant (google/drive/team/connector.py:1336-1360).
 - id: RULE-P13
   title: Linked source account (AUTHENTICATED_AS for A) holds the grant
   source: rule cases R1-R13 (spec)

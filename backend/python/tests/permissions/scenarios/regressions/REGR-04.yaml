@@ -32,4 +32,4 @@
     verdicts:
       u: {m1: deny, m3: deny, mb: deny}
   tags: [regression, qa, rgl, delete]
-  comment: m1 is RESTRICTED and does not inherit, yet the declared arm admits it (B5). m2 hangs under the mailbox without BELONGS_TO, and the walk never passes through a record-group-level group. m4 belongs to a record-group-level group of another connector, which does not count.
+  comment: m1 is RESTRICTED and does not inherit, yet the declared arm admits it. m2 hangs under the mailbox without BELONGS_TO, and the walk never passes through a record-group-level group. m4 belongs to a record-group-level group of another connector, which does not count.

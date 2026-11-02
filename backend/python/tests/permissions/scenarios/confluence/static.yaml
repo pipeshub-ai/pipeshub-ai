@@ -36,20 +36,48 @@
   title: Edit-only restriction does not change who can view
   source: permission model doc, confluence section (edit restrictions do not affect viewing)
   rule: intersection
-  comment: The writer keeps the page STRICT for an edit-only restriction (connector.py:1786-1790), so the graph is the base world.
+  comment: The writer keeps the page STRICT for an edit-only restriction (connector.py:2341-2343), so the graph is the base world.
   world: golden/confluence_hr
   expect:
     verdicts:
       erin: {page:Handbook: admit}
       dave: {page:Handbook: admit}
   tags: [confluence, "cell:confluence/edit-only"]
+- id: CONF-S-06
+  title: Space readable by all licensed users; the licensed group's members read it and an unlicensed person cannot
+  source: permission model doc, confluence section; found by the permission harness
+  rule: intersection
+  comment: >
+    An ALL_LICENSED_USERS space grant maps to the synced licensed group and never to the whole organization; when no such
+    group is synced it grants nothing and is reported (atlassian/confluence_cloud/connector.py:4537-4578).
+  world:
+    principals:
+      - {id: lic}
+      - {id: unl}
+      - {id: g:licensed, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: space:ALL, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: page:Welcome, kind: record, connector: app, rule: STRICT, parents: [space:ALL], inherits: [space:ALL], belongs: [space:ALL]}
+    grants:
+      - [g:licensed, space:ALL]
+    memberships:
+      - [lic, g:licensed]
+    gates:
+      - [lic, app]
+      - [unl, app]
+  expect:
+    verdicts:
+      lic: {page:Welcome: admit}
+      unl: {page:Welcome: deny}
+  tags: [confluence, "cell:confluence/access-class-fallback"]
 - id: CONF-S-07
   title: Page restricted so the sync account loses it; the removal sweep deletes it, so it is not readable
   source: permission model doc, confluence section (a page restriction applies at once); checked by the permission harness
   rule: intersection
   comment: >
     The sync account gets 404 for the page and its space listing no longer includes it, so the connector's removal sweep
-    deletes the record and its attachment (confluence_cloud/connector.py:2165-2177, :2063-2065). The harness measured
+    deletes the record and its attachment (confluence_cloud/connector.py:2862, _remove_content_gone_from_source, and :3289, _remove_attachments_gone). The harness measured
     it on the perm preset: 20 new restrictions, 0 wrong pairs after one incremental sync (an earlier reading of 89 wrong
     pairs came from a simulator without the listing route).
   world:

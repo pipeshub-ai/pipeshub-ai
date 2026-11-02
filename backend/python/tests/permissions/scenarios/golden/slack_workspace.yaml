@@ -1,10 +1,10 @@
 # Slack workspace: a public and a private channel, each with a message and a thread (container rule: the channel's
 # member list is the whole access list). Written the way the Slack team connector writes it on main.
-#   channel: RECORD_GROUP_LEVEL group, OPEN, does not inherit the app, hide_children: slack/team/connector.py:1331-1355
-#   public channel grants: the workspace_member role, plus the guests added to the channel: connector.py:1198-1225
-#   private channel grants: one user grant per member: connector.py:1229-1240
-#   thread: a SLACK_THREAD record group (RGL) under its channel, inheriting it: connector.py:1885-1899
-#   messages and thread replies: inherit their group (inherit_permissions=True): connector.py:2054
+#   channel: RECORD_GROUP_LEVEL group, OPEN, does not inherit the app, hide_children: slack/team/connector.py:1611-1634
+#   public channel grants: the workspace_member role, plus the guests added to the channel: connector.py:1451-1515 (_channel_permissions)
+#   private channel grants: one user grant per member: connector.py:1477-1515
+#   thread: a SLACK_THREAD record group (RGL) under its channel, inheriting it: connector.py:2152-2187
+#   messages and thread replies: inherit their group (inherit_permissions=True): connector.py:2347, :2750
 # Every record is stamped "container": its access is its channel's.
 principals:
   - {id: ann}

@@ -80,6 +80,11 @@ def _user_deactivated(w: World, m: Mutation) -> World:
     return replace(w, memberships=tuple(x for x in w.memberships if x.member != m.node))
 
 
+def _gate_withdrawn(w: World, m: Mutation) -> World:
+    """What a connector writes when it finds an account inactive: it removes the person's relation to its app."""
+    return replace(w, gates=tuple(g for g in w.gates if g.who != m.node))
+
+
 _APPLY: dict[str, Callable[[World, Mutation], World]] = {
     "grant_added": _grant_added,
     "grant_removed": _grant_removed,
@@ -91,6 +96,7 @@ _APPLY: dict[str, Callable[[World, Mutation], World]] = {
     "deleted": _deleted,
     "user_removed": _user_removed,
     "user_deactivated": _user_deactivated,
+    "gate_withdrawn": _gate_withdrawn,
 }
 assert set(_APPLY) == set(MUTATION_KINDS)
 

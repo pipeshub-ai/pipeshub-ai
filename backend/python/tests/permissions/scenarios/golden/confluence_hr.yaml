@@ -1,12 +1,12 @@
 # Confluence HR space (permission model doc, confluence section), written the way Confluence Cloud writes it on main.
 #   space  RESTRICTED + inherits the app, granted to its readers:
-#          atlassian/confluence_cloud/connector.py:3414-3415
+#          atlassian/confluence_cloud/connector.py:4841-4842
 #   page   STRICT, RESTRICTED when it carries a READ restriction (edit-only stays STRICT):
-#          connector.py:1786-1790 (pages), :836-839 (folders)
+#          connector.py:2341-2343 (pages), :1239-1245 (folders)
 #   page inherits its parent page or the space (Record.inherit_permissions defaults True,
-#          models/entities.py:299; edge written at data_source_entities_processor.py:762)
-#   attachment / comment: OPEN, inherits its page: connector.py:1967, :6458
-#   confluence_access.py:91 (apply_page_access_to_dependents) re-stamps dependents when a page's access changes.
+#          models/entities.py:303; edge written at data_source_entities_processor.py:949-952)
+#   attachment / comment: OPEN, inherits its page: connector.py:7583-7585 (attachments), :8113-8115 (comments)
+#   atlassian/core/confluence_access.py:91 (apply_page_access_to_dependents) re-stamps dependents when a page's access changes.
 # Extra principals and nodes (cam, lia, finn, space:ALL, page:Onboarding) exist for the change scenarios.
 principals:
   - {id: bob}

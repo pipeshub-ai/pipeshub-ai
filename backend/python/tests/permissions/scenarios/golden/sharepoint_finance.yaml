@@ -1,11 +1,13 @@
 # SharePoint Online finance site (permission model doc, sharepoint section), written the way the connector writes it on main.
 #   site group: OPEN, no inheritance, granted to the site groups' members (Limited Access groups are skipped:
-#          role_bindings_to_permission_type, microsoft/sharepoint_online/connector.py:272-285)
-#   library: inherits its site unless it has unique role assignments: connector.py:2488 (inherit_permissions=True),
-#          :3347-3360 (_get_library_access)
-#   item without unique permissions: inherits (default); item with unique permissions: inherit_permissions=False,
-#          grants = its own role assignments plus org and link grants Graph reports:
-#          connector.py:1544, :1563-1570, :288-296 (unique_file_grants)
+#          role_bindings_to_permission_type, microsoft/sharepoint_online/connector.py:304-317)
+#   library: inherits its site unless it has unique role assignments: connector.py:1419 (drive_record_group.inherit_permissions),
+#          :3164 (_get_library_access)
+#   item without unique permissions: inherits and stores no grants (_drive_item_access, connector.py:1669-1679, with
+#          PERMISSION_MODEL_VERSION = 2 at :262); item with unique permissions: inherit_permissions=False, grants = its own
+#          role assignments plus the identities Graph lists on its links (unique_file_grants)
+#   sharing link: grants only the identities Graph lists on it; an organization or anonymous link opens the item to the
+#          people who redeem it, who arrive through the link's SharePoint group in the role assignments (connector.py:2822-2825)
 # Extra principals and nodes (audrey, leo, cfo, the Archive folder, memo, minutes) exist for the scenarios.
 principals:
   - {id: bob}
@@ -42,15 +44,8 @@ grants:
   - [g:finance-members, board-deck]
   - [alice, board-deck]
   - [g:finance-members, policy]
-  - [org, policy, ORG]
+  - [raj, policy]
   - [g:finance-members, public-deck]
-  # snapshot grants on the inheriting items (the inherited entries Graph lists for each)
-  - [g:finance-members, forecast]
-  - [g:finance-members, folder:Archive]
-  - [g:finance-members, archive]
-  - [g:finance-members, memo]
-  - [g:finance-members, minutes]
-  - [g:hr-payroll, salaries]
 memberships:
   - [bob, g:finance-members]
   - [hana, g:hr-payroll]

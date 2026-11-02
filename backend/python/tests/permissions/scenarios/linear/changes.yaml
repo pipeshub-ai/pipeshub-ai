@@ -4,8 +4,7 @@
   rule: override
   world: golden/linear_teams
   mutations:
-    - {kind: grant_removed, node: team:Platform, ref: org}
-    - {kind: grant_added, node: team:Platform, ref: g:team-platform}
+    - {kind: grant_removed, node: team:Platform, ref: g:workspace-members}
   expect:
     before: {ben: {PLAT-7: admit}}
     verdicts:
@@ -15,13 +14,12 @@
     index_writes: 0
   tags: [linear, "cell:linear/visibility-change"]
 - id: LIN-C-02
-  title: Team made public; Payments' grant becomes the org and Ben gains its issues
+  title: Team made public; Payments is also granted to the workspace members and Ben gains its issues
   source: permission model doc, linear section
   rule: override
   world: golden/linear_teams
   mutations:
-    - {kind: grant_removed, node: team:Payments, ref: g:team-payments}
-    - {kind: grant_added, node: team:Payments, ref: org, value: ORG}
+    - {kind: grant_added, node: team:Payments, ref: g:workspace-members}
   expect:
     before: {ben: {PAY-12: deny}}
     verdicts:
@@ -66,3 +64,18 @@
       ben: {PLAT-7: deny}
     index_writes: 1
   tags: [linear, "cell:linear/move"]
+- id: LIN-C-06
+  title: User removed from the workspace; Ann should lose everything
+  source: permission model doc, linear section
+  rule: override
+  comment: >
+    The connector leaves inactive users out of the users it syncs (linear/connector.py:996-1005), so they are in no team
+    group and not in the workspace-members group (:940), and every team grant is a group grant: she reads nothing.
+  world: golden/linear_teams
+  mutation: {kind: user_deactivated, node: ann}
+  expect:
+    before: {ann: {PAY-12: admit}}
+    verdicts:
+      ann: {PLAT-7: deny, PAY-12: deny, SUP-3: deny}
+    index_writes: 0
+  tags: [linear, "cell:linear/user-removed", narrowing]

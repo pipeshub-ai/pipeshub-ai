@@ -1,7 +1,7 @@
 # Gmail team mailboxes (container rule: the mailbox's owner grant is the whole access list), as the connector writes them.
-#   mailbox: RECORD_GROUP_LEVEL group, does not inherit the app, granted to its owner: google/gmail/team/connector.py:2325-2349
-#   labels INBOX, SENT, OTHERS: child groups inheriting the mailbox: connector.py:2336-2349
-#   mails: inherit their label group (inherit_permissions=True): connector.py:522
+#   mailbox: RECORD_GROUP_LEVEL group, does not inherit the app, granted to its owner: google/gmail/team/connector.py:1779-1809
+#   labels INBOX, SENT, OTHERS: child groups inheriting the mailbox: connector.py:1792-1801
+#   mails: inherit their label group (inherit_permissions=True): connector.py:572
 principals:
   - {id: ann}
   - {id: bob}

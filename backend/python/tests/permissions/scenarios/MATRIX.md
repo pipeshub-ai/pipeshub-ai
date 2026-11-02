@@ -64,18 +64,18 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 
 | Connector | grant | member | restriction | inherit | move | delete | user | link | visibility | closed | event |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `atlassian/confluence_cloud` | 2 | 2 | 5 | - | 2 | 1 | gap | - | - | - | gap |
-| `atlassian/confluence_datacenter` | 2 | 2 | 5 | - | 2 | 1 | gap | - | - | - | gap |
+| `atlassian/confluence_cloud` | 2 | 2 | 5 | - | 2 | 1 | 1 | - | - | - | gap |
+| `atlassian/confluence_datacenter` | 2 | 2 | 5 | - | 2 | 1 | 1 | - | - | - | gap |
 | `atlassian/confluence_datacenter_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `atlassian/jira_cloud` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
 | `atlassian/jira_data_center` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
 | `atlassian/jira_cloud_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `atlassian/jira_data_center_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
-| `microsoft/sharepoint_online` | 3 | 1 | - | gap | 1 | - | - | 1 | - | - | - |
+| `microsoft/sharepoint_online` | 3 | 1 | - | 2 | 2 | - | - | 4 | - | - | - |
 | `microsoft/onedrive` | gap | gap | - | gap | gap | - | - | gap | - | - | - |
 | `google/drive/team` | 7 | 2 | - | 3 | 1 | - | - | 1 | - | - | - |
 | `google/drive/individual` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
-| `linear` | - | 2 | - | - | 1 | - | gap | - | 2 | - | - |
+| `linear` | - | 2 | - | - | 1 | - | 1 | - | 2 | - | - |
 | `slack/team` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `slack/individual` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `google/gmail/team` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
@@ -126,7 +126,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | confluence | edit-only | static | CONF-C-06, CONF-S-04 |
 | confluence | attachment-comment | static | CONF-S-03 |
 | confluence | depth-over-50 | static | CONF-S-05 |
-| confluence | access-class-fallback | static | **gap** |
+| confluence | access-class-fallback | static | CONF-S-06 |
 | confluence | restricted-away-from-sync-account | static | CONF-S-07 |
 | confluence | space-grant | change | CONF-C-01, CONF-C-02 |
 | confluence | restriction-change | change | CONF-C-03, CONF-C-04, CONF-C-05 |
@@ -134,7 +134,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | confluence | move-in-space | change | CONF-C-07 |
 | confluence | move-cross-space | change | CONF-C-08 |
 | confluence | delete | change | CONF-C-10 |
-| confluence | user-removed | change | **gap** |
+| confluence | user-removed | change | CONF-C-11 |
 | confluence | audit-event | change | **gap** |
 | jira | no-level | static | **gap** |
 | jira | level-holder | static | **gap** |
@@ -156,21 +156,21 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | jira | move-project | change | **gap** |
 | jira | scheme-unreadable | change | **gap** |
 | jira | user-deactivated | change | **gap** |
-| sharepoint | inheriting | static | **gap** |
-| sharepoint | unique-folder | static | **gap** |
-| sharepoint | nested-unique | static | SP-S-02 |
-| sharepoint | specific-people-share | static | **gap** |
-| sharepoint | org-link | static | **gap** |
+| sharepoint | inheriting | static | SP-S-01 |
+| sharepoint | unique-folder | static | SP-S-01 |
+| sharepoint | nested-unique | static | SP-S-01, SP-S-02 |
+| sharepoint | specific-people-share | static | SP-S-01 |
+| sharepoint | org-link | static | SP-C-07, SP-S-01 |
 | sharepoint | anyone-link | static | SP-S-03 |
-| sharepoint | limited-access | static | **gap** |
+| sharepoint | limited-access | static | SP-S-01 |
 | sharepoint | site-grant | change | SP-C-01 |
 | sharepoint | member-change | change | SP-C-02 |
-| sharepoint | break-restore-inheritance | change | **gap** |
+| sharepoint | break-restore-inheritance | change | SP-C-03, SP-C-04 |
 | sharepoint | unique-grant-change | change | SP-C-05 |
 | sharepoint | file-shared | change | SP-C-06 |
-| sharepoint | org-link | change | **gap** |
-| sharepoint | link-redeemed | change | **gap** |
-| sharepoint | move | change | SP-C-08 |
+| sharepoint | org-link | change | SP-C-07, SP-S-01 |
+| sharepoint | link-redeemed | change | SP-C-07 |
+| sharepoint | move | change | SP-C-08, SP-C-09 |
 | onedrive | inheriting | static | **gap** |
 | onedrive | unique-folder | static | **gap** |
 | onedrive | specific-people-share | static | **gap** |
@@ -195,13 +195,13 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | drive | shared-drive-member | change | DRIVE-C-06, DRIVE-S-01 |
 | drive | move | change | DRIVE-C-07 |
 | drive | link-discoverability | change | DRIVE-C-08 |
-| linear | public-team | static | **gap** |
-| linear | private-team | static | **gap** |
-| linear | guest | static | LIN-C-04 |
+| linear | public-team | static | LIN-S-01 |
+| linear | private-team | static | LIN-S-01 |
+| linear | guest | static | LIN-C-04, LIN-S-01 |
 | linear | visibility-change | change | LIN-C-01, LIN-C-02 |
 | linear | member-change | change | LIN-C-03, LIN-C-04 |
 | linear | move | change | LIN-C-05 |
-| linear | user-removed | change | **gap** |
+| linear | user-removed | change | LIN-C-06 |
 | container | public-channel | static | SLK-S-01 |
 | container | private-channel | static | SLK-S-01 |
 | container | thread-under-channel | static | SLK-S-01 |
@@ -221,4 +221,4 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | item-acl | shared | static | **gap** |
 | item-acl | not-shared | static | **gap** |
 
-50 gaps of 101 cells.
+37 gaps of 101 cells.

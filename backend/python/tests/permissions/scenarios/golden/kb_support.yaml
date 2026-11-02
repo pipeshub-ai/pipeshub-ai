@@ -1,6 +1,6 @@
 # A knowledge base opened to a team (container rule: the KB app is the permission scope). The KB is an App of type KB,
 # which opens every record that belongs to it to every user gated into it (rule R12); a team's PERMISSION edge to the
-# app gates its members (data_source_entities_processor.py:1316-1360 links records to the app; localKB/connector.py:57).
+# app gates its members (data_source_entities_processor.py:700-723 links records to the app; localKB/connector.py:57).
 principals:
   - {id: mia}
   - {id: nate}

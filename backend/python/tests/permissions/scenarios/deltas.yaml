@@ -9,15 +9,17 @@ deltas:
     scenarios: [DRIVE-C-08]
     pairs: [DRIVE-C-08/mo/roadmap]
     reason: >
-      The Drive team connector drops a domain share (google/drive/team/connector.py:987-989, skipped at :1072-1074)
-      and an anyone-link (:1064-1066), so a discoverable domain share gives the org no grant. Safe but incomplete.
+      The Drive team connector stores no grant for a domain share (google/drive/team/connector.py:1157-1159) and the
+      processor writes no edge for a domain or anyone entity (data_source_entities_processor.py:2317-2331), so a
+      discoverable domain share gives the org no grant. Safe but incomplete.
     fix: "Write a discoverable domain share (and a discoverable anyone share) as an org grant after a verified-domain check; link-only shares stay ungranted."
   - id: DELTA-05
     direction: under-share
     scenarios: [CONF-S-05]
     pairs: [CONF-S-05/v/page:52]
     reason: >
-      The walk up the hierarchy stops at 50 hops (rule R7), so a page nested deeper is hidden from everyone.
+      The walk up the hierarchy stops at 50 hops (ACCESS_WALK_MAX_DEPTH, services/graph_db/interface/graph_db_provider.py:47;
+      rule R7), so a page nested deeper is hidden from everyone.
     fix: "Raise the cap in check_access or flatten depth at write time; ticket candidate."
   - id: DELTA-17
     direction: under-share
@@ -25,5 +27,5 @@ deltas:
     pairs: [GM-C-01/cat/mail:ann-1, GM-C-01/cat/mail:ann-2]
     reason: >
       A Gmail delegate added at the source gets no access in PipesHub: the connector writes only the owner's grant
-      (google/gmail/team/connector.py:2325-2353); 'delegation' in that connector means domain-wide impersonation.
+      (google/gmail/team/connector.py:1310-1324, _create_owner_permission); 'delegation' in that connector means domain-wide impersonation.
     fix: "Read mailbox delegates and grant them the mailbox, or accept and document the gap."

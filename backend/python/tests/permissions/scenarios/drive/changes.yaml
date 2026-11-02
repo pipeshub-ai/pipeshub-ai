@@ -129,7 +129,7 @@
   source: permission model doc, google-drive section (a discoverable domain share becomes an org grant)
   rule: union
   comment: >
-    The processor drops DOMAIN and ANYONE grants (data_source_entities_processor.py:2089-2101), so the graph is
+    The processor drops DOMAIN and ANYONE grants (data_source_entities_processor.py:2317-2331), so the graph is
     unchanged and org members outside the folder's audience cannot find the file. Safe, but incomplete.
   world: golden/drive_q4
   expect:

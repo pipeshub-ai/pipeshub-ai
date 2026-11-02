@@ -1,3 +1,19 @@
+- id: SP-S-01
+  title: Finance site, the worked example (Bob, Hana, Alice, Raj, Zoe)
+  source: permission model doc, sharepoint section
+  rule: override
+  comment: >
+    Limited Access on the site and library is skipped by the writer, so Alice holds nothing there.
+    policy.docx has an organization link that Raj redeemed: the link grants Raj, not the whole organization.
+  world: golden/sharepoint_finance
+  expect:
+    verdicts:
+      bob: {forecast: admit, salaries: deny, folder:Payroll-2026: deny, board-deck: admit, policy: admit}
+      hana: {forecast: deny, salaries: admit, folder:Payroll-2026: deny, board-deck: deny, policy: deny}
+      alice: {forecast: deny, salaries: deny, folder:Payroll-2026: deny, board-deck: admit, policy: deny}
+      raj: {forecast: deny, salaries: deny, folder:Payroll-2026: deny, board-deck: deny, policy: admit}
+      zoe: {forecast: deny, salaries: deny, folder:Payroll-2026: deny, board-deck: deny, policy: deny}
+  tags: [sharepoint, "cell:sharepoint/inheriting", "cell:sharepoint/unique-folder", "cell:sharepoint/nested-unique", "cell:sharepoint/specific-people-share", "cell:sharepoint/org-link", "cell:sharepoint/limited-access"]
 - id: SP-S-02
   title: Nested unique folder replaces its parent's audience
   source: permission model doc, sharepoint section (2026 replaced Payroll with HR-Leads)
@@ -12,7 +28,7 @@
   title: Anyone link is not stored; nobody gains the file
   source: permission model doc, sharepoint section (anyone links are searchable by redeemers only)
   rule: override
-  comment: An anonymous link names no grantee and is not stored (connector.py:3016-3024 handles only the organization scope).
+  comment: An anonymous link names no grantee and is not stored (connector.py:2800-2825 grants only the identities Graph lists).
   world: golden/sharepoint_finance
   expect:
     verdicts:

@@ -1,5 +1,5 @@
 # A Confluence space where most pages match the space and one subtree is restricted (written as confluence_hr is:
-# atlassian/confluence_cloud/connector.py:3414, :1786-1790). `stamp` is the rule a projector should give each node:
+# atlassian/confluence_cloud/connector.py:4841-4842, :2341-2343). `stamp` is the rule a projector should give each node:
 # "container" when its access is its space's, "intersection" for the restricted subtree. The tests hold the stamps to
 # the oracle: a container node is admitted exactly when its space is, for every viewer; an intersection node differs
 # for at least one.

@@ -100,3 +100,14 @@ def test_deactivating_a_person_only_drops_their_memberships() -> None:
     after = mutations.apply(world, Mutation("user_deactivated", "u"))
     assert after.memberships == () and after.grants == world.grants and after.gates == world.gates
     assert after.principals == world.principals
+
+
+def test_withdrawing_the_gate_of_a_person_changes_nothing_else() -> None:
+    from . import mutations
+    from .model import Membership, Mutation
+
+    world = World(principals=(Principal("u"), Principal("v"), Principal("g", "group")),
+                  memberships=(Membership("u", "g"),), grants=(Grant("u", "n"),), gates=(Gate("u", "A"), Gate("v", "A")),
+                  nodes=(Node("A", "app"), Node("n", "record", "A", "OPEN")))
+    after = mutations.apply(world, Mutation("gate_withdrawn", "u"))
+    assert after.gates == (Gate("v", "A"),) and after.memberships == world.memberships and after.grants == world.grants

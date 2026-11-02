@@ -135,3 +135,21 @@
       bob: {page:2027-bands: deny, att:bands: deny, page:Compensation: admit, page:Handbook: admit}
     index_writes: delete
   tags: [confluence, "cell:confluence/delete"]
+- id: CONF-C-11
+  title: Account deactivated; Atlassian keeps its groups, so Bob keeps everything the groups grant
+  source: permission model doc, confluence section (user removed from the org)
+  rule: intersection
+  comment: >
+    Atlassian keeps a deactivated account in its groups, but the connector reads each member's account status: it leaves
+    an inactive member out of the group (confluence_cloud/connector.py:5478-5482) and withdraws the connector from the
+    stored user (:5606-5618), so the person is in no group and has no gate.
+  world: golden/confluence_hr
+  mutations:
+    - {kind: user_deactivated, node: bob}
+    - {kind: gate_withdrawn, node: bob}
+  expect:
+    before: {bob: {page:Handbook: admit}}
+    verdicts:
+      bob: {page:Handbook: deny, page:2027-bands: deny, space:HR: deny}
+    index_writes: 0
+  tags: [confluence, "cell:confluence/user-removed", narrowing]

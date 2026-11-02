@@ -60,7 +60,7 @@
   source: permission model doc, container rule
   rule: container
   comment: >
-    A private channel is granted to each of its members (slack/team/connector.py:1229-1240). The members of the channel
+    A private channel is granted to each of its members (slack/team/connector.py:1477-1515). The members of the channel
     before the change were Ann and the guest, so both stay; workspace members who had not joined lose it.
   world: golden/slack_workspace
   mutations:

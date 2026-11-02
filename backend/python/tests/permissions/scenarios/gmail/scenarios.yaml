@@ -15,7 +15,7 @@
   rule: container
   comment: >
     Gmail lets an owner delegate a mailbox, but the connector writes only the owner's grant
-    (google/gmail/team/connector.py:2325-2353); "delegation" in that connector means domain-wide impersonation. The graph
+    (google/gmail/team/connector.py:1311-1324); "delegation" in that connector means domain-wide impersonation. The graph
     does not change (DELTA-17).
   world: golden/gmail_mailboxes
   expect:

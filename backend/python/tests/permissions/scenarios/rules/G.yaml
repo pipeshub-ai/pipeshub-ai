@@ -15,7 +15,7 @@
     verdicts:
       u: {f: deny}
   tags: [rules, any]
-  comment: A grant in a connector the user cannot enter is dropped (N:17081).
+  comment: A grant in a connector the user cannot enter is dropped.
 - id: RULE-G02
   title: Gate through a group's USER_APP_RELATION
   source: rule cases R1-R13 (spec)
@@ -75,7 +75,7 @@
     verdicts:
       u: {f: admit}
   tags: [rules, any]
-  comment: The gate does not apply the ORG/ORGANIZATION type test that grants do (N:16944). Nothing found writes such an edge.
+  comment: The gate does not apply the ORG/ORGANIZATION type test that grants do. Nothing found writes such an edge.
 - id: RULE-G05
   title: 'App of another org: not gated even with USER_APP_RELATION'
   source: rule cases R1-R13 (spec)
