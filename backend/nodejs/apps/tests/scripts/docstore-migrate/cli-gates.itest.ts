@@ -30,9 +30,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
     it('the dispatcher: an unknown command exits 2, help exits 0, reset wants --yes, and status reads the job', async () => {
       expect((await run(['no-such-command'])).code).to.equal(2);
-      // the way back arrives with the reverse copy: until then these are not commands
-      expect((await run(['rollback'])).code).to.equal(2);
-      expect((await run(['reverse'])).code).to.equal(2);
       expect((await run(['help'])).code).to.equal(0);
       const noYes = await run(['reset']);
       expect(noYes.code).to.equal(2);

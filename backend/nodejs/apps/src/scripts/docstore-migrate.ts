@@ -12,6 +12,7 @@
  *     verify [--only a,b]    compare every document through the independent decoder
  *     drain [--wait s] [--force] [--cancel]   ask the running application for no new chat turns, wait for the turns in flight
  *     migrate --offline [--dry-run] [--allow-writers]   the compose cut, one command
+ *     rollback [--reverse]   back to MongoDB (see docs)
  *     reset --yes            empty the copied tables and cancel the job (start the copy again)
  *     status                 job, phase and per-collection progress
  */

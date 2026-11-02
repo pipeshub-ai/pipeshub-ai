@@ -5,8 +5,10 @@ import { readMongoFence } from './fence';
 import { follow, followStart } from './follow';
 import { migrateOffline } from './offline';
 import { cutover, onlineStart, onlineVerify, unfreeze } from './online';
+import { reverseFollow, rollbackOnline } from './reverse-follow';
 import { preflight } from './preflight';
 import { reset } from './reset';
+import { rollback } from './reverse';
 import { MigrationRuntime } from './runtime';
 import { postLoad, runMigrateJob } from './schema';
 import { JobState } from './state';
@@ -42,7 +44,7 @@ const log: Log = (event, data) =>
     `${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`,
   );
 
-const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reset, status
+const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, status
 --confirm-fence-armed (drain): every application process runs with DOC_STORE_FENCE=on. Without it drain refuses while a connected
   application client does not name its connections pipeshub-fenced, because a process that does not wrap its writes keeps writing
   whatever the fence says.
@@ -238,6 +240,48 @@ export async function runCli(
         const changed = await unfreeze(rt);
         out({ ok: true, changed, fence: (await readMongoFence(rt)).mode });
         return 0;
+      }
+      case 'reverse': {
+        const js = await JobState.attach(rt);
+        const idle =
+          typeof a.flags.get('until-idle') === 'string'
+            ? Number(a.flags.get('until-idle')) * 1000
+            : 0;
+        const ac = new AbortController();
+        process.once('SIGTERM', () => {
+          ac.abort();
+        });
+        process.once('SIGINT', () => {
+          ac.abort();
+        });
+        const r = await reverseFollow(rt, js, {
+          untilIdleMs: idle,
+          stop: ac.signal,
+          log,
+        });
+        out({ ok: true, ...r });
+        return 0;
+      }
+      case 'rollback': {
+        if (a.flags.has('online')) {
+          const sample = a.flags.get('sample');
+          const max = a.flags.get('max-freeze');
+          const r = await rollbackOnline(rt, {
+            log,
+            maxFreezeMs: typeof max === 'string' ? Number(max) * 1000 : 900_000,
+            ...(typeof sample === 'string' ? { sample: Number(sample) } : {}),
+          });
+          out(r);
+          return r.ok ? 0 : 1;
+        }
+        const r = await rollback(rt, {
+          reverse: a.flags.has('reverse'),
+          allowWriters:
+            a.flags.has('allow-clients') || a.flags.has('allow-writers'),
+          log,
+        });
+        out(r);
+        return r.ok ? 0 : 1;
       }
       case 'reset': {
         if (!a.flags.has('yes')) {
