@@ -345,8 +345,10 @@ logged-in user's `userId` and `orgId`.
 
 ## Runtime tuning (workers and query-service flags)
 
-These live in `.env` alongside the rest of your configuration. Every default below
-reproduces current behaviour, so an upgrade changes nothing until you opt in.
+These live in `.env` alongside the rest of your configuration. The defaults below keep
+the earlier behaviour except two: the stored-record cache is on (up to 512 MiB per query
+worker; `PIPESHUB_RECORD_CACHE_BYTES=0` turns it off and restores the earlier memory use),
+and storage search runs ripgrep on up to half the container's CPUs (`GREP_THREADS`).
 
 Compose forwards **only** the variables it enumerates, so a name that is not listed in
 the compose file never reaches the container. All of these are wired; setting them in
@@ -445,7 +447,7 @@ the table says.
 > **Naming note.** The `PIPESHUB_*` variables in
 > [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 > are read by `install.sh` *before* `.env` is written and control the installer itself.
-> The four above are read by the running service. They share a prefix but not a purpose.
+> The `PIPESHUB_*` variables above are read by the running service. They share a prefix but not a purpose.
 
 ---
 
