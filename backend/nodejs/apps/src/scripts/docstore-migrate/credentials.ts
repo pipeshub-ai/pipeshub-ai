@@ -11,6 +11,7 @@
 import { plainJson, Doc } from './canonical';
 import { compareDocs, DocDiff } from './compare';
 import { decodeDoc } from './decode';
+import { idText } from '../../libs/repositories/import';
 import { importCredentialDocs } from '../../libs/repositories/identity/credentials-import';
 import { userCredentials } from './mapping/identity';
 import { idFilter } from './mongo-read';
@@ -43,6 +44,17 @@ async function liveUsers(
       out.add(`${String(u.orgId)}/${String(u._id)}`.toLowerCase());
   return out;
 }
+
+/** A user id as the importer stores it (lower-case hex), so source ids and PostgreSQL rows meet under one key. */
+const stored = (v: string): string => idText(v) ?? v;
+
+/**
+ * The forms a user id may have in MongoDB, for a `$in` (a text id is matched exactly there).
+ * shortcut: all-lower and all-upper hex only; a mixed-case id is not found, none is known to exist. Upgrade with a collation query if one does.
+ */
+const sourceForms = (ids: Iterable<string>): string[] => [
+  ...new Set([...ids].flatMap((u) => [u, u.toLowerCase(), u.toUpperCase()])),
+];
 
 const accountOf = (c: Record<string, unknown>): string =>
   `${String(c.orgId)}/${String(c.userId)}`.toLowerCase();
@@ -87,7 +99,7 @@ async function expectedRows(
   const cursor = rt
     .db()
     .collection('userCredentials')
-    .find(userIds ? { userId: { $in: userIds } } : {}, {
+    .find(userIds ? { userId: { $in: sourceForms(userIds) } } : {}, {
       sort: { _id: 1 },
       promoteLongs: false,
     });
@@ -95,9 +107,9 @@ async function expectedRows(
     const c = toCanonical(raw, rep, 'userCredentials');
     if (c.isDeleted === true || typeof c.userId !== 'string') continue;
     if (!live.has(accountOf(c))) continue;
-    const prev = best.get(c.userId);
-    if (!prev || time(c.updatedAt) >= time(prev.updatedAt))
-      best.set(c.userId, c);
+    const key = stored(c.userId);
+    const prev = best.get(key);
+    if (!prev || time(c.updatedAt) >= time(prev.updatedAt)) best.set(key, c);
   }
   const out = new Map<string, Doc>();
   for (const [u, c] of best) {
@@ -105,6 +117,7 @@ async function expectedRows(
     for (const f of userCredentials.fields) {
       let v = c[f.path];
       if (v === undefined && f.readAbsentAs !== undefined) v = f.readAbsentAs;
+      if (typeof v === 'string' && f.type === 'oid') v = stored(v);
       if (v !== undefined) doc[f.path] = v;
     }
     out.set(u, plainJson(doc) as Doc);
@@ -134,7 +147,8 @@ export async function verifyCredentialsFor(
     ...new Set(
       creds
         .map((c) => c.userId)
-        .filter((u): u is string => typeof u === 'string'),
+        .filter((u): u is string => typeof u === 'string')
+        .map(stored),
     ),
   ];
   if (users.length === 0) return [];
@@ -230,7 +244,7 @@ export async function syncCredentials(
   const raws = await rt
     .db()
     .collection('userCredentials')
-    .find({ userId: { $in: list }, isDeleted: { $ne: true } } as never, {
+    .find({ userId: { $in: sourceForms(list) }, isDeleted: { $ne: true } } as never, {
       sort: { _id: 1 },
       promoteLongs: false,
     })
