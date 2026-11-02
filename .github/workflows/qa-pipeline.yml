@@ -365,7 +365,10 @@ jobs:
       # needs key, endpoint and deployment together — miss one and Azure is dropped
       # from the candidates silently, leaving OpenAI as the only provider tried.
       # secrets || vars so the non-secret names work from either store.
-      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      # Blank on a pull request even if the environment holds it: the key (with the
+      # endpoint and deployment) is what marks a live_model test runnable, and a PR
+      # stack is seeded with the stand-in model.
+      TEST_AZURE_OPENAI_API_KEY: ${{ github.event_name != 'pull_request' && secrets.TEST_AZURE_OPENAI_API_KEY || '' }}
       TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
       TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}

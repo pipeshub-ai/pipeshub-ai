@@ -195,7 +195,10 @@ class Faults:
 
 
 def minimal_instance(schema: dict) -> Any:
-    """The smallest JSON value that satisfies ``schema`` (required fields only)."""
+    """The smallest JSON value that satisfies ``schema`` (required fields only).
+
+    ``$ref``, ``allOf``, ``const`` and ``enum`` on non-strings are not followed: they give None.
+    """
     for key in ("anyOf", "oneOf"):
         if schema.get(key):
             return minimal_instance(schema[key][0])
