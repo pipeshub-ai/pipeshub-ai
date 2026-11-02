@@ -39,6 +39,10 @@ export interface McpServerTemplate {
 
   // SSE / Streamable HTTP
   defaultUrl?: string | null;
+  /** The admin types the server URL. Other catalog entries lock `defaultUrl`. */
+  urlEditable?: boolean;
+  /** Setup always asks for a client ID and secret. */
+  requireOauthClient?: boolean;
 
   // OAuth
   authorizationUrl?: string | null;
