@@ -1500,6 +1500,16 @@ describe('client-name trust rules', () => {
       expect(load.callCount).to.equal(2)
     })
 
+    it('shares one load among lookups that miss at the same time', async () => {
+      let finish!: (configs: Array<{ id: string; approveActionsFromSlack?: boolean }>) => void
+      const load = sinon.stub().returns(new Promise((resolve) => { finish = resolve }))
+      const lookup = cachedApprovalLookup(load, 60_000)
+      const answers = Promise.all([lookup('a'), lookup('a'), lookup('b')])
+      finish([{ id: 'a', approveActionsFromSlack: true }])
+      expect(await answers).to.deep.equal([true, true, false])
+      expect(load.callCount).to.equal(1)
+    })
+
     it('does not cache a failed load', async () => {
       const load = sinon.stub()
       load.onFirstCall().rejects(new Error('down'))

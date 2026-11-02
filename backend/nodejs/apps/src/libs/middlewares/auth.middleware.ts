@@ -48,10 +48,19 @@ export function cachedApprovalLookup(
     id: string;
     approveActionsFromSlack?: boolean;
   }> = [];
+  // Lookups that miss while a load runs wait on it instead of starting their own.
+  let loading: Promise<void> | null = null;
   return async (configId: string): Promise<boolean> => {
     if (Date.now() - loadedAt >= ttlMs) {
-      configs = await loadConfigs();
-      loadedAt = Date.now();
+      loading ??= loadConfigs()
+        .then((loaded) => {
+          configs = loaded;
+          loadedAt = Date.now();
+        })
+        .finally(() => {
+          loading = null;
+        });
+      await loading;
     }
     return (
       configs.find((c) => c.id === configId)?.approveActionsFromSlack === true
