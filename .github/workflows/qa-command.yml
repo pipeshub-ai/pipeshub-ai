@@ -88,7 +88,7 @@ jobs:
           profile=$(jq -r .profile <<<"$PARSED")
           plan_only=$(jq -r .plan_only <<<"$PARSED")
           review=$(jq -r '.review // false' <<<"$PARSED")
-          [[ "$mode" == range || "$mode" == since || "$mode" == full ]] || mode=pr
+          [[ "$mode" == range || "$mode" == since || "$mode" == full ]] || mode="pr"
           [[ "$profile" == full ]] && profile=standard
           # Every QA workflow in this checkout that accepts these inputs; the
           # OSS command never names an edition-specific workflow.

@@ -25,6 +25,7 @@ def scenario(title, level="unit", covers=(PROVIDER,), steps=("list records",), e
 
 class GenerateCase(unittest.TestCase):
     def setUp(self) -> None:
+        testing.without_ci_env(self)
         self.root, tmp = testing.make_repo()
         self.addCleanup(tmp.cleanup)
         self.out = self.root / "qa-out"

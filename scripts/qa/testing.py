@@ -5,12 +5,24 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
+from unittest import mock
 
 from qa import config, metrics
+
+
+def without_ci_env(case) -> None:
+    """Hide the runner's GITHUB_* variables for one test, so CI reads the same as a laptop."""
+    patcher = mock.patch.dict(os.environ)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+    for key in [k for k in os.environ if k.startswith("GITHUB_")]:
+        del os.environ[key]
+
 
 SUITES = """
 [[suite]]

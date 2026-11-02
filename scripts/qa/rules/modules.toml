@@ -39,7 +39,7 @@ paths = ["backend/python/app/modules/transformers/**", "backend/python/tests/uni
 [[module]]
 id = "retrieval"
 title = "Retrieval"
-paths = ["backend/python/app/modules/retrieval/**", "backend/python/tests/unit/modules/retrieval/**", "backend/python/app/modules/qna/**", "backend/python/tests/unit/modules/qna/**", "backend/python/app/modules/reranker/**", "backend/python/tests/unit/modules/reranker/**", "backend/python/app/api/routes/search*.py", "backend/python/tests/unit/api/routes/test_search*.py"]
+paths = ["backend/python/app/modules/retrieval/**", "backend/python/tests/unit/modules/retrieval/**", "backend/python/app/modules/qna/**", "backend/python/tests/unit/modules/qna/**", "backend/python/app/api/routes/search*.py", "backend/python/tests/unit/api/routes/test_search*.py"]
 
 [[module]]
 id = "chat"

@@ -10,6 +10,7 @@ from qa import catalog, collect, config, impact, paths, testing
 
 class ImpactCase(unittest.TestCase):
     def setUp(self) -> None:
+        testing.without_ci_env(self)
         self.root, tmp = testing.make_repo()
         self.addCleanup(tmp.cleanup)
         self.base = testing.git(self.root, "rev-parse", "HEAD")
