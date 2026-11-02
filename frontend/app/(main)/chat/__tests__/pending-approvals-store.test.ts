@@ -94,6 +94,35 @@ describe('pending approvals store', () => {
     unmount();
   });
 
+  it('a poll tick while a slow fetch runs waits for it instead of discarding it', async () => {
+    let finish!: (items: PendingApprovalItem[]) => void;
+    api.fetchPendingApprovals.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { unmount } = renderHook(() => usePendingApprovalsSync());
+    await act(async () => {});
+    // Slower than the poll: the tick, and a focus, start no second fetch.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(1);
+    await act(async () => { finish([item('slow', 'conv-other')]); });
+    expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['slow']);
+    // Polling carries on once it is back.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(api.fetchPendingApprovals).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+
+  it('a put during a slow polled fetch still discards that fetch', async () => {
+    let finish!: (items: PendingApprovalItem[]) => void;
+    api.fetchPendingApprovals.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { unmount } = renderHook(() => usePendingApprovalsSync());
+    await act(async () => {});
+    const refused = { ...item('b', 'conv-other'), card: { ...item('b', 'conv-other').card, editErrors: [{ path: '', message: 'No' }] } };
+    act(() => usePendingApprovals.getState().put(refused));
+    await act(async () => { finish([item('b', 'conv-other')]); });
+    expect(usePendingApprovals.getState().items).toEqual([refused]);
+    unmount();
+  });
+
   it('expired item leaves on its own', async () => {
     api.fetchPendingApprovals.mockResolvedValue([item('soon', 'conv-other', 5_000), item('later', 'conv-x')]);
     const { unmount } = renderHook(() => usePendingApprovalsSync());
