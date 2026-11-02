@@ -135,6 +135,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         for (const c of named) if (have.length && !have.includes(c)) problems.push(`${m.collection}: ${m.table}.${c} does not exist`);
         for (const ch of m.children ?? []) {
           const hc = await cols(ch.table);
+          if (!hc.length) problems.push(`${m.collection}: child table ${ch.table} does not exist`);
           const cn = new Set<string>([ch.parentCol, ch.orderCol, ...ch.derived, ...ch.fields.map((f) => f.col)]);
           for (const c of hc) if (!cn.has(c)) problems.push(`${m.collection}: column ${ch.table}.${c} is neither mapped nor derived`);
           for (const c of cn) if (hc.length && !hc.includes(c)) problems.push(`${m.collection}: ${ch.table}.${c} does not exist`);

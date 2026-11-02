@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         repair_result = await run_connector_oauth_toolset_fields_repair(
-            app_container.config_service(), oauth_registry, logger
+            app_container.config_service(), oauth_registry, logger, graph_provider
         )
         if not repair_result.get("skipped"):
             logger.info(
@@ -1192,7 +1192,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         run_flat_storage_migration,
     )
 
-    app.state.flat_storage_migration_task = asyncio.create_task(
+    app.state.flat_storage_migration_task = spawn_detached(
         run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
     )
 

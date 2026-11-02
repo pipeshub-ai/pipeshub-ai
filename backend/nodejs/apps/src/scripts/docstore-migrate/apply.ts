@@ -40,14 +40,7 @@ export async function deleteDocs(
   ids: string[],
 ): Promise<void> {
   if (ids.length === 0) return;
-  for (const c of m.children ?? [])
-    await k.query(
-      fill(
-        '/* pipeshub:follow.delete_children */ DELETE FROM @{T} WHERE @{P} = ANY($1::text[])',
-        { T: ident(c.table), P: ident(c.parentCol) },
-      ),
-      [ids],
-    );
+  await deleteChildren(k, m, ids);
   await k.query(
     fill(
       '/* pipeshub:follow.delete_root */ DELETE FROM @{T} WHERE @{I} = ANY($1::text[])',
