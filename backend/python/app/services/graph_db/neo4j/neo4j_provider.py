@@ -20218,16 +20218,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         arrow both read it, so an arrow means the expansion lists something."""
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop(c, p, state=state, grant_once=grant_once, opens=opens)
-        # The check does not walk through a declared group of this App: a child below one is read by its
-        # membership (the last arm) or its own grant, not by inheriting from the group.
+        # The check does not walk through a declared group of this App, whether or not the App opens everything:
+        # a child below one is read by its membership (the last arm) or its own grant, not by inheriting from the
+        # group. Nor does it walk on from a member of one: what hangs under a member inherits from it only below
+        # a grant.
         walk = (f"(NOT ({p}:RecordGroup AND coalesce({p}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
-                f" AND coalesce({p}.connectorId, '') = app.id) OR {c}.id IN $grantedIds OR {opens})")
+                f" AND coalesce({p}.connectorId, '') = app.id) OR {c}.id IN $grantedIds)")
+        below_member = (f"(NOT ({p}:Record AND EXISTS {{ ({p})-[:BELONGS_TO]->(kh_mg:RecordGroup) WHERE kh_mg.id IN $declaredScope }})"
+                        f" OR {p}.id IN $grantedIds OR {c}.id IN $grantedIds)")
         return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}) AND {walk})
               OR (NOT {from_app} AND NOT {opens}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
-                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk})
+                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk} AND {below_member})
               OR (NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
                   AND ({c}.id IN $declaredScope

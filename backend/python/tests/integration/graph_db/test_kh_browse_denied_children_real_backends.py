@@ -53,7 +53,39 @@ logger = logging.getLogger("kh-browse-denied-children-it")
 RGL = "RECORD_GROUP_LEVEL"
 
 
+def _more() -> tuple[list, list]:
+    """kt: a thread that belongs to the channel (a member) with a reply that inherits from the thread, and a thread
+    that is no member with a reply under it. ka and kb: a declared group in an app that opens everything and in a
+    collection, each with a child that only hangs under the group, one that inherits, and one that belongs."""
+    g = {"group_type": "DRIVE", "connector": DRIVE}
+    nodes = [
+        app("kt", "Chat", connector=DRIVE, app_group="G"),
+        rg("kt-chan", "chan", permissionModel=RGL, connectorId="kt", **g),
+        *[rec(f"kt-{n}", n, connector_id="kt") for n in ("thread", "reply", "thread-nm", "reply-nm")],
+        app("ka", "Open", connector=DRIVE, app_group="G", permissionModel="APP_LEVEL"),
+        app("kb", "Coll", connector="KB", app_group="Local"),
+        rg("ka-g", "g", permissionModel=RGL, connectorId="ka", **g),
+        rg("kb-g", "g", permissionModel=RGL, connectorId="kb", **g),
+        *[rec(f"{a}-{n}", n, connector_id=a) for a in ("ka", "kb") for n in ("nr", "ip", "bt")],
+    ]
+    edges = [
+        user_app(USER_U, "kt"), nr("kt", "kt-chan"), bt("kt-chan", "kt"), perm(GROUP_G, "kt-chan", grant_type="GROUP"),
+        bt("kt-thread", "kt-chan"), nr("kt-chan", "kt-thread"),
+        nr("kt-thread", "kt-reply"), ip("kt-reply", "kt-thread"),
+        nr("kt-chan", "kt-thread-nm"), ip("kt-thread-nm", "kt-chan"),
+        nr("kt-thread-nm", "kt-reply-nm"), ip("kt-reply-nm", "kt-thread-nm"),
+    ]
+    for a in ("ka", "kb"):
+        edges += [
+            user_app(USER_U, a), nr(a, f"{a}-g"), bt(f"{a}-g", a), perm(GROUP_G, f"{a}-g", grant_type="GROUP"),
+            nr(f"{a}-g", f"{a}-nr"), nr(f"{a}-g", f"{a}-ip"), ip(f"{a}-ip", f"{a}-g"),
+            nr(f"{a}-g", f"{a}-bt"), bt(f"{a}-bt", f"{a}-g"),
+        ]
+    return nodes, edges
+
+
 def _graph() -> tuple[list, list]:
+    n2, e2 = _more()
     g = {"group_type": "DRIVE", "connector": DRIVE}
     principal_nodes, principal_edges = _principals()
     nodes = [
@@ -79,8 +111,9 @@ def _graph() -> tuple[list, list]:
         nr("bp-dir", "bp-way"), ip("bp-way", "bp-dir"), bt("bp-way", "bp-dir"),
         nr("bp-way", "bp-leaf"), ip("bp-leaf", "bp-way"), bt("bp-leaf", "bp-dir"),
         nr("bp-dir", "bp-strict"), bt("bp-strict", "bp-dir"),
+        *e2,
     ]
-    return nodes, edges
+    return nodes + n2, edges
 
 
 class _World:
@@ -193,3 +226,29 @@ async def test_a_placeholder_is_listed_only_when_something_readable_is_below_it(
 
     assert ids == {"bp-way"}
     assert page["total"] == len(ids)
+
+
+async def test_a_reply_under_a_member_of_a_declared_group_is_not_listed(world: _World) -> None:
+    browse = await _page(world, "kt", flatten=False, start_id="kt-thread", start_type="record")
+    flat = await _page(world, "kt", flatten=True)
+    flat_ids = {row["id"] for row in flat["rows"]}
+
+    assert browse["rows"] == []
+    assert flat_ids == {"kt-chan", "kt-thread"}
+    assert flat["total"] == len(flat_ids)
+    assert flat_ids <= await _admitted(world, sorted(flat_ids))
+    assert await _admitted(world, ["kt-reply", "kt-reply-nm"]) == set()
+
+
+@pytest.mark.parametrize("app_id", ["ka", "kb"])
+async def test_a_declared_group_in_an_app_that_opens_everything_lists_only_what_the_check_admits(
+    world: _World, app_id: str,
+) -> None:
+    browse = await _page(world, app_id, flatten=False, start_id=f"{app_id}-g", start_type="recordGroup")
+    flat = await _page(world, app_id, flatten=True)
+    flat_ids = {row["id"] for row in flat["rows"]}
+
+    assert {row["id"] for row in browse["rows"]} == {f"{app_id}-bt"}
+    assert flat_ids == {f"{app_id}-g", f"{app_id}-bt"}
+    assert flat["total"] == len(flat_ids)
+    assert flat_ids <= await _admitted(world, sorted(flat_ids))

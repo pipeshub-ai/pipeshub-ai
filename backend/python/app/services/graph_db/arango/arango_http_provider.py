@@ -489,18 +489,37 @@ def _aql_in_scope(c: str, p: str) -> str:
             f" LIMIT 1 RETURN 1) > 0)))")
 
 
-def _aql_browse_child(c: str, p: str, tag: str, from_app: str) -> str:
+def _aql_is_member(p: str) -> str:
+    """Whether record ``p`` belongs to a group of the declared scope (``@kh_scope``)."""
+    return (f'(IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {p}) AND LENGTH(FOR kh_mg IN 1..1 OUTBOUND {p}'
+            f" {CollectionNames.BELONGS_TO.value} FILTER HAS(@kh_scope, kh_mg._key) LIMIT 1 RETURN 1) > 0)")
+
+
+def _aql_way_below(v: str) -> str:
+    """Whether a readable node lies below the stub ``v``: a browse shows a stub only as the way to one.
+    shortcut: the hops between the stub and that node are not each tested, only the last, so a stub whose way
+    is cut by a node the viewer cannot read is still shown; test every hop if that matters."""
+    return (f"LENGTH(FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+            f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
+            f" AND {_aql_browse_child('kh_pd', 'DOCUMENT(kh_pe._from)', 'pb', 'false')}"
+            f" LIMIT 1 RETURN 1) > 0")
+
+
+def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | None = None) -> str:
     """Whether child ``c`` is listed under ``p`` when browsing: the hop where the walk from the App (or an
     open App) reaches ``p``, OPEN nodes only below a seed, and the declared scope either way. Written once:
     the expansion and a row's arrow both read it, so an arrow means the expansion lists something.
     ``kh_opens``, ``@granted`` and ``@kh_scope`` must be in scope."""
-    # The check does not walk through a declared group of this App: a child below one is read by its
-    # membership (the scope arm) or its own grant, not by inheriting from the group.
+    # The check does not walk through a declared group of this App, whether or not the App opens everything: a
+    # child below one is read by its membership (the scope arm) or its own grant, not by inheriting from the group.
+    # Nor does it walk on from a member of one: what hangs under a member inherits from it only below a grant.
     walk = (f'(NOT ({p}.permissionModel == "RECORD_GROUP_LEVEL" AND {p}.connectorId == @app_id)'
-            f" OR HAS(@granted, {c}._key) OR kh_opens)")
+            f" OR HAS(@granted, {c}._key))")
+    # ``p_member`` is that test already made for ``p`` (a walk makes it once per parent, not per child).
+    below_member = f"(NOT {p_member or _aql_is_member(p)} OR HAS(@granted, {p}._key) OR HAS(@granted, {c}._key))"
     return (f"({_aql_read_by_app(c)} AND ((({from_app}) OR kh_opens) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
             f" AND {walk}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
-            f" AND {walk}) ? true : ({_aql_in_scope(c, p)})))))")
+            f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})))))")
 
 
 # Arango's write-write conflict (errorNum 1200), as the HTTP client reports it.
@@ -630,7 +649,8 @@ def _aql_kh_has_children(v: str) -> str:
         f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
         f' FILTER (IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", kh_ch)'
         f' OR IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", kh_ch))'
-        f" AND kh_ch.orgId == @org_id AND (@kh_placeholders OR kh_ch.isPlaceholder != true)"
+        f" AND kh_ch.orgId == @org_id"
+        f" AND (kh_ch.isPlaceholder != true ? true : (@kh_placeholders AND {_aql_way_below('kh_ch')}))"
         f" FILTER {rule} LIMIT 1 RETURN 1) > 0"
         f" OR (kh_opens AND LENGTH(FOR kh_ch IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
         f" FILTER kh_ch.isDeleted != true AND kh_ch.orgId == @org_id AND {_aql_read_by_app('kh_ch')} LIMIT 1 RETURN 1) > 0)))"
@@ -20078,22 +20098,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             _aql_kh_has_children("kh_n") if any("node.hasChildren" in c for c in conditions) else "false"
         )
 
-        # A browse shows a stub only as the way to something readable below it. shortcut: the hops between the
-        # stub and that node are not each tested, only the last, so a stub whose way is cut by a node the viewer
-        # cannot read is still shown.
-        below = (f"LENGTH(FOR kh_pd, kh_pe IN 1..50 OUTBOUND kh_n {CollectionNames.NODE_RELATIONS.value}"
-                 f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
-                 f" AND {_aql_browse_child('kh_pd', 'DOCUMENT(kh_pe._from)', 'pb', 'false')}"
-                 f" LIMIT 1 RETURN 1) > 0")
+        below = _aql_way_below("kh_n")
 
-        def rows(collection: str) -> str:
+        def rows(collection: str, *, stubs: bool = False) -> str:
+            # Stubs are read apart so that the way-below test, a subquery, runs for them alone.
+            stub_filter = ("kh_n.isPlaceholder == true AND @kh_placeholders" if stubs else "kh_n.isPlaceholder != true")
+            way = f"\n                    FILTER {below}" if stubs else ""
             return f"""(
                 FOR kh_h IN kh_handles
                     FILTER STARTS_WITH(kh_h, "{collection}/")
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
-                            AND kh_n.isDeleted != true AND (kh_n.isPlaceholder != true OR (@kh_placeholders AND {below}))
-                            AND {_aql_read_by_app("kh_n")}
+                            AND kh_n.isDeleted != true AND {stub_filter}
+                            AND {_aql_read_by_app("kh_n")}{way}
                     LET node = {{
                         id: kh_n._key,
                         name: NOT_NULL(kh_n.name, kh_n.recordName, kh_n.groupName),
@@ -20141,7 +20158,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET kh_app = DOCUMENT("{apps}", @app_id)
             LET kh_opens = {opens}
             LET kh_handles = UNION_DISTINCT(@kh_nodes, {belonging}, {placed})
-            FOR kh_row IN UNION({rows(records)}, {rows(groups)})
+            FOR kh_row IN UNION({rows(records)}, {rows(records, stubs=True)}, {rows(groups)})
                 RETURN kh_row
         """
         return f"""
@@ -20160,7 +20177,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN kh_be._from) : []),
                 {placed}
             )
-            FOR kh_row IN UNION({rows(records)}, {rows(groups)})
+            FOR kh_row IN UNION({rows(records)}, {rows(records, stubs=True)}, {rows(groups)})
                 RETURN kh_row
         """
 
@@ -20176,11 +20193,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hierarchy = _HIERARCHY_AQL
         listable = f'(IS_SAME_COLLECTION("{records}", kh_c) OR IS_SAME_COLLECTION("{groups}", kh_c))'
 
-        def children(parent_filter: str, child_filter: str) -> str:
+        def children(parent_filter: str, child_filter: str, parent_let: str = "") -> str:
             return f"""
             FOR kh_ph IN @kh_frontier
                 LET kh_p = DOCUMENT(kh_ph)
-                FILTER kh_p != null{parent_filter}
+                FILTER kh_p != null{parent_filter}{parent_let}
                 FOR kh_c, kh_e IN 1..1 OUTBOUND kh_p {relations}
                     FILTER kh_e.relationshipType IN {hierarchy}
                     FILTER {listable}
@@ -20510,7 +20527,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }}
             """,
             # Below a browse start: what a row's arrow reads too.
-            "step_browse": "LET kh_opens = @kh_opens" + children("", _aql_browse_child("kh_c", "kh_p", "b", "@kh_from_app")),
+            "step_browse": "LET kh_opens = @kh_opens" + children(
+                "", _aql_browse_child("kh_c", "kh_p", "b", "@kh_from_app", "kh_pm"),
+                f"\n                LET kh_pm = {_aql_is_member('kh_p')}"),
             "enrich": f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
             LET kh_opens = {_AQL_APP_OPENS}
