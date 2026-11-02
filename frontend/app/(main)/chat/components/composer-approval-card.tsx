@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Box } from '@radix-ui/themes';
@@ -19,6 +19,9 @@ export function ComposerApprovalCard() {
   const router = useRouter();
   const items = useOtherChatApprovals();
   const [index, setIndex] = useState(0);
+  const order = items.map((i) => i.card.approvalId).join(' ');
+  // A call answered, added or sent back: show the newest again.
+  useEffect(() => setIndex(0), [order]);
   if (items.length === 0) return null;
   const item = items[index % items.length];
   const title = item.conversationTitle ?? t('chat.newChat');
@@ -28,6 +31,8 @@ export function ComposerApprovalCard() {
 
   const onAnswer = async (answer: ToolApprovalAnswer) => {
     const result = await answerElsewhere(item, answer);
+    // The card is back in the list with the server's errors, and shows them when it remounts.
+    if (result === 'refused') return 'sent' as const;
     if (result === 'sent' || result === 'stale') usePendingApprovals.getState().drop(item.card.approvalId);
     if (result === 'sent') {
       const message = answer.decision === 'allow'
@@ -43,7 +48,8 @@ export function ComposerApprovalCard() {
   return (
     <Box mb="2">
       <ToolApprovalCard
-        key={item.card.approvalId}
+        // A refused edit comes back as a new card: remount so it opens with the errors.
+        key={`${item.card.approvalId}:${JSON.stringify(item.card.editErrors ?? [])}`}
         approval={item.card}
         isLatest
         placement="composer"

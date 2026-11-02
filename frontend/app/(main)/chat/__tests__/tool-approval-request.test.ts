@@ -160,15 +160,35 @@ describe('validateApprovalEdits', () => {
       const store = useChatStore.getState();
       const onScreen = store.createSlot('conv-here');
       store.setActiveSlot(onScreen);
-      useChatStore.setState({ agentStreamTools: ['jira.search'] });
+      useChatStore.setState({
+        agentStreamTools: ['jira.search'],
+        agentToolCatalogFullNames: ['jira.search', 'jira.create_issue'],
+        agentKnowledgeScope: { apps: ['app-of-a'], kb: ['kb-of-a'] },
+        agentKnowledgeDefaults: { apps: ['app-of-a'], kb: [] },
+        scopedAgentCapabilities: { 'agent-b': { internalSearch: false, webSearch: false } },
+      });
       const plain = store.createSlot('conv-plain');
       const agentChat = store.createSlot('conv-agent');
       store.updateSlot(agentChat, { threadAgentId: 'agent-b' });
 
-      expect(buildStreamChatRequestForSlot(plain, 'q', undefined, ANSWER, { agentMode: true })?.agentId).toBeUndefined();
-      const request = buildStreamChatRequestForSlot(agentChat, 'q', undefined, ANSWER, { agentMode: true });
+      expect(buildStreamChatRequestForSlot(plain, 'q', undefined, ANSWER, { agentMode: true, background: true })?.agentId).toBeUndefined();
+      const request = buildStreamChatRequestForSlot(agentChat, 'q', undefined, ANSWER, { agentMode: true, background: true });
       expect(request?.agentId).toBe('agent-b');
       expect(request?.agentStreamTools).toBeUndefined();
+      expect(request?.filters).toBeUndefined();
+      expect(request?.appliedFilters).toBeUndefined();
+      expect(request?.agentCapabilities).toBeUndefined();
+      // The chat's own tool choice, from when it was last on screen, still goes.
+      store.updateSlot(agentChat, { agentStreamTools: ['slack.post'] });
+      expect(buildStreamChatRequestForSlot(agentChat, 'q', undefined, ANSWER, { background: true })?.agentStreamTools).toEqual(['slack.post']);
+      // A project page's scope stays with it too.
+      useChatStore.setState({
+        projectScope: { projectId: 'p-1', toolCatalogFullNames: ['jira.search'], knowledgeDefaults: { apps: ['p-app'], kb: [] } } as never,
+        projectStreamTools: ['jira.search'],
+      });
+      const plainRequest = buildStreamChatRequestForSlot(plain, 'q', undefined, ANSWER, { agentMode: true, background: true });
+      expect(plainRequest?.agentStreamTools).toBeUndefined();
+      expect(plainRequest?.filters).toBeUndefined();
       expect(buildStreamChatRequestForSlot(onScreen, 'q')?.agentId).toBe('agent-on-screen');
     } finally {
       window.history.replaceState(null, '', '/');

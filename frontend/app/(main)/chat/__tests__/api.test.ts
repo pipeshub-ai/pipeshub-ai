@@ -131,6 +131,14 @@ describe('ChatApi.streamMessage — answering a tool approval card', () => {
     await ChatApi.streamMessage({ ...base, agentId: 'agent-1' }, {});
     expect(sentBody()).not.toHaveProperty('toolApproval');
   });
+
+  it("an agent request built without filters leaves them out, so the agent's own sources apply", async () => {
+    const { filters: _f, ...noFilters } = base;
+    await ChatApi.streamMessage({ ...noFilters, agentId: 'agent-1', toolApproval: answer }, {});
+    expect(sentBody()).not.toHaveProperty('filters');
+    await ChatApi.streamMessage({ ...base, agentId: 'agent-1' }, {});
+    expect(sentBody().filters).toEqual({ apps: [], kb: [] });
+  });
 });
 
 describe('ChatApi stream bodies — no model resolved', () => {

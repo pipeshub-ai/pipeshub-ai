@@ -7,7 +7,7 @@ import type { PendingApprovalItem } from '../../types';
 
 const m = vi.hoisted(() => ({
   push: vi.fn(),
-  answerElsewhere: vi.fn(async (..._a: unknown[]) => 'sent' as 'sent' | 'busy' | 'stale' | 'failed'),
+  answerElsewhere: vi.fn(async (..._a: unknown[]) => 'sent' as 'sent' | 'busy' | 'stale' | 'failed' | 'refused'),
   fetchPending: vi.fn(async (): Promise<unknown[]> => []),
   toast: { success: vi.fn(), info: vi.fn(), error: vi.fn() },
   state: { activeSlotId: 'slot-1', slots: { 'slot-1': { convId: 'conv-here', isOwner: true, isStreaming: false } } },
@@ -123,12 +123,34 @@ describe('ComposerApprovalCard', () => {
       argsHash: 'h',
       inputSchema: { type: 'object', properties: { title: { type: 'string' } } },
     };
+    // The stream ended with the card back, carrying the server's errors.
+    m.answerElsewhere.mockImplementation(async () => {
+      usePendingApprovals.getState().put({ ...editable, card: { ...editable.card, editErrors: [{ path: '/title', message: 'Too long' }] } });
+      return 'refused';
+    });
     await show([editable]);
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
-    await waitFor(() => expect(screen.queryByTestId('tool-approval-card')).toBeNull());
-    // The stream ended with the card back, carrying the server's errors.
-    act(() => usePendingApprovals.getState().put({ ...editable, card: { ...editable.card, editErrors: [{ path: '/title', message: 'Too long' }] } }));
     expect(await screen.findByText('Fix the highlighted fields')).toBeTruthy();
+    expect(m.toast.success).not.toHaveBeenCalled();
+    expect(usePendingApprovals.getState().items).toHaveLength(1);
+  });
+
+  it('a failed answer keeps the card and says why', async () => {
+    m.answerElsewhere.mockResolvedValue('failed');
+    await show([item('a', 'conv-a', 'Fix login')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(await screen.findByText("Couldn't send your answer. Try again.")).toBeTruthy();
+    expect(usePendingApprovals.getState().items).toHaveLength(1);
+    expect(m.toast.success).not.toHaveBeenCalled();
+  });
+
+  it('after an answer, the newest remaining call shows', async () => {
+    await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report'), item('c', 'conv-c', 'Budget')]);
+    fireEvent.click(screen.getByRole('button', { name: '+2 more' }));
+    fireEvent.click(screen.getByRole('button', { name: '+2 more' }));
+    expect(screen.getByText(/In "Budget"/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(screen.getByText(/In "Fix login"/)).toBeTruthy());
   });
 
   it('Open chat navigates', async () => {
