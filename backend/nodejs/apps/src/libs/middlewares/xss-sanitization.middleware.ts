@@ -447,8 +447,9 @@ export const xssSanitizationMiddleware = (
     // An edited tool call is checked before it is answered, and the answer goes through
     // /api/v1/conversations/, which is skipped above. Its body must reach the check
     // unchanged, or the check passes values the answer then sends differently. Python
-    // validates it against the tool's schema; the web app renders it as React text. The
-    // approval id in the path is still checked below.
+    // validates it against the tool's schema; the web app renders it as React text. Its
+    // query string is still checked below; the approval id in the path is not (this runs
+    // before routing, so req.params is empty here), and the controller URL-encodes it.
     const isToolApprovalCheck =
       req.method === 'POST' && TOOL_APPROVAL_VALIDATE_PATH.test(req.path);
 
