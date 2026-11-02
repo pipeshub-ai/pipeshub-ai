@@ -1485,7 +1485,10 @@
       "titleIn": "{{tool}} in {{server}}",
       "inChatExpiresIn_one": "In „{{title}}“ · Läuft in {{count}} Min. ab",
       "inChatExpiresIn_other": "In „{{title}}“ · Läuft in {{count}} Min. ab",
-      "inChatExpiresSoon": "In „{{title}}“ · Läuft in weniger als einer Minute ab"
+      "inChatExpiresSoon": "In „{{title}}“ · Läuft in weniger als einer Minute ab",
+      "moreFields": "Weitere Felder",
+      "pill": "{{label}}: {{value}}",
+      "pillEmpty": "{{label}}: hinzufügen"
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
     "noConnectorsFound": "Keine Konnektoren gefunden",

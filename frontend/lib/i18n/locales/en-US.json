@@ -1574,7 +1574,10 @@
       "titleIn": "{{tool}} in {{server}}",
       "inChatExpiresIn_one": "In \"{{title}}\" · Expires in {{count}} min",
       "inChatExpiresIn_other": "In \"{{title}}\" · Expires in {{count}} min",
-      "inChatExpiresSoon": "In \"{{title}}\" · Expires in under a minute"
+      "inChatExpiresSoon": "In \"{{title}}\" · Expires in under a minute",
+      "moreFields": "More fields",
+      "pill": "{{label}}: {{value}}",
+      "pillEmpty": "{{label}}: add"
     },
     "selectedAlone": "{{name}} (this item only)",
     "noConnectorsFound": "No connectors found",

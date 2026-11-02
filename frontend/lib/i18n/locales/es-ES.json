@@ -1508,7 +1508,10 @@
       "inChatExpiresIn_one": "En «{{title}}» · Caduca en {{count}} min",
       "inChatExpiresIn_other": "En «{{title}}» · Caduca en {{count}} min",
       "inChatExpiresIn_many": "En «{{title}}» · Caduca en {{count}} min",
-      "inChatExpiresSoon": "En «{{title}}» · Caduca en menos de un minuto"
+      "inChatExpiresSoon": "En «{{title}}» · Caduca en menos de un minuto",
+      "moreFields": "Más campos",
+      "pill": "{{label}}: {{value}}",
+      "pillEmpty": "{{label}}: añadir"
     },
     "selectedAlone": "{{name}} (solo este elemento)",
     "noConnectorsFound": "No se encontraron conectores",

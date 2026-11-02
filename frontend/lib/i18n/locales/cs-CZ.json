@@ -1642,7 +1642,10 @@
       "inChatExpiresIn_few": "V „{{title}}“ · Vyprší za {{count}} min",
       "inChatExpiresIn_many": "V „{{title}}“ · Vyprší za {{count}} min",
       "inChatExpiresIn_other": "V „{{title}}“ · Vyprší za {{count}} min",
-      "inChatExpiresSoon": "V „{{title}}“ · Vyprší za méně než minutu"
+      "inChatExpiresSoon": "V „{{title}}“ · Vyprší za méně než minutu",
+      "moreFields": "Další pole",
+      "pill": "{{label}}: {{value}}",
+      "pillEmpty": "{{label}}: přidat"
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
     "noConnectorsFound": "Nebyly nalezeny žádné konektory",

@@ -12,7 +12,7 @@ import { useChatStore } from '../../store';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
 import type { EditError, ToolApprovalAnswer, ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 import { checkArgs } from './approval-form/check-args';
-import { SchemaForm } from './approval-form/schema-form';
+import { DocumentForm } from './approval-form/document-form';
 import { schemaFields } from './approval-form/schema-fields';
 
 /** Whole minutes left (rounded up), re-read every half minute; 0 once the request has expired. */
@@ -290,7 +290,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         }}
       >
         {showForm ? (
-          <SchemaForm
+          <DocumentForm
             fields={fields}
             values={values}
             errors={fieldErrors}

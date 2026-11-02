@@ -1571,7 +1571,10 @@
       "titleIn": "在 {{server}} 中{{tool}}",
       "inChatExpiresIn_one": "在「{{title}}」中 · {{count}} 分鐘後過期",
       "inChatExpiresIn_other": "在「{{title}}」中 · {{count}} 分鐘後過期",
-      "inChatExpiresSoon": "在「{{title}}」中 · 不到一分鐘後過期"
+      "inChatExpiresSoon": "在「{{title}}」中 · 不到一分鐘後過期",
+      "moreFields": "更多欄位",
+      "pill": "{{label}}: {{value}}",
+      "pillEmpty": "{{label}}: 新增"
     },
     "selectedAlone": "{{name}}（僅此項目）",
     "noConnectorsFound": "找不到連接器",

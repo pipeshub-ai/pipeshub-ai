@@ -246,6 +246,7 @@ describe('ToolApprovalCard: editing and notes', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Note: add' }));
     const noteField = screen.getByRole('textbox', { name: 'Note' });
     fireEvent.change(noteField, { target: { value: 'x' } });
     fireEvent.change(noteField, { target: { value: '' } });
@@ -304,9 +305,11 @@ describe('ToolApprovalCard: editing and notes', () => {
     focus.mockRestore();
   });
 
-  it('shows nested values read-only', () => {
+  it('shows nested values read-only, under More fields', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.queryByText("Can't be edited here")).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More fields' }));
     expect(screen.getByText("Can't be edited here")).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'Meta' })).toBeNull();
   });
@@ -338,15 +341,15 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
   });
 
-  it('moves focus into a list field that has the error', async () => {
+  it('moves focus to the pill of a list field that has the error', async () => {
     chat.validate.mockResolvedValueOnce([{ path: '/labels/0', message: 'Unknown label' }]);
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Bug' } });
     fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
 
-    expect(await screen.findByText('Unknown label')).toBeTruthy();
-    expect(document.activeElement).toBe(screen.getByRole('group', { name: 'Labels' }).querySelector('input'));
+    expect(await screen.findByText('Labels: Unknown label')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Labels: bug/ }));
   });
 
   it('says when the request changed under the card', async () => {
@@ -387,6 +390,7 @@ describe('ToolApprovalCard: editing and notes', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Assignee: add' }));
     const assignee = screen.getByRole('textbox', { name: /Assignee/ });
     fireEvent.change(assignee, { target: { value: 'sam' } });
     fireEvent.change(assignee, { target: { value: '' } });
@@ -476,6 +480,50 @@ describe('ToolApprovalCard: editing and notes', () => {
     fireEvent.keyDown(titleField(), { key: 'Escape' });
     expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
     expect(screen.getByText('Login broken')).toBeTruthy();
+  });
+
+  it('pill opens a popover editor and Esc closes it without leaving edit mode', async () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Labels: bug/ }));
+    const input = screen.getByRole('group', { name: 'Labels' }).querySelector('input') as HTMLInputElement;
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Labels' })).toBeNull());
+    expect(titleField()).toBeTruthy();
+  });
+
+  it('Enter in a field never approves', () => {
+    const onAnswer = vi.fn(async () => 'sent' as const);
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest placement="composer" conversationTitle="Fix login" onAnswer={onAnswer} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    fireEvent.keyDown(titleField(), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: /^Labels: bug/ }));
+    const input = screen.getByRole('group', { name: 'Labels' }).querySelector('input') as HTMLInputElement;
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('unset optional field still shows and stays out of the call when untouched', async () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({
+          arguments: { title: 'Login fails' },
+          inputSchema: { type: 'object', properties: { title: { type: 'string' }, priority: { type: 'string', enum: ['High', 'Low'] }, description: { type: 'string' } } },
+        })}
+        isLatest
+        rowId="row-1"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByRole('button', { name: 'Priority: add' })).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: 'Description' }) as HTMLTextAreaElement).value).toBe('');
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
+
+    await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', arguments: { title: 'Login broken' } });
   });
 });
 

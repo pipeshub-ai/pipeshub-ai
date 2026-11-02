@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useId } from 'react';
+import React, { useId, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Flex, Select, Switch, Text, TextArea, TextField } from '@radix-ui/themes';
 import { TagInput, type TagItem } from '@/app/(main)/workspace/components';
+import { EMAIL } from './check-args';
 import type { FieldSpec } from './schema-fields';
 
 interface SchemaFormProps {
@@ -28,6 +29,20 @@ function parseNumber(text: string): unknown {
 const toTags = (value: unknown): TagItem[] =>
   (Array.isArray(value) ? value : []).map((item, i) => ({ id: `${i}:${String(item)}`, value: String(item) }));
 
+const MAX_TEXT_HEIGHT = 240;
+
+/** Grows with its text up to 240px, then scrolls inside. */
+function GrowingTextArea(props: React.ComponentProps<typeof TextArea>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXT_HEIGHT)}px`;
+  }, [props.value]);
+  return <TextArea ref={ref} {...props} />;
+}
+
 /** The call's arguments as a form, one field per top-level property. */
 export function SchemaForm({ fields, values, errors, changed, onChange }: SchemaFormProps) {
   const base = useId();
@@ -48,7 +63,7 @@ export function SchemaForm({ fields, values, errors, changed, onChange }: Schema
   );
 }
 
-interface FieldProps {
+export interface FieldProps {
   id: string;
   field: FieldSpec;
   value: unknown;
@@ -57,8 +72,12 @@ interface FieldProps {
   onChange: (value: unknown) => void;
 }
 
-function Field({ id, field, value, error, changed, onChange }: FieldProps) {
+/** One labelled field: the control for its kind, its Edited badge and its error. */
+export function Field({ id, field, value, error: given, changed, onChange }: FieldProps) {
   const { t } = useTranslation();
+  // A list of addresses is flagged as it is typed; ids in a recipients list are not addresses.
+  const badAddress = field.control === 'chips' && field.schema.items?.format === 'email' && Array.isArray(value) && value.some((v) => !EMAIL.test(String(v)));
+  const error = given ?? (badAddress ? t('chat.toolApproval.errors.email') : undefined);
   const errorId = `${id}-error`;
   const labelId = `${id}-label`;
   const a11y = {
@@ -71,7 +90,7 @@ function Field({ id, field, value, error, changed, onChange }: FieldProps) {
   let control: React.ReactNode;
   switch (field.control) {
     case 'textarea':
-      control = <TextArea {...a11y} size="2" rows={4} value={asText(value)} onChange={(e) => onChange(e.target.value)} style={{ resize: 'vertical' }} />;
+      control = <GrowingTextArea {...a11y} size="2" variant="surface" rows={4} value={asText(value)} onChange={(e) => onChange(e.target.value)} />;
       break;
     case 'number':
       control = <TextField.Root {...a11y} size="2" type="number" value={asText(value)} onChange={(e) => onChange(parseNumber(e.target.value))} />;

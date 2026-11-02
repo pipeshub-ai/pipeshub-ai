@@ -1,7 +1,7 @@
 import type { EditError } from '../../../types';
 import { schemaType, type FieldSpec } from './schema-fields';
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const empty = (v: unknown) => v === undefined || v === null || v === '';
 
@@ -37,7 +37,10 @@ function check(field: FieldSpec, value: unknown): Problem | null {
     case 'boolean':
       return typeof value === 'boolean' ? null : problem('type', 'Choose yes or no.', { type: 'boolean' });
     case 'array':
-      return Array.isArray(value) ? null : problem('type', 'Enter a list.', { type: 'array' });
+      if (!Array.isArray(value)) return problem('type', 'Enter a list.', { type: 'array' });
+      if (schema.items?.format === 'email' && value.some((item) => typeof item !== 'string' || !EMAIL.test(item)))
+        return problem('email', 'Enter a valid email address.');
+      return null;
     default:
       return null;
   }

@@ -13,7 +13,16 @@ export type FieldSpec = {
   schema: JsonSchema;
 };
 
-const LONG_TEXT_NAME = /body|description|content|message|comment|text/i;
+const LONG_TEXT_NAME = /body|description|content|message|comment|text|markdown|html/i;
+const LONG_TEXT_FORMAT = new Set(['markdown', 'html', 'textarea']);
+
+function longText(name: string, schema: JsonSchema): boolean {
+  if (LONG_TEXT_FORMAT.has(schema.format ?? '')) return true;
+  return schema.maxLength !== undefined ? schema.maxLength > 200 : LONG_TEXT_NAME.test(name);
+}
+
+/** A string field that reads as a body of text: by its name, a `maxLength` over 200, or a markdown/html/textarea format. */
+export const isLongText = (field: FieldSpec): boolean => field.control === 'textarea';
 
 /** `anyOf`/`oneOf` of one schema plus null is that schema, nullable; any other union stays as is. */
 export function unwrapNullable(schema: JsonSchema): JsonSchema {
@@ -36,7 +45,7 @@ function controlFor(name: string, raw: JsonSchema): FieldControl {
       if (schema.format === 'email') return 'email';
       if (schema.format === 'date') return 'date';
       if (schema.format === 'date-time') return 'datetime';
-      if (schema.maxLength !== undefined ? schema.maxLength > 200 : LONG_TEXT_NAME.test(name)) return 'textarea';
+      if (longText(name, schema)) return 'textarea';
       return 'text';
     case 'integer':
     case 'number':

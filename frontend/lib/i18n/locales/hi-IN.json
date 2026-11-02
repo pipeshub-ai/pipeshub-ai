@@ -1485,7 +1485,10 @@
       "titleIn": "{{server}} में {{tool}}",
       "inChatExpiresIn_one": "\"{{title}}\" में · {{count}} मिनट में समाप्त",
       "inChatExpiresIn_other": "\"{{title}}\" में · {{count}} मिनट में समाप्त",
-      "inChatExpiresSoon": "\"{{title}}\" में · एक मिनट से कम में समाप्त"
+      "inChatExpiresSoon": "\"{{title}}\" में · एक मिनट से कम में समाप्त",
+      "moreFields": "और फ़ील्ड",
+      "pill": "{{label}}: {{value}}",
+      "pillEmpty": "{{label}}: जोड़ें"
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",
