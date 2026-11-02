@@ -143,6 +143,26 @@ export default tseslint.config(
     },
   },
 
+  // The MongoDB-to-PostgreSQL migration reads raw, untyped documents from the driver and rebuilds them from JSON rows: values are
+  // `unknown` by nature and are stringified or asserted on purpose. The rules below add noise there and no safety.
+  {
+    files: [
+      'src/scripts/docstore-migrate/**/*.ts',
+      'src/libs/repositories/import.ts',
+    ],
+    rules: {
+      '@typescript-eslint/no-base-to-string': 'off',
+      '@typescript-eslint/consistent-type-assertions': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/strict-boolean-expressions': 'off',
+      '@typescript-eslint/explicit-module-boundary-types': 'off',
+      '@typescript-eslint/no-dynamic-delete': 'off',
+    },
+  },
+
   // Ignore patterns
   {
     ignores: ['dist/**', 'node_modules/**', '**/*.js', '**/*.mjs'],
