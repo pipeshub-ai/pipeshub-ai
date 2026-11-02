@@ -91,7 +91,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const hexA = (1577836800 + 400_000_000).toString(16).padStart(8, '0') + 'abcdef0123' + '000005';
       const hexB = hexA.slice(0, 18) + '800005';
       const ev = (id: string, key: string): Record<string, unknown> => ({
-        _id: id, topic: 't', key, value: JSON.stringify({ payload: { orgId: String(ORG_A) } }), createdAt: new Date('2026-01-02T00:00:00.000Z'), status: 'pending',
+        _id: id, topic: 't', key, value: JSON.stringify({ payload: { orgId: String(ORG_A) } }), createdAt: new Date('2026-01-02T00:00:00.123Z'), status: 'pending',
       });
       const run = (list: Record<string, unknown>[]) =>
         jobsUnit((tx) => repo.importBatch(m.collection, list.map((d) => toNeutral(d, new SourceReport(), m.collection)), tx));
@@ -106,6 +106,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       err = undefined;
       await run([ev(hexC, 'c'), ev(hexD, 'd')]).catch((e: Error) => (err = e));
       expect(err?.message, 'two different events in one batch').to.contain(hexC).and.to.contain(hexD);
+      // the same id in another organisation is another event, not a collision
+      const other = { ...ev(hexA, 'o'), value: JSON.stringify({ payload: { orgId: String(ORG_B) } }) };
+      expect((await run([other])).inserted['platform.outbox']).to.equal(1);
+      await stack.admin((c) => c.query("DELETE FROM platform.outbox WHERE msg_key = 'o'"));
       expect(await folded(), 'nothing was dropped or overwritten').to.equal(1);
       expect(await count('platform.outbox', "msg_key = 'a'")).to.equal(1);
       expect(await count('platform.outbox', "msg_key IN ('b','c','d')")).to.equal(0);
