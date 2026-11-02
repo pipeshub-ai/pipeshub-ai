@@ -110,6 +110,14 @@ def _inline_value(value: Any) -> str:  # noqa: ANN401
             text = text[: _MAX_INLINE_ARG_CHARS - 1] + "…"
         return f'"{text}"'
     if isinstance(value, list):
+        if not value:
+            return "none"
+        # A short list of plain values reads as the values; anything longer or nested as a count.
+        shown = ", ".join(str(v) for v in value[:3])
+        if len(value) <= 3 and len(shown) <= _MAX_INLINE_ARG_CHARS and all(
+            isinstance(v, (str, int, float)) and not isinstance(v, bool) for v in value
+        ):
+            return f"[{shown}]"
         return f"[{len(value)} item{'s' if len(value) != 1 else ''}]"
     if isinstance(value, dict):
         return "{…}"

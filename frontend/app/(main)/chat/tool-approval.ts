@@ -177,7 +177,8 @@ export function approvalArgumentLines(
   args: Record<string, unknown>,
   { full = false }: { full?: boolean } = {}
 ): Array<{ name: string; value: string; cut: boolean }> {
-  return Object.entries(args).map(([name, value]) => {
+  // An empty list says nothing a person needs before approving.
+  return Object.entries(args).filter(([, value]) => !(Array.isArray(value) && value.length === 0)).map(([name, value]) => {
     const shown = argumentText(name, value);
     const cut = !full && shown.length > MAX_VALUE_CHARS;
     return { name, value: cut ? `${shown.slice(0, MAX_VALUE_CHARS)}…` : shown, cut };
