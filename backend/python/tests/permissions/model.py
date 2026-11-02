@@ -140,7 +140,7 @@ MUTATION_KINDS = (
     "deleted",  # node
     "user_removed",  # node=principal: also leaves the org (BELONGS_TO), memberships, grants, gates, links
     "user_deactivated",  # node=principal: the source drops the person; only the group syncs react (memberships go)
-    "gate_withdrawn",  # node=principal: the connector takes its app away from the person (the gates go; nothing else changes)
+    "gate_withdrawn",  # node=principal, ref=app: the connector takes its own app away from the person (nothing else changes)
 )
 STRUCTURAL_KINDS = frozenset({"inherit_set", "moved"})
 

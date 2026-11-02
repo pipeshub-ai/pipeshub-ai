@@ -81,8 +81,10 @@ def _user_deactivated(w: World, m: Mutation) -> World:
 
 
 def _gate_withdrawn(w: World, m: Mutation) -> World:
-    """What a connector writes when it finds an account inactive: it removes the person's relation to its app."""
-    return replace(w, gates=tuple(g for g in w.gates if g.who != m.node))
+    """What a connector writes when it finds an account inactive: it removes the person's relation to its own app."""
+    if not any(g.who == m.node and g.app == m.ref for g in w.gates):
+        raise ValueError(f"gate_withdrawn: no gate {m.node} -> {m.ref}")
+    return replace(w, gates=tuple(g for g in w.gates if not (g.who == m.node and g.app == m.ref)))
 
 
 _APPLY: dict[str, Callable[[World, Mutation], World]] = {

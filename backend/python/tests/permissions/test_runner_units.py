@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from .model import Gate, Grant, Node, Parent, Principal, World
 from .runner import ConformanceRunner, OracleLayer
 
@@ -107,10 +109,15 @@ def test_withdrawing_the_gate_of_a_person_changes_nothing_else() -> None:
     from .model import Membership, Mutation
 
     world = World(principals=(Principal("u"), Principal("v"), Principal("g", "group")),
-                  memberships=(Membership("u", "g"),), grants=(Grant("u", "n"),), gates=(Gate("u", "A"), Gate("v", "A")),
-                  nodes=(Node("A", "app"), Node("n", "record", "A", "OPEN")))
-    after = mutations.apply(world, Mutation("gate_withdrawn", "u"))
-    assert after.gates == (Gate("v", "A"),) and after.memberships == world.memberships and after.grants == world.grants
+                  memberships=(Membership("u", "g"),), grants=(Grant("u", "n"),),
+                  gates=(Gate("u", "A"), Gate("u", "B"), Gate("v", "A")),
+                  nodes=(Node("A", "app"), Node("B", "app"), Node("n", "record", "A", "OPEN")))
+    after = mutations.apply(world, Mutation("gate_withdrawn", "u", "A"))
+    # only this connector's app goes: the person keeps another app's gate
+    assert after.gates == (Gate("u", "B"), Gate("v", "A")) and after.memberships == world.memberships
+    assert after.grants == world.grants
+    with pytest.raises(ValueError, match="no gate"):
+        mutations.apply(world, Mutation("gate_withdrawn", "u", "C"))
 
 
 def test_lifecycle_flags_reach_the_compiled_graph() -> None:

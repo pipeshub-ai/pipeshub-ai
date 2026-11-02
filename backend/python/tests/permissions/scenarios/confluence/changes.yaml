@@ -146,7 +146,7 @@
   world: golden/confluence_hr
   mutations:
     - {kind: user_deactivated, node: bob}
-    - {kind: gate_withdrawn, node: bob}
+    - {kind: gate_withdrawn, node: bob, ref: app}
   expect:
     before: {bob: {page:Handbook: admit}}
     verdicts:
