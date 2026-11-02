@@ -1,5 +1,7 @@
-"""Whether a URL or host is OpenAI's own API, as opposed to a server that only speaks its protocol."""
+"""OpenAI endpoint rules: which hosts are OpenAI's own API, and what a configured base URL may contain."""
 
+import re
+from collections.abc import Mapping
 from urllib.parse import urlparse
 
 OPENAI_API_HOST = "api.openai.com"
@@ -27,3 +29,70 @@ def is_openai_api_url(url: str | None) -> bool:
         return is_openai_api_host(urlparse(url).hostname)
     except ValueError:
         return False
+
+
+_WRONG_HOST_CODE = "incorrect_hostname"
+_NAMED_HOST = re.compile(r"request to ([a-z0-9.-]+)", re.IGNORECASE)
+
+
+def _error_fields(source: object) -> tuple[object, object]:
+    """``(code, message)`` from an OpenAI SDK error or a parsed error payload."""
+    body = getattr(source, "body", source)
+    if isinstance(body, Mapping):
+        inner = body.get("error")
+        if isinstance(inner, Mapping):
+            body = inner
+        return body.get("code") or getattr(source, "code", None), body.get("message")
+    return getattr(source, "code", None), getattr(source, "message", None)
+
+
+def openai_wrong_host(source: object) -> str | None:
+    """The host OpenAI says to use when a key reached another region's host, else None.
+
+    OpenAI answers a data-residency project's key on ``api.openai.com`` (or a
+    regular key on ``us.api.openai.com``) with 401 ``incorrect_hostname``, which
+    otherwise reads as a bad key. Returns "" when OpenAI names no host of its own,
+    so a provider's text never reaches the admin unchecked.
+    """
+    seen: set[int] = set()
+    current = source
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code, message = _error_fields(current)
+        if code == _WRONG_HOST_CODE:
+            match = _NAMED_HOST.search(message) if isinstance(message, str) else None
+            host = match.group(1).rstrip(".").lower() if match else ""
+            return host if is_openai_api_host(host) else ""
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return None
+
+
+# Providers whose endpoint the OpenAI SDK takes as base_url and appends the
+# operation path to. A pasted full URL (".../v1/responses") doubles that path,
+# and the provider's 404 then reads as "model not found".
+OPENAI_SDK_BASE_URL_PROVIDERS = frozenset({
+    "openAI", "openAICompatible", "litellmProxy", "lmStudio", "together",
+})
+_OPENAI_OPERATION_PATHS = (
+    "/chat/completions", "/completions", "/responses", "/embeddings",
+    "/images/generations", "/audio/speech", "/audio/transcriptions",
+)
+
+
+def endpoint_path_problem(provider: str | None, endpoint: object) -> str | None:
+    """Why *endpoint* is not a usable base URL for *provider*, or None when it is."""
+    if provider not in OPENAI_SDK_BASE_URL_PROVIDERS or not isinstance(endpoint, str):
+        return None
+    endpoint = endpoint.strip()
+    try:
+        path = urlparse(endpoint).path.rstrip("/").lower()
+    except ValueError:
+        return None
+    suffix = next((s for s in _OPENAI_OPERATION_PATHS if path.endswith(s)), None)
+    if suffix is None:
+        return None
+    base = endpoint[: endpoint.lower().rindex(suffix)]
+    return (
+        f"The endpoint {endpoint!r} includes the API path \"{suffix}\". Enter only the base URL, "
+        f"{base!r}, in Workspace > AI Models; the path is added for each request."
+    )

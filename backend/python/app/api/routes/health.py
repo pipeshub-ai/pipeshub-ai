@@ -42,6 +42,7 @@ from app.utils.aimodels import (
     openai_async_client_kwargs,
     require_public_endpoint,
 )
+from app.utils.openai_hosts import endpoint_path_problem, openai_wrong_host
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
 from app.web.deadline import Deadline
@@ -282,6 +283,16 @@ def _rejected_settings_message(
     provider = _provider_display_name(model_config.get("provider"))
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    wrong_host = openai_wrong_host(exc) if code == "auth_error" else None
+    if wrong_host is not None:
+        target = (
+            f"Change the Base URL to https://{wrong_host}/v1"
+            if wrong_host else "Change the Base URL to that region's host"
+        )
+        return (
+            f"OpenAI serves the API key for {name} from {wrong_host or 'a different regional host'}, "
+            f"not from this endpoint. {target} in Workspace > AI Models, then try again."
+        )
     if _normalize_provider_key(model_config.get("provider")) == "bedrock":
         from app.utils.aimodels import (
             bedrock_inference_profile_hint,
@@ -483,39 +494,16 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     return None
 
 
-# Providers whose endpoint the OpenAI SDK takes as base_url and appends the
-# operation path to. A pasted full URL (".../v1/responses") doubles that path,
-# and the provider's 404 then reads as "model not found".
-_OPENAI_SDK_BASE_URL_PROVIDERS = frozenset({
-    "openAI", "openAICompatible", "litellmProxy", "lmStudio", "together",
-})
-_OPENAI_OPERATION_PATHS = (
-    "/chat/completions", "/completions", "/responses", "/embeddings",
-    "/images/generations", "/audio/speech", "/audio/transcriptions",
-)
-
-
 def _endpoint_path_refusal(config: dict) -> JSONResponse | None:
     """A 400 for an OpenAI-protocol endpoint that ends in an API operation path, else None."""
-    if config.get("provider") not in _OPENAI_SDK_BASE_URL_PROVIDERS:
-        return None
     configuration = config.get("configuration")
-    endpoint = configuration.get("endpoint") if isinstance(configuration, dict) else None
-    if not isinstance(endpoint, str):
+    if not isinstance(configuration, dict):
         return None
-    endpoint = endpoint.strip()
-    try:
-        path = urlparse(endpoint).path.rstrip("/")
-    except ValueError:
+    problem = endpoint_path_problem(config.get("provider"), configuration.get("endpoint"))
+    if problem is None:
         return None
-    suffix = next((s for s in _OPENAI_OPERATION_PATHS if path.lower().endswith(s)), None)
-    if suffix is None:
-        return None
-    base = endpoint[: endpoint.lower().rindex(suffix)]
     return _config_error(
-        f"The endpoint {endpoint!r} includes the API path \"{suffix}\". Enter only the base URL, "
-        f"{base!r}, in Workspace > AI Models; the path is added for each request.",
-        config, configuration.get("model", ""), error_code="invalid_endpoint_path",
+        problem, config, configuration.get("model", ""), error_code="invalid_endpoint_path",
     )
 
 

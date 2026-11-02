@@ -63,6 +63,22 @@ async def test_a_rejected_key_is_a_400_that_names_the_model_and_provider() -> No
 
 
 @pytest.mark.asyncio
+async def test_a_key_used_on_the_wrong_openai_region_names_the_base_url() -> None:
+    error = _status_error(openai.AuthenticationError, 401, {
+        "message": "Attempted to access resource with incorrect regional hostname. "
+                   "Please make your request to api.openai.com",
+        "type": "invalid_request_error", "param": None, "code": "incorrect_hostname",
+    })
+
+    resp, body = await _check_llm(error)
+
+    assert resp.status_code == 400
+    assert "https://api.openai.com/v1" in body["message"]
+    assert "was rejected" not in body["message"]
+    assert body["details"]["error_code"] == "auth_error"
+
+
+@pytest.mark.asyncio
 async def test_a_forbidden_key_is_a_settings_error_too() -> None:
     error = _status_error(openai.PermissionDeniedError, 403, {"error": {"message": "Forbidden"}})
 
