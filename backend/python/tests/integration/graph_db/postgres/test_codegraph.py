@@ -442,6 +442,14 @@ async def test_a_failing_org_does_not_stop_the_sweep_of_the_others_and_is_raised
     assert await ps[orgs.index(bad)].stage_state_get(f"s{orgs.index(bad)}-{tag}") is not None
 
 
+async def test_a_sync_point_update_removes_top_level_nulls_only(pg_db) -> None:
+    p = bound(pg_db)
+    await p.upsert_sync_point("sp", {"cursor": "c1", "keep": {"a": None}}, "syncPoints")
+    assert await p.update_sync_point_if("sp", {"cursor": "c1"}, {"cursor": None, "nested": {"b": None}}, "syncPoints") is True
+    got = await p.get_sync_point("sp", "syncPoints")
+    assert "cursor" not in got and got["keep"] == {"a": None} and got["nested"] == {"b": None}
+
+
 async def _as_admin(sql: str, *args: object) -> list:
     """Rows read as the superuser, so row-level security cannot hide a missing org predicate."""
     import asyncpg
