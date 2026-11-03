@@ -319,7 +319,7 @@ def test_an_org_id_must_match_whole_a_trailing_newline_is_not_an_org_id():
 def test_a_request_with_a_malformed_org_id_is_refused_at_once_and_never_retried():
     """The table's own check refuses such an id; this is the worker's second line, with a stub for the jobs connection."""
     class Jobs:
-        def __init__(self):
+        def __init__(self) -> None:
             self.sql = []
 
         def execute(self, sql, params=()):
