@@ -31,6 +31,7 @@ from db.lib import fold, placement, upkeep
 from db.migrate import (
     EXIT_CONFIG,
     EXIT_FAILED,
+    KEEPALIVES,
     OWNER_ROLE,
     RunnerError,
     locked,
@@ -159,10 +160,13 @@ def _nightly(url: str, *, every_leaf: bool) -> int:
     indexes of the leaves that still have tombstones are rebuilt, then the tombstones of the leaves that were rebuilt go (all of them
     when the mode is off). A leaf whose rebuild failed keeps its tombstones, so the next run rebuilds it."""
     bad = 0
-    with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
-        if not upkeep.nightly_lock(jobs):                   # held on this connection for the whole run
-            log("busy: another nightly is running; nothing was done")
-            return EXIT_PARTIAL
+    with psycopg.connect(_jobs_url(), autocommit=True, **KEEPALIVES) as jobs:      # keepalives: a run that lasts hours must notice a dead link
+        try:
+            if not upkeep.nightly_lock(jobs):               # held on this connection for the whole run
+                log("busy: another nightly is running; nothing was done")
+                return EXIT_PARTIAL
+        except upkeep.PoolerError as exc:
+            raise RunnerError(EXIT_CONFIG, str(exc)) from exc
         safe = placement.parse_version(jobs.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'").fetchone()[0]) < placement.SAFE_BELOW
 
         def options(conn: Connection) -> list[str]:
@@ -209,6 +213,11 @@ def _nightly(url: str, *, every_leaf: bool) -> int:
 def main(argv: list[str]) -> int:
     try:
         cmd = argv[0] if argv else ""
+        if cmd in ("placement", "build-indexes", "nightly"):
+            try:
+                placement.check_build_settings()
+            except ValueError as exc:
+                raise RunnerError(EXIT_CONFIG, str(exc)) from exc
         if cmd == "recount" and len(argv) in (1, 2):
             if len(argv) == 2 and not placement.is_org_id(argv[1]):
                 raise RunnerError(EXIT_CONFIG, USAGE)

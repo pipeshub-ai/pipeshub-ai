@@ -408,18 +408,23 @@ def reloptions(cluster, name, leaf: str):
         return c.execute("SELECT reloptions FROM pg_class WHERE oid = %s::regclass", (leaf,)).fetchone()[0]
 
 
-def test_a_bad_build_setting_is_ignored_with_a_warning_and_the_floor_is_the_servers_memory(monkeypatch, caplog):
-    for bad in ("", "  ", "512MB", "-5", "0", "x"):
-        monkeypatch.setenv("VECTOR_BUILD_MEMORY_MB", bad)
-        assert placement.build_plan(100_000, 1024, (0, 8, 6), workers=2).memory_mb == 95        # the graph's need, under the default ceiling
-    monkeypatch.setenv("VECTOR_BUILD_MEMORY_MB", "512MB")
-    monkeypatch.setenv("VECTOR_BUILD_WORKERS", "-1")
-    with caplog.at_level("WARNING"):
-        p = placement.build_plan(10_000_000, 1024, (0, 8, 6))
-    assert (p.memory_mb, p.workers) == (placement.DEFAULT_BUILD_MB, placement.DEFAULT_BUILD_WORKERS)
-    assert "VECTOR_BUILD_MEMORY_MB" in caplog.text and "VECTOR_BUILD_WORKERS" in caplog.text
+def test_a_bad_build_setting_is_a_startup_error_naming_it_and_the_floor_is_the_servers_memory(monkeypatch, capsys):
+    for name in ("VECTOR_BUILD_MEMORY_MB", "VECTOR_BUILD_WORKERS"):
+        for bad in ("512MB", "-5", "x", " 1 2"):
+            monkeypatch.setenv(name, bad)
+            with pytest.raises(ValueError, match=name):
+                placement.check_build_settings()
+            for cmd in ("placement", "build-indexes", "nightly"):           # refused before any connection is made
+                assert maintain.main([cmd]) == maintain.EXIT_CONFIG and name in capsys.readouterr().out
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("VECTOR_BUILD_MEMORY_MB", "0")                           # the ceiling is at least 1 MB, the worker count may be 0
+    with pytest.raises(ValueError, match="VECTOR_BUILD_MEMORY_MB"):
+        placement.check_build_settings()
+    monkeypatch.setenv("VECTOR_BUILD_MEMORY_MB", "96")
+    monkeypatch.setenv("VECTOR_BUILD_WORKERS", "0")
+    placement.check_build_settings()
     monkeypatch.setenv("VECTOR_BUILD_MEMORY_MB", "")
-    monkeypatch.setenv("VECTOR_BUILD_WORKERS", "")
+    monkeypatch.setenv("VECTOR_BUILD_WORKERS", "")                                # empty means unset
     assert placement.build_plan(10, 1024, (0, 8, 6)).workers == placement.DEFAULT_BUILD_WORKERS
     assert placement.build_plan(10, 1024, (0, 8, 6), ceiling_mb=512, workers=2, floor_mb=300).memory_mb == 300     # the server's setting is a floor
     assert placement.build_plan(10_000_000, 1024, (0, 8, 6), ceiling_mb=512, workers=2, floor_mb=300).memory_mb == 512
@@ -651,6 +656,34 @@ def test_a_second_nightly_at_once_exits_busy_and_does_nothing(rdb, monkeypatch):
     assert counts(cluster, name, ORG_A) == (4, 4, 0)
 
 
+class FakeJobs:
+    """A connection as a transaction-mode pooler gives it: another backend now and then, or a session lock it does not keep."""
+
+    def __init__(self, pids, held) -> None:
+        self.pids, self.held = iter(pids), held
+
+    def execute(self, sql, params=None):
+        row = (next(self.pids),) if "pg_backend_pid()" in sql and "count" not in sql else (True,) if "try_advisory" in sql else (self.held,)
+        return type("R", (), {"fetchone": lambda s: row})()
+
+
+def test_the_nightly_lock_is_proved_held_and_a_pooler_is_refused():
+    assert upkeep.nightly_lock(FakeJobs([7, 7, 7], 1)) is True
+    for jobs in (FakeJobs([7, 8, 7], 1), FakeJobs([7, 7, 7], 0)):              # another backend per statement / a lock the pooler dropped
+        with pytest.raises(upkeep.PoolerError, match="pooler"):
+            upkeep.nightly_lock(jobs)
+
+
+def test_a_nightly_behind_a_pooler_is_a_configuration_error_and_does_nothing(monkeypatch, capsys):
+    kept = {}
+    monkeypatch.setenv("PG_JOBS_URL", "postgresql://x@127.0.0.1:1/x")
+    monkeypatch.setenv("PG_MIGRATE_URL", "postgresql+psycopg://x@127.0.0.1:1/x")
+    monkeypatch.setattr(maintain.psycopg, "connect", lambda *a, **k: kept.update(k) or type("C", (), {
+        "__enter__": lambda s: FakeJobs([1, 2, 3], 0), "__exit__": lambda s, *e: None})())
+    assert maintain.main(["nightly"]) == maintain.EXIT_CONFIG and "pooler" in capsys.readouterr().out
+    assert kept["keepalives"] == 1 and kept["autocommit"] is True                   # the long connection notices a dead link
+
+
 def test_group_gc_skips_a_group_a_writer_holds_uncommitted_and_collects_it_after_a_rollback(rdb, monkeypatch):
     """The writer's group statement (INSERT ... ON CONFLICT DO UPDATE) locks the group row even when its fence leaves the row as it is;
     the collection takes its candidates with SKIP LOCKED, so it leaves that group alone."""
@@ -666,6 +699,7 @@ def test_group_gc_skips_a_group_a_writer_holds_uncommitted_and_collects_it_after
     with pytest.raises(Rollback), connect_as(cluster, name, "pipeshub_jobs") as held, uow(held, "pipeshub_jobs", ORG_A):
         held.execute("INSERT INTO retrieval.point_groups AS pg (org_id, collection_id, group_key, computed_at) VALUES (%s, 1, 'g', now() - interval '1 hour') "
                      "ON CONFLICT (org_id, collection_id, group_key) DO UPDATE SET computed_at = EXCLUDED.computed_at WHERE pg.computed_at < EXCLUDED.computed_at", (ORG_A,))
+        monkeypatch.setenv("PG_JOBS_URL", jobs_url(cluster, name) + "?options=-c%20lock_timeout%3D3000")      # a revert fails here instead of hanging
         assert maintain.main(["group-gc"]) == 0                                 # the row is locked by the open transaction
         with cluster.admin(name) as a:
             assert a.execute("SELECT count(*) FROM retrieval.point_groups WHERE group_key = 'g'").fetchone()[0] == 1

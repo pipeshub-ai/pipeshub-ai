@@ -194,8 +194,8 @@ class BuildPlan:
 
 
 def _env_int(name: str, default: int, minimum: int) -> int:
-    """An integer setting from the environment; an empty, malformed or too small value falls back to the default with a warning
-    (a typo in a deployment file must not stop the placement worker)."""
+    """An integer setting from the environment; empty means the default, anything else that is not an integer of at least ``minimum``
+    is an error naming the setting (ValueError)."""
     raw = os.environ.get(name, "")
     if raw.strip() == "":
         return default
@@ -204,16 +204,21 @@ def _env_int(name: str, default: int, minimum: int) -> int:
     except ValueError:
         value = minimum - 1
     if value < minimum:
-        log.warning("%s=%r is not an integer of at least %d: using %d", name, raw, minimum, default)
-        return default
+        raise ValueError(f"{name}={raw!r} must be an integer of at least {minimum}")
     return value
+
+
+def check_build_settings() -> None:
+    """Fail at the start of a run, naming the setting, instead of in the middle of an index build."""
+    _env_int("VECTOR_BUILD_MEMORY_MB", DEFAULT_BUILD_MB, 1)
+    _env_int("VECTOR_BUILD_WORKERS", DEFAULT_BUILD_WORKERS, 0)
 
 
 def build_plan(rows: int, dim: int, version: tuple[int, ...], *, ceiling_mb: int | None = None, workers: int | None = None,
                floor_mb: int = 64) -> BuildPlan:
     """Memory and workers for one HNSW build of ``rows`` points of ``dim`` bits. Before pgvector 0.8.2 a parallel build can overflow,
     so it is serial there. ``VECTOR_BUILD_MEMORY_MB`` and ``VECTOR_BUILD_WORKERS`` set the ceiling and the workers (read at each
-    call, bad values ignored); ``floor_mb`` is the least a build gets (the server's own ``maintenance_work_mem``)."""
+    call; a bad value is an error naming it); ``floor_mb`` is the least a build gets (the server's own ``maintenance_work_mem``)."""
     ceiling_mb = ceiling_mb if ceiling_mb is not None else _env_int("VECTOR_BUILD_MEMORY_MB", DEFAULT_BUILD_MB, 1)
     workers = workers if workers is not None else _env_int("VECTOR_BUILD_WORKERS", DEFAULT_BUILD_WORKERS, 0)
     need = -(-int(rows * (GRAPH_BYTES + dim / 8) * BUILD_HEADROOM) // 2**20)

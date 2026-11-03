@@ -54,10 +54,22 @@ WITH d AS (
   RETURNING 1)
 SELECT count(*) FROM d"""
 
+class PoolerError(RuntimeError):
+    """The connection does not keep a session lock (a transaction-mode pooler)."""
+
+
 def nightly_lock(jobs: psycopg.Connection) -> bool:
     """Take the session-level lock of the whole nightly run on this connection (False: another nightly is running). It is released when
-    the connection closes, so a killed run never leaves it held."""
-    return jobs.execute("SELECT pg_try_advisory_lock(%s, 0)", (NIGHTLY_LOCK,)).fetchone()[0]
+    the connection closes, so a killed run never leaves it held. Raises PoolerError when the connection is behind a pooler that would
+    drop it: the lock is proved held by a separate statement, as the migrate lock is."""
+    if len({jobs.execute("SELECT pg_backend_pid()").fetchone()[0] for _ in range(3)}) > 1:
+        raise PoolerError("PG_JOBS_URL points at a connection pooler; use the direct address")
+    if not jobs.execute("SELECT pg_try_advisory_lock(%s, 0)", (NIGHTLY_LOCK,)).fetchone()[0]:
+        return False
+    if not jobs.execute("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND pid = pg_backend_pid() "
+                        "AND classid = %s", (NIGHTLY_LOCK,)).fetchone()[0]:
+        raise PoolerError("the session advisory lock is not held after it was taken: PG_JOBS_URL points at a connection pooler; use the direct address")
+    return True
 
 
 def _one(jobs: psycopg.Connection, org: str, lock_class: int, sql: str, leaves: list[str] | None = None) -> int:
