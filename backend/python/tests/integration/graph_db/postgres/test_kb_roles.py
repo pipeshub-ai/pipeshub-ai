@@ -137,3 +137,45 @@ async def test_an_unknown_direct_role_does_not_beat_or_replace_a_team_role(w: Wo
     assert await w.p.get_user_kb_permission("kb1", "me") == "READER"                  # the team's role stands; the unknown one is nothing
     await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role="ORGANIZER")
     assert await w.p.get_user_kb_permission("kb1", "me") == "READER"                  # a retired direct role reads as READER
+
+
+async def _kb_with_a_record(w: World) -> None:
+    await kb(w, status="ACTIVE")
+    await w.nodes("records", {"_key": "rec", "recordName": "R", "connectorId": "kb1", "origin": "UPLOAD"})
+    await w.edge("belongsTo", ("records", "rec"), ("apps", "kb1"))
+    await w.edge("inheritPermissions", ("records", "rec"), ("apps", "kb1"))
+    await w.edge("nodeRelations", ("apps", "kb1"), ("records", "rec"), relationshipType="PARENT_CHILD")
+
+
+async def _opens(w: World, *ids: str) -> set[str]:
+    return set((await w.p.check_access("me", w.org, node_ids=list(ids))).node_ids)
+
+
+@pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
+async def test_an_unknown_direct_role_neither_gates_nor_opens_the_collection_or_its_records(w: World, role: str) -> None:
+    await _kb_with_a_record(w)
+    await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role=role)
+    assert await _opens(w, "kb1", "rec") == set()
+    acc = await w.p.get_knowledge_hub_access_v3("me", w.org)
+    assert "kb1" not in acc["gated_app_ids"] and "kb1" not in acc["by_connector"]
+
+
+@pytest.mark.parametrize("role", ["READER", "WRITER", "OWNER", "ORGANIZER", "COMMENTER"])
+async def test_a_recognised_or_retired_direct_role_still_opens_the_collection(w: World, role: str) -> None:
+    await _kb_with_a_record(w)
+    await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role=role)
+    assert await _opens(w, "kb1", "rec") == {"kb1", "rec"}
+    assert "kb1" in (await w.p.get_knowledge_hub_access_v3("me", w.org))["gated_app_ids"]
+
+
+async def test_an_unknown_direct_role_beside_a_team_reader_still_opens_as_the_team_does(w: World) -> None:
+    await _kb_with_a_record(w)
+    await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role="ADMIN")
+    await via_team(w, grant="READER", member="OWNER")
+    assert await _opens(w, "kb1", "rec") == {"kb1", "rec"}
+
+
+async def test_a_team_grant_of_an_unknown_role_gates_nothing(w: World) -> None:
+    await _kb_with_a_record(w)
+    await via_team(w, grant="EDITOR", member="OWNER")
+    assert await _opens(w, "kb1", "rec") == set()
