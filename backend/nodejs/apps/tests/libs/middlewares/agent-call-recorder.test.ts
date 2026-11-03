@@ -71,7 +71,7 @@ describe('Agent call recorder', () => {
   })
 
   const oauthClaims = (extra: Record<string, unknown> = {}) => ({
-    userId: 'u1', orgId: 'org1', client_id: 'app-1', jti: 'jti-1', scope: 'kb:read', ...extra,
+    userId: 'u1', orgId: 'org1', client_id: 'app-1', jti: 'jti-1', tokenRowId: 'tok-1', scope: 'kb:read', ...extra,
   })
 
   async function start(): Promise<string> {
@@ -112,7 +112,7 @@ describe('Agent call recorder', () => {
     await settle()
     expect(repo.rows).to.have.length(1)
     expect(repo.rows[0]).to.deep.include({
-      orgId: 'org1', userId: 'u1', tokenId: 'jti-1', tokenKind: 'oauth', oauthClientId: 'app-1', userAgent: 'curl/8.1',
+      orgId: 'org1', userId: 'u1', tokenId: 'tok-1', tokenKind: 'oauth', oauthClientId: 'app-1', userAgent: 'curl/8.1',
       method: 'GET', route: '/api/v1/knowledgeBase/:kbId/records', statusCode: 200, scopeDenied: false, rollup: true,
     })
   })
@@ -206,7 +206,7 @@ describe('Agent call recorder', () => {
     asBearer(oauthClaims({ client_id: 'pat-system:org1' }))
     const base = await start()
     await call(`${base}/api/v1/knowledgeBase/kb1/records`)
-    verifyAccessToken.resolves(oauthClaims({ jti: 'jti-2', client_id: 'svc-system:org1' }))
+    verifyAccessToken.resolves(oauthClaims({ jti: 'jti-2', tokenRowId: 'tok-2', client_id: 'svc-system:org1' }))
     await call(`${base}/api/v1/knowledgeBase/kb1/records`)
     await settle()
     expect(repo.rows.map((r) => [r.tokenKind, r.oauthClientId])).to.deep.equal([['pat', undefined], ['delegated', undefined]])

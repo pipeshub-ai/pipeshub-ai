@@ -34,11 +34,19 @@ export class MongoAgentCallRepository implements AgentCallRepository {
     };
     // The key fields are not repeated in $setOnInsert: the upsert writes them from the filter.
     const { orgId: _o, tokenId: _t, method: _m, route: _r, ...rest } = doc;
-    await AgentCallEvent.updateOne(
-      key,
-      { $inc: { count: 1 }, $setOnInsert: { ...rest, createdAt: now } },
-      { upsert: true },
-    );
+    const upsert = () =>
+      AgentCallEvent.updateOne(
+        key,
+        { $inc: { count: 1 }, $setOnInsert: { ...rest, createdAt: now } },
+        { upsert: true },
+      );
+    try {
+      await upsert();
+    } catch (err) {
+      // Two upserts racing for a new minute: the loser hits the unique key, and its retry finds the row and counts.
+      if ((err as { code?: number }).code !== 11000) throw err;
+      await upsert();
+    }
   }
 
   async list(

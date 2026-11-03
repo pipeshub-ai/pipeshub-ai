@@ -301,7 +301,7 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
-      tokenId: payload.jti,
+      tokenId: payload.tokenRowId,
       delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,

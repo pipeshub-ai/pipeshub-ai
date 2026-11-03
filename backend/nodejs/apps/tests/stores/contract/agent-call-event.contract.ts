@@ -59,6 +59,16 @@ export function describeAgentCallContract(fx: AgentCallFixture): void {
     expect(rows.find((r) => r.tokenId === base.tokenId && r.route === base.route)!.count).to.equal(2);
   });
 
+  it('counts every one of several GETs that race to open the same minute', async function () {
+    const org = fx.newId(), base = call(org, { method: 'GET', statusCode: 200, rollup: true });
+    const minute = Math.floor(Date.now() / 60000);
+    await Promise.all(Array.from({ length: 8 }, () => repo.record(base)));
+    if (Math.floor(Date.now() / 60000) !== minute) this.skip(); // the minute turned during the test
+    const rows = await repo.list(org, {}, 10);
+    expect(rows).to.have.length(1);
+    expect(rows[0]!.count).to.equal(8);
+  });
+
   it('shows an org its own rows only', async () => {
     const a = fx.newId(), b = fx.newId();
     await repo.record(call(a));
