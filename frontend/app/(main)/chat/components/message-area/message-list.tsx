@@ -63,6 +63,9 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
   );
+  const searchDegraded = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.searchDegraded ?? false : false
+  );
   const streamingQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.streamingQuestion || EMPTY_STRING : EMPTY_STRING
   );
@@ -1127,6 +1130,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     citationMaps={pair.citationMaps}
                     citationCallbacks={citationCallbacks}
                     confidence={pair.confidence}
+                    searchDegraded={isLast && searchDegraded}
                     isStreaming={pair.isStreaming}
                     modelInfo={pair.modelInfo}
                     collections={pair.collections}

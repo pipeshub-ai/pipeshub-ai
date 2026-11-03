@@ -9301,6 +9301,11 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was served with less
+                than the full search, for example because the search service was busy.
     AgentStreamCreateConversationRequest:
       allOf:
         - $ref: '#/components/schemas/AgentCreateConversationRequest'
@@ -9880,6 +9885,11 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was served with less
+                than the full search, for example because the search service was busy.
     AgentAddMessageStreamRequest:
       allOf:
         - $ref: '#/components/schemas/AgentAddMessageRequest'
@@ -12404,6 +12414,11 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        searchDegraded:
+          type: boolean
+          description: |
+            Present (`true`) only when the search store answered with less than its full search, for
+            example because it was busy. The results are valid but may be incomplete.
         searchIncomplete:
           type: string
           description: |
@@ -23397,6 +23412,11 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was served with less
+                than the full search, for example because the search service was busy.
     StoredAIModelsConfig:
       type: object
       additionalProperties: false

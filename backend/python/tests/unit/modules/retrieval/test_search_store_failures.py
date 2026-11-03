@@ -212,3 +212,22 @@ async def test_an_ordinary_empty_search_carries_no_failure(service, mock_vector_
     assert result["status"] == Status.EMPTY_RESPONSE.value
     assert "searchIncomplete" not in result
     assert mock_vector_db_service.query_nearest_points.await_count == 1
+
+
+async def test_a_degraded_answer_from_the_store_is_flagged_in_the_response(service, mock_vector_db_service) -> None:
+    point = _point()
+    point.degraded = "admission"
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
+
+    result = await _search(service)
+
+    assert result["status"] == Status.SUCCESS.value
+    assert result["searchDegraded"] is True
+
+
+async def test_a_complete_answer_carries_no_degraded_flag(service, mock_vector_db_service) -> None:
+    point = _point()
+    point.degraded = None
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
+
+    assert "searchDegraded" not in await _search(service)

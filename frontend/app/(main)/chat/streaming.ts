@@ -991,6 +991,7 @@ export async function streamMessageForSlot(
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
+    searchDegraded: false,
     streamingQuestion,
     streamingContent: '',
     currentStatusMessage: null,
@@ -1501,6 +1502,7 @@ export async function streamMessageForSlot(
             pendingCollections: [],
             artifacts: [],
             messages: finalMessages,
+            searchDegraded: data.meta?.searchDegraded === true,
             hasLoaded: true,
             abortController: null,
             runId: null,
@@ -1780,6 +1782,7 @@ export async function streamRegenerateForSlot(
       ? { pendingAskUserQuestion: null }
       : {}),
     isStreaming: true,
+    searchDegraded: false,
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
     streamingContent: '',
@@ -1951,7 +1954,7 @@ export async function streamRegenerateForSlot(
       stopIdleStatus();
     },
 
-    onComplete: async () => {
+    onComplete: async (data) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
       const wasStopped = Boolean(useChatStore.getState().slots[slotId]?.stopping);
       if (flushTimer !== null) {
@@ -2021,6 +2024,7 @@ export async function streamRegenerateForSlot(
           streamingParts: [],
           messages: finalMessages,
           rawMessages: detail.messages,
+          searchDegraded: data?.meta?.searchDegraded === true,
           abortController: null,
           runId: null,
           stopping: false,

@@ -30,6 +30,7 @@ from app.models.blocks import GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -282,6 +283,8 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
+    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
+    degraded: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -846,6 +849,8 @@ class RetrievalService:
                     # as nothing matching.
                     response["message"] = f"{incomplete} {message}"
                     response["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response["searchDegraded"] = True
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -1482,6 +1487,8 @@ class RetrievalService:
                 incomplete = plan.incomplete_notice()
                 if incomplete:
                     response_data["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response_data["searchDegraded"] = True
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -2696,6 +2703,10 @@ class RetrievalService:
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        if any(isinstance(getattr(hit, "degraded", None), str) for batch in search_results for hit in batch):
+            degraded_notice.note()
+            if plan is not None:
+                plan.degraded = True
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back

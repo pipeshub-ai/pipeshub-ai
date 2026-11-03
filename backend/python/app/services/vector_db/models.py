@@ -242,6 +242,9 @@ class SearchResult:
     id: str
     score: float
     payload: dict[str, Any] = field(default_factory=dict)
+    # Set by a provider that answered with less than its full search (the reason, e.g. "timeout"); None for a complete answer.
+    # Not part of equality: a flag does not change which document ranks where.
+    degraded: str | None = field(default=None, compare=False)
 
 
 class QuantizationType(Enum):

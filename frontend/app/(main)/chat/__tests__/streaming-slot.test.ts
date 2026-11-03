@@ -192,6 +192,29 @@ describe('a new conversation, start to finish', () => {
     expect(useChatStore.getState().slots).toEqual({});
   });
 
+  it('remembers that the answer came from a degraded search, and forgets it on the next question', async () => {
+    const slotId = newSlot();
+    const finish = (meta: Record<string, unknown>) => respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue was $4.2M.' }),
+      frame('TEXT_MESSAGE_END'),
+      frame('RUN_FINISHED', { result: { conversation: finishedConversation('Revenue was $4.2M.'), meta } }),
+    ]);
+
+    finish({ searchDegraded: true });
+    await streamMessageForSlot(slotId, Q, request());
+    expect(slot(slotId).searchDegraded).toBe(true);
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    fetchMock.mockImplementationOnce(async () => { await gate; return sseResponse([frame('RUN_FINISHED', { result: { conversation: finishedConversation('x'), meta: {} } })]); });
+    const next = streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-real' }));
+    expect(slot(slotId).searchDegraded).toBe(false);
+    release();
+    await next;
+    expect(slot(slotId).searchDegraded).toBe(false);
+  });
+
   it('ignores an artifact event with no payload instead of failing the run', async () => {
     const slotId = newSlot();
     respondWith([
@@ -1313,6 +1336,24 @@ describe('regenerating an answer', () => {
     await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
 
     expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ assistantMessageId: 'a1', status: 'pending' });
+  });
+
+  it('shows the degraded-search note on a regenerated answer', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: { meta: { searchDegraded: true } } })]);
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: { ...finishedConversation('new answer'), id: 'conv-1' } },
+    });
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(slot(slotId).searchDegraded).toBe(true);
   });
 
   it('leaves the previous answer in place when the regenerate request fails', async () => {

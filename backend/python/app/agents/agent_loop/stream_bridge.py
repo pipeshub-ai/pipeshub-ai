@@ -56,6 +56,7 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.modules.retrieval import degraded_notice
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -355,6 +356,7 @@ async def run_agent_loop_stream(
     (which formats `Agent.run()`'s own final answer rather than making a
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
+    degraded_notice.track()
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.connector_instances import fetch_user_connector_instances
