@@ -329,3 +329,15 @@ async def test_the_inherit_permissions_edge_of_a_record_goes(pg_provider, orgs, 
         assert await p.get_edge("r", "records", "g", "recordGroups", "inheritPermissions") is not None
         await p.delete_inherit_permissions_relation_record_group("r", "g")
         assert await p.get_edge("r", "records", "g", "recordGroups", "inheritPermissions") is None
+
+async def test_a_link_stored_with_no_key_is_found_and_deleted_under_its_own_collection(pg_provider, orgs, org_ctx) -> None:
+    """``recordLinks`` rows carry no edge key; they are links all the same (a ``nodeRelations`` link is the one with a key)."""
+    a, _ = orgs
+    p = pg_provider
+    link = {"from_id": "x", "from_collection": "records", "to_id": "y", "to_collection": "records"}
+    with org_ctx(a):
+        await p.batch_create_edges([link], "recordLinks")
+        assert await p.get_edge("x", "records", "y", "records", "recordLinks") is not None
+        assert await p.get_edge("x", "records", "y", "records", "nodeRelations") is None            # not the hierarchy edge of the pair
+        assert await p.batch_delete_edges([link], "recordLinks") == 1
+        assert await p.get_edge("x", "records", "y", "records", "recordLinks") is None
