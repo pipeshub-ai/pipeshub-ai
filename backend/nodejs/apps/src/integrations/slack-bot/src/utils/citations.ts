@@ -547,7 +547,7 @@ export function sourcesBlocks(
     ...documents.slice(0, SOURCES_SHOWN).map(sourceLine),
   ].join('\n');
   const rest = documents.slice(SOURCES_SHOWN).map(sourceLine);
-  const section = (text: string) => ({
+  const section = (text: string): Record<string, unknown> => ({
     type: 'section',
     expand: false,
     text: { type: 'mrkdwn', text },
