@@ -75,13 +75,53 @@ describe('ToolApprovalCard', () => {
     expect(screen.queryByText('Jira')).toBeNull();
     expect(screen.getByText(/^Expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
-    expect(screen.getByText('bug')).toBeTruthy();
+    expect(screen.getByText('Labels: bug')).toBeTruthy();
     expect(screen.queryByText("Can't be undone")).toBeNull();
+    expect(screen.getByRole('group', { name: 'Needs your approval: Create an issue in Jira' })).toBeTruthy();
+  });
+
+  it('reads a call as its document: the product in the title, the headline, one metadata line, the body, ids under Details', () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={approval({
+          serverName: 'Atlassian Rovo',
+          toolName: 'createJiraIssue',
+          toolTitle: 'Create issue',
+          argsSummary: 'cloudId: "c7f…", projectKey: "PP", …',
+          arguments: {
+            cloudId: 'c7f37664-a798-44ef-a525-ecacfeb1087d',
+            projectKey: 'PP',
+            issueTypeName: 'Task',
+            summary: 'Test Slack automation and tool approvals',
+            description: 'Test Slack automation workflows and verify tool approval behavior.',
+          },
+        })}
+        isLatest
+      />,
+    );
+    expect(screen.getByText('Create issue in Jira')).toBeTruthy();
+    expect(screen.getByText(/^Atlassian Rovo · Expires in 15 min$/)).toBeTruthy();
+    // The summary repeats the fields below, so it isn't shown.
+    expect(screen.queryByText(/cloudId/)).toBeNull();
+    expect(screen.getByText('Test Slack automation and tool approvals')).toBeTruthy();
+    expect(screen.getByText('Project: PP · Issue type: Task')).toBeTruthy();
+    expect(screen.getByLabelText('Description').textContent).toBe('Test Slack automation workflows and verify tool approval behavior.');
+    expect(screen.queryByText('c7f37664-a798-44ef-a525-ecacfeb1087d')).toBeNull();
+
+    const details = screen.getByRole('button', { name: 'Details' });
+    expect(details.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(details);
+    expect(details.getAttribute('aria-expanded')).toBe('true');
+    expect(document.getElementById(details.getAttribute('aria-controls') ?? '')).toBeTruthy();
+    expect(screen.getByText('Cloud ID')).toBeTruthy();
+    expect(screen.getByText('c7f37664-a798-44ef-a525-ecacfeb1087d')).toBeTruthy();
   });
 
   it('names a tool without a title readably', () => {
     renderInTheme(<ToolApprovalCard approval={approval({ toolTitle: null, toolName: 'createConfluencePage' })} isLatest />);
-    expect(screen.getByText('Create Confluence Page in Jira')).toBeTruthy();
+    // The tool names its product, so the title doesn't add one; the server goes on the subline.
+    expect(screen.getByText('Create Confluence Page')).toBeTruthy();
+    expect(screen.getByText(/^Jira · Expires in 15 min$/)).toBeTruthy();
   });
 
   it('marks a tool that deletes data', () => {
@@ -607,13 +647,13 @@ describe('ToolApprovalCard: house style', () => {
     expect(icon.getAttribute('data-color')).toBe('');
   });
 
-  it('Allow is solid and Deny soft', () => {
+  it('Allow is solid and Deny a bordered secondary', () => {
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
     const allow = screen.getByRole('button', { name: 'Allow' });
     const deny = screen.getByRole('button', { name: 'Deny' });
     expect(variant(allow)).toBe('rt-variant-solid');
     expect(allow.getAttribute('data-accent-color')).not.toBe('red');
-    expect(variant(deny)).toBe('rt-variant-soft');
+    expect(variant(deny)).toBe('rt-variant-outline');
     expect(deny.getAttribute('data-accent-color')).toBe('gray');
     cleanup();
 
