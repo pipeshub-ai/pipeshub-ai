@@ -117,8 +117,9 @@ class _VectorDBContractTests:
             org_a = await vector_service.filter_collection(must={"orgId": "org-a"})
 
             async def delete_a_until_gone() -> bool:
-                # OpenSearch skips a document updated since its last refresh (conflicts=proceed), so a
-                # repeat after the refresh finishes the job; refresh=True makes each pass visible.
+                # shortcut: OpenSearch's delete_by_query skips a document rewritten since the index last
+                # refreshed (conflicts=proceed), so the delete is repeated until it has all gone; drop the
+                # loop once fix/opensearch-delete-conflicts (refresh and retry inside delete_points) lands.
                 await vector_service.delete_points(col, org_a, refresh=True)
                 return len(await vector_service.retrieve_points(col, [p.id for p in a_pts])) == 0
 
