@@ -1395,6 +1395,9 @@ export function describeAnswerWiring(
           ['Searched the web', 'complete'],
           ['Writing the answer', 'complete'],
         ]);
+        // It said so while the answer streamed, not only at the end.
+        const live = apiCalls(client, 'chat.appendStream').flatMap((c) => c.chunks as AnyArgs[]);
+        expect(live).to.deep.include({ type: 'task_update', id: 'next-2', title: 'Writing the answer', status: 'in_progress' });
       });
 
       it('shows how long a long step has taken, and its final title once it ends', async () => {
