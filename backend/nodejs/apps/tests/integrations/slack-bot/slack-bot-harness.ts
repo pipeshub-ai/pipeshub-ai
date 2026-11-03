@@ -199,6 +199,41 @@ export const streamedChunks = (
     ...apiCalls(client, 'chat.appendStream'),
   ].flatMap((call) => call.chunks as AnyArgs[]);
 
+/** The Jira answer from a live run: an intro, a ten-row table, then a closing sentence. */
+export const JIRA_TABLE_ANSWER = [
+  'Here are your 10 most recently updated unresolved Jira tickets, ordered newest first:',
+  '',
+  '| Ticket | Summary | Status | Priority | Last updated |',
+  '|---|---|---|---|---|',
+  '| PP-497 | Update documentation on docs.pipehsub | PR review | Medium | Tue, Nov 3, 11:35 AM IST |',
+  '| PP-485 | Fix connector sync retries | Testing | High | Tue, Nov 3, 10:02 AM IST |',
+  '| PP-447 | Slack bot thinking trail | Testing | High | Mon, Nov 2, 6:40 PM IST |',
+  '| PP-481 | Jira OAuth scopes | Testing | Medium | Mon, Nov 2, 4:15 PM IST |',
+  '| PP-476 | Indexing backoff | In progress | Medium | Mon, Nov 2, 1:05 PM IST |',
+  '| PP-470 | Docs: Slack setup | To do | Low | Sun, Nov 1, 9:30 PM IST |',
+  '| PP-466 | Search ranking tweak | In progress | Medium | Sun, Nov 1, 3:12 PM IST |',
+  '| PP-459 | Confluence attachments | To do | Medium | Sat, Oct 31, 8:44 PM IST |',
+  '| PP-452 | Rate-limit dashboard | In progress | Low | Sat, Oct 31, 11:20 AM IST |',
+  '| PP-449 | MCP server timeouts | To do | High | Fri, Oct 30, 7:58 PM IST |',
+  '',
+  'The most immediate follow-ups by status appear to be PP-497 (PR review) and PP-485, PP-447, PP-481 (Testing).',
+].join('\n');
+
+/** Every block the reply posted after its text: the stop's blocks, then any posted below it. */
+export const replyBlocks = (client: ReturnType<typeof slackClient>): AnyArgs[] => [
+  ...apiCalls(client, 'chat.stopStream').flatMap((c) => (c.blocks ?? []) as AnyArgs[]),
+  ...client.chat.postMessage.getCalls().flatMap((c) => ((c.args[0] as AnyArgs).blocks ?? []) as AnyArgs[]),
+];
+
+/** No markdown_text the reply streamed holds a table row outside a code fence. */
+export function expectNoStreamedTableRow(client: ReturnType<typeof slackClient>): void {
+  let fenced = false;
+  for (const line of streamedText(client).split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    if (!fenced) expect(line, 'a table row streamed as text').to.not.match(/^\s*\|.*\|\s*$/);
+  }
+}
+
 export const streamedText = (client: ReturnType<typeof slackClient>): string =>
   streamedChunks(client)
     .filter((c) => c.type === 'markdown_text')
@@ -984,6 +1019,131 @@ export function describeAnswerWiring(
       const blocks = stop.blocks as AnyArgs[];
       expect(blocks.some((b) => b.type === 'table')).to.equal(true);
       expect(JSON.stringify(blocks)).to.include('That is all.');
+    });
+
+    describe('the Jira table answer from a live run', () => {
+      const intro = JIRA_TABLE_ANSWER.slice(0, JIRA_TABLE_ANSWER.indexOf('|'));
+      const expectTable = (client: ReturnType<typeof slackClient>) => {
+        // The streamed text is the intro only: no part of the header row goes out as text.
+        expect(streamedText(client).trim()).to.equal(intro.trim());
+        expectNoStreamedTableRow(client);
+        const blocks = replyBlocks(client);
+        const table = blocks.findIndex((b) => b.type === 'table');
+        expect(table, 'the table is a table block').to.be.at.least(0);
+        expect(blocks[table].rows).to.have.length(11);
+        const closing = blocks.findIndex((b) => JSON.stringify(b).includes('The most immediate follow-ups'));
+        expect(closing, 'the closing sentence follows the table').to.be.greaterThan(table);
+      };
+
+      // 40 is the chunking of the live reproduction.
+      for (const size of [1, 3, 7, 16, 40, 64]) {
+        it(`streams the intro and puts the table as blocks, in chunks of ${String(size)}`, async () => {
+          expectTable(await ask([
+            { type: 'RUN_STARTED', runId: 'r1' },
+            { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+            ...tokens(JIRA_TABLE_ANSWER, size),
+            finished(JIRA_TABLE_ANSWER),
+          ]));
+        });
+      }
+
+      it('when one chunk carries the intro and the first rows', async () => {
+        const cut = JIRA_TABLE_ANSWER.indexOf('| PP-485');
+        expectTable(await ask([
+          { type: 'RUN_STARTED', runId: 'r1' },
+          { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+          { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: JIRA_TABLE_ANSWER.slice(0, cut) },
+          ...tokens(JIRA_TABLE_ANSWER.slice(cut), 9),
+          finished(JIRA_TABLE_ANSWER),
+        ]));
+      });
+
+      it('when the intro streams before a pause and the header row arrives alone', async () => {
+        expectTable(await ask([
+          { type: 'RUN_STARTED', runId: 'r1' },
+          { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+          { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: intro },
+          { type: 'TEXT_MESSAGE_CONTENT', runId: 'r1', delta: '| Ticket | Summary | Status | Priority | Last updated |\n' },
+          ...tokens(JIRA_TABLE_ANSWER.slice(JIRA_TABLE_ANSWER.indexOf('|---')), 5),
+          finished(JIRA_TABLE_ANSWER),
+        ]));
+      });
+
+      it('after a tool call, when the answer comes only with the end of the run', async () => {
+        expectTable(await ask([
+          { type: 'RUN_STARTED', runId: 'r1' },
+          { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'jira__search_issues', displayName: 'Searched Jira' },
+          { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed', resultSummary: '10 results' },
+          finished(JIRA_TABLE_ANSWER),
+        ]));
+      });
+
+      it('after a tool call, streamed', async () => {
+        expectTable(await ask([
+          { type: 'RUN_STARTED', runId: 'r1' },
+          { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+          ...tokens('Let me look up your tickets.'),
+          { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'jira__search_issues', displayName: 'Searched Jira' },
+          { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed', resultSummary: '10 results' },
+          { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+          ...tokens(JIRA_TABLE_ANSWER, 4),
+          finished(JIRA_TABLE_ANSWER),
+        ]));
+      });
+    });
+
+    it('puts two tables of one answer both as blocks', async () => {
+      const answer = 'First:\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nThen:\n\n| C | D |\n|---|---|\n| 3 | 4 |\n\nDone.';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 3),
+        finished(answer),
+      ]);
+      expectNoStreamedTableRow(client);
+      expect(replyBlocks(client).filter((b) => b.type === 'table')).to.have.length(2);
+      expect(JSON.stringify(replyBlocks(client))).to.include('Done.');
+    });
+
+    it('keeps a table inside a code fence as code', async () => {
+      const answer = 'Example:\n\n```\n| A | B |\n|---|---|\n| 1 | 2 |\n```\n\nThat is the format.';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 3),
+        finished(answer),
+      ]);
+      expect(visibleText(client)).to.equal(answer);
+      expect(replyBlocks(client).some((b) => b.type === 'table')).to.equal(false);
+    });
+
+    it('puts a table after citations as blocks, its citations numbered like the Sources list', async () => {
+      const answer = 'Revenue grew [source](ref1).\n\n| Quarter | Revenue |\n|---|---|\n| Q3 | 12% |\n\nSee above.';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 4),
+        finished(answer, CITATIONS),
+      ]);
+      expectNoStreamedTableRow(client);
+      expect(streamedText(client)).to.include('Revenue grew [[1]](https://x.test/q3).');
+      expect(replyBlocks(client).some((b) => b.type === 'table')).to.equal(true);
+      expect(JSON.stringify(replyBlocks(client))).to.include('https://x.test/q3');
+    });
+
+    it('puts a table that comes after the answer rolled over into a new message as blocks', async () => {
+      const long = `${'Revenue grew in every quarter of the year. '.repeat(320)}\n\n`;
+      const answer = `${long}| Quarter | Revenue |\n|---|---|\n| Q3 | 12% |\n\nThat is all.`;
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 400),
+        finished(answer),
+      ]);
+      expect(apiCalls(client, 'chat.startStream').length).to.be.greaterThan(1);
+      expectNoStreamedTableRow(client);
+      expect(replyBlocks(client).some((b) => b.type === 'table')).to.equal(true);
+      expect(JSON.stringify(replyBlocks(client))).to.include('That is all.');
     });
 
     it('puts a table as blocks even when the answer came only with the end of the run', async () => {

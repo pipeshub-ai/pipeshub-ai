@@ -1291,6 +1291,55 @@ export function tryParseMarkdownTableAtLine(
   };
 }
 
+/** Each line with where it starts, and whether it is inside a code fence. */
+function linesOutsideFences(content: string): { line: string; at: number; fenced: boolean }[] {
+  const out: { line: string; at: number; fenced: boolean }[] = [];
+  let activeFenceMarker: FenceMarker | null = null;
+  let at = 0;
+  for (const line of content.split("\n")) {
+    let fenced = activeFenceMarker !== null;
+    if (activeFenceMarker) {
+      if (isFenceClosingLine(line, activeFenceMarker)) activeFenceMarker = null;
+    } else {
+      activeFenceMarker = getFenceMarker(line);
+      fenced = activeFenceMarker !== null;
+    }
+    out.push({ line, at, fenced });
+    at += line.length + 1;
+  }
+  return out;
+}
+
+/** Where the first table outside code fences (a header row, then its separator) starts, or -1. */
+export function markdownTableStart(content: string): number {
+  const lines = linesOutsideFences(content);
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const { line, at, fenced } = lines[i]!;
+    const next = lines[i + 1]!;
+    if (!fenced && !next.fenced && isMarkdownTableRow(line) && isMarkdownTableSeparatorRow(next.line)) {
+      return at;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Where trailing lines that may still turn out to be a table start: lines
+ * beginning with `|` outside code fences, up to the end. -1 when there are none.
+ */
+export function trailingTableRowsStart(content: string): number {
+  const lines = linesOutsideFences(content);
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const { line, at, fenced } = lines[i]!;
+    // The last line may be empty (text ended with a newline): a row can still come.
+    if (i === lines.length - 1 && line === "") continue;
+    if (fenced || !/^\s*\|/.test(line)) break;
+    start = at;
+  }
+  return start;
+}
+
 export function hasMarkdownTableStartOutsideCodeFences(content: string): boolean {
   if (!content) {
     return false;
