@@ -93,14 +93,15 @@ class RecordsMixin(PgBase):
 
     async def get_records_by_virtual_record_id(self, virtual_record_id: str, accessible_record_ids: list[str] | None = None, transaction: str | None = None,
                                                *, raise_on_error: bool = False, visibility: RecordVisibility = RecordVisibility.LIVE) -> list[str]:
-        """The keys of the records of one virtual record; an empty ``accessible_record_ids`` filters nothing (as on Neo4j)."""
+        """The keys of the records of one virtual record. ``accessible_record_ids`` None filters nothing; an empty list returns nothing (fail closed: on
+        Neo4j and ArangoDB an empty list is also no filter, which no caller on main relies on or passes)."""
         org = current_org_id()
         try:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_by_virtual_record_id */ SELECT n.id FROM graph.nodes n
                 WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = $2
                 AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2))
                 AND ($3::text[] IS NULL OR n.id = ANY($3::text[]))""",
-                                                      org, virtual_record_id, list(accessible_record_ids) if accessible_record_ids else None, _vis(visibility)),
+                                                      org, virtual_record_id, list(accessible_record_ids) if accessible_record_ids is not None else None, _vis(visibility)),
                                   transaction)
             return [r["id"] for r in rows]
         except Exception as e:

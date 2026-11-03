@@ -113,11 +113,12 @@ async def test_visibility_live_trashed_and_both_and_a_missing_flag_is_live(pg_db
     assert await p.get_virtual_record_ids_in_use([]) == set() and await p.get_virtual_record_ids_for_record_ids([]) == {}
 
 
-async def test_an_empty_accessible_list_filters_nothing_and_a_list_filters(pg_db) -> None:
+async def test_no_list_filters_nothing_an_empty_list_returns_nothing_and_a_list_filters(pg_db) -> None:
     p = bound(pg_db)
     await p.batch_upsert_records([code(p.org, "a"), code(p.org, "b")])
     await p.batch_update_nodes([{"id": "a", "virtualRecordId": "v"}, {"id": "b", "virtualRecordId": "v"}], "records")
-    assert set(await p.get_records_by_virtual_record_id("v", [])) == {"a", "b"} == set(await p.get_records_by_virtual_record_id("v", None))
+    assert set(await p.get_records_by_virtual_record_id("v", None)) == {"a", "b"}
+    assert await p.get_records_by_virtual_record_id("v", []) == []                                  # may read nothing: nothing, never everything
     assert await p.get_records_by_virtual_record_id("v", ["a", "zz"]) == ["a"]
     assert await p.get_virtual_record_ids_for_record_ids(["a", "zz"]) == {"a": "v"}
 
