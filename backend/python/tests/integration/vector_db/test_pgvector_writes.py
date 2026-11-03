@@ -268,6 +268,12 @@ async def test_points_of_one_group_in_one_upsert_each_contribute_the_membership_
     assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c9"), (2, "g1")]
 
 
+async def test_a_repeated_point_takes_its_place_at_its_last_occurrence_when_the_batch_sets_a_membership_key(store) -> None:
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"]), point(A, "p2", conn=["c2"]), point(A, "p1", conn=["c3"])])
+    members = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1' ORDER BY 1, 2"
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c3")]                # the last point of the batch wins the key
+
+
 async def test_a_writer_that_carries_no_membership_still_holds_its_groups_rows_until_it_commits(store) -> None:
     """The maintenance job that collects the membership of groups without points takes its candidates ``FOR UPDATE SKIP LOCKED``. A writer
     that adds points to a group without carrying membership must hold that group's row too, or the job removes the membership under it."""
