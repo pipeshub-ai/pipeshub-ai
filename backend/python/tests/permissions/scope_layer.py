@@ -114,7 +114,7 @@ def oracle_scopes(graph: Graph, user: str, org: str) -> ViewerScopes:
     readable = {n for n in groups | {x.id for x in scopes} if oracle.verdict(s, who, n).admitted}
     tokens = frozenset({f"u:{user}", *(f"g:{p}" for p in who.ps if p != user)})
     return ViewerScopes(
-        org_id=org, user_key=user, gated_apps=frozenset(who.apps), legacy_apps=legacy,
+        org_id=org, user_key=user, gated_apps=frozenset(who.apps) - legacy, legacy_apps=legacy,
         open_apps=frozenset(a for a in who.apps if _opens(s, a) and a not in legacy), readable_groups=frozenset(groups & readable),
         readable_scopes=frozenset(x.id for x in scopes if x.id in readable),
         unreadable_restricted=frozenset(x.id for x in scopes if x.restricted and x.id not in readable

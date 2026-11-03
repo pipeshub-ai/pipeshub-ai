@@ -501,3 +501,17 @@ async def test_a_fill_for_a_version_that_has_moved_does_not_resolve() -> None:
     await cache.bump(ORG)  # ... which has not run yet when the version moves
     await service.wait_for_fills()
     assert graph.resolves == 0
+
+
+async def test_a_legacy_app_is_not_a_gated_app() -> None:
+    hierarchy = InMemoryHierarchyView(ORG, {"conf": frozenset({"g1"})}, (), {"conf": AppFacts(False, "CONFLUENCE", True), "slack": AppFacts(False, "SLACK")})
+    principals = InMemoryPrincipalView({(ORG, USER): Principal(TOKENS, frozenset({"conf", "slack"}))}, {})
+    got = await ViewerScopeResolver(hierarchy, principals).resolve(ORG, USER)
+    assert got.legacy_apps == {"conf"} and got.gated_apps == {"slack"}
+
+
+async def test_the_term_bound_trips_before_the_store_is_asked() -> None:
+    hierarchy, principals = _views(frozenset({"g1"}))
+    with pytest.raises(ViewerScopesUnavailable) as caught:
+        await ViewerScopeResolver(hierarchy, principals, max_terms=2).resolve(ORG, USER)  # asks g1, g2, s2
+    assert caught.value.reason.startswith("too_many_terms") and principals.calls == []

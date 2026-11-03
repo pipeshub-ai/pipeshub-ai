@@ -113,6 +113,9 @@ class ViewerScopeResolver:
             pending = await self._hierarchy.pending_scopes(org_id)
             # A node that only a direct grant can open is not asked about unless the viewer holds one.
             asked = groups | {s.id for s in scopes if not s.needs_grant or s.id in who.granted_ids}
+            # Bounded on what is asked, so the store is not run over an unbounded set only to be refused afterwards.
+            if self._max_terms is not None and len(asked) > self._max_terms:
+                raise ViewerScopesUnavailable(f"too_many_terms:{len(asked)}")
             readable = await self._principals.readable(org_id, who, asked) if asked else frozenset[str]()
         except ViewerScopesUnavailable:
             raise
@@ -123,7 +126,7 @@ class ViewerScopeResolver:
         out = ViewerScopes(
             org_id=org_id,
             user_key=user_key,
-            gated_apps=who.gated_app_ids,
+            gated_apps=who.gated_app_ids - legacy,
             open_apps=frozenset(a for a, f in facts.items() if f.opens and a not in legacy),
             readable_groups=groups & readable,
             readable_scopes=frozenset(s.id for s in scopes if s.id in readable),

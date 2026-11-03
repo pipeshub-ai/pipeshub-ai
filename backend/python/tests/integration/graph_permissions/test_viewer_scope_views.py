@@ -15,6 +15,8 @@ from .fixture_graph import (
     USER_V,
     _principals,
     app,
+    nr,
+    rec,
     rg,
     user_app,
 )
@@ -24,16 +26,30 @@ from .test_provider_v3_viewer_children import APP, SPACE, _graph
 pytestmark = pytest.mark.integration
 
 RGL_APP, RGL_GROUP = "sv-rgl-app", "sv-rgl-group"
+FA_APP, FG_APP = "sv-foreign-app", "sv-foreign-group-app"
 OTHER_ORG = "org-other"
 
 
 def _extra() -> tuple[list, list]:
+    edges = [user_app(USER_U, RGL_APP)]
     nodes = [
         app(RGL_APP, "Confluence with a group of its own", connector=CONFLUENCE, app_group="Atlassian"),
         rg(RGL_GROUP, "Own readers", group_type="CONFLUENCE_SPACES", connector=CONFLUENCE, connectorId=RGL_APP,
            permissionModel="RECORD_GROUP_LEVEL"),
     ]
-    return nodes, [user_app(USER_U, RGL_APP)]
+    # A page that does not inherit, in an app that has no group of its own readers: only a direct grant opens it. Each
+    # app has a look-alike in another organization that must not change that (a foreign app: unknown here, which counts
+    # as special; a foreign group of its own readers).
+    for app_id in (FA_APP, FG_APP):
+        nodes += [rec(f"{app_id}-parent", "Parent", connector_id=app_id), rec(f"{app_id}-hidden", "Hidden", connector_id=app_id)]
+        edges.append(nr(f"{app_id}-parent", f"{app_id}-hidden"))
+    nodes += [
+        app(FA_APP, "Foreign app", connector=CONFLUENCE, app_group="Atlassian", orgId=OTHER_ORG),
+        app(FG_APP, "Own app", connector=CONFLUENCE, app_group="Atlassian"),
+        rg("sv-foreign-group", "Foreign readers", group_type="CONFLUENCE_SPACES", connector=CONFLUENCE, connectorId=FG_APP,
+           permissionModel="RECORD_GROUP_LEVEL", orgId=OTHER_ORG),
+    ]
+    return nodes, edges
 
 
 @pytest.fixture(scope="module")
@@ -90,3 +106,10 @@ async def test_a_viewer_who_does_not_hold_the_app_gets_nothing_of_it(views_graph
     assert RGL_APP not in theirs.gated_apps and RGL_APP not in theirs.legacy_apps
     assert not theirs.readable_groups & {RGL_GROUP}
     assert _principals()                                                       # the fixture's principals exist
+
+
+@pytest.mark.parametrize(("app_id", "needs_grant"), [(FA_APP, False), (FG_APP, True)])
+async def test_another_organizations_app_or_group_does_not_decide_what_is_special(views_graph, provider, app_id, needs_grant) -> None:
+    # `special` drops the grant requirement; it reads this organization's app and groups only.
+    scopes = {s.id: s for s in await provider.permission_hierarchy_view().scope_nodes(ORG, app_id)}
+    assert scopes[f"{app_id}-hidden"].restricted and scopes[f"{app_id}-hidden"].needs_grant is needs_grant

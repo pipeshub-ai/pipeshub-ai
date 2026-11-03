@@ -20,7 +20,7 @@ UNVERSIONED = -1
 class ViewerScopes:
     org_id: str
     user_key: str
-    #: Apps the viewer passes the connector gate for. This is the gate, NOT "may read every record of the app": no
+    #: Apps the viewer passes the connector gate for, less `legacy_apps`. This is the gate, NOT "may read every record of the app": no
     #: filter may match `connectorIds` against it. It tells the post-check and the "path reaches the app" arm.
     gated_apps: frozenset[str] = frozenset()
     #: Gated apps whose membership admits by itself (APP_LEVEL permission model or a KB). The only apps a filter may

@@ -291,7 +291,7 @@ async def test_an_app_the_path_filter_cannot_describe_is_named_and_left_out() ->
             if scopes.legacy_apps:
                 described = scopes.open_apps | scopes.readable_groups | scopes.readable_scopes | scopes.unreadable_restricted
                 assert not scopes.legacy_apps & described
-                assert scopes.legacy_apps <= scopes.gated_apps
+                assert not scopes.legacy_apps & scopes.gated_apps
                 return
     raise AssertionError("no generated world has a record-group-level group in an Intersection app")
 
