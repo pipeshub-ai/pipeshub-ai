@@ -25,7 +25,7 @@ def refuse_autocommit() -> None:
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$")
 _LOCK_NOT_AVAILABLE = "55P03"
 POSTINGS = "retrieval.postings"
-# index-only scans of postings need a current visibility map: vacuum after 2 % inserted rows, not 20 % (see retrieval_0006)
+# index-only scans of postings need a current visibility map: vacuum after 2 % inserted rows, not 20 % (see retrieval_0001)
 GRAPH_OPTIONS = "autovacuum_analyze_scale_factor = 0.02, autovacuum_analyze_threshold = 200, autovacuum_vacuum_scale_factor = 0.05"
 POSTINGS_OPTIONS = "autovacuum_vacuum_insert_scale_factor = 0.02, autovacuum_vacuum_insert_threshold = 2000"
 

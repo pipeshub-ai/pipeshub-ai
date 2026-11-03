@@ -3,7 +3,7 @@
 Every node is a row of ``graph.nodes (org_id, coll, id, doc jsonb)`` and every edge a row of ``graph.edges``; ``coll`` is the collection
 name the callers use. All reads and writes run in the ambient org (row-level security), through ``app.core.db``.
 
-The provider is composed of one mixin per group of methods, each in its own module; for now ``core`` (generic documents and edges). A method no
+The provider is composed of one mixin per group of methods, each in its own module: ``permissions`` (the access check) and ``core`` (generic documents and edges). A method no
 mixin defines raises ``NotImplementedInPostgres``; ``unimplemented()`` lists them (the coverage list).
 """
 from __future__ import annotations
@@ -16,13 +16,14 @@ from app.core.org_context import instrument_org_methods
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
 from app.services.graph_db.postgres.core import CoreMixin
+from app.services.graph_db.postgres.permissions import PermissionsMixin
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CoreMixin,)
+_MIXINS = (PermissionsMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
 
