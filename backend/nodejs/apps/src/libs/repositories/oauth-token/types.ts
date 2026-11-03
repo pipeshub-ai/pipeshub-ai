@@ -30,11 +30,15 @@ export interface AgentRegistrationDto {
   attemptExpiresAt: Date;
   /** The outer window the agent has to finish the claim in. */
   expiresAt: Date;
+  /** When the sweeper may delete the row. */
+  purgeAt: Date;
   status: AgentRegistrationStatus;
   failedAttempts: number;
   lastPolledAt?: Date;
   claimedUserId?: string;
   claimedOrgId?: string;
+  /** The scopes the person was shown and approved; every token issued under the registration stays within them. */
+  approvedScopes?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -46,7 +50,7 @@ export interface NewAgentRegistration {
   userCodeHash: string;
   attemptExpiresAt: Date;
   expiresAt: Date;
-  /** When the row may be deleted: past the longest assertion it can back. */
+  /** When the row may be deleted: the end of the claim window, until a consume moves it past the assertion. */
   purgeAt: Date;
 }
 
@@ -355,10 +359,21 @@ export interface OAuthTokenRepository {
           status: AgentRegistrationStatus.CLAIMED;
           userId: string;
           orgId: string;
+          scopes: string[];
         },
   ): Promise<boolean>;
-  /** Claimed to consumed as one conditional write: of any number of concurrent polls exactly one gets the row. */
-  consumeAgentRegistration(id: string): Promise<AgentRegistrationDto | null>;
+  /**
+   * Claimed to consumed as one conditional write: of any number of concurrent polls exactly one gets the row.
+   * `purgeAt` replaces the row's, so it outlives the assertion this consume lets the caller issue.
+   */
+  consumeAgentRegistration(
+    id: string,
+    purgeAt: Date,
+  ): Promise<AgentRegistrationDto | null>;
+  /** The claimed and consumed registrations one person approved, newest first. */
+  listAgentRegistrationsForUser(userId: string): Promise<AgentRegistrationDto[]>;
+  /** Revokes one claimed or consumed registration; with `userId`, only if that person approved it. False when nothing matched. */
+  revokeAgentRegistration(id: string, userId?: string): Promise<boolean>;
   /** Revokes the claimed and consumed registrations of one user. */
   revokeAgentRegistrationsForUser(userId: string): Promise<void>;
   /** Revokes every claimed and consumed registration (the agent app was revoked). */

@@ -2,6 +2,7 @@ import { injectable, inject } from 'inversify';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { Logger } from '../../../libs/services/logger.service';
+import { NotFoundError } from '../../../libs/errors/http.errors';
 import { forOrg } from '../../../libs/context/orgContext';
 import {
   DeviceGrantError,
@@ -29,7 +30,7 @@ import {
   CLAIM_TOKEN_PREFIX,
   MAX_FAILED_CODE_ATTEMPTS,
   REGISTRATION_ID_PREFIX,
-  REGISTRATION_RETENTION_SECONDS,
+  ASSERTION_RETENTION_SECONDS,
   REGISTRATION_WINDOW_SECONDS,
 } from '../constants/agent-auth.constants';
 import type { OAuthAppDto } from '../../../libs/repositories/oauth-app';
@@ -157,7 +158,8 @@ export class AgentRegistrationService {
       userCodeHash: attempt.userCodeHash,
       attemptExpiresAt: attempt.expiresAt,
       expiresAt,
-      purgeAt: new Date(now + REGISTRATION_RETENTION_SECONDS * 1000),
+      // An unclaimed row goes with its window; consuming it moves this past the assertion.
+      purgeAt: expiresAt,
     });
     const registrationId = REGISTRATION_ID_PREFIX + reg._id;
     this.logger.info('registration.created', { registrationId });
@@ -263,9 +265,13 @@ export class AgentRegistrationService {
     const reg = await this.pendingAttempt(attemptToken, user);
     const repo = getOAuthTokenRepository();
     if (action === 'deny') {
-      await repo.decideAgentRegistration(reg._id, {
+      const denied = await repo.decideAgentRegistration(reg._id, {
         status: AgentRegistrationStatus.REVOKED,
       });
+      // An approval that won the race has already made the registration usable.
+      if (!denied) {
+        throw fail('invalid_request', 'this claim link is no longer valid');
+      }
       this.logger.info('claim.denied', {
         registrationId: REGISTRATION_ID_PREFIX + reg._id,
       });
@@ -276,11 +282,19 @@ export class AgentRegistrationService {
       await repo.recordAgentFailedAttempt(reg._id, MAX_FAILED_CODE_ATTEMPTS);
       throw fail('invalid_user_code', 'that code is not right');
     }
-    // The person and org come from the session, never from the request.
+    const app = await this.firstPartyApp();
+    if (!app) {
+      throw fail(
+        'service_auth_not_enabled',
+        'service_auth registration is not enabled',
+      );
+    }
+    // The person and org come from the session, never from the request. The scopes are the list the claim page showed.
     const decided = await repo.decideAgentRegistration(reg._id, {
       status: AgentRegistrationStatus.CLAIMED,
       userId: user.userId,
       orgId: user.orgId,
+      scopes: this.scopesOf(app),
     });
     if (!decided) {
       throw fail('invalid_request', 'this claim link is no longer valid');
@@ -331,7 +345,10 @@ export class AgentRegistrationService {
       );
     }
     // Claim before minting so two concurrent polls cannot both issue a token.
-    const taken = await repo.consumeAgentRegistration(reg._id);
+    const taken = await repo.consumeAgentRegistration(
+      reg._id,
+      new Date(Date.now() + ASSERTION_RETENTION_SECONDS * 1000),
+    );
     if (!taken) {
       throw new InvalidGrantError('claim_token has already been used');
     }
@@ -363,6 +380,43 @@ export class AgentRegistrationService {
     return tokens;
   }
 
+  // ---- the approving person's own registrations (session) ---------------------------------------------------------
+
+  async listForUser(user: SessionUser): Promise<{
+    registrations: {
+      id: string;
+      status: AgentRegistrationStatus;
+      created_at: string;
+      updated_at: string;
+    }[];
+  }> {
+    const rows = await getOAuthTokenRepository().listAgentRegistrationsForUser(
+      user.userId,
+    );
+    return {
+      registrations: rows.map((r) => ({
+        id: REGISTRATION_ID_PREFIX + r._id,
+        status: r.status,
+        created_at: r.createdAt.toISOString(),
+        updated_at: r.updatedAt.toISOString(),
+      })),
+    };
+  }
+
+  /** Another person's registration answers like one that does not exist. */
+  async revokeForUser(id: string, user: SessionUser): Promise<{ ok: true }> {
+    const revoked = await getOAuthTokenRepository().revokeAgentRegistration(
+      id.slice(REGISTRATION_ID_PREFIX.length),
+      user.userId,
+    );
+    if (!revoked) throw new NotFoundError('Registration not found');
+    this.logger.info('registration.revoked', {
+      registrationId: id,
+      userId: user.userId,
+    });
+    return { ok: true };
+  }
+
   // ---- helpers -----------------------------------------------------------------------------------------------------
 
   /** The first-party agent app, or null when registration is off or the app cannot be had. */
@@ -386,7 +440,10 @@ export class AgentRegistrationService {
     const orgId = reg.claimedOrgId;
     const userId = reg.claimedUserId;
     const app = await this.firstPartyApp();
-    if (!orgId || !userId || !app) {
+    // What the person approved, less anything the app has stopped allowing since; an app widened later adds nothing.
+    const now = new Set(app ? this.scopesOf(app) : []);
+    const scopes = (reg.approvedScopes ?? []).filter((s) => now.has(s));
+    if (!orgId || !userId || !app || scopes.length === 0) {
       throw new InvalidGrantError('the registration cannot be used');
     }
     return forOrg(orgId, 'oauth.agent', async () => {
@@ -412,11 +469,14 @@ export class AgentRegistrationService {
         app,
         userId,
         orgId,
-        this.scopesOf(app),
+        scopes,
         false,
         user.fullName,
         (org as { accountType?: string }).accountType,
-        { recheckAppScopes: true },
+        {
+          recheckAppScopes: true,
+          agentRegistrationId: REGISTRATION_ID_PREFIX + reg._id,
+        },
       );
       return {
         access_token: tokens.accessToken,

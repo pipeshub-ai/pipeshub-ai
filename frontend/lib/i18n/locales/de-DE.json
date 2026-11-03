@@ -4268,6 +4268,15 @@
       "scopeCount_one": "{{count}} Berechtigungsbereich",
       "scopeCount_other": "{{count}} Berechtigungsbereiche"
     },
+    "agentSignIns": {
+      "title": "Agent-Anmeldungen",
+      "subtitle": "Agenten, die Sie genehmigt haben, in Ihrem Namen zu handeln. Widerrufen Sie eine, damit sie keinen neuen Zugriff mehr erhält.",
+      "columnApproved": "Genehmigt",
+      "revoke": "Widerrufen",
+      "revokeAria": "Agent-Anmeldung {{id}} widerrufen",
+      "revokedTitle": "Agent-Anmeldung widerrufen",
+      "errorTitle": "Die Agent-Anmeldung konnte nicht widerrufen werden"
+    },
     "skills": {
       "title": "Skills",
       "subtitle": "Erstellen Sie eigene Skills für Ihre Agenten: Markdown-Anweisungen, optionale Skripte und Referenzdateien — versioniert und verwaltet wie alle anderen Inhalte im Agent Builder.",

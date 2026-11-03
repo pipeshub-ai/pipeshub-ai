@@ -220,7 +220,8 @@ export const revokeSchema = z.object({
   body: z.object({
     token: z.string().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
-    client_id: z.string().min(1),
+    // Absent for the agent flow, whose tokens are their own credential.
+    client_id: z.string().min(1).optional(),
     client_secret: z.string().optional(),
   }),
 });
@@ -388,4 +389,8 @@ export const listAppsQuerySchema = z.object({
     status: z.enum(['active', 'suspended', 'revoked']).optional(),
     search: z.string().optional(),
   }),
+});
+
+export const agentRegistrationIdSchema = z.object({
+  params: z.object({ id: z.string().regex(/^reg_[0-9a-f]{24}$/) }),
 });

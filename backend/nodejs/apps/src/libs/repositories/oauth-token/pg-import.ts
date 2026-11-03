@@ -193,12 +193,82 @@ async function importDeviceDocs(
   return stats;
 }
 
+/**
+ * Agent registrations, held by the install's organisation as the application keeps them. One the sweeper would already have
+ * deleted, or that has no live organisation to hang on, is skipped.
+ */
+async function importAgentDocs(
+  k: KernelTx,
+  docs: NeutralDoc[],
+): Promise<ImportStats> {
+  const stats = emptyStats(docs.length);
+  const org = (
+    await k.query<{ org_id: string }>(
+      '/* pipeshub:import.install_org */ SELECT o.org_id FROM identity.orgs o WHERE NOT o.is_deleted ORDER BY o.created_at, o.org_id LIMIT 1',
+    )
+  ).rows[0]?.org_id;
+  const rows: Row[] = [];
+  const now = Date.now();
+  for (const d of docs) {
+    const id = idText(d._id);
+    if (typeof d.purgeAt === 'string' && Date.parse(d.purgeAt) <= now) {
+      stats.skipped.push({
+        id: String(d._id),
+        reason: 'agent registration is past its retention',
+      });
+      continue;
+    }
+    if (
+      org &&
+      id &&
+      typeof d.claimEmail === 'string' &&
+      typeof d.claimTokenHash === 'string' &&
+      typeof d.attemptTokenHash === 'string' &&
+      typeof d.userCodeHash === 'string' &&
+      typeof d.attemptExpiresAt === 'string' &&
+      typeof d.expiresAt === 'string' &&
+      typeof d.purgeAt === 'string'
+    )
+      rows.push({
+        org_id: org,
+        id,
+        claim_email: d.claimEmail,
+        claim_token_hash: d.claimTokenHash,
+        attempt_token_hash: d.attemptTokenHash,
+        user_code_hash: d.userCodeHash,
+        attempt_expires_at: d.attemptExpiresAt,
+        expires_at: d.expiresAt,
+        purge_at: d.purgeAt,
+        status: str(d.status) ?? 'pending',
+        failed_attempts:
+          typeof d.failedAttempts === 'number' ? d.failedAttempts : 0,
+        last_polled_at: d.lastPolledAt ?? null,
+        claimed_user_id: idText(d.claimedUserId),
+        claimed_org_id: idText(d.claimedOrgId),
+        approved_scopes: Array.isArray(d.approvedScopes) ? d.approvedScopes : null,
+        version: version(d),
+        created_at: d.createdAt ?? d.expiresAt,
+        updated_at: d.updatedAt ?? d.createdAt ?? d.expiresAt,
+      });
+    else
+      stats.skipped.push({
+        id: String(d._id),
+        reason: org
+          ? 'agent registration without a usable _id, hash, email or expiry'
+          : 'agent registration with no organisation to hold it',
+      });
+  }
+  await writePlan(k, [{ table: 'oauth.agent_registrations', rows }], stats);
+  return stats;
+}
+
 export async function importOAuthTokenDocs(
   k: KernelTx,
   collection: string,
   docs: NeutralDoc[],
 ): Promise<ImportStats> {
   if (collection === 'oauthDeviceCodes') return importDeviceDocs(k, docs);
+  if (collection === 'oauthAgentRegistrations') return importAgentDocs(k, docs);
   const spec = SPECS[collection];
   if (!spec)
     throw new Error(

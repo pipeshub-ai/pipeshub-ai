@@ -16,6 +16,7 @@ export interface IOAuthAgentRegistration extends Document {
   lastPolledAt?: Date;
   claimedUserId?: Types.ObjectId;
   claimedOrgId?: Types.ObjectId;
+  approvedScopes?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,6 +45,7 @@ const OAuthAgentRegistrationSchema = new Schema<IOAuthAgentRegistration>(
     lastPolledAt: { type: Date },
     claimedUserId: { type: Schema.Types.ObjectId, ref: 'users', index: true },
     claimedOrgId: { type: Schema.Types.ObjectId, ref: 'org' },
+    approvedScopes: { type: [String], default: undefined },
   },
   { timestamps: true },
 );

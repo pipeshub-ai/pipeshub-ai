@@ -193,6 +193,8 @@ export async function reverseCopy(
     ).map((id) => idFilter(id));
     // pending device sign-ins live minutes and MongoDB still holds the originals: nothing to bring back (a client starts again)
     if (m.collection === 'oauthDeviceCodes') continue;
+    // shortcut: registrations made after the move are not carried back (an agent registers again), upgrade if a rollback must keep them
+    if (m.collection === 'oauthAgentRegistrations') continue;
     const manual = REVERSE_MANUAL(m);
     if (manual) {
       notReversed.push(`${m.collection}: ${manual}`);

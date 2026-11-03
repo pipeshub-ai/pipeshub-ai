@@ -525,15 +525,23 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
   });
 
   describe('agent registrations', () => {
-    const registration = () => ({
-      claimEmail: `${uniq('agent')}@example.com`,
-      claimTokenHash: sha(uniq('clm')),
-      attemptTokenHash: sha(uniq('cla')),
-      userCodeHash: sha(uniq('code')),
-      attemptExpiresAt: future(600_000),
-      expiresAt: future(86_400_000),
-      purgeAt: future(40 * 86_400_000),
-    });
+    const registration = () => {
+      const expiresAt = future(86_400_000);
+      return {
+        claimEmail: `${uniq('agent')}@example.com`,
+        claimTokenHash: sha(uniq('clm')),
+        attemptTokenHash: sha(uniq('cla')),
+        userCodeHash: sha(uniq('code')),
+        attemptExpiresAt: future(600_000),
+        expiresAt,
+        purgeAt: expiresAt,
+      };
+    };
+    const claimFor = async (user: string) => {
+      const made = await tokens.createAgentRegistration(registration());
+      await tokens.decideAgentRegistration(made._id, { status: AgentRegistrationStatus.CLAIMED, userId: user, orgId: ORG, scopes: ['org:read'] });
+      return made;
+    };
 
     it('creates a pending registration found by each of its hashes and its id', async () => {
       const r = registration();
@@ -568,27 +576,72 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
     it('decides once: claimed for a person in an org, then consumed by exactly one of many polls', async () => {
       const made = await tokens.createAgentRegistration(registration());
       const user = fx.newId();
-      const claim = { status: AgentRegistrationStatus.CLAIMED as const, userId: user, orgId: ORG };
+      const claim = { status: AgentRegistrationStatus.CLAIMED as const, userId: user, orgId: ORG, scopes: ['org:read', 'kb:read'] };
       expect(await tokens.decideAgentRegistration(made._id, claim)).to.equal(true);
       expect(await tokens.decideAgentRegistration(made._id, { status: AgentRegistrationStatus.REVOKED })).to.equal(false);
-      const polls = await Promise.all(Array.from({ length: 6 }, () => tokens.consumeAgentRegistration(made._id)));
+      const polls = await Promise.all(Array.from({ length: 6 }, () => tokens.consumeAgentRegistration(made._id, future(31 * 86_400_000))));
       const won = polls.filter((p) => p !== null);
       expect(won).to.have.length(1);
       expect(won[0]).to.include({ status: AgentRegistrationStatus.CONSUMED, claimedUserId: user, claimedOrgId: ORG });
+      expect(won[0]?.approvedScopes).to.deep.equal(['org:read', 'kb:read']);   // what the person approved comes back as stored
+    });
+
+    it('keeps an unclaimed row only to the end of its window; consuming moves the purge time out, once', async () => {
+      const r = registration();
+      const made = await tokens.createAgentRegistration(r);
+      expect(made.purgeAt.getTime()).to.equal(r.expiresAt.getTime());
+      await tokens.decideAgentRegistration(made._id, { status: AgentRegistrationStatus.CLAIMED, userId: fx.newId(), orgId: ORG, scopes: ['org:read'] });
+      const later = future(31 * 86_400_000);
+      const won = await tokens.consumeAgentRegistration(made._id, later);
+      expect(won?.purgeAt.getTime()).to.equal(later.getTime());
+      await tokens.consumeAgentRegistration(made._id, future(99 * 86_400_000));
+      expect((await tokens.findAgentRegistrationById(made._id))?.purgeAt.getTime()).to.equal(later.getTime());
+    });
+
+    it('lists only the person’s own claimed and consumed registrations, newest first', async () => {
+      const user = fx.newId(), other = fx.newId();
+      const first = await claimFor(user);
+      const second = await claimFor(user);
+      await tokens.consumeAgentRegistration(second._id, future(31 * 86_400_000));
+      await claimFor(other);
+      await tokens.createAgentRegistration(registration());
+      const denied = await tokens.createAgentRegistration(registration());
+      await tokens.decideAgentRegistration(denied._id, { status: AgentRegistrationStatus.REVOKED });
+      const mine = await tokens.listAgentRegistrationsForUser(user);
+      expect(mine.map((r) => r._id)).to.have.members([first._id, second._id]);
+      expect(mine.every((r) => r.claimedUserId === user)).to.equal(true);
+      expect(await tokens.listAgentRegistrationsForUser(fx.newId())).to.deep.equal([]);
+    });
+
+    it('revokes one registration for its own person only; by id alone when no person is named', async () => {
+      const user = fx.newId(), other = fx.newId();
+      const reg = await claimFor(user);
+      expect(await tokens.revokeAgentRegistration(reg._id, other)).to.equal(false);
+      expect((await tokens.findAgentRegistrationById(reg._id))?.status).to.equal(AgentRegistrationStatus.CLAIMED);
+      expect(await tokens.revokeAgentRegistration(reg._id, user)).to.equal(true);
+      expect((await tokens.findAgentRegistrationById(reg._id))?.status).to.equal(AgentRegistrationStatus.REVOKED);
+      expect(await tokens.revokeAgentRegistration(reg._id, user)).to.equal(false);
+      const again = await claimFor(user);
+      await tokens.consumeAgentRegistration(again._id, future(31 * 86_400_000));
+      expect(await tokens.revokeAgentRegistration(again._id)).to.equal(true);
+      expect((await tokens.findAgentRegistrationById(again._id))?.status).to.equal(AgentRegistrationStatus.REVOKED);
+      expect(await tokens.revokeAgentRegistration('not-an-id', user)).to.equal(false);
+      const pending = await tokens.createAgentRegistration(registration());
+      expect(await tokens.revokeAgentRegistration(pending._id)).to.equal(false);
     });
 
     it('a pending registration cannot be consumed', async () => {
       const made = await tokens.createAgentRegistration(registration());
-      expect(await tokens.consumeAgentRegistration(made._id)).to.equal(null);
+      expect(await tokens.consumeAgentRegistration(made._id, future(31 * 86_400_000))).to.equal(null);
     });
 
     it('revoking a user ends their claimed and consumed registrations and no one else’s', async () => {
       const user = fx.newId(), other = fx.newId();
       const mine = await tokens.createAgentRegistration(registration());
       const theirs = await tokens.createAgentRegistration(registration());
-      await tokens.decideAgentRegistration(mine._id, { status: AgentRegistrationStatus.CLAIMED, userId: user, orgId: ORG });
-      await tokens.consumeAgentRegistration(mine._id);
-      await tokens.decideAgentRegistration(theirs._id, { status: AgentRegistrationStatus.CLAIMED, userId: other, orgId: ORG });
+      await tokens.decideAgentRegistration(mine._id, { status: AgentRegistrationStatus.CLAIMED, userId: user, orgId: ORG, scopes: ['org:read'] });
+      await tokens.consumeAgentRegistration(mine._id, future(31 * 86_400_000));
+      await tokens.decideAgentRegistration(theirs._id, { status: AgentRegistrationStatus.CLAIMED, userId: other, orgId: ORG, scopes: ['org:read'] });
       await tokens.revokeAgentRegistrationsForUser(user);
       expect((await tokens.findAgentRegistrationById(mine._id))?.status).to.equal(AgentRegistrationStatus.REVOKED);
       expect((await tokens.findAgentRegistrationById(theirs._id))?.status).to.equal(AgentRegistrationStatus.CLAIMED);

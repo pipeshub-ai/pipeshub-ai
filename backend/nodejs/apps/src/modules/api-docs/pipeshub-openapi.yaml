@@ -2889,7 +2889,9 @@ components:
         client_id:
           type: string
           minLength: 1
-          description: Client ID
+          description: |
+            Client ID. Required unless `token` is an agent identity assertion or an access token
+            issued under an agent registration, which are their own credential.
         client_secret:
           type: string
           description: |
@@ -2898,7 +2900,6 @@ components:
             wrong secret is `401 invalid_client`.
       required:
         - token
-        - client_id
     OAuthIntrospectRequest:
       type: object
       description: |
@@ -21041,6 +21042,35 @@ components:
       required:
         - ok
         - status
+    AgentRegistrationList:
+      type: object
+      properties:
+        registrations:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: The registration id (`reg_…`)
+              status:
+                type: string
+                enum:
+                  - claimed
+                  - consumed
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+            required:
+              - id
+              - status
+              - created_at
+              - updated_at
+      required:
+        - registrations
     ProjectAppliedFilterNode:
       type: object
       additionalProperties: false
@@ -25863,6 +25893,10 @@ paths:
         - User revokes app access from account settings
         - Security incident response
 
+        An agent identity assertion, or an access token issued by the agent grants, needs no
+        `client_id`: revoking it also revokes the agent registration behind it, so the agent can
+        no longer get new access tokens.
+
         **Note:** Returns 200 OK even if token was already revoked or invalid
         (per RFC 7009, to prevent token enumeration).
       operationId: oauthRevoke
@@ -25897,7 +25931,8 @@ paths:
           description: |
             Client authentication failed (`invalid_client`): an unknown or inactive `client_id`
             (`Invalid client_id`), a confidential client without `client_secret` (`client_secret required
-            for confidential clients`), or a wrong `client_secret`.
+            for confidential clients`), or a wrong `client_secret`. Also returned when `client_id` is
+            missing and `token` is not an agent credential.
           content:
             application/json:
               schema:
@@ -71796,6 +71831,109 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentAuthError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/registrations:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List the agent registrations you approved
+      description: |
+        The agent registrations the signed-in user has approved and not revoked, newest first.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentRegistrationsList
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The user's own registrations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationList'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not a user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+  /agent/registrations/{id}:
+    delete:
+      tags:
+        - OAuth Provider
+      summary: Revoke an agent registration you approved
+      description: |
+        Ends the registration: its identity assertion stops working and no new access token is
+        issued. Access tokens already issued run out on their own. A registration that is not the
+        caller's answers `404`.
+
+        **Session only.** OAuth access tokens, personal access tokens and service accounts are
+        refused with `403`.
+      operationId: agentRegistrationsRevoke
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The registration id (`reg_` and 24 hex characters)
+          schema:
+            type: string
+            pattern: '^reg_[0-9a-f]{24}$'
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        '400':
+          description: The id is malformed (`VALIDATION_ERROR`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not a user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such registration approved by the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:

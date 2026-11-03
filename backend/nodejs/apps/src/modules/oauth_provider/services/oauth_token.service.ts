@@ -153,6 +153,9 @@ export class OAuthTokenService {
       // minted under the previous answer survives to be honoured.
       createdBy: app.tokenIdentityUserId ?? app.createdBy,
       knowledgeLimit,
+      ...(opts?.agentRegistrationId
+        ? { agent_registration_id: opts.agentRegistrationId }
+        : {}),
     };
 
     // A delegated token speaks as the person named in `userId`, so every
@@ -670,6 +673,42 @@ export class OAuthTokenService {
     }
 
     return false;
+  }
+
+  /**
+   * RFC 7009 for the agent flow, where the token is the only credential (no client_id): an identity assertion, or an access token
+   * issued under a registration, revokes that registration (and the access token itself). False for any other token.
+   */
+  async revokeAgentToken(token: string): Promise<boolean> {
+    const repo = getOAuthTokenRepository();
+    let registrationId: string | undefined;
+    try {
+      registrationId = this.verifyAgentAssertion(token);
+    } catch {
+      // not an assertion: it may still be an access token
+    }
+    let accessClient: string | undefined;
+    if (!registrationId) {
+      try {
+        const payload = jwt.verify(token, this.verifyKey, {
+          algorithms: [this.algorithm],
+        }) as OAuthTokenPayload;
+        if (typeof payload.agent_registration_id !== 'string') return false;
+        registrationId = payload.agent_registration_id;
+        accessClient = payload.client_id;
+      } catch {
+        return false;
+      }
+    }
+    if (!registrationId.startsWith(REGISTRATION_ID_PREFIX)) return false;
+    if (accessClient) {
+      await repo.revokeAccessByHash(this.hashToken(token), accessClient);
+    }
+    await repo.revokeAgentRegistration(
+      registrationId.slice(REGISTRATION_ID_PREFIX.length),
+    );
+    this.logger.info('Agent registration revoked by token', { registrationId });
+    return true;
   }
 
   /**

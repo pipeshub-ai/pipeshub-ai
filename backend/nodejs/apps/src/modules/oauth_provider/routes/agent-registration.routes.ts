@@ -13,6 +13,7 @@ import {
   agentClaimSchema,
   agentClaimVerifySchema,
   agentClaimCompleteSchema,
+  agentRegistrationIdSchema,
 } from '../validators/oauth.validators';
 
 /** Mounted at /api/v1/agent. */
@@ -61,6 +62,13 @@ export function createAgentRegistrationRouter(container: Container): Router {
     ...session,
     ValidationMiddleware.validate(agentClaimCompleteSchema),
     controller.claimComplete,
+  );
+  router.get('/registrations', ...session, controller.list);
+  router.delete(
+    '/registrations/:id',
+    ...session,
+    ValidationMiddleware.validate(agentRegistrationIdSchema),
+    controller.revoke,
   );
 
   return router;

@@ -18,6 +18,7 @@ import {
   tokenSchema,
   agentClaimCompleteSchema,
   agentClaimSchema,
+  agentRegistrationIdSchema,
 } from '../../../../src/modules/oauth_provider/validators/oauth.validators';
 import { createMockLogger } from '../../../helpers/mock-logger';
 
@@ -99,6 +100,39 @@ describe('agent registration HTTP surface', () => {
         ok: true,
         status: 'claimed',
       });
+    });
+  });
+
+  describe('own registrations', () => {
+    it('hands the session user to the list and revoke, never anything from the body', async () => {
+      const user = { userId: 'u', orgId: 'o', email: 'a@b.c' };
+      const listForUser = sinon.stub().resolves({ registrations: [] });
+      const revokeForUser = sinon.stub().resolves({ ok: true });
+      const controller = new AgentRegistrationController({
+        listForUser,
+        revokeForUser,
+      } as any);
+      await controller.list({ user, body: { userId: 'evil' } } as any, res(), sinon.stub());
+      expect(listForUser.firstCall.args).to.deep.equal([user]);
+      await controller.revoke(
+        { user, params: { id: 'reg_x' }, body: { userId: 'evil' } } as any,
+        res(),
+        sinon.stub(),
+      );
+      expect(revokeForUser.firstCall.args).to.deep.equal(['reg_x', user]);
+    });
+
+    it('needs a session', async () => {
+      const next = sinon.stub();
+      await new AgentRegistrationController({} as any).list({} as any, res(), next);
+      expect(next.firstCall.args[0]).to.have.property('message', 'Sign in first');
+    });
+
+    it('takes only a registration id in the path', () => {
+      const ok = (id: string) => agentRegistrationIdSchema.safeParse({ params: { id } }).success;
+      expect(ok('reg_' + 'a'.repeat(24))).to.equal(true);
+      expect(ok('a'.repeat(24))).to.equal(false);
+      expect(ok('reg_../x')).to.equal(false);
     });
   });
 

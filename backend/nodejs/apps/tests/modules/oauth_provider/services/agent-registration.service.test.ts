@@ -78,14 +78,46 @@ class FakeRepo {
     if (d.userId) {
       r.claimedUserId = d.userId;
       r.claimedOrgId = d.orgId;
+      r.approvedScopes = d.scopes;
     }
     return true;
   }
-  async consumeAgentRegistration(id: string) {
+  async consumeAgentRegistration(id: string, purgeAt: Date) {
     const r = this.rows.get(id)!;
     if (r.status !== AgentRegistrationStatus.CLAIMED) return null;
     r.status = AgentRegistrationStatus.CONSUMED;
+    r.purgeAt = purgeAt;
     return { ...r };
+  }
+  async listAgentRegistrationsForUser(userId: string) {
+    return [...this.rows.values()].filter(
+      (r) =>
+        r.claimedUserId === userId &&
+        [
+          AgentRegistrationStatus.CLAIMED,
+          AgentRegistrationStatus.CONSUMED,
+        ].includes(r.status),
+    );
+  }
+  async revokeAgentRegistration(id: string, userId?: string) {
+    const r = this.rows.get(id);
+    if (
+      !r ||
+      (userId !== undefined && r.claimedUserId !== userId) ||
+      ![
+        AgentRegistrationStatus.CLAIMED,
+        AgentRegistrationStatus.CONSUMED,
+      ].includes(r.status)
+    ) {
+      return false;
+    }
+    r.status = AgentRegistrationStatus.REVOKED;
+    return true;
+  }
+  revoked: string[] = [];
+  async revokeAccessByHash(hash: string, clientId: string) {
+    this.revoked.push(`${clientId}:${hash}`);
+    return true;
   }
 }
 
@@ -95,10 +127,11 @@ describe('AgentRegistrationService', () => {
   let tokens: OAuthTokenService;
   let generate: sinon.SinonStub;
   let user: { fullName: string } | null;
-  const app = { clientId: 'pipeshub-agent', allowedScopes: SCOPES };
+  let app: { clientId: string; allowedScopes: string[] };
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT;
+    app = { clientId: 'pipeshub-agent', allowedScopes: [...SCOPES] };
     repo = new FakeRepo();
     setOAuthTokenRepository(repo as any);
     user = { fullName: 'Ada' };
@@ -124,7 +157,7 @@ describe('AgentRegistrationService', () => {
     );
     service = new AgentRegistrationService(
       createMockLogger() as any,
-      { getAppByClientId: sinon.stub().resolves(app) } as any,
+      { getAppByClientId: sinon.stub().callsFake(async () => app) } as any,
       tokens,
       {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
@@ -353,6 +386,27 @@ describe('AgentRegistrationService', () => {
       expect([...repo.rows.values()][0].status).to.equal('revoked');
     });
 
+    it('refuses a deny that lost the race to an approval', async () => {
+      const r = await register();
+      // the approval lands between the deny's read and its write
+      sinon.stub(repo, 'decideAgentRegistration').resolves(false);
+      await expectFail(
+        service.completeClaim(
+          attemptToken(r.claim.verification_uri),
+          undefined,
+          'deny',
+          USER,
+        ),
+        'invalid_request',
+      );
+    });
+
+    it('keeps a registration that is never claimed only to the end of its window', async () => {
+      await register();
+      const [row] = [...repo.rows.values()];
+      expect(row.purgeAt.getTime()).to.equal(row.expiresAt.getTime());
+    });
+
     it('shows the signed-in person what is being granted', async () => {
       const r = await register();
       const ctx = await service.getClaimContext(
@@ -425,6 +479,39 @@ describe('AgentRegistrationService', () => {
       expect(claims.jti).to.be.a('string');
       expect(claims.exp! - claims.iat!).to.equal(30 * 24 * 3600);
       expect(Date.parse(out.assertion_expires!)).to.equal(claims.exp! * 1000);
+    });
+
+    it('stamps the access token with the registration and keeps the row until the assertion is long over', async () => {
+      const r = await claimed();
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[7]).to.include({
+        agentRegistrationId: r.registration_id,
+      });
+      const [row] = [...repo.rows.values()];
+      const claims = jwt.decode(out.identity_assertion!) as jwt.JwtPayload;
+      expect(row.purgeAt.getTime()).to.be.greaterThan(claims.exp! * 1000);
+    });
+
+    it('keeps to what the person approved when the app is widened afterwards', async () => {
+      const r = await claimed();
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+    });
+
+    it('drops a scope the app no longer allows', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      const r = await claimed();
+      app.allowedScopes = ['org:read', 'offline_access'];
+      const out = await service.claimGrant(r.claim_token);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      app.allowedScopes = ['offline_access'];
+      await expectFail(
+        service.jwtBearerGrant(out.identity_assertion!),
+        'invalid_grant',
+      );
     });
 
     it('works once: afterwards invalid_grant', async () => {
@@ -546,6 +633,97 @@ describe('AgentRegistrationService', () => {
       const assertion = await consumed();
       user = null;
       await expectFail(service.jwtBearerGrant(assertion), 'invalid_grant');
+    });
+  });
+
+  describe('revocation', () => {
+    const OTHER = { ...USER, userId: 'c'.repeat(24) };
+    const accessFor = (registrationId: string, extra: object = {}) =>
+      jwt.sign(
+        {
+          iss: ISSUER,
+          scope: 'org:read',
+          client_id: 'pipeshub-agent',
+          agent_registration_id: registrationId,
+          ...extra,
+        },
+        SECRET,
+        { algorithm: 'HS256', expiresIn: 60 },
+      );
+
+    it('revoking the assertion revokes the registration, so no new token is issued', async () => {
+      const out = await service.claimGrant((await claimed()).claim_token);
+      expect(await tokens.revokeAgentToken(out.identity_assertion!)).to.equal(
+        true,
+      );
+      expect([...repo.rows.values()][0].status).to.equal(
+        AgentRegistrationStatus.REVOKED,
+      );
+      await expectFail(
+        service.jwtBearerGrant(out.identity_assertion!),
+        'invalid_grant',
+      );
+    });
+
+    it('revoking an access token issued under a registration revokes both', async () => {
+      const r = await claimed();
+      await service.claimGrant(r.claim_token);
+      const access = accessFor(r.registration_id);
+      expect(await tokens.revokeAgentToken(access)).to.equal(true);
+      expect([...repo.rows.values()][0].status).to.equal(
+        AgentRegistrationStatus.REVOKED,
+      );
+      expect(repo.revoked).to.have.length(1);
+      expect(repo.revoked[0]).to.match(/^pipeshub-agent:/);
+    });
+
+    it('leaves any other token alone', async () => {
+      const r = await claimed();
+      await service.claimGrant(r.claim_token);
+      const plain = jwt.sign({ iss: ISSUER, scope: 'org:read' }, SECRET, {
+        algorithm: 'HS256',
+        expiresIn: 60,
+      });
+      expect(await tokens.revokeAgentToken(plain)).to.equal(false);
+      expect(
+        await tokens.revokeAgentToken(
+          accessFor(r.registration_id) + 'x',
+        ),
+      ).to.equal(false);
+      expect(
+        await tokens.revokeAgentToken(
+          jwt.sign(
+            { scope: 'x', agent_registration_id: r.registration_id },
+            'y'.repeat(40),
+            { algorithm: 'HS256' },
+          ),
+        ),
+      ).to.equal(false);
+      expect(await tokens.revokeAgentToken('not.a.jwt')).to.equal(false);
+      expect([...repo.rows.values()][0].status).to.equal(
+        AgentRegistrationStatus.CONSUMED,
+      );
+    });
+
+    it('lists and revokes only the signed-in person’s own registrations', async () => {
+      const r = await claimed();
+      const id = r.registration_id;
+      const { registrations } = await service.listForUser(USER);
+      expect(registrations).to.have.length(1);
+      expect(registrations[0]).to.include({ id, status: 'claimed' });
+      expect(JSON.stringify(registrations)).to.not.match(/hash|@/i);
+      expect((await service.listForUser(OTHER)).registrations).to.deep.equal(
+        [],
+      );
+      try {
+        await service.revokeForUser(id, OTHER);
+        throw new Error('expected 404');
+      } catch (e: any) {
+        expect(e.statusCode ?? e.status).to.equal(404);
+      }
+      expect([...repo.rows.values()][0].status).to.equal('claimed');
+      await service.revokeForUser(id, USER);
+      expect([...repo.rows.values()][0].status).to.equal('revoked');
     });
   });
 });

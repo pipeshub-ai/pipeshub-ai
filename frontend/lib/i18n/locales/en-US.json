@@ -2145,6 +2145,15 @@
       "scopeCount_one": "{{count}} scope",
       "scopeCount_other": "{{count}} scopes"
     },
+    "agentSignIns": {
+      "title": "Agent sign-ins",
+      "subtitle": "Agents you approved to act as you. Revoke one to stop it getting new access.",
+      "columnApproved": "Approved",
+      "revoke": "Revoke",
+      "revokeAria": "Revoke agent sign-in {{id}}",
+      "revokedTitle": "Agent sign-in revoked",
+      "errorTitle": "Could not revoke the agent sign-in"
+    },
     "aiModels": {
       "title": "AI models",
       "subtitle": "Configure and manage AI models from different providers",

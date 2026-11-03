@@ -4308,6 +4308,15 @@
       "scopeCount_other": "{{count}} ámbitos",
       "scopeCount_many": "{{count}} de ámbitos"
     },
+    "agentSignIns": {
+      "title": "Inicios de sesión de agentes",
+      "subtitle": "Agentes que aprobó para actuar en su nombre. Revoque uno para que deje de obtener acceso nuevo.",
+      "columnApproved": "Aprobado",
+      "revoke": "Revocar",
+      "revokeAria": "Revocar el inicio de sesión de agente {{id}}",
+      "revokedTitle": "Inicio de sesión de agente revocado",
+      "errorTitle": "No se pudo revocar el inicio de sesión de agente"
+    },
     "common": {
       "loadingUsers": "Cargando usuarios...",
       "noUsersAvailable": "No hay usuarios disponibles",

@@ -377,6 +377,7 @@ export interface OauthAgentRegistrations {
   last_polled_at: Date | null;
   claimed_user_id: string | null;
   claimed_org_id: string | null;
+  approved_scopes: string[] | null;
   version: Generated<number>;
   created_at: Date;
   updated_at: Date;

@@ -1,5 +1,5 @@
 -- An agent registration of the install's organisation: the email the agent named, the SHA-256 of its three secrets, and where the claim stands.
--- `claimed_org_id` is the organisation of the person who approved; `purge_at` is when the sweeper may delete the row (after the longest assertion it backs).
+-- `claimed_org_id` is the organisation of the person who approved and `approved_scopes` what they were shown; `purge_at` is when the sweeper may delete the row (after the longest assertion it backs).
 CREATE TABLE oauth.agent_registrations (
   org_id text NOT NULL,
   id oauth.oid24 NOT NULL,
@@ -15,6 +15,7 @@ CREATE TABLE oauth.agent_registrations (
   last_polled_at timestamptz,
   claimed_user_id oauth.oid24,
   claimed_org_id text,
+  approved_scopes text[],
   version int NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
@@ -26,6 +27,8 @@ CREATE INDEX agent_registrations_by_purge ON oauth.agent_registrations (org_id, 
 CREATE INDEX agent_registrations_by_user ON oauth.agent_registrations (org_id, claimed_user_id) WHERE claimed_user_id IS NOT NULL;
 
 SELECT kernel.apply_rls('oauth.agent_registrations', 'org', p_jobs => true);
+SELECT kernel.grant_import_access('oauth.agent_registrations');
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON oauth.agent_registrations TO pipeshub_node;
 GRANT SELECT, DELETE ON oauth.agent_registrations TO pipeshub_jobs;
+GRANT SELECT, INSERT, UPDATE, DELETE ON oauth.agent_registrations TO pipeshub_import;

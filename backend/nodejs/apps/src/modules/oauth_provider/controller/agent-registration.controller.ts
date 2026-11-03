@@ -82,6 +82,22 @@ export class AgentRegistrationController {
     }));
   };
 
+  list = (
+    req: SessionRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    this.run(res, next, () => this.service.listForUser(sessionUser(req)));
+
+  revoke = (
+    req: SessionRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    this.run(res, next, () =>
+      this.service.revokeForUser(String(req.params.id), sessionUser(req)),
+    );
+
   private async run(
     res: Response,
     next: NextFunction,

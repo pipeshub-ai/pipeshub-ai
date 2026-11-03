@@ -498,10 +498,19 @@ export class OAuthProviderController {
       const { token, token_type_hint, client_id, client_secret } = req.body as {
         token: string;
         token_type_hint?: 'refresh_token' | 'access_token';
-        client_id: string;
+        client_id?: string;
         // A JSON body can carry any type here, null included.
         client_secret?: unknown;
       };
+
+      // An agent's assertion or access token is its own credential: it has no client_id to authenticate.
+      if (await this.oauthTokenService.revokeAgentToken(token)) {
+        res.status(200).send();
+        return;
+      }
+      if (!client_id) {
+        throw new InvalidClientError('client_id is required');
+      }
 
       // RFC 7009: authenticate the client. A public client (the first-party
       // device app) has no secret and is identified by client_id alone, as the

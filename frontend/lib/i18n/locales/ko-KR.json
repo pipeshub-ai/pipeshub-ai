@@ -2128,6 +2128,15 @@
       },
       "scopeCount_other": "범위 {{count}}개"
     },
+    "agentSignIns": {
+      "title": "에이전트 로그인",
+      "subtitle": "내 대신 동작하도록 승인한 에이전트입니다. 새 접근을 막으려면 해당 항목을 취소하세요.",
+      "columnApproved": "승인됨",
+      "revoke": "취소",
+      "revokeAria": "에이전트 로그인 {{id}} 취소",
+      "revokedTitle": "에이전트 로그인이 취소되었습니다",
+      "errorTitle": "에이전트 로그인을 취소하지 못했습니다"
+    },
     "aiModels": {
       "title": "AI 모델",
       "subtitle": "다양한 제공업체의 AI 모델을 구성하고 관리합니다",

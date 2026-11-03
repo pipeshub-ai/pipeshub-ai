@@ -389,6 +389,7 @@ column oauth.access_tokens.token_hash type=text notnull=true identity= generated
 column oauth.access_tokens.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column oauth.access_tokens.user_id type=oauth.oid24 notnull=false identity= generated= default=-
 column oauth.access_tokens.version type=integer notnull=true identity= generated= default=0
+column oauth.agent_registrations.approved_scopes type=text[] notnull=false identity= generated= default=-
 column oauth.agent_registrations.attempt_expires_at type=timestamp with time zone notnull=true identity= generated= default=-
 column oauth.agent_registrations.attempt_token_hash type=text notnull=true identity= generated= default=-
 column oauth.agent_registrations.claim_email type=text notnull=true identity= generated= default=-
@@ -1235,6 +1236,7 @@ policy oauth.access_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs us
 policy oauth.access_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.access_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.agent_registrations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.agent_registrations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.agent_registrations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.agent_registrations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.agent_registrations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
@@ -1694,6 +1696,10 @@ relacl oauth.access_tokens pipeshub_node SELECT grantable=false
 relacl oauth.access_tokens pipeshub_node UPDATE grantable=false
 relacl oauth.access_tokens pipeshub_restore INSERT grantable=false
 relacl oauth.agent_registrations pipeshub_backup SELECT grantable=false
+relacl oauth.agent_registrations pipeshub_import DELETE grantable=false
+relacl oauth.agent_registrations pipeshub_import INSERT grantable=false
+relacl oauth.agent_registrations pipeshub_import SELECT grantable=false
+relacl oauth.agent_registrations pipeshub_import UPDATE grantable=false
 relacl oauth.agent_registrations pipeshub_jobs DELETE grantable=false
 relacl oauth.agent_registrations pipeshub_jobs SELECT grantable=false
 relacl oauth.agent_registrations pipeshub_node DELETE grantable=false
@@ -2084,6 +2090,7 @@ trigger identity.user_pictures docstore_change_log enabled=O function=platform.d
 trigger identity.users docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger integrations.slack_threads docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.access_tokens docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.agent_registrations docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.apps docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.authorization_codes docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger oauth.delegation_events docstore_change_log enabled=O function=platform.docstore_log_change()

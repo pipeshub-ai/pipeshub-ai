@@ -2128,6 +2128,15 @@
       },
       "scopeCount_other": "{{count}} 个权限范围"
     },
+    "agentSignIns": {
+      "title": "代理登录",
+      "subtitle": "您已批准代表您操作的代理。撤销后，该代理将无法获得新的访问权限。",
+      "columnApproved": "批准时间",
+      "revoke": "撤销",
+      "revokeAria": "撤销代理登录 {{id}}",
+      "revokedTitle": "代理登录已撤销",
+      "errorTitle": "无法撤销代理登录"
+    },
     "aiModels": {
       "title": "AI 模型",
       "subtitle": "配置和管理来自不同提供商的 AI 模型",

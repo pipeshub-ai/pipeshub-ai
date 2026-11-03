@@ -145,16 +145,18 @@ interface AgentRow {
   user_code_hash: string;
   attempt_expires_at: Date;
   expires_at: Date;
+  purge_at: Date;
   status: AgentRegistrationStatus;
   failed_attempts: number;
   last_polled_at: Date | null;
   claimed_user_id: string | null;
   claimed_org_id: string | null;
+  approved_scopes: string[] | null;
   created_at: Date;
   updated_at: Date;
 }
-const AGENT = `id, claim_email, claim_token_hash, attempt_token_hash, user_code_hash, attempt_expires_at, expires_at, status, failed_attempts,
-  last_polled_at, claimed_user_id, claimed_org_id, created_at, updated_at`;
+const AGENT = `id, claim_email, claim_token_hash, attempt_token_hash, user_code_hash, attempt_expires_at, expires_at, purge_at, status, failed_attempts,
+  last_polled_at, claimed_user_id, claimed_org_id, approved_scopes, created_at, updated_at`;
 const agentDto = (r: AgentRow): AgentRegistrationDto => {
   const o: Record<string, unknown> = {
     _id: r.id,
@@ -164,6 +166,7 @@ const agentDto = (r: AgentRow): AgentRegistrationDto => {
     userCodeHash: r.user_code_hash,
     attemptExpiresAt: r.attempt_expires_at,
     expiresAt: r.expires_at,
+    purgeAt: r.purge_at,
     status: r.status,
     failedAttempts: r.failed_attempts,
     createdAt: r.created_at,
@@ -173,6 +176,7 @@ const agentDto = (r: AgentRow): AgentRegistrationDto => {
     ['last_polled_at', 'lastPolledAt'],
     ['claimed_user_id', 'claimedUserId'],
     ['claimed_org_id', 'claimedOrgId'],
+    ['approved_scopes', 'approvedScopes'],
   ]);
   return o as unknown as AgentRegistrationDto;
 };
@@ -1128,6 +1132,7 @@ export class PgOAuthTokenRepository
           status: AgentRegistrationStatus.CLAIMED;
           userId: string;
           orgId: string;
+          scopes: string[];
         },
   ): Promise<boolean> {
     if (decision.status === AgentRegistrationStatus.REVOKED)
@@ -1136,13 +1141,14 @@ export class PgOAuthTokenRepository
     if (!uid) return Promise.resolve(false);
     return this.updateAgent(
       id,
-      `status = 'claimed', claimed_user_id = $4, claimed_org_id = $5`,
-      [uid, decision.orgId],
+      `status = 'claimed', claimed_user_id = $4, claimed_org_id = $5, approved_scopes = $6`,
+      [uid, decision.orgId, decision.scopes],
     );
   }
 
   async consumeAgentRegistration(
     id: string,
+    purgeAt: Date,
   ): Promise<AgentRegistrationDto | null> {
     const rid = id24(id);
     if (!rid) return null;
@@ -1152,12 +1158,48 @@ export class PgOAuthTokenRepository
       null,
       async (k) => {
         const { rows } = await k.query<AgentRow>(
-          `/* pipeshub:oauth.agent_consume */ UPDATE oauth.agent_registrations SET status = 'consumed', updated_at = $3
+          `/* pipeshub:oauth.agent_consume */ UPDATE oauth.agent_registrations SET status = 'consumed', purge_at = $4, updated_at = $3
           WHERE org_id = $1 AND id = $2 AND status = 'claimed' RETURNING ${AGENT}`,
-          [k.orgId, rid, new Date()],
+          [k.orgId, rid, new Date(), purgeAt],
         );
         return rows[0] ? agentDto(rows[0]) : null;
       },
+    );
+  }
+
+  async listAgentRegistrationsForUser(
+    userId: string,
+  ): Promise<AgentRegistrationDto[]> {
+    const uid = id24(userId);
+    if (!uid) return [];
+    return inKeyUnit<AgentRegistrationDto[]>(
+      installOrg,
+      false,
+      [],
+      async (k) => {
+        const { rows } = await k.query<AgentRow>(
+          `/* pipeshub:oauth.agent_list_user */ SELECT ${AGENT} FROM oauth.agent_registrations
+            WHERE org_id = $1 AND claimed_user_id = $2 AND status IN ('claimed', 'consumed') ORDER BY created_at DESC`,
+          [k.orgId, uid],
+        );
+        return rows.map(agentDto);
+      },
+    );
+  }
+
+  async revokeAgentRegistration(
+    id: string,
+    userId?: string,
+  ): Promise<boolean> {
+    const uid = userId === undefined ? null : id24(userId);
+    if (userId !== undefined && !uid) return false;
+    return this.updateAgent(
+      id,
+      `status = 'revoked'`,
+      uid ? [uid] : [],
+      uid
+        ? `status IN ('claimed', 'consumed') AND claimed_user_id = $4`
+        : `status IN ('claimed', 'consumed')`,
     );
   }
 

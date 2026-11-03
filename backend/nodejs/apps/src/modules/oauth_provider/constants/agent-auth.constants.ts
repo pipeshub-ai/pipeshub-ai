@@ -13,9 +13,8 @@ export const CLAIM_CODE_TTL_SECONDS = 600;
 export const CLAIM_POLL_INTERVAL_SECONDS = 5;
 export const REGISTRATION_WINDOW_SECONDS = 24 * 60 * 60;
 export const ASSERTION_TTL_SECONDS = 30 * 24 * 60 * 60;
-/** A row is kept past the longest assertion it can back (issued up to a window after creation). */
-export const REGISTRATION_RETENTION_SECONDS =
-  REGISTRATION_WINDOW_SECONDS + ASSERTION_TTL_SECONDS + 24 * 60 * 60;
+/** A consumed row is kept a day past the assertion it backs. */
+export const ASSERTION_RETENTION_SECONDS = ASSERTION_TTL_SECONDS + 24 * 60 * 60;
 export const MAX_FAILED_CODE_ATTEMPTS = 5;
 
 /** Registration works exactly when first-party device login does. */

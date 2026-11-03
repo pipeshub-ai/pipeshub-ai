@@ -94,6 +94,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'list',
   'listAccessibleIds',
   'listAdminIds',
+  'listAgentRegistrationsForUser',
   'listAgentSharedWithMe',
   'listAllLive',
   'listArchivedAgentGroups',

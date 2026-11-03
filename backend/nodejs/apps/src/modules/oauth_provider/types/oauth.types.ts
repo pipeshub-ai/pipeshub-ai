@@ -35,6 +35,8 @@ export interface OAuthTokenPayload {
   act?: { sub: string };
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
+  /** The agent registration this token was issued under; revoking the token revokes the registration. */
+  agent_registration_id?: string;
 }
 
 // Generated Tokens Response
@@ -61,6 +63,8 @@ export interface GenerateTokensOptions {
   // User grants only: PAT and service pseudo-apps store allowedScopes once
   // and validate against MCP_SCOPES instead.
   recheckAppScopes?: boolean;
+  /** Stamps the token with the agent registration (`reg_…`) it was issued under. */
+  agentRegistrationId?: string;
   /**
    * Mint this as a delegated token: `userId` keeps speaking as the person,
    * while this names the service account acting as them. See the `act` claim

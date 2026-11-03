@@ -2237,6 +2237,15 @@
       "scopeCount_many": "{{count}} rozsahu",
       "scopeCount_other": "{{count}} rozsahů"
     },
+    "agentSignIns": {
+      "title": "Přihlášení agentů",
+      "subtitle": "Agenti, kterým jste schválili jednat vaším jménem. Zrušte některého, aby už nezískal nový přístup.",
+      "columnApproved": "Schváleno",
+      "revoke": "Zrušit",
+      "revokeAria": "Zrušit přihlášení agenta {{id}}",
+      "revokedTitle": "Přihlášení agenta bylo zrušeno",
+      "errorTitle": "Přihlášení agenta se nepodařilo zrušit"
+    },
     "aiModels": {
       "title": "Modely AI",
       "subtitle": "Nakonfigurujte a spravujte modely AI od různých poskytovatelů",

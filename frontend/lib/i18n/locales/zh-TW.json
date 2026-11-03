@@ -2128,6 +2128,15 @@
       },
       "scopeCount_other": "{{count}} 個權限範圍"
     },
+    "agentSignIns": {
+      "title": "代理登入",
+      "subtitle": "您已核准代表您操作的代理。撤銷後，該代理將無法取得新的存取權限。",
+      "columnApproved": "核准時間",
+      "revoke": "撤銷",
+      "revokeAria": "撤銷代理登入 {{id}}",
+      "revokedTitle": "代理登入已撤銷",
+      "errorTitle": "無法撤銷代理登入"
+    },
     "aiModels": {
       "title": "AI 模型",
       "subtitle": "設定並管理來自不同供應商的 AI 模型",

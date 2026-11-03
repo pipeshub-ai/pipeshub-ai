@@ -583,6 +583,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
           status: AgentRegistrationStatus.CLAIMED;
           userId: string;
           orgId: string;
+          scopes: string[];
         },
   ): Promise<boolean> {
     const r = await OAuthAgentRegistration.updateOne(
@@ -594,6 +595,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
                 status: decision.status,
                 claimedUserId: oid(decision.userId),
                 claimedOrgId: oid(decision.orgId),
+                approvedScopes: decision.scopes,
               }
             : { status: decision.status },
       },
@@ -603,13 +605,52 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
 
   async consumeAgentRegistration(
     id: string,
+    purgeAt: Date,
   ): Promise<AgentRegistrationDto | null> {
     const row = await OAuthAgentRegistration.findOneAndUpdate(
       { _id: oid(id), status: AgentRegistrationStatus.CLAIMED },
-      { $set: { status: AgentRegistrationStatus.CONSUMED } },
+      { $set: { status: AgentRegistrationStatus.CONSUMED, purgeAt } },
       { new: true },
     );
     return row ? toPlain<AgentRegistrationDto>(row) : null;
+  }
+
+  async listAgentRegistrationsForUser(
+    userId: string,
+  ): Promise<AgentRegistrationDto[]> {
+    if (!Types.ObjectId.isValid(userId)) return [];
+    const rows = await OAuthAgentRegistration.find({
+      claimedUserId: oid(userId),
+      status: {
+        $in: [
+          AgentRegistrationStatus.CLAIMED,
+          AgentRegistrationStatus.CONSUMED,
+        ],
+      },
+    }).sort({ createdAt: -1 });
+    return rows.map((r) => toPlain<AgentRegistrationDto>(r));
+  }
+
+  async revokeAgentRegistration(
+    id: string,
+    userId?: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) return false;
+    if (userId !== undefined && !Types.ObjectId.isValid(userId)) return false;
+    const r = await OAuthAgentRegistration.updateOne(
+      {
+        _id: oid(id),
+        ...(userId !== undefined ? { claimedUserId: oid(userId) } : {}),
+        status: {
+          $in: [
+            AgentRegistrationStatus.CLAIMED,
+            AgentRegistrationStatus.CONSUMED,
+          ],
+        },
+      },
+      { $set: { status: AgentRegistrationStatus.REVOKED } },
+    );
+    return r.modifiedCount === 1;
   }
 
   async revokeAgentRegistrationsForUser(userId: string): Promise<void> {
