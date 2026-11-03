@@ -492,42 +492,32 @@ class IdentityMixin(PgBase):
                                                transaction: str | None = None) -> tuple[list[dict], int]:
         if not org_id or not self._mine(org_id):
             return [], 0
-        q = _Args(current_org_id(), collection, edge_collection)
-        # The org edge is the tenant boundary of an instance; only the creator sees a personal one, admins included.
-        w = ["EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = $3 AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)",
-             f"(n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = {q(user_id)})"]
-        uid = f"${len(q.a)}"
-        if exclude_kb and kb_connector_type:
-            w.append(f"n.doc->>'type' <> {q(kb_connector_type)}")
-        if scope == "personal":
-            w.append(f"n.doc->>'scope' = 'personal' AND n.doc->>'createdBy' = {uid}")
-        elif scope == "team":
-            w.append("n.doc->>'scope' = 'team'")
-            if not is_admin:  # team apps reached directly or through a team the user holds
-                w.append(f"""n.id IN (SELECT e.to_id FROM graph.nodes u JOIN graph.edges e ON e.org_id = u.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = u.id
-                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = {uid}
+        # The org edge is the tenant boundary of an instance; only the creator sees a personal one, admins included. Every filter is a bound
+        # parameter of one fixed statement (NULL: not asked).
+        rows = await self._id_rows("""/* pipeshub:graph.get_filtered_connector_instances */ WITH f AS (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+              AND EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = $3 AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)
+              AND (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $4)
+              AND ($5::text IS NULL OR n.doc->>'type' <> $5)
+              AND (NOT $6::boolean OR (n.doc->>'scope' = 'personal' AND n.doc->>'createdBy' = $4))
+              AND (NOT $7::boolean OR (n.doc->>'scope' = 'team' AND ($8::boolean OR n.id IN (
+                    SELECT e.to_id FROM graph.nodes u JOIN graph.edges e ON e.org_id = u.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = u.id
+                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4
                     UNION SELECT t.to_id FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
                     JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id
-                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = {uid})""")
-        if search:
-            ph = q(search)
-            w.append("(" + " OR ".join(_contains(f"n.doc->>'{k}'", ph) for k in ("name", "type", "appGroup")) + ")")
-        if is_authenticated is not None:
-            w.append(f"n.doc->'isAuthenticated' = to_jsonb({q(is_authenticated)}::boolean)")
-        if is_active is not None:
-            w.append(f"n.doc->'isActive' = to_jsonb({q(is_active)}::boolean)")
-        if connector_type_filter:
-            w.append(f"n.doc->>'type' = {q(connector_type_filter)}")
-        if is_configured is not None:
-            w.append(f"coalesce((n.doc->>'isConfigured')::boolean, false) = {q(is_configured)}")
-        if is_agent_active is not None:
-            w.append(f"coalesce((n.doc->>'isAgentActive')::boolean, false) = {q(is_agent_active)}")
-        if allowed_connector_types is not None:
-            w.append(f"n.doc->>'type' = ANY({q(list(allowed_connector_types))}::text[])")
-        off, lim = q(max(skip, 0)), q(max(limit, 0))
-        rows = await self._id_rows(f"""/* pipeshub:graph.get_filtered_connector_instances */ WITH f AS (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
-              AND {' AND '.join(w)}), cnt AS (SELECT count(*) AS total FROM f)
-            SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT doc FROM f ORDER BY doc->'createdAtTimestamp' DESC, id OFFSET {off} LIMIT {lim}) p ON true""", q.a, transaction)
+                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4))))
+              AND ($9::text IS NULL OR position(lower($9) in lower(coalesce(n.doc->>'name', ''))) > 0 OR position(lower($9) in lower(coalesce(n.doc->>'type', ''))) > 0
+                   OR position(lower($9) in lower(coalesce(n.doc->>'appGroup', ''))) > 0)
+              AND ($10::boolean IS NULL OR n.doc->'isAuthenticated' = to_jsonb($10::boolean))
+              AND ($11::boolean IS NULL OR n.doc->'isActive' = to_jsonb($11::boolean))
+              AND ($12::text IS NULL OR n.doc->>'type' = $12)
+              AND ($13::boolean IS NULL OR coalesce((n.doc->>'isConfigured')::boolean, false) = $13)
+              AND ($14::boolean IS NULL OR coalesce((n.doc->>'isAgentActive')::boolean, false) = $14)
+              AND ($15::text[] IS NULL OR n.doc->>'type' = ANY($15))), cnt AS (SELECT count(*) AS total FROM f)
+            SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT doc FROM f ORDER BY doc->'createdAtTimestamp' DESC, id OFFSET $16 LIMIT $17) p ON true""",
+                                  [current_org_id(), collection, edge_collection, user_id, kb_connector_type if exclude_kb and kb_connector_type else None,
+                                   scope == "personal", scope == "team", is_admin, search or None, is_authenticated, is_active, connector_type_filter or None,
+                                   is_configured, is_agent_active, list(allowed_connector_types) if allowed_connector_types is not None else None,
+                                   max(skip, 0), max(limit, 0)], transaction)
         return [_arango(_doc(r["doc"]), collection) for r in rows if r["doc"] is not None], (rows[0]["total"] if rows else 0)
 
     @_soft(False)
@@ -537,15 +527,12 @@ class IdentityMixin(PgBase):
             return False
         if scope != "personal" and not org_id:      # a team connector is looked up under an org
             return False
-        q = _Args(current_org_id(), collection, instance_name, scope)
-        cond = ["n.doc->>'scope' = $4", "lower(regexp_replace(n.doc->>'name', '^\\s+|\\s+$', '', 'g')) = lower(regexp_replace($3, '^\\s+|\\s+$', '', 'g'))"]
-        if scope == "personal":
-            cond.append(f"n.doc->>'createdBy' = {q(user_id)}")
-        else:  # the organization's team connectors
-            cond.append("EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = 'orgAppRelation' AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)")
-        if exclude_connector_id:
-            cond.append(f"n.id <> {q(exclude_connector_id)}")
-        rows = await self._id_rows(f"/* pipeshub:graph.check_connector_name_exists */ SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND {' AND '.join(cond)} LIMIT 1", q.a, transaction)
+        rows = await self._id_rows("""/* pipeshub:graph.check_connector_name_exists */ SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+              AND n.doc->>'scope' = $4 AND lower(regexp_replace(n.doc->>'name', '^\\s+|\\s+$', '', 'g')) = lower(regexp_replace($3, '^\\s+|\\s+$', '', 'g'))
+              AND (($5::boolean AND n.doc->>'createdBy' = $6) OR (NOT $5::boolean AND EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = 'orgAppRelation'
+                    AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)))
+              AND ($7::text IS NULL OR n.id <> $7) LIMIT 1""",
+                                  [current_org_id(), collection, instance_name, scope, scope == "personal", user_id, exclude_connector_id or None], transaction)
         return bool(rows)
 
     @_soft(0)
@@ -566,12 +553,6 @@ class IdentityMixin(PgBase):
         return dedupe_agents_by_id([dict(r) for r in rows])
 
     # ---- teams ---------------------------------------------------------------------------------------------------
-    _TEAM_MEMBERS = """(SELECT coalesce(jsonb_agg(jsonb_build_object('id', mu.id, 'userId', mu.doc->'userId', 'userName', mu.doc->'fullName', 'userEmail', mu.doc->'email',
-              'role', mp.doc->'role', 'joinedAt', mp.doc->'createdAtTimestamp', 'isOwner', coalesce(mp.doc->>'role' = 'OWNER', false)) ORDER BY mu.id), '[]'::jsonb)
-          FROM graph.edges mp JOIN graph.nodes mu ON mu.org_id = mp.org_id AND mu.coll = 'users' AND mu.id = mp.from_id
-          WHERE mp.org_id = t.org_id AND mp.coll = 'permission' AND mp.from_coll = 'users' AND mp.to_coll = 'teams' AND mp.to_id = t.id
-            AND coalesce((mu.doc->>'isActive')::boolean, false){member_filter})"""
-
     @staticmethod
     def _team_dict(t: dict, cur_role: str | None, members: list, count: int, *, is_org_admin: bool = False) -> dict:
         owner = is_org_admin or cur_role == "OWNER"
@@ -588,27 +569,27 @@ class IdentityMixin(PgBase):
         everyone = bool(is_org_admin and org_id)
         if everyone and not self._mine(org_id):
             return [], 0
-        q = _Args(current_org_id())
-        source = (f"SELECT t.org_id, t.id, t.doc, NULL::text AS cur FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = 'teams' AND t.doc->>'orgId' = {q(org_id)}" if everyone else
-                  f"""SELECT t.org_id, t.id, t.doc, p.doc->>'role' AS cur FROM graph.edges p
+        # one fixed statement: the source (every team of the organisation, or the user's), the filters, the page and the service-account switch are bound
+        rows = await self._id_rows("""/* pipeshub:graph.get_user_teams */ WITH s AS (
+              SELECT t.org_id, t.id, t.doc, NULL::text AS cur FROM graph.nodes t WHERE $4::boolean AND t.org_id = $1 AND t.coll = 'teams' AND t.doc->>'orgId' = $2
+              UNION ALL
+              SELECT t.org_id, t.id, t.doc, p.doc->>'role' AS cur FROM graph.edges p
               JOIN graph.nodes t ON t.org_id = p.org_id AND t.coll = 'teams' AND t.id = p.to_id
-              WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = {q(user_key)} AND p.to_coll = 'teams'""")
-        w = ""
-        if search:
-            ph = q(search)
-            w += f" AND ({_contains('t.doc->>' + chr(39) + 'name' + chr(39), ph)} OR {_contains('t.doc->>' + chr(39) + 'description' + chr(39), ph)})"
-        if created_by:
-            w += f" AND t.doc->>'createdBy' = {q(created_by)}"
-        if created_after is not None:
-            w += f" AND (t.doc->>'createdAtTimestamp')::numeric >= {q(created_after)}"
-        if created_before is not None:
-            w += f" AND (t.doc->>'createdAtTimestamp')::numeric <= {q(created_before)}"
-        members_only = "" if include_service_accounts else f" AND {_not_service('mu')}"
-        off, lim = q((page - 1) * limit), q(limit)
-        rows = await self._id_rows(f"""/* pipeshub:graph.get_user_teams */ WITH t AS ({source}{w}),
+              WHERE NOT $4::boolean AND p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $3 AND p.to_coll = 'teams'),
+            t AS (SELECT * FROM s t WHERE ($5::text IS NULL OR position(lower($5) in lower(coalesce(t.doc->>'name', ''))) > 0
+                                          OR position(lower($5) in lower(coalesce(t.doc->>'description', ''))) > 0)
+                AND ($6::text IS NULL OR t.doc->>'createdBy' = $6)
+                AND ($7::numeric IS NULL OR (t.doc->>'createdAtTimestamp')::numeric >= $7)
+                AND ($8::numeric IS NULL OR (t.doc->>'createdAtTimestamp')::numeric <= $8)),
             cnt AS (SELECT count(DISTINCT id) AS total FROM t)
-            SELECT cnt.total, pg.doc, pg.cur, pg.members FROM cnt LEFT JOIN LATERAL (SELECT t.doc, t.cur, {self._TEAM_MEMBERS.format(member_filter=members_only)} AS members
-              FROM t ORDER BY t.doc->'createdAtTimestamp' DESC, t.id OFFSET {off} LIMIT {lim}) pg ON true""", q.a, transaction)
+            SELECT cnt.total, pg.doc, pg.cur, pg.members FROM cnt LEFT JOIN LATERAL (SELECT t.doc, t.cur, (SELECT coalesce(jsonb_agg(jsonb_build_object('id', mu.id, 'userId', mu.doc->'userId', 'userName', mu.doc->'fullName', 'userEmail', mu.doc->'email',
+              'role', mp.doc->'role', 'joinedAt', mp.doc->'createdAtTimestamp', 'isOwner', coalesce(mp.doc->>'role' = 'OWNER', false)) ORDER BY mu.id), '[]'::jsonb)
+          FROM graph.edges mp JOIN graph.nodes mu ON mu.org_id = mp.org_id AND mu.coll = 'users' AND mu.id = mp.from_id
+          WHERE mp.org_id = t.org_id AND mp.coll = 'permission' AND mp.from_coll = 'users' AND mp.to_coll = 'teams' AND mp.to_id = t.id
+            AND coalesce((mu.doc->>'isActive')::boolean, false) AND ($9::boolean OR (coalesce(mu.doc->>'kind', '') <> 'service' AND right(lower(coalesce(mu.doc->>'email', '')), length($10::text)) <> $10::text))) AS members
+              FROM t ORDER BY t.doc->'createdAtTimestamp' DESC, t.id OFFSET $11 LIMIT $12) pg ON true""",
+                                  [current_org_id(), org_id, user_key, everyone, search or None, created_by or None, created_after, created_before,
+                                   include_service_accounts, _SERVICE_SUFFIX, (page - 1) * limit, limit], transaction)
         teams = []
         for r in rows:
             if r["doc"] is None:
@@ -622,14 +603,15 @@ class IdentityMixin(PgBase):
                          transaction: str | None, *, include_service_accounts: bool = False, is_org_admin: bool = False) -> dict | None:
         if not self._mine(org_id):
             return None
-        q = _Args(current_org_id(), team_id, user_key, current_org_id())
-        mf = "" if include_service_accounts else f" AND {_not_service('mu')}"
-        if search:
-            ph = q(search)
-            mf += f" AND ({_contains('mu.doc->>' + chr(39) + 'fullName' + chr(39), ph)} OR {_contains('mu.doc->>' + chr(39) + 'email' + chr(39), ph)})"
-        rows = await self._id_rows(f"""/* pipeshub:graph.team_view */ SELECT t.doc, (SELECT cp.doc->>'role' FROM graph.edges cp WHERE cp.org_id = t.org_id AND cp.coll = 'permission'
-              AND cp.from_coll = 'users' AND cp.from_id = $3 AND cp.to_coll = 'teams' AND cp.to_id = t.id LIMIT 1) AS cur, {self._TEAM_MEMBERS.format(member_filter=mf)} AS members
-            FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = 'teams' AND t.id = $2 AND t.doc->>'orgId' = $4""", q.a, transaction)
+        rows = await self._id_rows("""/* pipeshub:graph.team_view */ SELECT t.doc, (SELECT cp.doc->>'role' FROM graph.edges cp WHERE cp.org_id = t.org_id AND cp.coll = 'permission'
+              AND cp.from_coll = 'users' AND cp.from_id = $3 AND cp.to_coll = 'teams' AND cp.to_id = t.id LIMIT 1) AS cur, (SELECT coalesce(jsonb_agg(jsonb_build_object('id', mu.id, 'userId', mu.doc->'userId', 'userName', mu.doc->'fullName', 'userEmail', mu.doc->'email',
+              'role', mp.doc->'role', 'joinedAt', mp.doc->'createdAtTimestamp', 'isOwner', coalesce(mp.doc->>'role' = 'OWNER', false)) ORDER BY mu.id), '[]'::jsonb)
+          FROM graph.edges mp JOIN graph.nodes mu ON mu.org_id = mp.org_id AND mu.coll = 'users' AND mu.id = mp.from_id
+          WHERE mp.org_id = t.org_id AND mp.coll = 'permission' AND mp.from_coll = 'users' AND mp.to_coll = 'teams' AND mp.to_id = t.id
+            AND coalesce((mu.doc->>'isActive')::boolean, false) AND ($5::boolean OR (coalesce(mu.doc->>'kind', '') <> 'service' AND right(lower(coalesce(mu.doc->>'email', '')), length($6::text)) <> $6::text))
+            AND ($7::text IS NULL OR position(lower($7) in lower(coalesce(mu.doc->>'fullName', ''))) > 0 OR position(lower($7) in lower(coalesce(mu.doc->>'email', ''))) > 0)) AS members
+            FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = 'teams' AND t.id = $2 AND t.doc->>'orgId' = $4""",
+                                  [current_org_id(), team_id, user_key, current_org_id(), include_service_accounts, _SERVICE_SUFFIX, search or None], transaction)
         if not rows:
             return None
         members = _js(rows[0]["members"])
