@@ -317,6 +317,12 @@ def test_every_statement_of_the_dense_path_pins_the_org_the_collection_and_the_s
     assert "p.org_id = $1" in lexical.lexical_sql(" AND (p.ent_type = ANY($12::text[]))")
     for sql in (dense._TOMBSTONES, dense._CONNECTORS, dense._UNCONNECTED, dense._LEAF, validate._BOUNDS, validate._NEXT):
         assert "org_id = $1" in sql, sql[:60]
+    # every table reference carries its own alias-qualified predicate (a substring check would pass with one of several removed)
+    assert dense._TOMBSTONES.count("t.org_id = $1") == 1 and dense._LEAF.count("p.org_id = $1") == 1
+    assert dense._UNCONNECTED.count("p.org_id = $1") == 1 and dense._UNCONNECTED.count("m.org_id = $1") == 1
+    assert dense._CONNECTORS.count("m.org_id = $1 AND m.collection_id = $2") == 2 and dense._CONNECTORS.count("org_id") == 2
+    for sql in (validate._BOUNDS, validate._NEXT):
+        assert "p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3" in sql
     assert "m.org_id = $1" in dense.exact_sql(query()) and "m.collection_id = $2" in dense.exact_sql(query())     # the membership probe too
     for sql in (validate._LOAD, validate._SAVE, validate._FAIL):
         assert "org_id" in sql and "$1" in sql
@@ -328,36 +334,55 @@ def test_the_admission_statement_uses_the_registered_lock_class_and_an_unknown_m
         dense.exact_sql(query(metric="euclid"))
 
 
+def _built_statements(source: str) -> dict[str, int]:
+    """Statement texts built from parts in ``source``, by the function that builds them: an f-string with values, ``"..." % x``,
+    ``"..." + x`` and ``"...".format(x)`` whose constant text holds a SQL keyword."""
+    import ast
+    import re
+
+    keywords = re.compile(r"\bselect\b|\binsert\s+into\b|\bupdate\s+\S+\s+set\b|\bdelete\s+from\b", re.I)
+    tree = ast.parse(source)
+    owner: dict[ast.AST, str] = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+            for n in ast.walk(fn):
+                owner[n] = fn.name
+    found: dict[str, int] = {}
+    for n in ast.walk(tree):
+        text, built = "", False
+        if isinstance(n, ast.JoinedStr):
+            built = any(isinstance(v, ast.FormattedValue) for v in n.values)
+            text = "".join(v.value for v in n.values if isinstance(v, ast.Constant))
+        elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod | ast.Add) and isinstance(n.left, ast.Constant):      # "..." % x, "..." + x
+            built = not isinstance(n.right, ast.Constant)
+            text = n.left.value if isinstance(n.left.value, str) else ""
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "format" and isinstance(n.func.value, ast.Constant):
+            built, text = True, str(n.func.value.value)                                                                    # "...".format(x)
+        if built and keywords.search(text):
+            found[owner.get(n, "<module>")] = found.get(owner.get(n, "<module>"), 0) + 1
+    return found
+
+
+def test_the_detector_of_built_statements_sees_every_way_of_building_one() -> None:
+    assert _built_statements('def f(x):\n    return f"SELECT {x}"') == {"f": 1}
+    assert _built_statements('def f(x):\n    return "SELECT %s" % x') == {"f": 1}
+    assert _built_statements('def f(x):\n    return "SELECT * FROM t WHERE a = " + x') == {"f": 1}
+    assert _built_statements('def f(x):\n    return "SELECT {}".format(x)') == {"f": 1}
+    assert _built_statements('def f(x):\n    return "SELECT 1 " + "FROM t"') == {}          # constants joined are not built
+
+
 def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None:
     """Every statement text of the search path that is built from parts, by file and function. A statement built anywhere else in these
     modules fails here (the shared SQL guard sees only a statement built where it is passed to ``fetch``)."""
-    import ast
-    import re
     from pathlib import Path
 
-    keywords = re.compile(r"\bselect\b|\binsert\s+into\b|\bupdate\s+\S+\s+set\b|\bdelete\s+from\b", re.I)
     root = Path(dense.__file__).parent
     found: dict[tuple[str, str], int] = {}
     for path in sorted(root.glob("*.py")):
         if path.name in ("writes.py", "reads.py"):          # their built statements are pinned by test_pgvector_writes.py
             continue
-        tree = ast.parse(path.read_text())
-        owner: dict[ast.AST, str] = {}
-        for fn in ast.walk(tree):
-            if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
-                for n in ast.walk(fn):
-                    owner[n] = fn.name
-        for n in ast.walk(tree):
-            built = ((isinstance(n, ast.JoinedStr) and any(isinstance(v, ast.FormattedValue) for v in n.values))
-                     or (isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod) and isinstance(n.left, ast.Constant)))
-            text = ""
-            if isinstance(n, ast.JoinedStr):
-                text = "".join(v.value for v in n.values if isinstance(v, ast.Constant))
-            elif isinstance(n, ast.BinOp) and isinstance(n.left, ast.Constant) and isinstance(n.left.value, str):
-                text = n.left.value
-            if built and keywords.search(text):
-                key = (path.name, owner.get(n, "<module>"))
-                found[key] = found.get(key, 0) + 1
+        for fn, count in _built_statements(path.read_text()).items():
+            found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions: fixed text, every value a ``$n``)
     assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,

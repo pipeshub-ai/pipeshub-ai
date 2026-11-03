@@ -1,7 +1,7 @@
 """Does bit HNSW plus a halfvec rerank find the exact neighbours in this embedding space?
 
-Binary quantisation keeps the sign of each dimension; how much ranking survives depends on the model. A space that has data is checked: sampled stored vectors are used as queries (each one's own point left out of
-both answers, so the query does not find itself), and the vector-index tier (the real statement, at the real rerank depth and
+Binary quantisation keeps the sign of each dimension; how much ranking survives depends on the model. A space that has data is checked: sampled stored vectors are used as queries (each one's own point
+left out of both answers, so the query does not find itself), and the vector-index tier (the real statement, at the real rerank depth and
 settings) is compared with an exact scan of the same org. The verdict is stored per org and space (``space_checks``), so a restart
 or another process does not repeat the scan; it is repeated after ``check_recheck_s``, and a check that could not finish (no
 slot in the background pool, a timeout) waits ``check_backoff_s`` times the failed attempts before the next try. Below the floor
