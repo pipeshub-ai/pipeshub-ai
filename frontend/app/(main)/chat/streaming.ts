@@ -224,9 +224,37 @@ function followRemoteRun(slotId: string, convId: string): void {
   useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
 }
 
-/** The note of the answer a regenerate leaves in place when its run ends without replacing it. */
-const keptSearchDegraded = (slotId: string): boolean =>
-  useChatStore.getState().slots[slotId]?.regenSearchDegraded ?? false;
+type AnswerCustom = { messageId?: string; searchDegraded?: boolean };
+const answerCustom = (m: ThreadMessageLike) => m.metadata?.custom as AnswerCustom | undefined;
+
+/** Whether `row` is the assistant answer `target` names: by row id, or by the backend message id when the row id differs from it. */
+function isAnswerRow(row: ThreadMessageLike, target: string | null | undefined, backendId?: string | null): boolean {
+  if (row.role !== 'assistant') return false;
+  if (target && row.id === target) return true;
+  const id = backendId ?? target;
+  return Boolean(id) && (row.id === id || answerCustom(row)?.messageId === id);
+}
+
+/**
+ * The partial-search note belongs to an answer, so it is kept on the message (`metadata.custom.searchDegraded`) and shown from there: an
+ * old answer that stays on screen keeps its note, and a new answer brings its own. A list reloaded from the server carries no flags,
+ * so the notes of the answers already on screen are carried over by row id or backend message id. `mark` is the answer whose final
+ * event said its search was partial; `fresh` is an answer that was just replaced, so its old note is not carried.
+ */
+function withSearchDegraded(
+  next: ThreadMessageLike[],
+  previous: ThreadMessageLike[],
+  opts: { mark?: ThreadMessageLike | null; fresh?: string | null } = {},
+): ThreadMessageLike[] {
+  const degradedBefore = previous.filter((m) => m.role === 'assistant' && answerCustom(m)?.searchDegraded === true);
+  return next.map((row) => {
+    if (row.role !== 'assistant') return row;
+    const marked = Boolean(opts.mark) && row.id === opts.mark!.id;
+    const carried = !isAnswerRow(row, opts.fresh ?? null) && degradedBefore.some((p) => isAnswerRow(row, typeof p.id === 'string' ? p.id : null, answerCustom(p)?.messageId));
+    if (!marked && !carried) return row;
+    return { ...row, metadata: { ...row.metadata, custom: { ...row.metadata?.custom, searchDegraded: true } } };
+  });
+}
 
 /**
  * Builds the post-stop message list for the offline fallback (grace-timeout
@@ -255,11 +283,12 @@ function buildStoppedMessages(
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>
-      m.id === regenerateMessageId
+      isAnswerRow(m, regenerateMessageId)
         ? {
             ...m,
             content: [{ type: 'text' as const, text: streamingContent }],
-            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+            // The streamed text replaces the old answer, so the old answer's note goes with it.
+            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const, searchDegraded: undefined } },
           }
         : m
     );
@@ -995,8 +1024,6 @@ export async function streamMessageForSlot(
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
-    regenSearchDegraded: null,
-    searchDegraded: false,
     streamingQuestion,
     streamingContent: '',
     currentStatusMessage: null,
@@ -1347,7 +1374,7 @@ export async function streamMessageForSlot(
                 if (current?.convId !== reloadId || current.messages !== settledMessages) return;
                 // History returns its latest page only, so pagination restarts from it.
                 useChatStore.getState().updateSlot(slotId, {
-                  messages: loadHistoricalMessages(detail.messages).messages,
+                  messages: withSearchDegraded(loadHistoricalMessages(detail.messages).messages, current.messages),
                   rawMessages: detail.messages,
                   messagePagination: {
                     currentPage: detail.pagination.page,
@@ -1506,8 +1533,11 @@ export async function streamMessageForSlot(
             streamingParts: [],
             pendingCollections: [],
             artifacts: [],
-            messages: finalMessages,
-            searchDegraded: data.meta?.searchDegraded === true,
+            messages: withSearchDegraded(finalMessages, slotBeforeComplete?.messages ?? [], {
+              mark: data.meta?.searchDegraded === true
+                ? (reuseExistingAssistant ? (cardRow ?? lastAsst) : lastAsst)
+                : null,
+            }),
             hasLoaded: true,
             abortController: null,
             runId: null,
@@ -1786,9 +1816,6 @@ export async function streamRegenerateForSlot(
       ? { pendingAskUserQuestion: null }
       : {}),
     isStreaming: true,
-    // The old answer stays on screen if this run ends without replacing it (a failure or a stop), and so must its note.
-    regenSearchDegraded: slot.searchDegraded,
-    searchDegraded: false,
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
     streamingContent: '',
@@ -2023,15 +2050,22 @@ export async function streamRegenerateForSlot(
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           regenerateMessageId: null,
-          regenSearchDegraded: null,
           streamingAssistantId: null,
           streamingContent: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
           streamingParts: [],
-          messages: finalMessages,
+          messages: withSearchDegraded(
+            finalMessages,
+            useChatStore.getState().slots[slotId]?.messages ?? [],
+            {
+              fresh: regenRowId,
+              mark: data?.meta?.searchDegraded === true
+                ? (finalMessages.find((m) => m.id === regenRowId) ?? null)
+                : null,
+            },
+          ),
           rawMessages: detail.messages,
-          searchDegraded: data?.meta?.searchDegraded === true,
           abortController: null,
           runId: null,
           stopping: false,
@@ -2070,8 +2104,6 @@ export async function streamRegenerateForSlot(
           abortController: null,
           runId: null,
           stopping: false,
-          searchDegraded: keptSearchDegraded(slotId),
-          regenSearchDegraded: null,
         });
         debugLog.flush('regenerate-reload-error', { slotId });
       }
@@ -2103,8 +2135,6 @@ export async function streamRegenerateForSlot(
         abortController: null,
         runId: null,
         stopping: false,
-        ...(dropped ? {} : { searchDegraded: keptSearchDegraded(slotId) }),
-        regenSearchDegraded: null,
       });
       if (dropped) followRemoteRun(slotId, editConvId);
       debugLog.flush('regenerate-error', { slotId });
@@ -2207,8 +2237,6 @@ export async function streamRegenerateForSlot(
       ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,
       regenerateMessageId: null,
-      ...(dropped ? {} : { searchDegraded: keptSearchDegraded(slotId) }),
-      regenSearchDegraded: null,
       streamingAssistantId: null,
       streamingContent: '',
       currentStatusMessage: null,
@@ -2274,8 +2302,6 @@ export function cancelStreamForSlot(slotId: string): void {
       stopping: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
-      ...(slot.regenerateMessageId ? { searchDegraded: keptSearchDegraded(slotId) } : {}),
-      regenSearchDegraded: null,
     });
     if (isTemp) {
       store.clearPendingConversation(slotId);
@@ -2340,9 +2366,6 @@ export function cancelStreamForSlot(slotId: string): void {
       stopping: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
-      // A regenerate stopped before any text arrived leaves the old answer on screen: its note stays.
-      ...(cur.regenerateMessageId && messages === cur.messages ? { searchDegraded: keptSearchDegraded(slotId) } : {}),
-      regenSearchDegraded: null,
       messages,
     });
     if (cur.isTemp) {

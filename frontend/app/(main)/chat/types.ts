@@ -1201,10 +1201,6 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
-  /** The latest answer's search was served with less than the full search (SSE complete `meta.searchDegraded`). */
-  searchDegraded: boolean;
-  /** For a regenerate: the previous answer's `searchDegraded`, restored if the run ends without replacing it; null otherwise. */
-  regenSearchDegraded: boolean | null;
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;

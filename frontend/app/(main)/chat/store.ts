@@ -336,8 +336,6 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     pendingCollections: [],
     artifacts: [],
     pendingAskUserQuestion: null,
-    searchDegraded: false,
-    regenSearchDegraded: null,
     abortController: null,
     runId: null,
     stopping: false,
