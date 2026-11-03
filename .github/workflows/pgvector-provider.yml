@@ -10,7 +10,14 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/python/app/services/vector_db/**'
-      - 'backend/python/app/core/db/**'
+      - 'backend/python/app/core/**'
+      - 'backend/python/app/config/**'
+      - 'backend/python/app/utils/**'
+      - 'backend/python/app/exceptions/**'
+      - 'backend/python/app/telemetry/**'
+      - 'backend/python/app/edition.py'
+      - 'backend/python/app/services/messaging/**'
+      - 'backend/python/app/services/resource_governor/**'
       - 'backend/python/tests/integration/db/**'
       - 'backend/python/tests/integration/vector_db/test_pgvector_*.py'
       - 'backend/python/pyproject.toml'
@@ -82,6 +89,6 @@ jobs:
       - name: No unexpected skips, and every case ran
         if: ${{ always() }}
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 9
-          --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=7'
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 10
+          --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=8'
           --expect-suite 'tests.integration.vector_db.test_pgvector_probe=2'
