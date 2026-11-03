@@ -321,6 +321,25 @@ async def _stale_servable_set(world: World, vrid: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+async def test_in_place_names_a_missing_org_and_still_switches(world: World) -> None:
+    """An in-place write over a mapping with no org (an older bare row) whose run is not a
+    ``none:`` run switches twice: the invalidation names the org, and the final switch must
+    not expect it still absent, or the write would be dropped as superseded."""
+    vrid = world.vrid()
+    first = await _stale_servable_set(world, vrid)
+    assert await world.provider.batch_update_nodes([{"_key": vrid, "orgId": None}], MAPPING)
+
+    await world.index(world.record(vrid, B), _rev(B))
+
+    mapping = await world.mapping(vrid)
+    assert mapping["orgId"] == world.org
+    # Both the invalidation and the final switch landed.
+    assert mapping["switchSeq"] == first["switchSeq"] + 2
+    assert is_none_run(mapping["storedRun"])
+    assert await world.stored(vrid) == B
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalidate", [True, False], ids=["invalidates", "no_invalidation_control"])
 async def test_in_place_invalidates_before_upload(
     world: World, invalidate: bool, monkeypatch: pytest.MonkeyPatch,

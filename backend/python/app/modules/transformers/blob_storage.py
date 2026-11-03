@@ -358,9 +358,15 @@ def _with_missing_org(
     org with the first change, not after it; the write expects it still absent, so a value
     another writer set is never replaced.
     """
-    if node is None or "orgId" in node or not org_id:
+    if node is None or _names_org(node) or not org_id:
         return updates, expected
     return {**updates, "orgId": org_id}, {**expected, "orgId": None}
+
+
+def _names_org(node: dict[str, Any]) -> bool:
+    """Whether the row read has an org. Only presence matters here, never which org: a
+    null ``orgId`` is as missing as an absent one."""
+    return "orgId" in node and ("orgId", None) not in node.items()
 
 
 class ReconciliationMappingGoneError(Exception):
@@ -1973,6 +1979,9 @@ class BlobStorage(Transformer):
                     continue
                 record_store_switch(IN_PLACE, "invalidated")
                 seq = (seq or 0) + 1
+                if org_id and not _names_org(node):
+                    # The invalidation named the org; the final switch must not expect it absent.
+                    node = {**node, "orgId": org_id}
             break
         else:
             record_store_switch(IN_PLACE, "busy")

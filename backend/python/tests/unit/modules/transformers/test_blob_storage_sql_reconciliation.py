@@ -317,6 +317,16 @@ class TestSaveReconciliationMetadata:
         graph_provider.update_node_fields_if_match.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_null_org_counts_as_missing(self) -> None:
+        graph_provider, bs = self._reusing({"documentId": "doc-1", "switchSeq": 3, "orgId": None})
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+
+        await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
+
+        _, _, updates, expected = graph_provider.update_node_fields_if_match.await_args.args
+        assert (updates["orgId"], expected["orgId"]) == ("org", None)
+
+    @pytest.mark.asyncio
     async def test_a_mapping_that_names_its_org_is_not_touched_again(self) -> None:
         graph_provider, bs = self._reusing({"documentId": "doc-1", "switchSeq": 3, "orgId": "org"})
         graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
