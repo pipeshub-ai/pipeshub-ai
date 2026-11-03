@@ -125,16 +125,16 @@ def test_prefilter_reads_the_inline_case_flag() -> None:
     assert ere_prefilter("foo") == ("foo", False)
 
 
-def test_the_non_ascii_case_variants_are_exactly_k_and_s() -> None:
+def test_the_letters_with_a_non_ascii_case_variant_are_exactly_those_the_prefilter_leaves_out() -> None:
     from app.utils.grep_lines import _NON_ASCII_FOLD
 
-    found = set()
-    for cp in range(0x80, 0x30000):
-        ch = chr(cp)
-        for letter in "abcdefghijklmnopqrstuvwxyz":
-            if regex.fullmatch(letter, ch, regex.IGNORECASE):
-                found.add(letter)
-    assert found <= {c.lower() for c in _NON_ASCII_FOLD}
+    # one search per letter over every non-ASCII character at once (a match per character took minutes)
+    blob = "".join(chr(cp) for cp in range(0x80, 0x30000))
+    found = {
+        letter for letter in "abcdefghijklmnopqrstuvwxyz"
+        if regex.search(letter, blob, regex.IGNORECASE)
+    }
+    assert found == {c.lower() for c in _NON_ASCII_FOLD} == {"i", "k", "s"}
 
 
 def test_lines_are_counted_on_newlines_only() -> None:
