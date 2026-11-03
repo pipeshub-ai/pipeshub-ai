@@ -54,14 +54,18 @@ from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
+from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
+    STALE_SCOPE,
     reset_membership_context,
     resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
+    scope_fields_for_state,
+    scope_org_id,
     set_membership_context,
     sync_vector_membership,
     vector_point_payload,
@@ -1429,6 +1433,20 @@ class VectorStore(Transformer):
                 e,
                 exc_info=True,
             )
+            await self._mark_scope_stale(virtual_record_id)
+
+    async def _mark_scope_stale(self, virtual_record_id: str) -> None:
+        """The post-write resync failed, so the stamp the upsert carried (read before a long embed) may be older than a
+        structural change: put the legacy marker on the points. Best effort; logged when it fails."""
+        org_id = scope_org_id() if scope_fields_enabled() else None
+        if not org_id:
+            return
+        try:
+            filt = await self.vector_db_service.filter_collection(must={"orgId": org_id, "virtualRecordId": virtual_record_id})
+            for name in await self.collection_locator.all_collections(fresh=True):
+                await self.vector_db_service.set_payload(name, STALE_SCOPE.to_payload(), filt)
+        except Exception as exc:
+            self.logger.error("could not mark the scope fields of %s stale: %s", virtual_record_id, exc)
 
     async def _record_is_gone(self, record_id: str) -> bool:
         """True only when the graph positively reports the record as absent.
@@ -1482,8 +1500,14 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
+        # Scope fields (permission model): written only while ACL_SCOPE_FIELDS is on. A failure never fails indexing; the
+        # point is marked stale and the post-index resync or the back-fill recomputes it.
+        scope = None
+        if scope_fields_enabled():
+            org_id = getattr(record, "org_id", None)
+            scope = await scope_fields_for_state(self.graph_provider, state, org_id, self.logger) if org_id else STALE_SCOPE
         return set_membership_context(
-            connector_ids, record_group_ids, root_record_group_ids
+            connector_ids, record_group_ids, root_record_group_ids, scope
         )
 
     # ------------------------------------------------------------------

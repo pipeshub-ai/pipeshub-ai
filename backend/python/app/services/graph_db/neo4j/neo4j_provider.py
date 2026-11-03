@@ -225,6 +225,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     is_write_conflict,
 )
 from app.services.graph_db.neo4j.permission_scopes import Neo4jHierarchyView
+from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
     PushClaim,
@@ -8623,6 +8624,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> Neo4jHierarchyView:
         return Neo4jHierarchyView(lambda: self.client)
+
+    def permission_stamp_graph(self) -> Neo4jStampGraph:
+        return Neo4jStampGraph(lambda: self.client)
 
     async def get_accessible_containers(
         self,
