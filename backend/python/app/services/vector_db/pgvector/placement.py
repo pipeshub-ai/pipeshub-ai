@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app.core import org_context
 from app.services.vector_db.pgvector.errors import OrgMismatch, PgVectorError
 from app.services.vector_db.pgvector.scope import ambient_org
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     import asyncpg
 
     from app.core.db import KernelDB, Tx
@@ -35,7 +37,7 @@ class OwnLeafPolicy:
     def __init__(self, db: KernelDB, *, wait: float = 30.0, poll: float = 0.1) -> None:
         self._db, self._wait, self._poll = db, wait, poll
         self._placed: set[str] = set()
-        self._asking: dict[str, asyncio.Task[None]] = {}
+        self._asking: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Task[None]] = {}    # per loop: a task cannot be awaited from another loop
 
     async def before_first_write(self, org: str) -> None:
         # the requests below act for the ambient org: refuse a call that names another one, a placed org included
@@ -43,11 +45,12 @@ class OwnLeafPolicy:
             raise OrgMismatch("placement was asked for a different organisation than the one the call runs for")
         if org in self._placed:
             return
-        task = self._asking.get(org)
+        key = (asyncio.get_running_loop(), org)      # the indexing consumers each run a loop of their own against one service
+        task = self._asking.get(key)
         if task is None:
             # request-scoped child work: it keeps the caller's org context (the same org for every waiter)
-            task = self._asking[org] = org_context.spawn_in_request(self._place(org), name=f"pgvector-placement-{org}")
-            task.add_done_callback(lambda _t, org=org: self._asking.pop(org, None))
+            task = self._asking[key] = org_context.spawn_in_request(self._place(org), name=f"pgvector-placement-{org}")
+            task.add_done_callback(lambda _t, key=key: self._asking.pop(key, None))
         await asyncio.shield(task)
 
     async def _place(self, org: str) -> None:
@@ -58,11 +61,11 @@ class OwnLeafPolicy:
             return await tx.fetchrow("/* pipeshub:pgvector.org_leaf_status */ SELECT placed, note FROM retrieval.org_leaf_status()")
 
         # the caller runs inside the org's scope; a concurrent first request is settled inside the function
-        await self._db.run(ask, write=True, idempotent=True, custom_plan=True)
-        deadline = time.monotonic() + self._wait
+        deadline = time.monotonic() + self._wait          # the request and every poll count against it
+        await self._within(deadline, self._db.run(ask, write=True, idempotent=True, custom_plan=True))
         delay = self._poll
         while True:
-            row = await self._db.run(status, custom_plan=True)
+            row = await self._within(deadline, self._db.run(status, custom_plan=True))
             if row is not None and row["placed"]:
                 self._placed.add(org)
                 return
@@ -70,10 +73,20 @@ class OwnLeafPolicy:
             if row is not None and row["note"]:
                 raise PgVectorError(f"the organisation cannot get a leaf of its own: {row['note']}")
             if time.monotonic() >= deadline:
-                raise PgVectorError(
-                    f"placement did not finish in time ({self._wait:g}s): the organisation's own partition has not been created. Likely causes: "
-                    "the placement worker is not running, it is busy or waiting for the migrate lock during a deployment, or its database "
-                    "connection is failing; check its log"
-                )
-            await asyncio.sleep(delay)
+                raise self._late()
+            await asyncio.sleep(min(delay, max(deadline - time.monotonic(), 0)))
             delay = min(delay * 2, 1.0)
+
+    async def _within(self, deadline: float, call: Coroutine[Any, Any, Any]) -> Any:  # noqa: ANN401
+        try:
+            async with asyncio.timeout(max(deadline - time.monotonic(), 0)):
+                return await call
+        except TimeoutError:
+            raise self._late() from None
+
+    def _late(self) -> PgVectorError:
+        return PgVectorError(
+            f"placement did not finish in time ({self._wait:g}s): the organisation's own partition has not been created. Likely causes: "
+            "the placement worker is not running, it is busy or waiting for the migrate lock during a deployment, or its database "
+            "connection is failing; check its log"
+        )

@@ -106,3 +106,48 @@ async def test_a_placed_org_is_still_refused_to_a_call_running_for_another() -> 
 
     with pytest.raises(OrgMismatch):                                          # a context of its own: the fixture's org is not ambient there
         await asyncio.get_running_loop().create_task(other_org(), context=contextvars.Context())
+
+
+@pytest.mark.asyncio
+async def test_a_policy_shared_by_two_event_loops_gives_each_loop_a_task_of_its_own() -> None:
+    import threading
+
+    policy = OwnLeafPolicy(FakeRun([{"placed": False, "note": None}, {"placed": True, "note": None}]), wait=5, poll=0.01)
+    errors: list[BaseException] = []
+    started, release = threading.Event(), threading.Event()
+
+    async def other_loop() -> None:
+        with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+            started.set()
+            await policy.before_first_write(ORG)
+
+    def run_other() -> None:
+        try:
+            asyncio.run(other_loop())
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            release.set()
+
+    first = asyncio.ensure_future(policy.before_first_write(ORG))                  # this loop's task is pending when the other loop asks
+    await asyncio.sleep(0)
+    t = threading.Thread(target=run_other)
+    t.start()
+    await asyncio.get_running_loop().run_in_executor(None, release.wait, 10)
+    t.join()
+    await first
+    assert errors == [] and {k[0] for k in policy._asking} <= {asyncio.get_running_loop()}
+
+
+@pytest.mark.asyncio
+async def test_the_wait_counts_the_request_and_cuts_a_slow_call_at_the_deadline() -> None:
+    class Slow(FakeRun):
+        async def run(self, fn, **opts) -> object:
+            await asyncio.sleep(5)                                                # a request that outlasts the whole wait
+            return await super().run(fn, **opts)
+
+    policy = OwnLeafPolicy(Slow([{"placed": True, "note": None}]), wait=0.1, poll=0.01)
+    t0 = asyncio.get_running_loop().time()
+    with pytest.raises(PgVectorError, match="placement did not finish"):
+        await policy.before_first_write(ORG)
+    assert asyncio.get_running_loop().time() - t0 < 1
