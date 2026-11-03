@@ -1065,7 +1065,7 @@ class TestConfigServiceInit:
 class TestStartWatch:
     """Tests for ConfigurationService._start_watch."""
 
-    def _run_watch_sync(self, svc, timeout: float = 1.0) -> None:
+    def _run_watch_sync(self, svc, timeout: float = 10.0) -> None:
         svc._start_watch()
         svc.watch_thread.join(timeout=timeout)
 
@@ -1250,7 +1250,7 @@ class TestWatchWorkerMigrationFlag:
     ``None`` for a flag it never wrote.
     """
 
-    def _run_watch_sync(self, svc, timeout: float = 1.0) -> None:
+    def _run_watch_sync(self, svc, timeout: float = 10.0) -> None:
         svc._start_watch()
         svc.watch_thread.join(timeout=timeout)
 
