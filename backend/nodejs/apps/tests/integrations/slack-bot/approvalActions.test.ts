@@ -187,11 +187,23 @@ describe('slack-bot/approvalActions', () => {
       });
       const sending = client.chat.update.firstCall.args[0];
       expect(sending).to.deep.include({ channel: 'C1', ts: '100.2' });
-      expect(sending.blocks.map((b: AnyBlock) => b.type)).to.deep.equal(['header', 'section', 'context']);
+      // The call stays as the record; the status line and the buttons give way to the receipt.
+      expect(sending.blocks.map((b: AnyBlock) => b.block_id ?? b.type)).to.deep.equal(['header', 'approval_meta', 'approval_status']);
       expect(sending.blocks[2].elements[0].text).to.equal('Sending your answer…');
       expect(client.chat.update.firstCall.calledBefore(resumeApproval.firstCall)).to.equal(true);
       expect(client.chat.update.calledTwice).to.equal(true);
       expect(lastText(client.chat.update)).to.equal('Approved by <@U1>');
+    });
+
+    it('keeps the call and its Details on the receipt, and drops the lines of a card posted before its blocks had ids', async () => {
+      const card = buildApprovalCard(approval({ arguments: { summary: 'Fix login', cloudId: 'c-1' } }), 'U1', 'T1');
+      // Slack names an unnamed block with a random id when it sends the message back.
+      const legacy = { ...card, blocks: [...card.blocks, { type: 'context', block_id: 'x1Y2', elements: [{ type: 'mrkdwn', text: 'old' }] }] };
+      const client = fakeClient({ U1: OWNER }, legacy as typeof card);
+      await press('approval_allow', 'U1', client, { card: legacy as typeof card });
+      expect(client.chat.update.lastCall.args[0].blocks.map((b: AnyBlock) => b.block_id ?? b.type)).to.deep.equal([
+        'header', 'approval_document', 'approval_details', 'approval_status',
+      ]);
     });
 
     it('shows "Expired" when the backend says so', async () => {
@@ -283,6 +295,7 @@ describe('slack-bot/approvalActions', () => {
       const opened = await openModal(client);
       expect(opened.trigger_id).to.equal('trig-1');
       expect(opened.view.callback_id).to.equal('approval_feedback');
+      expect([opened.view.title.text, opened.view.submit.text]).to.deep.equal(['Suggest a change', 'Send suggestion']);
       expect(opened.view.blocks[0].element).to.deep.include({ multiline: true, max_length: 2000 });
       expect(resumeApproval.called).to.equal(false);
 

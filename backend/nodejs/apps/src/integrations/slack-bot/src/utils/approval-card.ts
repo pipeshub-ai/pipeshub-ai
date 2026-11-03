@@ -1,5 +1,14 @@
 import type { types } from '@slack/bolt';
 
+import {
+  approvalLayout,
+  approvalProduct,
+  epochSeconds,
+  toolLabel,
+  valueText,
+  type ApprovalField,
+} from './approval-fields';
+
 type KnownBlock = types.KnownBlock;
 type Button = types.Button;
 
@@ -102,36 +111,83 @@ export function parseApprovalButtonValue(
   }
 }
 
+/** Block ids the card's answer replaces; the rest of the card stays as the record. */
+export const APPROVAL_STATUS_BLOCK = 'approval_status';
+export const APPROVAL_ACTIONS_BLOCK = 'approval_actions';
+export const KEPT_CONTEXT_BLOCKS: ReadonlySet<string> = new Set(['approval_source', 'approval_meta', 'approval_details']);
+
+const BODY_MAX_CHARS = 1500;
+const LINE_MAX_CHARS = 1000;
+// The server's closing words for a turn that stopped on a card (Python `tool_approvals.WAITING_PREFIX`).
+const WAITING_LINE = /Waiting for your approval to run [^\n]*\.\s*$/;
+
 /**
- * Every argument the call will run with, as many as fit in one section; the
- * card never hides what is being approved without saying so.
+ * The answer without the server's closing "Waiting for your approval to run …":
+ * the card above it says that already, with the status line and the buttons.
+ * The space before it stays, so a streamed answer never gets shorter.
  */
-function argumentDetails(approval: ToolApprovalDetails): string {
+export function withoutWaitingLine(text: string): string {
+  return text.replace(WAITING_LINE, '');
+}
+
+const context = (blockId: string, ...texts: string[]): types.ContextBlock => ({
+  type: 'context',
+  block_id: blockId,
+  elements: texts.map((text) => ({ type: 'mrkdwn' as const, text })),
+});
+
+/**
+ * The call as the thing it makes, in the web card's regions: who it goes
+ * to, the headline in bold and the body as text in one section; the other
+ * settings as one line; ids and nested values on a Details line. Every set
+ * argument is on the card, cut only to fit, and a cut says so.
+ */
+function documentBlocks(approval: ToolApprovalDetails): KnownBlock[] {
   if (approval.arguments === null) {
     const preview = approval.argumentsPreview ?? '';
-    if (preview === '') return '';
+    if (preview === '') return [];
     const shown = plain(preview, SECTION_MAX_CHARS - MORE_LINE_RESERVE);
-    return shown.length < plain(preview).length
-      ? `${shown}\n_${SEE_EVERYTHING}_`
-      : shown;
+    const text = shown.length < plain(preview).length ? `${shown}\n_${SEE_EVERYTHING}_` : shown;
+    return [{ type: 'section', block_id: 'approval_document', text: { type: 'mrkdwn', text } }];
   }
-  const entries = Object.entries(approval.arguments);
-  const lines: string[] = [];
-  let used = 0;
-  let valueCut = false;
-  for (const [key, value] of entries) {
-    const text = typeof value === 'string' ? value : JSON.stringify(value);
-    const shownValue = plain(text, ARGUMENT_VALUE_MAX_CHARS);
-    const line = `*${plain(key, ARGUMENT_KEY_MAX_CHARS)}:* ${shownValue}`;
-    if (used + line.length + 1 > SECTION_MAX_CHARS - MORE_LINE_RESERVE) break;
-    if (shownValue.length < plain(text).length) valueCut = true;
-    lines.push(line);
-    used += line.length + 1;
+  const layout = approvalLayout(approval.arguments, approval.inputSchema);
+  let cut = false;
+  const show = (value: unknown, max: number, name = ''): string => {
+    const seconds = epochSeconds(name, value);
+    if (seconds !== null) return `<!date^${String(seconds)}^{date_short_pretty} {time}|${new Date(seconds * 1000).toUTCString()}>`;
+    const text = valueText(value);
+    const shown = plain(text, max);
+    if (shown.length < plain(text).length) cut = true;
+    return shown;
+  };
+  const pair = (f: ApprovalField, max = ARGUMENT_VALUE_MAX_CHARS) =>
+    `${plain(f.label, ARGUMENT_KEY_MAX_CHARS)}: ${show(f.value, max, f.name)}`;
+  const lines = [
+    ...layout.recipients.map((f) => pair(f, LINE_MAX_CHARS)),
+    ...(layout.headline ? [`*${show(layout.headline.value, LINE_MAX_CHARS).replace(/\*/g, '')}*`] : []),
+    // A label only tells several bodies apart.
+    ...layout.body.map((f) =>
+      layout.body.length > 1 ? `_${plain(f.label, ARGUMENT_KEY_MAX_CHARS)}_\n${show(f.value, BODY_MAX_CHARS / 2)}` : show(f.value, BODY_MAX_CHARS),
+    ),
+  ];
+  const blocks: KnownBlock[] = [];
+  if (lines.length > 0) {
+    blocks.push({ type: 'section', block_id: 'approval_document', text: { type: 'mrkdwn', text: lines.join('\n') } });
   }
-  const hidden = entries.length - lines.length;
-  if (hidden > 0) lines.push(`_+${String(hidden)} more. ${SEE_EVERYTHING}_`);
-  else if (valueCut) lines.push(`_${SEE_EVERYTHING}_`);
-  return lines.join('\n');
+  if (layout.meta.length > 0) {
+    blocks.push(context('approval_meta', truncate(layout.meta.map((f) => pair(f)).join(' · '), SECTION_MAX_CHARS)));
+  }
+  const details = layout.details.map((f) => pair(f)).join(' · ');
+  if (details !== '' || cut) {
+    blocks.push(
+      context(
+        'approval_details',
+        ...(details !== '' ? ['*Details*', truncate(details, SECTION_MAX_CHARS)] : []),
+        ...(cut ? [`_${SEE_EVERYTHING}_`] : []),
+      ),
+    );
+  }
+  return blocks;
 }
 
 export function buildApprovalCard(
@@ -140,15 +196,13 @@ export function buildApprovalCard(
   teamId: string,
 ): { text: string; blocks: KnownBlock[] } {
   // The tool's own title, as the web card shows it; displayName is past tense.
-  const toolTitle = approval.toolTitle?.trim() ?? '';
-  const name = toolTitle !== '' ? toolTitle : approval.toolName;
-  const title = `${name} on ${approval.serverName}`;
-  const subtitle = approval.argsSummary?.trim() ?? '';
-  const details = argumentDetails(approval);
+  const tool = toolLabel(approval.toolName, approval.toolTitle);
+  const product = approvalProduct(approval.toolName, approval.serverName);
+  const title = tool.toLowerCase().includes(product.toLowerCase()) ? tool : `${tool} in ${product}`;
   const expiresAtSeconds = Math.floor(approval.expiresAt / 1000);
-  const notes = [
-    `Waiting on <@${requesterSlackId}>`,
-    `<!date^${String(expiresAtSeconds)}^Expires {time}|Expires ${new Date(approval.expiresAt).toUTCString()}>`,
+  const status = [
+    `Waiting on <@${requesterSlackId}> to answer`,
+    `<!date^${String(expiresAtSeconds)}^Expires at {time}|Expires at ${new Date(approval.expiresAt).toUTCString()}>`,
     ...(approval.kind === 'destructive' ? ["Can't be undone"] : []),
   ];
   const buttonValue: ApprovalButtonValue = {
@@ -170,15 +224,17 @@ export function buildApprovalCard(
     value,
     ...(style !== undefined ? { style } : {}),
   });
+  // Left-aligned, so the yes leads; then the maybe, then the no (no confirm: a deny can be asked again).
   const actions: types.ActionsBlock = {
     type: 'actions',
+    block_id: APPROVAL_ACTIONS_BLOCK,
     elements: [
       button(
         APPROVAL_ALLOW_ACTION,
         'Approve',
         approval.kind === 'destructive' ? 'danger' : 'primary',
       ),
-      button(APPROVAL_CHANGE_ACTION, 'Change something else'),
+      button(APPROVAL_CHANGE_ACTION, 'Suggest a change'),
       button(APPROVAL_DENY_ACTION, 'Deny'),
     ],
   };
@@ -189,34 +245,9 @@ export function buildApprovalCard(
         type: 'header',
         text: { type: 'plain_text', text: truncate(title, HEADER_MAX_CHARS) },
       },
-      ...(subtitle !== ''
-        ? [
-            {
-              type: 'context' as const,
-              elements: [
-                {
-                  type: 'mrkdwn' as const,
-                  text: plain(subtitle, SECTION_MAX_CHARS),
-                },
-              ],
-            },
-          ]
-        : []),
-      ...(details !== ''
-        ? [
-            {
-              type: 'section' as const,
-              text: {
-                type: 'mrkdwn' as const,
-                text: details,
-              },
-            },
-          ]
-        : []),
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: notes.join(' · ') }],
-      },
+      ...(product !== approval.serverName ? [context('approval_source', plain(approval.serverName, ARGUMENT_KEY_MAX_CHARS))] : []),
+      ...documentBlocks(approval),
+      context(APPROVAL_STATUS_BLOCK, status.join(' · ')),
       actions,
     ],
   };
@@ -243,5 +274,5 @@ export function buildApprovalReceipt(
     // The feedback is capped at 2000, so the line stays under the 3000 limit.
     if (note !== undefined && note !== '') text += `: ${plain(note, 2500)}`;
   }
-  return [{ type: 'context', elements: [{ type: 'mrkdwn', text }] }];
+  return [context(APPROVAL_STATUS_BLOCK, text)];
 }

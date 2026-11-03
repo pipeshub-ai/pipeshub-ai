@@ -10,6 +10,7 @@ import type {
 import {
   APPROVAL_ALLOW_ACTION,
   APPROVAL_CHANGE_ACTION,
+  KEPT_CONTEXT_BLOCKS,
   APPROVAL_DENY_ACTION,
   buildApprovalReceipt,
   parseApprovalButtonValue,
@@ -103,10 +104,16 @@ export function resetApprovalGuardForTests(): void {
   answering.clear();
 }
 
-/** The card's header and details; its waiting line and buttons give way to a receipt. */
+/**
+ * The card's header and the call; its status line and buttons give way to a
+ * receipt. Slack gives an unnamed block a random id, so a context line stays
+ * only by one of the card's own names.
+ */
 function cardDetails(blocks: KnownBlock[]): KnownBlock[] {
-  return blocks.filter(
-    (block) => block.type !== 'actions' && block.type !== 'context',
+  return blocks.filter((block) =>
+    block.type === 'actions'
+      ? false
+      : block.type !== 'context' || KEPT_CONTEXT_BLOCKS.has(block.block_id ?? ''),
   );
 }
 
@@ -269,8 +276,8 @@ function feedbackModal(privateMetadata: string): types.ModalView {
     type: 'modal',
     callback_id: APPROVAL_FEEDBACK_VIEW,
     private_metadata: privateMetadata,
-    title: { type: 'plain_text', text: 'Change something else' },
-    submit: { type: 'plain_text', text: 'Send' },
+    title: { type: 'plain_text', text: 'Suggest a change' },
+    submit: { type: 'plain_text', text: 'Send suggestion' },
     close: { type: 'plain_text', text: 'Cancel' },
     blocks: [
       {
