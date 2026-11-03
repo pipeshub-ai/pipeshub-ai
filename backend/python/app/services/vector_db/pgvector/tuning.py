@@ -1,5 +1,5 @@
-"""The knobs of the search path. Every one has a type, a default, a range and an environment variable; a value that is missing, malformed
-or out of range falls back to the default with a warning, so a typo in a config never takes search down.
+"""The knobs of the search path. Every one has a type, a default, a range and an environment variable; a value that is missing is the default; one that is
+malformed or out of range is a startup error naming the variable (a typo, or a value meant as off, must not quietly become the default).
 
 Defaults are the provisional numbers of the design (dev-host measurements); ``pipeshub doctor`` style re-measurement on the target
 hardware replaces them by configuration, not by code.
@@ -137,9 +137,8 @@ class Tuning:
                 raise ValueError(f"{var} must be {'a whole number' if isinstance(default, int) else 'a finite number'}, got {raw!r}")
             if isinstance(default, int):
                 value = int(value)
-            if not lo <= value <= hi:
-                logger.warning("pgvector search setting %s=%r is outside %s..%s; using %s", name, raw, lo, hi, default)
-                continue
+            if not lo <= value <= hi:        # not silently the default: a value meant as "off" (-1, 0) must not switch something on
+                raise ValueError(f"{var} must be between {lo} and {hi}, got {raw!r}")
             out[name] = value
         for name, default in _FLAGS.items():
             out[name] = parse_flag(f"PGVECTOR_{name.upper()}", data.get(name, os.getenv(f"PGVECTOR_{name.upper()}")), default=default)

@@ -115,7 +115,6 @@ def test_a_misspelt_search_switch_is_refused_and_a_valid_setting_is_read() -> No
     assert Tuning.from_dict({"fused_search": "off"}).fused_search is False
     assert Tuning.from_dict({"sampler_max_per_s": "12"}).sampler_max_per_s == 12
     assert Tuning.from_dict({"sampler_max_per_s": 12.0}).sampler_max_per_s == 12
-    assert Tuning.from_dict({"sampler_max_per_s": 10_000}).sampler_max_per_s == Tuning().sampler_max_per_s      # out of range: warned, default
 
 
 @pytest.mark.parametrize("bad", [12.9, "12.9", "twelve", "1e1x", "nan", "inf", [3]])
@@ -136,8 +135,37 @@ def test_an_unknown_placement_policy_is_refused() -> None:
         PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "placement": "owm_leaf"})
 
 
-def test_a_pool_size_below_one_is_one() -> None:
-    assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "pool_max": 0}).pool_max == 1
+@pytest.mark.parametrize("bad", [0, -3, "0", "many", [4], "2.5"])
+def test_a_pool_size_that_is_not_a_whole_number_of_at_least_one_is_a_startup_error_naming_it(bad) -> None:
+    with pytest.raises(ValueError, match="pool_max"):
+        PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "pool_max": bad})
+    assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "pool_max": "4"}).pool_max == 4
+    assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "max_size": 7}).pool_max == 7
+
+
+@pytest.mark.parametrize("key", ["placement_wait", "catalog_ttl"])
+@pytest.mark.parametrize("bad", ["", "soon", [3]])
+def test_an_empty_or_unreadable_number_of_seconds_is_an_error_naming_the_setting(key, bad) -> None:
+    with pytest.raises(ValueError, match=key):
+        PgVectorConfig.from_dict({"dsn": "postgresql://h/db", key: bad})
+
+
+@pytest.mark.parametrize("name", ["sampler_rate", "validate_floor", "h_slots"])
+@pytest.mark.parametrize("meant_as_off", [-1, 10**9, "-1"])
+def test_a_search_setting_outside_its_range_is_an_error_not_the_default(name, meant_as_off, monkeypatch) -> None:
+    from app.services.vector_db.pgvector.tuning import Tuning
+
+    with pytest.raises(ValueError, match=f"PGVECTOR_{name.upper()}"):
+        Tuning.from_dict({name: meant_as_off})
+    monkeypatch.setenv(f"PGVECTOR_{name.upper()}", str(meant_as_off))
+    with pytest.raises(ValueError, match=f"PGVECTOR_{name.upper()}"):
+        Tuning.from_dict(None)
+
+
+def test_zero_is_how_the_sampler_is_switched_off() -> None:
+    from app.services.vector_db.pgvector.tuning import Tuning
+
+    assert Tuning.from_dict({"sampler_rate": 0}).sampler_rate == 0
 
 
 def test_a_process_login_in_the_environment_beats_a_dsn_in_the_config_store(monkeypatch, caplog) -> None:
