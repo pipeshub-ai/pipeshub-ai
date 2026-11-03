@@ -171,38 +171,47 @@ async function verifyCustom(
     };
   }
   if (m.collection === 'oauthAgentRegistrations') {
-    // every agent registration the sweeper has not reached must be in PostgreSQL
+    // Every registration the sweeper has not reached must be in PostgreSQL with the same status: a sign-in revoked there and still
+    // consumed here would come back live if a rollback took this as "nothing written to PostgreSQL".
     const live = await db
       .collection('oauthAgentRegistrations')
       .find({ purgeAt: { $gt: new Date(Date.now() + 120_000) } } as never, {
-        projection: { _id: 1 },
+        projection: { _id: 1, status: 1 },
       })
       .toArray();
     const ids = live.map((d) => String(d._id).toLowerCase());
-    const have = new Set(
+    const pgStatus = new Map(
       await rt.jobs(
         async (_t, k) =>
           (
-            await k.query<{ id: string }>(
-              '/* pipeshub:verify.agent_registrations */ SELECT id FROM oauth.agent_registrations WHERE id = ANY($1::text[])',
+            await k.query<{ id: string; status: string }>(
+              '/* pipeshub:verify.agent_registrations */ SELECT id, status FROM oauth.agent_registrations WHERE id = ANY($1::text[])',
               [ids],
             )
-          ).rows.map((r) => r.id),
+          ).rows.map((r) => [r.id, r.status] as const),
         { write: false },
       ),
     );
-    const missing = ids.filter((i) => !have.has(i));
-    const diffs: DocDiff[] = missing.map((id) => ({
-      id,
-      kind: 'missing_in_pg',
-      detail: [],
-    }));
+    const diffs: DocDiff[] = [];
+    for (const d of live) {
+      const id = String(d._id).toLowerCase();
+      const there = pgStatus.get(id);
+      const here = typeof d.status === 'string' ? d.status : 'pending';
+      if (there === undefined)
+        diffs.push({ id, kind: 'missing_in_pg', detail: [] });
+      else if (there !== here)
+        diffs.push({
+          id,
+          kind: 'differs',
+          detail: [`status: ${here} in MongoDB, ${there} in PostgreSQL`],
+        });
+    }
     for (const d of diffs) scope.onDiff?.(m.collection, d);
     return {
       ...empty,
       sourceDocs: ids.length,
       comparedDocs: ids.length,
-      pgRows: have.size,
+      pgRows: pgStatus.size,
       diffs: diffs.slice(0, MAX_DIFFS_KEPT),
       diffCount: diffs.length,
     };

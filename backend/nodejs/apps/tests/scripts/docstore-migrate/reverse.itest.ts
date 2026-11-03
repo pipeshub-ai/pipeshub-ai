@@ -89,6 +89,20 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(back?.status).to.equal('revoked');
     });
 
+    it('a revoked agent sign-in is a PostgreSQL write: plain rollback refuses, and --reverse brings the revocation back', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const reg = (await sql("SELECT id FROM oauth.agent_registrations WHERE status = 'consumed' ORDER BY id LIMIT 1"))[0];
+      expect(reg, 'the fixture has a consumed registration').to.exist;
+      await sql("UPDATE oauth.agent_registrations SET status = 'revoked' WHERE id = $1", [reg.id]);
+      const refused = await run(['rollback']);
+      expect(refused.code).to.equal(1);
+      expect(refused.out.mode).to.equal('refused');
+      const r = await run(['rollback', '--reverse']);
+      expect(r.code, r.out.message).to.equal(0);
+      const back = await w.mongo.client.db(DB).collection<any>('oauthAgentRegistrations').findOne({ _id: new ObjectId(reg.id) });
+      expect(back?.status).to.equal('revoked');
+    });
+
     it('after the cut, the reverse follower writes application changes back and rollback --online makes MongoDB the store again', async () => {
       expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
       const r = await cut();
