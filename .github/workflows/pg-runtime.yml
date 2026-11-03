@@ -23,6 +23,8 @@ on:
       - 'backend/python/app/services/graph_db/postgres/**'
       - 'backend/python/app/services/graph_db/**'
       - 'backend/python/app/modules/code_graph/**'
+      - 'backend/python/app/models/entities.py'
+      - 'backend/python/app/utils/time_conversion.py'
       - 'backend/python/app/services/graph_db/graph_db_provider_factory.py'
       - 'backend/python/app/models/permission.py'
       - 'backend/python/tests/integration/graph_db/postgres/**'
