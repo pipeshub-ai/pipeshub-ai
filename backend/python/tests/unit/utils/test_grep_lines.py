@@ -200,6 +200,14 @@ def test_a_match_that_exists_only_because_the_line_was_cut_is_not_reported() -> 
     assert (matches, total, complete) == ([], 0, False)
 
 
+def test_a_lookahead_that_reads_past_the_cut_is_not_reported_but_a_plain_hit_before_it_is() -> None:
+    cut = "x" * (MAX_SCAN_CHARS - 4) + "foox" + " more text"
+    matches, total, _, complete = find_matches([{"data": cut}], _rx(r"foo(?=x$)"), context_lines=0, max_matches=5)
+    assert (matches, total, complete) == ([], 0, False)
+    matches, total, _, complete = find_matches([{"data": cut}], _rx("foo"), context_lines=0, max_matches=5)
+    assert (total, complete) == (1, False)
+
+
 async def test_a_request_that_waited_out_its_deadline_never_submits_the_record() -> None:
     import time
     from unittest.mock import patch
