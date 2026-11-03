@@ -485,3 +485,16 @@ class TestLeanReadHeader:
         lean_read_header(record)
 
         assert record["context_metadata"] == before
+
+    def test_an_id_that_starts_with_n_a_is_kept_whole(self) -> None:
+        record = _header_record()
+        record["context_metadata"] = record["context_metadata"].replace("External Parent ID: N/A", "External Parent ID: N/A-2025")
+
+        assert "External Parent ID: N/A-2025" in lean_read_header(record)["context_metadata"]
+
+    async def test_a_thread_read_leaves_out_the_same_lines(self) -> None:
+        read = await read_thread([_header_record(), _header_record()], max_chars=40_000)
+
+        for gone in ("Summary:", "Topics:", "Category:", "Connector ID: N/A", "MIME Type:"):
+            assert gone not in read["content"]
+        assert "Record ID: doc-1" in read["content"]

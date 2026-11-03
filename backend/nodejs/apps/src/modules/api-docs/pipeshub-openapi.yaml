@@ -53312,8 +53312,8 @@ paths:
         a `403`.
 
         **A connected app with a limit:** the rendered text names nothing
-        outside the limit beside the record. Its `External Parent ID` reads
-        `N/A` for a parent the limit leaves out, and a code file's `Path:`
+        outside the limit beside the record. A parent the limit leaves out is not named,
+        and a code file's `Path:`
         line is left out unless the limit covers the whole app. Linked
         records, related tables, a deal's orgs and products, and live Jira
         parent, epic, sub-task and linked-issue lines appear only for

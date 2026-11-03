@@ -62,7 +62,7 @@ _MODEL_WRITTEN_FIELDS = (
     "summary", "topics", "categories", "sub_category_level_1", "sub_category_level_2", "sub_category_level_3",
 )
 # Header lines that tell an API caller nothing it can use.
-_EMPTY_HEADER_LINE = re.compile(r"^(?:Connector ID: N/A|External Parent ID: N/A|MIME Type: .*)\n?", re.MULTILINE)
+_EMPTY_HEADER_LINE = re.compile(r"^(?:Connector ID: N/A|External Parent ID: N/A|MIME Type: .*)$\n?", re.MULTILINE)
 
 
 def lean_read_header(record: dict[str, Any]) -> dict[str, Any]:
@@ -429,7 +429,7 @@ async def read_thread(
     next_block = 0
     oversized = ""
     for position in range(start_record, total):
-        record = records[position]
+        record = lean_read_header(records[position])
         key = _record_key(record)
         offset = start_block if position == start_record else 0
         budget.begin_record(key)
