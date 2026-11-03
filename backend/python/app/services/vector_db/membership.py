@@ -63,7 +63,7 @@ from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
 from app.services.permissions.metrics import SCOPE_REFUSED, SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.projector import ScopeProjector
-from app.services.permissions.scope_fields import ScopeFields, Stamp
+from app.services.permissions.scope_fields import ScopeFields
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -133,7 +133,7 @@ _cv_scope: ContextVar[ScopeFields | None] = ContextVar("vector_scope_fields", de
 
 #: Marks a point whose scope fields must be recomputed (the projection failed, or the point's records changed under it): it
 #: has no exact stamp, so it stays on the legacy filter, and `version` 0 makes the back-fill redo it.
-STALE_SCOPE = ScopeFields(Stamp.LEGACY, version=0)
+STALE_SCOPE = ScopeFields.stale()
 
 
 def set_membership_context(
@@ -573,7 +573,8 @@ def records_of_state(state: VirtualRecordState) -> dict[str, str]:
 
 
 async def scope_fields_for_state(
-    graph_provider: IGraphDBProvider, state: VirtualRecordState, org_id: str, logger: logging.Logger | None = None
+    graph_provider: IGraphDBProvider, state: VirtualRecordState, org_id: str, logger: logging.Logger | None = None,
+    projector: ScopeProjector | None = None,
 ) -> ScopeFields:
     """The scope fields of the point a VRID's records stand for, computed from the graph (never from a viewer). Any
     failure, an incomplete read, or no records: `STALE_SCOPE`, which keeps the point on the legacy filter and is redone.
@@ -582,7 +583,7 @@ async def scope_fields_for_state(
     if not records or not state.complete:
         return STALE_SCOPE
     try:
-        projector = ScopeProjector(graph_provider.permission_stamp_graph())
+        projector = projector or ScopeProjector(graph_provider.permission_stamp_graph())
         fields, outcomes = await projector.project_virtual_record(org_id, records)
     except Exception as exc:
         SCOPE_STAMP_FAILED.inc("membership")
@@ -602,6 +603,30 @@ def scope_org_id() -> str | None:
     except (MissingOrgContext, SystemContextNotAllowed):
         SCOPE_STAMP_FAILED.inc("no_org")
         return None
+
+
+async def write_scope_fields(
+    vector_db, collections: Sequence[str], virtual_record_ids: Sequence[str], fields: ScopeFields, org_id: str | None  # noqa: ANN001
+) -> None:
+    """Write the scope keys (and only those) of the points of these virtual records. Matches this organisation's points when one is
+    known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields."""
+    must: dict[str, Any] = {"virtualRecordId": list(virtual_record_ids), **({"orgId": org_id} if org_id else {})}
+    filt = await vector_db.filter_collection(must=must)
+    for name in collections:
+        await vector_db.set_payload(name, fields.to_payload(), filt)
+
+
+async def mark_scope_stale(vector_db, locator: CollectionLocator, virtual_record_id: str, logger) -> None:  # noqa: ANN001
+    """With scope fields on, a sync that wrote nothing (no connector, no collection) must not leave a stamp that may be wrong: put the
+    stale marker on the points in every collection. Best effort; a failure is logged and the point keeps what it had."""
+    if not scope_fields_enabled():
+        return
+    try:
+        await write_scope_fields(vector_db, await locator.all_collections(fresh=True), [virtual_record_id], STALE_SCOPE, scope_org_id())
+    except Exception as exc:
+        SCOPE_STAMP_FAILED.inc("marker")
+        if logger is not None:
+            logger.error("could not mark the scope fields of %s stale: %s", virtual_record_id, type(exc).__name__)
 
 
 @asynccontextmanager
@@ -671,8 +696,8 @@ async def write_membership_batch_locked(
         payload[RECORD_GROUP_IDS_FIELD] = list(remaining_record_group_ids)
     if scope_fields_enabled():
         # the points lost records, so whatever they were stamped with may admit through a record that is gone; the next
-        # sync or the back-fill recomputes it
-        payload.update(STALE_SCOPE.to_payload())
+        # sync or the back-fill recomputes it. Written first, so a failure after it leaves the marker, never a stale stamp.
+        await write_scope_fields(vector_db, [collection_name], ordered, STALE_SCOPE, scope_org_id())
 
     filt = await vector_db.filter_collection(must={"virtualRecordId": ordered})
     # refresh: the connector purge re-reads the matched set after each write to
@@ -739,6 +764,7 @@ async def _sync_vector_membership_locked(
                 "connectorIds, which would blank existing membership",
                 virtual_record_id,
             )
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
         return None
 
     # Derived from the records just fetched, so under a strategy that splits by
@@ -752,22 +778,23 @@ async def _sync_vector_membership_locked(
                 "Skipping vector membership write for %s: resolved no collections",
                 virtual_record_id,
             )
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
         return None
 
     # The org comes first, outside any try: a missing one is a stale stamp (counted), never an unscoped read of the graph.
-    org_id = scope = None
     if scope_fields_enabled():
         org_id = scope_org_id()
         scope = await scope_fields_for_state(graph_provider, state, org_id, logger) if org_id else STALE_SCOPE
+        # First, and with the org in its filter: a failure after it leaves the new stamp beside the old membership, which the
+        # legacy filter reads as it always did; the membership write below keeps its filter exactly as it was.
+        await write_scope_fields(vector_db, collections, [virtual_record_id], scope, org_id)
     filt = await vector_db.filter_collection(
-        must={"orgId": org_id, "virtualRecordId": virtual_record_id} if org_id else {"virtualRecordId": virtual_record_id}
+        must={"virtualRecordId": virtual_record_id}
     )
     payload: dict[str, Any] = {
         CONNECTOR_IDS_FIELD: connector_ids,
         RECORD_GROUP_IDS_FIELD: record_group_ids,
     }
-    if scope is not None:
-        payload.update(scope.to_payload())
     # set_payload merges, so omitting the key leaves whatever root is already
     # there. Writing the array we resolved would replace a good root with an
     # empty one, and a root-scoped connector's records are then matched by
