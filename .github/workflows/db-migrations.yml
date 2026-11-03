@@ -8,6 +8,7 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/python/app/edition.py'
+      - 'scripts/assert_no_skips.py'
       - '.github/workflows/db-migrations.yml'
 
 permissions:
@@ -55,6 +56,7 @@ jobs:
           python -m db.lint
           python -m db.lib.vetted check db/versions/kernel/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/platform/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/graph/vetted/manifest.yaml
 
       - name: Empty database to heads, then the org isolation catalog check
         # python -m db.migrate exits 4 when kernel.rls_violations returns any row.
@@ -76,4 +78,15 @@ jobs:
         env:
           MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
           MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
-        run: python -m pytest -q
+        run: python -m pytest -q --junitxml="$RUNNER_TEMP/db-junit.xml"
+
+      - name: No unexpected skips
+        # The generated vetted-function suite skips the checks that do not apply to a function by design (a function with no organisation
+        # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or fewer cases than
+        # expected, or a graph suite that did not run, fails the job.
+        if: ${{ always() }}
+        run: |
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests 700 --expect-suite 'tests.test_graph=33' \
+            --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
+            --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
+            --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]'
