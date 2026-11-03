@@ -1584,7 +1584,9 @@
       "askedJustNow": "刚刚请求",
       "askedAgo_one": "{{count}} 分钟前请求",
       "askedAgo_other": "{{count}} 分钟前请求",
-      "chatDeleted": "该聊天已被删除。"
+      "chatDeleted": "该聊天已被删除。",
+      "details": "详细信息",
+      "needsApprovalFor": "需要你的批准：{{title}}"
     },
     "selectedAlone": "{{name}}（仅此项目）",
     "noConnectorsFound": "未找到连接器",

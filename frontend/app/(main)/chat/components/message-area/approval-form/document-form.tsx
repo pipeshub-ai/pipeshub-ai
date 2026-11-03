@@ -23,7 +23,9 @@ const blank = (v: unknown) => v === undefined || v === null || v === '' || (Arra
 export function DocumentForm({ fields, values, errors, onChange }: DocumentFormProps) {
   const { t } = useTranslation();
   const base = useId();
-  const layout = useMemo(() => documentLayout(fields), [fields]);
+  // Laid out by the values the form opened with, so a field never jumps region while it is typed in.
+  const [opened] = useState(values);
+  const layout = useMemo(() => documentLayout(fields, opened), [fields, opened]);
   const [moreOpen, setMoreOpen] = useState(false);
   const id = (field: FieldSpec) => `${base}-${field.name}`;
   const props = (field: FieldSpec) => ({
