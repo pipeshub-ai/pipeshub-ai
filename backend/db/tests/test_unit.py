@@ -460,3 +460,10 @@ def test_no_shipped_table_uses_the_lineage_class():
     found = [str(p.relative_to(versions)) for p in sorted(versions.rglob("*"))
              if p.suffix in (".sql", ".py") and use.search(p.read_text(encoding="utf-8"))]
     assert found == [], f"these revisions register the lineage class: {found}"
+
+
+def test_the_catalog_check_runs_with_jit_off():
+    # with JIT built in (the Debian/pgdg packages) the big catalog views compile for 10-30 s and save nothing
+    import inspect
+    src = inspect.getsource(migrate._report)
+    assert src.index('SET jit = off') < src.index('FROM kernel.rls_violations') < src.index('RESET jit')
