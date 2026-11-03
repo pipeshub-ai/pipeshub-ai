@@ -39,9 +39,13 @@ interface UseKbStreamUploadOptions {
 export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOptions) {
   const { t } = useTranslation();
 
+  /**
+   * Resolves `false` when a sign-out cancelled the upload: the caller must then do nothing
+   * more for it (a follow-up request would run in the next person's session).
+   */
   const uploadFiles = useCallback(
-    async (files: File[]): Promise<void> => {
-      if (files.length === 0) return;
+    async (files: File[]): Promise<boolean> => {
+      if (files.length === 0) return true;
 
       // SSE events correlate by file name, so duplicates would collapse
       // tracker rows. Keep only the last File for each name (matches the
@@ -70,7 +74,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
             ],
           })),
         );
-        return;
+        return true;
       }
 
       const uploadId = generateUploadId();
@@ -155,7 +159,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
       } finally {
         stopOnSessionEnd();
       }
-      if (upload.signal.aborted) return;
+      if (upload.signal.aborted) return false;
 
       // Never mark a row completed unless the server confirmed the batch
       // finished (`done`) with no error — a row whose terminal event was
@@ -182,6 +186,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
       useUploadStore.getState().finalizeSession(uploadId);
 
       if (anySuccess) onUploaded?.();
+      return true;
     },
     [getKbId, onUploaded, t],
   );

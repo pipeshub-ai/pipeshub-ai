@@ -43,8 +43,8 @@ export async function fetchToolCatalog(mcpEnabled: boolean): Promise<ToolCatalog
  * The tool catalog shared by the project settings picker and the project composer: one request
  * for both, reused for five minutes, so opening a project and then its chat is one round trip.
  */
-export function useToolCatalog(mcpEnabled: boolean): SWRResponse<ToolCatalog> {
-  const key: ToolCatalogKey = [SWR_NS.myToolCatalog, { mcpEnabled }];
+export function useToolCatalog(mcpEnabled: boolean, enabled = true): SWRResponse<ToolCatalog> {
+  const key: ToolCatalogKey | null = enabled ? [SWR_NS.myToolCatalog, { mcpEnabled }] : null;
   return useSWR(key, ([, params]: ToolCatalogKey) => fetchToolCatalog(params.mcpEnabled), SWR_POLICY.list5m);
 }
 
@@ -110,7 +110,8 @@ export function buildProjectChatScope(project: ProjectDetail, catalog: ToolCatal
  */
 export function useProjectScopeHydration(project: ProjectDetail | null): void {
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
-  const { data: catalog } = useToolCatalog(mcpEnabled);
+  // Plain chat (no project) has no tool allow-list to build, so it asks for nothing.
+  const { data: catalog } = useToolCatalog(mcpEnabled, project != null);
   const setProjectScope = useChatStore((s) => s.setProjectScope);
 
   useEffect(() => {

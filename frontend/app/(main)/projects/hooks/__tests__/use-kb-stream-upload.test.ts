@@ -225,15 +225,18 @@ describe('useKbStreamUpload', () => {
     const onUploaded = vi.fn();
     const hook = mountHook(() => useKbStreamUpload({ getKbId: vi.fn().mockResolvedValue('kb1'), onUploaded }));
 
-    let upload!: Promise<void>;
+    let upload!: Promise<boolean>;
     await act(async () => {
       upload = hook.current.uploadFiles([makeFile('a.txt')]);
     });
     clearSessionCache();
+    let finished: boolean | undefined;
     await act(async () => {
-      await upload;
+      finished = await upload;
     });
 
+    // Tells the caller, so it sends nothing more for this upload.
+    expect(finished).toBe(false);
     expect(signal?.aborted).toBe(true);
     expect(useUploadStore.getState().items).toEqual([]);
     expect(onUploaded).not.toHaveBeenCalled();
@@ -245,9 +248,11 @@ describe('useKbStreamUpload', () => {
       { event: 'done', data: {} },
     ];
     const hook = mountHook(() => useKbStreamUpload({ getKbId: vi.fn().mockResolvedValue('kb1') }));
+    let finished: boolean | undefined;
     await act(async () => {
-      await hook.current.uploadFiles([makeFile('a.txt')]);
+      finished = await hook.current.uploadFiles([makeFile('a.txt')]);
     });
+    expect(finished).toBe(true);
 
     // The finished upload no longer listens for the session end.
     clearSessionCache();

@@ -200,6 +200,23 @@ describe('useProjectScopeHydration', () => {
     useChatStore.getState().setProjectScope(null);
   });
 
+  it('asks for no catalog on plain chat (no project)', async () => {
+    renderHook(() => useProjectScopeHydration(null));
+    await settle();
+
+    expect(toolsetsApi.getAllMyToolsets).not.toHaveBeenCalled();
+    expect(mcpApi.getMyMcpServers).not.toHaveBeenCalled();
+  });
+
+  it('the project chat and the project settings picker still share one request', async () => {
+    toolsetsApi.getAllMyToolsets.mockResolvedValue(answer(['slack']));
+    renderHook(() => useProjectScopeHydration(project));
+    renderHook(() => useCatalog(true));
+    await settle();
+
+    expect(toolsetsApi.getAllMyToolsets).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes the knowledge scope at once and the tools when the catalog arrives', async () => {
     let finish!: (value: ReturnType<typeof answer>) => void;
     toolsetsApi.getAllMyToolsets.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
