@@ -29,15 +29,6 @@ const TOOLS: [string, string | undefined][] = [
   ['some_brand_new_tool', undefined],
 ];
 
-/** The dashboard's group label (ToolCallGroup in agent-activity.tsx). */
-function webGroupLabel(names: string[]): string {
-  if (names.every((name) => web.isSkillTool(name)))
-    return `Used ${String(names.length)} skills`;
-  if (names.every((name) => /search/i.test(name)))
-    return `Explored ${String(names.length)} searches`;
-  return `Ran ${String(names.length)} tools`;
-}
-
 /** The dashboard's group app tag (ToolCallGroup in agent-activity.tsx): untagged calls don't count. */
 function webGroupTag(names: string[]): string | undefined {
   const labels = [
@@ -67,7 +58,7 @@ describe('slack-bot tool display matches the dashboard', () => {
     });
   }
 
-  it('groups calls under the same label', () => {
+  it('tags a group of calls with the same app', () => {
     const bursts = [
       ['web_search', 'knowledgegraph__search', 'jira__search_issues'],
       ['load_skill', 'skill_search'],
@@ -78,7 +69,6 @@ describe('slack-bot tool display matches the dashboard', () => {
       ['mcp_jira_search_issues', 'web_search'],
     ];
     for (const names of bursts) {
-      expect(slack.toolGroupLabel(names)).to.equal(webGroupLabel(names));
       expect(slack.groupToolsetLabel(names)).to.equal(webGroupTag(names));
     }
   });

@@ -35,10 +35,6 @@ export function isWebTool(toolName: string | undefined): boolean {
   return !!toolName && WEB_TOOLS.has(toolName.replace(/^dynamic__/, ''));
 }
 
-export function isSearchLike(toolName: string | undefined): boolean {
-  return !!toolName && /search/i.test(toolName);
-}
-
 /** The app a tool belongs to, as the dashboard tags it ("Knowledgegraph", "MCP"). */
 export function extractToolsetLabel(
   toolName: string | undefined,
@@ -65,18 +61,6 @@ export function groupToolsetLabel(toolNames: string[]): string | undefined {
     ),
   ];
   return labels.length === 1 ? labels[0] : undefined;
-}
-
-/** A burst of tool calls with no text between them, labelled the way the dashboard groups them. */
-export function toolGroupLabel(toolNames: string[]): string {
-  const count = toolNames.length;
-  if (toolNames.every((name) => isSkillTool(name))) {
-    return `Used ${String(count)} skills`;
-  }
-  if (toolNames.every((name) => isSearchLike(name))) {
-    return `Explored ${String(count)} searches`;
-  }
-  return `Ran ${String(count)} tools`;
 }
 
 /** Drops any `{app}__` namespace prefix, splits on separators, title-cases. */

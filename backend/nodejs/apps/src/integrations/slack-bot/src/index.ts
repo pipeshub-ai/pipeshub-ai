@@ -935,6 +935,7 @@ async function processSlackMessage(
 
     function startAnswerSegment(): void {
       citationMarkers.checkpoint();
+      liveCitationRows = new Map();
       streamedBeforeSegment = answerTextStreamed;
       queuedStreamAppend = queuedStreamAppend
         .then(() => {
@@ -979,6 +980,7 @@ async function processSlackMessage(
       answerTextStreamed = streamedBeforeSegment;
       // The discarded call's numbers are free again, so [n] keeps matching the Sources list.
       citationMarkers.rollback();
+      liveCitationRows = new Map();
       pendingStreamText = "";
       if (!shown) {
         return;
@@ -1054,10 +1056,14 @@ async function processSlackMessage(
         conversationPersistPromise = persistConversationId(conversationId);
       },
       onCitations: (citations) => {
-        liveCitationRows = citationRows(
-          citations as SlackCitationLike[],
-          getFrontendBaseUrl(),
-        );
+        // A known citation keeps its link for the rest of the call: the backend clears them before a tool call.
+        liveCitationRows = new Map([
+          ...liveCitationRows,
+          ...citationRows(
+            citations as SlackCitationLike[],
+            getFrontendBaseUrl(),
+          ),
+        ]);
         if (pendingStreamText === "" || textSendQueued) {
           return;
         }

@@ -232,14 +232,16 @@ const MARKER_TOKEN = /(\d+):(\d+):(\d+)/g;
  * Streamed answer text with each citation placeholder (`refN`,
  * `https://refN.xyz`) as a clickable `[n]`.
  *
- * - Numbers go to distinct refs by first appearance, one counter per reply,
- *   so a number never stands for two refs.
+ * - Each distinct ref gets one number for the whole reply, given when its
+ *   first marker is shown, so a number never stands for two refs and the
+ *   shown numbers run 1, 2, 3 like the Sources list.
  * - The backend numbers each model call's citations the same way (by first
  *   appearance within that call) and refreshes them while the call streams,
  *   so a marker's link is the live citation at its place within the call.
  * - `mark()` leaves a token per marker; `resolve()` turns tokens into links
  *   once their citation is known, and holds the text from the first unknown
- *   one, so no broken or placeholder link is sent.
+ *   one, so no broken or placeholder link is sent. A marker whose link never
+ *   came is left out at the end rather than shown as a number with no source.
  * - `checkpoint()` when a model call's text starts and `rollback()` when the
  *   backend discards that call free the numbers it took.
  * - `sources()` lists the markers actually shown, so the numbers match.
@@ -249,12 +251,16 @@ export class CitationMarkers {
   private saved = new Map<string, number>();
   private shown = new Map<number, SlackSourceRow>();
   private savedShown = new Map<number, SlackSourceRow>();
+  /** Each ref's number as shown, by its marker number. */
+  private display = new Map<number, number>();
+  private savedDisplay = new Map<number, number>();
   private callRefs: string[] = [];
   private call = 0;
 
   checkpoint(): void {
     this.saved = new Map(this.numbers);
     this.savedShown = new Map(this.shown);
+    this.savedDisplay = new Map(this.display);
     this.callRefs = [];
     this.call += 1;
   }
@@ -262,6 +268,7 @@ export class CitationMarkers {
   rollback(): void {
     this.numbers = new Map(this.saved);
     this.shown = new Map(this.savedShown);
+    this.display = new Map(this.savedDisplay);
     this.callRefs = [];
     this.call += 1;
   }
@@ -312,8 +319,10 @@ export class CitationMarkers {
       const n = Number(match[1]);
       const place = Number(match[2]);
       const call = Number(match[3]);
+      const known = this.display.get(n);
       const row =
-        this.shown.get(n) ?? (call === this.call ? rows.get(place) : undefined);
+        (known === undefined ? undefined : this.shown.get(known)) ??
+        (call === this.call ? rows.get(place) : undefined);
       if (!row && !final && call === this.call) {
         return [
           spaceAdjacentMarkers(out + text.slice(from, match.index)),
@@ -322,10 +331,13 @@ export class CitationMarkers {
       }
       out += text.slice(from, match.index);
       if (row) {
-        this.shown.set(n, row);
-        out += linkedCitationMarker(n, row.url);
+        const shownAs = known ?? this.display.size + 1;
+        this.display.set(n, shownAs);
+        this.shown.set(shownAs, row);
+        out += linkedCitationMarker(shownAs, row.url);
       } else {
-        out += `[${String(n)}]`;
+        // No link ever came for it: a bare number would match no source.
+        out = out.replace(/[ \t]+$/, '');
       }
       from = match.index + match[0].length;
     }
