@@ -91,5 +91,27 @@ describe('slack-bot/utils/agui-stream', () => {
 
       expect(plan.flushReasoning()?.output).to.equal('Check the deploy log.');
     });
+
+    it('skips citation snapshots of the discarded call until the one marked /discarded', () => {
+      const onCitations = sinon.spy();
+      const handle = createSlackAGUIEventHandler({ onCitations });
+      const cites = (value: unknown[], discarded = false) => frame('STATE_DELTA', {
+        runId: 'root',
+        delta: [{ op: 'replace', path: '/citations', value }, ...(discarded ? [{ op: 'replace', path: '/discarded', value: true }] : [])],
+      });
+      handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+      handle(cites(['stale']));
+      handle(cites([], true));
+      handle(cites(['fresh']));
+      expect(onCitations.args.map((a) => a[0])).to.deep.equal([[], ['fresh']]);
+    });
+
+    it('passes a blocked call\'s reason, sent as its content, as its summary', () => {
+      const onToolResult = sinon.spy();
+      const handle = createSlackAGUIEventHandler({ onToolResult });
+      handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 't1', toolCallName: 'jira_create' }));
+      handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 't1', status: 'blocked', content: 'Declined by the user.' }));
+      expect(onToolResult.lastCall.args[4]).to.deep.include({ summary: 'Declined by the user.' });
+    });
   });
 });
