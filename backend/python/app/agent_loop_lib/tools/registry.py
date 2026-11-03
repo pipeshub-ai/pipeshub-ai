@@ -115,6 +115,10 @@ class ToolRegistry:
         # synchronous `setdefault`, so creating the lock itself can't race.
         self._materialize_locks: dict[str, asyncio.Lock] = {}
         self._deferrals: dict[str, ToolDeferral] = {}
+        # Callable by exact name, never listed: no schema, no toolset, no
+        # search hit. A retired tool name kept for calls already written
+        # against it (saved agents, cached plans); see `register_hidden_tool`.
+        self._hidden_by_name: dict[str, Tool] = {}
 
     # ---- registration ----------------------------------------------------
 
@@ -149,6 +153,16 @@ class ToolRegistry:
         self._path_by_name[tool.name] = tool.path
         if extra_tags:
             self._extra_tags_by_path[tool.path] = extra_tags
+
+    def register_hidden_tool(self, tool: Tool) -> None:
+        """Make ``tool`` callable by its exact name without ever offering it:
+        it is in no schema list, toolset, search or ``names()``, and ``has``
+        is False for it, so nothing grants or shows it. A name already
+        registered as a listed tool wins over a hidden one."""
+        _validate_path(tool.path)
+        if tool.name in self._path_by_name or tool.name in self._hidden_by_name:
+            raise DuplicateToolNameError(tool.name)
+        self._hidden_by_name[tool.name] = tool
 
     def register_tool_if_absent(self, tool: Tool, *, extra_tags: tuple[Tag, ...] = ()) -> bool:
         """Idempotent `register_tool`: a no-op returning `False` if
@@ -352,11 +366,16 @@ class ToolRegistry:
     def resolve_by_name(self, name: str) -> Tool:
         path = self._path_by_name.get(name)
         if path is None:
+            if name in self._hidden_by_name:
+                return self._hidden_by_name[name]
             raise ToolNotFoundError(name)
         return self._tools_by_path[path]
 
     def path_for_name(self, name: str) -> str | None:
-        return self._path_by_name.get(name)
+        path = self._path_by_name.get(name)
+        if path is None and name in self._hidden_by_name:
+            return self._hidden_by_name[name].path
+        return path
 
     def has(self, name: str) -> bool:
         return name in self._path_by_name
@@ -366,6 +385,8 @@ class ToolRegistry:
 
     def tags_for_name(self, name: str) -> tuple[Tag, ...]:
         path = self._path_by_name.get(name)
+        if path is None and name in self._hidden_by_name:
+            return tuple(self._hidden_by_name[name].tags)
         return self.tags_for(path) if path is not None else ()
 
     def expand_tool_names(self, tool_names: list[str]) -> list[str]:
