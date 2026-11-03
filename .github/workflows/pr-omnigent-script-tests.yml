@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   helper-tests:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Omnigent helper tests
     runs-on: ubuntu-latest
     steps:

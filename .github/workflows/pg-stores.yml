@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   stores:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

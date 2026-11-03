@@ -30,7 +30,7 @@ jobs:
   # Which of the jobs below this pull request's changes can affect
   # (scripts/pr_changes.py). Every other event runs them all.
   changes:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -54,7 +54,7 @@ jobs:
     # Self-hosted runner: never run a fork's code on it (same guard as published-hub-smoke.yml).
     # Skipped when the pull request changes only docs, which the stack never reads.
     if: >-
-      (github.event_name != 'pull_request' || github.event.label.name == '/run-checks')
+      (github.event_name != 'pull_request' || github.event.label.name == 'run-checks')
       && needs.changes.outputs.e2e_smoke == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb

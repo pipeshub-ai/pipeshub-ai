@@ -54,7 +54,7 @@ jobs:
   # Which of the jobs below this pull request's changes can affect
   # (scripts/pr_changes.py). Every other event runs them all.
   changes:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -76,7 +76,7 @@ jobs:
 
   nodejs-unit-tests:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.node_unit == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.node_unit == 'true') }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -146,7 +146,7 @@ jobs:
   python-unit:
     name: python-unit (${{ matrix.shard }})
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.python_unit == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.python_unit == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -275,7 +275,7 @@ jobs:
     needs: [changes, python-unit]
     # Still runs when a shard failed: the coverage result is a separate question,
     # and python-unit-tests fails on the shard either way.
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (!cancelled() && needs.changes.outputs.python_unit == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (!cancelled() && needs.changes.outputs.python_unit == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -340,7 +340,7 @@ jobs:
   # change. Structural only — no model call, no network, no API key.
   python-agent-evals:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.python_unit == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.python_unit == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -391,7 +391,7 @@ jobs:
   # pinned packages staying published.
   python-integration-offline:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.python_unit == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.python_unit == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -435,7 +435,7 @@ jobs:
   # required status check keeps one name however the shards change.
   python-unit-tests:
     needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline]
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (always() && needs.changes.outputs.python_unit == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (always() && needs.changes.outputs.python_unit == 'true') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -453,7 +453,7 @@ jobs:
     # proves the MemoryDB-readiness refactor (R1/R17) against a live cluster on
     # every PR that touches Redis code, not just nightly/manual integration runs.
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.redis_cluster == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.redis_cluster == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   integration-suite-guards:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: integration-suite-guards
     runs-on: ubuntu-latest
     timeout-minutes: 30

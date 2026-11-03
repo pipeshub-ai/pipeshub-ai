@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   pg-runtime:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

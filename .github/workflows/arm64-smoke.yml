@@ -45,7 +45,7 @@ env:
 
 jobs:
   slim:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Build and start slim (arm64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45

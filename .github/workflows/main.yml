@@ -18,7 +18,7 @@ jobs:
   # Which of the jobs below this pull request's changes can affect
   # (scripts/pr_changes.py). Every other event runs them all.
   changes:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -39,7 +39,7 @@ jobs:
 
   validate-backend:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.node_build == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.node_build == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -85,7 +85,7 @@ jobs:
 
   validate-frontend:
     needs: changes
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.frontend == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -139,7 +139,7 @@ jobs:
           npm run build
 
   ruff-lint-pr:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
 
     steps:
@@ -188,7 +188,7 @@ jobs:
           echo "$CHANGED_TESTS" | xargs ruff check --select F811 --output-format=concise
 
   pyright-type-check-pr:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
 
     steps:
@@ -232,7 +232,7 @@ jobs:
           fi
 
   validate-docker-compose:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
 
     steps:
@@ -281,7 +281,7 @@ jobs:
         run: bash deployment/docker-compose/tests/entrypoint_ownership_test.sh
 
   workflow-lint:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Lint GitHub Actions workflows
     runs-on: ubuntu-latest
     steps:
@@ -320,7 +320,7 @@ jobs:
         run: actionlint -color
 
   connector-coverage:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Connector integration coverage
     runs-on: ubuntu-latest
     steps:

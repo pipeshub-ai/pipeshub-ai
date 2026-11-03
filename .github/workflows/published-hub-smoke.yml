@@ -47,7 +47,7 @@ jobs:
   slim:
     name: slim (Hub slim)
     if: >-
-      (github.event_name != 'pull_request' || github.event.label.name == '/run-checks')
+      (github.event_name != 'pull_request' || github.event.label.name == 'run-checks')
       && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","slim"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -77,7 +77,7 @@ jobs:
   full:
     name: full (Hub latest)
     if: >-
-      (github.event_name != 'pull_request' || github.event.label.name == '/run-checks')
+      (github.event_name != 'pull_request' || github.event.label.name == 'run-checks')
       && github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","full"]'), github.event.inputs.profiles))
     # 4 CPU is the installer floor. Full adds Kafka + Zookeeper on the same
@@ -109,7 +109,7 @@ jobs:
   eval:
     name: eval (Hub slim)
     if: >-
-      (github.event_name != 'pull_request' || github.event.label.name == '/run-checks')
+      (github.event_name != 'pull_request' || github.event.label.name == 'run-checks')
       && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","eval"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
@@ -139,7 +139,7 @@ jobs:
   arango:
     name: slim on ArangoDB (Hub slim)
     if: >-
-      (github.event_name != 'pull_request' || github.event.label.name == '/run-checks')
+      (github.event_name != 'pull_request' || github.event.label.name == 'run-checks')
       && github.event_name != 'pull_request'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","arango"]'), github.event.inputs.profiles))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb

@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   dependency-review:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Dependency review
     runs-on: ubuntu-latest
     permissions:

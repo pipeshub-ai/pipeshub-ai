@@ -1,6 +1,6 @@
 name: run-checks label
 
-# Pull request CI runs only when someone adds the `/run-checks` label. Each CI
+# Pull request CI runs only when someone adds the `run-checks` label. Each CI
 # workflow starts on that `labeled` event; this one removes the label straight
 # away so adding it again re-runs CI on the latest commit. A label removed with
 # GITHUB_TOKEN starts no workflow, so the removal cancels nothing.
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   remove-label:
-    if: github.event.label.name == '/run-checks'
+    if: github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -21,4 +21,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-        run: gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label '/run-checks'
+        run: gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label 'run-checks'

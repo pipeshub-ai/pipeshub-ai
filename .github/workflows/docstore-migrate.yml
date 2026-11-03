@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   migrate:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
     runs-on: ubuntu-24.04
     timeout-minutes: 60

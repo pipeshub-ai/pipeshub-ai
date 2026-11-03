@@ -49,7 +49,7 @@ env:
 
 jobs:
   oracle:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -81,7 +81,7 @@ jobs:
           pytest tests/permissions -m "not integration" -v -rx
 
   graph:
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (github.event_name != 'schedule') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (github.event_name != 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     services:
@@ -167,7 +167,7 @@ jobs:
           if-no-files-found: ignore
 
   nightly:
-    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == 'run-checks') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:

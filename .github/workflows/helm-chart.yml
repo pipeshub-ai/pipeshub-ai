@@ -41,7 +41,7 @@ env:
 
 jobs:
   check:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Lint and validate every configuration
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -78,7 +78,7 @@ jobs:
         run: bash deployment/helm/tests/check_chart.sh
 
   install:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     name: Install on kind (${{ matrix.variant }})
     needs: check
     runs-on: ubuntu-latest

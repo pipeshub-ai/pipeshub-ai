@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'
     uses: ./.github/workflows/electron-build-reusable.yml
     with:
       targets: '["linux"]'
