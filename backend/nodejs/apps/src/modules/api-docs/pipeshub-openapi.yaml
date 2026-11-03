@@ -247,9 +247,11 @@ tags:
       project.
 
       Projects are a Labs feature. While an admin has **Enable Projects**
-      turned off, every `/projects` route answers `403`, as do starting a
-      chat with a `projectId` and moving a chat into a project; an existing
-      project chat keeps answering, without its project's context.
+      turned off, every `/projects` route answers a signed-in caller with
+      `403`, as do starting a chat with a `projectId` and moving a chat into
+      a project; an existing project chat keeps answering, without its
+      project's context. A caller who is not signed in gets `401` first,
+      whatever the switch says.
 
       Name, description and instruction lengths count UTF-16 code units, the
       way a browser's `maxLength` does, so an emoji counts as two characters.
@@ -9395,6 +9397,11 @@ components:
             duration:
               type: integer
               minimum: 0
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -9428,6 +9435,11 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentStreamCreateConversationRequest:
       allOf:
         - $ref: '#/components/schemas/AgentCreateConversationRequest'
@@ -10007,6 +10019,11 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentAddMessageStreamRequest:
       allOf:
         - $ref: '#/components/schemas/AgentAddMessageRequest'
@@ -12535,6 +12552,11 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        searchDegraded:
+          type: boolean
+          description: |
+            Present (`true`) only when the search store answered from a partial search.
+            The results are valid but may be incomplete.
         searchIncomplete:
           type: string
           description: |
@@ -16082,6 +16104,7 @@ components:
           `result` is `{ conversation, recordsUsed, meta }` — the updated
           conversation plus request metadata after the regenerated response
           is persisted.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
           lookup failures, unauthorized conversation access, and regenerate
           rule failures such as "not the last message" are reported here.
@@ -16134,6 +16157,7 @@ components:
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
 
@@ -16191,6 +16215,7 @@ components:
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16251,6 +16276,7 @@ components:
           `{ conversation, recordsUsed, meta }`.
           `recordsUsed` is the count of citations attached to the new
           assistant message.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16308,6 +16334,8 @@ components:
         `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+        Optional `result.meta.searchDegraded` (`true`) is present on `RUN_FINISHED` only when a search behind the
+        answer was answered from a partial search.
       properties:
         event:
           type: string
@@ -16357,6 +16385,7 @@ components:
           parsed, citations are saved, and the updated conversation is
           persisted. The gateway emits `{ type, result }`; `result` carries
           `{ conversation, recordsUsed, meta }`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired for runtime failures after the stream has
           already started, including conversation lookup failures, upstream
           AI startup failures, save failures, and stream transport errors.
@@ -23528,6 +23557,11 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     StoredAIModelsConfig:
       type: object
       additionalProperties: false
@@ -24007,6 +24041,217 @@ components:
         $ref:
           type: string
           example: '#/components/responses/XssRejected'
+    EntityType:
+      type: string
+      description: Kind of knowledge-graph entity.
+      enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
+    EntityRecordDate:
+      type: object
+      description: >-
+        The one date shown for a record, under the key that says what it is: `modified` (last change in the source),
+        `dated` (the document's own date), `fileModified` (the file's last change) or `uploaded` (when it was added).
+        Absent when the record has no date. The same shape in `POST /search/entities` and `POST /search/entities/neighbors`.
+      properties:
+        modified:
+          type: string
+          example: '2026-04-30'
+        dated:
+          type: string
+          example: '2026-04-30'
+        fileModified:
+          type: string
+          example: '2026-04-30'
+        uploaded:
+          type: string
+          example: '2026-04-30'
+    EntitySearchRequest:
+      type: object
+      description: Request body for `POST /search/entities`.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: A name or phrase.
+        entityTypes:
+          type: array
+          maxItems: 10
+          description: Only these kinds. Leave out for all.
+          items:
+            $ref: '#/components/schemas/EntityType'
+        namedEntityKinds:
+          type: array
+          maxItems: 10
+          description: For `named_entity`, only these kinds, such as `person` or `organization`.
+          items:
+            type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 25
+          default: 10
+          description: Most entities to return.
+    EntitySearchResponse:
+      type: object
+      description: Result of `POST /search/entities`.
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          description: Set when nothing matched.
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+                description: Named-entity kind, for `named_entity` results.
+              apps:
+                type: array
+                description: Connectors whose records carry the entity.
+                items:
+                  type: string
+              records:
+                type: array
+                description: A few readable records, for the first entities only.
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/EntityRecordDate'
+                    - type: object
+                      properties:
+                        recordId:
+                          type: string
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        app:
+                          type: string
+              moreRecords:
+                type: boolean
+        scopeNote:
+          type: string
+          description: Set when the caller's access covers only part of some connectors' records, so matches can be missing.
+        ignoredEntityTypes:
+          type: array
+          description: Requested `entityTypes` this search does not cover; they were left out.
+          items:
+            type: string
+        kindNotes:
+          type: array
+          description: Why some requested `namedEntityKinds` were not searched.
+          items:
+            type: string
+    EntityNeighborsRequest:
+      type: object
+      description: Request body for `POST /search/entities/neighbors`.
+      required:
+        - entityId
+        - entityType
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          description: Only records of these types, such as `FILE` or `TICKET`.
+          items:
+            type: string
+        recordLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most records to list.
+        relatedLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most related entities to list.
+        cursor:
+          type: string
+          maxLength: 64
+          description: "`nextCursor` from the previous page."
+    EntityNeighborsResponse:
+      type: object
+      description: Result of `POST /search/entities/neighbors`.
+      properties:
+        status:
+          type: string
+          example: success
+        entityId:
+          type: string
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        records:
+          type: array
+          description: Readable records connected to the entity, newest first.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/EntityRecordDate'
+              - type: object
+                properties:
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  recordType:
+                    type: string
+                  app:
+                    type: string
+                  webUrl:
+                    type: string
+                    nullable: true
+        relatedEntities:
+          type: array
+          description: Entities those records share with this one, most shared first.
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+              relation:
+                type: string
+                description: Edge type joining a record to this entity.
+              sharedRecords:
+                type: integer
+                description: How many of the listed records carry it.
+        relationTypes:
+          type: array
+          items:
+            type: string
+        nextCursor:
+          type: string
+          description: Pass as `cursor` for the next page of records.
+        note:
+          type: string
+          description: Set when the entity has more records than one listing can scan.
+        relatedNote:
+          type: string
+          description: Set when `relatedEntities` covers only the records on this page.
   responses:
     XssRejected:
       description: >-
@@ -26102,6 +26347,88 @@ paths:
                 bearer_methods_supported: ["header"]
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
+  /auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: authMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
+  /.well-known/auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: wellKnownAuthMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
     get:
@@ -27621,6 +27948,10 @@ paths:
 
         - Multiple OTP requests may be rate-limited
         - Wait for the current OTP to expire before requesting a new one
+        - Requests about **one email address** are also limited across all clients
+          (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+          the same `200` and message but no code is sent, so the limit does not show whether the
+          address has an account. Password sign-in is not affected.
 
         **CAPTCHA:**
 
@@ -27695,6 +28026,10 @@ paths:
         email is registered. If the account exists a reset link is sent;
         otherwise the request is silently ignored. Internal lookup or mail
         delivery failures are logged server-side and do not change the response.
+
+        Requests about **one email address** are also limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+        the same `200` and message but no email is sent.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -27839,6 +28174,10 @@ paths:
 
         **Known defects:** a value that is not an email is stored although the answer is `422`;
         a token without a `newEmail` claim stores the word `undefined` the same way.
+
+        **Rate limit:** confirmations for one new address are limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute); the address is the one in the
+        verified token. Over the limit the answer is `429` with `Retry-After`.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -27888,6 +28227,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many confirmations for this new address in the current minute. Try again after `Retry-After` seconds.
+          headers:
+            Retry-After:
+              description: Seconds until the current minute ends.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error. Also returned when the token's `userId` is not a valid
@@ -45547,6 +45897,7 @@ paths:
             `{ type, message, code? }` on failure. Forwarded lifecycle and
             child-run events may contain `runId`, `threadId`, and
             `parentRunId`. Clients should ignore unknown event names.
+            Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
 
             Refusals after validation are not HTTP errors. A missing, deleted
             or inaccessible conversation, a conversation with no messages, a
@@ -50243,6 +50594,7 @@ paths:
             Stable event names:
             - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
               updated conversation and metadata
+              Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
             - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
               authorization, or regenerate-rule failures
 
@@ -71982,6 +72334,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /search/entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search knowledge-graph entities
+      description: |
+        Find entities in the organisation's knowledge graph by name or meaning:
+        departments, categories, subcategories, topics, languages, record
+        groups (a drive, a space, a project), record titles and, where
+        named-entity extraction is on, people, organisations and other named
+        entities.
+
+        Only entities connected to records the caller can read are returned,
+        decided by the same access check as the assistant's entity tools. Each
+        result carries an `entityId` and `entityType`; pass both to
+        `POST /search/entities/neighbors` to see the records and related
+        entities around it.
+      operationId: searchEntities
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: What to look for.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntitySearchRequest'
+            examples:
+              topic:
+                summary: Find a topic
+                value:
+                  query: "payments"
+                  entityTypes: ["topic", "category"]
+      responses:
+        '200':
+          description: Entities the caller can reach, best match first. An empty `results` list means none matched, or none are connected to records the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitySearchResponse'
+        '400':
+          description: The request is invalid, for example an unsupported entity type or named-entity lookup turned off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: Entity search is not available in this deployment or timed out before the access check finished. This is not an empty result; try again.
+
+  /search/entities/neighbors:
+    post:
+      tags:
+        - Semantic Search
+      summary: Get an entity's records, related entities and relation types
+      description: |
+        Walk one step out from an entity: the records connected to it that the
+        caller can read (newest first), the other entities those records are
+        tagged with or mention (most shared first), and the relation types
+        that join them (`belongsToCategory`, `belongsToTopic`,
+        `belongsToLanguage`, `belongsToDepartment`, `mentionsEntity`).
+
+        Related entities are counted over the records listed in the same
+        response, never over records the caller cannot read. An entity the
+        caller cannot reach and an entity with no readable records answer the
+        same way: empty lists. Use `cursor` to page the records.
+      operationId: entityNeighbors
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: The entity to expand.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityNeighborsRequest'
+            examples:
+              topic:
+                summary: Neighbourhood of a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: Records, related entities and relation types around the entity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityNeighborsResponse'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: The lookup failed or timed out. This is not an empty result; try again.
+
   /search/updateAppConfig:
     post:
       tags:

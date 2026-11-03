@@ -127,6 +127,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
+    "_get_kb_context_for_record": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "filter_linked_record_ids": (
@@ -198,6 +199,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "stage_states_delete_for_virtual_records": (
         Rule.WRITE,
         "deletes the pipeline stage states of virtual records no record references any more",
+    ),
+    "stage_state_org_for_virtual_record": (
+        Rule.ALL,
+        "reads pipeline stage states, not records: the org of content whose mapping lost it",
     ),
     "delete_parent_child_edge_to_record": (Rule.WRITE, ""),
     "batch_upsert_records": (Rule.WRITE, ""),

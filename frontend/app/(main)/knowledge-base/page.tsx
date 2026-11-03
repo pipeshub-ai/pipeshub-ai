@@ -2046,15 +2046,18 @@ function KnowledgeBasePageContent() {
   const nodes = useKnowledgeBaseStore((state) => state.nodes);
 
   // Create the share adapter for the currently selected KB node
-  const shareAdapter = useMemo(() => {
+  const shareKbId = useMemo(() => {
     const nodeId = selectedNode?.nodeId;
     if (!nodeId) return null;
     // Only share root KB collection nodes (app with connector KB)
     if (selectedNode?.nodeType !== 'app') return null;
     const storeNode = nodes.find((n) => n.id === nodeId);
     if (!storeNode || !isKbCollectionsHubApp(storeNode)) return null;
-    return createKBShareAdapter(nodeId);
+    return nodeId;
   }, [selectedNode?.nodeId, selectedNode?.nodeType, nodes]);
+  // A new adapter only for another collection: `nodes` grows as the tree loads,
+  // and a new adapter re-ran the members fetch below.
+  const shareAdapter = useMemo(() => (shareKbId ? createKBShareAdapter(shareKbId) : null), [shareKbId]);
 
   // Share controls are owner-only for collections, and also require group permission.
   const isSelectedKbOwner = !isAllRecordsMode && (tableData?.permissions?.canManagePermissions ?? false);

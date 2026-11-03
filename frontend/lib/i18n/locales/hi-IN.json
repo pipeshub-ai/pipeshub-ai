@@ -1488,7 +1488,8 @@
       "internalSearch": "आंतरिक खोज",
       "webSearch": "वेब खोज",
       "internalAndWebSearch": "आंतरिक + वेब खोज"
-    }
+    },
+    "searchDegraded": "परिणाम अधूरे हो सकते हैं।"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",

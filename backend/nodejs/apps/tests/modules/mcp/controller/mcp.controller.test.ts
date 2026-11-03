@@ -620,9 +620,21 @@ describe('MCP Controller — handleMCPRequest', () => {
           .to.deep.equal(['read'])
       })
 
-      it('mounts every tool for a token with both write scopes', async () => {
+      it('mounts the read and write tools, not the connect ones, for a token with both write scopes only', async () => {
         expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:read', 'kb:write', 'kb:upload'] }))
-          .to.equal(undefined)
+          .to.deep.equal(['read', 'write'])
+      })
+
+      it('needs both connector scopes for the connect tools', async () => {
+        expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:write', 'kb:upload', 'connector:write'] }))
+          .to.deep.equal(['read', 'write'])
+      })
+
+      it('mounts every tool for a token with the write and connector scopes', async () => {
+        expect(await scopesFor({
+          userId: 'u', orgId: 'o', isOAuth: true,
+          oauthScopes: ['kb:read', 'kb:write', 'kb:upload', 'connector:write', 'connector:sync'],
+        })).to.equal(undefined)
       })
 
       it('mounts every tool for a session user, as requireScopes lets them through', async () => {

@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from neo4j import AsyncGraphDatabase
 
-from app.config.constants.arangodb import DeleteSource
+from app.config.constants.arangodb import CollectionNames, DeleteSource
 
 from .fixture_graph import ORG
 from .loaders import load_into_neo4j
@@ -234,10 +234,10 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
     await p.soft_delete_records(["ls-r2"], APP, delete_source=DeleteSource.USER.value, batch_id="ls-batch", follow=())
     await fresh("soft_delete_records")
     assert "KhDeleted" in await _labels(neo4j_settings, "ls-r2")
-    await p._upsert_record_nodes_releasing_trash([
+    await p.batch_upsert_nodes([
         _node("ls-r4", recordName="Released", recordType="FILE", mimeType="text/directory", externalRecordId="ls-x4"),
-    ])
-    await fresh("_upsert_record_nodes_releasing_trash")
+    ], collection=CollectionNames.RECORDS.value)
+    await fresh("batch_upsert_nodes")
     assert await _labels(neo4j_settings, "ls-r4") == {"KhFolder"}
 
     plain, labelled = await _pages(p)

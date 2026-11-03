@@ -1488,7 +1488,8 @@
       "internalSearch": "Internal search",
       "webSearch": "Web search",
       "internalAndWebSearch": "Internal + web search"
-    }
+    },
+    "searchDegraded": "Results may be incomplete."
   },
   "workspaceMenu": {
     "appearance": "Appearance",

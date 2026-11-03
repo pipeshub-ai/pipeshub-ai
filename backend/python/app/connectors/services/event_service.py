@@ -62,6 +62,7 @@ from app.edition_services import (
 )
 from app.models.entities import FileRecord
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1744,10 +1745,14 @@ class EventService:
             )
 
             # Delete from graph DB
-            result = await self.graph_provider.delete_connector_instance(
-                connector_id=connector_id,
-                org_id=org_id
-            )
+            try:
+                result = await self.graph_provider.delete_connector_instance(
+                    connector_id=connector_id,
+                    org_id=org_id
+                )
+            finally:
+                # Whether or not it finished, the cascade may have removed the app's grants.
+                await notify_principals_changed(org_id)
 
             if not result.get("success"):
                 # The intent stays either way: the reconciler drops it once stale

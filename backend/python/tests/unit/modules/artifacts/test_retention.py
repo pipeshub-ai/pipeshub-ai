@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core import org_context
 from app.modules.artifacts import retention as retention_module
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
@@ -18,6 +19,14 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+def current_org_id_or_none() -> str | None:
+    try:
+        return org_context.current_org_id()
+    except Exception:
+        return None
+
 
 NOW = 10_000 * 3600 * 1000
 HOUR = 3600 * 1000
@@ -37,11 +46,14 @@ class FakeGraph:
     fail_holders_for: set[str] = field(default_factory=set)
     fail_stage_states: bool = False
     after_page_read: Any = None
+    pointer_orgs: list[str | None] = field(default_factory=list)
+    delete_orgs: list[str | None] = field(default_factory=list)
 
     def map(self, vrid: str, current: str | None = None, previous: str | None = None, org: str | None = ORG) -> None:
         self.mappings[vrid] = {"orgId": org, "currentRev": current, "previousRev": previous}
 
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        self.pointer_orgs.append(current_org_id_or_none())
         keys = sorted(k for k in self.mappings if after_key is None or k > after_key)[:limit]
         return [{"virtualRecordId": k, **{f: self.mappings[k].get(f) for f in ("orgId", "currentRev", "previousRev")}}
                 for k in keys]
@@ -85,6 +97,7 @@ class FakeGraph:
     async def stage_states_delete_unheld_revisions(
         self, revisions: list[tuple[str, str]], *, updated_before_ms: int
     ) -> int:
+        self.delete_orgs.append(current_org_id_or_none())
         doomed = set(self._unheld({v for v, _ in revisions}, updated_before_ms)) & set(revisions)
         before = len(self.states)
         self.states = [s for s in self.states if (s[0], s[1]) not in doomed]
@@ -773,3 +786,45 @@ async def test_a_delete_storage_answers_lost_is_counted_failed_not_kept(
     assert ("revision", "failed", 1) in counted
     assert ("revision", "changed", 1) not in counted
     assert issubclass(ArtifactStoreError, Exception)
+
+
+@pytest.mark.asyncio
+async def test_under_system_each_virtual_record_retires_in_its_own_org_and_one_with_none_is_skipped() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    for vrid, org in (("v-a", "org-a"), ("v-b", "org-b"), ("v-none", None)):
+        graph.map(vrid, current="r2", org=org)
+        graph.states.append((vrid, "r1", OLD))
+    caplog_orgs: list[str | None] = []
+    holders = graph.get_virtual_record_holders
+
+    async def recording_holders(vrids: list[str], org_id: str) -> dict[str, list[dict[str, Any]]]:
+        caplog_orgs.append(current_org_id_or_none())
+        return await holders(vrids, org_id)
+
+    graph.get_virtual_record_holders = recording_holders  # type: ignore[method-assign]
+
+    with org_context.system("retention_test"):
+        _, report = await _sweep(graph, store).run_page(None)
+
+    assert sorted(o for o in caplog_orgs if o) == ["org-a", "org-b"]
+    assert graph.delete_orgs == ["org-a", "org-b"] or graph.delete_orgs == ["org-b", "org-a"]
+    assert report.skipped_no_org == 1 and report.stage_states_deleted == 2
+    assert [s[0] for s in graph.states] == ["v-none"]
+
+
+@pytest.mark.asyncio
+async def test_a_trash_check_that_cannot_run_fails_the_page_before_anything_is_deleted() -> None:
+    graph, store = FakeGraph(), FakeStore()
+    graph.map("v-a", current="r2", org="org-a")
+    graph.states.append(("v-a", "r1", OLD))
+    _revs(store, "v-a", "r1", "r2")
+
+    async def unavailable(*_a: Any, **_k: Any) -> set[str]:  # noqa: ANN401
+        raise NotImplementedError("not available on this store")
+
+    graph.get_virtual_record_ids_in_use = unavailable  # type: ignore[method-assign]
+
+    with org_context.system("retention_test"), pytest.raises(NotImplementedError):
+        await _sweep(graph, store).run_page(None)
+
+    assert store.deleted == [] and store.list_calls == 0 and len(graph.states) == 1

@@ -402,6 +402,8 @@ export interface IAIResponse {
     reason?: string;
   };
   modelInfo?: IAIModel;
+  /** Set when a search of the run was answered with less than the full search (see `searchDegradedMeta`). */
+  searchDegraded?: boolean;
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
   /** Present only when `PIPESHUB_PERSIST_REASONING=true` on the Python side. */
