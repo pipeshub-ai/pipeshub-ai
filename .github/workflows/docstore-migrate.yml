@@ -37,7 +37,8 @@ jobs:
   migrate:
     # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The suites take 53-55 minutes on main since the CLI end-to-end suite; 60 left no room for any new case.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
