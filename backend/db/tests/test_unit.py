@@ -475,21 +475,13 @@ def test_the_shard_guard_sees_a_test_file_in_a_subdirectory(tmp_path):
 
 
 def test_every_test_file_is_in_exactly_one_shard_of_the_db_migrations_workflow():
-    """CI runs the tests in shards; a test file that no shard names would not run, and one named twice would run twice.
-    A file may be split over shards by --slice I/N: then its slices must be exactly 0/N .. N-1/N."""
+    """CI runs the tests in shards by file; a test file that no shard names would not run, and one named twice would run twice."""
     import yaml
 
     workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "db-migrations.yml"
     if not workflow.is_file():
         pytest.skip("no workflow file in this checkout (the backend is packaged alone)")
     matrix = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["migrations"]["strategy"]["matrix"]
-    seen: dict[str, list[str]] = {}
-    for shard in matrix["include"]:
-        for f in shard["files"].split():
-            seen.setdefault(f, []).append(shard.get("slice") or "")
-    for f, slices in seen.items():
-        if slices != [""]:
-            n = slices[0].partition("/")[2]
-            assert n.isdigit() and sorted(slices) == sorted(f"{i}/{n}" for i in range(int(n))), (f, slices)
-    assert sorted(seen) == _files_on_disk(Path(__file__).parent), seen
+    named = [f for shard in matrix["include"] for f in shard["files"].split()]
+    assert sorted(named) == _files_on_disk(Path(__file__).parent), named
     assert sorted(s["shard"] for s in matrix["include"]) == sorted(matrix["shard"])
