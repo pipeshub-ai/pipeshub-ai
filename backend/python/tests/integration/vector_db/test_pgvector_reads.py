@@ -113,9 +113,9 @@ async def test_filters_select_by_column_by_membership_and_an_empty_list_selects_
 
 async def test_empty_lists_given_to_filter_collection_are_dropped_as_on_every_provider(store) -> None:
     """The shared builder drops an empty list: callers short-circuit an empty accessible set before they search (and graph-check every hit)."""
-    await store.upsert_points("records", [point(A, 1, conn=["c1"]), point(A, 2, conn=["c2"])])
+    await store.upsert_points("records", [point(A, "p1", "r1", conn=["c1"]), point(A, "p2", "r2", conn=["c2"])])
     built = await store.filter_collection(must={"orgId": A}, should={"connectorIds": [], "recordGroupIds": []})
-    assert {p.payload["metadata"]["blockId"] for p in await scroll_all(store, built)} == {"b1", "b2"}      # no arm left: the whole organisation
+    assert {p.payload["metadata"]["blockId"] for p in await scroll_all(store, built)} == {"p1", "p2"}      # no arm left: the whole organisation
 
 
 async def test_deleted_points_are_invisible_and_an_org_without_points_or_a_collection_is_handled(store) -> None:
