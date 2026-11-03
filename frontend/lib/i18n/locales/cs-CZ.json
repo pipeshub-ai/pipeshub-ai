@@ -1661,7 +1661,9 @@
       "askedAgo_few": "Dotaz před {{count}} min",
       "askedAgo_many": "Dotaz před {{count}} min",
       "askedAgo_other": "Dotaz před {{count}} min",
-      "chatDeleted": "Tento chat byl smazán."
+      "chatDeleted": "Tento chat byl smazán.",
+      "details": "Podrobnosti",
+      "needsApprovalFor": "Vyžaduje vaše schválení: {{title}}"
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
     "noConnectorsFound": "Nebyly nalezeny žádné konektory",

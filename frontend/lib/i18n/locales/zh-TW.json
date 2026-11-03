@@ -1584,7 +1584,9 @@
       "askedJustNow": "剛剛請求",
       "askedAgo_one": "{{count}} 分鐘前請求",
       "askedAgo_other": "{{count}} 分鐘前請求",
-      "chatDeleted": "該聊天已被刪除。"
+      "chatDeleted": "該聊天已被刪除。",
+      "details": "詳細資訊",
+      "needsApprovalFor": "需要你的核准：{{title}}"
     },
     "selectedAlone": "{{name}}（僅此項目）",
     "noConnectorsFound": "找不到連接器",

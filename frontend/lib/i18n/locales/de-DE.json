@@ -1498,7 +1498,9 @@
       "askedJustNow": "Gerade eben gefragt",
       "askedAgo_one": "Vor {{count}} Min. gefragt",
       "askedAgo_other": "Vor {{count}} Min. gefragt",
-      "chatDeleted": "Dieser Chat wurde gelöscht."
+      "chatDeleted": "Dieser Chat wurde gelöscht.",
+      "details": "Details",
+      "needsApprovalFor": "Benötigt Ihre Freigabe: {{title}}"
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
     "noConnectorsFound": "Keine Konnektoren gefunden",

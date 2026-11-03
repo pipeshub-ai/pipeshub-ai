@@ -10,11 +10,12 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { usePendingApprovals } from '../../pending-approvals-store';
 import { useChatStore } from '../../store';
-import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
+import { approvalProduct, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
 import type { EditError, ToolApprovalAnswer, ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 import { checkArgs } from './approval-form/check-args';
 import { DocumentForm } from './approval-form/document-form';
-import { schemaFields } from './approval-form/schema-fields';
+import { DocumentView } from './approval-form/document-view';
+import { argumentFields, schemaFields } from './approval-form/schema-fields';
 
 /** Whole minutes left (rounded up), re-read every half minute; 0 once the request has expired. */
 function useMinutesLeft(expiresAt: number): number {
@@ -77,7 +78,6 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const original = approval.arguments ?? null;
   const [remember, setRemember] = useState(false);
   const [forConversation, setForConversation] = useState(false);
-  const [showAll, setShowAll] = useState(false);
   const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...(approval.editedArguments ?? original ?? {}) }));
   const [errors, setErrors] = useState<EditError[]>(() => approval.editErrors ?? []);
   const [editing, setEditing] = useState(() => Boolean(approval.editErrors?.length));
@@ -126,7 +126,10 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   }, [focusTick]);
 
   const tool = approvalToolLabel(approval);
-  const server = approval.serverName;
+  // The product the call acts in ("Jira"); the server it goes through ("Atlassian Rovo") is the subline.
+  const server = approvalProduct(approval);
+  const title = tool.toLowerCase().includes(server.toLowerCase()) ? tool : t('chat.toolApproval.titleIn', { tool, server });
+  const via = server === approval.serverName ? null : approval.serverName;
   const expired = minutesLeft === 0;
   const answerable = !expired && isLatest && canSend;
 
@@ -159,10 +162,9 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   }
   const hasFieldErrors = Object.keys(fieldErrors).length > 0;
 
-  const lines = original ? approvalArgumentLines(values, { full: showAll }) : [];
+  const viewFields = original ? argumentFields(approval.inputSchema, values) : [];
   const changeCount = t('chat.toolApproval.changeCount', { count: changed.size });
   const changedLabels = [...changed].map((name) => fields.find((f) => f.name === name)?.label ?? name).join(', ');
-  const anyCut = !showAll && lines.some((line) => line.cut);
 
   const answer = async (decision: ToolApprovalDecision, extra: { arguments?: Record<string, unknown>; feedback?: string } = {}) => {
     // An edit or a note is about this one call, so it never sets a lasting rule.
@@ -258,7 +260,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     : soon
       ? t('chat.toolApproval.expiresSoon')
       : t('chat.toolApproval.expiresIn', { count: minutesLeft });
-  const detail = asked ? `${expiry} · ${asked}` : expiry;
+  const detail = [via, expiry, asked].filter(Boolean).join(' · ');
 
   return (
     <Box
@@ -266,7 +268,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
       className={placement === 'composer' ? 'tool-approval-card no-scrollbar' : 'tool-approval-card'}
       data-testid="tool-approval-card"
       role="group"
-      aria-label={t('chat.toolApproval.needsApproval')}
+      aria-label={t('chat.toolApproval.needsApprovalFor', { title })}
       // On the whole card, so Esc leaves edit mode from Done, Reset or Allow too.
       onKeyDown={showForm ? onFormKeyDown : undefined}
       p="3"
@@ -295,7 +297,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
         <Box style={{ flex: 1, minWidth: 0 }}>
           <Flex align="baseline" gap="2">
             <Text size="2" weight="medium" truncate title={approval.toolName} style={{ color: 'var(--gray-12)', minWidth: 0 }}>
-              {t('chat.toolApproval.titleIn', { tool, server })}
+              {title}
             </Text>
             {/* One status label for the whole edit, like a document's save status; the tooltip names the fields. */}
             {edited && (
@@ -316,7 +318,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
               {edited ? changeCount : ''}
             </VisuallyHidden>
           )}
-          {approval.argsSummary && (
+          {/* The call's own fields say it below; the summary stands in only when they're too large to send. */}
+          {approval.argsSummary && !original && (
             <Text as="p" size="2" truncate style={{ color: 'var(--gray-11)' }}>
               {approval.argsSummary}
             </Text>
@@ -353,7 +356,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           borderRadius: 'var(--radius-3)',
           backgroundColor: 'var(--color-panel-solid)',
           padding: showForm ? 'var(--space-3)' : 'var(--space-2) var(--space-3)',
-          maxHeight: showAll || showForm ? 360 : 220,
+          maxHeight: showForm ? 360 : undefined,
           overflowY: 'auto',
         }}
       >
@@ -378,30 +381,10 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
               {t('chat.toolApproval.partial')}
             </Text>
           </>
-        ) : lines.length === 0 ? (
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
-            {t('chat.toolApproval.noArguments')}
-          </Text>
         ) : (
-          <Box style={{ display: 'grid', gridTemplateColumns: 'minmax(72px, max-content) 1fr', columnGap: 'var(--space-4)', rowGap: 'var(--space-1)' }}>
-            {lines.map((line) => (
-              <React.Fragment key={line.name}>
-                <Text size="1" style={{ color: 'var(--gray-10)', fontFamily: 'var(--code-font-family)', lineHeight: 'var(--line-height-2)' }}>
-                  {line.name}
-                </Text>
-                <Text size="2" style={{ color: 'var(--gray-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 'var(--line-height-2)' }}>
-                  {line.value}
-                </Text>
-              </React.Fragment>
-            ))}
-          </Box>
+          <DocumentView fields={viewFields} values={values} />
         )}
       </Box>
-      {!showForm && (anyCut || showAll) && (
-        <Button size="1" variant="ghost" mt="2" onClick={() => setShowAll((value) => !value)}>
-          {showAll ? t('chat.toolApproval.showLess') : t('chat.toolApproval.showAll')}
-        </Button>
-      )}
       {(hasFieldErrors || cardErrors.length > 0) && (
         <Flex direction="column" gap="1" mt="2" role="alert">
           {hasFieldErrors && <Text size="1" style={{ color: 'var(--red-11)' }}>{t('chat.toolApproval.editRejected')}</Text>}
@@ -479,7 +462,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           )}
         </Flex>
         <Flex className="tool-approval-card-group tool-approval-card-answer" align="center" gap="2">
-          <Button size="2" variant="soft" color="gray" disabled={sending} onClick={() => void answer('deny')}>
+          {/* A dialog footer: a bordered secondary beside the house primary, never a soft one. */}
+          <Button size="2" variant="outline" color="gray" disabled={sending} onClick={() => void answer('deny')}>
             {t('chat.toolApproval.deny')}
           </Button>
           <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} loading={sending} onClick={() => void allow()}>

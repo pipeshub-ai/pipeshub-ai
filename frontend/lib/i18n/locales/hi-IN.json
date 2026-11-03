@@ -1498,7 +1498,9 @@
       "askedJustNow": "अभी पूछा गया",
       "askedAgo_one": "{{count}} मिनट पहले पूछा गया",
       "askedAgo_other": "{{count}} मिनट पहले पूछा गया",
-      "chatDeleted": "वह चैट हटा दी गई थी।"
+      "chatDeleted": "वह चैट हटा दी गई थी।",
+      "details": "विवरण",
+      "needsApprovalFor": "आपकी अनुमति चाहिए: {{title}}"
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",

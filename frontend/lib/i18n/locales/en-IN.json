@@ -1498,7 +1498,9 @@
       "askedJustNow": "Asked just now",
       "askedAgo_one": "Asked {{count}} min ago",
       "askedAgo_other": "Asked {{count}} min ago",
-      "chatDeleted": "That chat was deleted."
+      "chatDeleted": "That chat was deleted.",
+      "details": "Details",
+      "needsApprovalFor": "Needs your approval: {{title}}"
     },
     "selectedAlone": "{{name}} (this item only)",
     "noConnectorsFound": "No connectors found",

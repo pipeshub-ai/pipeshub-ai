@@ -1524,7 +1524,9 @@
       "askedAgo_one": "Pedido hace {{count}} min",
       "askedAgo_many": "Pedido hace {{count}} min",
       "askedAgo_other": "Pedido hace {{count}} min",
-      "chatDeleted": "Ese chat se eliminó."
+      "chatDeleted": "Ese chat se eliminó.",
+      "details": "Detalles",
+      "needsApprovalFor": "Necesita tu aprobación: {{title}}"
     },
     "selectedAlone": "{{name}} (solo este elemento)",
     "noConnectorsFound": "No se encontraron conectores",

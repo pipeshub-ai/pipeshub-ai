@@ -1,4 +1,3 @@
-import { toolDisplayName } from '../../../../workspace/mcp-servers/tool-rules';
 import type { JsonSchema } from '../../../types';
 
 export type FieldControl = 'text' | 'textarea' | 'email' | 'date' | 'datetime' | 'number' | 'switch' | 'select' | 'chips' | 'json';
@@ -81,7 +80,7 @@ export function schemaFields(schema: JsonSchema, values: Record<string, unknown>
     const control = controlFor(name, prop, values[name]);
     return {
       name,
-      label: prop.title?.trim() || toolDisplayName(name),
+      label: fieldLabel(name, prop.title),
       required: required.has(name),
       control,
       ...(control === 'select' ? { options: (unwrapNullable(prop).enum ?? []).map((value) => ({ value, label: String(value) })) } : {}),
@@ -89,4 +88,43 @@ export function schemaFields(schema: JsonSchema, values: Record<string, unknown>
     };
   });
   return [...fields.filter((f) => f.required), ...fields.filter((f) => !f.required)];
+}
+
+// Words written as initialisms in a label; a trailing name or key is the field's own plumbing.
+const INITIALISM: Record<string, string> = { id: 'ID', ids: 'IDs', url: 'URL', urls: 'URLs', uuid: 'UUID', html: 'HTML', api: 'API' };
+const PLUMBING_WORD = new Set(['name', 'key']);
+
+/** A field's label: the schema's title, else its name in sentence case ("issueTypeName" is "Issue type"). */
+export function fieldLabel(name: string, title?: string | null): string {
+  if (title?.trim()) return title.trim();
+  const words = name.split(/[_\-\s.]+|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean).map((w) => w.toLowerCase());
+  if (words.length > 1 && PLUMBING_WORD.has(words[words.length - 1])) words.pop();
+  if (words.length === 0) return name;
+  const text = words.map((w) => INITIALISM[w] ?? w).join(' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+const ID_WORD = new Set(['id', 'ids', 'uuid', 'guid']);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** An id the person doesn't judge the call by (`cloudId`, a uuid): shown under Details, never dropped. */
+export function isTechnical(field: FieldSpec, value: unknown): boolean {
+  return ID_WORD.has(lastWord(field.name)) || field.schema.format === 'uuid' || (typeof value === 'string' && UUID.test(value.trim()));
+}
+
+// The type a value has, for an argument the schema doesn't describe.
+function valueSchema(value: unknown): JsonSchema {
+  if (typeof value === 'string') return { type: 'string' };
+  if (typeof value === 'number') return { type: 'number' };
+  if (typeof value === 'boolean') return { type: 'boolean' };
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) return { type: 'array', items: { type: 'string' } };
+  return {};
+}
+
+/** Every argument of a call as a field, to show it: the schema's fields, then any argument it leaves out. */
+export function argumentFields(schema: JsonSchema | undefined, values: Record<string, unknown>): FieldSpec[] {
+  const described = schema ? schemaFields(schema, values) : [];
+  const known = new Set(described.map((f) => f.name));
+  const rest = Object.keys(values).filter((name) => !known.has(name));
+  return [...described, ...schemaFields({ type: 'object', properties: Object.fromEntries(rest.map((name) => [name, valueSchema(values[name])])) }, values)];
 }
