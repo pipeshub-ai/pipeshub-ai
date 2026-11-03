@@ -437,7 +437,7 @@ const UUID =
 const LONG_ID = /\b([A-Za-z0-9]{8})[A-Za-z0-9_-]{16,}\b/g;
 
 function shortIds(text: string): string {
-  // A long token is an id only with a digit in it: "pipeshub-connector-test-bucket" is a name.
+  // A long token is an id only with a digit in it: "demo-connector-sample-bucket" is a name.
   return text
     .replace(UUID, '$1')
     .replace(LONG_ID, (id: string, head: string) =>
