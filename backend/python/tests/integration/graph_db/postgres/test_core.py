@@ -412,3 +412,21 @@ async def test_only_top_level_nulls_are_removed_on_write_and_update(pg_provider,
         assert "v" not in got and got["w"] == {"x": None, "y": 1}                                  # the nested null stays, the top-level one goes
         await pg_provider.update_node("n1", "things", {"w": {"z": None}, "gone": None})
         assert (await pg_provider.get_document("n1", "things"))["w"] == {"z": None}
+
+
+async def test_deleting_all_edges_of_a_node_follows_the_relationship_type_of_the_collection(pg_provider, orgs, org_ctx) -> None:
+    """As the Neo4j provider: ``nodeRelations`` is the hierarchy edge, ``recordLinks`` the links; neither touches the other."""
+    a, _ = orgs
+    p = pg_provider
+
+    async def seed() -> None:
+        await p.batch_create_edges([{"from_id": "x", "from_collection": "records", "to_id": "y", "to_collection": "records", "relationshipType": "PARENT_CHILD"},
+                                    {"from_id": "z", "from_collection": "records", "to_id": "x", "to_collection": "records", "relationshipType": "BOOKMARK"}], "nodeRelations")
+    with org_ctx(a):
+        await seed()
+        assert await p.delete_all_edges_for_node("records/x", "nodeRelations") == 1                                  # the hierarchy edge only
+        assert [e["relationshipType"] for e in await p.get_edges_to_node("records/x", "recordLinks")] == ["BOOKMARK"]
+        assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 1                                    # the link only
+        await seed()
+        assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 1
+        assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 1                                   # the hierarchy edge stayed
