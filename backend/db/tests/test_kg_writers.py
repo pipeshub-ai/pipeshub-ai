@@ -125,9 +125,12 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         assert call(c, "kg.w_changes_delete", ORG_A, ([ids[ORG_A][0]],)) == [(0,)]
         assert len(rows(c, "kg.graph_changes", ORG_B)) == 2 and len(rows(c, "kg.graph_changes", ORG_A)) == 1
         assert call(c, "kg.w_changes_ack", ORG_A, ()) == [(0,)]                                       # this transaction wrote none
-        with unit(c, "pipeshub_connectors", ORG_A):
-            c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))
-            assert c.execute("SELECT kg.w_changes_ack()").fetchone()[0] == 1
+        c.execute("BEGIN")
+        c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
+        c.execute("SET LOCAL ROLE pipeshub_connectors")
+        c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
+        assert c.execute("SELECT kg.w_changes_ack()").fetchone()[0] == 1
+        c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
         clean(c)
 
