@@ -425,3 +425,47 @@ async def test_urls_issue_sites_threads_duplicates_and_removal_by_a_field(pg_db)
     await p.batch_create_edges([{"from_id": "t1", "from_collection": "records", "to_id": "t2", "to_collection": "records", "relationshipType": "REFERENCE"}], "nodeRelations")
     assert await p.remove_nodes_by_field("records", "recordType", field_value="TICKET") == 2
     assert await p.get_existing_record_keys(["t1", "t2", "host"]) == {"host"} and await p.get_edges_from_node("records/t1", "nodeRelations") == []
+
+
+async def test_a_null_match_value_matches_nothing_in_remove_and_update(pg_db) -> None:
+    """A node without the field is not 'null': Neo4j's ``n.f = null`` is never true, so nothing is removed and nothing is replaced."""
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    await p.batch_upsert_nodes([raw(p.org, "a"), raw(p.org, "b", flag="x")], "records")
+    assert await p.remove_nodes_by_field("records", "flag", field_value=None) == 0
+    assert await p.get_existing_record_keys(["a", "b"]) == {"a", "b"}
+    assert await p.update_node_if_match("a", "records", {"recordName": "changed"}, "nofield", None) is False
+    assert (await p.get_document("a", "records"))["recordName"] == "A"
+    assert await p.remove_nodes_by_field("records", "flag", field_value="x") == 1
+
+
+async def test_a_status_page_of_limit_zero_is_empty_not_everything(pg_db) -> None:
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    await p.batch_upsert_nodes([raw(p.org, "a", indexingStatus="QUEUED")], "records")
+    await p.batch_upsert_nodes([{"_key": "a", "isFile": True, "extension": "txt", "mimeType": "text/plain"}], "files")
+    await p.batch_create_edges([{"from_id": "a", "from_collection": "records", "to_id": "a", "to_collection": "files"}], "isOfType")
+    assert await p.get_records_by_status(p.org, "c1", ["QUEUED"], limit=0) == []
+    assert [r.id for r in await p.get_records_by_status(p.org, "c1", ["QUEUED"])] == ["a"]
+
+
+async def test_no_lookup_returns_another_orgs_record_or_a_trashed_one(pg_db) -> None:
+    a, b = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org()), OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    for p in (a, b):
+        await p.batch_upsert_nodes([raw(p.org, "r", webUrl="https://w/1", md5Checksum="m", recordType="TICKET", externalRevisionId="rv", virtualRecordId="v",
+                                        connectorName="JIRA"),
+                                    raw(p.org, "r2", webUrl="https://w/1", md5Checksum="m", virtualRecordId="v2"), raw(p.org, "kid", externalParentId="x-r")], "records")
+        await p.batch_create_edges([{"from_id": "r", "from_collection": "records", "to_id": "kid", "to_collection": "records", "relationshipType": "PARENT_CHILD"}], "nodeRelations")
+        await p.batch_upsert_nodes([{"_key": "g", "orgId": p.org, "connectorId": "c1"}], "recordGroups")
+        await p.batch_create_edges([{"from_id": "kid", "from_collection": "records", "to_id": "g", "to_collection": "recordGroups"}], "belongsTo")
+    # b holds records of the same ids; a asks with b's org id as the argument, and with its own
+    assert await a.get_record_by_weburl("https://w/1", b.org) is None
+    assert await a.get_records_by_weburls(["https://w/1"], b.org) == []
+    assert await a.find_duplicate_records("r2", "m", b.org) == []
+    assert await a.get_records_by_parent_record("r", "c1", b.org, -1) == [] and await a.get_records_by_record_group("g", "c1", b.org, -1) == []
+    assert await a.get_address_links_batch(["r"], b.org) == {"r": {"mentioned_in": [], "links_to": []}} and await a.get_linked_records("r", b.org, "u", ["X"]) == []
+    adj = await a.get_record_parent_adjacency(["kid"], b.org)
+    assert adj["nodes"] == {} or all(n["id"] != "r" for n in adj["nodes"].values())
+    assert await a.get_issue_sites(b.org, ["JIRA"]) == [] and await a.get_records_linking_to_weburls(["https://w/1"], b.org, ["JIRA"]) == []
+    # a trashed record is not found by address, duplicate or issue key
+    await a.batch_update_nodes([{"id": "r", "isDeleted": True}], "records")
+    assert (await a.get_record_by_weburl("https://w/1", a.org)).id == "r2" and [d["id"] for d in await a.find_duplicate_records("r2", "m", a.org)] == []
+    assert [d["id"] for d in await a.get_records_by_weburls(["https://w/1"], a.org)] == ["r2"]
