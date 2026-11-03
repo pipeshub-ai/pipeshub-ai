@@ -59,6 +59,7 @@ import { useBrand } from '@/lib/branding';
 import { chatContentColumnStyle, clampSplitWidth } from './constants';
 import { useSplitWidth } from '@/chat/hooks/use-split-width';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import {
   useFeatureFlagsStore,
   selectProjectsEnabled,
@@ -975,7 +976,7 @@ function ChatContent() {
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
   const agentCreator = useUserDirectoryEntry(historyAndShareAgentId ? agentContextCreatedBy : null);
-  const agentCreatorName = agentCreator?.name?.trim() || agentCreator?.email?.trim() || null;
+  const agentCreatorName = userDisplayName(agentCreator);
   const agentCreatorAvatarUrl = agentCreator?.profilePicture;
 
   // Render decisions

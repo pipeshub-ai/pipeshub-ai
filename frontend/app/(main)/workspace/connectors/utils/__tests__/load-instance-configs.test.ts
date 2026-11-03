@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearSessionCache } from '@/lib/api/session-cache';
+import { onSwrNamespaceRevalidate, SWR_NS } from '@/lib/api/swr-cache';
+import { CONNECTOR_OAUTH_POST_MESSAGE } from '@/app/(main)/connectors/oauth/connector-oauth-window-messages';
 import type { Connector, ConnectorConfig } from '../../types';
 
 const api = vi.hoisted(() => ({ getConnectorConfig: vi.fn() }));
@@ -50,15 +52,41 @@ describe('loadInstanceConfigs', () => {
     expect(useConnectorsStore.getState().instanceConfigs).toEqual({});
   });
 
-  it('drops a config for an instance removed while it was being read', async () => {
+  it('keeps a config whose page was left while it was being read, since the set is then cached as read', async () => {
     let answer: (value: ConnectorConfig) => void = () => {};
     api.getConnectorConfig.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
 
     const load = loadInstanceConfigs(['a']);
-    useConnectorsStore.getState().removeConnectorInstance('a');
+    listed('personal-1');
     answer(config('a'));
-    await load;
+    await expect(load).resolves.toBe(true);
 
-    expect(useConnectorsStore.getState().instanceConfigs).toEqual({});
+    expect(useConnectorsStore.getState().instanceConfigs).toEqual({ a: config('a') });
+  });
+});
+
+describe('an OAuth sign-in finished in another window', () => {
+  it('refreshes the cached instance configs, even with no panel open', () => {
+    const refreshed = vi.fn();
+    const stop = onSwrNamespaceRevalidate(SWR_NS.connectorConfigs, refreshed);
+
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { type: CONNECTOR_OAUTH_POST_MESSAGE.SUCCESS }, origin: window.location.origin }),
+    );
+
+    expect(refreshed).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it('ignores the same message from another origin', () => {
+    const refreshed = vi.fn();
+    const stop = onSwrNamespaceRevalidate(SWR_NS.connectorConfigs, refreshed);
+
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { type: CONNECTOR_OAUTH_POST_MESSAGE.SUCCESS }, origin: 'https://evil.test' }),
+    );
+
+    expect(refreshed).not.toHaveBeenCalled();
+    stop();
   });
 });

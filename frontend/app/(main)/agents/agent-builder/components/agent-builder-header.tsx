@@ -20,6 +20,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
 import { ServiceAgentIdentityControl } from './service-agent-identity-control';
@@ -103,7 +104,7 @@ export function AgentBuilderHeader(props: {
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
   const creator = useUserDirectoryEntry(createdBy);
-  const creatorName = creator?.name?.trim() || creator?.email?.trim() || null;
+  const creatorName = userDisplayName(creator);
   const creatorAvatarUrl = creator?.profilePicture;
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);

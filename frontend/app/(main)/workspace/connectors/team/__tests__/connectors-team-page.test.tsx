@@ -56,6 +56,9 @@ vi.mock('next/link', () => ({
 }));
 
 import { clearSessionCache } from '@/lib/api/session-cache';
+import { writeSwrKey } from '@/lib/api/swr-cache';
+import { ACTIVE_TEAM_CONNECTORS_KEY } from '../../cache-keys';
+import { useDemoDataActive } from '../../demo-data/use-demo-data';
 import TeamConnectorsPage from '../connectorsTeamPage';
 import { useConnectorsStore } from '../../store';
 import {
@@ -298,6 +301,100 @@ describe('Team connectors page: reads it can reuse', () => {
     expect(api.getRegistryConnectors).not.toHaveBeenCalled();
     expect(api.getActiveConnectors).not.toHaveBeenCalled();
     expect(api.getConnectorConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps configs that arrive after the admin left, so returning within a minute shows them', async () => {
+    let answer: (config: unknown) => void = () => {};
+    nav.params = new URLSearchParams('connectorType=Jira');
+    api.getActiveConnectors.mockResolvedValue({ connectors: [makeInstance()] });
+    api.getConnectorConfig.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const first = renderInTheme(<TeamConnectorsPage />);
+    await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledTimes(1));
+
+    first.unmount();
+    useConnectorsStore.setState({ activeConnectors: [makeInstance({ _key: 'personal-1' })] });
+    await act(async () => answer(scheduled));
+
+    openTypePage();
+    expect(await screen.findByText('Scheduled')).toBeTruthy();
+    expect(api.getConnectorConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read configs of the personal list a deep link finds in the store', async () => {
+    useConnectorsStore.setState({ activeConnectors: [makeInstance({ _key: 'personal-1' })] });
+
+    openTypePage();
+    await screen.findByText('Scheduled');
+
+    expect(api.getConnectorConfig).toHaveBeenCalledWith('conn-1');
+    expect(api.getConnectorConfig).not.toHaveBeenCalledWith('personal-1');
+  });
+
+  it('reads the config of a new instance when the list gains one', async () => {
+    openTypePage();
+    await screen.findByText('Scheduled');
+
+    act(() =>
+      writeSwrKey(ACTIVE_TEAM_CONNECTORS_KEY, { connectors: [makeInstance(), makeInstance({ _key: 'conn-2', name: 'Jira (Ops)' })] }),
+    );
+
+    await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledWith('conn-2'));
+  });
+
+  it('shares one list request between the page and its demo check', async () => {
+    function DemoCheck() {
+      useDemoDataActive();
+      return null;
+    }
+    renderInTheme(
+      <>
+        <TeamConnectorsPage />
+        <DemoCheck />
+      </>,
+    );
+    await screen.findByTestId('connector-card-Jira');
+
+    expect(api.getActiveConnectors).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps what Refresh all read for the next visit within a minute', async () => {
+    openTypePage();
+    await screen.findByText('Jira (Engineering)');
+    api.getActiveConnectors.mockResolvedValue({ connectors: [makeInstance({ name: 'Jira (Renamed)' })] });
+    api.getConnectorInstance.mockResolvedValue(makeInstance({ name: 'Jira (Renamed)' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Refresh all/ }));
+    await screen.findByText('Jira (Renamed)');
+    cleanup();
+    useConnectorsStore.setState({ activeConnectors: [] });
+
+    renderInTheme(<TeamConnectorsPage />);
+
+    await waitFor(() => expect(useConnectorsStore.getState().activeConnectors[0]?.name).toBe('Jira (Renamed)'));
+  });
+
+  it('after a minute, re-reads the list and configs in the background, keeping the cards on screen', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const first = openTypePage();
+      await screen.findByText('Scheduled');
+      first.unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      let answer: (config: unknown) => void = () => {};
+      api.getConnectorConfig.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+
+      openTypePage();
+
+      await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledTimes(2));
+      expect(api.getActiveConnectors).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('Scheduled')).toBeTruthy();
+      expect(screen.queryByRole('status')).toBeNull();
+      await act(async () => answer(scheduled));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reads the configs again after a catalog refresh (a save, a new instance, a sign-in)', async () => {

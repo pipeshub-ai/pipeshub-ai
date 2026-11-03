@@ -14,14 +14,18 @@ const queued = new Map<string, Waiter[]>();
 function flush(): void {
   const batch = new Map(queued);
   queued.clear();
-  // A card falls back to the id or initials on its own; a toast per failed lookup would only be noise.
-  UsersApi.getUsersByIds([...batch.keys()], { suppressErrorToast: true }).then(
-    (users) => {
-      const byId = new Map(users.map((user) => [user.userId.toLowerCase(), user]));
+  // Every waiter settles whatever goes wrong: an unsettled one would stay cached as "loading" all session.
+  Promise.resolve()
+    // A card falls back to the id or initials on its own; a toast per failed lookup would only be noise.
+    .then(() => UsersApi.getUsersByIds([...batch.keys()], { suppressErrorToast: true }))
+    .then((users) => {
+      const byId = new Map<string, User>();
+      for (const user of users) {
+        if (typeof user?.userId === 'string') byId.set(user.userId.toLowerCase(), user);
+      }
       batch.forEach((waiters, id) => waiters.forEach((w) => w.resolve(byId.get(id) ?? null)));
-    },
-    (error: unknown) => batch.forEach((waiters) => waiters.forEach((w) => w.reject(error))),
-  );
+    })
+    .catch((error: unknown) => batch.forEach((waiters) => waiters.forEach((w) => w.reject(error))));
 }
 
 /** Joins every id asked for in the same tick into one by-ids request. */

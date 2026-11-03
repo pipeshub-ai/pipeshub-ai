@@ -12,7 +12,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import useSWR from 'swr';
-import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
+import { SWR_NS, SWR_POLICY, writeSwrKey } from '@/lib/api/swr-cache';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { ACTIVE_TEAM_CONNECTORS_KEY, fetchActiveTeamConnectors } from '../cache-keys';
@@ -24,7 +24,6 @@ import {
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { localFsDesktopToast } from '../utils/local-fs-helpers';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
-import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   refreshAllConnectorInstances,
   refreshConnectorInstanceDetails,
@@ -196,6 +195,16 @@ function TeamConnectorsPageContent() {
       .join('|');
   }, [activeConnectors, connectorType]);
 
+  // Read from the team list itself: the store may still hold the personal page's list for a render.
+  const teamInstanceKeys = useMemo(() => {
+    if (!connectorType || !teamList) return '';
+    return filterConnectorsForScope(teamList.connectors ?? [], 'team')
+      .filter((c) => c.type === connectorType && c._key)
+      .map((c) => c._key as string)
+      .sort()
+      .join('|');
+  }, [teamList, connectorType]);
+
   // ── Instance type page: keep list + header in sync (no loading) ──
   useEffect(() => {
     if (!connectorType) return;
@@ -219,7 +228,7 @@ function TeamConnectorsPageContent() {
 
   // ── Instance configs: read for this set of instances at most once a minute; writes invalidate ──
   const { isLoading: isLoadingConfigs } = useSWR(
-    connectorType && instanceDetailKeys ? ([SWR_NS.connectorConfigs, instanceDetailKeys] as const) : null,
+    connectorType && teamInstanceKeys ? ([SWR_NS.connectorConfigs, teamInstanceKeys] as const) : null,
     ([, ids]) => loadInstanceConfigs(ids.split('|')),
     SWR_POLICY.list60s,
   );
@@ -236,9 +245,18 @@ function TeamConnectorsPageContent() {
 
   /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
   const refreshConnectorsListsQuiet = useCallback(async () => {
-    const { registry, active } = await fetchFilteredConnectorLists('team');
-    if (registry) setRegistryConnectors(registry);
-    if (active) setActiveConnectors(active);
+    const [registryRes, activeRes] = await Promise.allSettled([
+      ConnectorsApi.getRegistryConnectors('team'),
+      fetchActiveTeamConnectors(),
+    ]);
+    if (registryRes.status === 'fulfilled') {
+      setRegistryConnectors(filterConnectorsForScope(registryRes.value.connectors, 'team'));
+    }
+    if (activeRes.status === 'fulfilled') {
+      setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors ?? [], 'team'));
+      // The page re-applies the cached list on mount, so the cache must hold this newer answer.
+      writeSwrKey(ACTIVE_TEAM_CONNECTORS_KEY, activeRes.value);
+    }
   }, [setRegistryConnectors, setActiveConnectors]);
 
   const handleRefreshAllInstances = useCallback(async () => {
@@ -507,7 +525,6 @@ function TeamConnectorsPageContent() {
       <>
         <ConnectorDetailsLayout
           connector={connectorTypeInfo}
-          scope="team"
           scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}

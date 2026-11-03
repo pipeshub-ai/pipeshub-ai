@@ -140,6 +140,40 @@ describe('useUserDirectoryEntry: failures', () => {
     expect(requestedIds()).toEqual([[A, B], [A]]);
   });
 
+  it('settles every card when reading the answer fails, and the next visit asks again', async () => {
+    getUsersByIds.mockResolvedValueOnce(null);
+    const first = render(<><Name id={A} /><Name id={B} /></>);
+    await waitFor(() => expect(getUsersByIds).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    first.unmount();
+
+    render(<Name id={A} />);
+
+    await waitFor(() => expect(screen.getByText('Ada Lovelace')).toBeTruthy());
+    expect(requestedIds()).toEqual([[A, B], [A]]);
+  });
+
+  it('ignores a row without an id and still answers the others', async () => {
+    getUsersByIds.mockResolvedValueOnce([{ name: 'No id' }, user(B, 'Brian Kernighan')]);
+    render(<><Name id={A} /><Name id={B} /></>);
+
+    await waitFor(() => expect(screen.getByText('Brian Kernighan')).toBeTruthy());
+    expect(screen.getByTestId(`name-${A}`).textContent).toBe('—');
+  });
+
+  it('a lookup that never answers does not block the next session', async () => {
+    getUsersByIds.mockImplementationOnce(() => new Promise(() => {}));
+    const first = render(<Name id={A} />);
+    await waitFor(() => expect(getUsersByIds).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    act(() => clearSessionCache());
+    render(<Name id={A} />);
+
+    await waitFor(() => expect(screen.getByText('Ada Lovelace')).toBeTruthy());
+    expect(requestedIds()).toEqual([[A], [A]]);
+  });
+
   it('a failed batch does not touch users from another batch', async () => {
     const view = render(<Name id={A} />);
     await waitFor(() => expect(screen.getByText('Ada Lovelace')).toBeTruthy());

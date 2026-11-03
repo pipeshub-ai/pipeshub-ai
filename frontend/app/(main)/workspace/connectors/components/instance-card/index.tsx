@@ -5,9 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import { formatRelativeTime } from '@/lib/utils/formatters';
+import { formatRelativeTime, shortUserName } from '@/lib/utils/formatters';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
-import { shortUserName } from '@/lib/utils/user-ids';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import {
   InfoRow,

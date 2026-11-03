@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import { openFolderChildren, reloadOpenFoldersUnder, seedChildrenFromListing } from '../utils/folder-children';
+import { showCollectionsInSidebar } from '../utils/root-app-list';
 import { collection, hubChildrenFake, hubNode, hubResponse } from './kb-page-harness';
 import type { KnowledgeHubNode, KnowledgeHubQueryParams } from '../types';
 
@@ -89,6 +90,22 @@ describe('seedChildrenFromListing', () => {
     seed([folder('f-a', 'Alpha')], { ...TABLE_PARAMS, ...extra } as KnowledgeHubQueryParams);
 
     expect(kb().nodeChildrenCache.has('kb-eng')).toBe(false);
+  });
+
+  it('does nothing for a listing that does not say whether more children follow', () => {
+    seedChildrenFromListing('kb-eng', 'app', TABLE_PARAMS, { ...hubResponse([folder('f-a', 'Alpha')]), pagination: undefined });
+
+    expect(kb().nodeChildrenCache.has('kb-eng')).toBe(false);
+  });
+
+  it('shows the fresher rows of a folder already open in the sidebar', () => {
+    showCollectionsInSidebar([ENGINEERING]);
+    useKnowledgeBaseStore.setState((s) => ({ expandedFolders: { ...s.expandedFolders, 'kb-eng': true } }));
+
+    seed([folder('f-a', 'Alpha')]);
+
+    const engineering = [...kb().categorizedNodes!.shared, ...kb().categorizedNodes!.private].find((n) => n.id === 'kb-eng');
+    expect(engineering?.children?.map((n) => n.id)).toEqual(['f-a']);
   });
 
   it('does nothing when the table has more children than it showed', () => {

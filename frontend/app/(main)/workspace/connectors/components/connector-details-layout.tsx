@@ -26,8 +26,8 @@ import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspac
 interface ConnectorDetailsLayoutProps {
   /** Connector type info */
   connector: Connector | null;
-  /** Scope: team or personal. Not read any more; kept because edition pages pass it. */
-  scope: ConnectorScope;
+  /** @deprecated Not read; kept so edition pages that still pass it compile. */
+  scope?: ConnectorScope;
   /** Scope label for breadcrumb */
   scopeLabel: string;
   /** Instances for this connector type */

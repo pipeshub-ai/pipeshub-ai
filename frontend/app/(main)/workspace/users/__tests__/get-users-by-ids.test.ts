@@ -8,7 +8,7 @@ vi.mock('@/lib/api', () => ({
 
 const { UsersApi } = await import('../api');
 const { ShareCommonApi } = await import('@/app/components/share/api');
-const { isLookupUserId, shortUserName, toLookupUserIds } = await import('@/lib/utils/user-ids');
+const { isLookupUserId, toLookupUserIds } = await import('@/lib/utils/user-ids');
 
 const ID_A = '507f1f77bcf86cd799439011';
 const ID_B = '507f1f77bcf86cd799439012';
@@ -40,18 +40,6 @@ describe('isLookupUserId', () => {
       expect(isLookupUserId(id)).toBe(false);
     },
   );
-});
-
-describe('shortUserName', () => {
-  it.each([
-    ['Ada Lovelace', 'Ada L'],
-    ['  Ada   Byron   Lovelace ', 'Ada L'],
-    ['Ada', 'Ada'],
-    ['   ', ''],
-    [null, ''],
-  ])('%j becomes %j', (fullName, expected) => {
-    expect(shortUserName(fullName)).toBe(expected);
-  });
 });
 
 describe('UsersApi.getUsersByIds options', () => {

@@ -5,6 +5,7 @@ import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import { SharedAvatarStack } from '@/app/components/share/shared-avatar-stack';
 import type { TFunction } from 'i18next';
 import { useUserStore } from '@/lib/store/user-store';
@@ -53,7 +54,7 @@ export function AboutCard({ project, isOwner, onOpenShare }: AboutCardProps) {
   );
   const ownerName = isOwner
     ? t('chat.projects.workspace.youLabel', { defaultValue: 'You' })
-    : owner?.name?.trim() || owner?.email || t('chat.projects.roles.owner');
+    : userDisplayName(owner) ?? t('chat.projects.roles.owner');
 
   const visibilityLabel = projectVisibilityLabel(project, isOwner, t);
   const memberCount = project.members?.length ?? 0;

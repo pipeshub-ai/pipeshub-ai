@@ -250,7 +250,8 @@ export function seedChildrenFromListing(
   params: KnowledgeHubQueryParams,
   response: KnowledgeHubApiResponse,
 ): void {
-  if (response.pagination?.hasNext) return;
+  // No pagination means nothing says the listing is complete.
+  if (response.pagination?.hasNext !== false) return;
   if (Object.keys(params).some((key) => !PARAMS_THAT_KEEP_EVERY_CHILD.has(key))) return;
   const state = useKnowledgeBaseStore.getState();
   if (state.nodeChildrenPagination.get(parentId)?.hasNext) return;

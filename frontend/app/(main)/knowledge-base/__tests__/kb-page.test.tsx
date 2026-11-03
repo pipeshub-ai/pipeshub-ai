@@ -1728,6 +1728,24 @@ describe('Knowledge base page — All Records', () => {
     );
   });
 
+  it('fills the tree of a source folder from its complete listing, but never an app, whose tree lives elsewhere', async () => {
+    withCollections();
+    const folder = hubNode({ id: 'fold-1', name: 'Reports', nodeType: 'folder', parentId: 'rg-drive' });
+    api.hub.loadFolderData.mockResolvedValue(hubResponse([folder]));
+
+    const first = openAt('/knowledge-base?view=all-records&nodeType=recordGroup&nodeId=rg-drive');
+    await screen.findByRole('row', { name: 'Reports' });
+    expect(useKnowledgeBaseStore.getState().nodeChildrenCache.get('rg-drive')?.map((n) => n.id)).toEqual(['fold-1']);
+    first.unmount();
+
+    openAt('/knowledge-base?view=all-records&nodeType=app&nodeId=app-drive');
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalledWith('app', 'app-drive', expect.anything(), expect.anything()));
+    await screen.findByRole('row', { name: 'Reports' });
+
+    expect(useKnowledgeBaseStore.getState().nodeChildrenCache.has('app-drive')).toBe(false);
+    expect(useKnowledgeBaseStore.getState().appChildrenCache.has('app-drive')).toBe(false);
+  });
+
   it('scopes a question from the chat box to the connectors the filter bar picked', async () => {
     withCollections();
     api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));

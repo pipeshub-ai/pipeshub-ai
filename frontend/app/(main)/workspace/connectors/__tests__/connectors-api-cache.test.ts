@@ -41,6 +41,14 @@ describe('connector writes refresh the cached team connector lists (and the demo
     expect(revalidate).toHaveBeenCalledWith(SWR_NS.connectorConfigs);
   });
 
+  it('completing OAuth (desktop app) refreshes the instance configs', async () => {
+    api.get.mockResolvedValue({ data: {} });
+
+    await ConnectorsApi.completeConnectorOAuthCallback({ code: 'c', state: 's', oauthError: null, baseUrl: '' });
+
+    expect(revalidate).toHaveBeenCalledWith(SWR_NS.connectorConfigs);
+  });
+
   it('a failed auth save refreshes nothing', async () => {
     api.put.mockRejectedValue(new Error('500'));
 

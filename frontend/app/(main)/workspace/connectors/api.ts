@@ -475,6 +475,8 @@ export const ConnectorsApi = {
       params: query,
       suppressErrorToast: true,
     });
+    // The desktop app completes OAuth here even when the instance panel was closed meanwhile.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data ?? {};
   },
 
