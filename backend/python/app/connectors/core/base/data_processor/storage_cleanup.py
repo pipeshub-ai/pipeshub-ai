@@ -363,7 +363,11 @@ class StorageCleanupHelper:
         return moved, failed
 
     async def hand_over_after_record_delete(
-        self, org_id: str, connector_id: str, virtual_record_id: str
+        self,
+        org_id: str,
+        connector_id: str,
+        virtual_record_id: str,
+        deleted_record_id: str | None = None,
     ) -> bool:
         """After a record holding ``virtual_record_id`` left the graph, move the
         shared copy under a record that still holds it. True when it moved.
@@ -374,13 +378,16 @@ class StorageCleanupHelper:
         knowledge base's delete) does not look. A copy already under a remaining
         holder's path stays put, and so does one in the flat layout, which the
         flat-storage migration moves. Raises when the copy should move and
-        could not.
+        could not, or when a holder's path cannot be read: that holder may be
+        where the copy already is.
         """
         holders = [
             h for h in (
                 await self.graph_provider.get_virtual_record_holders([virtual_record_id], org_id)
             ).get(virtual_record_id) or []
-            if h.get("id") and h.get("connectorId")
+            # A lagging read can still list the deleted record, whose path is
+            # where the copy sits; counting it would leave the copy unmoved.
+            if h.get("id") and h.get("connectorId") and h.get("id") != deleted_record_id
         ]
         if not holders:
             return False
@@ -389,17 +396,17 @@ class StorageCleanupHelper:
             return False
         owner = choose_storage_owner(holders)
         # The owner first: it is where the copy usually already is.
-        owner_path: str | None = None
+        owner_path = ""
         for holder in [owner, *(h for h in holders if h is not owner)]:
             path = await self._owner_storage_path(holder)
             if path == current:
                 return False
+            if not path:
+                raise StorageHandoverError(
+                    f"no storage path for holder {holder.get('id')} of VRID {virtual_record_id}"
+                )
             if holder is owner:
                 owner_path = path
-        if not owner_path:
-            raise StorageHandoverError(
-                f"no storage path for holder {owner.get('id')} of VRID {virtual_record_id}"
-            )
         # Storage moves only what the named connector's delete would take; the
         # copy sits under its filing connector, which is not always this one.
         parts = current.split("/")

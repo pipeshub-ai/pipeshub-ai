@@ -822,11 +822,26 @@ class TestRecordDelete:
         helper.current_content_path = current
         return helper
 
-    async def _delete(self, graph: FakeGraph, node: FakeNode, key: str) -> bool:
-        record = graph.records.pop(key)
+    async def _delete(
+        self, graph: FakeGraph, node: FakeNode, key: str, *, still_listed: bool = False,
+        unreadable_path_for: str | None = None,
+    ) -> bool:
+        """``still_listed`` keeps the deleted record in the graph, the way a
+        lagging read still shows it; ``unreadable_path_for`` makes that
+        holder's storage path unreadable."""
+        record = graph.records[key] if still_listed else graph.records.pop(key)
         helper = self._helper(graph, node)
+        if unreadable_path_for:
+            read_path = helper._owner_storage_path
+
+            async def path_for(holder: dict) -> str | None:
+                return None if holder.get("id") == unreadable_path_for else await read_path(holder)
+
+            helper._owner_storage_path = path_for
         try:
-            return await helper.hand_over_after_record_delete(ORG, record["connectorId"], "v-shared")
+            return await helper.hand_over_after_record_delete(
+                ORG, record["connectorId"], "v-shared", deleted_record_id=key
+            )
         finally:
             await helper.close()
 
@@ -879,5 +894,21 @@ class TestRecordDelete:
 
         with pytest.raises(StorageHandoverError):
             await self._delete(graph, node, "a1")
+
+        assert node.path(docs["shared_record"]) == "records/conn-a/Report"
+
+    async def test_the_deleted_record_still_listed_by_a_lagging_read_is_not_a_holder(self, node) -> None:
+        graph, docs = _world(node)
+
+        assert await self._delete(graph, node, "a1", still_listed=True) is True
+
+        assert node.path(docs["shared_record"]) == "records/conn-b/Drive/Report"
+
+    async def test_a_holder_whose_path_cannot_be_read_stops_the_move(self, node) -> None:
+        graph, docs = _world(node)
+        graph.add("a3", "conn-a", "v-shared", name="Copy")
+
+        with pytest.raises(StorageHandoverError):
+            await self._delete(graph, node, "a1", unreadable_path_for="a3")
 
         assert node.path(docs["shared_record"]) == "records/conn-a/Report"

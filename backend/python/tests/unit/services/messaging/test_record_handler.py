@@ -1550,7 +1550,8 @@ class TestDeleteRecordEvent:
 
 class TestDeleteRecordSharedCopyHandover:
     """A deleted record may be the one its shared content is filed under; the
-    copy is handed to a record that still holds it, and never fails the delete."""
+    copy is handed to a record that still holds it, and a failed handover is
+    retried, since nothing else would move it."""
 
     PAYLOAD = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "connectorId": "kb-1"}
 
@@ -1570,21 +1571,25 @@ class TestDeleteRecordSharedCopyHandover:
             events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
 
         assert len(events) == 2
-        helper.hand_over_after_record_delete.assert_awaited_once_with("org-1", "kb-1", "vr1")
+        helper.hand_over_after_record_delete.assert_awaited_once_with(
+            "org-1", "kb-1", "vr1", deleted_record_id="r1"
+        )
         helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_a_failed_handover_is_logged_and_the_delete_completes(self) -> None:
+    async def test_a_failed_handover_raises_so_the_delete_is_retried(self) -> None:
         handler = self._handler()
+        handler._request_code_edge_build_for_deleted = AsyncMock()
         with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
             helper = helper_cls.return_value
             helper.hand_over_after_record_delete = AsyncMock(side_effect=RuntimeError("storage is down"))
             helper.close = AsyncMock()
-            events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
+            with pytest.raises(IndexingError) as raised:
+                await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
 
-        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        warned = " ".join(str(c.args) for c in handler.logger.warning.call_args_list)
-        assert "storage is down" in warned
+        assert "storage is down" in str(raised.value.__cause__)
+        # A retry runs the whole delete again, so the code-edge build is still asked for.
+        handler._request_code_edge_build_for_deleted.assert_awaited_once()
         helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio

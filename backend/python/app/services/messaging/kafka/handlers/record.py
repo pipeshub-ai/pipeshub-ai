@@ -875,8 +875,9 @@ class RecordEventHandler(BaseEventService):
         """The deleted record may be the one its shared content is filed under;
         that copy moves under a record that still holds it.
 
-        Never raises: the survivors still read the copy where it is, so a failed
-        handover leaves it misfiled, not lost, and must not fail the delete.
+        Raises IndexingError so the consumer retries, then dead-letters: the
+        record is already gone from the graph, so nothing else would move the
+        copy, and every step of the delete is idempotent.
         """
         connector_id = payload.get("connectorId")
         virtual_record_id = payload.get("virtualRecordId")
@@ -885,15 +886,18 @@ class RecordEventHandler(BaseEventService):
         helper = StorageCleanupHelper(
             self.logger, self.event_processor.graph_provider, self.config_service
         )
+        record_id = payload.get("recordId")
         try:
-            await helper.hand_over_after_record_delete(org_id, connector_id, virtual_record_id)
-        except Exception as e:
-            self.logger.warning(
-                "Deleted record %s: the content it shared with other records stays filed "
-                "under its old folder, because it could not be moved under a record that "
-                "still holds it (VRID %s): %s",
-                payload.get("recordId"), virtual_record_id, e,
+            await helper.hand_over_after_record_delete(
+                org_id, connector_id, virtual_record_id, deleted_record_id=record_id
             )
+        except Exception as e:
+            raise IndexingError(
+                f"Deleted record {record_id}: the content it shared with other records could "
+                "not be moved under a record that still holds it",
+                record_id=record_id,
+                details={"org_id": org_id, "virtual_record_id": virtual_record_id},
+            ) from e
         finally:
             await helper.close()
 
@@ -1661,8 +1665,8 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
-                await self._hand_over_shared_copy(payload, org_id)
                 await self._request_code_edge_build_for_deleted(payload)
+                await self._hand_over_shared_copy(payload, org_id)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
