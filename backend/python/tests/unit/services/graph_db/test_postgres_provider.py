@@ -12,6 +12,7 @@ from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFacto
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres import core
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
+from app.services.graph_db.postgres.permissions import PermissionsMixin
 from app.services.graph_db.postgres.provider import PostgresGraphProvider, unimplemented
 
 FACTORY = "app.services.graph_db.graph_db_provider_factory.GraphDBProviderFactory"
@@ -99,7 +100,7 @@ def _mismatches(name: str) -> list[str]:
 
 
 IMPLEMENTED = sorted(n for n, _ in inspect.getmembers(IGraphDBProvider, inspect.isfunction)
-                     if not n.startswith("_") and n not in unimplemented() and n in vars(core.CoreMixin))
+                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin)})
 
 
 @pytest.mark.parametrize("name", IMPLEMENTED)
@@ -116,8 +117,9 @@ def test_the_foundation_implements_the_generic_documents_and_edges() -> None:
 
 def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
     """A name defined twice is silently decided by the MRO."""
-    clashes = [n for n in vars(core.CoreMixin) if n in vars(PgBase) and not (n.startswith("__") and n.endswith("__"))]
-    assert not clashes
+    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin)}
+    assert not names[core.CoreMixin] & names[PermissionsMixin], "defined by two mixins"
+    assert not [n for ns in names.values() for n in ns if n in vars(PgBase)]
 
 
 def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
