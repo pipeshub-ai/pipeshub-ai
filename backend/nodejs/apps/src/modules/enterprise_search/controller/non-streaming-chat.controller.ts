@@ -20,6 +20,7 @@ import { ProjectService } from '../../projects/services/project.service';
 import { ProjectDto } from '../../projects/types/project.interfaces';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { CONVERSATION_STATUS } from '../constants/constants';
+import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import {
   completeTurn,
@@ -85,6 +86,7 @@ const nonStreamingTurn =
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    if (await refuseIfDraining(res)) return;
     const startTime = Date.now();
     const requestId = req.context?.requestId;
     try {

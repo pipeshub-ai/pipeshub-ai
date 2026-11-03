@@ -135,3 +135,29 @@ RETIRE_MARK = METRICS_BACKEND.counter(
 
 def record_retire_mark(outcome: str) -> None:
     RETIRE_MARK.inc(outcome)
+
+
+# outcome: written, current (nothing to write), no_union (the scope projects no property), no_stamp (the
+# record has no usable source stamp), failed:<reason> (values unreadable or untrusted; nothing written),
+# fenced_by_generation / superseded / content_changed / contention (a newer writer or version won; the
+# sweep converges the record), error (an unexpected exception, swallowed so indexing completes).
+PROPERTY_PROJECTIONS = METRICS_BACKEND.counter(
+    "pipeshub_record_property_projections_total",
+    "Record property projections written at index time, by outcome",
+    ["outcome"],
+)
+
+
+def record_property_projection(outcome: str) -> None:
+    PROPERTY_PROJECTIONS.inc(outcome)
+
+
+PROPERTY_VALUES_DROPPED = METRICS_BACKEND.counter(
+    "pipeshub_record_property_values_dropped_total",
+    "Property values not projected because they do not fit their property's stored form",
+    [],
+)
+
+
+def record_property_value_dropped() -> None:
+    PROPERTY_VALUES_DROPPED.inc()

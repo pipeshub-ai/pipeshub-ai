@@ -283,8 +283,8 @@ class TestIntegrationShards(unittest.TestCase):
 
     def test_a_connectors_own_code_runs_its_shard_and_core(self) -> None:
         self.assertEqual(shards("backend/python/app/connectors/sources/zendesk/connector.py"), {"connectors-2", "core"})
-        self.assertEqual(shards("backend/python/app/sources/client/s3/s3.py"), {"connectors-1", "connectors-3", "core"})
-        self.assertEqual(shards("backend/python/app/sources/external/google/drive.py"), {"connectors-2", "connectors-4", "core"})
+        self.assertEqual(shards("backend/python/app/sources/client/s3/s3.py"), {"connectors-1", "connectors-5", "core"})
+        self.assertEqual(shards("backend/python/app/sources/external/google/drive.py"), {"connectors-2", "connectors-4", "connectors-5", "core"})
 
     def test_a_connector_with_no_suite_runs_core(self) -> None:
         self.assertEqual(shards("backend/python/app/connectors/sources/box/connector.py"), {"core"})
@@ -305,12 +305,24 @@ class TestIntegrationShards(unittest.TestCase):
         self.assertEqual(shards("integration-tests/connectors/sharepoint/test_x.py"), {"connectors-1", "connectors-3"})
         self.assertEqual(shards("integration-tests/connectors/demo/test_demo.py"), {"demo"})
         self.assertEqual(shards("integration-tests/connectors/cifs/test_x.py"), {"core"})
+        self.assertEqual(shards("integration-tests/connectors/local_fs/local_fs_sim_world.py"), {"connectors-1"})
+
+    def test_the_desktop_local_fs_code_runs_the_local_fs_sim_shard(self) -> None:
+        for path in (
+            "frontend/electron/local-sync/manager.ts",
+            "frontend/electron/tsconfig.json",
+            "frontend/package.json",
+            "frontend/package-lock.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(shards(path), {"connectors-1", "core"})
+        self.assertEqual(shards("frontend/electron/main.ts"), {"core"})
         self.assertEqual(shards("integration-tests/connectors/scenario_matrix.py"), ALL_SHARDS)
 
     def test_a_connector_test_helper_other_suites_import_runs_their_shards_too(self) -> None:
         # MinIO subclasses S3's storage helper, and the cleanup tests on core use MinIO's.
-        self.assertEqual(shards("integration-tests/connectors/s3/s3_storage_helper.py"), {"connectors-1", "connectors-3", "core"})
-        self.assertEqual(shards("integration-tests/connectors/jira/jira_block_utils.py"), {"connectors-1", "connectors-2", "connectors-3"})
+        self.assertEqual(shards("integration-tests/connectors/s3/s3_storage_helper.py"), {"connectors-1", "connectors-5", "core"})
+        self.assertEqual(shards("integration-tests/connectors/jira/jira_block_utils.py"), {"connectors-1", "connectors-2", "connectors-4"})
 
     def test_markdown_the_code_or_tests_read_is_not_docs(self) -> None:
         self.assertEqual(shards("integration-tests/parsers/fixtures/research.md"), {"core"})
@@ -440,7 +452,7 @@ class TestTheShardRulesMatchTheRepository(unittest.TestCase):
         self.assertGreater(sum(1 for shards in executing.values() if shards), 300)
         # A case the walk must see: an import through another connector folder and helper/.
         s3_helper = IT / "connectors" / "s3" / "s3_storage_helper.py"
-        self.assertEqual(executing[s3_helper], {"connectors-1", "connectors-3", "core"})
+        self.assertEqual(executing[s3_helper], {"connectors-1", "connectors-5", "core"})
         for path, needed in sorted(executing.items()):
             rel = path.relative_to(ROOT).as_posix()
             with self.subTest(path=rel):

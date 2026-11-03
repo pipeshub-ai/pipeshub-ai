@@ -32,6 +32,8 @@ column content.documents.upload_lease_expires_at type=timestamp with time zone n
 column content.documents.upload_lease_token type=text notnull=false identity= generated= default=-
 column content.documents.version type=integer notnull=true identity= generated= default=0
 column content.documents.version_history type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column content.documents.write_seq type=bigint notnull=true identity= generated= default=0
+column content.documents.writers type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column content.project_members.added_at type=timestamp with time zone notnull=true identity= generated= default=-
 column content.project_members.added_by type=content.oid24 notnull=true identity= generated= default=-
 column content.project_members.org_id type=text notnull=true identity= generated= default=-
@@ -491,6 +493,13 @@ column platform.consumer_inbox.org_id type=text notnull=true identity= generated
 column platform.consumer_inbox.received_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column platform.deployment_profile.epoch type=integer notnull=true identity= generated= default=-
 column platform.deployment_profile.profile type=jsonb notnull=true identity= generated= default='{}'::jsonb
+column platform.docstore_changes.at type=timestamp with time zone notnull=true identity= generated= default=clock_timestamp()
+column platform.docstore_changes.id type=bigint notnull=true identity=a generated= default=-
+column platform.docstore_changes.op type="char" notnull=true identity= generated= default=-
+column platform.docstore_changes.org_id type=text notnull=true identity= generated= default=-
+column platform.docstore_changes.pk type=text notnull=true identity= generated= default=-
+column platform.docstore_changes.rel type=text notnull=true identity= generated= default=-
+column platform.docstore_changes.txid type=bigint notnull=true identity= generated= default=-
 column platform.jobs.created_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column platform.jobs.id type=bigint notnull=true identity=a generated= default=-
 column platform.jobs.kind type=text notnull=true identity= generated= default=-
@@ -765,6 +774,10 @@ constraint platform.connectors_config org_id_not_empty c def=86dc6958e5ad13c746a
 constraint platform.consumer_inbox consumer_inbox_pkey p def=200b24df51f90df254103634480056dc
 constraint platform.consumer_inbox org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint platform.consumer_inbox org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint platform.docstore_changes docstore_changes_op_check c def=95eccf2b368171ee705709ecce8740cf
+constraint platform.docstore_changes docstore_changes_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint platform.docstore_changes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint platform.docstore_changes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint platform.jobs jobs_pkey p def=4c6419b3704337bbfe50f018842a9ad3
 constraint platform.jobs jobs_status_check c def=0b1660fa4b72c6172fa023081f133040
 constraint platform.kv_entries kv_entries_pkey p def=729d3ed6c85722f863da384d2313331e
@@ -826,6 +839,7 @@ func kernel.restore_allows(text) owner=pipeshub_owner secdef=false leakproof=fal
 func kernel.set_epoch(text,integer,integer) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=8f910d57b1a6285a77542f5a3a0eac76 ext=-
 func kernel.src_text(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=search_path=pg_catalog, pg_temp body=3fc2fd51d3e06880f7956d4f18066887 ext=-
 func kernel.waive_sequence(regclass,regclass,name,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ce100d8398bc4d8937f3de3bc2a90b48 ext=-
+func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
@@ -854,6 +868,7 @@ funcacl kernel.profile_epoch() pipeshub_kv EXECUTE
 funcacl kernel.profile_epoch() pipeshub_node EXECUTE
 funcacl kernel.profile_epoch() pipeshub_query EXECUTE
 funcacl kernel.restore_allows(text) pipeshub_restore EXECUTE
+funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
@@ -961,6 +976,8 @@ index platform.connectors_config_pkey on platform.connectors_config unique=true 
 index platform.consumer_inbox_pkey on platform.consumer_inbox unique=true exclusion=false valid=true def=fdd7dcc3e0a1196783a6f4123c894660
 index platform.consumer_inbox_received_at on platform.consumer_inbox unique=false exclusion=false valid=true def=aedce0110dc15e21ca7265496b1a0100
 index platform.deployment_profile_one_row on platform.deployment_profile unique=true exclusion=false valid=true def=d14b131f206cb2b4f70564ec9404b576
+index platform.docstore_changes_by_id on platform.docstore_changes unique=false exclusion=false valid=true def=1e8cc3479e0b299f6d020bdc08774608
+index platform.docstore_changes_pkey on platform.docstore_changes unique=true exclusion=false valid=true def=5c24ff547b880656a29904ccc6c85bee
 index platform.jobs_one_running_per_kind on platform.jobs unique=true exclusion=false valid=true def=48b0837b864e0155e01b30cd4761f3bf
 index platform.jobs_pkey on platform.jobs unique=true exclusion=false valid=true def=79f9c6e47506242e024f85e368948de3
 index platform.kv_entries_expiry on platform.kv_entries unique=false exclusion=false valid=true def=3fd96ca779f6b615709654ddb1a836fc
@@ -1022,127 +1039,164 @@ operator ext.<<%(text,text) owner=<bootstrap-superuser> function=ext.strict_word
 operator ext.<<->(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_dist_op
 operator ext.<<<->(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_dist_op
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy content.documents import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy content.documents org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy content.documents restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy content.project_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy content.project_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy content.project_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy content.project_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy content.projects backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy content.projects import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy content.projects org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy content.projects restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.chat_messages backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.chat_messages import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.chat_messages jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.chat_messages org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.chat_messages restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.chat_session_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.chat_session_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.chat_session_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.chat_session_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.chat_session_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.chat_sessions backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.chat_sessions import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.chat_sessions jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.chat_sessions org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.chat_sessions restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.citations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.citations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.citations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.citations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.citations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.semantic_search_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.semantic_search_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.semantic_search_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.semantic_search_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.semantic_search_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.semantic_searches backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.semantic_searches import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.semantic_searches jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.semantic_searches org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.semantic_searches restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.org_auth_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.org_auth_config import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.org_auth_config jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.org_auth_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.org_auth_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.org_logos backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.org_logos import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.org_logos jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.org_logos org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.org_logos restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.orgs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.orgs import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.orgs jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.orgs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.orgs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.orgs vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy identity.slug_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.slug_counters import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.slug_counters jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.slug_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.slug_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.used_reset_links backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.used_reset_links import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.used_reset_links jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.used_reset_links org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.used_reset_links restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_activities backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_activities import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.user_activities jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_activities org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_activities restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_credentials backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_credentials import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.user_credentials jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_credentials org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_credentials restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_group_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_group_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.user_group_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_group_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_group_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_groups backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_groups import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.user_groups jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_groups org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_groups restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_pictures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_pictures import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.user_pictures jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.user_pictures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_pictures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.users backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.users import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.users jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.users org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.users restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy integrations.slack_threads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy integrations.slack_threads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy integrations.slack_threads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy integrations.slack_threads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.access_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.access_tokens import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.access_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.access_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.access_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.apps import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.authorization_codes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.authorization_codes import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.authorization_codes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.authorization_codes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.authorization_codes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.delegation_events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.delegation_events import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.delegation_events jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.delegation_events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.delegation_events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.device_authorizations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.device_authorizations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.device_authorizations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.device_authorizations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.device_authorizations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.refresh_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.refresh_tokens import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.refresh_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy oauth.refresh_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.refresh_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.service_account_delegations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.service_account_delegations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.service_account_delegations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.service_account_delegations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.connectors_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.connectors_config import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.connectors_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.connectors_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.consumer_inbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.consumer_inbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy platform.consumer_inbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.consumer_inbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy platform.docstore_changes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.docstore_changes import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy platform.docstore_changes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.docstore_changes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy platform.docstore_changes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.mail_log backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.mail_log import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.mail_log org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.mail_log restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.notifications backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.notifications import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.notifications jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy platform.notifications org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.notifications restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.outbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.outbox import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.outbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy platform.outbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.outbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
@@ -1199,6 +1253,8 @@ rel oauth.service_account_delegations kind=r owner=pipeshub_owner rls=true force
 rel platform.connectors_config kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.consumer_inbox kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.deployment_profile kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.docstore_changes kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel platform.docstore_changes_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.jobs_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.kv_entries kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -1214,24 +1270,40 @@ rel platform.sched_jobs kind=r owner=pipeshub_owner rls=false force=false option
 rel platform.sched_repeats kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.store_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 relacl content.documents pipeshub_backup SELECT grantable=false
+relacl content.documents pipeshub_import DELETE grantable=false
+relacl content.documents pipeshub_import INSERT grantable=false
+relacl content.documents pipeshub_import SELECT grantable=false
+relacl content.documents pipeshub_import UPDATE grantable=false
 relacl content.documents pipeshub_node DELETE grantable=false
 relacl content.documents pipeshub_node INSERT grantable=false
 relacl content.documents pipeshub_node SELECT grantable=false
 relacl content.documents pipeshub_node UPDATE grantable=false
 relacl content.documents pipeshub_restore INSERT grantable=false
 relacl content.project_members pipeshub_backup SELECT grantable=false
+relacl content.project_members pipeshub_import DELETE grantable=false
+relacl content.project_members pipeshub_import INSERT grantable=false
+relacl content.project_members pipeshub_import SELECT grantable=false
+relacl content.project_members pipeshub_import UPDATE grantable=false
 relacl content.project_members pipeshub_node DELETE grantable=false
 relacl content.project_members pipeshub_node INSERT grantable=false
 relacl content.project_members pipeshub_node SELECT grantable=false
 relacl content.project_members pipeshub_node UPDATE grantable=false
 relacl content.project_members pipeshub_restore INSERT grantable=false
 relacl content.projects pipeshub_backup SELECT grantable=false
+relacl content.projects pipeshub_import DELETE grantable=false
+relacl content.projects pipeshub_import INSERT grantable=false
+relacl content.projects pipeshub_import SELECT grantable=false
+relacl content.projects pipeshub_import UPDATE grantable=false
 relacl content.projects pipeshub_node DELETE grantable=false
 relacl content.projects pipeshub_node INSERT grantable=false
 relacl content.projects pipeshub_node SELECT grantable=false
 relacl content.projects pipeshub_node UPDATE grantable=false
 relacl content.projects pipeshub_restore INSERT grantable=false
 relacl conversation.chat_messages pipeshub_backup SELECT grantable=false
+relacl conversation.chat_messages pipeshub_import DELETE grantable=false
+relacl conversation.chat_messages pipeshub_import INSERT grantable=false
+relacl conversation.chat_messages pipeshub_import SELECT grantable=false
+relacl conversation.chat_messages pipeshub_import UPDATE grantable=false
 relacl conversation.chat_messages pipeshub_jobs DELETE grantable=false
 relacl conversation.chat_messages pipeshub_jobs INSERT grantable=false
 relacl conversation.chat_messages pipeshub_jobs SELECT grantable=false
@@ -1242,6 +1314,10 @@ relacl conversation.chat_messages pipeshub_node SELECT grantable=false
 relacl conversation.chat_messages pipeshub_node UPDATE grantable=false
 relacl conversation.chat_messages pipeshub_restore INSERT grantable=false
 relacl conversation.chat_session_members pipeshub_backup SELECT grantable=false
+relacl conversation.chat_session_members pipeshub_import DELETE grantable=false
+relacl conversation.chat_session_members pipeshub_import INSERT grantable=false
+relacl conversation.chat_session_members pipeshub_import SELECT grantable=false
+relacl conversation.chat_session_members pipeshub_import UPDATE grantable=false
 relacl conversation.chat_session_members pipeshub_jobs DELETE grantable=false
 relacl conversation.chat_session_members pipeshub_jobs INSERT grantable=false
 relacl conversation.chat_session_members pipeshub_jobs SELECT grantable=false
@@ -1252,6 +1328,10 @@ relacl conversation.chat_session_members pipeshub_node SELECT grantable=false
 relacl conversation.chat_session_members pipeshub_node UPDATE grantable=false
 relacl conversation.chat_session_members pipeshub_restore INSERT grantable=false
 relacl conversation.chat_sessions pipeshub_backup SELECT grantable=false
+relacl conversation.chat_sessions pipeshub_import DELETE grantable=false
+relacl conversation.chat_sessions pipeshub_import INSERT grantable=false
+relacl conversation.chat_sessions pipeshub_import SELECT grantable=false
+relacl conversation.chat_sessions pipeshub_import UPDATE grantable=false
 relacl conversation.chat_sessions pipeshub_jobs DELETE grantable=false
 relacl conversation.chat_sessions pipeshub_jobs INSERT grantable=false
 relacl conversation.chat_sessions pipeshub_jobs SELECT grantable=false
@@ -1262,6 +1342,10 @@ relacl conversation.chat_sessions pipeshub_node SELECT grantable=false
 relacl conversation.chat_sessions pipeshub_node UPDATE grantable=false
 relacl conversation.chat_sessions pipeshub_restore INSERT grantable=false
 relacl conversation.citations pipeshub_backup SELECT grantable=false
+relacl conversation.citations pipeshub_import DELETE grantable=false
+relacl conversation.citations pipeshub_import INSERT grantable=false
+relacl conversation.citations pipeshub_import SELECT grantable=false
+relacl conversation.citations pipeshub_import UPDATE grantable=false
 relacl conversation.citations pipeshub_jobs DELETE grantable=false
 relacl conversation.citations pipeshub_jobs INSERT grantable=false
 relacl conversation.citations pipeshub_jobs SELECT grantable=false
@@ -1272,6 +1356,10 @@ relacl conversation.citations pipeshub_node SELECT grantable=false
 relacl conversation.citations pipeshub_node UPDATE grantable=false
 relacl conversation.citations pipeshub_restore INSERT grantable=false
 relacl conversation.semantic_search_members pipeshub_backup SELECT grantable=false
+relacl conversation.semantic_search_members pipeshub_import DELETE grantable=false
+relacl conversation.semantic_search_members pipeshub_import INSERT grantable=false
+relacl conversation.semantic_search_members pipeshub_import SELECT grantable=false
+relacl conversation.semantic_search_members pipeshub_import UPDATE grantable=false
 relacl conversation.semantic_search_members pipeshub_jobs DELETE grantable=false
 relacl conversation.semantic_search_members pipeshub_jobs INSERT grantable=false
 relacl conversation.semantic_search_members pipeshub_jobs SELECT grantable=false
@@ -1282,6 +1370,10 @@ relacl conversation.semantic_search_members pipeshub_node SELECT grantable=false
 relacl conversation.semantic_search_members pipeshub_node UPDATE grantable=false
 relacl conversation.semantic_search_members pipeshub_restore INSERT grantable=false
 relacl conversation.semantic_searches pipeshub_backup SELECT grantable=false
+relacl conversation.semantic_searches pipeshub_import DELETE grantable=false
+relacl conversation.semantic_searches pipeshub_import INSERT grantable=false
+relacl conversation.semantic_searches pipeshub_import SELECT grantable=false
+relacl conversation.semantic_searches pipeshub_import UPDATE grantable=false
 relacl conversation.semantic_searches pipeshub_jobs DELETE grantable=false
 relacl conversation.semantic_searches pipeshub_jobs INSERT grantable=false
 relacl conversation.semantic_searches pipeshub_jobs SELECT grantable=false
@@ -1292,6 +1384,10 @@ relacl conversation.semantic_searches pipeshub_node SELECT grantable=false
 relacl conversation.semantic_searches pipeshub_node UPDATE grantable=false
 relacl conversation.semantic_searches pipeshub_restore INSERT grantable=false
 relacl identity.org_auth_config pipeshub_backup SELECT grantable=false
+relacl identity.org_auth_config pipeshub_import DELETE grantable=false
+relacl identity.org_auth_config pipeshub_import INSERT grantable=false
+relacl identity.org_auth_config pipeshub_import SELECT grantable=false
+relacl identity.org_auth_config pipeshub_import UPDATE grantable=false
 relacl identity.org_auth_config pipeshub_jobs DELETE grantable=false
 relacl identity.org_auth_config pipeshub_jobs INSERT grantable=false
 relacl identity.org_auth_config pipeshub_jobs SELECT grantable=false
@@ -1302,6 +1398,10 @@ relacl identity.org_auth_config pipeshub_node SELECT grantable=false
 relacl identity.org_auth_config pipeshub_node UPDATE grantable=false
 relacl identity.org_auth_config pipeshub_restore INSERT grantable=false
 relacl identity.org_logos pipeshub_backup SELECT grantable=false
+relacl identity.org_logos pipeshub_import DELETE grantable=false
+relacl identity.org_logos pipeshub_import INSERT grantable=false
+relacl identity.org_logos pipeshub_import SELECT grantable=false
+relacl identity.org_logos pipeshub_import UPDATE grantable=false
 relacl identity.org_logos pipeshub_jobs DELETE grantable=false
 relacl identity.org_logos pipeshub_jobs INSERT grantable=false
 relacl identity.org_logos pipeshub_jobs SELECT grantable=false
@@ -1313,6 +1413,10 @@ relacl identity.org_logos pipeshub_node UPDATE grantable=false
 relacl identity.org_logos pipeshub_restore INSERT grantable=false
 relacl identity.org_slug_seq pipeshub_node USAGE grantable=false
 relacl identity.orgs pipeshub_backup SELECT grantable=false
+relacl identity.orgs pipeshub_import DELETE grantable=false
+relacl identity.orgs pipeshub_import INSERT grantable=false
+relacl identity.orgs pipeshub_import SELECT grantable=false
+relacl identity.orgs pipeshub_import UPDATE grantable=false
 relacl identity.orgs pipeshub_jobs DELETE grantable=false
 relacl identity.orgs pipeshub_jobs INSERT grantable=false
 relacl identity.orgs pipeshub_jobs SELECT grantable=false
@@ -1324,6 +1428,10 @@ relacl identity.orgs pipeshub_node UPDATE grantable=false
 relacl identity.orgs pipeshub_restore INSERT grantable=false
 relacl identity.orgs pipeshub_vetted_identity SELECT grantable=false
 relacl identity.slug_counters pipeshub_backup SELECT grantable=false
+relacl identity.slug_counters pipeshub_import DELETE grantable=false
+relacl identity.slug_counters pipeshub_import INSERT grantable=false
+relacl identity.slug_counters pipeshub_import SELECT grantable=false
+relacl identity.slug_counters pipeshub_import UPDATE grantable=false
 relacl identity.slug_counters pipeshub_jobs DELETE grantable=false
 relacl identity.slug_counters pipeshub_jobs INSERT grantable=false
 relacl identity.slug_counters pipeshub_jobs SELECT grantable=false
@@ -1334,6 +1442,10 @@ relacl identity.slug_counters pipeshub_node SELECT grantable=false
 relacl identity.slug_counters pipeshub_node UPDATE grantable=false
 relacl identity.slug_counters pipeshub_restore INSERT grantable=false
 relacl identity.used_reset_links pipeshub_backup SELECT grantable=false
+relacl identity.used_reset_links pipeshub_import DELETE grantable=false
+relacl identity.used_reset_links pipeshub_import INSERT grantable=false
+relacl identity.used_reset_links pipeshub_import SELECT grantable=false
+relacl identity.used_reset_links pipeshub_import UPDATE grantable=false
 relacl identity.used_reset_links pipeshub_jobs DELETE grantable=false
 relacl identity.used_reset_links pipeshub_jobs INSERT grantable=false
 relacl identity.used_reset_links pipeshub_jobs SELECT grantable=false
@@ -1344,6 +1456,10 @@ relacl identity.used_reset_links pipeshub_node SELECT grantable=false
 relacl identity.used_reset_links pipeshub_node UPDATE grantable=false
 relacl identity.used_reset_links pipeshub_restore INSERT grantable=false
 relacl identity.user_activities pipeshub_backup SELECT grantable=false
+relacl identity.user_activities pipeshub_import DELETE grantable=false
+relacl identity.user_activities pipeshub_import INSERT grantable=false
+relacl identity.user_activities pipeshub_import SELECT grantable=false
+relacl identity.user_activities pipeshub_import UPDATE grantable=false
 relacl identity.user_activities pipeshub_jobs DELETE grantable=false
 relacl identity.user_activities pipeshub_jobs INSERT grantable=false
 relacl identity.user_activities pipeshub_jobs SELECT grantable=false
@@ -1354,6 +1470,10 @@ relacl identity.user_activities pipeshub_node SELECT grantable=false
 relacl identity.user_activities pipeshub_node UPDATE grantable=false
 relacl identity.user_activities pipeshub_restore INSERT grantable=false
 relacl identity.user_credentials pipeshub_backup SELECT grantable=false
+relacl identity.user_credentials pipeshub_import DELETE grantable=false
+relacl identity.user_credentials pipeshub_import INSERT grantable=false
+relacl identity.user_credentials pipeshub_import SELECT grantable=false
+relacl identity.user_credentials pipeshub_import UPDATE grantable=false
 relacl identity.user_credentials pipeshub_jobs DELETE grantable=false
 relacl identity.user_credentials pipeshub_jobs INSERT grantable=false
 relacl identity.user_credentials pipeshub_jobs SELECT grantable=false
@@ -1364,6 +1484,10 @@ relacl identity.user_credentials pipeshub_node SELECT grantable=false
 relacl identity.user_credentials pipeshub_node UPDATE grantable=false
 relacl identity.user_credentials pipeshub_restore INSERT grantable=false
 relacl identity.user_group_members pipeshub_backup SELECT grantable=false
+relacl identity.user_group_members pipeshub_import DELETE grantable=false
+relacl identity.user_group_members pipeshub_import INSERT grantable=false
+relacl identity.user_group_members pipeshub_import SELECT grantable=false
+relacl identity.user_group_members pipeshub_import UPDATE grantable=false
 relacl identity.user_group_members pipeshub_jobs DELETE grantable=false
 relacl identity.user_group_members pipeshub_jobs INSERT grantable=false
 relacl identity.user_group_members pipeshub_jobs SELECT grantable=false
@@ -1374,6 +1498,10 @@ relacl identity.user_group_members pipeshub_node SELECT grantable=false
 relacl identity.user_group_members pipeshub_node UPDATE grantable=false
 relacl identity.user_group_members pipeshub_restore INSERT grantable=false
 relacl identity.user_groups pipeshub_backup SELECT grantable=false
+relacl identity.user_groups pipeshub_import DELETE grantable=false
+relacl identity.user_groups pipeshub_import INSERT grantable=false
+relacl identity.user_groups pipeshub_import SELECT grantable=false
+relacl identity.user_groups pipeshub_import UPDATE grantable=false
 relacl identity.user_groups pipeshub_jobs DELETE grantable=false
 relacl identity.user_groups pipeshub_jobs INSERT grantable=false
 relacl identity.user_groups pipeshub_jobs SELECT grantable=false
@@ -1384,6 +1512,10 @@ relacl identity.user_groups pipeshub_node SELECT grantable=false
 relacl identity.user_groups pipeshub_node UPDATE grantable=false
 relacl identity.user_groups pipeshub_restore INSERT grantable=false
 relacl identity.user_pictures pipeshub_backup SELECT grantable=false
+relacl identity.user_pictures pipeshub_import DELETE grantable=false
+relacl identity.user_pictures pipeshub_import INSERT grantable=false
+relacl identity.user_pictures pipeshub_import SELECT grantable=false
+relacl identity.user_pictures pipeshub_import UPDATE grantable=false
 relacl identity.user_pictures pipeshub_jobs DELETE grantable=false
 relacl identity.user_pictures pipeshub_jobs INSERT grantable=false
 relacl identity.user_pictures pipeshub_jobs SELECT grantable=false
@@ -1394,6 +1526,10 @@ relacl identity.user_pictures pipeshub_node SELECT grantable=false
 relacl identity.user_pictures pipeshub_node UPDATE grantable=false
 relacl identity.user_pictures pipeshub_restore INSERT grantable=false
 relacl identity.users pipeshub_backup SELECT grantable=false
+relacl identity.users pipeshub_import DELETE grantable=false
+relacl identity.users pipeshub_import INSERT grantable=false
+relacl identity.users pipeshub_import SELECT grantable=false
+relacl identity.users pipeshub_import UPDATE grantable=false
 relacl identity.users pipeshub_jobs DELETE grantable=false
 relacl identity.users pipeshub_jobs INSERT grantable=false
 relacl identity.users pipeshub_jobs SELECT grantable=false
@@ -1404,6 +1540,10 @@ relacl identity.users pipeshub_node SELECT grantable=false
 relacl identity.users pipeshub_node UPDATE grantable=false
 relacl identity.users pipeshub_restore INSERT grantable=false
 relacl integrations.slack_threads pipeshub_backup SELECT grantable=false
+relacl integrations.slack_threads pipeshub_import DELETE grantable=false
+relacl integrations.slack_threads pipeshub_import INSERT grantable=false
+relacl integrations.slack_threads pipeshub_import SELECT grantable=false
+relacl integrations.slack_threads pipeshub_import UPDATE grantable=false
 relacl integrations.slack_threads pipeshub_node DELETE grantable=false
 relacl integrations.slack_threads pipeshub_node INSERT grantable=false
 relacl integrations.slack_threads pipeshub_node SELECT grantable=false
@@ -1415,6 +1555,10 @@ relacl kernel.schema_epoch pipeshub_indexing SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_node SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_query SELECT grantable=false
 relacl oauth.access_tokens pipeshub_backup SELECT grantable=false
+relacl oauth.access_tokens pipeshub_import DELETE grantable=false
+relacl oauth.access_tokens pipeshub_import INSERT grantable=false
+relacl oauth.access_tokens pipeshub_import SELECT grantable=false
+relacl oauth.access_tokens pipeshub_import UPDATE grantable=false
 relacl oauth.access_tokens pipeshub_jobs DELETE grantable=false
 relacl oauth.access_tokens pipeshub_jobs SELECT grantable=false
 relacl oauth.access_tokens pipeshub_node DELETE grantable=false
@@ -1423,12 +1567,20 @@ relacl oauth.access_tokens pipeshub_node SELECT grantable=false
 relacl oauth.access_tokens pipeshub_node UPDATE grantable=false
 relacl oauth.access_tokens pipeshub_restore INSERT grantable=false
 relacl oauth.apps pipeshub_backup SELECT grantable=false
+relacl oauth.apps pipeshub_import DELETE grantable=false
+relacl oauth.apps pipeshub_import INSERT grantable=false
+relacl oauth.apps pipeshub_import SELECT grantable=false
+relacl oauth.apps pipeshub_import UPDATE grantable=false
 relacl oauth.apps pipeshub_node DELETE grantable=false
 relacl oauth.apps pipeshub_node INSERT grantable=false
 relacl oauth.apps pipeshub_node SELECT grantable=false
 relacl oauth.apps pipeshub_node UPDATE grantable=false
 relacl oauth.apps pipeshub_restore INSERT grantable=false
 relacl oauth.authorization_codes pipeshub_backup SELECT grantable=false
+relacl oauth.authorization_codes pipeshub_import DELETE grantable=false
+relacl oauth.authorization_codes pipeshub_import INSERT grantable=false
+relacl oauth.authorization_codes pipeshub_import SELECT grantable=false
+relacl oauth.authorization_codes pipeshub_import UPDATE grantable=false
 relacl oauth.authorization_codes pipeshub_jobs DELETE grantable=false
 relacl oauth.authorization_codes pipeshub_jobs SELECT grantable=false
 relacl oauth.authorization_codes pipeshub_node DELETE grantable=false
@@ -1437,6 +1589,10 @@ relacl oauth.authorization_codes pipeshub_node SELECT grantable=false
 relacl oauth.authorization_codes pipeshub_node UPDATE grantable=false
 relacl oauth.authorization_codes pipeshub_restore INSERT grantable=false
 relacl oauth.delegation_events pipeshub_backup SELECT grantable=false
+relacl oauth.delegation_events pipeshub_import DELETE grantable=false
+relacl oauth.delegation_events pipeshub_import INSERT grantable=false
+relacl oauth.delegation_events pipeshub_import SELECT grantable=false
+relacl oauth.delegation_events pipeshub_import UPDATE grantable=false
 relacl oauth.delegation_events pipeshub_jobs DELETE grantable=false
 relacl oauth.delegation_events pipeshub_jobs SELECT grantable=false
 relacl oauth.delegation_events pipeshub_node DELETE grantable=false
@@ -1445,6 +1601,10 @@ relacl oauth.delegation_events pipeshub_node SELECT grantable=false
 relacl oauth.delegation_events pipeshub_node UPDATE grantable=false
 relacl oauth.delegation_events pipeshub_restore INSERT grantable=false
 relacl oauth.device_authorizations pipeshub_backup SELECT grantable=false
+relacl oauth.device_authorizations pipeshub_import DELETE grantable=false
+relacl oauth.device_authorizations pipeshub_import INSERT grantable=false
+relacl oauth.device_authorizations pipeshub_import SELECT grantable=false
+relacl oauth.device_authorizations pipeshub_import UPDATE grantable=false
 relacl oauth.device_authorizations pipeshub_jobs DELETE grantable=false
 relacl oauth.device_authorizations pipeshub_jobs SELECT grantable=false
 relacl oauth.device_authorizations pipeshub_node DELETE grantable=false
@@ -1453,6 +1613,10 @@ relacl oauth.device_authorizations pipeshub_node SELECT grantable=false
 relacl oauth.device_authorizations pipeshub_node UPDATE grantable=false
 relacl oauth.device_authorizations pipeshub_restore INSERT grantable=false
 relacl oauth.refresh_tokens pipeshub_backup SELECT grantable=false
+relacl oauth.refresh_tokens pipeshub_import DELETE grantable=false
+relacl oauth.refresh_tokens pipeshub_import INSERT grantable=false
+relacl oauth.refresh_tokens pipeshub_import SELECT grantable=false
+relacl oauth.refresh_tokens pipeshub_import UPDATE grantable=false
 relacl oauth.refresh_tokens pipeshub_jobs DELETE grantable=false
 relacl oauth.refresh_tokens pipeshub_jobs SELECT grantable=false
 relacl oauth.refresh_tokens pipeshub_node DELETE grantable=false
@@ -1461,12 +1625,20 @@ relacl oauth.refresh_tokens pipeshub_node SELECT grantable=false
 relacl oauth.refresh_tokens pipeshub_node UPDATE grantable=false
 relacl oauth.refresh_tokens pipeshub_restore INSERT grantable=false
 relacl oauth.service_account_delegations pipeshub_backup SELECT grantable=false
+relacl oauth.service_account_delegations pipeshub_import DELETE grantable=false
+relacl oauth.service_account_delegations pipeshub_import INSERT grantable=false
+relacl oauth.service_account_delegations pipeshub_import SELECT grantable=false
+relacl oauth.service_account_delegations pipeshub_import UPDATE grantable=false
 relacl oauth.service_account_delegations pipeshub_node DELETE grantable=false
 relacl oauth.service_account_delegations pipeshub_node INSERT grantable=false
 relacl oauth.service_account_delegations pipeshub_node SELECT grantable=false
 relacl oauth.service_account_delegations pipeshub_node UPDATE grantable=false
 relacl oauth.service_account_delegations pipeshub_restore INSERT grantable=false
 relacl platform.connectors_config pipeshub_backup SELECT grantable=false
+relacl platform.connectors_config pipeshub_import DELETE grantable=false
+relacl platform.connectors_config pipeshub_import INSERT grantable=false
+relacl platform.connectors_config pipeshub_import SELECT grantable=false
+relacl platform.connectors_config pipeshub_import UPDATE grantable=false
 relacl platform.connectors_config pipeshub_node INSERT grantable=false
 relacl platform.connectors_config pipeshub_node SELECT grantable=false
 relacl platform.connectors_config pipeshub_node UPDATE grantable=false
@@ -1484,6 +1656,14 @@ relacl platform.consumer_inbox pipeshub_query INSERT grantable=false
 relacl platform.consumer_inbox pipeshub_query SELECT grantable=false
 relacl platform.consumer_inbox pipeshub_restore INSERT grantable=false
 relacl platform.deployment_profile pipeshub_vetted_kernel SELECT grantable=false
+relacl platform.docstore_changes pipeshub_backup SELECT grantable=false
+relacl platform.docstore_changes pipeshub_import DELETE grantable=false
+relacl platform.docstore_changes pipeshub_import SELECT grantable=false
+relacl platform.docstore_changes pipeshub_jobs DELETE grantable=false
+relacl platform.docstore_changes pipeshub_jobs INSERT grantable=false
+relacl platform.docstore_changes pipeshub_jobs SELECT grantable=false
+relacl platform.docstore_changes pipeshub_node INSERT grantable=false
+relacl platform.docstore_changes pipeshub_restore INSERT grantable=false
 relacl platform.jobs pipeshub_vetted_platform INSERT grantable=false
 relacl platform.jobs pipeshub_vetted_platform SELECT grantable=false
 relacl platform.jobs pipeshub_vetted_platform UPDATE grantable=false
@@ -1508,10 +1688,18 @@ relacl platform.kv_entries pipeshub_query INSERT grantable=false
 relacl platform.kv_entries pipeshub_query SELECT grantable=false
 relacl platform.kv_entries pipeshub_query UPDATE grantable=false
 relacl platform.mail_log pipeshub_backup SELECT grantable=false
+relacl platform.mail_log pipeshub_import DELETE grantable=false
+relacl platform.mail_log pipeshub_import INSERT grantable=false
+relacl platform.mail_log pipeshub_import SELECT grantable=false
+relacl platform.mail_log pipeshub_import UPDATE grantable=false
 relacl platform.mail_log pipeshub_node INSERT grantable=false
 relacl platform.mail_log pipeshub_node SELECT grantable=false
 relacl platform.mail_log pipeshub_restore INSERT grantable=false
 relacl platform.notifications pipeshub_backup SELECT grantable=false
+relacl platform.notifications pipeshub_import DELETE grantable=false
+relacl platform.notifications pipeshub_import INSERT grantable=false
+relacl platform.notifications pipeshub_import SELECT grantable=false
+relacl platform.notifications pipeshub_import UPDATE grantable=false
 relacl platform.notifications pipeshub_jobs DELETE grantable=false
 relacl platform.notifications pipeshub_jobs SELECT grantable=false
 relacl platform.notifications pipeshub_node DELETE grantable=false
@@ -1520,6 +1708,10 @@ relacl platform.notifications pipeshub_node SELECT grantable=false
 relacl platform.notifications pipeshub_node UPDATE grantable=false
 relacl platform.notifications pipeshub_restore INSERT grantable=false
 relacl platform.outbox pipeshub_backup SELECT grantable=false
+relacl platform.outbox pipeshub_import DELETE grantable=false
+relacl platform.outbox pipeshub_import INSERT grantable=false
+relacl platform.outbox pipeshub_import SELECT grantable=false
+relacl platform.outbox pipeshub_import UPDATE grantable=false
 relacl platform.outbox pipeshub_jobs DELETE grantable=false
 relacl platform.outbox pipeshub_jobs SELECT grantable=false
 relacl platform.outbox pipeshub_jobs UPDATE grantable=false
@@ -1614,19 +1806,23 @@ schema oauth owner=pipeshub_owner
 schema platform owner=pipeshub_owner
 schema public owner=pg_database_owner
 schemaacl content pipeshub_backup USAGE grantable=false
+schemaacl content pipeshub_import USAGE grantable=false
 schemaacl content pipeshub_node USAGE grantable=false
 schemaacl content pipeshub_restore USAGE grantable=false
 schemaacl conversation pipeshub_backup USAGE grantable=false
+schemaacl conversation pipeshub_import USAGE grantable=false
 schemaacl conversation pipeshub_jobs USAGE grantable=false
 schemaacl conversation pipeshub_node USAGE grantable=false
 schemaacl conversation pipeshub_restore USAGE grantable=false
 schemaacl ext pipeshub_app USAGE grantable=false
 schemaacl identity pipeshub_backup USAGE grantable=false
+schemaacl identity pipeshub_import USAGE grantable=false
 schemaacl identity pipeshub_jobs USAGE grantable=false
 schemaacl identity pipeshub_node USAGE grantable=false
 schemaacl identity pipeshub_restore USAGE grantable=false
 schemaacl identity pipeshub_vetted_identity USAGE grantable=false
 schemaacl integrations pipeshub_backup USAGE grantable=false
+schemaacl integrations pipeshub_import USAGE grantable=false
 schemaacl integrations pipeshub_node USAGE grantable=false
 schemaacl integrations pipeshub_restore USAGE grantable=false
 schemaacl kernel pipeshub_app USAGE grantable=false
@@ -1639,11 +1835,13 @@ schemaacl kernel pipeshub_query_login USAGE grantable=false
 schemaacl kernel pipeshub_restore USAGE grantable=false
 schemaacl kernel pipeshub_vetted_kernel USAGE grantable=false
 schemaacl oauth pipeshub_backup USAGE grantable=false
+schemaacl oauth pipeshub_import USAGE grantable=false
 schemaacl oauth pipeshub_jobs USAGE grantable=false
 schemaacl oauth pipeshub_node USAGE grantable=false
 schemaacl oauth pipeshub_restore USAGE grantable=false
 schemaacl platform pipeshub_backup USAGE grantable=false
 schemaacl platform pipeshub_connectors USAGE grantable=false
+schemaacl platform pipeshub_import USAGE grantable=false
 schemaacl platform pipeshub_indexing USAGE grantable=false
 schemaacl platform pipeshub_jobs USAGE grantable=false
 schemaacl platform pipeshub_kv USAGE grantable=false
@@ -1721,6 +1919,36 @@ sysrelacl information_schema.views PUBLIC SELECT
 sysschemaacl information_schema PUBLIC USAGE
 tablespace pg_default owner=<bootstrap-superuser>
 tablespace pg_global owner=<bootstrap-superuser>
+trigger content.documents docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger content.project_members docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger content.projects docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger conversation.chat_messages docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger conversation.chat_session_members docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger conversation.chat_sessions docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger conversation.citations docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger conversation.semantic_search_members docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger conversation.semantic_searches docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.org_auth_config docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.org_logos docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.slug_counters docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.used_reset_links docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.user_activities docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.user_credentials docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.user_group_members docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.user_groups docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.user_pictures docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger identity.users docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger integrations.slack_threads docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.access_tokens docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.apps docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.authorization_codes docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.delegation_events docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.device_authorizations docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.refresh_tokens docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger oauth.service_account_delegations docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger platform.connectors_config docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger platform.mail_log docstore_change_log enabled=O function=platform.docstore_log_change()
+trigger platform.notifications docstore_change_log enabled=O function=platform.docstore_log_change()
 type content.oid24 kind=d owner=pipeshub_owner
 type conversation.oid24 kind=d owner=pipeshub_owner
 type identity.oid24 kind=d owner=pipeshub_owner

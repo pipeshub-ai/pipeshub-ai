@@ -14,14 +14,18 @@ from app.connectors.core.registry.oauth_config_registry import (
     get_oauth_config_registry,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-# Which indexing lane a connector is given on Redis Streams, and whether an
-# administrator may move it. An edition can replace either: pin a connector to
-# a lane of its own, weight lanes, or allow admin moves.
+# Which indexing lane a connector is given on Redis Streams, whether an
+# administrator may move it, and which pool of lanes an org belongs in. An
+# edition can replace any of them: pin a connector to a lane of its own, weight
+# lanes, allow admin moves, or keep a group of orgs on lanes of their own.
 from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed as admin_lane_move_allowed,
 )
 from app.services.messaging.lanes.assignment_policy import (
     choose_connector_lane as choose_connector_lane,
+)
+from app.services.messaging.lanes.assignment_policy import (
+    lane_pool_for_org as lane_pool_for_org,
 )
 
 

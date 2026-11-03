@@ -133,7 +133,7 @@ class TestGuards:
         assert ok is True
         assert "ignoredEntityTypes" not in json.loads(text)
         _, search_kwargs = patched[1].call_args
-        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization"])
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization", "product"])
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
@@ -372,7 +372,7 @@ class TestWhereEntitySearchIsOffered:
     async def test_kinds_it_cannot_serve_are_explained_and_not_sent(self, patched) -> None:
         _, search = patched
         _, payload = await self._offered(query="Acme", named_entity_kinds=["organization", "person", "date", "company"])
-        assert search.call_args.kwargs["kinds"] == ["organization"]
+        assert search.call_args.kwargs["kinds"] == ["organization", "product"]
         notes = " ".join(payload["kindNotes"])
         assert "search_by_entities" in notes and "find_records_by_value" in notes and "'company'" in notes
 
@@ -408,11 +408,17 @@ class TestWithoutEntitySearch:
         monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
 
     @pytest.mark.asyncio
-    async def test_kinds_go_to_the_search_as_given(self, patched) -> None:
+    async def test_kinds_go_to_the_search_with_the_kinds_their_names_are_filed_under(self, patched) -> None:
         _, search = patched
         ok, text = await execute_search_entities(_state(), "Sam", named_entity_kinds=["person", "organization"])
-        assert ok and search.call_args.kwargs["kinds"] == ["person", "organization"]
+        assert ok and search.call_args.kwargs["kinds"] == ["person", "organization", "product"]
         assert "kindNotes" not in json.loads(text) and "search_by_entities" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_place_kind_reaches_every_place_kind(self, patched) -> None:
+        _, search = patched
+        await execute_search_entities(_state(), "Hamburg", named_entity_kinds=["state"])
+        assert set(search.call_args.kwargs["kinds"]) == {"location", "city", "state", "country_region"}
 
     @pytest.mark.asyncio
     async def test_hits_carry_no_kind(self, patched) -> None:

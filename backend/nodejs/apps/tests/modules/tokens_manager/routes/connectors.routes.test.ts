@@ -1,6 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import http from 'http'
+import type { AddressInfo } from 'net'
+import axios from 'axios'
 import { Container } from 'inversify'
 import {
   createConnectorRouter,
@@ -1898,5 +1901,36 @@ describe('Connector Routes - handler coverage', () => {
         })
       }
     })
+  })
+})
+
+// Loading the routes module sets the retry policy of the process-wide axios client.
+describe('axios retry policy set by the connector routes', () => {
+  const countRequests = async (headers: Record<string, string>): Promise<number> => {
+    let count = 0
+    const server = http.createServer((_req, res) => {
+      count += 1
+      res.writeHead(429, headers).end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = server.address() as AddressInfo
+      const status = await axios.get(`http://127.0.0.1:${port}/`).then(
+        () => 200,
+        (e) => e.response?.status,
+      )
+      expect(status).to.equal(429)
+      return count
+    } finally {
+      server.close()
+    }
+  }
+
+  it('passes a 429 with a long Retry-After straight back', async () => {
+    expect(await countRequests({ 'Retry-After': '2351' })).to.equal(1)
+  })
+
+  it('still retries a 429 with no Retry-After', async () => {
+    expect(await countRequests({})).to.equal(4)
   })
 })

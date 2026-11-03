@@ -106,6 +106,8 @@ CHECKS: dict[str, tuple[str, ...]] = {
 STORAGE_NODE = (
     "backend/nodejs/apps/src/modules/storage/**",
     "backend/nodejs/apps/src/libs/middlewares/**",
+    # The storage server reads and writes its documents through these.
+    "backend/nodejs/apps/src/libs/repositories/**",
     "backend/nodejs/apps/src/libs/utils/**",
     "backend/nodejs/apps/src/libs/keyValueStore/**",
     "backend/nodejs/apps/src/libs/services/authtoken.service.ts",
@@ -117,6 +119,13 @@ STORAGE_NODE = (
     "backend/nodejs/apps/package-lock.json",
     "backend/nodejs/apps/tsconfig.json",
     "backend/nodejs/apps/tsconfig.test.json",
+    # The document write state the storage server keeps (its unit of work, errors and
+    # org context), and the model and itest that prove it.
+    "backend/nodejs/apps/src/libs/db/uow.ts",
+    "backend/nodejs/apps/src/libs/errors/storage.errors.ts",
+    "backend/nodejs/apps/src/libs/context/**",
+    "backend/nodejs/apps/tests/storage/fingerprint-model/**",
+    "backend/nodejs/apps/tests/stores/storage-fingerprint.itest.ts",
 )
 
 
@@ -127,6 +136,9 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/support/**",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/fake_storage.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/image_harness.py",
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
@@ -194,15 +206,19 @@ CODEQL_LANGUAGES = {
 
 IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 
-# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_4 in
+# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_5 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
-    "connectors-1": ("nextcloud", "bookstack", "mariadb", "minio", "postgres", "web", "rss", "local_fs", "github", "sharepoint"),
-    "connectors-2": (
-        "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
+    "connectors-1": (
+        "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "web", "local_fs", "local_fs_sim", "github",
+        "sharepoint",
     ),
-    "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
-    "connectors-4": ("google_drive_workspace", "google_drive_individual"),
+    "connectors-2": (
+        "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
+    ),
+    "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
+    "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
+    "connectors-5": ("google_drive_workspace", "s3"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -243,6 +259,14 @@ IT_CORE = tuple(
         "resilience", "storage", "ai_agents", "named_entities",
     )
 ) + ("frontend/**",)
+# The desktop app's Local FS code, which the local_fs_sim suite runs headless, and
+# what the desktop agent loads it with: the Electron tsconfig and the frontend's packages.
+IT_LOCAL_SYNC = (
+    "frontend/electron/local-sync/**",
+    "frontend/electron/tsconfig.json",
+    "frontend/package.json",
+    "frontend/package-lock.json",
+)
 
 # Connector code: a folder under one of these is that connector's.
 CONNECTOR_ROOTS = (
@@ -265,18 +289,18 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
         for name in (
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
-            "lumos", "monday", "pagerduty", "posthog", "redshift", "salesforce", "servicenow", "trello", "workday",
+            "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",
         )
     },
     "azure": ("azure_blob", "azure_files"),
     "azure_blob": ("azure_blob",),
     "azure_files": ("azure_files",),
-    "bookstack": ("bookstack",),
+    "bookstack": ("bookstack", "bookstack_sim"),
     "cifs": ("smb",),
     "demo": ("demo",),
     # external/bookstack imports external/dropbox.
-    "dropbox": ("bookstack",),
+    "dropbox": ("bookstack", "bookstack_sim"),
     "gcs": ("gcs",),
     "google_cloud_storage": ("gcs",),
     "github": ("github", "github_teams"),
@@ -290,6 +314,8 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "network_share": ("smb",),
     "nextcloud": ("nextcloud",),
     "rss": ("rss",),
+    "salesforce": ("salesforce",),
+    "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
     "zammad": ("zammad",),
     "zendesk": ("zendesk",),
@@ -298,21 +324,28 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 # A connector test folder's markers, where they differ from its name.
 # test_pr_changes.py checks that every test file in a folder carries one of them.
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
+    "bookstack": ("bookstack", "bookstack_sim"),
+    "servicenow": ("servicenow", "servicenow_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
+    "local_fs": ("local_fs", "local_fs_sim"),
     "sharepoint": ("sharepoint", "sharepoint_sim"),
     # Marked cifs, which no shard selects; core still collects the files.
     "cifs": (),
+    # Marked snowflake, which no shard selects: it needs a live account.
+    "snowflake": (),
 }
 # Shards whose suites import a connector test folder's helpers, beyond the
 # folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
-# Teams' (which uses Jira's block parser), Gmail on Google Drive's sync helpers,
-# and the cleanup tests on core create MinIO, Postgres and S3 connectors.
+# Teams' (which, like GitLab's, uses Jira's block parser), Gmail and the individual
+# Google Drive suite on the workspace Drive suite's helpers, Salesforce on Gmail's
+# user helper, and the cleanup tests on core create MinIO, Postgres and S3 connectors.
 # test_pr_changes.py follows the suite's imports and fails when this misses one.
 CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "github_teams": ("connectors-1",),
-    "google_drive_workspace": ("connectors-2",),
-    "jira": ("connectors-1", "connectors-3"),
+    "gmail": ("connectors-3",),
+    "google_drive_workspace": ("connectors-2", "connectors-4"),
+    "jira": ("connectors-1", "connectors-4"),
     "minio": ("core",),
     "postgres": ("core",),
     "s3": ("connectors-1", "core"),
@@ -344,6 +377,8 @@ def _integration_shards_for(path: str) -> set[str]:
         if markers is None:
             return set(IT_SHARDS)
         return (_shards_of(markers) or {"core"}) | set(CONNECTOR_TESTS_ALSO_RUN.get(name, ()))
+    if matches(path, IT_LOCAL_SYNC):
+        return {"core"} | _shards_of(("local_fs_sim",))
     if matches(path, IT_CORE) and not path.startswith("integration-tests/response-validation/helper/"):
         return {"core"}
     return set(IT_SHARDS)

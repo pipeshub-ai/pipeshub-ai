@@ -34,7 +34,8 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResponse> {
 export async function updateOnboardingStatus(
   status: Exclude<OnboardingStatus, 'notConfigured'>
 ): Promise<void> {
-  await apiClient.put('/api/v1/org/onboarding-status', { status });
+  // The onboarding page shows its own error with a retry, so skip the generic toast.
+  await apiClient.put('/api/v1/org/onboarding-status', { status }, { suppressErrorToast: true });
 }
 
 // ===============================

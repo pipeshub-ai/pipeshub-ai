@@ -5,11 +5,13 @@ closed by that module once it sits unused. Its requests go through the connector
 which allows the hosts in ``WEB_CONNECTOR_ALLOWED_HOSTS``; a page's own scripts could then pull an
 internal host's data into what the model reads, so rendering is off whenever that allowlist is set.
 The URL is checked as public before it is opened and the page the browser lands on is checked after.
+Each render loads in a browser context of its own, so nothing a site stores for one caller reaches another.
 """
 
 import asyncio
 import logging
 import os
+import uuid
 
 from app.connectors.sources.web.address_guard import ALLOWED_HOSTS_ENV
 from app.utils.url_redaction import redact_url
@@ -20,8 +22,6 @@ from app.web.fetch.http import FetchedBody, check_page_status, check_public
 logger = logging.getLogger(__name__)
 
 RENDER_SWITCH_ENV = "WEB_FETCH_RENDER_JS"
-# Pages rendered for chat share one browser context, apart from the web connector's crawls.
-_CONTEXT_KEY = "chat"
 _OFF = frozenset({"0", "false", "no", "off"})
 
 
@@ -42,7 +42,7 @@ class BrowserRenderer:
         try:
             async with asyncio.timeout(deadline.remaining()):
                 async with shared_fetcher(browser_like=True) as fetcher:
-                    result = await fetcher.fetch(url, browser_like=True, context_key=_CONTEXT_KEY)
+                    result = await fetcher.fetch(url, browser_like=True, context_key=f"chat:{uuid.uuid4().hex}")
         except TimeoutError as e:
             raise TimedOut(f"The browser did not finish {redact_url(url)} in time", source=self.id) from e
         final = result.url or url

@@ -83,10 +83,15 @@ def _make_handler(logger=None, config_service=None, event_processor=None, produc
 
 
 async def _collect_events(handler, event_type, payload):
-    """Collect all yielded events from process_event into a list."""
+    """Collect the events process_event yields, less the announcement of the download.
+
+    START_DOWNLOAD is for the consumer's admission; it says nothing about the
+    outcome these tests assert on, and every record now yields one.
+    """
     events = []
     async for event in handler.process_event(event_type, payload):
-        events.append(event)
+        if event.event != IndexingEvent.START_DOWNLOAD:
+            events.append(event)
     return events
 
 
@@ -765,12 +770,14 @@ class TestRequestCodeEdges:
         handler.producer.send_event.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_deleting_a_code_file_asks_for_a_full_build(self) -> None:
+    async def test_deleting_a_code_file_whose_names_were_not_kept_asks_for_a_full_build(self) -> None:
         """An incremental build starts from records updated since the last one,
-        and a deleted record is not among them (R-3)."""
+        and a deleted record is not among them (R-3); without the names the
+        file defined it cannot find the files that called into it."""
         handler = _make_handler()
         graph_provider = handler.event_processor.graph_provider
         graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         graph_provider.upsert_sync_point = AsyncMock()
         await handler._request_code_edge_build_for_deleted({
             "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
@@ -781,6 +788,37 @@ class TestRequestCodeEdges:
         mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
         assert mark["edgeBuildFullRequestId"]
         handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_code_file_whose_names_were_kept_asks_for_an_incremental_build(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"syncPointKey": "k"}])
+        graph_provider.upsert_sync_point = AsyncMock()
+        await handler._request_code_edge_build_for_deleted({
+            "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
+            "recordGroupId": "repo-1-code-repository", "connectorName": "GitLab",
+        })
+        assert graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {
+            "orgId": "org-1", "recordId": "record-1", "syncDataPointType": "codeEdgeDeletedFile",
+        }
+        for call in graph_provider.upsert_sync_point.await_args_list:
+            assert "edgeBuildFullRequestId" not in call.kwargs["sync_point_data"]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_deleted_file_record_asks_for_a_full_build(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("graph down"))
+        graph_provider.upsert_sync_point = AsyncMock()
+        await handler._request_code_edge_build_for_deleted({
+            "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
+            "recordGroupId": "repo-1-code-repository", "connectorName": "GitLab",
+        })
+        mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
+        assert mark["edgeBuildFullRequestId"]
 
     @pytest.mark.asyncio
     async def test_an_edited_file_does_not_ask_for_a_full_build(self) -> None:
@@ -1954,7 +1992,7 @@ class TestAlreadyIndexed:
                 indexingStatus=ProgressStatus.COMPLETED.value,
                 extractionStatus=ProgressStatus.IN_PROGRESS.value,
             )
-            yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
             raise EntityLookupUnavailableError("lookup could not run") from _StoreRefused()
 
         handler.event_processor.on_event = MagicMock(side_effect=indexed_then_deferred)
@@ -2000,7 +2038,7 @@ class TestAlreadyIndexed:
                     indexingStatus=ProgressStatus.COMPLETED.value,
                     extractionStatus=ProgressStatus.IN_PROGRESS.value,
                 )
-            yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
             raise error
 
         handler.event_processor.on_event = MagicMock(side_effect=on_event)
@@ -2121,7 +2159,7 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
             "fork-2": self._code("fork-2", "repo-b"),
             "doc": {"_key": "doc", "connectorName": "Drive", "indexingStatus": "COMPLETED"},
         })
-        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_awaited_once_with("org-1", "conn-1", "repo-b")
 
     @pytest.mark.asyncio
@@ -2132,17 +2170,29 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
             "_key": "twin", "indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": "vr1"})
         gp.update_queued_duplicates_status = AsyncMock(return_value=1)
         handler._reconcile_pending_duplicates = AsyncMock()
-        handler._request_code_edge_builds_for_copies = AsyncMock()
+        handler.request_code_edge_builds_for_copies = AsyncMock()
         await handler._release_queued_copies("twin")
-        handler._request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
+        handler.request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_does_not_raise(self) -> None:
         handler = self._handler({})
         handler.event_processor.graph_provider.get_records_by_virtual_record_id = AsyncMock(
             side_effect=ConnectionError("graph down"))
-        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_failed_request_does_not_skip_the_other_repos(self) -> None:
+        handler = self._handler({
+            "twin": self._code("twin", "repo-a"),
+            "fork-1": self._code("fork-1", "repo-b"),
+            "fork-2": self._code("fork-2", "repo-c"),
+        })
+        handler._ask_for_code_edge_build = AsyncMock(side_effect=[ConnectionError("broker down"), None])
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
+        asked = {c.args[2] for c in handler._ask_for_code_edge_build.await_args_list}
+        assert asked == {"repo-b", "repo-c"}
 
 
 class TestReleasingQueuedCopies:
@@ -3526,6 +3576,7 @@ class TestProcessEventErrors:
                 EventTypes.NEW_RECORD.value,
                 payload,
             )
+            assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
             await asyncio.wait_for(entered_processor.wait(), timeout=1)
             processing.cancel()
@@ -3589,6 +3640,7 @@ class TestProcessEventErrors:
                 EventTypes.NEW_RECORD.value,
                 payload,
             )
+            assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
             await asyncio.wait_for(entered_processor.wait(), timeout=1)
             processing.cancel()
@@ -4057,14 +4109,14 @@ class TestReconcilePromotedDuplicates:
             "sib-1": {"_key": "sib-1", "orgId": "org-1"},
             "sib-2": {"_key": "sib-2", "orgId": "org-1"},
         }
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: sib_docs[key])
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: sib_docs[key])
         handler.event_processor.sync_vector_membership = AsyncMock()
         sink = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         await handler._reconcile_promoted_duplicates("r1", "vr1")
 
-        gp.get_records_by_virtual_record_id.assert_awaited_once_with("vr1")
+        gp.get_records_by_virtual_record_id.assert_awaited_once_with("vr1", raise_on_error=True)
         assert [c.args for c in gp.copy_document_relationships.await_args_list] == [
             ("r1", "sib-1"),
             ("r1", "sib-2"),
@@ -4082,7 +4134,7 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1"])
         gp.copy_document_relationships = AsyncMock(return_value=True)
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key, "orgId": "org-1"})
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: {"_key": key, "orgId": "org-1"})
         handler.event_processor.sync_vector_membership = AsyncMock()
         assert handler.event_processor.sink_orchestrator is None
 
@@ -4107,7 +4159,7 @@ class TestReconcilePromotedDuplicates:
             "other-org": {"_key": "other-org", "orgId": "org-2"},
             "gone": None,
         }
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: docs[key])
         handler.event_processor.sync_vector_membership = AsyncMock()
         sink = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
@@ -4123,7 +4175,7 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1"])
         gp.copy_document_relationships = AsyncMock()
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key})
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: {"_key": key})
         handler.event_processor.sync_vector_membership = AsyncMock()
 
         await handler._reconcile_promoted_duplicates("r1", "vr1")
@@ -4152,7 +4204,7 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1", "sib-2"])
         gp.copy_document_relationships = AsyncMock(side_effect=[False, True])
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key, "orgId": "org-1"})
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: {"_key": key, "orgId": "org-1"})
         handler.event_processor.sync_vector_membership = AsyncMock()
         sink = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
@@ -5819,11 +5871,25 @@ class TestStageRedrive:
                 "extension": "pptx", "stages": ["classify"], **extra}
 
     @pytest.mark.asyncio
+    async def test_a_first_use_of_a_revision_never_seen_does_not_reindex(self) -> None:
+        handler, _gp, ingress = self._handler(None)
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(firstUse=True))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_awaited_once()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_records_first_use_redrives_without_forcing(self) -> None:
+        handler, _gp, ingress = self._handler(["vr1:rev-1:classify@1"])
+        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(firstUse=True))
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"], force=False)
+
+    @pytest.mark.asyncio
     async def test_named_stages_re_run_without_touching_the_index(self) -> None:
         handler, gp, ingress = self._handler(["vr1:rev-1:classify@1"])
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"])
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"], force=True)
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
@@ -5832,7 +5898,7 @@ class TestStageRedrive:
         handler, gp, ingress = self._handler(["vr1:rev-1:entities@1"])
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"]))
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"])
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"], force=True)
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
@@ -5864,7 +5930,7 @@ class TestStageRedrive:
         handler, gp, ingress = self._handler(["vr1:?:classify@1"])
         gp.get_document.return_value.pop("contentRev")
         await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stageRev=None))
-        ingress.redrive.assert_awaited_once_with("vr1", None, ["classify"])
+        ingress.redrive.assert_awaited_once_with("vr1", None, ["classify"], force=True)
 
     @pytest.mark.asyncio
     async def test_a_retry_for_the_current_revision_re_runs_its_stage(self) -> None:
@@ -5872,7 +5938,7 @@ class TestStageRedrive:
         await _collect_events(
             handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"], stageRev="rev-1")
         )
-        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"])
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"], force=True)
 
     @pytest.mark.asyncio
     async def test_a_failed_retry_never_writes_the_records_statuses(self) -> None:

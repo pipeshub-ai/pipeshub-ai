@@ -16,6 +16,8 @@ from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
     EntityKind,
     EntitySource,
+    interchangeable_kinds,
+    kind_family,
 )
 from app.modules.named_entities.domain.values import ContactValue
 from app.modules.named_entities.merge import EntityIdentity, entity_identity
@@ -34,10 +36,6 @@ NAME_KINDS: tuple[EntityKind, ...] = (
 )
 # What an agent may say a name is; an address is still tried when no kind is given.
 MENTION_KIND_HINTS: tuple[str, ...] = tuple(kind.value for kind in NAME_KINDS if kind is not EntityKind.ADDRESS)
-# The extractor files one place under any of these, so a hint of one means all.
-LOCATION_FAMILY: tuple[EntityKind, ...] = (
-    EntityKind.LOCATION, EntityKind.CITY, EntityKind.STATE, EntityKind.COUNTRY_REGION,
-)
 _CONTEXT = NormalizationContext(tz="UTC")
 
 
@@ -53,10 +51,18 @@ class Mention:
         return tuple(dict.fromkeys(kind for kind, _ in self.keys))
 
     def hinted(self, kind: str | EntityKind) -> bool:
-        """Whether ``kind`` is what the agent asked for (any kind, when it gave none)."""
+        """Whether ``kind`` is what the agent asked for, or one it is filed under
+        too (any kind, when it gave none)."""
         if self.kind_hint is None:
             return True
-        return str(getattr(kind, "value", kind)) in {k.value for k in _expand(self.kind_hint)}
+        return str(getattr(kind, "value", kind)) in {k.value for k in kind_family(self.kind_hint)}
+
+    def settles(self, kind: str | EntityKind) -> bool:
+        """Whether an exact name match under ``kind`` answers this mention without
+        a check: the asked kind or one interchangeable with it (any, with no hint)."""
+        if self.kind_hint is None:
+            return True
+        return str(getattr(kind, "value", kind)) in {k.value for k in interchangeable_kinds(self.kind_hint)}
 
 
 @dataclass(frozen=True)
@@ -71,7 +77,7 @@ def parse_mentions(raw: Any) -> ParsedMentions:  # noqa: ANN401 - tool arguments
     items = raw if isinstance(raw, list) else ([raw] if raw else [])
     notes: list[str] = []
     mentions: list[Mention] = []
-    seen: set[tuple[str, EntityKind | None]] = set()
+    seen: set[tuple[frozenset[tuple[EntityKind, str]], EntityKind | None]] = set()
     for item in items:
         name, kind_text = _fields(item)
         if not name:
@@ -89,13 +95,14 @@ def parse_mentions(raw: Any) -> ParsedMentions:  # noqa: ANN401 - tool arguments
             notes.append(f"'{name}': unknown kind '{kind_text}' was ignored.")
         keys = tuple(
             (kind, identity.norm_key)
-            for kind in (_expand(hint) if hint else NAME_KINDS)
+            for kind in (kind_family(hint) if hint else NAME_KINDS)
             if (identity := _identity(kind, name)) is not None
         )
         if not keys:
             notes.append(f"'{name}' is not a name that can be looked up.")
             continue
-        dedupe = (keys[0][1].rsplit(":", 1)[-1], hint)
+        # The hint stays part of it: related kinds share keys but not what settles a match.
+        dedupe = (frozenset(keys), hint)
         if dedupe in seen:
             continue
         seen.add(dedupe)
@@ -139,5 +146,3 @@ def _value_kind(text: str) -> bool:
     return any(kind.value == text for kind in VALUE_KINDS)
 
 
-def _expand(hint: EntityKind) -> tuple[EntityKind, ...]:
-    return LOCATION_FAMILY if hint in LOCATION_FAMILY else (hint,)

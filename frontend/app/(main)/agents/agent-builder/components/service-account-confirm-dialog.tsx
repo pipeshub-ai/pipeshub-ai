@@ -171,7 +171,6 @@ export function ServiceAccountConfirmDialog({
           padding: 'var(--space-3)',
           paddingBottom: 'max(var(--space-3), env(safe-area-inset-bottom, 0px))',
           zIndex: 1000,
-          backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-3)',
           border: '1px solid var(--olive-4)',
           boxShadow:

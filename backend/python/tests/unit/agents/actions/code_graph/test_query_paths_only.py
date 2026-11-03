@@ -21,7 +21,8 @@ def query_graph() -> object:
 
     class _Graph:
         async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
-                                            filters=None, limit=None, raise_on_error=False) -> list[dict]:
+                                            filters=None, limit=None, raise_on_error=False,
+                                            return_fields=None) -> list[dict]:
             if collection != CollectionNames.CODE_FILES.value:
                 return []
             return [{"_key": "rec-1", "filePath": "app/events/events.py", "fileRole": "source"}]
@@ -82,7 +83,8 @@ def repo_root_graph() -> object:
 
     class _Graph:
         async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
-                                            filters=None, limit=None, raise_on_error=False) -> list[dict]:
+                                            filters=None, limit=None, raise_on_error=False,
+                                            return_fields=None) -> list[dict]:
             return [{"_key": p, "filePath": p, "fileRole": "source"}
                     for p in paths if p.startswith(prefix)]
 
@@ -227,7 +229,8 @@ class _CappedGraph:
     """Two files where the scan only looks at one."""
 
     async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
-                                        filters=None, limit=None, raise_on_error=False) -> list[dict]:
+                                        filters=None, limit=None, raise_on_error=False,
+                                            return_fields=None) -> list[dict]:
         if collection != CollectionNames.CODE_FILES.value:
             return []
         return [{"_key": f"rec-{i}", "filePath": f"app/events/e{i}.py",

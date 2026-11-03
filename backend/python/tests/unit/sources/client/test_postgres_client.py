@@ -604,7 +604,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
 
         assert columns == ["id", "name"]
         assert rows == [(1, "a"), (2, "b")]
-        conn.prepare.assert_awaited_once_with("SELECT * FROM t")
+        conn.prepare.assert_awaited_once_with("SELECT * FROM t", timeout=None)
         pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
 
     @pytest.mark.asyncio
@@ -640,7 +640,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         client, _, _ = self._make_pooled_client(statement=statement)
 
         await client.execute_query_raw("SELECT * FROM t WHERE id = $1", (1,))
-        statement.fetch.assert_awaited_once_with(1)
+        statement.fetch.assert_awaited_once_with(1, timeout=None)
 
     @pytest.mark.asyncio
     async def test_no_params(self) -> None:

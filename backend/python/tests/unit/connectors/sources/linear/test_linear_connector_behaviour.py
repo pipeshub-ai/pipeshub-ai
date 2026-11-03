@@ -80,6 +80,8 @@ def _make_connector() -> LinearConnector:
         ("get_records_in_record_group", []),
         ("get_nodes_by_filters", []),
         ("on_new_app_users", None),
+        ("get_all_app_users", []),
+        ("withdraw_app_user_access", None),
         ("on_new_user_groups", None),
         ("on_new_record_groups", None),
         ("on_new_records", None),
@@ -1131,6 +1133,88 @@ class TestRunSync:
         assert team_members == [alice, guest]
 
     @pytest.mark.asyncio
+    async def test_a_stored_user_missing_from_the_user_list_loses_the_connector(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        gone = AppUser(
+            app_name=Connectors.LINEAR, connector_id=CONNECTOR_ID, source_user_id="u3",
+            org_id="org-1", email="gone@test.com", full_name="Gone", is_active=True)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[alice, guest, gone])
+
+        await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [gone])
+
+    @pytest.mark.asyncio
+    async def test_everyone_stored_is_withdrawn_when_a_complete_read_lists_nobody_eligible(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        connector._fetch_users = AsyncMock(return_value=[])
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[alice, guest])
+
+        await self._run(connector)
+
+        processor.on_new_app_users.assert_not_awaited()
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [alice, guest])
+
+    @pytest.mark.asyncio
+    async def test_the_old_node_of_an_account_whose_email_changed_loses_the_connector(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        old_node = AppUser(
+            app_name=Connectors.LINEAR, connector_id=CONNECTOR_ID, source_user_id="u1",
+            org_id="org-1", email="alice.old@test.com", full_name="Alice", is_active=True)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[old_node, alice, guest])
+
+        await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [old_node])
+
+    @pytest.mark.asyncio
+    async def test_nobody_is_withdrawn_while_everyone_is_listed(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[alice, guest])
+
+        await self._run(connector)
+
+        connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_stored_user_list_withdraws_nobody_and_stops_the_sync(self) -> None:
+        connector = _make_connector()
+        self._prepare(connector)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_not_awaited()
+        connector._fetch_teams.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_user_flagged_inactive_is_not_listed_and_a_reactivated_one_is(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        users = [
+            {"id": "u1", "email": "alice@test.com", "active": True},
+            {"id": "u2", "email": "bob@test.com", "active": False},
+        ]
+
+        async def pages(*_: object, **__: object) -> AsyncIterator[tuple]:
+            yield users, None, None
+
+        connector._api.pages = pages
+        assert [u.source_user_id for u in await connector._fetch_users()] == ["u1"]
+
+        users[1]["active"] = True
+        assert [u.source_user_id for u in await connector._fetch_users()] == ["u1", "u2"]
+
+    @pytest.mark.asyncio
     async def test_steps_run_in_order_with_the_synced_teams(self) -> None:
         connector = _make_connector()
         self._prepare(connector)
@@ -1524,3 +1608,78 @@ class TestUnsyncedParentTeams:
         assert {g.source_user_group_id for g, _ in user_groups} == {"team-web", "team-ops", "team-sec"}
         assert datasource.teams.await_count == 2
         assert datasource.teams.await_args.kwargs["filter"] == {"id": {"in": ["team-sec"]}}
+
+
+class TestChildMetByTwoWritersAtOnce:
+    """The sync's attachment pass and the stream of the attachment's issue (indexing
+    reads the issue while the sync goes on) can each look for the attachment before
+    either has stored it. Each then created its own record, so the graph held two
+    records for one attachment. The next full sync rewrote the one its lookup found
+    and unlinked the other, which lost its parent issue and the access it inherits."""
+
+    ATTACHMENT = {
+        "id": "att-1", "title": "ENG-3", "url": "https://linear.app/org/issue/ENG-3",
+        "createdAt": "2024-01-01T10:00:00.000Z", "updatedAt": "2024-06-01T10:00:00.000Z",
+        "issue": {"id": "issue-1", "identifier": "ENG-1", "team": {"id": "team-1"}},
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        connector = _make_connector()
+        processor = connector.data_entities_processor
+        stored: dict = {}
+
+        async def store(records_with_permissions) -> None:
+            for record, _ in records_with_permissions:
+                stored[record.id] = record
+
+        # Both writers look before either has stored the attachment.
+        processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: (
+                _ticket(external_record_id) if external_record_id == "issue-1" else None))
+        processor.on_new_records = AsyncMock(side_effect=store)
+        datasource = _use_datasource(connector, MagicMock())
+        datasource.attachments = AsyncMock(return_value=_ok({"attachments": _page([self.ATTACHMENT])}))
+
+        await connector._process_issue_attachments([self.ATTACHMENT], "issue-1", "node-issue-1", "team-1")
+        await connector._sync_attachments([(_team_rg(), [])])
+
+        assert [r.external_record_id for r in stored.values()] == ["att-1"], (
+            f"one attachment stored as {len(stored)} records: {sorted(stored)}")
+
+    def test_a_new_child_gets_the_same_id_from_every_writer(self) -> None:
+        first, second = _make_connector(), _make_connector()
+        document = {"id": "doc-1", "title": "Plan", "url": "https://linear.app/org/document/plan",
+                    "createdAt": "2024-01-01T10:00:00.000Z", "updatedAt": "2024-06-01T10:00:00.000Z"}
+
+        def ids(connector) -> list[str]:
+            return [
+                connector._transform_attachment_to_link_record(
+                    self.ATTACHMENT, "issue-1", "node-issue-1", "team-1").id,
+                connector._transform_document_to_webpage_record(
+                    document, "issue-1", "node-issue-1", "team-1").id,
+            ]
+
+        assert ids(first) == ids(second)
+        assert len(set(ids(first))) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_new_file_gets_the_same_id_from_every_writer(self) -> None:
+        first, second = _make_connector(), _make_connector()
+
+        async def file_id(connector) -> str:
+            record = await connector._transform_file_url_to_file_record(
+                file_url=UPLOAD, filename="spec.pdf", parent_external_id="issue-1",
+                parent_node_id="node-issue-1", parent_record_type=RecordType.TICKET, team_id="team-1")
+            return record.id
+
+        assert await file_id(first) == await file_id(second)
+
+    def test_a_stored_child_keeps_its_id(self) -> None:
+        connector = _make_connector()
+        stored = MagicMock(id="stored-node", version=2, source_updated_at=0)
+
+        link = connector._transform_attachment_to_link_record(
+            self.ATTACHMENT, "issue-1", "node-issue-1", "team-1", existing_record=stored)
+
+        assert link.id == "stored-node"

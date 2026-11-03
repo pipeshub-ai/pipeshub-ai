@@ -21,6 +21,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.sources.client.mariadb import mariadb as mariadb_client_module
 from app.sources.client.mariadb.mariadb import READ_ONLY_TIMEOUT_S, MariaDBClient
 from app.utils.conversation_tasks import pop_tasks
+from app.utils.sql_limits import SQL_MAX_ROWS, SQL_QUERY_TIMEOUT_S
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -77,7 +78,12 @@ class _FakeCursor:
         self._rows = rows
 
     async def fetchall(self) -> list[dict[str, Any]]:
+        self._pool.fetched.append(len(self._rows))
         return list(self._rows)
+
+    async def fetchmany(self, size: int) -> list[dict[str, Any]]:
+        self._pool.fetched.append(min(size, len(self._rows)))
+        return list(self._rows[:size])
 
     async def close(self) -> None:
         return None
@@ -86,10 +92,11 @@ class _FakeCursor:
 class _FakeConnection:
     def __init__(self, pool: "_FakePool") -> None:
         self._pool = pool
+        self.connection_id = 7
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
 
-    def cursor(self, dictionary: bool = False) -> _FakeCursor:
+    def cursor(self, dictionary: bool = False, buffered: bool = True) -> _FakeCursor:
         return _FakeCursor(self._pool)
 
 
@@ -97,6 +104,7 @@ class _FakePool:
     def __init__(self, responder: Responder) -> None:
         self.responder = responder
         self.calls: list[tuple[str, tuple]] = []
+        self.fetched: list[int] = []  # rows the driver was asked to hand over, per fetch
         self.connections: list[_FakeConnection] = []
 
     @asynccontextmanager
@@ -320,6 +328,39 @@ class TestExecuteQuery:
         assert len(body["data"]) == 100
         assert (body["truncated"], body["displayed_row_count"]) == (True, 100)
 
+    async def test_at_most_the_cap_plus_one_rows_are_read_and_the_cut_is_reported(self, make_tool) -> None:
+        tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(SQL_MAX_ROWS + 500)))
+        body = _body(await tool.execute_query(query="SELECT * FROM customers"))
+
+        assert pool.fetched == [SQL_MAX_ROWS + 1]
+        assert (body["row_count"], body["rows_cut_at"]) == (SQL_MAX_ROWS, SQL_MAX_ROWS)
+        assert f"cut at {SQL_MAX_ROWS} rows" in body["message"]
+
+    async def test_a_result_of_exactly_the_cap_is_not_cut(self, make_tool) -> None:
+        tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(SQL_MAX_ROWS)))
+        body = _body(await tool.execute_query(query="SELECT * FROM customers"))
+        assert body["row_count"] == SQL_MAX_ROWS and "rows_cut_at" not in body
+
+    async def test_long_text_is_clipped_for_the_model_but_not_in_the_csv(self, make_tool) -> None:
+        blob = create_autospec(BlobStorage, instance=True)
+        blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/x.csv"}
+        state = {"conversation_id": "conv-clip", "org_id": "org-1", "blob_storage": blob}
+        long_row = [{"id": 1, "email": "x" * 500}]
+        tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: long_row), state=state)
+        body = _body(await tool.execute_query(query="SELECT * FROM customers"))
+        assert len(body["data"][0]["email"]) == 100
+        await pop_tasks("conv-clip")[0]
+        assert "x" * 500 in blob.save_conversation_file_to_storage.call_args.kwargs["file_bytes"].decode()
+
+    async def test_a_server_timeout_is_a_tool_error(self, make_tool) -> None:
+        def stopped(q: str, p: tuple) -> None:
+            raise mariadb_driver.OperationalError("Query execution was interrupted (max_statement_time exceeded)")
+
+        tool, _ = make_tool(_Catalog(SHOP, on_query=stopped))
+        ok, payload = await tool.execute_query(query="SELECT * FROM customers")
+        assert ok is False
+        assert f"up to {SQL_QUERY_TIMEOUT_S}s" in json.loads(payload)["error"]
+
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
         blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/x.csv"}
@@ -402,13 +443,18 @@ class TestExecuteQuery:
         ok, _ = await tool.execute_query(query="UPDATE customers SET email = NULL WHERE id = 1")
 
         assert ok is True
-        assert pool.statements() == ["USE `shop`", "UPDATE customers SET email = NULL WHERE id = 1"]
+        assert pool.statements() == [
+            "USE `shop`",
+            f"SET STATEMENT max_statement_time={SQL_QUERY_TIMEOUT_S} FOR UPDATE customers SET email = NULL WHERE id = 1",
+        ]
 
     async def test_a_read_that_calls_a_server_side_function_is_not_run_read_only(self, make_tool) -> None:
         # It asks first (see test_tool_approvals); once approved it runs as written.
         tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: []))
         await tool.execute_query(query="SELECT SLEEP(1)")
-        assert pool.statements() == ["USE `shop`", "SELECT SLEEP(1)"]
+        assert pool.statements() == [
+            "USE `shop`", f"SET STATEMENT max_statement_time={SQL_QUERY_TIMEOUT_S} FOR SELECT SLEEP(1)",
+        ]
 
     async def test_statement_without_rows_reports_affected_rows(self, make_tool) -> None:
         tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: None))

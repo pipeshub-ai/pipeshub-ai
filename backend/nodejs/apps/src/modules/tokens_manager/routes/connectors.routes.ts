@@ -12,7 +12,7 @@ import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
-import axiosRetry from 'axios-retry';
+import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
@@ -99,11 +99,22 @@ const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
 
+// A 429 whose Retry-After is longer than this goes straight back to the caller
+// with its Retry-After: waiting it out would hold the request open (a preview
+// would hang for the length of a source's rate limit).
+const MAX_RETRY_AFTER_MS = 5000;
+
 // Configure axios retry logic
 axiosRetry(axios, {
   retries: 3,
   retryDelay: axiosRetry.exponentialDelay,
   retryCondition: (error) => {
+    if (
+      error.response?.status === 429 &&
+      retryAfter(error) > MAX_RETRY_AFTER_MS
+    ) {
+      return false;
+    }
     return !!(
       axiosRetry.isNetworkOrIdempotentRequestError(error) ||
       (error.response && error.response.status >= 500)
@@ -469,6 +480,8 @@ const testConnectorConnectionSchema = z.object({
   }),
   body: z.object({
     auth: z.record(z.string(), z.unknown()),
+    // The chosen form when a connector offers several: `auth` holds only its fields.
+    authType: z.string().min(1).max(64).optional(),
     connectorId: z
       .string()
       .regex(

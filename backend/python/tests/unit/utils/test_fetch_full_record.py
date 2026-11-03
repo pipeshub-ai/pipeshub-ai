@@ -959,6 +959,41 @@ class TestFetchMultipleRecordsImplGraphFallback:
 
         assert seen == [url]
 
+    @pytest.mark.parametrize(("limit", "named"), [
+        (None, "Board finance"),
+        ({"apps": ["app-1"], "recordGroups": [], "records": []}, "Board finance"),
+        ({"apps": [], "recordGroups": [], "records": ["r1"]}, None),
+    ])
+    @pytest.mark.parametrize("in_map", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_record_read_by_id_names_its_connector_inside_the_limit(self, in_map, limit, named) -> None:
+        """A record read here was never named by search; its citation showed no source name."""
+        from app.utils import fetch_full_record as ffr
+
+        doc = {"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1", "connectorId": "app-1"}
+        graph_provider = self._make_graph_provider()
+        graph_provider.get_document = AsyncMock(side_effect=lambda *a, **kw: (
+            {"_key": "app-1", "name": "Board finance"} if "apps" in (*a, *kw.values()) else dict(doc)
+        ))
+        results_map = {"vrid-1": {"id": "r1", **doc}} if in_map else {}
+        seen: list[str | None] = []
+
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
+            seen.append(graph_map[vrid].get("connectorInstanceName"))
+            results_map[vrid] = {"id": "r1", "record_name": "budget.xlsx"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(config_service=graph_provider.config_service)
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], results_map, org_id="org-1", graph_provider=graph_provider, user_id="u1",
+                connection_sources=limit,
+            )
+
+        assert result["ok"] is True
+        assert seen == [named]
+
     @pytest.mark.asyncio
     async def test_graph_fallback_endpoint_config_exception(self):
         """If fetching endpoints config raises, we still proceed with frontend_url=None."""

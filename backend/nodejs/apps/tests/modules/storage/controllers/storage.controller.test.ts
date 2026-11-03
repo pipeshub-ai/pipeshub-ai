@@ -11,7 +11,10 @@ import * as storageUtils from '../../../../src/modules/storage/utils/utils'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
 import * as mimetypeModule from '../../../../src/modules/storage/mimetypes/mimetypes'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
-import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { NotFoundError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
+import { StorageConfigurationError } from '../../../../src/libs/errors/storage.errors'
+import { inertWriteState, useInertWriteState } from '../../../support/inert-write-state'
+import { setDocumentRepository } from '../../../../src/libs/repositories/document'
 
 function makeOrgId() {
   return new mongoose.Types.ObjectId().toString()
@@ -88,6 +91,7 @@ function makeDocument(overrides: any = {}): any {
 const withStringId = <T extends { _id: unknown }>(row: T) => ({ ...row, _id: String(row._id) })
 
 describe('StorageController', () => {
+  useInertWriteState()
   let controller: StorageController
   let mockKvs: any
   let mockConfig: any
@@ -265,8 +269,11 @@ describe('StorageController', () => {
 
       await controller.getDocumentById(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
-      // The repository hands back plain rows: ids are strings, which serialise the same.
-      expect(JSON.parse(JSON.stringify(res.body))).to.deep.equal(JSON.parse(JSON.stringify(doc)))
+      // The repository hands back plain rows: ids are strings, which serialise the same. The fingerprint is the one added field.
+      const { storageFingerprint, ...row } = JSON.parse(JSON.stringify(res.body))
+      expect(row).to.deep.equal(JSON.parse(JSON.stringify(doc)))
+      expect(storageFingerprint).to.include({ version: 1, verified: false, trusted: false, objectMissing: false })
+      expect(storageFingerprint.object).to.equal(null)
     })
 
     it('should call next with BadRequestError when documentId is missing', async () => {
@@ -391,6 +398,48 @@ describe('StorageController', () => {
       expect(next.firstCall.args[0].statusCode).to.equal(409)
       expect(rows).to.deep.equal([row])
       expect(adapter.deleteObject.called).to.be.false
+    })
+
+    describe('an upload that completed while it was being aborted', () => {
+      const spied = () => {
+        const spies = {
+          adoptDirectUpload: sinon.stub().resolves(true),
+          clearAwaitingDirectUpload: sinon.stub().resolves(),
+          bumpSeq: sinon.stub().resolves({ writeSeq: 2 }),
+        }
+        const base = inertWriteState()
+        setDocumentRepository(new Proxy(base, { get: (t, prop, r) => (prop in spies ? (spies as any)[prop] : Reflect.get(t, prop, r)) }))
+        return spies
+      }
+
+      it('adopts the object the way a verified read does (its real size), then refuses with 409', async () => {
+        const row = placeholder()
+        adapter.objectExists.resolves(true)
+        adapter.statObject = sinon.stub().resolves({ size: 5, etag: 'e', lastModified: null })
+        const spies = spied()
+        const next = sinon.stub()
+
+        await controller.abortDirectUpload(serviceReq(String(row.orgId), String(row._id)), makeRes(), next)
+
+        expect(spies.adoptDirectUpload.calledOnceWith(String(row.orgId), String(row._id), 5)).to.be.true
+        expect(spies.clearAwaitingDirectUpload.called).to.be.false
+        expect(next.firstCall.args[0].statusCode).to.equal(409)
+      })
+
+      it('falls back to clearing the flag and moving the sequence when the object cannot be stat-ed', async () => {
+        const row = placeholder()
+        adapter.objectExists.resolves(true)
+        adapter.statObject = sinon.stub().rejects(new Error('Method not implemented'))
+        const spies = spied()
+        const next = sinon.stub()
+
+        await controller.abortDirectUpload(serviceReq(String(row.orgId), String(row._id)), makeRes(), next)
+
+        expect(spies.adoptDirectUpload.called).to.be.false
+        expect(spies.clearAwaitingDirectUpload.calledOnce).to.be.true
+        expect(spies.bumpSeq.calledOnce).to.be.true
+        expect(next.firstCall.args[0].statusCode).to.equal(409)
+      })
     })
 
     it('still reports success when the path could not be cleared', async () => {
@@ -759,6 +808,27 @@ describe('StorageController', () => {
 
       await controller.uploadDocument(req, res, next)
       expect(next.calledOnce).to.be.true
+    })
+
+    it('reports storage that cannot be opened as a file that was not saved', async () => {
+      initAdapterStub.rejects(new StorageConfigurationError('Failed to initialize mount point', { mountPath: '/root/.local/PipesHub' }))
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ServiceUnavailableError)
+      expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+    })
+
+    it('passes on a failure that is not about storage unchanged', async () => {
+      const failure = new NotFoundError('Storage configuration not found')
+      initAdapterStub.rejects(failure)
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.equal(failure)
     })
   })
 
@@ -1313,6 +1383,30 @@ describe('StorageController', () => {
       expect(doc.save.called).to.be.false
       expect(next.firstCall.args[0].statusCode).to.equal(HTTP_STATUS.BAD_REQUEST)
       expect(next.firstCall.args[0].message).to.contain("The user id in the storage token isn't valid")
+    })
+
+    it('refuses an invalid storage vendor BEFORE any byte is written (changed bytes must not sit behind an unchanged row)', async () => {
+      const doc = makeDocument({
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, s3: { url: 'v0' }, size: 100 },
+          { version: 1, s3: { url: 'v1' }, size: 200 },
+        ],
+        storageVendor: 'not-a-vendor',
+      })
+      sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
+      sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
+      sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
+      sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
+      sinon.stub(storageUtils, 'getVersionFilePath').returns('version/path')
+      const clone = sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'rolled-url' })
+      const next = sinon.stub()
+
+      await controller.rollBackToPreviousVersion(makeReq({ body: { version: 0, note: 'n' }, query: {} }), makeRes(), next)
+
+      expect(clone.called, 'no clone ran').to.be.false
+      expect(next.firstCall.args[0].statusCode).to.equal(HTTP_STATUS.BAD_REQUEST)
     })
 
     it('should throw NotFoundError when document not found', async () => {

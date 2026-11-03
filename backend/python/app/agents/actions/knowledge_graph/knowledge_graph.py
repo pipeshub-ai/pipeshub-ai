@@ -19,22 +19,23 @@ from __future__ import annotations
 import json
 import logging
 import re
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.agent_loop.entity_search_tool import (
     entity_search_offered_in,
     named_entities_enabled_in,
 )
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import (
@@ -44,10 +45,12 @@ from app.utils.chat_helpers import (
 )
 
 from .catalog import ConnectorCatalog
+from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
-from .navigator import GraphNavigator
+from .navigator import GraphNavigator, ListingFailedError
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
+    NODE_NOT_FOUND_MESSAGE,
     _has_selection,
     browsable_app_ids,
     ids_within_scope,
@@ -185,6 +188,14 @@ def _record_ids_in_view(view: NavigationView) -> list[str]:
     return ids
 
 
+def _listed_facts(view: NavigationView, fetchable: set[str]) -> dict[str, str]:
+    """What the listing states about each record in it the user may open."""
+    facts = {row.id: row_facts(row) for row in (*view.rows, *view.related) if row.id in fetchable}
+    if view.current and view.current.id in fetchable:
+        facts[view.current.id] = context_facts(view.context_block)
+    return facts
+
+
 def _get_scoping(state: ChatState) -> tuple[list[str], list[str]]:
     """Return (connector_ids, kb_ids) — shim kept for the contract tests."""
     from .ops.scope import derive_scope
@@ -204,14 +215,16 @@ def _time_range_error_message(error_json: str) -> str:
         return error_json
 
 
-def _copies_outside_selection(identifier: str, matches: list, *, connected_app: bool = False) -> str:
-    """Where the readable copies of an issue key or URL live, when none of
-    them is inside this conversation. Success, not a failed tool call.
+def _no_readable_match(identifier: str) -> str:
+    return (
+        f"No record matching {identifier} can be opened in this conversation. Search for it "
+        "with knowledgegraph__search, or find it by name with knowledgegraph__list_files(query=...)."
+    )
 
-    A connected app's limit is the most it may learn about, so a copy outside
-    it is not named (``connected_app``)."""
-    if connected_app:
-        return f"{identifier} is outside what this conversation is limited to."
+
+def _copies_outside_selection(identifier: str, matches: list) -> str:
+    """Where the readable copies of an issue key or URL live, when none of
+    them is inside this conversation. Success, not a failed tool call."""
     places = []
     for match in matches:
         name = getattr(match, "name", None) or match.id
@@ -429,7 +442,16 @@ class KnowledgeGraph:
         # rejects a future created_after, so navigate() gets identical
         # (and identically-worded) validation instead of a second,
         # looser ISO-parsing implementation.
-        from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
+        from app.agents.actions.knowledge_graph.ops.time_range import (
+            agent_today_start,
+            parse_time_range,
+            upper_bounds_before_today,
+        )
+        created_before, modified_before = upper_bounds_before_today(
+            agent_today_start(state),
+            created_after=created_after, created_before=created_before,
+            modified_after=modified_after, modified_before=modified_before,
+        )
         time_range, time_error = parse_time_range(
             created_after=created_after,
             created_before=created_before,
@@ -497,21 +519,23 @@ class KnowledgeGraph:
                     excluded_app_ids=excluded_app_ids(state),
                 )
                 result = await resolver.resolve_many([node_id])
-                if result.matches:
-                    # The same issue key can exist on more than one connector.
-                    # The copy inside this conversation wins; another connector's
-                    # copy is named so the miss is not a broken tool.
-                    inside = await ids_within_scope(
-                        state, graph_provider, user_key, org_id,
-                        [match.id for match in result.matches],
-                    )
-                    chosen = next((match for match in result.matches if match.id in inside), None)
-                    if chosen is None:
-                        return True, _copies_outside_selection(
-                            node_id, result.matches,
-                            connected_app=connection_sources_of(state.get("filters")) is not None,
-                        )
-                    node_id = chosen.id
+                if not result.matches:
+                    return False, _no_readable_match(node_id)
+                # The same issue key can exist on more than one connector.
+                # The copy inside this conversation wins; another connector's
+                # copy is named so the miss is not a broken tool.
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id,
+                    [match.id for match in result.matches],
+                )
+                chosen = next((match for match in result.matches if match.id in inside), None)
+                if chosen is None:
+                    # A connected app's limit is the most it may learn about: a copy
+                    # beyond it reads exactly like no copy at all.
+                    if connection_sources_of(state.get("filters")) is not None:
+                        return False, _no_readable_match(node_id)
+                    return True, _copies_outside_selection(node_id, result.matches)
+                node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
         if refusal:
@@ -541,6 +565,8 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
+            if node_id and view.current is None:
+                return False, NODE_NOT_FOUND_MESSAGE
             # The listing names every ancestor the user can open, and every
             # child under the opened node. Neither is the conversation's
             # limit: a parent above a selected group would be named and
@@ -564,12 +590,21 @@ class KnowledgeGraph:
             await keep_row_summaries_inside_connection(
                 [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
             )
+        except ListingFailedError as exc:
+            logger.warning("navigate listing failed for node_id=%s: %s", node_id, exc)
+            if exc.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
+                return False, (
+                    f"Listing failed: {exc} knowledgegraph__list_files with a name query, "
+                    "or search, can reach its records instead."
+                )
+            return False, f"Listing failed: {exc}"
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener)
         fetchable = set(_record_ids_in_view(view))
+        cite_refs = await cite_listed_records(state, graph_provider, org_id, _listed_facts(view, fetchable))
+        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             [rid for rid in emitted if rid in fetchable],
@@ -668,12 +703,13 @@ class KnowledgeGraph:
         if catalog.is_empty():
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
-            logger.warning(
-                "lookup_record: catalog is empty — apps=%r, kb=%r, agent_knowledge=%d entries",
-                state.get("apps"), state.get("kb"),
-                len(state.get("agent_knowledge") or []),
+            # No connector to search: a KB-only user's knowledge bases stand in.
+            catalog = await ConnectorCatalog.knowledge_bases(
+                state,
+                graph_provider=graph_provider,
+                user_key=user_key,
+                org_id=org_id,
             )
-            return False, _NOT_FOUND_MSG
 
         # Agent-scoped connector ids (for ordering priority in resolver)
         scope = await resolve_scope(state)
@@ -690,20 +726,15 @@ class KnowledgeGraph:
             connector_name_hint=connector_name,
             frontend_url=await resolve_frontend_url(state.get("config_service")),
             excluded_app_ids=excluded_app_ids(state),
+            # A match outside what the turn is limited to is not a match, and must not end the search.
+            within_scope=lambda ids: ids_within_scope(state, graph_provider, user_key, org_id, ids),
         )
 
         try:
             result = await resolver.resolve_many(idents)
-            # A match outside what the turn is limited to is not a match.
-            inside = await ids_within_scope(
-                state, graph_provider, user_key, org_id, [m.id for m in result.matches],
-            )
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
-        if len(inside) < len(result.matches):
-            kept = [m for m in result.matches if m.id in inside]
-            result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
         await keep_context_blocks_inside_connection(
             [(m.id, m) for m in result.matches], graph_provider, state.get("user_id", ""), org_id,
             connection_sources_of(state.get("filters")),
@@ -717,7 +748,10 @@ class KnowledgeGraph:
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text, emitted = render_lookup_result_with_ids(result, record_id_shortener)
+        cite_refs = await cite_listed_records(
+            state, graph_provider, org_id, {m.id: context_facts(m.context_block) for m in result.matches},
+        )
+        text, emitted = render_lookup_result_with_ids(result, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             emitted,
@@ -1109,24 +1143,62 @@ class KnowledgeGraph:
         short_description="Find accessible records that mention a typed value",
         description=(
             "Find records the user can access that mention a typed value: a date range, "
-            "an amount in a currency, a quantity, or a percentage. Requires named-entity "
+            "an amount in a currency, a quantity, or a percentage. Use it when the question "
+            "is about a value rather than words (\"deals over $50k\", \"incidents in March "
+            "2026\", \"latency above 200 ms\"): it finds a record however the value is "
+            "written there. Requires named-entity "
             "extraction to be enabled. Lists readable records most recently modified first, "
             "each with the values that matched, in pages: continue with the call it prints. "
             "To look in one knowledge base or app (the Invoices knowledge base for \"invoices over "
-            "$50k\"), pass its id in source_ids. record_types is the storage type (FILE, MAIL, "
-            "TICKET, ...), not a document kind."
+            "$50k\"), pass its id in source_ids. To keep records about a company, person or product "
+            "(\"Acme invoices over $50k\"), pass its name, which is linked to its entities as an "
+            "entity search links it, or entity_ids an entity search returned. record_types is the storage type (FILE, MAIL, TICKET, ...), not a document kind."
         ),
         parameters=[
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
-            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name prefix.", required=False),
-            ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
-            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds.", required=False),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name of a company, person or product the records must mention; linked to its entities, not a prefix.", required=False),
+            ToolParameter(name="entity_ids", type=ParameterType.ARRAY, description="Optional entity ids an entity search returned; records must mention one of them.", required=False, items={"type": "string"}),
+            ToolParameter(
+                name="date_from", type=ParameterType.STRING,
+                description=(
+                    "Dates on or after this. ISO 8601: 'YYYY-MM-DD' (start of that day in UTC) or a "
+                    "full datetime with timezone (e.g. '2026-01-15T00:00:00Z'), not epoch milliseconds."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="date_to", type=ParameterType.STRING,
+                description=(
+                    "Dates on or before this, inclusive of the whole day for a date-only value. ISO 8601 "
+                    "like date_from. One day is date_from='2026-03-10', date_to='2026-03-10'; Q1 2026 is "
+                    "date_from='2026-01-01', date_to='2026-03-31'."
+                ),
+                required=False,
+            ),
             ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
             ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
-            ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
-            ToolParameter(name="quantity_min", type=ParameterType.FLOAT, description="Minimum quantity in SI units.", required=False),
-            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in SI units.", required=False),
-            ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
+            ToolParameter(
+                name="currency", type=ParameterType.STRING,
+                description=(
+                    "ISO-4217 currency code; pass it whenever the question names one ('$' is USD unless the "
+                    "question says otherwise). Without it amounts in every currency are compared unconverted."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="quantity_min", type=ParameterType.FLOAT,
+                description="Minimum quantity in SI units: metres, kilograms, bytes, kelvin; seconds for time (0.2 for 200 ms). Pass dimension so units compare.",
+                required=False,
+            ),
+            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in the same SI units.", required=False),
+            ToolParameter(
+                name="dimension", type=ParameterType.STRING,
+                description=(
+                    "Quantity dimension: length, weight, speed, temperature, data_size, tokens, or time "
+                    "(a duration such as '200 ms' or '4 hours'; months and years are not matched)."
+                ),
+                required=False,
+            ),
             ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Optional record types to keep, e.g. FILE, MAIL, TICKET.", required=False, items={"type": "string"}),
@@ -1141,8 +1213,9 @@ class KnowledgeGraph:
         self,
         kinds: list[str] | None = None,
         name: str | None = None,
-        date_from: int | None = None,
-        date_to: int | None = None,
+        entity_ids: list[str] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
         amount_min: float | None = None,
         amount_max: float | None = None,
         currency: str | None = None,
@@ -1161,6 +1234,7 @@ class KnowledgeGraph:
             self.state,
             kinds=kinds,
             name=name,
+            entity_ids=entity_ids,
             date_from=date_from,
             date_to=date_to,
             amount_min=amount_min,
@@ -1176,6 +1250,38 @@ class KnowledgeGraph:
             limit=limit,
             cursor=cursor,
         )
+
+    @tool(
+        path="/tools/knowledgegraph/find_co_mentioned_entities",
+        short_description="List the people, companies or products mentioned together with an entity",
+        description=(
+            "List the named entities (people, organizations, products, places, events, ...) mentioned in "
+            "the records that mention one entity, with how many of those records mention each, most "
+            "first, counted only over records you can read. Use it for \"who worked with Acme\", "
+            "\"which products come up with Pinecrest\", \"people in the Tidewater contracts\". Pass the "
+            "entity_ids search_entities returned for that one entity (all of its ids, aliases included). Each entity comes with its id and example records to cite; list "
+            "every record of one with find_records_by_entity. Contact details (emails, phones) are "
+            "listed only when named in kinds."
+        ),
+        parameters=[
+            ToolParameter(
+                name="entity_ids", type=ParameterType.ARRAY, required=True, items={"type": "string"},
+                description="Ids of one entity (up to 5) that search_entities returned.",
+            ),
+            ToolParameter(
+                name="kinds", type=ParameterType.ARRAY, required=False, items={"type": "string"},
+                description="Optional kinds to list: person, organization, product, location, event, ...",
+            ),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Entities to list (default 20, max 50).", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        display_name="Found entities mentioned together",
+    )
+    async def find_co_mentioned_entities(
+        self, entity_ids: list[str], kinds: list[str] | None = None, limit: int = 20,
+    ) -> tuple[bool, str]:
+        from .ops.co_mentions import execute_find_co_mentioned_entities
+        return await execute_find_co_mentioned_entities(self.state, entity_ids=entity_ids, kinds=kinds, limit=limit)
 
     @tool(
         path="/tools/knowledgegraph/find_records_by_person",
@@ -1275,11 +1381,11 @@ class KnowledgeGraph:
             "Do not use it for topics, ideas or document titles (use search or search_entities), or "
             "for dates and amounts (use find_records_by_value). A name on most records (the company's "
             "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
-            "People are found by their name as written, or by a first name that starts a full one; a "
-            "surname alone is not looked up. For what a person is assigned, reported, created or "
-            "leads, use knowledgegraph__find_records_by_person. Only records indexed while named-entity extraction was on "
-            "are linked to names, so confirm a name that is not found with search before saying it "
-            "is absent."
+            "People are found by their name as written (a near spelling of the surname too), or by a "
+            "first name that starts a full one; a surname alone is not looked up. For what a person is "
+            "assigned, reported, created or leads, use knowledgegraph__find_records_by_person. Only "
+            "records indexed while named-entity extraction was on are linked to names, so confirm a "
+            "name that is not found with search before saying it is absent."
         ),
         parameters=[
             ToolParameter(

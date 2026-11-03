@@ -15,7 +15,9 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     DeleteSource,
+    OriginTypes,
     ProgressStatus,
     RecordRelations,
 )
@@ -27,6 +29,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.conditions import Cond
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
@@ -61,6 +64,23 @@ class MoveDestinationMissing(RuntimeError):
             f"Record {record_id} was not moved: its new parent {parent_record_id} "
             "is not in the graph or is in the trash"
         )
+
+
+@dataclass(frozen=True)
+class RefAccess:
+    """What ``IGraphDBProvider.get_ref_access`` found for a set of storage document ids.
+
+    ``linked``: ids named by any record or file link (so the id is somebody's content, whoever uploaded it).
+    ``readable``: ids with a granting record the caller can read. Record ids are never exposed.
+    """
+
+    linked: frozenset[str] = frozenset()
+    readable: frozenset[str] = frozenset()
+
+
+#: Linking records taken per document and per call; any readable one grants, more than the cap is not an error.
+REF_LINKS_PER_DOC = 8
+REF_LINKS_PER_CALL = 128
 
 
 @dataclass(frozen=True)
@@ -1623,6 +1643,22 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def filter_linked_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        The ids among ``record_ids`` that still hang in the hierarchy: a belongsTo edge to a
+        record group, or a parent record above them (a PARENT_CHILD or ATTACHMENT record
+        relation). A record a full sync no longer saw is unlinked and has neither; a step that
+        grants access across all of a connector's records uses this to leave it unreadable.
+
+        A failed query raises.
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
     async def get_nodes_by_field_in(
         self,
         collection: str,
@@ -1664,8 +1700,9 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
-        """Get nodes whose field starts with a prefix."""
+        """Get nodes whose field starts with a prefix; only *return_fields* when given."""
         pass
 
     @abstractmethod
@@ -2202,6 +2239,52 @@ class IGraphDBProvider(ABC):
             Exception: on query failure.
         """
         pass
+
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into the node only while every condition holds, in
+        one statement. ``update_node_fields_if_match`` with named operators
+        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``) instead of
+        equality only, so "unset or not newer than" can be asked. A ``None`` in
+        ``updates`` removes or nulls the field.
+
+        Returns:
+            True iff the write applied.
+
+        Raises:
+            ValueError: when ``conditions`` is empty.
+            NotImplementedError: from a provider without it.
+            Exception: on query failure.
+        """
+        raise NotImplementedError
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """Replace (not merge) the projected property values of a record, and set
+        ``controls`` beside them, only while ``conditions`` hold, in one statement.
+
+        ``values`` maps property name to its stored value. The values the record
+        held before and that are not in ``values`` (``previous_names``) are
+        removed, so a property the record lost does not linger.
+
+        Returns:
+            True iff the write applied.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def create_node_if_absent(
@@ -7270,6 +7353,94 @@ class IGraphDBProvider(ABC):
             ),
         )
 
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        """Rows ``{docId, recordId, kind, origin, connectorName, connectorId}`` naming any of ``doc_ids``.
+
+        ``kind`` is ``externalRecordId`` (a record) or ``files.path`` (a file whose path is ``storage://<id>``).
+        Any org, live or trashed: "linked" is global; only readability is org-scoped. The cap is per document
+        (``REF_LINKS_PER_DOC`` rows, platform upload links first), never over the whole call: a document that many
+        other documents' links crowd out would otherwise look unlinked, and its uploader would pass on the initiator check.
+        """
+        raise NotImplementedError
+
+    async def _ref_access_hint(self, user_key: str, org_id: str, connector_ids: set[str]) -> dict[str, Any] | None:
+        """``access`` for ``check_access`` when the linking records sit in one connector (a probe instead of resolving
+        every grant of the user); None means "let ``check_access`` resolve it"."""
+        return None
+
+    async def get_ref_access(self, user_id: str, org_id: str, doc_ids: Iterable[str]) -> RefAccess:
+        """Which storage documents ``user_id`` may inline into a pushed record.
+
+        A document is *linked* when any record or file names it. It is *readable* when the caller can read a record
+        that the platform itself linked to it: a record with ``origin = UPLOAD`` in the knowledge-base connector whose
+        ``externalRecordId`` is the document id. Links a connector or a client reported (``files.path``, a connector's
+        ``externalRecordId``) make a document linked, never readable through them. One ``check_access`` call decides all
+        of them. Raises ``PermissionVerificationUnavailableError`` when the graph cannot answer (never a denial).
+        """
+        ids = sorted(set(doc_ids))
+        if not ids:
+            return RefAccess()
+        try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user_key = (user or {}).get("id") or (user or {}).get("_key") or ""
+            rows = await self._ref_link_rows(ids)
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        linked = {r["docId"] for r in rows if r.get("docId")}
+        by_doc: dict[str, list[dict[str, Any]]] = {}
+        for r in sorted(rows, key=lambda r: str(r.get("recordId"))):
+            if (r.get("kind") == "externalRecordId" and r.get("origin") == OriginTypes.UPLOAD.value
+                    and r.get("connectorName") == Connectors.KNOWLEDGE_BASE.value and r.get("recordId")):
+                by_doc.setdefault(r["docId"], []).append(r)
+        chosen: list[dict[str, Any]] = []
+        for doc in ids:
+            chosen.extend(by_doc.get(doc, [])[:REF_LINKS_PER_DOC])
+        chosen = chosen[:REF_LINKS_PER_CALL]
+        if not chosen or not user_key:
+            return RefAccess(frozenset(linked), frozenset())
+        connectors = {r.get("connectorId") for r in chosen if r.get("connectorId")}
+        try:
+            access = await self._ref_access_hint(user_key, org_id, connectors) if len(connectors) == 1 else None
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        check = await self.check_access(user_key, org_id, node_ids=[r["recordId"] for r in chosen], access=access)
+        allowed = check.node_ids - check.placeholder_ids
+        return RefAccess(frozenset(linked), frozenset(r["docId"] for r in chosen if r["recordId"] in allowed))
+
+    async def _kh_v3_child_ids(
+        self, parent_ids: list[str], org_id: str, skip: int, limit: int, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        """Each record's live hierarchy children of ``org_id`` by id, ``limit`` from ``skip``."""
+        raise NotImplementedError
+
+    async def _with_readable_children(
+        self, items: list[dict[str, Any]], user_key: str, org_id: str, transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Set each item's ``hasChildren``: true only for a child the user may open (a bare
+        "has a child" tells a viewer about ones they cannot read). Children are read in pages,
+        batch-checked, and an item stops at its first readable one."""
+        pending = {item["id"]: item for item in items}
+        for item in items:
+            item["hasChildren"] = False
+        skip, page = 0, 500
+        while pending:
+            kids = await self._kh_v3_child_ids(list(pending), org_id, skip, page, transaction)
+            asked = {c for ids in kids.values() for c in ids}
+            readable = (
+                (await self.check_access(user_key, org_id, node_ids=asked, transaction=transaction)).node_ids
+                if asked else frozenset()
+            )
+            for pid, ids in kids.items():
+                if any(c in readable for c in ids):
+                    pending.pop(pid).update(hasChildren=True)
+                elif len(ids) < page:
+                    pending.pop(pid)
+            pending = {pid: item for pid, item in pending.items() if kids.get(pid)}
+            skip += page
+        return items
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
@@ -8376,7 +8547,15 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
-        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        """``{id, kind, name, normKey, normalizedAliases}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_alias(
+        self, org_id: str, pairs: list[tuple[str, str]], limit: int = 3
+    ) -> list[dict]:
+        """Nodes carrying a ``(kind, key)`` pair's key as an alias other than their own
+        key, at most ``limit`` per pair, each row tagged with that ``key``."""
         raise NotImplementedError
 
     @abstractmethod
@@ -8393,6 +8572,21 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Mention edges between ``record_ids`` (records the caller already resolved)
         and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        """Every named-entity mention edge from ``record_ids`` (records the caller can
+        read): ``{recordId, entityId, kind, extractedNames}``; merged nodes left out."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_date_spans(
+        self, org_id: str, record_ids: list[str], start_ms: int, end_ms: int,
+    ) -> dict[str, tuple[bool, int]]:
+        """Each record among ``record_ids`` with a date value overlapping [start_ms, end_ms):
+        whether it names a date in it (one starting in it, no longer than it or than a day),
+        and the narrowest span in milliseconds of its dates overlapping it."""
         raise NotImplementedError
 
     @abstractmethod
@@ -8483,6 +8677,12 @@ class IGraphDBProvider(ABC):
         backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
         when its marker is already gone (its claim committed before the failure).
         Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reproject(self, org_id: str, record_id: str) -> None:
+        """Queue the record's stored extraction to be written again, due now, counting no
+        failure; a record with a pending retry or re-extraction keeps that one."""
         raise NotImplementedError
 
     @abstractmethod

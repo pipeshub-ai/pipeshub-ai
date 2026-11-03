@@ -31,6 +31,8 @@ interface Baseline {
 const isExempt = (rel: string): boolean =>
   /^libs\/repositories\/(.*\/)?mongo\.ts$/.test(rel) ||
   rel === 'libs/services/mongo.service.ts' ||
+  // the migration tool: the collection list loads every model
+  rel === 'scripts/docstore-migrate/mongo-collections.ts' ||
   // typing helper for filters that are built up piece by piece
   rel === 'libs/utils/mongo-filter.ts' ||
   rel === 'config.ts' ||

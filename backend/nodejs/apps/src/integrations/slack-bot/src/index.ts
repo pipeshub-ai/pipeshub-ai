@@ -56,6 +56,7 @@ import {
   type TypedSlackClient,
   type AttachmentRef,
   type SlackAttachmentUploadResult,
+  type SlackFile,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -90,9 +91,15 @@ import {
   slackCallerDisplayName,
   isIgnoredSlackMessage,
   isThreadFollowUpMessage,
-  fetchPriorThreadMessages,
+  fetchPriorThread,
+  collectThreadFilesSinceLastBotReply,
+  resolveOwnBotIdentity,
+  type PriorThreadMessages,
+  MAX_ATTACHMENTS_PER_QUESTION,
   resolveThreadUserLabels,
   inferThreadMessageSpeaker,
+  threadHasOtherParticipants,
+  formatUntrustedThreadContextQuery,
   removeContinuousDuplicateMarkdownLinks,
   addSpaceBetweenMarkdownLinks,
   resolveSlackArtifactLink,
@@ -118,6 +125,8 @@ async function buildThreadContextualQuery(
   priorMessages: SlackMessagePayload[],
   userLabelsById: Map<string, string>,
   typedClient: TypedSlackClient,
+  currentUserId?: string,
+  botUserId?: string,
 ): Promise<string> {
   const contextLines = await Promise.all(
     priorMessages.map(async (message) => {
@@ -129,7 +138,11 @@ async function buildThreadContextualQuery(
       if (!normalizedText) {
         return null;
       }
-      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      const speaker = inferThreadMessageSpeaker(
+        message,
+        userLabelsById,
+        botUserId,
+      );
       return `${speaker}: ${normalizedText}`;
     })
   ).then(lines => lines.filter((line): line is string => Boolean(line)));
@@ -138,25 +151,107 @@ async function buildThreadContextualQuery(
     return query;
   }
 
-  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+  // Alone with the bot, the thread is the user's own words: keep the plain format.
+  if (!threadHasOtherParticipants(priorMessages, currentUserId, botUserId)) {
+    return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+  }
+  return formatUntrustedThreadContextQuery(query, contextLines);
+}
+
+async function fetchThreadContext(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+): Promise<PriorThreadMessages> {
+  if (!isThreadFollowUpMessage(typedMessage)) {
+    return { messages: [], complete: true };
+  }
+  try {
+    return await fetchPriorThread(typedClient, typedMessage);
+  } catch (error) {
+    console.error('Failed to fetch Slack thread context:', error);
+    return { messages: [], complete: false };
+  }
+}
+
+/** Thread files for this question; none unless the whole thread was read. Never throws. */
+async function collectThreadFiles(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  thread: PriorThreadMessages,
+  botCacheKey: string,
+  knownBotUserId: string | undefined,
+): Promise<SlackFile[]> {
+  if (!thread.complete) {
+    return [];
+  }
+  const prior = thread.messages.filter((m) => m.ts !== typedMessage.ts);
+  const hasFiles = prior.some(
+    (m) => Array.isArray(m.files) && m.files.length > 0,
+  );
+  if (!hasFiles) {
+    return [];
+  }
+  const own = await resolveOwnBotIdentity(
+    typedClient,
+    botCacheKey,
+    knownBotUserId,
+  );
+  return collectThreadFilesSinceLastBotReply(prior, own.userId, own.botId);
 }
 
 async function buildQueryWithThreadContext(
   typedClient: TypedSlackClient,
-  typedMessage: SlackMessagePayload,
+  priorMessages: SlackMessagePayload[],
   query: string,
+  currentUserId?: string,
+  botUserId?: string,
 ): Promise<string> {
-  if (!isThreadFollowUpMessage(typedMessage)) {
+  if (priorMessages.length === 0) {
     return query;
   }
 
   try {
-    const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
     const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
-    return await buildThreadContextualQuery(query, priorMessages, userLabelsById, typedClient);
+    return await buildThreadContextualQuery(
+      query,
+      priorMessages,
+      userLabelsById,
+      typedClient,
+      currentUserId,
+      botUserId,
+    );
   } catch (error) {
     console.error("Failed to fetch Slack thread context:", error);
     return query;
+  }
+}
+
+/** Upload thread files for this question. Never fails the reply: on error it logs and sends none. */
+async function uploadThreadFiles(
+  threadFiles: SlackFile[],
+  slots: number,
+  botToken: string | undefined,
+  accessToken: string,
+  agentId: string | null | undefined,
+): Promise<AttachmentRef[]> {
+  const files = threadFiles.slice(0, Math.max(slots, 0));
+  if (files.length === 0 || botToken === undefined || botToken === '') {
+    return [];
+  }
+  try {
+    const upload = await uploadSlackAttachments(
+      files,
+      botToken,
+      accessToken,
+      agentId,
+    );
+    return upload.attachments;
+  } catch (error) {
+    console.error(
+      'Error uploading Slack thread files:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return [];
   }
 }
 
@@ -287,6 +382,7 @@ async function processSlackMessage(
   typedContext: TypedSlackContext,
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
+  threadFiles: SlackFile[] = [],
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
@@ -534,6 +630,17 @@ async function processSlackMessage(
           return;
         }
       }
+    }
+
+    if (threadFiles.length > 0) {
+      const threadRefs = await uploadThreadFiles(
+        threadFiles,
+        MAX_ATTACHMENTS_PER_QUESTION - attachmentRefs.length,
+        resolvedSlackBot.botToken,
+        accessToken,
+        currentAgentId,
+      );
+      attachmentRefs = attachmentRefs.concat(threadRefs);
     }
 
     const url = buildChatStreamUrl(conversation, currentAgentId);
@@ -1501,10 +1608,20 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   try {
+    const thread = await fetchThreadContext(typedClient, typedMessage);
     const contextualQuery = await buildQueryWithThreadContext(
       typedClient,
-      typedMessage,
+      thread.messages,
       query,
+      typedMessage.user,
+      typedContext.botUserId,
+    );
+    const threadFiles = await collectThreadFiles(
+      typedClient,
+      typedMessage,
+      thread,
+      resolvedSlackBot?.botId ?? 'default',
+      typedContext.botUserId,
     );
     await processSlackMessage(
       typedMessage,
@@ -1512,6 +1629,7 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedContext,
       contextualQuery,
       resolvedSlackBot,
+      threadFiles,
     );
   } catch (error) {
     console.error("Error handling app mention:", error);

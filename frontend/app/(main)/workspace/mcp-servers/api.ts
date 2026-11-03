@@ -149,6 +149,8 @@ export const McpServersApi = {
   async getInstanceTools(instanceId: string, { cached = false }: { cached?: boolean } = {}): Promise<McpToolsResponse> {
     const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tools`, {
       params: cached ? { cached: true } : undefined,
+      // A 409 (the server asks for a sign-in) is explained where the tools would be; a toast would repeat it.
+      suppressErrorToast: (error) => error.statusCode === 409,
     });
     return data;
   },

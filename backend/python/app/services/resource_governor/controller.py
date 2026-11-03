@@ -5,18 +5,31 @@ construct at process startup and share across their consumers/routes.
 from __future__ import annotations
 
 import asyncio
+import functools
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
+from app.services.resource_governor.download_ahead import (
+    HEAVY_DOWNLOAD_AHEAD,
+    DownloadAhead,
+)
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
     FeedbackWindow,
     get_default_downstream_feedback,
 )
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
+from app.services.resource_governor.lanes import (
+    LaneBudget,
+    lanes_health,
+    open_lane_budget,
+    parse_lanes_mode,
+    plan_for_governor,
+)
 from app.services.resource_governor.memory_budget import MemoryBudget
 from app.services.resource_governor.models import (
     Ceilings,
@@ -39,6 +52,7 @@ from app.services.resource_governor.policy import (
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    ceiling_cpus,
     ceiling_for,
     cgroup_heavy_parse_limit,
     floor_for,
@@ -49,7 +63,11 @@ from app.services.resource_governor.policy import (
     start_rate_limiter_params,
     warm_start_limits,
 )
-from app.services.resource_governor.probe import ResourceProbe, build_probe
+from app.services.resource_governor.probe import (
+    ResourceProbe,
+    build_probe,
+    effective_cpu_count,
+)
 from app.services.resource_governor.registry import LimitRegistry
 from app.services.resource_governor.shared_slots import (
     SharedSlots,
@@ -61,6 +79,19 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
     from pathlib import Path
+
+
+_T = TypeVar("_T")
+
+# /health reads its statistics in threads of its own. The default executor also
+# runs parse work (Docling conversions, asyncio.to_thread offloads), and a
+# liveness probe must not queue behind it. Threads start on first use.
+_HEALTH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="health-stats")
+
+
+async def run_for_health(fn: Callable[..., _T], *args: object) -> _T:
+    """Run a blocking statistics call for ``/health`` off the event loop and off the parse executor."""
+    return await asyncio.get_running_loop().run_in_executor(_HEALTH_EXECUTOR, functools.partial(fn, *args))
 
 
 def _fmt_bytes(value: int | None) -> str:
@@ -175,8 +206,13 @@ class ResourceGovernor:
         # Records too big for the count limits reserve their memory here.
         self.memory_budget = MemoryBudget()
         self.memory_budget.limit = free_memory_share_bytes(initial_snapshot, self._worker_count)
+        # Heavy records downloaded but not yet holding a parse permit.
+        self.download_ahead = DownloadAhead(HEAVY_DOWNLOAD_AHEAD)
 
         self._running = False
+        self._lanes_lock = threading.Lock()
+        self._lanes: LaneBudget | None = None
+        self._lanes_built = False
 
         self._logger.info(
             "ResourceGovernor initialised: probe_source=%s cpu_quota=%.2f mem_limit=%s "
@@ -217,9 +253,10 @@ class ResourceGovernor:
         if reserve_embedding_cpus:
             # Mirrors resolve_ceilings: the reservation is capped at a share of
             # the quota so it cannot flatten heavy on a small host.
+            ceiling_quota = ceiling_cpus(initial_snapshot.cpu_quota)
             reservation = min(
                 EMBEDDING_CPU_RESERVATION,
-                initial_snapshot.cpu_quota * EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
+                ceiling_quota * EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
             )
             self._logger.info(
                 "ResourceGovernor: local CPU embedding model configured — %.2f of "
@@ -229,8 +266,8 @@ class ResourceGovernor:
                 "GOVERNOR_EMBEDDING_CPU_RESERVATION=0 to size heavy off the full "
                 "quota, or raise it if embedding is still starved",
                 reservation,
-                initial_snapshot.cpu_quota,
-                max(0.0, initial_snapshot.cpu_quota - reservation),
+                ceiling_quota,
+                max(0.0, ceiling_quota - reservation),
             )
         self._logger.info(
             "ResourceGovernor start-rate limiters: heavy_parse=%.1f/s (burst %d) "
@@ -286,6 +323,24 @@ class ResourceGovernor:
     def ceilings(self) -> Ceilings:
         """This process's share: what its own gates are clamped to."""
         return self._ceilings
+
+    @property
+    def lanes(self) -> LaneBudget | None:
+        """The CPU lane budget of this memory domain; ``None`` unless ``PARSE_LANES=on``.
+
+        Built on first use, never in ``off``, and closed with the governor.
+        """
+        with self._lanes_lock:
+            if not self._lanes_built:
+                self._lanes_built = True
+                if parse_lanes_mode() == "on":
+                    plan = plan_for_governor(self, effective_cpu_count())
+                    self._lanes = open_lane_budget(
+                        plan,
+                        local_share=max(1, self._ceilings.heavy // 2),
+                        plan_refresh=lambda: plan_for_governor(self, effective_cpu_count()),
+                    )
+            return self._lanes
 
     @property
     def fleet_ceilings(self) -> Ceilings:
@@ -370,11 +425,22 @@ class ResourceGovernor:
         slots, self._heavy_parse_slots = self._heavy_parse_slots, None
         if slots is not None:
             slots.close()
+        with self._lanes_lock:
+            lanes, self._lanes, self._lanes_built = self._lanes, None, True
+        if lanes is not None:
+            lanes.close()
 
     async def _sample_once(self) -> None:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)
         self.memory_budget.limit = free_memory_share_bytes(snapshot, self._worker_count)
+        lanes = self._lanes
+        if lanes is not None:
+            try:
+                # File locks: off the event loop.
+                await asyncio.to_thread(lanes.brake_step, snapshot.mem_pressure_raw)
+            except Exception:
+                self._logger.exception("ResourceGovernor: the lane brake step failed")
         demand = self._drain_all_demand()
         feedback = self._feedback.drain()
 
@@ -499,6 +565,12 @@ class ResourceGovernor:
         self._logger.warning(
             "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
         )
+        lanes = self._lanes
+        if lanes is not None:
+            try:
+                lanes.report_incident()
+            except Exception:
+                self._logger.exception("ResourceGovernor: could not record the incident in the lane ledger")
 
     # -- observability ------------------------------------------------------
 
@@ -544,10 +616,12 @@ class ResourceGovernor:
                 "index_heavy": self._ceilings.index_heavy,
                 "index_light": self._ceilings.index_light,
             },
+            "lanes": lanes_health(self, effective_cpu_count()),
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),
             "record_memory": self.memory_budget.stats(),
+            "download_ahead": self.download_ahead.stats(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

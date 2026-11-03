@@ -185,6 +185,16 @@ export interface Document {
   artifactSet?: ArtifactSet;
 }
 
+/**
+ * The write state kept beside a document: a counter that only grows and the writers that may be mid-write
+ * (`t` a random token, `until` the server time in ms its claim lapses). Stored, never part of `Document`:
+ * no read returns it, so it is read only by a method that asks for it by name.
+ */
+export interface FingerprintState {
+  writeSeq: number;
+  writers: { t: string; until: number }[];
+}
+
 export interface ArtifactSet {
   virtualRecordId: string;
   rev: string;

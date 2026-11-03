@@ -475,6 +475,48 @@ class JiraDataSource:
             async for chunk in response.aiter_bytes(chunk_size=chunk_size):
                 yield chunk
 
+    async def upload_issue_attachment(
+        self,
+        issue_id_or_key: str,
+        filename: str,
+        content: bytes,
+        mime_type: str,
+        api_version: str = "3",
+    ) -> HTTPResponse:
+        """Attach one file to an issue: POST /rest/api/{2|3}/issue/{issueIdOrKey}/attachments.
+
+        Multipart with the file in a part named ``file``. Jira rejects the upload as an XSRF
+        attempt without ``X-Atlassian-Token: no-check``. ``api_version="2"`` serves Data Center,
+        where the endpoint is the same but only exists under ``/rest/api/2``.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _check_api_version(api_version)
+        url = (
+            f'{self.base_url}/rest/api/{api_version}/issue/'
+            f'{quote(str(issue_id_or_key), safe="")}/attachments'
+        )
+        req = HTTPRequest(
+            method='POST',
+            url=url,
+            headers={'X-Atlassian-Token': 'no-check', 'Accept': 'application/json'},
+            files=[('file', (filename, content, mime_type))],
+        )
+        return await self._client.execute(
+            req, timeout=httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=30.0),
+        )
+
+    async def get_attachment_settings(self, api_version: str = "3") -> HTTPResponse:
+        """GET /rest/api/{2|3}/attachment/meta — ``{enabled, uploadLimit}`` for the site."""
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _check_api_version(api_version)
+        req = HTTPRequest(
+            method='GET',
+            url=f'{self.base_url}/rest/api/{api_version}/attachment/meta',
+        )
+        return await self._client.execute(req)
+
     async def get_attachment_meta(
         self,
         headers: Optional[Dict[str, Any]] = None
@@ -21464,6 +21506,10 @@ class JiraDataSource:
         return resp
 
 # ---- Helpers used by generated methods ----
+def _check_api_version(api_version: str) -> None:
+    if api_version not in ("2", "3"):
+        raise ValueError(f"Unsupported Jira REST API version: {api_version!r}")
+
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:
     class _SafeDict(dict):
         def __missing__(self, key: str) -> str:

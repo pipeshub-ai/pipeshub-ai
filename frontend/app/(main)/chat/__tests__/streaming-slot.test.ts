@@ -30,6 +30,7 @@ const { CHAT_STREAM_ERROR_MESSAGES, busyStreamMessage } = await import('@/lib/ap
 const { getThreadMessagePlainText, loadHistoricalMessages } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
 const { useToastStore } = await import('@/lib/store/toast-store');
+const { clearSessionCache } = await import('@/lib/api/session-cache');
 
 const fetchMock = vi.fn<typeof fetch>();
 const initialState = useChatStore.getState();
@@ -159,6 +160,36 @@ describe('a new conversation, start to finish', () => {
     // The sidebar row moves from "generating" to the saved conversation.
     expect(useChatStore.getState().pendingConversations[slotId]).toBeUndefined();
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-real']);
+  });
+
+  it("keeps an answer that finishes after sign-out out of the next person's Recents", async () => {
+    const slotId = newSlot();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    fetchMock.mockImplementationOnce(async () => {
+      await gate;
+      return sseResponse([
+        frame('CUSTOM', { name: 'conversation_created', value: { conversationId: 'conv-real', title: 'Quarterly revenue' } }),
+        frame('RUN_FINISHED', { result: { conversation: finishedConversation('Revenue was $4.2M.') } }),
+      ]);
+    });
+    const run = streamMessageForSlot(slotId, Q, request());
+    expect(useChatStore.getState().pendingConversations[slotId]).toBeDefined();
+
+    clearSessionCache();
+    const nextPersonsChat = { id: 'b1', title: 'B', createdAt: '', updatedAt: '', isShared: false, sharedWith: [] };
+    const page1 = { page: 1, limit: 10, totalCount: 1, totalPages: 1, hasNextPage: false, hasPrevPage: false };
+    useChatStore.getState().setSidebarLists({
+      owned: { conversations: [nextPersonsChat], pagination: page1 },
+      shared: { conversations: [], pagination: page1 },
+      excludeProjectChats: false,
+    });
+    release();
+    await run.catch(() => undefined);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['b1']);
+    expect(useChatStore.getState().slots).toEqual({});
   });
 
   it('ignores an artifact event with no payload instead of failing the run', async () => {

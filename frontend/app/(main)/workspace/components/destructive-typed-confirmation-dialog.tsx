@@ -64,7 +64,6 @@ export function DestructiveTypedConfirmationDialog({
         style={{
           maxWidth: '37.5rem',
           padding: 'var(--space-5) 0',
-          backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow:

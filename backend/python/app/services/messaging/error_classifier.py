@@ -421,8 +421,12 @@ class MessageErrorClassifier:
         # `raise ... from` causes count: handlers often try an encoding, catch
         # the UnicodeDecodeError and fall back, and a network error raised
         # during that fallback must stay retryable.
+        # A cause chain can loop (asyncpg server errors are their own __cause__),
+        # and an unguarded walk never returns, which blocks the whole event loop.
         cause: Optional[BaseException] = exc
-        while cause is not None:
+        seen: set[int] = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
             if isinstance(cause, UnicodeDecodeError):
                 return MessageErrorType.TERMINAL
             cause = cause.__cause__

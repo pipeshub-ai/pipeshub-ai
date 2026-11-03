@@ -116,6 +116,15 @@ class TestBrowsing:
         assert await selection_browse_refusal(state, graph, "u", "o", "in-b") == SELECTION_OUTSIDE_MESSAGE
 
     @pytest.mark.asyncio
+    async def test_an_unknown_id_and_one_outside_the_limit_read_the_same(self) -> None:
+        """Telling them apart would show a connected app what exists beyond its limit."""
+        state = {"filters": {"apps": ["a"], "kb": []}}
+        outside = await selection_browse_refusal(state, _graph(readable={"in-b"}), "u", "o", "in-b")
+        unknown = await selection_browse_refusal(state, _graph(), "u", "o", "Launch SaaS")
+        assert outside == unknown == SELECTION_OUTSIDE_MESSAGE
+        assert "not a name" in outside
+
+    @pytest.mark.asyncio
     async def test_without_a_selection_a_node_inside_the_picked_apps_may_be_browsed(self) -> None:
         graph = _graph(readable={"in-a"}, inside={"in-a"})
         assert await selection_browse_refusal({"filters": {"apps": ["a"], "kb": []}}, graph, "u", "o", "in-a") is None

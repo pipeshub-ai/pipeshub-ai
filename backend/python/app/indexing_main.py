@@ -95,6 +95,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
 from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
@@ -2109,6 +2110,9 @@ async def start_kafka_consumers(
         # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
         pipeline_runtime.record_leases.bind(concurrency_manager)
         record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
+        pipeline_runtime.queued_copies.bind_copies_promoted(
+            record_event_handler.request_code_edge_builds_for_copies
+        )
         registry = pipeline_runtime.registry
         stage_topics = [registry.topic_for(name) for name in registry.names()]
         stage_producer = retry_producer
@@ -2537,6 +2541,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
 
+    # The parse pool before the governor closes: its workers hold leases and
+    # tokens of the governor's lane budget.
+    try:
+        from app.modules.parsers import parse_pool
+        # Cleared first, or the next submit in this process starts a new pool.
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down parse worker pool: {e}")
+
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.
     governor.stop()
@@ -2578,15 +2593,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
-    try:
-        from app.modules.parsers import parse_pool
-        # Cleared first, or the next submit in this process starts a new pool.
-        parse_pool.set_resource_governor(None)
-        if parse_pool.shutdown_parse_pool():
-            logger.info("✅ Parse worker pool shut down")
-    except Exception as e:
-        logger.error(f"❌ Error shutting down parse worker pool: {e}")
-
 
 set_service_suffix("-is")
 
@@ -2617,7 +2623,7 @@ async def health_check(request: Request) -> JSONResponse:
         }
         if governor is not None:
             try:
-                content["resource_governor"] = governor.stats()
+                content["resource_governor"] = await run_for_health(governor.stats)
             except Exception as stats_error:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.

@@ -1,7 +1,7 @@
 """Unit tests for app.modules.transformers.sink_orchestrator.SinkOrchestrator."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -610,6 +610,25 @@ class TestIndexedWriteWhenEnrichmentFollows:
         assert row["parsingStatus"] == "COMPLETED"
         # Nothing on the record path is still running; the stage runtime owns the rest.
         assert row["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_classification_left_for_first_use_marks_extraction_not_started(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.settings = {"enrichment_follows": True}
+
+        with patch(
+            "app.modules.transformers.sink_orchestrator.is_classify_on_first_use_enabled",
+            AsyncMock(return_value=True),
+        ):
+            await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["extractionStatus"] == "NOT_STARTED"
+        assert row["extractionDeferred"] is True
+        # The dispatch reads the same decision, so it cannot queue what this left unqueued.
+        assert ctx.settings["enrichment_deferred"] is True
+        assert not ctx.settings["enrichment_follows"]
 
     @pytest.mark.asyncio
     async def test_without_a_stage_to_follow_extraction_is_left_alone(self) -> None:

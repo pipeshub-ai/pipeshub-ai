@@ -391,10 +391,22 @@ services:
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_SERVER_QUERY_RESERVED_SLOTS=${EMBEDDING_SERVER_QUERY_RESERVED_SLOTS:-}
       - EMBEDDING_SERVER_MODEL_IDLE_SECONDS=${EMBEDDING_SERVER_MODEL_IDLE_SECONDS:-}
+      # Request size caps (HTTP 413 over a cap); empty keeps the defaults.
+      - EMBEDDING_SERVER_MAX_REQUEST_BYTES=${EMBEDDING_SERVER_MAX_REQUEST_BYTES:-}
+      - EMBEDDING_SERVER_MAX_INPUTS=${EMBEDDING_SERVER_MAX_INPUTS:-}
+      - EXTRACTION_MAX_REQUEST_BYTES=${EXTRACTION_MAX_REQUEST_BYTES:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
       - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}
+      # Vector points per record: A (default), B (one per text block) or C (B plus
+      # 5 table rows per point). See docs/indexing-service.md.
+      - EMBED_POINT_POLICY=${EMBED_POINT_POLICY:-A}
+      - EMBED_TABLE_ROWS_PER_POINT=${EMBED_TABLE_ROWS_PER_POINT:-5}
+      - EMBED_MAX_TABLE_POINTS=${EMBED_MAX_TABLE_POINTS:-200}
+      # Longest input of a hosted embedding model, in tokens (default 8191); the
+      # bundled embedding server reports its own.
+      - PIPESHUB_EMBED_TOKEN_LIMIT=${PIPESHUB_EMBED_TOKEN_LIMIT:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}

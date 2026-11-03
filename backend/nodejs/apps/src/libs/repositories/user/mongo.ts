@@ -382,6 +382,16 @@ export class MongoUserRepository implements UserRepository {
       filter._id = { ...(filter._id as object), $in: userIdsInGroups };
     }
 
+    for (const field of ['createdAt', 'updatedAt'] as const) {
+      const range = q[field];
+      if (!range || (range.from === undefined && range.to === undefined))
+        continue;
+      filter[field] = {
+        ...(range.from !== undefined && { $gte: range.from }),
+        ...(range.to !== undefined && { $lt: range.to }),
+      };
+    }
+
     const [rows, total] = await Promise.all([
       Users.find(filter)
         .sort({ fullName: 1, _id: 1 })

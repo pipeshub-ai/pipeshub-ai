@@ -66,8 +66,9 @@ async def _resolve_anchors(
     *,
     repo: str | None,
     access: RecordAccess,
-) -> list[dict[str, Any]]:
-    """The symbols a walk starts from: one named symbol, or the whole file.
+) -> tuple[list[dict[str, Any]], str]:
+    """The symbols a walk starts from: one named symbol, or the whole file,
+    and the indexed path they came from (a checkout prefix the index lacks is dropped).
 
     Whole-file is the shape a caller has right after a search or a listing —
     a path, and no symbol yet. Without it, "what does this file talk to" costs
@@ -84,14 +85,17 @@ async def _resolve_anchors(
             graph_provider, org_id, file_path, qualified_name, connector_id,
             repo=repo, access=access,
         )
-        return [anchor] if anchor else []
+        return ([anchor] if anchor else []), file_path
 
-    record_ids = await _choose_records(
-        graph_provider, org_id, await _records_for_path(graph_provider, org_id, file_path),
-        connector_id, file_path=file_path, repo=repo, access=access,
+    record_ids, matched_path = await _records_for_path(
+        graph_provider, org_id, file_path,
+        choose=lambda ids: _choose_records(
+            graph_provider, org_id, ids, connector_id,
+            file_path=file_path, repo=repo, access=access,
+        ),
     )
     if not record_ids:
-        return []
+        return [], file_path
     rows = await graph_provider.get_nodes_by_field_in(
         collection=_BLOCKS, field_name="recordId", field_values=record_ids, raise_on_error=True
     )
@@ -101,7 +105,7 @@ async def _resolve_anchors(
         (row.get("kind") or "").lower() in FILLER_KINDS, row.get("startLine") or 0,
     ))
     # One past the cap, so the caller can tell "exactly 200" from "more".
-    return mine[:_NEIGHBOUR_FANOUT + 1]
+    return mine[:_NEIGHBOUR_FANOUT + 1], matched_path
 
 
 # Candidates a bare name may resolve to before the walk gives up and asks which
@@ -305,12 +309,12 @@ async def get_neighbour_impl(
     }
     by_name = not file_path
     access = RecordAccess(graph_provider, org_id, user_id)
-    anchors = await (
-        _resolve_anchors_by_name(graph_provider, org_id, qualified_name, connector_id)
-        if by_name else
-        _resolve_anchors(graph_provider, org_id, file_path, qualified_name, connector_id,
-                         repo=repo, access=access)
-    )
+    if by_name:
+        anchors = await _resolve_anchors_by_name(graph_provider, org_id, qualified_name, connector_id)
+    else:
+        anchors, file_path = await _resolve_anchors(
+            graph_provider, org_id, file_path, qualified_name, connector_id, repo=repo, access=access,
+        )
     if not anchors:
         return empty
 

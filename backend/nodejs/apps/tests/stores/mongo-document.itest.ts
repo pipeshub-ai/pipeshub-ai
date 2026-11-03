@@ -45,5 +45,19 @@ describe('MongoDocumentRepository against a real MongoDB', function () {
   describeDocumentContract({
     repo: new MongoDocumentRepository(),
     newId: () => String(new mongoose.Types.ObjectId()),
+    setHiddenState: async (orgId, id, state) => {
+      const r = await DocumentModel.collection.updateOne(
+        { _id: new mongoose.Types.ObjectId(id), orgId: new mongoose.Types.ObjectId(orgId) },
+        { $set: { writeSeq: state.writeSeq, writers: state.writers } },
+      );
+      if (r.matchedCount !== 1) throw new Error(`no row ${id} to set the write state on`);
+    },
+    getHiddenState: async (orgId, id) => {
+      const raw = await DocumentModel.collection.findOne({
+        _id: new mongoose.Types.ObjectId(id),
+        orgId: new mongoose.Types.ObjectId(orgId),
+      });
+      return { writeSeq: raw?.writeSeq as number, writers: raw?.writers as { t: string; until: number }[] };
+    },
   });
 });

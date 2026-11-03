@@ -208,7 +208,12 @@ describe('unit-of-work source lints', () => {
       // the migration tool owns the fence and uses the raw driver: its writers (fence document, drain, reverse copy) and its read-only
       // admin commands (hello, replSetGetStatus in the preflight, the follower and the cut's pre-checks; ping for the freeze's cluster time) are listed by file; nothing else in it is exempt
       const migrator = new Set(['fence.ts', 'drain.ts', 'reverse.ts', 'reverse-special.ts', 'reverse-follow.ts', 'preflight.ts', 'follow.ts', 'online.ts'].map((f) => `scripts/docstore-migrate/${f}`))
-      expect(files.filter(([f]) => !own.has(f) && !migrator.has(f)).flatMap(([f, t]) => unfencedMongoWrites(t).map((m) => `${f} ${m}`))).to.deep.equal([])
+      // The document repository reads the server clock with the read-only hello (or isMaster) admin
+      // command; only those two calls are allowed there, so any other unfenced write in it still fails.
+      const clockReads = (f: string, m: string) => f === 'libs/repositories/document/mongo.ts' && /: admin\.command$/.test(m)
+      const clock = files.flatMap(([f, t]) => unfencedMongoWrites(t).filter((m) => clockReads(f, m)))
+      expect(clock).to.have.length(2)
+      expect(files.filter(([f]) => !own.has(f) && !migrator.has(f)).flatMap(([f, t]) => unfencedMongoWrites(t).filter((m) => !clockReads(f, m)).map((m) => `${f} ${m}`))).to.deep.equal([])
     })
     it('has no SELECT * on chat messages', () => {
       expect(files.flatMap(([f, t]) => selectStarOnChatMessages(t).map((m) => `${f} ${m}`))).to.deep.equal([])

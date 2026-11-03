@@ -38,6 +38,9 @@ import type {
   UserRoleSnapshot,
   UserWithGroupsDto,
 } from './types';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importUserDocs } from './pg-import';
 
 interface UserRow {
   id: string;
@@ -222,7 +225,15 @@ function search(p: Params, text: string): string {
   return `(u.full_name ILIKE ${ref} ESCAPE '\\' OR u.email ILIKE ${ref} ESCAPE '\\')`;
 }
 
-export class PgUserRepository implements UserRepository {
+export class PgUserRepository implements UserRepository, Importable {
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importUserDocs(kernelTx(tx), collection, docs);
+  }
   private one(
     sql: string,
     params: unknown[],
@@ -533,6 +544,15 @@ export class PgUserRepository implements UserRepository {
       if (q.groupIds !== undefined && q.groupIds.length > 0) {
         conds.push(`u.id IN (SELECT m.user_id FROM identity.user_group_members m JOIN identity.user_groups g ON g.org_id = m.org_id AND g.id = m.group_id
           WHERE m.org_id = ${org} AND g.org_id = ${org} AND NOT g.is_deleted AND g.id = ANY(${p.add(oidsOf(q.groupIds))}::text[]))`);
+      }
+      for (const [column, range] of [
+        ['u.created_at', q.createdAt],
+        ['u.updated_at', q.updatedAt],
+      ] as const) {
+        if (range?.from !== undefined)
+          conds.push(`${column} >= ${p.add(range.from)}`);
+        if (range?.to !== undefined)
+          conds.push(`${column} < ${p.add(range.to)}`);
       }
       const where = conds.join(' AND ');
       const page = await k.query<UserRow>(

@@ -57,6 +57,12 @@ function fakeServer(...replies: Array<FakeReply | Error>) {
   return sent;
 }
 
+/** An unsigned JWT for `userId` in org `o1`. */
+function tokenFor(userId: string, secondsFromNow = 3600): string {
+  const claims = { exp: Math.floor(Date.now() / 1000) + secondsFromNow, userId, orgId: 'o1' };
+  return `header.${btoa(JSON.stringify(claims)).replace(/=+$/, '')}.signature`;
+}
+
 const bearer = (config: InternalAxiosRequestConfig) => AxiosHeaders.from(config.headers).get('Authorization');
 const errorToasts = () => useToastStore.getState().toasts.filter((t) => t.variant === 'error');
 const fetchMock = vi.fn<typeof fetch>();
@@ -356,6 +362,26 @@ describe('the proactive refresh timer', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: fromOtherTab }));
       expect(useAuthStore.getState().accessToken).toBe(fromOtherTab);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('starts over on a fresh chat page when another tab signs in as someone else', () => {
+      const originalLocation = window.location;
+      const assign = vi.fn();
+      Object.defineProperty(window, 'location', { value: { assign }, configurable: true });
+      try {
+        useAuthStore.setState({ accessToken: tokenFor('user-a') });
+
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+        expect(assign).not.toHaveBeenCalled();
+
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+        // A page load drops every cache and store of the previous account, and the
+        // chat it had open, which belongs to that account.
+        expect(assign).toHaveBeenCalledWith('/chat/');
+        expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+      } finally {
+        Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+      }
     });
 
     it('signs out here when another tab signs out', () => {

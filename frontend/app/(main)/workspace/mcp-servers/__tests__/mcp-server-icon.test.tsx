@@ -18,6 +18,16 @@ function logo(ui: React.ReactElement): string | null {
 describe('McpServerIcon', () => {
   it("shows a catalog server's own logo", () => {
     expect(logo(<McpServerIcon typeId="atlassian_rovo" name="Atlassian Rovo" />)).toBe('atlassian icon');
+    expect(logo(<McpServerIcon typeId="stripe" name="Stripe" />)).toBe('stripe icon');
+  });
+
+  it("shows Microsoft Learn's own logo, not the broad Microsoft match", () => {
+    expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
+  });
+
+  it('shows the DocuSign and Okta catalog logos', () => {
+    expect(logo(<McpServerIcon typeId="docusign" name="DocuSign" />)).toBe('docusign icon');
+    expect(logo(<McpServerIcon typeId="okta" name="Okta" />)).toBe('okta icon');
   });
 
   it('goes by the catalog type when the server was renamed', () => {
@@ -28,10 +38,24 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Notion" />)).toBe('notion icon');
   });
 
+  it("shows Context7's logo", () => {
+    expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
+  });
+
+  it("shows Hugging Face's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
+    expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
+  });
+
   it('keeps the MCP mark for a custom server with no logo, not a stock icon', () => {
     const { container } = render(<McpServerIcon name="Acme internal" />);
 
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('[data-icon="hub"]')).toBeTruthy();
   });
+
+  it("shows Vercel's logo", () => {
+    expect(logo(<McpServerIcon typeId="vercel" name="Vercel" />)).toBe('vercel icon');
+  });
+
 });

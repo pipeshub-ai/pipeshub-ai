@@ -208,9 +208,12 @@ async def _seed_neo4j(provider: Neo4jProvider, org_id: str) -> None:
         MATCH (direct:Record {id: $direct}), (denied:Record {id: $denied})
         CREATE (seen:NamedEntity {id: $seen, orgId: $org, kind: 'organization', name: 'Acme', normKey: 'acme'})
         CREATE (hidden:NamedEntity {id: $hidden, orgId: $org, kind: 'organization', name: 'Initech', normKey: 'initech'})
-        CREATE (direct)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(seen)
-        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(seen)
-        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(hidden)
+        CREATE (direct)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1,
+                                           extractedNames: ['Acme']}]->(seen)
+        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1,
+                                           extractedNames: ['Acme']}]->(seen)
+        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1,
+                                           extractedNames: ['Initech']}]->(hidden)
         """,
         parameters={"org": org_id, "direct": r["direct"], "denied": r["denied"],
                     "seen": keys["named_seen"], "hidden": keys["named_hidden"]},
@@ -314,11 +317,11 @@ async def _seed_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
     named = CollectionNames.NAMED_ENTITIES.value
     await _insert(provider, CollectionNames.MENTIONS_ENTITY.value, [
         {"_from": f"records/{source}", "_to": f"{named}/{target}", "orgId": org_id,
-         "mentionCount": 1, "createdAtTimestamp": 1}
-        for source, target in (
-            (r["direct"], keys["named_seen"]),
-            (r["denied"], keys["named_seen"]),
-            (r["denied"], keys["named_hidden"]),
+         "mentionCount": 1, "createdAtTimestamp": 1, "extractedNames": [spelling]}
+        for source, target, spelling in (
+            (r["direct"], keys["named_seen"], "Acme"),
+            (r["denied"], keys["named_seen"], "Acme"),
+            (r["denied"], keys["named_hidden"], "Initech"),
         )
     ])
     await provider.create_taxonomy_node_if_absent(CollectionNames.TOPICS.value, {

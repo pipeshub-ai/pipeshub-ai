@@ -566,7 +566,8 @@ for (const p of __panels) {
         """Fetch a single URL, returning rendered HTML.
 
         ``browser_like=False`` loads it as PipesHub (its own User-Agent, no evasion). Pages that pass
-        the same ``context_key`` share cookies and storage, and no other pages do.
+        the same ``context_key`` share cookies and storage, and no other pages do; pages fetched without
+        one all share a single context.
         """
         config = self._config_for(
             browser_like=browser_like, context_key=context_key, wait_until=wait_until, wait_for=wait_for,

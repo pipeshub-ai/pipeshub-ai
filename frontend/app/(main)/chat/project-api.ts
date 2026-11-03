@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import type {
   CreateProjectInput,
   ListProjectsParams,
@@ -84,6 +85,8 @@ export const ProjectApi = {
 
   async remove(projectId: string): Promise<void> {
     await apiClient.delete(`${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}`);
+    // The server unlinks the project's chats, so they move into Recents.
+    revalidateSwrNamespace(SWR_NS.conversationLists);
   },
 
   async archive(projectId: string): Promise<ProjectDetail> {

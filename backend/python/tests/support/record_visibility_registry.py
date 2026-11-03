@@ -129,6 +129,11 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
+    "filter_linked_record_ids": (
+        Rule.ALL,
+        _STRUCTURE + ": whether each of the caller's records still hangs under a record group or parent; "
+        "a trashed record's permissions are left as they were",
+    ),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
     "get_record_taxonomy_links": (
@@ -139,6 +144,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_named_entities_for_record": (Rule.ALL, _STRUCTURE),
     "get_named_entity_mentions_in_records": (
         Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
+    ),
+    "get_named_entity_mentions_from_records": (
+        Rule.ALL, _STRUCTURE + "; find_co_mentioned_entities passes only records list_accessible_entity_records returned",
     ),
     "get_named_entity_values_in_records": (
         Rule.ALL, _STRUCTURE + "; find_records_by_value passes only records it already permission-checked",
@@ -185,6 +193,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
     "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
     "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
+    "set_record_properties": (Rule.WRITE, "writes projected values onto a record the caller read live; on a trashed one they are inert"),
     "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "stage_states_delete_for_virtual_records": (
         Rule.WRITE,

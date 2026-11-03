@@ -15,7 +15,7 @@ import { requestContextMiddleware } from '../../../../src/libs/middlewares/reque
 const CONTROLLER_PATH = require.resolve('../../../../src/modules/mcp/controller/mcp.controller')
 delete require.cache[CONTROLLER_PATH]
 const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../../../src/modules/mcp/controller/mcp.controller')
-import { CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
+import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).
@@ -262,16 +262,18 @@ describe('MCP Controller — handleMCPRequest', () => {
     let fetchStub: sinon.SinonStub
     let registered: string[]
     let connectedAfter: number
+    let sdkServer: { _instructions?: string }
 
     beforeEach(() => {
       fetchStub = sinon.stub(globalThis, 'fetch')
       registered = []
       connectedAfter = -1
+      sdkServer = { _instructions: 'Documents.' }
       mcpServerExports.createMCPServer = sinon.stub().returns({
         server: {
           registerTool: (name: string) => { registered.push(name) },
           connect: sinon.stub().callsFake(async () => { connectedAfter = registered.length }),
-          server: {},
+          server: sdkServer,
         },
       })
       sdkTransportExports.StreamableHTTPServerTransport = class {
@@ -284,11 +286,12 @@ describe('MCP Controller — handleMCPRequest', () => {
         status: 200, headers: { 'content-type': 'application/json' },
       })
     // A distinct user per test: the repo check is cached per caller.
-    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}) => {
+    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}, query: Record<string, string> = {}) => {
       const req = createMockRequest({
         headers: { authorization: 'Bearer t' },
         user: { userId, orgId: 'org-1', ...user },
         body,
+        query,
       })
       await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
     }
@@ -327,8 +330,56 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
     })
 
+    it('names the code tools in the instructions when the caller can read a repo', async () => {
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-init', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      expect(sdkServer._instructions).to.equal('Documents.' + CODE_GRAPH_INSTRUCTIONS)
+    })
+
+    it('sends only the code tools and their instructions for ?tools=code', async () => {
+      const docTool = { remove: sinon.stub() }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          _registeredTools: { pipeshub_search: docTool },
+          registerTool: (name: string) => { registered.push(name) },
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-code-only', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, {}, { tools: 'code' })
+      expect(docTool.remove.calledOnce).to.equal(true)
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+      expect(sdkServer._instructions).to.equal(CODE_GRAPH_INSTRUCTIONS.trimStart())
+    })
+
+    it('keeps document tools callable in a ?tools=code batch that calls one', async () => {
+      const docTool = { remove: sinon.stub() }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          _registeredTools: { pipeshub_search: docTool },
+          registerTool: (name: string) => { registered.push(name) },
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-code-only-batch', [
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_code_read' } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } },
+      ], {}, { tools: 'code' })
+      expect(docTool.remove.called).to.equal(false)
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+    })
+
+    it('leaves the instructions alone when the caller can read no repo', async () => {
+      fetchStub.resolves(repos([]))
+      await serve('cg-init-none', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      expect(sdkServer._instructions).to.equal('Documents.')
+    })
+
     it('does not check repos for requests that cannot reach a code tool', async () => {
-      await serve('cg-other', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      await serve('cg-other', { jsonrpc: '2.0', id: 1, method: 'ping' })
       await serve('cg-other', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } })
       expect(fetchStub.called).to.equal(false)
       expect(registered).to.deep.equal([])
@@ -526,6 +577,10 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
+      // initialize asks the query service whether the caller has code repos.
+      sinon.stub(globalThis, 'fetch').resolves(new Response(JSON.stringify({ repos: [] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
       await handleMCPRequest(appConfig)(req, res as any, next)
 
       expect(handleRequestStub.calledOnce).to.be.true
@@ -804,6 +859,10 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
+      // initialize asks the query service whether the caller has code repos.
+      sinon.stub(globalThis, 'fetch').resolves(new Response(JSON.stringify({ repos: [] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
       await handle(appConfig)(req, res as any, next)
 
       expect(infoStub.calledOnce).to.be.true

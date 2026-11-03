@@ -73,7 +73,9 @@ class DoclingMarkdownParser:
 
         # Convert URLs to base64 if there are any images
         if urls_to_convert:
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
 
             # Create caption map with base64 URLs
             for i, image in enumerate(images):

@@ -137,9 +137,9 @@ export function FilePreviewSidebar({
           animation: 'slideInFromRight 0.2s ease-out',
           borderRadius: 'var(--Radius-2-max, 4px)',
           border: '1px solid var(--olive-3)',
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
         }}
       >
         <VisuallyHidden>

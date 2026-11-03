@@ -1,0 +1,185 @@
+- id: RULE-J01
+  title: 'Jira: issue without a level, project Browse granted'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: STRICT, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: admit}
+  tags: [rules, jira]
+  comment: jira_issue_security.py:627-634 (apply_issue_access_settled, STRICT)
+- id: RULE-J02
+  title: 'Jira: issue with a level, U is a level holder, Browse granted'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, proj]
+      - [u, i]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: admit}
+  tags: [rules, jira]
+  comment: jira_issue_security.py, apply_issue_access
+- id: RULE-J03
+  title: 'Jira: level holder without Browse on the project'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, i]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: deny}
+  tags: [rules, jira]
+- id: RULE-J04
+  title: 'Jira: Browse but not in the level'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: deny}
+  tags: [rules, jira]
+- id: RULE-J05
+  title: 'Jira: scheme unreadable -> issue closed (RESTRICTED, no grants)'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {i: deny}
+  tags: [rules, jira]
+  comment: jira_issue_security.py:516-519 (ANYONE_AUTHENTICATED_SCOPE)
+- id: RULE-J06
+  title: 'Jira: sub-task of a leveled parent, U holds the level (both granted)'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: parent, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: sub, kind: record, connector: A, rule: RESTRICTED, parents: [parent], inherits: [parent], belongs: [proj]}
+    grants:
+      - [u, proj]
+      - [u, parent]
+      - [u, sub]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {sub: admit}
+  tags: [rules, jira]
+  comment: jira_issue_security.py:507-509 (group holders)
+- id: RULE-J07
+  title: 'Jira: sub-task granted but parent issue not (parent''s level excludes U)'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: parent, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: sub, kind: record, connector: A, rule: RESTRICTED, parents: [parent], inherits: [parent], belongs: [proj]}
+    grants:
+      - [u, proj]
+      - [u, sub]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {sub: deny}
+  tags: [rules, jira]
+- id: RULE-J08
+  title: 'Jira (inherit edge to the project): unleveled story under an epic in a scheme project'
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: epic, kind: record, connector: A, rule: STRICT, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: story, kind: record, connector: A, rule: STRICT, parents: [epic], inherits: [proj], belongs: [proj]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {story: deny}
+  tags: [rules, jira]
+  comment: "An inherit edge to the project while the hierarchy parent stays the epic does not count (data_source_entities_processor.py:1537-1544). Jira shows the story to Browse holders; PipesHub hides it."
+- id: RULE-J09
+  title: Jira attachment of a leveled issue follows the issue (STRICT, inherits)
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: i, kind: record, connector: A, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+      - {id: att, kind: record, connector: A, rule: STRICT, parents: [{id: i, rel: ATTACHMENT}], inherits: [i]}
+    grants:
+      - [u, proj]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {att: deny}
+  tags: [rules, jira]
+  comment: apply_attachment_access, jira_issue_security.py:700-704; U not in the level.

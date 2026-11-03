@@ -1579,7 +1579,12 @@ export const testConnectorConnection =
   ): Promise<void> => {
     try {
       const { connectorType } = req.params;
-      const { auth, connectorId } = req.body;
+      // The route's schema has checked this shape.
+      const { auth, authType, connectorId } = req.body as {
+        auth: Record<string, unknown>;
+        authType?: string;
+        connectorId?: string;
+      };
 
       if (!connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -1590,7 +1595,7 @@ export const testConnectorConnection =
         `${appConfig.connectorBackend}/api/v1/connectors/registry/${encodeURIComponent(connectorType)}/test-connection`,
         HttpMethod.POST,
         headers,
-        { auth, connectorId },
+        { auth, connectorId, ...(authType ? { authType } : {}) },
       );
 
       handleConnectorResponse(

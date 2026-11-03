@@ -7,14 +7,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.models.blocks import Block, BlockType, BlocksContainer, DataFormat
+from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 
 def test_supported_mime_types_include_office_formats():
-    from app.api.routes.chatbot import _attachment_extension, _is_supported_attachment_mime
+    from app.api.routes.chatbot import (
+        _attachment_extension,
+        _is_supported_attachment_mime,
+    )
     from app.utils.attachment_mime_types import (
         DELIMITED_MIME_TYPES as _DELIMITED_MIME_TYPES,
+    )
+    from app.utils.attachment_mime_types import (
         DOCX_MIME_TYPES as _DOCX_MIME_TYPES,
+    )
+    from app.utils.attachment_mime_types import (
         SPREADSHEET_MIME_TYPES as _SPREADSHEET_MIME_TYPES,
     )
 
@@ -52,7 +59,9 @@ def test_supported_mime_types_include_office_formats():
 
 def test_doc_attachment_mime_types_in_resolver():
     from app.agents.chat_modes.attachments import _is_doc
-    from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES as _DOC_ATTACHMENT_MIME_TYPES
+    from app.utils.attachment_mime_types import (
+        DOC_ATTACHMENT_MIME_TYPES as _DOC_ATTACHMENT_MIME_TYPES,
+    )
 
     assert _is_doc("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     assert _is_doc("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -160,6 +169,47 @@ async def test_upload_csv_dispatches_to_lightweight_parser():
     assert out["attachments"][0]["parseMode"] == "csv_lightweight"
     assert out["attachments"][0]["ocrMode"] == "csv_lightweight"
     orch.index.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_parse_of_an_upload_runs_as_interactive() -> None:
+    """The parsers reach the parse pool deep inside (CSV, XLSX, text PDF, large
+    text), also from threads; the whole upload must run as interactive so each
+    of those lands on the chat attachment pool."""
+    import asyncio
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.modules.parsers import parse_pool_lanes
+
+    csv_bytes = b"name,amount\nAlice,10\n"
+    req = MagicMock()
+    req.json = AsyncMock(return_value={"conversationId": "conv-1", "attachments": [_csv_attachment("sales.csv", csv_bytes)]})
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    req.app.container = MagicMock()
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    fake_blocks = BlocksContainer(blocks=[], block_groups=[])
+    seen: list[bool] = []
+
+    async def parse_csv(*_args: object, **_kwargs: object) -> BlocksContainer:
+        seen.append(parse_pool_lanes._interactive.get())
+        seen.append(await asyncio.to_thread(parse_pool_lanes._interactive.get))
+        return fake_blocks
+
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot.convert_record_dict_to_record",
+        return_value=MagicMock(block_containers=fake_blocks),
+    ), patch(
+        "app.api.routes.chatbot.TransformContext",
+        MagicMock(side_effect=lambda **_: MagicMock()),
+    ), patch("app.api.routes.chatbot._build_csv_blocks", side_effect=parse_csv):
+        mock_bs_cls.return_value.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert seen == [True, True]
+    assert parse_pool_lanes._interactive.get() is False
 
 
 def _csv_attachment(name: str, content: bytes) -> dict:
@@ -272,6 +322,97 @@ async def test_upload_xlsx_dispatches_to_lightweight_parser():
     assert out["attachments"][0]["extension"] == "xlsx"
     assert out["attachments"][0]["parseMode"] == "excel_lightweight"
     assert out["attachments"][0]["ocrMode"] == "excel_lightweight"
+
+
+@pytest.mark.asyncio
+async def test_a_too_large_xlsx_attachment_says_it_is_too_large() -> None:
+    from fastapi import HTTPException
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.services.parsing.interface import ParseError, ParseErrorCode
+    from app.utils.user_errors import EXCEL_TOO_LARGE
+
+    xlsx_bytes = b"PK\x03\x04fake"
+    payload = {
+        "attachments": [
+            {
+                "fileName": "huge.xlsx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": len(xlsx_bytes),
+                "contentBase64": base64.b64encode(xlsx_bytes).decode("ascii"),
+            }
+        ],
+    }
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    cont = MagicMock()
+    cont.logger.return_value = MagicMock()
+    req.app.container = cont
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+
+    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_create_edges = AsyncMock()
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot._build_excel_blocks",
+        new_callable=AsyncMock,
+        side_effect=ParseError(ParseErrorCode.INVALID_INPUT, EXCEL_TOO_LARGE),
+    ), pytest.raises(HTTPException) as raised:
+        blob = AsyncMock()
+        blob.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = blob
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == EXCEL_TOO_LARGE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cause", ["timed_out", "crashed", "memory"])
+async def test_an_xlsx_parse_worker_that_overran_or_died_is_too_heavy_not_unreadable(cause: str) -> None:
+    from fastapi import HTTPException
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.modules.parsers.parse_pool import ParseWorkerError
+
+    xlsx_bytes = b"PK\x03\x04fake"
+    payload = {
+        "attachments": [
+            {
+                "fileName": "big.xlsx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": len(xlsx_bytes),
+                "contentBase64": base64.b64encode(xlsx_bytes).decode("ascii"),
+            }
+        ],
+    }
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    cont = MagicMock()
+    cont.logger.return_value = MagicMock()
+    req.app.container = cont
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_create_edges = AsyncMock()
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot._build_excel_blocks",
+        new_callable=AsyncMock,
+        side_effect=ParseWorkerError("internal", cause),
+    ), pytest.raises(HTTPException) as raised:
+        blob = AsyncMock()
+        blob.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = blob
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert raised.value.status_code == 422
+    assert "big.xlsx is too large or complex to read right now" in raised.value.detail
 
 
 @pytest.mark.asyncio
@@ -476,7 +617,7 @@ class TestPdfAttachmentFailsOnItsOwn:
     The parse now runs in a parse worker under a deadline, and the user is told."""
 
     @staticmethod
-    async def _upload(pdf_processor: MagicMock, timeout_s: float = 50) -> HTTPException:
+    async def _upload(pdf_processor: MagicMock, timeout_s: float = 50, page_count: int = 40) -> HTTPException:
         from app.api.routes.chatbot import upload_chat_attachments
 
         gp = AsyncMock()
@@ -486,7 +627,7 @@ class TestPdfAttachmentFailsOnItsOwn:
         ), patch(
             "app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pdf_processor
         ), patch(
-            "app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, 80)
+            "app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, page_count)
         ), patch("app.api.routes.chatbot._CHAT_ATTACHMENT_UPLOAD_BUDGET_S", timeout_s), pytest.raises(HTTPException) as exc:
             mock_bs_cls.return_value = AsyncMock(save_binary_to_storage=AsyncMock(return_value=("ext", None)))
             await upload_chat_attachments(_pdf_upload_request(), gp, AsyncMock())
@@ -506,7 +647,27 @@ class TestPdfAttachmentFailsOnItsOwn:
 
         assert loop.time() - started < 5
         assert error.status_code == 422
-        assert error.detail.startswith("deck.pdf is too large or complex to read right now, so it wasn't attached.")
+        assert error.detail == (
+            "deck.pdf took too long to read, so it wasn't attached. "
+            "Try again, attach fewer pages, or add it to a knowledge base."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_of_the_cap_that_overruns_the_deadline_is_told_it_took_too_long(self) -> None:
+        """The cap bounds memory, not time: the largest allowed file can still hit the
+        deadline on a busy host, and then the user gets the actionable message."""
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+        async def never_finishes(*_: object) -> None:
+            await asyncio.sleep(30)
+
+        processor = MagicMock(parse_document=AsyncMock(side_effect=never_finishes))
+
+        error = await self._upload(processor, timeout_s=0.2, page_count=CHAT_PDF_PAGE_CAP)
+
+        assert error.status_code == 422
+        assert "took too long to read" in error.detail
+        assert "pages a PDF can have" not in error.detail
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cause", ["timed_out", "crashed", "renderer died", "memory"])
@@ -553,6 +714,84 @@ class TestPdfAttachmentFailsOnItsOwn:
         assert submitted == [needs_ocr_and_page_count]
         assert exc.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_the_ocr_check_is_given_the_page_cap(self) -> None:
+        """So a PDF far past the cap is refused from its page count, not timed out
+        while every page's text is counted."""
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP, upload_chat_attachments
+
+        submitted: list[tuple[object, ...]] = []
+
+        async def fake_submit(_fn: object, *args: object, **_kwargs: object) -> tuple[bool, int]:
+            submitted.append(args)
+            raise RuntimeError("stop here")
+
+        gp = AsyncMock()
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+        with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+            "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+        ), patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor"), patch(
+            "app.api.routes.chatbot.parse_pool.submit", side_effect=fake_submit), pytest.raises(HTTPException):
+            mock_bs_cls.return_value = AsyncMock(save_binary_to_storage=AsyncMock(return_value=("ext", None)))
+            await upload_chat_attachments(_pdf_upload_request(), gp, AsyncMock())
+
+        # parse_pool.submit passes positional arguments only: (content, max_pages).
+        assert submitted[0][1] == CHAT_PDF_PAGE_CAP
+
+
+class TestLongPdfAttachment:
+    """A PDF past the page cap is refused after the quick inspection, with what to do,
+    rather than read for the whole upload budget and then killed."""
+
+    @staticmethod
+    async def _upload(needs_ocr: bool, page_count: int) -> tuple[HTTPException | None, MagicMock, AsyncMock]:
+        from app.api.routes.chatbot import upload_chat_attachments
+
+        processor = MagicMock(
+            parse_document=AsyncMock(side_effect=RuntimeError("stop here")),
+        )
+        render = AsyncMock(side_effect=RuntimeError("stop here"))
+        gp = AsyncMock()
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+
+        async def submit(fn: object, *_args: object, **_kwargs: object) -> object:
+            if getattr(fn, "__name__", "") == "render_all_pages_as_png":
+                return await render()
+            return needs_ocr, page_count
+
+        with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+            "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+        ), patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=processor), patch(
+            "app.api.routes.chatbot.parse_pool.submit", side_effect=submit
+        ), pytest.raises(HTTPException) as exc:
+            mock_bs_cls.return_value = AsyncMock(save_binary_to_storage=AsyncMock(return_value=("ext", None)))
+            await upload_chat_attachments(_pdf_upload_request("report.pdf"), gp, AsyncMock())
+        return exc.value, processor, render
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("needs_ocr", [False, True], ids=["text", "scanned"])
+    async def test_a_pdf_past_the_cap_is_refused_and_never_parsed(self, needs_ocr: bool) -> None:
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+        error, processor, render = await self._upload(needs_ocr, CHAT_PDF_PAGE_CAP + 1)
+
+        assert error.status_code == 400
+        assert error.detail == (
+            f"report.pdf has {CHAT_PDF_PAGE_CAP + 1} pages, more than the {CHAT_PDF_PAGE_CAP} pages "
+            "a PDF can have when attached to a message. Attach a part of it, or split it into smaller files."
+        )
+        processor.parse_document.assert_not_called()
+        render.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_of_exactly_the_cap_is_still_parsed(self) -> None:
+        from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+        error, processor, _ = await self._upload(False, CHAT_PDF_PAGE_CAP)
+
+        processor.parse_document.assert_awaited_once()
+        assert "pages a PDF can have" not in str(error.detail)
+
 
 @pytest.mark.asyncio
 async def test_describing_images_never_runs_past_the_upload_budget() -> None:
@@ -588,3 +827,10 @@ async def test_describing_images_never_runs_past_the_upload_budget() -> None:
         await upload_chat_attachments(req, gp, AsyncMock())
 
     assert 0 < contexts[0]["settings"][IMAGE_DESCRIPTION_BUDGET_S] <= 2.0
+
+
+def test_the_chat_pdf_page_cap_is_fifty_pages() -> None:
+    """The cap bounds a chat upload's parse memory; changing it is a decision."""
+    from app.api.routes.chatbot import CHAT_PDF_PAGE_CAP
+
+    assert CHAT_PDF_PAGE_CAP == 50

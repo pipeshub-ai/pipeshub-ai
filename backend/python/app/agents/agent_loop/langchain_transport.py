@@ -123,6 +123,10 @@ _NETWORK_ERROR_NAME_HINTS = (
     "connectionerror", "connecttimeout", "readtimeout", "timeouterror",
     "apitimeouterror", "apiconnectionerror", "protocolerror", "incompleteread",
 )
+# httpx's `NetworkError` family (`ReadError`, `WriteError`, `CloseError`), raised unwrapped from a stream whose
+# connection the provider dropped mid-answer; matched by exact class name anywhere in the MRO ("readerror" as a
+# substring would also match unrelated names such as a `ThreadError`).
+_NETWORK_ERROR_CLASS_NAMES = frozenset({"NetworkError", "ReadError", "WriteError", "CloseError"})
 
 # Substrings providers/gateways actually emit when reasoning + bound function
 # tools can't both go through the API shape the request used. Matched
@@ -208,6 +212,8 @@ def _content_filter_detail(metadata: dict[str, Any]) -> str | None:
 
 def _is_network_error(exc: Exception) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    if {cls.__name__ for cls in type(exc).__mro__} & _NETWORK_ERROR_CLASS_NAMES:
         return True
     type_name = type(exc).__name__.lower()
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)

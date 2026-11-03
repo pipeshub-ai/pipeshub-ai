@@ -621,8 +621,9 @@ class WebConnector(BaseConnector):
         # (url, depth) being fetched right now: taken off the queue, not settled yet.
         self._fetching: dict[str, tuple[str, int]] = {}
         self._crawl_concurrency = crawl_concurrency()
-        # One browser context per sync: cookies and storage never reach another connector or sync.
-        self._browser_context_key: str | None = None
+        # One browser context per sync, and one for pages opened before the first: cookies and storage
+        # never reach another connector or sync, as they would in the browser's shared unkeyed context.
+        self._browser_context_key = f"{connector_id}:live"
         # Plain-HTTP answers the rendering check already got, kept for the crawl's own fetch of them.
         self._served_pages: dict[str, FetchResponse] = {}
         # Whether the site renders with scripts: probed, or read back from an earlier sync.

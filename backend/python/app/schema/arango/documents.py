@@ -272,6 +272,10 @@ app_schema = {
             # Excludes this KB from list/browse/unscoped-search surfaces even
             # though it is a normal KB app; explicit filters.kb still resolves it.
             "isHidden": {"type": ["boolean", "null"]},
+            # JWT user who POSTed a hidden create. The project owner is
+            # createdBy; this is who may delete an empty unused copy after a
+            # lost link race (they are WRITER, not OWNER).
+            "initiatedBy": {"type": ["string", "null"]},
         },
         "required": [
             "name",
@@ -376,6 +380,8 @@ record_schema = {
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
+            # Classification waits for the record's first use (ENABLE_CLASSIFY_ON_FIRST_USE).
+            "extractionDeferred": {"type": "boolean"},
             # app.modules.indexing.duplicate_reconcile
             "duplicateReconcileAttempts": {"type": ["integer", "null"]},
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
@@ -398,6 +404,8 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Set by an API push (see Record.push_origin); absent on every other record.
+            "pushOrigin": {"type": "boolean"},
             # Permission traversal input, read per visited node. Per node and
             # mixable within a connector; RESTRICTED applies to the node it is
             # on and is never inherited by its children. Absent reads as OPEN,
@@ -416,6 +424,14 @@ record_schema = {
             "rowCount": {"type": ["number", "null"]},
             # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
             "contentRev": {"type": ["string", "null"]},
+            # Typed property values projected for filtering (record properties); written by indexing.
+            "recordProps": {"type": ["object", "null"]},
+            # 16-hex hash of the property names projected, the schema generation that
+            # defined them, the source stamp they were taken from, and an optimistic counter.
+            "propsSet": {"type": ["string", "null"]},
+            "propsGen": {"type": ["number", "null"]},
+            "propsSrc": {"type": ["number", "null"]},
+            "propsVer": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -670,6 +686,7 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
@@ -773,6 +790,7 @@ pull_request_record_schema = {
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
@@ -1077,6 +1095,7 @@ named_entity_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1114,6 +1133,7 @@ value_mention_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},

@@ -70,6 +70,15 @@ export interface DirectoryQuery {
   /** `true`: only blocked people (or, with `hasLoggedIn`, either); `false`: only the unblocked. */
   blocked?: boolean;
   groupIds?: string[];
+  /** Joined in `[from, to)`; either bound may be left out. */
+  createdAt?: TimeRange;
+  /** Last updated (shown as last active) in `[from, to)`. */
+  updatedAt?: TimeRange;
+}
+
+export interface TimeRange {
+  from?: Date;
+  to?: Date;
 }
 
 export interface UserWithGroupsDto {

@@ -69,16 +69,16 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables) and the document store's branches
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES)
-HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (2, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (2, 0), "platform_data": (1, 0)}
-# the branches depend on early kernel and platform revisions, so the heads are the kernel's last revision and each branch's last
-REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0002", "conversation_0002", "identity_0003", "integrations_0002", "oauth_0002", "platform_data_0001"}
+HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0)}
+# platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
+REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0003", "oauth_0003", "platform_data_0004"}
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=15 min_code=11" in r.stdout and "epoch platform_data=1 min_code=0" in r.stdout
+    assert "epoch kernel=15 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \

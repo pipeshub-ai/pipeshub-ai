@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org
 from app.modules.artifacts.sidecars import ArtifactSidecars, classification_envelope
 from app.modules.entity_resolution.normalizer import normalize_name, spelling_key
 from app.modules.indexing.connector_sweep import (
@@ -350,17 +351,19 @@ class RecordLabelRepair(ConnectorSweep):
         vrid = virtual_record_id or record.get("virtualRecordId")
         if not org_id or not isinstance(vrid, str) or not vrid:
             return False
-        # Planned without the lease, from the mapping as it is now, so a record with nothing to
-        # repair never takes the lease. The write plans again under it, from the mapping as it is then.
-        lookup = await self.blob_store.get_document_id_by_virtual_record_id(vrid)
-        if not lookup or not lookup.get("record_doc_id"):
-            return False
-        if await self._plan(key, vrid, org_id, lookup, links) is None:
-            return False
-        outcome = await _under_record_lease(
-            self.lease_manager(), key,
-            lambda: self._write_under_lease(key, record, vrid, org_id, links),
-        )
+        # The storage and artifact settings it reads are the record's org's.
+        with for_org(org_id, job="record_label_repair"):
+            # Planned without the lease, from the mapping as it is now, so a record with nothing to
+            # repair never takes the lease. The write plans again under it, from the mapping as it is then.
+            lookup = await self.blob_store.get_document_id_by_virtual_record_id(vrid)
+            if not lookup or not lookup.get("record_doc_id"):
+                return False
+            if await self._plan(key, vrid, org_id, lookup, links) is None:
+                return False
+            outcome = await _under_record_lease(
+                self.lease_manager(), key,
+                lambda: self._write_under_lease(key, record, vrid, org_id, links),
+            )
         if outcome is _BUSY:
             raise _RecordBusy(key)
         return bool(outcome)

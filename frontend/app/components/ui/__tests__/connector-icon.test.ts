@@ -9,6 +9,8 @@ describe('resolveConnectorType', () => {
 
   it('leaves app slugs to their own icons', () => {
     expect(resolveConnectorType('jira')).toBe('jira');
+    expect(resolveConnectorType('docusign')).toBe('docusign');
+    expect(resolveConnectorType('okta')).toBe('okta');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {
@@ -16,5 +18,10 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('sheets')).toBe('google-sheets');
     expect(resolveConnectorType('Docs')).toBe('google-docs');
     expect(resolveConnectorType('drive')).toBe('google-drive');
+  });
+
+  it('maps Vercel MCP servers to the Vercel logo', () => {
+    expect(resolveConnectorType('vercel')).toBe('vercel');
+    expect(resolveConnectorType('Vercel MCP')).toBe('vercel');
   });
 });

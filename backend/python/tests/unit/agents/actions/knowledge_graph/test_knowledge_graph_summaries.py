@@ -463,7 +463,7 @@ class TestLookupRecord:
         scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         mock_resolve_scope.return_value = scope
 
-        match = SimpleNamespace(id="rec-1", name="Login bug")
+        match = SimpleNamespace(id="rec-1", name="Login bug", context_block=None)
         result_obj = SimpleNamespace(matches=[match])
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = result_obj
@@ -495,8 +495,8 @@ class TestLookupRecord:
 
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = SimpleNamespace(matches=[
-            SimpleNamespace(id="rec-1", name="Login bug"),
-            SimpleNamespace(id="rec-2", name="Cut by the cap"),
+            SimpleNamespace(id="rec-1", name="Login bug", context_block=None),
+            SimpleNamespace(id="rec-2", name="Cut by the cap", context_block=None),
         ])
         mock_resolver_cls.return_value = resolver_instance
 
@@ -528,6 +528,7 @@ class TestLookupRecord:
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")
     async def test_empty_catalog_with_knowledge(self, mock_uk, mock_catalog_build) -> None:
+        """A KB-only user has no connector in the catalog; the lookup still runs."""
         catalog = MagicMock()
         catalog.is_empty.return_value = True
         mock_catalog_build.return_value = catalog
@@ -539,7 +540,7 @@ class TestLookupRecord:
             "has_knowledge": True,
         })
         ok, msg = await kg.lookup_record("JIRA-1")
-        assert ok is False
+        assert ok is True
         assert "Not found" in msg
 
     @pytest.mark.asyncio

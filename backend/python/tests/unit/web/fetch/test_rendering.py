@@ -67,6 +67,14 @@ class TestThroughTheBrowser:
         assert "rendered documentation" in page.blocks[0].content
         assert fake_browser.browser_visits == [f"{SITE}/docs"]
 
+    async def test_each_render_gets_a_browser_context_of_its_own(self, fake_browser: FakeWeb) -> None:
+        fake_browser.add(f"{SITE}/docs", Page(body=SHELL, rendered=RENDERED))
+        await reader().fetch(f"{SITE}/docs", deadline())
+        await reader().fetch(f"{SITE}/docs", deadline())
+        first, second = fake_browser.browser_context_keys
+        assert first is not None
+        assert second not in (None, first)
+
     async def test_a_full_page_never_starts_the_browser(self, fake_browser: FakeWeb) -> None:  # WP-6-CSR-02
         fake_browser.add(f"{SITE}/plain", Page(body=FULL))
         page = await reader().fetch(f"{SITE}/plain", deadline())

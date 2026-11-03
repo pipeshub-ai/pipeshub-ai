@@ -471,7 +471,6 @@ class TestTheAppNameKeepsToTheLimit:
 
     @staticmethod
     async def _search(retrieval_service, mock_graph_provider, filter_groups) -> dict:
-        mod._connector_name_cache.clear()
         mock_graph_provider.get_accessible_containers = AsyncMock(
             return_value=_containers(app_ids=frozenset({"a"}))
         )
@@ -494,7 +493,6 @@ class TestTheAppNameKeepsToTheLimit:
                 queries=["q"], user_id="u1", org_id="o1", filter_groups=filter_groups,
             )
         assert result.get("searchResults"), result
-        mod._connector_name_cache.clear()
         return result
 
     @pytest.mark.asyncio

@@ -32,6 +32,8 @@ interface McpToolsApprovalsTabProps {
   onRefresh: () => void;
   onAuthenticate: () => void;
   onReauthenticate: () => void;
+  /** Opens the server's settings; absent when this person can't change them. */
+  onEditServer?: () => void;
 }
 
 /** Who is signed in and how, then the server's tools (with the person's own rules on their personal server). */
@@ -44,6 +46,7 @@ export function McpToolsApprovalsTab({
   onRefresh,
   onAuthenticate,
   onReauthenticate,
+  onEditServer,
 }: McpToolsApprovalsTabProps) {
   const { t } = useTranslation();
   const canListTools = state !== 'needs_connect' && state !== 'waiting_for_admin' && state !== 'shared_credential_missing';
@@ -62,6 +65,7 @@ export function McpToolsApprovalsTab({
           isBusy={isBusy}
           onAuthenticate={onAuthenticate}
           onReauthenticate={onReauthenticate}
+          onEditServer={onEditServer}
         />
 
         <Flex direction="column" gap="3">
@@ -100,7 +104,7 @@ export function McpToolsApprovalsTab({
             </Text>
           ) : listing ? (
             <FindingTools />
-          ) : load.status === 'error' ? (
+          ) : load.status === 'error' && !(state === 'needs_auth_mode' && load.code === 'reauth') ? (
             <Flex
               direction="column"
               gap="2"
@@ -217,15 +221,40 @@ function SignInCard({
   isBusy,
   onAuthenticate,
   onReauthenticate,
+  onEditServer,
 }: {
   instance: McpMyServerEntry;
   state: McpConnectionState;
   isBusy: boolean;
   onAuthenticate: () => void;
   onReauthenticate: () => void;
+  onEditServer?: () => void;
 }) {
   const { t } = useTranslation();
   const transport = MCP_TRANSPORT_LABELS[instance.transport];
+
+  if (state === 'needs_auth_mode') {
+    return (
+      <Callout.Root color="amber" size="1">
+        <Callout.Icon>
+          <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
+        </Callout.Icon>
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="medium">
+            {t('workspace.mcpServers.configPanel.asksForSignIn')}
+          </Text>
+          <Text size="1">{t('workspace.mcpServers.configPanel.asksForSignInBody')}</Text>
+          {onEditServer && (
+            <Box>
+              <Button size="1" color="amber" onClick={onEditServer}>
+                {t('workspace.mcpServers.configPanel.editServer')}
+              </Button>
+            </Box>
+          )}
+        </Flex>
+      </Callout.Root>
+    );
+  }
 
   if (instance.authMode === 'none') {
     return (

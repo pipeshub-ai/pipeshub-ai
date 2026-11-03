@@ -35,7 +35,7 @@ from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
-from app.modules.code_graph import edge_build_trigger
+from app.modules.code_graph import deleted_files, edge_build_trigger
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import (
     BuildStateStore,
@@ -484,7 +484,7 @@ class RecordEventHandler(BaseEventService):
                     updated,
                     record_id,
                 )
-                await self._request_code_edge_builds_for_copies(record_id, virtual_record_id)
+                await self.request_code_edge_builds_for_copies(record_id, virtual_record_id)
             else:
                 self.logger.info(
                     "No queued duplicates to update after primary failure for record %s",
@@ -749,7 +749,7 @@ class RecordEventHandler(BaseEventService):
             if promoted > 0 or had_pending:
                 await self._reconcile_pending_duplicates(record_id, virtual_record_id)
             if promoted > 0:
-                await self._request_code_edge_builds_for_copies(record_id, virtual_record_id)
+                await self.request_code_edge_builds_for_copies(record_id, virtual_record_id)
             if indexing_status == ProgressStatus.COMPLETED.value:
                 # Duplicates just became searchable too. They can live in
                 # a different KB than this record, which only the TTL
@@ -813,7 +813,7 @@ class RecordEventHandler(BaseEventService):
                 exc, "Failed to request a code edge build after record %s", record_id
             )
 
-    async def _request_code_edge_builds_for_copies(
+    async def request_code_edge_builds_for_copies(
         self, record_id: str, virtual_record_id: str | None
     ) -> None:
         """A promoted copy can be the last file of its own repo (a fork, a
@@ -833,12 +833,20 @@ class RecordEventHandler(BaseEventService):
                     scope = edge_build_trigger.publishable_scope(copy)
                     if scope is not None:
                         scopes.add(scope)
-            for scope in scopes:
-                await self._ask_for_code_edge_build(*scope)
         except Exception as exc:
             await self._edge_request_failed(
                 exc, "Failed to request code edge builds for the copies of record %s", record_id
             )
+            return
+        # One repo's failed request must not keep the others from being marked.
+        for scope in scopes:
+            try:
+                await self._ask_for_code_edge_build(*scope)
+            except Exception as exc:
+                await self._edge_request_failed(
+                    exc, "Failed to request a code edge build for record group %s, a copy of record %s",
+                    scope[2], record_id,
+                )
 
     async def _edge_request_failed(self, exc: Exception, message: str, *args: object) -> None:
         """The first failure since the last success is logged with its traceback,
@@ -875,10 +883,17 @@ class RecordEventHandler(BaseEventService):
         if not all(isinstance(value, str) and value for value in scope):
             return
         try:
-            # Full: an incremental build starts from records updated since the
-            # last one, and a deleted record is not among them, so the files
-            # that called into it would keep their old bindings.
-            await self._ask_for_code_edge_build(*scope, full=True)
+            # The connector kept the names the file defined before deleting it,
+            # and an incremental build re-resolves the files referencing them.
+            # Without those names it cannot find the files that called into the
+            # deleted one, so they would keep their old bindings: build in full.
+            try:
+                full = not await deleted_files.was_remembered(
+                    self.event_processor.graph_provider, scope[0], payload.get("recordId") or "",
+                )
+            except Exception:
+                full = True
+            await self._ask_for_code_edge_build(*scope, full=full)
         except Exception as exc:
             await self._edge_request_failed(
                 exc, "Failed to request a code edge build after deleting record %s",
@@ -1694,12 +1709,26 @@ class RecordEventHandler(BaseEventService):
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
                 dispatched = await stage_ingress.redrive(
-                    virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
+                    virtual_record_id,
+                    record.get("contentRev"),
+                    [str(s) for s in stages],
+                    # A search asking for a record it found is not a request to redo work.
+                    force=not payload.get("firstUse"),
                 )
                 if dispatched is not None:
                     self.logger.info(f"🔁 Re-running stages {stages} for record {record_id}: {dispatched}")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                if payload.get("firstUse"):
+                    # A search is no reason to re-parse and re-embed a record; one the
+                    # runtime never saw is left to an explicit reindex.
+                    self.logger.info(
+                        f"Not classifying record {record_id} on first use: no stage state for revision "
+                        f"{record.get('contentRev')}"
+                    )
+                    for done in (IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE):
+                        yield PipelineEvent(event=done, data=PipelineEventData(record_id=record_id))
                     return
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
@@ -2023,12 +2052,16 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            # Always: the consumer holds a record that would sit on its file
+            # waiting for a parse slot back until it is not downloaded yet.
             known_size = doc.get("sizeInBytes")
-            if isinstance(known_size, int) and known_size > 0:
-                yield PipelineEvent(
-                    event=IndexingEvent.START_DOWNLOAD,
-                    data=PipelineEventData(record_id=record_id, size_bytes=known_size),
-                )
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD,
+                data=PipelineEventData(
+                    record_id=record_id,
+                    size_bytes=known_size if isinstance(known_size, int) and known_size > 0 else None,
+                ),
+            )
 
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
@@ -2056,6 +2089,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -2117,6 +2155,11 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                # Parsed: the file's bytes must not outlive the
+                                # parse through embedding, storage and upsert.
+                                payload.pop("buffer", None)
+                                response = None
                             yield event
                     finally:
                         await on_event_gen.aclose()

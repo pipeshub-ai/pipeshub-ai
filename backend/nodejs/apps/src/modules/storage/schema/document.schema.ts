@@ -187,6 +187,23 @@ const DocumentSchema = new Schema(
       type: Number,
       default: null,
     },
+    // Write state: a counter that only grows and the writers that may be mid-write. Hidden from every
+    // query (`select: false`, lean or not) so no reader returns or re-saves them; nothing writes them yet.
+    writeSeq: {
+      type: Number,
+      select: false,
+    },
+    writers: {
+      type: [
+        {
+          t: { type: String },
+          until: { type: Number },
+          _id: false,
+        },
+      ],
+      select: false,
+      default: undefined,
+    },
   },
   {
     timestamps: {

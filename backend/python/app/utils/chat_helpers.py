@@ -88,14 +88,17 @@ from app.utils.record_block_selection import (  # noqa: E402
     FETCH_RECORD_HINTS,
     RECORD_CLOSE,
     ReadHints,
+    block_positions,
     continuation_hint,
     describe_gaps,
+    grouped_row_indexes,
     no_fit_hint,
     record_trailer_reserve,
     selection_hint,
 )
 from app.utils.render_budget import RenderBudget  # noqa: E402
 from app.utils.slack_replies import corrected_has_replies, replies_note  # noqa: E402
+from app.utils.text_fragments.cache import TtlCache  # noqa: E402
 
 # Larger than any record: what a caller that passes no budget gets, so its
 # rendering is bounded only by `max_blocks` exactly as it was before budgets
@@ -910,6 +913,7 @@ _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "recordType": "record_type",
     "connectorName": "connector_name",
     "connectorId": "connector_id",
+    "connectorInstanceName": "connector_instance_name",
     "mimeType": "mime_type",
     "externalRecordId": "external_record_id",
     "webUrl": "weburl",
@@ -1060,6 +1064,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
                 "labels": graph_doc.get("labels"),
+                "milestone": graph_doc.get("milestone"),
                 "resolved_at": graph_doc.get("resolvedAtTimestamp"),
                 "due_date": graph_doc.get("dueDateTimestamp"),
             }
@@ -1170,6 +1175,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "review_name": graph_doc.get("reviewName"),
                 "review_email": graph_doc.get("reviewEmail"),
                 "labels": graph_doc.get("labels"),
+                "milestone": graph_doc.get("milestone"),
                 "last_commit_sha": graph_doc.get("lastCommitSha"),
                 "merged_at": graph_doc.get("mergedAtTimestamp"),
                 "closed_at": graph_doc.get("closedAtTimestamp"),
@@ -2654,6 +2660,84 @@ async def keep_graph_docs_inside_connection(
                 doc[key] = None
 
 
+# Connector names only label citations; a slow graph must not hold up the turn.
+CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
+
+# Connector instance display names for citations. Each search looked up the App
+# of every connector in its results, one query each; a rename shows within a minute.
+_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
+# A missing app or a failed lookup, so a stalled graph costs one timeout per
+# connector, not one per record a thread or FK read names.
+_connector_name_misses = TtlCache(maxsize=10_000, ttl_seconds=30.0)
+
+
+async def attach_connector_instance_names(
+    graph_provider: IGraphDBProvider | None,
+    records: Iterable[dict[str, Any] | None],
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """Set ``connectorInstanceName`` on graph record documents: the name the
+    admin gave the record's connector.
+
+    ``connectorName`` is only the type code (WEB), shared by every instance
+    of that type. A missing or unreadable instance leaves the field unset,
+    and the UI falls back to the type. Under a connected app's limit
+    (``connection_sources``) the app's own name is its source's or
+    collection's name: set only when the limit covers that app whole, as the
+    Location trail and record details show it; any other record loses it.
+    """
+    records = [r for r in records if isinstance(r, dict)]
+    if connection_sources is not None:
+        whole_apps = set(connection_sources.get("apps") or ())
+        for r in records:
+            if r.get("connectorId") not in whole_apps:
+                r.pop("connectorInstanceName", None)
+        records = [r for r in records if r.get("connectorId") in whole_apps]
+    if graph_provider is None:
+        return
+    connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
+    if not connector_ids:
+        return
+    names: dict[str, str | None] = {}
+    for cid in connector_ids:
+        hit, name = _connector_name_cache.get(cid)
+        if not hit:
+            hit, name = _connector_name_misses.get(cid)
+        if hit:
+            names[cid] = name
+    # shortcut: concurrent first lookups of one connector each query the graph; coalesce if that shows up in load.
+    to_fetch = [cid for cid in connector_ids if cid not in names]
+    if to_fetch:
+        try:
+            # Each lookup has its own timeout: one slow app must not cost the others their names.
+            apps = await asyncio.gather(
+                *(
+                    asyncio.wait_for(
+                        graph_provider.get_document(cid, CollectionNames.APPS.value),
+                        timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                    )
+                    for cid in to_fetch
+                ),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            # Labels only: results stay correct, the UI shows the type code.
+            logger.warning("Could not resolve connector names for citations: %s", e)
+            apps = []
+        found = dict(zip(to_fetch, apps))
+        for cid in to_fetch:
+            app = found.get(cid)
+            if isinstance(app, dict):
+                names[cid] = app.get("name")
+                _connector_name_cache.set(cid, app.get("name"))
+            else:
+                _connector_name_misses.set(cid, None)
+    for r in records:
+        name = names.get(r.get("connectorId"))
+        if name:
+            r["connectorInstanceName"] = name
+
+
 async def keep_context_blocks_inside_connection(
     holders: Iterable[tuple[str | None, Any]],
     graph_provider: IGraphDBProvider | None,
@@ -2840,6 +2924,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         rec["origin"] = graph_rec.get("origin")
                         rec["connector_name"] = graph_rec.get("connectorName")
                         rec["connector_id"] = graph_rec.get("connectorId")
+                        await attach_connector_instance_names(graph_provider, [graph_rec], connection_sources)
+                        rec["connector_instance_name"] = graph_rec.get("connectorInstanceName")
                         rec["preview_renderable"] = graph_rec.get("previewRenderable", True)
                         rec["mime_type"] = graph_rec.get("mimeType")
                         rec["weburl"] = graph_rec.get("webUrl")
@@ -3047,6 +3133,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     # A split row's container queued for a large table, by chunk id: where its
     # entry sits in rows_to_be_included, so a later fragment can raise its score.
     pending_split_rows: dict[str, tuple[str, int]] = {}
+    # Block id to position, per record, for points that group several table rows.
+    row_positions: dict[str, dict[str, int]] = {}
     # What a later point on an already-seen chunk updates, so the passage keeps
     # its best hit's score: a block over 100 words is several points with one
     # blockIndex, and the search API runs several queries.
@@ -3058,6 +3146,24 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         rows_key, position = pending_split_rows[pending_key]
         row_index, row_score, content = rows_to_be_included[rows_key][position]
         rows_to_be_included[rows_key][position] = (row_index, max(row_score, score), content)
+
+    def _queue_rows(first_chunk_id: str, rows_key: str, index: int, meta: dict[str, Any],
+                    blocks: list[dict[str, Any]], score: float) -> None:
+        """Queue the table rows one point stands for; a row already queued only has its score raised."""
+        virtual_record_id = rows_key.rsplit("_", 1)[0]
+        if meta.get("rowBlockIds") and virtual_record_id not in row_positions:
+            row_positions[virtual_record_id] = block_positions(blocks)
+        for row_index in grouped_row_indexes(meta, row_positions.get(virtual_record_id, {}), index):
+            row_chunk_id = f"{virtual_record_id}-{row_index}"
+            if row_chunk_id in pending_split_rows:
+                _raise_pending_row(row_chunk_id, score)
+            elif row_chunk_id in emitted_table_rows:
+                _note_matched_block(emitted_table_rows[row_chunk_id], row_index, score)
+            elif row_chunk_id == first_chunk_id or row_chunk_id not in seen_chunks:
+                seen_chunks.add(row_chunk_id)
+                pending_split_rows[row_chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
+                rows_to_be_included[rows_key].append((row_index, score, None))
+                on_repeat_hit[row_chunk_id] = functools.partial(_raise_pending_row, row_chunk_id)
 
     def _raise_passage(passage: dict[str, Any], score: float) -> None:
         passage["score"] = max(float(passage.get("score") or 0.0), score)
@@ -3253,6 +3359,12 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 row_index, row_score, content = rows_to_be_included[rows_key][position]
                 if repeat_score > row_score and result.get("content"):
                     rows_to_be_included[rows_key][position] = (row_index, repeat_score, result["content"])
+            elif chunk_id in pending_split_rows and meta.get("rowBlockIds"):
+                # A later point grouping other rows of the same table.
+                blocks_seen = (virtual_record_id_to_result.get(virtual_record_id) or {}).get(
+                    "block_containers", {}
+                ).get("blocks", [])
+                _queue_rows(chunk_id, pending_split_rows[chunk_id][0], index, meta, blocks_seen, repeat_score)
             elif chunk_id in on_repeat_hit:
                 on_repeat_hit[chunk_id](repeat_score)
             continue
@@ -3424,9 +3536,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 logger.warning("Table row %d has no table, vrid=%s", index, virtual_record_id)
                 continue
             rows_key = f"{virtual_record_id}_{block_group_index}"
-            pending_split_rows[chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
-            rows_to_be_included[rows_key].append((index,float(result.get("score",0.0)), None))
-            on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
+            _queue_rows(chunk_id, rows_key, index, meta, blocks, float(result.get("score", 0.0)))
             continue
         elif block_type == GroupType.TABLE.value:
             table_metadata = block.get("table_metadata", {})

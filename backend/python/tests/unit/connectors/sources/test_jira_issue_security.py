@@ -1,5 +1,7 @@
 """Issue security decisions for Jira Cloud and Data Center team connectors."""
 
+import pytest
+
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_AUTH,
@@ -16,6 +18,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    level_reads_alike,
     refuses_a_scope,
     resolve_scheme_knowledge,
     scheme_has_no_levels,
@@ -497,3 +500,30 @@ class TestSchemeHasNoLevels:
         assert not scheme_has_no_levels({"id": 10101})
         assert not scheme_has_no_levels({"id": 10101, "levels": None})
         assert not scheme_has_no_levels(None)
+
+
+class TestLevelReadsAlike:
+    """Whether two issues of one project in a level are read by the same people, which is
+    when a story with its epic's level may hang under the epic."""
+
+    @staticmethod
+    def _context(holders: list[dict], **kw: object) -> IssueSecurityContext:
+        return IssueSecurityContext(**{
+            "knowledge": SchemeKnowledge.PRESENT, "scheme_id": "1", "members_readable": True,
+            "members_by_level": {"10": holders}, **kw})
+
+    @pytest.mark.parametrize("holder_type", ["user", "group", "projectRole", "projectLead", "applicationRole", "anyone"])
+    def test_holders_that_name_the_same_people_on_every_issue(self, holder_type: str) -> None:
+        assert level_reads_alike(self._context([{"type": holder_type}]), "10")
+
+    @pytest.mark.parametrize("holder_type", ["reporter", "assignee", "userCustomField", "groupCustomField", "unknown"])
+    def test_a_holder_that_names_people_per_issue_or_is_unknown(self, holder_type: str) -> None:
+        assert not level_reads_alike(self._context([{"type": "group"}, {"type": holder_type}]), "10")
+
+    def test_unread_members_or_an_unlisted_level_are_not_known(self) -> None:
+        assert not level_reads_alike(self._context([{"type": "group"}], members_readable=False), "10")
+        assert not level_reads_alike(self._context([{"type": "group"}]), "11")
+        assert not level_reads_alike(self._context([]), "10")
+
+    def test_a_personal_connector_enforces_no_levels(self) -> None:
+        assert not level_reads_alike(self._context([{"type": "group"}], enforce=False), "10")

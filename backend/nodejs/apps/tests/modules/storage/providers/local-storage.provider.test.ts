@@ -810,6 +810,23 @@ describe('LocalStorageAdapter', () => {
       expect(rmStub.calledOnce).to.be.true
     })
 
+    it('prunes emptied source ancestors without listing them', async () => {
+      sinon.stub(fs, 'mkdir').resolves()
+      sinon.stub(fs, 'rename').resolves()
+      const readdirStub = sinon.stub(fs, 'readdir')
+      const notEmpty = Object.assign(new Error('ENOTEMPTY'), { code: 'ENOTEMPTY' })
+      const rmdirStub = sinon.stub(fs, 'rmdir')
+      rmdirStub.onFirstCall().resolves()
+      rmdirStub.onSecondCall().rejects(notEmpty)
+      const adapter = createAdapter()
+      const result = await adapter.renameTree('org1/PipesHub/p1/c1', 'org1/PipesHub/p2/c1')
+      expect(result.statusCode).to.equal(200)
+      expect(readdirStub.called).to.be.false
+      expect(rmdirStub.calledTwice).to.be.true
+      expect(rmdirStub.firstCall.args[0]).to.include(path.join('org1', 'PipesHub', 'p1'))
+      expect(rmdirStub.secondCall.args[0]).to.include(path.join('org1', 'PipesHub'))
+    })
+
     it('throws StorageNotFoundError when the source prefix does not exist', async () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'mkdir').resolves()
