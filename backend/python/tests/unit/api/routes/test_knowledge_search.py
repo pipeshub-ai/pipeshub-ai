@@ -620,6 +620,12 @@ async def test_grep_never_returns_a_line_from_a_record_the_caller_cannot_read() 
 # ---- patterns that are expensive to compile -----------------------------------
 @pytest.mark.parametrize("pattern", [
     "(?:(?:(?:(?:a{99}){99}){99}){99})",    # 33 characters: 23 s and 27 GB to compile
+    "(?x)(?:(?:(?:(?:a{99}) {99}) {99}) {99})",   # verbose mode ignores the spaces that hide the nesting
+    "(?x)(?:(?:(?:(?:a{99})\t{99})\t{99})\t{99})",
+    "(?x:(?:(?:(?:a{99}) {99}) {99}) {99})",
+    "(?ix)(?:(?:(?:(?:a{99}) {99}) {99}) {99})",
+    "(?V1x)(?:(?:(?:(?:a{99}) {99}) {99}) {99})",
+    "(?x)(?#c)a", "(?<n>a)", "(?-x)a", "(?s:a)", "(?(1)a|b)", "(?>a)", "(?|a|b)",
     "((((a{40}){40}){40}){40})",
     "(?:a{2}){3}",                           # a counted repeat inside a counted repeat
     "(a{1,2}b){2,3}",
@@ -637,7 +643,7 @@ def test_grep_refuses_costly_repeats_before_compiling_and_fast(pattern) -> None:
 
 @pytest.mark.parametrize("pattern", [
     "a{100}", "a{2,100}", "a{3,}", "(?:ab|cd){50}", "(a|b)+c{5}d{5}", r"\\1", r"[{999}]", r"a\{999\}", r"\p{L}{5}",
-    "x{,5}", "a{abc}", "(a{2})(b{2})", "(?#c{999}) a",
+    "x{,5}", "a{abc}", "(a{2})(b{2})", "(?P<x>a{2})", "(?:x)", r"\(?x", "(?i)abc", "(?i:abc){5}", "(?=a)b", "(?<!a)b", "(?!a)b", "(?<=a)b",
 ])
 def test_grep_still_accepts_bounded_repeats_and_things_that_only_look_like_references(pattern) -> None:
     command, compiled = ks._grep_command(ks.GrepQuery(pattern=pattern, regex=True))
@@ -671,3 +677,13 @@ async def test_a_record_with_too_much_text_is_not_searched_and_the_answer_says_s
         out = await _grep(True, retrieval=retrieval)
     assert out["records"] == [] and out["coverage"]["complete"] is False
     assert "too large" in out["coverage"]["note"]
+
+
+def test_the_scan_is_linear_in_the_length_of_the_pattern() -> None:
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(HTTPException) as err:  # 500 opening parentheses: refused by the scan, never reaching the compiler
+        ks._grep_command(ks.GrepQuery(pattern="(" * 500, regex=True))
+    assert err.value.status_code == 400 and "deeper" in err.value.detail
+    assert time.monotonic() - started < 0.5

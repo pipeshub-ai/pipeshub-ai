@@ -88,12 +88,17 @@ MAX_PATTERN_CHARS = 500
 # A counted repeat above this, or one nested in another, makes the regex compiler build a state per repetition (a 33-character pattern
 # can take 20 seconds and tens of gigabytes), and compiling has no time limit: such a pattern is refused before it is compiled.
 MAX_REPEAT_COUNT = 100
+# Groups open inside each other (deeper patterns make the compiler recurse until it fails).
+MAX_GROUP_DEPTH = 20
 # Characters of one response, and of one record's text, searched; past them the answer says it is incomplete.
 MAX_RESPONSE_CHARS = 1_000_000
 MAX_RECORD_CHARS = 5_000_000
 _QUANTIFIER = re.compile(r"\{(\d*)(?:,(\d*))?\}")
 _REFERENCE_ESCAPES = frozenset("123456789gk")
-_REFERENCE_GROUPS = ("(?P=", "(?P>", "(?&", "(?R", "(?0")
+# The only ``(?`` forms a pattern may use: plain, look-around, named and case-insensitive groups. Every other form changes how the
+# rest of the pattern is read (verbose mode ignores spaces, which hides a repeat nested in another; version switches; scoped flags;
+# comments) or refers back to a group (recursion, \g-style calls), so it is refused instead of modelled.
+_GROUP_OPEN = re.compile(r"\(\?(?::|=|!|<=|<!|i:|P<[A-Za-z_]\w*>)")
 # Records read for line matches (or labels) at once; each is a blob fetch.
 _LOAD_CONCURRENCY = 8
 # Readable records one app may give back (the request's ``limit`` cuts after).
@@ -180,13 +185,18 @@ def _unsafe_regex(pattern: str) -> str | None:
             i += 1
             last_counted = False
         elif c == "(":
-            if pattern.startswith(_REFERENCE_GROUPS, i) or re.match(r"\(\?[-+]?\d", pattern[i:]):
-                return "References to earlier groups and recursion are not supported."
-            if pattern.startswith("(?#", i):  # a comment
-                i = pattern.find(")", i) + 1 or n
+            if pattern.startswith("(?i)", i):  # a flag: it opens no group
+                i += 4
                 continue
+            if pattern.startswith("(?", i):
+                if not (m := _GROUP_OPEN.match(pattern, i)):
+                    return "Only plain, look-around, named and (?i) groups are supported; flags, comments, recursion and group references are not."
+                i = m.end()
+            else:
+                i += 1
             stack.append(False)
-            i += 1
+            if len(stack) > MAX_GROUP_DEPTH:
+                return f"Groups nested deeper than {MAX_GROUP_DEPTH} are not supported."
             last_counted = False
             has_atom = False
             continue
