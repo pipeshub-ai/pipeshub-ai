@@ -140,11 +140,13 @@ def test_grep_accepts_code_tokens(pattern) -> None:
 @pytest.mark.parametrize("use_regex", [False, True])
 @pytest.mark.parametrize("case_sensitive", [False, True])
 def test_grep_command_is_one_the_explicit_command_rules_accept(pattern, use_regex, case_sensitive) -> None:
-    from app.utils.pattern_match import _explicit_command_error
+    from app.utils.pattern_match import _explicit_command_error, validate_pattern_match_command
 
     command, _ = ks._grep_command(ks.GrepQuery(pattern=pattern, regex=use_regex, caseSensitive=case_sensitive))
     assert _explicit_command_error(command, readable_only=True) is None  # includes the listing-command checks
     assert _explicit_command_error(command, readable_only=False) is None
+    # in the strict shape, so a scan is never put down to an unshaped command (the route passes no word index, and a test below asserts it)
+    assert validate_pattern_match_command(command)[0]
 
 
 def test_grep_command_is_a_fixed_string_of_plain_characters() -> None:
