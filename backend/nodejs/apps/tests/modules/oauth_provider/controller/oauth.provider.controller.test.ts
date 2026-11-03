@@ -54,7 +54,10 @@ describe('OAuthProviderController', () => {
   // Client resolution goes through the DCR service; for a registered client id it is the app lookup.
   const passThroughDcr = (): any => ({
     register: sinon.stub(),
-    resolveAuthorizeClient: (id: string) => mockOAuthAppService.getAppByClientId(id),
+    resolveAuthorizeClient: async (id: string) => {
+      const app = await mockOAuthAppService.getAppByClientId(id)
+      return { app, store: async () => app }
+    },
   })
 
   beforeEach(() => {

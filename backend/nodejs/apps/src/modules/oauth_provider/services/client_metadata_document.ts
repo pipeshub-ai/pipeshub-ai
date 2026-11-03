@@ -147,7 +147,9 @@ const httpsGet: Getter = (url) =>
       {
         lookup: guardedLookup,
         headers: { accept: 'application/json' },
+        // `timeout` is an idle timeout that every chunk resets; the signal caps the whole fetch.
         timeout: FETCH_TIMEOUT_MS,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       },
       (res) => {
         // Redirects are not followed: the document must live at the client id itself.

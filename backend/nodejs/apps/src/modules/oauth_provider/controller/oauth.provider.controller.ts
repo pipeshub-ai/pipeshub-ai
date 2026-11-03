@@ -94,7 +94,7 @@ export class OAuthProviderController {
 
     try {
       // Validate client first
-      app = await this.oauthDcrService.resolveAuthorizeClient(query.client_id);
+      ({ app } = await this.oauthDcrService.resolveAuthorizeClient(query.client_id));
 
       // Validate redirect URI - MUST be done before any error redirect
       this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri);
@@ -240,7 +240,8 @@ export class OAuthProviderController {
       } = req.body;
 
       // Validate client
-      const app = await this.oauthDcrService.resolveAuthorizeClient(client_id);
+      const client = await this.oauthDcrService.resolveAuthorizeClient(client_id);
+      const { app } = client;
 
       // Validate redirect URI
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri);
@@ -288,6 +289,9 @@ export class OAuthProviderController {
         requestedScopes,
         app.allowedScopes,
       );
+
+      // A metadata document client is stored only now, once the person has consented.
+      await client.store();
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(

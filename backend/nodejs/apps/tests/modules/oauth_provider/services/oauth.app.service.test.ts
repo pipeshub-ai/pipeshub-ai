@@ -219,6 +219,39 @@ describe('OAuthAppService', () => {
     })
   })
 
+  describe('validateDcrRedirectUris', () => {
+    const rejects = (uri: string) =>
+      expect(() => service.validateDcrRedirectUris([uri])).to.throw(InvalidRedirectUriError)
+
+    it('accepts https, loopback http and app schemes as real clients write them', () => {
+      service.validateDcrRedirectUris([
+        'https://claude.ai/api/mcp/auth_callback',
+        'http://127.0.0.1:33418/callback',
+        'http://localhost/callback',
+        'cursor://anysphere.cursor-retrieval/oauth/user-pipeshub/callback',
+        'vscode://vscode.github-authentication/did-authenticate',
+        'com.example.app:/oauth2redirect',
+      ])
+    })
+
+    it('refuses schemes that would hand the code to something other than the client', () => {
+      for (const uri of [
+        'mailto:client@example.com',
+        'tel:+15550100',
+        'sms:+15550100',
+        'javascript:alert(1)',
+        'data:text/html,hi',
+        'blob:https://example.com/x',
+        'about:blank',
+        'wss://example.com/cb',
+        'ftp://example.com/cb',
+        'http://example.com/cb',
+      ]) {
+        rejects(uri)
+      }
+    })
+  })
+
   describe('createApp', () => {
     it('should create an OAuth app and return with client secret', async () => {
       const mockApp = {
