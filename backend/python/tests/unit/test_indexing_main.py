@@ -1026,12 +1026,12 @@ class TestRecoverCutShortEnrichment:
         seen: list[tuple[str, str]] = []
         paginated, update = gp.get_documents_paginated.side_effect, gp.update_node.side_effect
 
-        async def recording_paginated(*a, **k):
+        async def recording_paginated(*a: Any, **k: Any) -> list[dict]:  # noqa: ANN401
             seen.append(("scan", current_org_id()))
             assert k["filters"]["orgId"] == "org-1"
             return await paginated(*a, **k)
 
-        async def recording_update(*a, **k):
+        async def recording_update(*a: Any, **k: Any) -> bool:  # noqa: ANN401
             seen.append(("update", current_org_id()))
             return await update(*a, **k)
 
