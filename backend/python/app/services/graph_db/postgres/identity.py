@@ -718,7 +718,8 @@ class IdentityMixin(PgBase):
 
     async def update_knowledge_base(self, kb_id: str, updates: dict, transaction: str | None = None) -> dict | None:
         clean = {k: v for k, v in updates.items() if k not in ("id", "_key")}
-        rows = await self._id_rows("""/* pipeshub:graph.update_knowledge_base */ UPDATE graph.nodes SET doc = jsonb_strip_nulls(doc || $3::jsonb)
+        rows = await self._id_rows("""/* pipeshub:graph.update_knowledge_base */ UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $3::jsonb) AS _nv
+                WHERE _nv.value <> 'null'::jsonb)
             WHERE org_id = $1 AND coll = 'apps' AND id = $2 AND doc->>'type' = $4 RETURNING doc""", [current_org_id(), kb_id, _j(clean), _KB], transaction, write=True)
         return _arango(_doc(rows[0]["doc"]), "apps") if rows else None
 
