@@ -58,6 +58,18 @@ class TestArangoQueryError:
 
 class TestArangoStageStates:
     @pytest.mark.asyncio
+    async def test_the_org_of_a_virtual_record_is_one_stage_state_s(self) -> None:
+        provider = _arango(["org-1"])
+        assert await provider.stage_state_org_for_virtual_record("vr-1") == "org-1"
+        query = _query(provider.http_client.execute_aql)
+        assert "doc.virtualRecordId == @vrid" in query and "doc.orgId != null" in query and "LIMIT 1" in query
+        assert provider.http_client.execute_aql.await_args.args[1]["vrid"] == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_no_stage_state_names_an_org(self) -> None:
+        assert await _arango([]).stage_state_org_for_virtual_record("vr-1") is None
+
+    @pytest.mark.asyncio
     async def test_create_inserts_under_the_key_and_reports_success(self) -> None:
         provider = _arango(["vr:rev:classify"])
         assert await provider.stage_state_create({"id": "vr:rev:classify", "status": "QUEUED"})
@@ -123,6 +135,17 @@ class TestArangoStageStates:
 
 
 class TestNeo4jStageStates:
+    @pytest.mark.asyncio
+    async def test_the_org_of_a_virtual_record_is_one_stage_state_s(self) -> None:
+        provider = _neo4j([{"org": "org-1"}])
+        assert await provider.stage_state_org_for_virtual_record("vr-1") == "org-1"
+        query = _query(provider.client.execute_query)
+        assert "n.virtualRecordId = $vrid" in query and "n.orgId IS NOT NULL" in query and "LIMIT 1" in query
+
+    @pytest.mark.asyncio
+    async def test_no_stage_state_names_an_org(self) -> None:
+        assert await _neo4j([]).stage_state_org_for_virtual_record("vr-1") is None
+
     @pytest.mark.asyncio
     async def test_create_merges_on_the_unique_id_and_reports_whether_it_created(self) -> None:
         provider = _neo4j([{"created": True}])
@@ -306,6 +329,12 @@ class TestStageStatesWithRecords:
         from app.services.graph_db.neo4j.neo4j_provider import _STAGE_STATE_INDEXES
 
         assert any("(n.connectorId, n.stage, n.status, n.id)" in index for index in _STAGE_STATE_INDEXES)
+
+    def test_neo4j_indexes_a_virtual_record_lookup_without_a_revision(self) -> None:
+        from app.services.graph_db.neo4j.neo4j_provider import _STAGE_STATE_INDEXES
+
+        # stage_state_org_for_virtual_record filters on virtualRecordId alone.
+        assert any(index.endswith("ON (n.virtualRecordId)") for index in _STAGE_STATE_INDEXES)
 
 
 def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, stages_ok: bool = True) -> None:

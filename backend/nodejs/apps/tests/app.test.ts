@@ -193,6 +193,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
+  sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
@@ -943,6 +944,18 @@ describe('Application', () => {
       '/.well-known',
       '/api/v1/docs',
     ];
+
+    // The catch-all layers (static, SPA, query) match every path, so require a
+    // layer that matches the guide's path and not a neighbour.
+    it('should mount the agent auth guide at /auth.md and /.well-known/auth.md', () => {
+      const stack = (expressApp as any)._router?.stack || [];
+      const mountedOnly = (path: string, neighbour: string) =>
+        stack.some(
+          (layer: any) => layer.regexp?.test(path) && !layer.regexp.test(neighbour),
+        );
+      expect(mountedOnly('/auth.md', '/not-auth.md')).to.be.true;
+      expect(mountedOnly('/.well-known/auth.md', '/.well-known/jwks.json')).to.be.true;
+    });
 
     for (const route of expectedRoutes) {
       it(`should mount route: ${route}`, () => {
