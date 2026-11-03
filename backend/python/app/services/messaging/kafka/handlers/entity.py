@@ -241,8 +241,9 @@ class EntityEventService(BaseEventService):
         """Handle organization deletion event"""
         try:
             self.logger.info(f"📥 Processing org deleted event: {payload}")
+            org_id = payload["orgId"]
             org_data = {
-                "_key": payload["orgId"],
+                "_key": org_id,
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
