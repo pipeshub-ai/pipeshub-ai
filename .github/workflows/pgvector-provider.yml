@@ -90,7 +90,7 @@ jobs:
       - name: No unexpected skips, and every case ran
         if: ${{ always() }}
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 46
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 48
           --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=8'
           --expect-suite 'tests.integration.vector_db.test_pgvector_probe=2'
-          --expect-suite 'tests.integration.vector_db.test_pgvector_writes=36'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_writes=38'

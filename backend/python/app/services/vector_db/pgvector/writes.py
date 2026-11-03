@@ -83,7 +83,9 @@ def prepare(points: list[VectorPoint]) -> Prepared:
     by_id: dict[uuid.UUID, VectorPoint] = {}
     for p in points:
         try:
-            by_id[uuid.UUID(str(p.id))] = p
+            key = uuid.UUID(str(p.id))
+            by_id.pop(key, None)             # a repeated id moves to the end, so the iteration below follows each point's last occurrence
+            by_id[key] = p
         except ValueError as e:
             raise PgVectorError(f"point id {p.id!r} is not a UUID") from e
     org: str | None = None
