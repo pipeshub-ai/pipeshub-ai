@@ -16,17 +16,25 @@ if [ "$1" = postgres ]; then
       exit 78
     fi
   done
+  # Printable ASCII only (the role script's SCRAM verifier relies on it); refused here, before anything is initialised.
+  check_printable() {
+    case "$2" in
+      *[!\ -~]*) echo "pg-entrypoint: $1 has a character outside printable ASCII; use letters, digits and punctuation. Not starting." >&2; exit 78 ;;
+    esac
+  }
   # Every password is checked before the stock entrypoint runs: a cluster initialised with one missing would be left without
   # its roles, and the next start would skip initialisation and serve it as it is.
   for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PASSWORD PG_QUERY_PASSWORD \
            PG_JOBS_PASSWORD PG_MIGRATE_PASSWORD PG_BACKUP_PASSWORD; do
     eval "val=\${$v:-}"
+    [ "$v" = POSTGRES_PASSWORD ] && name=PG_ADMIN_PASSWORD || name=$v
     if [ -z "$val" ]; then
-      [ "$v" = POSTGRES_PASSWORD ] && v=PG_ADMIN_PASSWORD
-      echo "pg-entrypoint: $v is empty; set it in .env. Not starting." >&2
+      echo "pg-entrypoint: $name is empty; set it in .env. Not starting." >&2
       exit 78
     fi
+    check_printable "$name" "$val"
   done
+  [ -n "${PG_KV_PASSWORD:-}" ] && check_printable PG_KV_PASSWORD "$PG_KV_PASSWORD"
   # Create what is missing of the roles on every start, once the server answers on TCP (the initialisation server listens on the
   # socket only), so a volume that was left half-set-up repairs itself and PgBouncer's verifier file is rewritten. A failure is
   # logged and leaves PgBouncer unhealthy.
