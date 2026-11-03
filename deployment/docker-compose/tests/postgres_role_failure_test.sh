@@ -30,6 +30,9 @@ services:
   postgres:
     environment:
       - PG_SCRAM_VERIFIER=/bin/false
+    # the shipped start_period would report 'starting' instead of 'unhealthy' for five minutes
+    healthcheck:
+      start_period: 1s
   app-stub:
     image: $image
     entrypoint: ["sleep", "infinity"]
