@@ -41,6 +41,7 @@ from app.services.messaging.disposition import describe_message, notify_abandone
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
@@ -486,9 +487,16 @@ class PgMessagingConsumer(IMessagingConsumer):
         except RequeueWithoutAttempt:
             raise
         except Exception as e:
-            self.logger.error(
-                "Error in message handler for %s: %s", d.message_id, e, exc_info=True
-            )
+            if is_expected_outcome(e):
+                # Expected (deleted while indexed, refused by the source): the handler
+                # already logged it once, so no traceback at error level here.
+                self.logger.info(
+                    "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                )
+            else:
+                self.logger.error(
+                    "Error in message handler for %s: %s", d.message_id, e, exc_info=True
+                )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
                 == MessageErrorType.TERMINAL
