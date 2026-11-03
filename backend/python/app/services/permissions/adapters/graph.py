@@ -67,7 +67,14 @@ class GraphPrincipalView:
                     # A placeholder stub is listed so a browse can open it; it is navigable, not readable content.
                     return found.node_ids - found.placeholder_ids
 
-            checks = await asyncio.gather(*(check(ids[i:i + self._chunk]) for i in range(0, len(ids), self._chunk)))
+            tasks = [asyncio.ensure_future(check(ids[i:i + self._chunk])) for i in range(0, len(ids), self._chunk)]
+            try:
+                checks = await asyncio.gather(*tasks)
+            finally:
+                # One failed chunk must not leave its siblings running past the caller's slot.
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
             found = frozenset[str]().union(*checks)
         except TimeoutError as exc:
             raise ViewerScopesUnavailable("check_timeout") from exc

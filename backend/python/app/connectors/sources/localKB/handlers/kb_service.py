@@ -767,7 +767,10 @@ class KnowledgeBaseService:
             # a partial auto-commit (NEO4J_CREATE_TRANSACTIONS=false) lands the
             # same KB once.
             self.logger.info("💾 Executing database operations...")
-            await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
+            try:
+                await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
+            finally:
+                await notify_principals_changed(org_id)  # the owner's grant is new; also after a partial auto-commit
             # After the commit, and outside the retry: the lane is keyed by
             # kb_key, so a second call returns the same lane. Best-effort; a
             # failure is logged and the first publish places the KB instead.

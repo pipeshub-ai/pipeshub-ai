@@ -1138,6 +1138,7 @@ async def _grant_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+        await notify_principals_changed(org_id)  # a new READER grant
     return len(edges)
 
 

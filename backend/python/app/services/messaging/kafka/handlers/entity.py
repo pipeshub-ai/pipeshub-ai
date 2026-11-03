@@ -553,6 +553,8 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+            # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
+            await notify_principals_changed(payload["orgId"])
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
@@ -691,6 +693,7 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 app_updates, CollectionNames.APPS.value
             )
+            await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:
             # the sweep and the cleanup below must not run while the sync is

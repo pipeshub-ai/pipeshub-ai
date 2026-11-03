@@ -110,6 +110,7 @@ class ArtifactSharingService:
             recipients.append(user_id)
         if edges:
             await self._graph.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+            await notify_principals_changed(actor.org_id)  # a new READER grant
             await self._notify(actor, artifact_id, artifact_name, recipients)
         return len(edges)
 

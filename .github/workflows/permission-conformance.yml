@@ -91,7 +91,7 @@ jobs:
           cd backend/python
           pytest tests/unit/services/permissions -v --junitxml="$RUNNER_TEMP/viewer-scopes-junit.xml"
           cd ../..
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/viewer-scopes-junit.xml" --min-tests 66
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/viewer-scopes-junit.xml" --min-tests 70
 
   graph:
     if: github.event_name != 'schedule'

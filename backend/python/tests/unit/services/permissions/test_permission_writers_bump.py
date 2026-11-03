@@ -215,3 +215,73 @@ def test_every_permission_edge_delete_outside_the_providers_bumps_or_is_listed_w
     assert unlisted == [], f"bump (notify_principals_changed) or list with a reason in NO_BUMP: {unlisted}"
     stale = sorted(k for k in NO_BUMP if k not in flagged or flagged[k])
     assert stale == [], f"stale NO_BUMP entries (not flagged any more, or they bump now): {stale}"
+
+
+# Edge creators: a new grant widens access, and a cached scope from before it under-admits until the entry expires.
+CREATE_CALLS = {"batch_create_edges", "create_edge", "create_edges", "batch_upsert_edges"}
+
+
+def _flagged_create_functions() -> dict[str, bool]:
+    """Functions outside the graph providers that create PERMISSION or USER_APP_RELATION edges, or edges into a
+    collection that is not a `CollectionNames.X` literal. Value: whether it bumps."""
+    flagged: dict[str, bool] = {}
+    for path in APP.rglob("*.py"):
+        rel = str(path.relative_to(APP))
+        if rel.startswith("services/graph_db/") or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS):
+            continue
+        for fn in _enclosing_functions(ast.parse(source)):
+            for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                text = ast.unparse(call)
+                if call.func.attr in CREATE_CALLS and ("PERMISSION" in text or "USER_APP_RELATION" in text):
+                    flagged[f"{rel}::{fn.name}"] = bool((BUMPS | PROCESSOR_BUMPS) & _calls(fn))
+    return flagged
+
+
+# function -> why it may create a grant without bumping itself.
+NEW_RECORD = "owner edge of a record or artifact created in the same request: nothing could have been cached for it"
+HELPER = "helper: every route or method that calls it bumps (checked by the guard on its callers)"
+CREATE_NO_BUMP = {
+    "agents/agent_loop/skills/graph_store.py::_create_owner_permission_edge": AGENT,
+    "api/routes/agent.py::clone_agent_template": AGENT,
+    "api/routes/agent.py::create_agent": AGENT,
+    "api/routes/agent.py::create_agent_template": AGENT,
+    "api/routes/agent.py::update_agent": AGENT,
+    "api/routes/agent.py::write_agent": AGENT,
+    "api/routes/chatbot.py::_upload_chat_attachments": NEW_RECORD,
+    "api/routes/entity.py::write_team": HELPER,
+    "services/artifact_registry/versioning.py::create": NEW_RECORD,
+    "services/artifact_registry/versioning.py::create_from_existing_document": NEW_RECORD,
+    "connectors/sources/localKB/handlers/kb_service.py::write_kb": HELPER,
+    "connectors/sources/salesforce/connector.py::write_permissions": SYNC,
+    **{f"connectors/core/base/data_processor/data_source_entities_processor.py::{f}": SYNC for f in (
+        "_give_every_copy_all_stored_members", "_link_kb_record_to_app", "_write_permission_edges",
+        "migrate_group_permissions_to_user", "on_user_group_member_added", "upsert_permission_edge")},
+    **{f"connectors/core/base/data_store/graph_data_store.py::{f}": STORE for f in (
+        "batch_upsert_record_group_permissions", "create_inherit_permissions_relation_record",
+        "create_user_group_membership")},
+}
+
+
+def test_every_grant_creator_outside_the_providers_bumps_or_is_listed_with_a_reason() -> None:
+    flagged = _flagged_create_functions()
+    unlisted = sorted(k for k, bumps in flagged.items() if not bumps and k not in CREATE_NO_BUMP)
+    assert unlisted == [], f"bump (notify_principals_changed) or list with a reason in CREATE_NO_BUMP: {unlisted}"
+    stale = sorted(k for k in CREATE_NO_BUMP if k not in flagged or flagged[k])
+    assert stale == [], f"stale CREATE_NO_BUMP entries: {stale}"
+
+
+def test_the_share_and_knowledge_base_create_writers_are_flagged_and_bump() -> None:
+    flagged = _flagged_create_functions()
+    for key in ("services/artifact_registry/sharing.py::share", "connectors/sources/localKB/handlers/kb_service.py::create_knowledge_base",
+                "api/routes/chatbot.py::_grant_reader_permissions"):
+        assert flagged.get(key) is True, key
+
+
+def test_a_handler_bumps_before_the_cleanup_that_follows_its_write() -> None:
+    """A disabled app or deleted user must not be served from a scope read before the change while cleanup runs."""
+    tree = _tree("services/messaging/kafka/handlers/entity.py")
+    for name, cleanup in (("_handle_user_deleted", "_remove_mcp_data"), ("_handle_app_disabled", "request_stop_by_prefix")):
+        calls = sorted((n.lineno, n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", ""))
+                       for n in ast.walk(_function(tree, name)) if isinstance(n, ast.Call))
+        order = [c for _, c in calls]
+        assert order.index("notify_principals_changed") < order.index(cleanup), name

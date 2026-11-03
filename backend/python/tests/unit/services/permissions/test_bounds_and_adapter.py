@@ -97,3 +97,23 @@ async def test_a_cache_started_without_redis_connects_when_redis_comes_back() ->
     assert before is not None
     await cache.bump("org-1")
     assert await cache.version("org-1") == before + 1
+
+
+async def test_a_failed_chunk_leaves_no_sibling_check_running() -> None:
+    running: set[str] = set()
+
+    class Provider:
+        async def check_access(self, _user: str, _org: str, *, node_ids: list[str], **_kw: object) -> SimpleNamespace:
+            if node_ids == ["a"]:
+                raise RuntimeError("boom")
+            running.add(node_ids[0])
+            try:
+                await asyncio.sleep(5)
+            finally:
+                running.discard(node_ids[0])
+            return SimpleNamespace(node_ids=frozenset(), placeholder_ids=frozenset())
+
+    view = GraphPrincipalView(Provider(), chunk=1, parallel=3)  # type: ignore[arg-type]
+    with pytest.raises(ViewerScopesUnavailable) as err:
+        await view.readable(ORG, _who(), frozenset({"a", "b", "c"}))
+    assert err.value.reason == "graph_error" and running == set()
