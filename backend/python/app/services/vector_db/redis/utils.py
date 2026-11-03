@@ -19,7 +19,7 @@ Redis treats as special inside ``{}``.
 import struct
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from app.services.permissions.scope_fields import SCOPE_KEYS, SCOPE_LIST_KEYS, SCOPE_VERSION_FIELD
+from app.services.permissions.scope_fields import SCOPE_GENERATION_FIELD, SCOPE_KEYS, SCOPE_LIST_KEYS, SCOPE_VERSION_FIELD
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -325,7 +325,7 @@ def _scope_payload(doc: dict[str, Any]) -> dict[str, Any]:
             continue
         if key in SCOPE_LIST_KEYS:
             out[key] = split_tag_values(doc[key])
-        elif key == SCOPE_VERSION_FIELD:
+        elif key in (SCOPE_VERSION_FIELD, SCOPE_GENERATION_FIELD):
             out[key] = int(doc[key]) if str(doc[key]).lstrip("-").isdigit() else doc[key]
         else:
             out[key] = doc[key]
