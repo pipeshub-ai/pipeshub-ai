@@ -37,6 +37,7 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-qs")
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
@@ -591,6 +592,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(knowledge_search_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
