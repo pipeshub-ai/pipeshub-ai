@@ -189,7 +189,8 @@ need named entities on (`KnowledgeGraphPolicy.named_entities`).
   counts only the sources the conversation is limited to (`LIMITED_SCOPE_NOTE`).
 - `applied`: the conditions as the engine read them (values as stored).
 - `next_cursor`, an opaque keyset cursor (see Paging), absent at the end.
-- The recall check's line: possible matches, or why it did not run (below).
+- The recall check's line: possible matches, or why it did not run, and
+  the judge's verdicts on them (below).
 
 ## Provider contract
 
@@ -287,7 +288,67 @@ It is a bounded hybrid search beside the engine
 - **Logs** carry counts only (searched, outside, admitted, possible by
   connector and by condition kind) with the query's correlation id.
 
-Judging possible matches by reading them (a side sub-agent) is R3b.
+## Judging possible matches
+
+When the recall check returns at least one possible match, one bounded model
+call reads them (`record_query/judge.py`) and says, per candidate, whether
+its text satisfies the conditions the graph could not decide. It runs only
+under `KnowledgeGraphPolicy.record_query`, only on a first page, and only
+with possible matches to judge; `judge.JUDGE_ENABLED` switches it off.
+
+- **Input**: the conditions as applied (the same echo the result prints,
+  with the names of the ids it holds), then up to `MAX_JUDGED` (10)
+  candidates, each with the fields the graph knows (`row_view`, no id) and
+  its own best passages from the recall search: at most 3, 1,200 characters
+  in all (about 300 tokens). Passages are matched to a candidate by its
+  record id or virtual record id only, and a candidate is a row the access
+  check already admitted, so nothing the user cannot open is sent. The
+  whole prompt is held under `INPUT_TOKEN_BUDGET` (5,000 estimated tokens)
+  by cutting the longest passages first.
+- **Model**: the request's own model (`state["llm"]`), the one the agent
+  runs on. The call is made inside the tool, so it goes out under the
+  `ModelCallContext` the route bound for the turn
+  (`docs/llm-gateway-identity.md`), labelled `record_judge` for usage
+  (`llm_usage_source`, and the `UsageLedger` when the request opted in),
+  with the request's tracing callbacks. No new provider wiring.
+- **Untrusted text**: each passage is fenced in `<passage>` tags (any such
+  tag inside it is removed first) and the instructions say the text is
+  data, never instructions. The reply must be exactly one JSON object
+  `{"verdicts": [{"id": "c<n>", "verdict": "supports" | "contradicts" |
+  "unclear", "quote": "..."}]}` (a code fence around it is allowed, prose is
+  not). An entry naming an id that was not offered, a repeated id, another
+  verdict, or a `supports` / `contradicts` whose quote is not a span of that
+  candidate's own passages is `unclear`; so is a candidate the reply leaves
+  out. A passage that tells the model to approve every candidate can
+  therefore decide at most its own record, and only by quoting itself.
+- **Render**: under the possible-matches header, a line that this is a
+  model judgement, not a graph fact, and that the exact total does not
+  change; then "Likely matches (model judgement, not counted): K", each
+  with its `judge_quote`; then "Still possible" for the unclear; then one
+  line counting the contradicted ones, which are left out of the list and
+  not cited.
+- **Bounds**: one call, never one per candidate; `JUDGE_DEADLINE_SECONDS`
+  (5 s) covers the model lookup and the call. The output is not capped by
+  a provider `max_tokens` (providers name it differently and reasoning
+  models count thinking against it); ten short verdicts and the deadline
+  bound it. A timeout, an error or no model leaves the possible matches
+  unjudged with one line saying the judge did not run; the call never
+  fails for it.
+- **Logs**: one line per query with its correlation id: judged count,
+  verdict counts, malformed entries, latency; or the error class when it
+  did not run. No content, names or quotes.
+
+**One call, not a sub-agent.** A domain or exploration child
+(`app/agents/agent_loop/domain_agents.py`) is a ReAct loop of up to 8-12
+turns with tools, started by the parent model choosing to call it, on the
+runtime the tool layer does not hold. The judge needs none of that: its
+inputs are already in hand (the admitted rows and the passages the recall
+search returned), the decision is a fixed classification, and it must fit a
+deadline inside a tool call. A loop would cost several model calls and
+seconds per query, could fetch further content, and its free-text answer
+would need parsing anyway. One batched call has one round trip, a fixed
+input size, and a reply checked against a schema; a candidate that needs
+more reading is still possible, and the agent can `fetch` it.
 
 ## One listing tool
 

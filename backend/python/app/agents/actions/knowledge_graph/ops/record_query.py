@@ -28,6 +28,7 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 from app.agents.actions.knowledge_graph.ops.scope import search_scope
 from app.agents.actions.knowledge_graph.views import CITE_NOTE
 from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
+from app.agents.agent_loop.protocol.run_usage import llm_usage_reporter
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval.entity_permissions import EntityAccessError
@@ -39,6 +40,7 @@ from app.modules.retrieval.record_fields import (
     FieldKind,
     Store,
 )
+from app.modules.retrieval.record_query import judge as judge_module
 from app.modules.retrieval.record_query.engine import (
     QueryNotRunnable,
     row_view,
@@ -48,6 +50,7 @@ from app.modules.retrieval.record_query.evaluate import (
     CLASSIFICATION_FAILED,
     NOT_CLASSIFIED,
 )
+from app.modules.retrieval.record_query.judge import Candidate, JudgeOutcome, Verdict
 from app.modules.retrieval.record_query.model import (
     EntityCondition,
     FieldCondition,
@@ -99,6 +102,14 @@ RECALL_ON_FIRST_PAGE = "Recall check: ran on the first page of this query; its p
 POSSIBLE_RULE = (
     "Never add them to the exact total: say how many are possible, or read one with fetch to decide it."
 )
+JUDGE_DID_NOT_RUN = "Judge did not run ({why}): the possible matches below are unjudged."
+JUDGED_NOTE = (
+    "A model read their text against the conditions: its judgement is not a graph fact, "
+    "and the exact total above does not change."
+)
+LIKELY_HEADER = "Likely matches (model judgement, not counted): {n}"
+STILL_POSSIBLE_HEADER = "Still possible (their text does not settle it): {n}"
+CONTRADICTED_LINE = "Left out {n} the model judged their text contradicts (not counted either way)."
 MENTIONS_NOTE = (
     "mentions matched values written in the records' text (as extracted), not record fields: "
     "count these records, never total or group the mentioned values."
@@ -180,8 +191,11 @@ async def execute_find_records(
         if sources and not apps:
             query.where.append(FieldCondition.model_validate({"field": "container", "in": list(sources)}))
         qid = uuid.uuid4().hex[:12]
+        passages: dict[str, list[str]] = {}
         # Beside the engine, so it adds no wait of its own; a pure describe has nothing to recall.
-        recall_task = None if _no_recall(query) else start_search(query, _names(state, people), _search(state))
+        recall_task = None if _no_recall(query) else start_search(
+            query, _names(state, people), _search(state, passages),
+        )
         try:
             result = await run_record_query(state["graph_provider"], context, query, apps=apps or None,
                                             correlation_id=qid)
@@ -208,9 +222,19 @@ async def execute_find_records(
     if keys:
         remember_record_ids(state, keys, names={r["record_id"]: r.get("title") or "" for r in result.rows})
         note_retrieved_by(state, "entity", graph_record_refs([{"_key": k} for k in keys]))
+    shown = (recall.possible if recall else [])[:MAX_POSSIBLE_SHOWN]
+    judged = None
+    if shown and judge_module.JUDGE_ENABLED:
+        try:
+            judged = await _judge(state, query, people, shown, passages, qid)
+        except Exception as exc:  # the judge is advisory: its failure never fails the call
+            logger.warning("record query %s judge: did not run (%s)", qid, type(exc).__name__)
+            judged = JudgeOutcome(error=type(exc).__name__)
+    if judged is not None and judged.ran:
+        shown = [r for r in shown if judged.of(str(r.get("_key"))) is not Verdict.CONTRADICTS]
     # Each row is cited for the facts it shows, as navigate and list_files cite
     # theirs; totals and groups are computed, not quoted, so they get none.
-    possible = [row_view(r) for r in (recall.possible if recall else [])[:MAX_POSSIBLE_SHOWN]]
+    possible = [row_view(r) for r in shown]
     if possible:
         remember_record_ids(state, [r["record_id"] for r in possible],
                             names={r["record_id"]: r.get("title") or "" for r in possible})
@@ -220,7 +244,8 @@ async def execute_find_records(
         {r["record_id"]: row_facts(r) for r in [*result.rows, *possible] if r.get("record_id")},
     )
     return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state), cite_refs=cite_refs,
-                        scope_note=limited_scope_note(context), people=people, recall=recall, possible=possible)
+                        scope_note=limited_scope_note(context), people=people, recall=recall, possible=possible,
+                        judged=judged)
 
 
 def _no_recall(query: RecordQuery) -> bool:
@@ -241,9 +266,15 @@ def _names(state: ChatState, people: Mapping[str, str]) -> dict[str, str]:
     return names
 
 
-def _search(state: ChatState) -> Any:  # noqa: ANN401
+def _passage_key(record_id: str = "", virtual_id: str = "") -> str:
+    return f"vid:{virtual_id}" if virtual_id else record_id
+
+
+def _search(state: ChatState, passages: dict[str, list[str]] | None = None) -> Any:  # noqa: ANN401
     """The recall check's search: the search tool's retrieval call, within
-    the turn's scope and permissions, record ids best first."""
+    the turn's scope and permissions, record ids best first. ``passages``
+    collects each hit's text, best first, by record id and by virtual record
+    id, for the judge."""
     async def search(text: str, time_range: dict[str, int] | None) -> list[str]:
         retrieval = state.get("retrieval_service")
         if retrieval is None:
@@ -261,11 +292,58 @@ def _search(state: ChatState) -> Any:  # noqa: ANN401
         if not isinstance(found, dict) or found.get("status_code", 200) >= 400:
             raise RuntimeError("search failed")
         by_vid = found.get("virtual_to_record_map") or {}
-        ids = [str((r.get("metadata") or {}).get("recordId") or "") for r in found.get("searchResults") or []]
+        hits = [r for r in found.get("searchResults") or [] if isinstance(r, dict)]
+        for hit in hits if passages is not None else ():
+            meta, content = hit.get("metadata") or {}, hit.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            for key in {_passage_key(str(meta.get("recordId") or "")),
+                        _passage_key(virtual_id=str(meta.get("virtualRecordId") or ""))} - {"", "vid:"}:
+                passages.setdefault(key, []).append(content)
+        ids = [str((r.get("metadata") or {}).get("recordId") or "") for r in hits]
         ids += [str(rec.get("_key") or "") for rec in by_vid.values() if isinstance(rec, dict)]
         return [i for i in dict.fromkeys(ids) if i]
 
     return search
+
+
+def _judge_conditions(query: RecordQuery, people: Mapping[str, str], names: Mapping[str, str]) -> str:
+    """The conditions as find_records echoes them, with the names of the ids they hold."""
+    applied = _applied(query)
+    named = [f"{i} is {n}" for i, n in names.items() if i and f'"{i}"' in applied]
+    named += [f'person "{asked}" is {label}' for asked, label in people.items()]
+    return applied + (" (" + "; ".join(named) + ")" if named else "")
+
+
+async def _judge(
+    state: ChatState, query: RecordQuery, people: Mapping[str, str], shown: list[dict[str, Any]],
+    passages: Mapping[str, list[str]], correlation_id: str,
+) -> JudgeOutcome:
+    """The judge over ``shown``, possible matches the access check admitted:
+    only their own passages from the user's search are sent."""
+    from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+
+    candidates = []
+    for row in shown:
+        key = str(row.get("_key") or "")
+        own = passages.get(_passage_key(key)) or passages.get(
+            _passage_key(virtual_id=str(row.get("virtualRecordId") or ""))) or []
+        known = {k: v for k, v in row_view(row).items() if k != "record_id"}
+        candidates.append(Candidate(key, known, judge_module.bounded_passages(own)))
+
+    async def model() -> Any:  # noqa: ANN401
+        # The request's own model: the call goes out under the identity the
+        # route bound for this turn, labelled as the judge for usage.
+        return state.get("llm")
+
+    try:
+        callbacks = build_langchain_opik_callbacks()
+    except Exception:  # tracing never blocks the judge
+        callbacks = []
+    return await judge_module.judge(
+        model, _judge_conditions(query, people, _names(state, people)), candidates, correlation_id=correlation_id,
+        on_llm_usage=llm_usage_reporter(state, judge_module.USAGE_SOURCE), callbacks=callbacks,
+    )
 
 
 _AGAIN = 'Call knowledgegraph__find_records again with that person\'s email as person.name.'
@@ -331,6 +409,7 @@ def render(
     query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None,  # noqa: ANN401
     cite_refs: Mapping[str, str] | None = None, scope_note: str = "", people: Mapping[str, str] | None = None,
     recall: RecallCheck | None = None, possible: list[dict[str, Any]] | None = None,
+    judged: JudgeOutcome | None = None,
 ) -> str:
     """Totals first, then what was computed, then a page of rows to cite."""
     cite_refs = cite_refs or {}
@@ -397,7 +476,7 @@ def render(
     if result.next_cursor:
         lines.append(f'More records: call again with the same arguments and cursor="{result.next_cursor}".')
     if recall is not None:
-        lines += _recall_lines(recall, possible or [], cite_refs, shortener)
+        lines += _recall_lines(recall, possible or [], cite_refs, shortener, judged)
     elif query.cursor:
         lines.append(RECALL_ON_FIRST_PAGE)
     return "\n".join(lines)
@@ -405,6 +484,7 @@ def render(
 
 def _recall_lines(
     recall: RecallCheck, possible: list[dict[str, Any]], cite_refs: Mapping[str, str], shortener: Any,  # noqa: ANN401
+    judged: JudgeOutcome | None = None,
 ) -> list[str]:
     if recall.failed:
         return [RECALL_DID_NOT_RUN]
@@ -412,15 +492,37 @@ def _recall_lines(
         return [RECALL_SKIPPED]
     if not recall.possible:
         return []
-    lines = [f"Possible matches the graph could not confirm: {len(recall.possible)} "
-             f"(search found them; the graph lacks the facts to decide). {POSSIBLE_RULE}"]
-    for row in possible:
+
+    def listed(row: dict[str, Any]) -> str:
         shown = dict(row)
+        verdict = judged.verdicts.get(str(row.get("record_id"))) if judged is not None and judged.ran else None
+        if verdict is not None and verdict.quote:
+            shown["judge_quote"] = verdict.quote
         if shown.get("record_id") in cite_refs:
             shown["cite"] = cite_refs[shown["record_id"]]
         if shortener is not None and shown.get("record_id"):
             shown["record_id"] = shortener.shorten_record_ids_in_text(shown["record_id"])
-        lines.append("- " + json.dumps(shown, ensure_ascii=False, separators=(",", ":")))
+        return "- " + json.dumps(shown, ensure_ascii=False, separators=(",", ":"))
+
+    lines = [f"Possible matches the graph could not confirm: {len(recall.possible)} "
+             f"(search found them; the graph lacks the facts to decide). {POSSIBLE_RULE}"]
+    if judged is None or not judged.ran:
+        if judged is not None:
+            lines.append(JUDGE_DID_NOT_RUN.format(why="no model" if judged.error == "no_model" else
+                                                  "timed out" if judged.error == "TimeoutError" else "error"))
+        return lines + [listed(row) for row in possible]
+    likely = [r for r in possible if judged.of(str(r.get("record_id"))) is Verdict.SUPPORTS]
+    rest = [r for r in possible if r not in likely]
+    contradicted = sum(1 for j in judged.verdicts.values() if j.verdict is Verdict.CONTRADICTS)
+    lines.append(JUDGED_NOTE)
+    if likely:
+        lines.append(LIKELY_HEADER.format(n=len(likely)))
+        lines += [listed(row) for row in likely]
+    if rest:
+        lines.append(STILL_POSSIBLE_HEADER.format(n=len(rest)))
+        lines += [listed(row) for row in rest]
+    if contradicted:
+        lines.append(CONTRADICTED_LINE.format(n=contradicted))
     return lines
 
 

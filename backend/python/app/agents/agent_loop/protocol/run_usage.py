@@ -49,7 +49,8 @@ class UsageLedger:
     labelled by its source: `main`, `sub_agent:<name>`, `single_shot:<name>`,
     `auto_compact`, `plan_critic`, `result_critic`, `planner`, `replanner`
     (from the request's transports, see `UsageReportingTransport`),
-    `grep_generation` and `entity_linking`. Only wired when the request opted
+    `grep_generation`, `entity_linking` and `record_judge` (find_records'
+    judge). Only wired when the request opted
     in, so a normal request records nothing."""
 
     entries: list[tuple[str, TokenUsage]] = field(default_factory=list)

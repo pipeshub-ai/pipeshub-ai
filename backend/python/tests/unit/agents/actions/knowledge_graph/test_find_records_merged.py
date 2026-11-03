@@ -5,6 +5,7 @@ routed to the equivalent query."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -210,7 +211,7 @@ async def test_possible_matches_are_listed_apart_cited_and_never_in_the_total(
     assert ok and lines[0] == "Total: 3 matching records you can open (exact)"
     (header,) = [line for line in lines if line.startswith("Possible matches the graph could not confirm: 12")]
     assert op.POSSIBLE_RULE in header
-    listed = lines[lines.index(header) + 1:]
+    listed = [line for line in lines[lines.index(header) + 1:] if line.startswith("- ")]
     assert len(listed) == 10 and '"cite":"[R1]"' in listed[0]
     cited = op.cite_listed_records.await_args.args[3]
     assert {"p0", "p9"} <= set(cited) and "p10" not in cited
@@ -279,3 +280,129 @@ async def test_a_cursor_page_runs_no_new_search_and_says_the_check_ran_on_the_fi
     assert ok and op.RECALL_ON_FIRST_PAGE in text.splitlines()
     start.assert_not_called()
     finish.assert_not_awaited()
+
+
+# ------------------------------------------------------------- the judge
+
+
+class _JudgeModel:
+    def __init__(self, reply: str = '{"verdicts": []}', *, delay: float = 0.0) -> None:
+        self.reply, self.delay, self.prompts = reply, delay, []
+
+    async def ainvoke(self, messages: list[Any], config: Any = None) -> Any:  # noqa: ANN401
+        import asyncio
+
+        from langchain_core.messages import AIMessage
+
+        self.prompts.append(messages[1].content)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return AIMessage(content=self.reply)
+
+
+def _judged_run(monkeypatch: pytest.MonkeyPatch, possible: list[dict[str, Any]], passages: dict[str, list[str]]) -> None:
+    """The recall check returns ``possible``; its search saw ``passages``."""
+    from app.modules.retrieval.record_query.recall import RecallCheck
+
+    def search(state: Any, sink: dict[str, list[str]] | None = None) -> Any:  # noqa: ANN401
+        if sink is not None:
+            sink.update(passages)
+        return None
+
+    monkeypatch.setattr(op, "_search", search)
+    monkeypatch.setattr(op, "start_search", MagicMock(return_value=None))
+    monkeypatch.setattr(op, "finish_recall", AsyncMock(return_value=RecallCheck(ran=True, possible=possible)))
+
+
+async def test_no_possible_matches_no_judge_call(engine: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    _judged_run(monkeypatch, [], {})
+    model = _JudgeModel()
+    ok, text = await op.execute_find_records(_state(llm=model), where=[{"field": "status", "in": ["OPEN"]}])
+    assert ok and model.prompts == [] and "Judge" not in text and "model judgement" not in text
+
+
+async def test_judged_matches_list_supports_first_drop_contradicted_and_leave_the_total(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _judged_run(monkeypatch, [_possible("p0"), _possible("p1"), _possible("p2")], {
+        "p0": ["p0 is still waiting on the vendor."],
+        "p1": ["Closed by Ann last week."],
+        "p2": ["Ravi picked this up and owns it now."],
+    })
+    model = _JudgeModel(json.dumps({"verdicts": [
+        {"id": "c1", "verdict": "unclear", "quote": ""},
+        {"id": "c2", "verdict": "contradicts", "quote": "Closed by Ann"},
+        {"id": "c3", "verdict": "supports", "quote": "Ravi picked this up"},
+    ]}))
+    ok, text = await op.execute_find_records(_state(llm=model), where=[{"field": "status", "in": ["OPEN"]}])
+    lines = text.splitlines()
+    assert ok and len(model.prompts) == 1
+    assert lines[0] == "Total: 3 matching records you can open (exact)"
+    assert op.JUDGED_NOTE in lines and op.CONTRADICTED_LINE.format(n=1) in lines
+    likely = lines.index(op.LIKELY_HEADER.format(n=1))
+    still = lines.index(op.STILL_POSSIBLE_HEADER.format(n=1))
+    assert likely < still
+    assert '"record_id":"p2"' in lines[likely + 1] and '"judge_quote":"Ravi picked this up"' in lines[likely + 1]
+    assert '"record_id":"p0"' in lines[still + 1] and '"p1"' not in text
+    assert "p1" not in op.cite_listed_records.await_args.args[3]
+
+
+async def test_a_late_judge_shows_the_possible_matches_unjudged_and_says_so(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.retrieval.record_query import judge
+
+    monkeypatch.setattr(judge, "JUDGE_DEADLINE_SECONDS", 0.05)
+    _judged_run(monkeypatch, [_possible("p0"), _possible("p1")], {"p0": ["text"]})
+    ok, text = await op.execute_find_records(_state(llm=_JudgeModel(delay=1.0)),
+                                             where=[{"field": "status", "in": ["OPEN"]}])
+    lines = text.splitlines()
+    assert ok and lines[0] == "Total: 3 matching records you can open (exact)"
+    assert op.JUDGE_DID_NOT_RUN.format(why="timed out") in lines
+    assert sum(1 for line in lines if line.startswith('- {"title":"Ticket p')) == 2
+
+
+async def test_only_admitted_candidates_and_their_own_passages_are_sent(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _judged_run(monkeypatch, [_possible("p0"), {**_possible("p1"), "virtualRecordId": "v-1"}], {
+        "p0": ["p0 own text"], "vid:v-1": ["p1 shared copy text"], "secret": ["text of a record never admitted"],
+    })
+    model = _JudgeModel()
+    await op.execute_find_records(_state(llm=model), where=[{"field": "status", "in": ["OPEN"]}])
+    (prompt,) = model.prompts
+    assert "p0 own text" in prompt and "p1 shared copy text" in prompt
+    assert "never admitted" not in prompt and "Candidate c3" not in prompt
+
+
+async def test_the_judge_can_be_switched_off(engine: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.modules.retrieval.record_query import judge
+
+    monkeypatch.setattr(judge, "JUDGE_ENABLED", False)
+    _judged_run(monkeypatch, [_possible("p0")], {"p0": ["text"]})
+    model = _JudgeModel()
+    ok, text = await op.execute_find_records(_state(llm=model), where=[{"field": "status", "in": ["OPEN"]}])
+    assert ok and model.prompts == [] and "Judge" not in text and '"record_id":"p0"' in text
+
+
+async def test_the_recall_search_keeps_each_hits_passages_for_the_judge(engine: AsyncMock) -> None:
+    retrieval = MagicMock()
+    retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [
+        {"metadata": {"recordId": "r1", "virtualRecordId": "v1"}, "content": "first"},
+        {"metadata": {"recordId": "r1", "virtualRecordId": "v1"}, "content": "second"},
+        {"metadata": {"recordId": "r2"}, "content": ["not text"]},
+    ]})
+    passages: dict[str, list[str]] = {}
+    await op._search(_state(retrieval_service=retrieval), passages)("x", None)
+    assert passages == {"r1": ["first", "second"], "vid:v1": ["first", "second"]}
+
+
+async def test_a_judge_that_breaks_before_its_call_never_fails_the_tool(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.retrieval.record_query import judge
+
+    _judged_run(monkeypatch, [_possible("p0")], {"p0": ["text"]})
+    monkeypatch.setattr(judge, "bounded_passages", MagicMock(side_effect=ValueError("bad passage")))
+    ok, text = await op.execute_find_records(_state(llm=_JudgeModel()), where=[{"field": "status", "in": ["OPEN"]}])
+    assert ok and op.JUDGE_DID_NOT_RUN.format(why="error") in text.splitlines() and '"record_id":"p0"' in text
