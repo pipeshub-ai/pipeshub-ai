@@ -4,7 +4,7 @@ rule text of a quoted target. Each plant is a function the first two versions of
 Runs on the fixture of test_vetted_pins (schema kt, the pinned test functions, every module of a migrated database)."""
 import pytest
 
-from .rls_fixture import ORG_B
+from .rls_fixture import ORG_A, ORG_B
 from .test_vetted_pins import conn, planted, violations
 from .test_vetted_pins import pdb as pdb  # the module fixture
 from .test_vetted_pins_k2 import DEL_FENCE, PIN_FENCE, hand
@@ -54,6 +54,8 @@ PLANTS = [
 ]
 
 
+NEW_TABLE = OWNER + "CREATE TABLE kt.newacc (org_id text NOT NULL, id bigint NOT NULL, PRIMARY KEY (org_id, id)); SELECT kernel.apply_rls('kt.newacc', 'org', p_vetted_write => true); "
+PLANTS.append(("a new table of a schema that owns pins forgets require_vetted_org_policy", NEW_TABLE, "128"))
 
 
 @pytest.mark.parametrize("plant", PLANTS, ids=[p[0] for p in PLANTS])
@@ -89,5 +91,32 @@ def test_the_manifest_refuses_a_do_a_set_and_a_set_config():
     vetted.deny_unclassifiable("BEGIN INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO NOTHING; UPDATE t SET a = 2 WHERE a = 1; RETURN 1; END;", "t")
 
 
+def test_the_boundary_is_the_text_checks_not_the_policy_a_routine_that_sets_the_org_crosses_it_when_the_catalog_is_bypassed(pdb):
+    """What the per-org policy can and cannot do (README, "Pinned writes"). The policy keys on the setting app.org_id, and any routine body can change a setting,
+    so the policy stops every cross-org route the catalog reads (rebinding the org variable, a second VALUES row, UPDATE .. WHERE true) but not a routine that sets
+    app.org_id itself. That route is closed by rules 130 and 131, not by the policy; this test pins both facts, so that a binding the routine cannot change
+    would have to flip the first assertion on purpose."""
+    from .test_vetted import install
+    with conn(pdb) as c:
+        c.execute("DELETE FROM kt.fences")
+        c.execute("INSERT INTO kt.fences (org_id, id, reason) VALUES (%s, 1, 'a'), (%s, 1, 'b')", (ORG_A, ORG_B))
+        c.execute("BEGIN")
+        try:
+            install(c, hand("cross", f"  PERFORM set_config('app.org_id', '{ORG_B}', true);\n" + f"  DELETE FROM kt.fences t WHERE t.org_id = '{ORG_B}' AND t.id = p_id;\n  RETURN 1;",
+                            pins=(PIN_FENCE,)))
+            names = {r for r, _ in violations(c)}
+            assert any(r.startswith(("130", "131")) for r in names), names                         # the catalog names it ...
+            c.execute("SET LOCAL ROLE pipeshub_connectors")                                         # ... and the policy alone does not stop it (all inside this rolled-back transaction)
+            c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
+            c.execute("SELECT kt.cross(1)")
+            c.execute("RESET ROLE")
+            assert c.execute("SELECT org_id FROM kt.fences").fetchall() == [(ORG_A,)]
+        finally:
+            c.execute("ROLLBACK")
+            c.execute("DELETE FROM kt.fences")
 
 
+def test_the_new_table_is_clean_once_it_asks_for_the_policy_and_a_table_that_reads_unbound_is_not_asked(pdb):
+    assert not any(r.startswith("128") for r, _ in planted(pdb, NEW_TABLE + "SELECT kernel.require_vetted_org_policy('kt.newacc');"))
+    with conn(pdb) as c:        # kt.notes is read unbound by its vetted role (a different kind of table): not what 128 is about
+        assert not any(r.startswith("128") for r, _ in violations(c))

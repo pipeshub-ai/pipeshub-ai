@@ -383,7 +383,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 16, "code": 16}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 17, "code": 17}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
