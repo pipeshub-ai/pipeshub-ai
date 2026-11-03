@@ -331,7 +331,7 @@ export class CitationMarkers {
       }
       out += text.slice(from, match.index);
       if (row) {
-        const shownAs = known ?? this.display.size + 1;
+        const shownAs = known ?? this.shown.size + 1;
         this.display.set(n, shownAs);
         this.shown.set(shownAs, row);
         out += linkedCitationMarker(shownAs, row.url);
@@ -344,9 +344,50 @@ export class CitationMarkers {
     return [spaceAdjacentMarkers(out + text.slice(from)), ''];
   }
 
+  /**
+   * A finished answer's citation links (`[N](…)`, numbered by the backend)
+   * as clickable markers numbered like the ones already shown: a source
+   * keeps its number, a new one continues the sequence. Numbered links that
+   * aren't citations stay as written.
+   */
+  renumber(
+    text: string,
+    citations: SlackCitationLike[] | undefined,
+    frontendBaseUrl: string,
+  ): string {
+    const rows = citationRows(citations, frontendBaseUrl);
+    const numbers = new Set(
+      (citations ?? []).flatMap((citation) => {
+        const n = parseCitationNumber(citation.citationData.chunkIndex);
+        return n === null ? [] : [n];
+      }),
+    );
+    return spaceAdjacentMarkers(
+      text.replace(
+        NUMBERED_MARKDOWN_LINK_PATTERN,
+        (match, citationNumber: string) => {
+          const n = Number.parseInt(citationNumber, 10);
+          if (!numbers.has(n)) return match;
+          const row = rows.get(n);
+          // A citation with no link would match no source: it is left out.
+          return row ? linkedCitationMarker(this.numberOf(row), row.url) : '';
+        },
+      ),
+    );
+  }
+
   /** The Sources of the markers shown, numbered to match. */
   sources(): ReadonlyMap<number, SlackSourceRow> {
     return this.shown;
+  }
+
+  private numberOf(row: SlackSourceRow): number {
+    for (const [n, shown] of this.shown) {
+      if (shown.url === row.url) return n;
+    }
+    const n = this.shown.size + 1;
+    this.shown.set(n, row);
+    return n;
   }
 
   private numberFor(ref: string): number {

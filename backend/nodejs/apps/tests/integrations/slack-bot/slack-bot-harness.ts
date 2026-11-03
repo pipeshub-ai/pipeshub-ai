@@ -1012,6 +1012,31 @@ export function describeAnswerWiring(
       expect(JSON.stringify(stop.blocks)).to.include('"[1] "').and.include('https://x.test/q3');
     });
 
+    it('numbers a final-only answer\'s citations like the markers shown before it, matching the Sources list', async () => {
+      const doc = (n: number, name: string, url: string) => ({ citationData: { chunkIndex: n, metadata: { recordId: name, recordName: name, webUrl: url } } });
+      const opening = 'B explains it [source](ref1). '.repeat(60);
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(opening.slice(0, 60), 40),
+        { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: [doc(1, 'B', 'https://x.test/b')] }] },
+        ...tokens(opening.slice(60), 40),
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
+        // The answer comes only with the run's end, numbered by the backend: A first, then B.
+        finished('A says so [1](/record/A). B agrees [2](/record/B). See item [7](https://example.com/list).', [
+          doc(1, 'A', 'https://x.test/a'),
+          doc(2, 'B', 'https://x.test/b'),
+        ]),
+      ]);
+
+      const text = visibleText(client);
+      expect(text).to.include('B explains it [[1]](https://x.test/b).');
+      expect(text).to.include('A says so [[2]](https://x.test/a). B agrees [[1]](https://x.test/b). See item [7](https://example.com/list).');
+      const sources = String(renderReplay(client).split('Sources:')[1]).trim();
+      expect(sources).to.equal('[1] B <https://x.test/b>\n[2] A <https://x.test/a>');
+    });
+
     it('shows no steps for a run with none', async () => {
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
