@@ -1181,8 +1181,15 @@ async def run_pattern_match_with_llm_grep(
     found: dict[str, dict[str, Any]] | None = None,
     coverage: PatternMatchCoverage | None = None,
     retrieval_service: LexicalSearcher | None = None,
+    commands: list[str] | None = None,
+    max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
+    readable_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Generate grep commands via LLM, look them up or run them, dedup.
+
+    *commands*, when given, are the grep commands to run as they are (the
+    grep API): no LLM generation and no keyword fallback, so a pattern that
+    matches nothing returns nothing.
 
     Falls back to a keyword grep derived from *query* when the LLM produces
     no usable command, or when its commands fail or match nothing — an LLM
@@ -1216,7 +1223,9 @@ async def run_pattern_match_with_llm_grep(
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
                 found=found, on_llm_usage=on_llm_usage, coverage=coverage,
-                retrieval_service=retrieval_service,
+                retrieval_service=retrieval_service, commands=commands,
+                max_records_per_connector=max_records_per_connector,
+                readable_only=readable_only,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1245,6 +1254,9 @@ async def _run_pattern_match_with_llm_grep(
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
     coverage: PatternMatchCoverage | None = None,
     retrieval_service: LexicalSearcher | None = None,
+    commands: list[str] | None = None,
+    max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
+    readable_only: bool = False,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
     so the caller still has them if the total budget cancels this."""
@@ -1256,8 +1268,8 @@ async def _run_pattern_match_with_llm_grep(
         "found": found, "coverage": coverage, "logger_instance": logger_instance,
         "small_store": searcher is not None and await _is_small_store(searcher, org_id, user_id, logger_instance),
     }
-    llm_grep_cmds: list[str] | None = None
-    if llm is not None:
+    llm_grep_cmds: list[str] | None = list(commands) if commands else None
+    if llm is not None and not commands:
         cache_key = (org_id, query.strip(), (user_query or "").strip())
         llm_grep_cmds = _grep_commands_cache.get(cache_key)
         if llm_grep_cmds is None:
@@ -1278,8 +1290,10 @@ async def _run_pattern_match_with_llm_grep(
         "filters": filters,
         "logger_instance": logger_instance,
         "coverage": coverage,
+        "max_records_per_connector": max_records_per_connector,
+        "readable_only": readable_only,
     }
-    keyword_cmd = build_grep_command_from_query(query)
+    keyword_cmd = None if commands else build_grep_command_from_query(query)
     scan_cmds = list(llm_grep_cmds or [])
     # Whether the LLM commands matched anything; the keyword grep is their
     # fallback, so their hits, not the keyword lookup's, decide it.
@@ -1321,6 +1335,8 @@ async def _run_pattern_match_with_llm_grep(
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+    if commands:
+        return list(found.values())
     # Without the index, any hit means the LLM commands matched. With it, the
     # keyword grep still runs when its lookup asked for a scan (a small store,
     # or a miss), even if that lookup found records itself.
@@ -1492,6 +1508,8 @@ async def execute_pattern_match_pipeline(
     grep_command: str | None = None,
     skip_grep_validation: bool = False,
     coverage: PatternMatchCoverage | None = None,
+    max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
+    readable_only: bool = False,
 ) -> list[dict]:
     """Full pipeline: eligibility check → build grep → resolve connectors → run.
 
@@ -1550,6 +1568,8 @@ async def execute_pattern_match_pipeline(
         connector_ids=connector_ids,
         logger_instance=logger_instance,
         coverage=coverage,
+        max_records_per_connector=max_records_per_connector,
+        readable_only=readable_only,
     )
 
 
@@ -1564,6 +1584,8 @@ async def run_pattern_match(
     logger_instance: logging.Logger,
     timeout: int = _PATTERN_MATCH_TIMEOUT,
     coverage: PatternMatchCoverage | None = None,
+    max_records_per_connector: int = _MAX_RECORDS_PER_CONNECTOR,
+    readable_only: bool = False,
 ) -> list[dict]:
     """Run grep pattern match across connectors. Returns raw, UNADJUDICATED records.
 
@@ -1625,14 +1647,15 @@ async def run_pattern_match(
     # Per connector, the outcome of its last grep; read once into *coverage*.
     outcomes: dict[str, str] = {}
 
-    async def _run_grep(connector_id: str, cmd: str) -> list[dict] | None:
+    async def _run_grep(connector_id: str, cmd: str, *, whole: bool = False) -> list[dict] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
         try:
             success, output = await storage_tool.find_records(
                 connector_id=connector_id,
                 command=cmd,
-                max_results=_MAX_RECORDS_PER_CONNECTOR,
+                max_results=max_records_per_connector,
+                readable_only=readable_only and whole,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
             )
@@ -1673,7 +1696,7 @@ async def run_pattern_match(
                 "pattern_match _search_connector: cid=%s APP_LEVEL, full grep",
                 connector_id,
             )
-            records = await _run_grep(connector_id, command) or []
+            records = await _run_grep(connector_id, command, whole=True) or []
             logger_instance.info(
                 "pattern_match _search_connector: cid=%s records=%d",
                 connector_id, len(records),
@@ -1745,7 +1768,7 @@ async def run_pattern_match(
             "pattern_match _search_connector: cid=%s RECORD_LEVEL, full grep",
             connector_id,
         )
-        records = await _run_grep(connector_id, command) or []
+        records = await _run_grep(connector_id, command, whole=True) or []
         logger_instance.info(
             "pattern_match _search_connector: cid=%s records=%d",
             connector_id, len(records),
