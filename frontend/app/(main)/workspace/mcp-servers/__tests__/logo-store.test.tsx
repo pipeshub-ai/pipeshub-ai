@@ -12,6 +12,7 @@ import {
   setMcpServerLogo,
   useMcpServerLogo,
 } from '../logo-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 
 const LOGO = 'data:image/png;base64,AAAA';
 const OLD = 'data:image/png;base64,b2xk';
@@ -113,5 +114,78 @@ describe('MCP server logos', () => {
 
     expect(getLogos).toHaveBeenCalledTimes(2);
     expect(getByTestId('logo').textContent).toBe('none');
+  });
+
+  describe('when the session ends', () => {
+    function pendingRead() {
+      const read: { answer: (value: { logos: Record<string, string> }) => void; fail: (error: Error) => void } = {
+        answer: () => {},
+        fail: () => {},
+      };
+      getLogos.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          read.answer = resolve;
+          read.fail = reject;
+        })
+      );
+      return read;
+    }
+
+    it('forgets every logo on sign-out and reads them again for the next user', async () => {
+      getLogos.mockResolvedValueOnce({ logos: { a: LOGO } }).mockResolvedValueOnce({ logos: {} });
+      const { getByTestId } = render(<Probe id="a" />);
+      await act(() => ensureMcpLogosLoaded());
+      expect(getByTestId('logo').textContent).toBe(LOGO);
+
+      act(() => clearSessionCache());
+      expect(getByTestId('logo').textContent).toBe('none');
+
+      await act(() => ensureMcpLogosLoaded());
+      expect(getLogos).toHaveBeenCalledTimes(2);
+      expect(getByTestId('logo').textContent).toBe('none');
+    });
+
+    it('drops the answer of a read started before the reset', async () => {
+      const old = pendingRead();
+      const { getByTestId } = render(<Probe id="a" />);
+      const oldLoad = ensureMcpLogosLoaded();
+
+      act(() => resetMcpLogos());
+      await act(async () => {
+        old.answer({ logos: { a: OLD } });
+        await oldLoad;
+      });
+
+      expect(getByTestId('logo').textContent).toBe('none');
+    });
+
+    it("leaves the next session's read in flight when an old read finishes", async () => {
+      const old = pendingRead();
+      const oldLoad = ensureMcpLogosLoaded();
+      resetMcpLogos();
+      const next = pendingRead();
+      const nextLoad = ensureMcpLogosLoaded();
+
+      old.answer({ logos: { a: OLD } });
+      await oldLoad;
+
+      expect(ensureMcpLogosLoaded()).toBe(nextLoad);
+      next.answer({ logos: {} });
+      await nextLoad;
+      expect(getLogos).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not hold back the next session's read when an old read fails", async () => {
+      const old = pendingRead();
+      const oldLoad = ensureMcpLogosLoaded();
+      resetMcpLogos();
+
+      old.fail(new Error('offline'));
+      await oldLoad;
+      getLogos.mockResolvedValueOnce({ logos: { a: LOGO } });
+      await ensureMcpLogosLoaded();
+
+      expect(getLogos).toHaveBeenCalledTimes(2);
+    });
   });
 });
