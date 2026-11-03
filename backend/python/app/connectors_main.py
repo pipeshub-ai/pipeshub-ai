@@ -1359,6 +1359,9 @@ async def health_check() -> JSONResponse:
         )
 
 
+PG_PROBE_TIMEOUT_SEC = 3.0
+
+
 @app.get("/health/graph-db")
 async def graph_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured graph database using the same driver the app uses.
@@ -1500,7 +1503,8 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     # ── PostgreSQL ────────────────────────────────────────────────────────────
     if data_store == "postgres":
         try:
-            await request.app.state.graph_provider.ping()
+            # Under Node's 5s graph timeout (also the Helm probe budget): a saturated pool must answer 503, not hang the probe.
+            await asyncio.wait_for(request.app.state.graph_provider.ping(), timeout=PG_PROBE_TIMEOUT_SEC)
             return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
         except Exception:
             request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)

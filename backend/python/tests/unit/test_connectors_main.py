@@ -1713,6 +1713,28 @@ class TestGraphDbHealthCheck:
         assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
 
     @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_hanging_ping_answers_503_at_the_deadline(self) -> None:
+        """A ping stuck on a saturated pool answers 503 within the deadline instead of outlasting the caller's timeout."""
+        import time
+
+        from app.connectors_main import graph_db_health_check
+
+        async def hang() -> None:
+            await asyncio.sleep(30)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=hang)
+
+        t0 = time.monotonic()
+        with patch("app.connectors_main.os.getenv", return_value="postgres"), \
+             patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert time.monotonic() - t0 < 2
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
         """Neo4j health probe returns 200 when the open driver answers RETURN 1."""
         from app.connectors_main import graph_db_health_check
