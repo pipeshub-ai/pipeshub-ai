@@ -801,6 +801,17 @@ export function truncateForSlack(text: string): string {
   return `...${text.slice(-(SLACK_MAX_TEXT_LENGTH - 3))}`;
 }
 
+/** A blocks message's top-level `text`, shown in notifications; Slack warns without it. */
+export function slackBlocksFallbackText(blocks: readonly unknown[]): string {
+  const text = blocks
+    .map((block) => (block as { text?: { text?: unknown } } | null)?.text?.text)
+    .filter(
+      (part): part is string => typeof part === 'string' && part.trim() !== '',
+    )
+    .join('\n');
+  return truncateForSlack(text !== '' ? text : 'Answer');
+}
+
 export function resolveThreadId(typedMessage: SlackMessagePayload): string {
   return typedMessage.thread_ts || typedMessage.ts;
 }
