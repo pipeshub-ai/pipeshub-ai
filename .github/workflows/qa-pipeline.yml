@@ -1,0 +1,763 @@
+name: QA pipeline
+
+# The QA engine (docs/qa-engine/): plan which tests a change needs, run them,
+# report on the PR, and gate on one check. Called by the qa*.yml workflows with the edition to cover.
+#
+# Shadow mode until the repository variable QA_ENFORCE is 'true': the plan is
+# computed and reported, nothing is executed, and the existing workflows keep
+# running everything. Callers own the fork guard; this workflow reads secrets
+# only through what a guarded caller passes in.
+
+on:
+  workflow_call:
+    inputs:
+      edition:
+        description: 'an edition the rules define, or all: which catalog rows this run covers'
+        type: string
+        default: oss
+      mode:
+        type: string
+        default: pr
+      base_sha:
+        type: string
+        default: ''
+      head_sha:
+        type: string
+        default: ''
+      profile:
+        type: string
+        default: ''
+      pr:
+        type: string
+        default: ''
+      use_model:
+        description: 'false runs the deterministic floor only (fork PRs)'
+        type: boolean
+        default: true
+      plan_only:
+        type: boolean
+        default: false
+      review:
+        description: 'post a QA review comment on inputs.pr (never gates)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  QA_OUT: qa-out
+  QA_EDITION: ${{ inputs.edition }}
+  PR_NUMBER: ${{ inputs.pr || github.event.pull_request.number || '' }}
+  HEAD_SHA: ${{ inputs.head_sha || github.event.pull_request.head.sha || github.sha }}
+  # The not_run kinds that do not block, for the PR comment and the gate alike.
+  # Nightly and full runs allow none: a missing secret there must show red.
+  QA_ALLOW_NOT_RUN: ${{ (github.event_name != 'schedule' && inputs.mode != 'full') && 'secret,profile' || '' }}
+  # The automatic quarantine from qa-history. Plan, report and gate fetch it
+  # themselves with their read-only token; no run job's artifact supplies it.
+  QA_QUARANTINE_AUTO: qa-out/quarantine-auto.json
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tests: ${{ steps.validate.outputs.tests }}
+      needs_stack: ${{ steps.validate.outputs.needs_stack }}
+      has_python: ${{ steps.validate.outputs.has_python }}
+      has_node: ${{ steps.validate.outputs.has_node }}
+      families: ${{ steps.validate.outputs.families }}
+      graph_db: ${{ steps.validate.outputs.graph_db }}
+      variants: ${{ steps.validate.outputs.variants }}
+      shards: ${{ steps.validate.outputs.shards }}
+      shard_total: ${{ steps.validate.outputs.shard_total }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Rules, quarantine and the engine come from the base branch, so a PR
+      # cannot weaken its own selection; the engine runs against the PR tree.
+      # A PR that changes the rules or the engine still triggers a full run
+      # (scripts/qa/rules/always.toml).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - name: Pick the engine
+        run: |
+          if [[ -f qa-engine/scripts/qa/__main__.py ]]; then
+            echo "ENGINE=qa-engine/scripts/qa" >> "$GITHUB_ENV"
+          else
+            echo "::warning::The base branch has no QA engine yet, so this run uses the PR's engine."
+            echo "ENGINE=scripts/qa" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Auto quarantine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On failure, drop any copy an artifact brought in: no file means no auto entries.
+        run: |
+          python3 "$ENGINE" history fetch-quarantine --repo "$GITHUB_REPOSITORY" --to qa-out/quarantine-auto.json \
+            || { rm -f qa-out/quarantine-auto.json; echo "::warning::no auto quarantine; quarantined tests will block"; }
+
+      - name: Choose the change and profile
+        id: args
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          MODE: ${{ inputs.mode }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          PROFILE_IN: ${{ inputs.profile }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          profile="${PROFILE_IN:-standard}"
+          if [[ "$EVENT" == pull_request ]]; then
+            [[ "$DRAFT" == true ]] && profile=fast
+            [[ " $LABELS " == *" qa-conservative "* ]] && profile=conservative
+            [[ " $LABELS " == *" qa-full "* ]] && profile=full
+          fi
+          case "$MODE" in
+            range) change="--base $BASE_SHA --head $HEAD_SHA --mode range" ;;
+            since) change="--since $BASE_SHA --head $HEAD_SHA --mode range" ;;
+            full)  change="--since $HEAD_SHA --mode full"; profile=full ;;
+            *)     change="--target $BASE_REF --head $HEAD_SHA" ;;
+          esac
+          [[ "$EVENT" == schedule ]] && { change="--since $HEAD_SHA --mode full"; profile=full; }
+          # The Sunday crons (OSS 04:00, the other edition 04:30) run only the weekly suites.
+          [[ "$EVENT" == schedule && ( "$SCHEDULE" == "0 4 * * 0" || "$SCHEDULE" == "30 4 * * 0" ) ]] && profile=weekly
+          echo "change=$change" >> "$GITHUB_OUTPUT"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+
+      - name: Install the planner CLI
+        if: inputs.use_model && (vars.QA_PLANNER || 'claude_code') == 'claude_code'
+        run: npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || echo "planner CLI unavailable; the floor alone will run"
+
+      # Any other provider: QA_PLANNER=litellm and QA_PLANNER_MODEL=<provider>/<model>,
+      # e.g. azure/<deployment>, openai/gpt-5, gemini/gemini-2.5-pro, with that
+      # provider's usual key secrets below.
+      - name: Install LiteLLM
+        if: inputs.use_model && vars.QA_PLANNER == 'litellm'
+        run: pip install litellm >/dev/null 2>&1 || echo "litellm unavailable; the floor alone will run"
+
+      - name: Plan
+        env:
+          ANTHROPIC_API_KEY: ${{ inputs.use_model && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ inputs.use_model && secrets.OPENAI_API_KEY || '' }}
+          AZURE_API_KEY: ${{ inputs.use_model && secrets.AZURE_API_KEY || '' }}
+          AZURE_API_BASE: ${{ inputs.use_model && secrets.AZURE_API_BASE || '' }}
+          AZURE_API_VERSION: ${{ vars.AZURE_API_VERSION }}
+          GEMINI_API_KEY: ${{ inputs.use_model && secrets.GEMINI_API_KEY || '' }}
+          QA_PLANNER: ${{ vars.QA_PLANNER || 'claude_code' }}
+          QA_PLANNER_MODEL: ${{ vars.QA_PLANNER_MODEL }}
+          QA_PLANNER_CMD: ${{ vars.QA_PLANNER_CMD }}
+          CHANGE: ${{ steps.args.outputs.change }}
+          PROFILE: ${{ steps.args.outputs.profile }}
+          USE_MODEL: ${{ inputs.use_model }}
+        run: |
+          adapter="$QA_PLANNER"
+          if [[ "$USE_MODEL" != true \
+                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" ) \
+                || ( "$adapter" == litellm && -z "$QA_PLANNER_MODEL" ) \
+                || ( "$adapter" == command && -z "$QA_PLANNER_CMD" ) ]]; then
+            adapter=none
+          fi
+          # shellcheck disable=SC2086 # CHANGE is a list of flags built above
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" collect $CHANGE
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" impact --profile "$PROFILE" --edition "$QA_EDITION"
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" plan --adapter "$adapter" --timeout 900
+
+      - name: Validate
+        id: validate
+        env:
+          # Parallel stack jobs per graph DB, each a duration-balanced share of the
+          # stack tests (scripts/qa/shard.py). One on PRs keeps runner use low.
+          QA_STACK_SHARDS: ${{ vars.QA_STACK_SHARDS || (github.event_name == 'pull_request' && '1' || '4') }}
+        run: QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" validate --emit-gh-outputs
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-plan-${{ inputs.edition }}
+          path: |
+            qa-out/*.json
+            qa-out/changeset.diff
+          retention-days: 14
+
+  run-unit:
+    needs: plan
+    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && needs.plan.outputs.tests != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: qa-plan-${{ inputs.edition }}
+          path: qa-out
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python test dependencies
+        if: needs.plan.outputs.has_python == 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libmariadb-dev
+          pip install uv
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e "backend/python[dev]"
+      - uses: actions/setup-node@v4
+        if: needs.plan.outputs.has_node == 'true'
+        with:
+          node-version: 20
+      - name: Install Node dependencies
+        if: needs.plan.outputs.has_node == 'true'
+        run: |
+          (cd backend/nodejs/apps && npm ci)
+          (cd frontend && npm ci)
+      - uses: astral-sh/setup-uv@v6
+        if: contains(needs.plan.outputs.families, 'it-pytest')
+      - name: Install integration-test helper dependencies
+        if: contains(needs.plan.outputs.families, 'it-pytest')
+        run: |
+          cd integration-tests
+          uv venv .venv --python 3.12
+          VIRTUAL_ENV=.venv uv pip install -e .
+      - name: Run the selected unit tests
+        run: python3 scripts/qa run --plan qa-out/plan.json --scope unit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-results-unit-${{ inputs.edition }}
+          path: |
+            qa-out/results-unit.json
+            qa-out/logs/
+            qa-out/junit-*.xml
+          retention-days: 14
+
+  run-stack:
+    needs: plan
+    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && needs.plan.outputs.needs_stack == 'true'
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    strategy:
+      fail-fast: false
+      matrix:
+        # The fallbacks are what a base engine that emits no such output implies:
+        # one shard, on the standard profile's graph DB.
+        graph: ${{ fromJSON(needs.plan.outputs.graph_db || '["neo4j"]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards || '[1]') }}
+        # "" is the default stack; a variant is a stack of its own (qa run --stack-variant).
+        variant: ${{ fromJSON(needs.plan.outputs.variants || '[""]') }}
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+    # actions: read is for `gh run download` of the previous nightly's screenshots (schedule only).
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 300
+    env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      # One value for both sides: compose seeds the stack with it and the
+      # storage suite mints its service tokens with it. Test-only; a
+      # TEST_SCOPED_JWT_SECRET secret replaces it, except on a pull request,
+      # whose checked-out code must never see a real signing secret.
+      SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
+      # Signs user sessions; compose seeds the stack with it and the security
+      # suite signs an expired session token with it. Test-only.
+      JWT_SECRET: pipeshub-integration-jwt-secret-test-only
+      DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      # Both integration stacks shorten the trash purge (SOFT_DELETE_PURGE_* in
+      # their compose files), so the purge test runs instead of skipping. It
+      # waits out the purge's 240 s minimum age plus a few ticks.
+      PIPESHUB_IT_TRASH_PURGE_TIMEOUT_SEC: '480'
+      ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+      TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+      TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+      TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
+      S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+      # The PostgreSQL connector syncs from a database that runs in the
+      # integration stack, so these are fixed test values rather than
+      # secrets. The connector reaches it by service name from inside the
+      # compose network; the test process uses the published port.
+      POSTGRES_TEST_HOST: localhost
+      POSTGRES_TEST_PORT: '5433'
+      POSTGRES_CONNECTOR_HOST: postgres-source
+      POSTGRES_CONNECTOR_PORT: '5432'
+      POSTGRES_TEST_USER: pipeshubtest
+      POSTGRES_TEST_PASSWORD: pipeshubtest123
+      POSTGRES_TEST_DB: pipeshub_connector_test
+      # MariaDB, the same way: a source database in the compose stack.
+      MARIADB_TEST_HOST: localhost
+      MARIADB_TEST_PORT: '3307'
+      MARIADB_CONNECTOR_HOST: mariadb-source
+      MARIADB_CONNECTOR_PORT: '3306'
+      MARIADB_TEST_USER: pipeshubtest
+      MARIADB_TEST_PASSWORD: pipeshubtest123
+      MARIADB_TEST_DB: pipeshub_connector_test
+      # MinIO runs in the integration compose stack, so these are fixed
+      # test values rather than secrets. The connector runs inside the
+      # compose network and reaches MinIO by service name; the test process
+      # reaches it on the published port.
+      MINIO_TEST_ENDPOINT: http://localhost:9000
+      MINIO_TEST_CONSOLE_URL: http://localhost:9001
+      MINIO_CONTAINER: docker-compose-minio-1
+      MINIO_CONNECTOR_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: pipeshubtest
+      MINIO_ROOT_PASSWORD: pipeshubtest123
+      MINIO_TEST_BUCKET: pipeshub-connector-test
+      MINIO_SECOND_TEST_BUCKET: pipeshub-connector-test-2
+      # The Web and RSS connectors sync from the web-fixtures service in the
+      # integration stack: the connector by service name, the test process
+      # (which changes pages through its control API) on the published port.
+      WEB_FIXTURES_TEST_URL: http://localhost:8089
+      WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # The agent tests register the mcp-fixture service as an external MCP
+      # server: PipesHub reaches it by service name, the test process reads its
+      # call log on the published port.
+      MCP_FIXTURE_TEST_URL: http://localhost:8097
+      MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
+      # API Toolsets tests add the openapi-fixture service from its OpenAPI spec:
+      # PipesHub calls it by service name, the test process reads its call log.
+      OPENAPI_FIXTURE_TEST_URL: http://localhost:8098
+      OPENAPI_FIXTURE_CONNECTOR_URL: http://openapi-fixture:8080
+      # Nextcloud and BookStack run in the compose stack too, behind the
+      # selfhosted-sources profile: only the shard that runs their tests
+      # (connectors-1, or a dispatch of just one of them) starts them.
+      # The Neo4j stack keeps Kafka behind the kafka profile, so a Kafka
+      # run has to enable it or the app has no broker to reach. Compose
+      # ignores the empty entry left when only one profile is on.
+      NEXTCLOUD_TEST_URL: http://localhost:8090
+      NEXTCLOUD_CONNECTOR_URL: http://nextcloud-source
+      BOOKSTACK_TEST_URL: http://localhost:8094
+      BOOKSTACK_CONNECTOR_URL: http://bookstack-source
+      BOOKSTACK_DB_PORT: '3308'
+      ZAMMAD_TEST_URL: http://localhost:8096
+      ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
+      S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+      S3_REGION: ${{ secrets.S3_REGION }}
+      # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
+      S3_ROLE_ARN: ${{ secrets.S3_ROLE_ARN }}
+      S3_EXTERNAL_ID: ${{ secrets.S3_EXTERNAL_ID }}
+      S3_SECOND_TEST_BUCKET: ${{ secrets.S3_SECOND_TEST_BUCKET }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
+      AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
+      AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # The perf smoke compares against the committed CI baseline; with none yet it only reports.
+      PERF_SMOKE_LABEL: ${{ matrix.variant == 'perf' && 'smoke-ci-neo4j-4cpu' || '' }}
+      # A pull request gets no model key (spec section 2, "LLM in tests"), so its stack
+      # indexes with the web-fixtures stand-in model. Tests that assert on a real
+      # model's answers carry the live_model marker and stay not_run there.
+      # The perf variant uses it too: it measures our code, not the provider's latency.
+      # Neither value is a secret.
+      TEST_AI_MODEL_PROVIDER: ${{ (github.event_name == 'pull_request' || matrix.variant == 'perf') && 'standIn' || 'azureOpenAI' }}
+      TEST_STAND_IN_MODEL_ENDPOINT: ${{ (github.event_name == 'pull_request' || matrix.variant == 'perf') && 'http://web-fixtures:8080/__fixtures__/openai/v1/' || '' }}
+      # Other events: Azure OpenAI is where the quota is, and TEST_AI_MODEL_PROVIDER
+      # names it outright: the helper falls back to the next provider on a health
+      # check failure, so without this an Azure problem retries against the
+      # OpenAI key and reports that instead.
+      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
+      # needs key, endpoint and deployment together — miss one and Azure is dropped
+      # from the candidates silently, leaving OpenAI as the only provider tried.
+      # secrets || vars so the non-secret names work from either store.
+      # Blank on a pull request even if the environment holds it: the key (with the
+      # endpoint and deployment) is what marks a live_model test runnable, and a PR
+      # stack is seeded with the stand-in model.
+      TEST_AZURE_OPENAI_API_KEY: ${{ github.event_name != 'pull_request' && secrets.TEST_AZURE_OPENAI_API_KEY || '' }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Optional. Unset falls back to the LLM deployment above, which is what a
+      # local .env run does today.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # The demo test's answer judge uses the Azure settings above. Without it,
+      # facts a question lists for the judge would go unchecked yet pass.
+      PIPESHUB_REQUIRE_JUDGE: '1'
+      # Confluence and Jira sync from the confluence-sim and jira-sim services
+      # (atlassian-sim profile), Notion from notion-sim (notion-sim profile); their
+      # settings come from integration-tests/connectors/atlassian_sim.env and
+      # notion_sim.env, loaded by the "Use the connector simulators" step.
+      # CONNSIM_REF pins the simulator commit the image is built from and
+      # CONNSIM_PACK_* the content pack it serves; together they fix every fixture
+      # value in those env files. The same image serves the Gmail simulator. The
+      # pinned commit is connectors-simulator's integration/notion-gmail branch:
+      # d31bd51 (Confluence hardening, with the Notion simulator, #6) plus the
+      # Gmail simulator (#5); none of them merged into its main yet.
+      CONNSIM_REF: 7b4ec0f83c717f9d5e81178303c884924ad6bfed
+      CONNSIM_IMAGE: pipeshub/connectors-simulator:it
+      CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-2.tar.gz
+      CONNSIM_PACK_SHA256: 54c042080de46e9fbdda84f6c954cceeb9a4d1d3fc78075e29fc418a43096354
+      # The sharepoint_sim suite runs against the SharePoint simulator on shard 3. It is not a profile: the
+      # connector calls Microsoft's fixed host names over HTTPS, so docker-compose.integration.sharepoint-sim.yml
+      # answers them through a TLS front under those names and has the app trust its CA. The "Use the SharePoint
+      # simulator" step adds that file to every compose call through SHAREPOINT_SIM_COMPOSE, so no suite on that
+      # shard may reach the real Microsoft 365: the live sharepoint suite (shard 1) and outlook (shard 2) stay off it.
+      # Its own pin and image: CONNSIM_SHAREPOINT_REF is connectors-simulator's main with the SharePoint
+      # simulator (#7), while CONNSIM_REF is still the integration/notion-gmail branch, which has Confluence
+      # changes main lacks. One pin will do once that branch is on main.
+      CONNSIM_SHAREPOINT_REF: 7feca7cd6291a7a305073c08cf5d480cc6920c21
+      SHAREPOINT_SIM_IMAGE: pipeshub/connectors-simulator:sharepoint-it
+      CONNSIM_LOCALFS_REF: c36cf2a33d1f0db73211ab529781ad03a42bbfa6
+      CONNSIM_BOOKSTACK_REF: d7369757c0272ca4bfc706ecfe039c404b5584f8
+      BOOKSTACK_SIM_IMAGE: pipeshub/connectors-simulator:bookstack-it
+      CONNSIM_SALESFORCE_REF: c40c2911a800b46d87a47283c7197fe8c18e7ac2
+      SALESFORCE_SIM_IMAGE: pipeshub/connectors-simulator:salesforce-it
+      CONNSIM_SERVICENOW_REF: 822e257268957c31ecfca5abb1c8acd7d911657e
+      SERVICENOW_SIM_IMAGE: pipeshub/connectors-simulator:servicenow-it
+      SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
+      SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
+      SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
+      SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
+      SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
+      # No _CONTENT suffix: the secrets are stored under these names, and a
+      # reference to a secret that does not exist resolves to empty, which the
+      # suite reports as "the SharePoint tenant is not configured" -- the same
+      # message as having no credentials at all.
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
+      ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
+      SERVICENOW_TEST_INSTANCE_URL: ${{ secrets.SERVICENOW_TEST_INSTANCE_URL }}
+      SERVICENOW_TEST_USERNAME: ${{ secrets.SERVICENOW_TEST_USERNAME }}
+      SERVICENOW_TEST_PASSWORD: ${{ secrets.SERVICENOW_TEST_PASSWORD }}
+      SERVICENOW_TEST_CLIENT_ID: ${{ secrets.SERVICENOW_TEST_CLIENT_ID }}
+      SERVICENOW_TEST_CLIENT_SECRET: ${{ secrets.SERVICENOW_TEST_CLIENT_SECRET }}
+      SERVICENOW_TEST_INTEGRATION_USERNAME: ${{ secrets.SERVICENOW_TEST_INTEGRATION_USERNAME }}
+      SERVICENOW_TEST_INTEGRATION_PASSWORD: ${{ secrets.SERVICENOW_TEST_INTEGRATION_PASSWORD }}
+      SERVICENOW_TEST_API_KEY: ${{ secrets.SERVICENOW_TEST_API_KEY }}
+      SERVICENOW_TEST_PERSONA_PLAIN_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_PLAIN_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_HR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_HR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ENG_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ENG_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ENG2_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ENG2_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_CONTRIB_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_CONTRIB_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KBMGR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KBMGR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_OWNER_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_OWNER_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KADMIN_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KADMIN_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KMANAGER_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KMANAGER_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_OGROUP_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_OGROUP_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_AUTHOR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_AUTHOR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ROLEDIRECT_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ROLEDIRECT_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ROLEC_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ROLEC_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_INACTIVE_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_INACTIVE_PASSWORD }}
+      LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
+      LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
+      # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
+      # hence the GH_ prefix. The token is a classic PAT — not fine-grained, which
+      # cannot reach GraphQL, used by the code-file timestamp backfill.
+      # GitHub Teams. Secret names cannot start with GITHUB_ (reserved by Actions).
+      GH_TEAMS_TEST_TOKEN: ${{ secrets.GH_TEAMS_TEST_TOKEN }}
+      GH_TEAMS_TEST_ORG: ${{ secrets.GH_TEAMS_TEST_ORG }}
+      GH_TEAMS_TEST_PRIMARY_REPO: ${{ secrets.GH_TEAMS_TEST_PRIMARY_REPO }}
+      GH_TEAMS_TEST_PUBLIC_REPO: ${{ secrets.GH_TEAMS_TEST_PUBLIC_REPO }}
+      GH_TEAMS_TEST_MUTATION_REPO: ${{ secrets.GH_TEAMS_TEST_MUTATION_REPO }}
+      # GitLab. INSTANCE_URL is blank/https://gitlab.com for cloud, or the
+      # self-managed host.
+      GITLAB_TEST_TOKEN: ${{ secrets.GITLAB_TEST_TOKEN }}
+      GITLAB_TEST_INSTANCE_URL: ${{ secrets.GITLAB_TEST_INSTANCE_URL }}
+      GITLAB_TEST_GROUP: ${{ secrets.GITLAB_TEST_GROUP }}
+      GITLAB_TEST_SUBGROUP: ${{ secrets.GITLAB_TEST_SUBGROUP }}
+      GITLAB_TEST_PRIMARY_PROJECT: ${{ secrets.GITLAB_TEST_PRIMARY_PROJECT }}
+      GITLAB_TEST_MUTATION_PROJECT: ${{ secrets.GITLAB_TEST_MUTATION_PROJECT }}
+      # Outlook (team, app-only): two licensed mailboxes + one M365 group in the test tenant
+      OUTLOOK_TEST_TENANT_ID: ${{ secrets.OUTLOOK_TEST_TENANT_ID }}
+      OUTLOOK_TEST_CLIENT_ID: ${{ secrets.OUTLOOK_TEST_CLIENT_ID }}
+      OUTLOOK_TEST_CLIENT_SECRET: ${{ secrets.OUTLOOK_TEST_CLIENT_SECRET }}
+      OUTLOOK_TEST_USER_IDS: ${{ secrets.OUTLOOK_TEST_USER_IDS }}
+      OUTLOOK_TEST_GROUP_ID: ${{ secrets.OUTLOOK_TEST_GROUP_ID }}
+      # Google Drive Workspace (service account + domain-wide delegation)
+      GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL }}
+      GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL }}
+      GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL }}
+      # Google Drive personal (OAuth). Refresh token is normally in
+      # .env.refresh_tokens locally; CI injects it as an env secret.
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      GOOGLE_DRIVE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_TEST_USER_EMAIL }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_FROM_EMAIL: no-reply@example.com
+      # The SMB connector syncs from the smb-source Samba share in the compose
+      # stack, started by the smb-source profile for connectors-2 (or a dispatch
+      # of smb). The connector reaches it by service name; the test process
+      # writes files through the published port. A secret, when set, points
+      # both at an external share instead. CIFS is not registered, so it is
+      # not in a shard.
+      SMB_HOST: ${{ secrets.SMB_HOST || 'localhost' }}
+      SMB_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '1445' }}
+      SMB_CONNECTOR_HOST: ${{ secrets.SMB_HOST || 'smb-source' }}
+      SMB_CONNECTOR_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '445' }}
+      SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
+      SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
+      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+          # The upgrade variant finds the previous release with git describe --tags on HEAD^.
+          # A string: the number 0 is falsy in an expression.
+          fetch-depth: ${{ matrix.variant == 'upgrade' && '0' || '1' }}
+          fetch-tags: ${{ matrix.variant == 'upgrade' }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: qa-plan-${{ inputs.edition }}
+          path: qa-out
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install integration-test dependencies
+        run: |
+          cd integration-tests
+          uv venv .venv --python 3.12
+          VIRTUAL_ENV=.venv uv pip install -e .
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: contains(needs.plan.outputs.families, 'playwright')
+        with:
+          node-version: '20'
+      - name: Install frontend deps and Playwright browsers
+        if: contains(needs.plan.outputs.families, 'playwright')
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      # The nightly compares against the previous nightly's screenshots. With none yet,
+      # --update-snapshots=missing writes them and the run passes.
+      - name: Fetch the previous nightly's visual baseline
+        if: github.event_name == 'schedule' && contains(needs.plan.outputs.families, 'playwright')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EDITION: ${{ inputs.edition }}
+        run: |
+          dir="$RUNNER_TEMP/visual-baseline"
+          mkdir -p "$dir"
+          # By artifact name, not by run: only a nightly uploads it (the Sunday weekly run does not).
+          id=$(gh api "repos/$GH_REPO/actions/artifacts?name=visual-baseline-$EDITION&per_page=20" \
+            -q '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "main")][0].workflow_run.id // empty' || true)
+          if [[ -n "$id" ]]; then gh run download "$id" -n "visual-baseline-$EDITION" -D "$dir" || true; fi
+          echo "VISUAL_BASELINE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "QA_PLAYWRIGHT_ARGS=--update-snapshots=missing" >> "$GITHUB_ENV"
+      - name: Pull base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+      - name: Run the selected integration and e2e tests
+        env:
+          GRAPH: ${{ matrix.graph }}
+          SHARD: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ needs.plan.outputs.shard_total || '1' }}
+          VARIANT: ${{ matrix.variant }}
+        # One shard passes no --shard, and the default stack no --stack-variant, so a PR tree whose engine predates them still runs.
+        run: |
+          shard=()
+          if [ "$SHARD_TOTAL" -gt 1 ]; then shard=(--shard "$SHARD/$SHARD_TOTAL"); fi
+          if [ -n "$VARIANT" ]; then shard+=(--stack-variant "$VARIANT"); fi
+          python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" "${shard[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # Must end in -<edition>: the report and gate download qa-*-<edition>.
+          name: qa-results-stack-${{ matrix.graph }}-${{ matrix.shard }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-${{ inputs.edition }}
+          path: |
+            qa-out/results-stack-*.json
+            qa-out/logs/
+            qa-out/junit-*.xml
+            frontend/test-results/**/*-diff.png
+            integration-tests/reports/perf/smoke/summary.json
+          retention-days: 14
+      # Only the job that ran the visual suite, on one graph, uploads the next baseline:
+      # two jobs cannot share an artifact name. It is tonight's screenshots: a shot that
+      # differs replaces the old one, so an intentional change is red for one night only.
+      - name: Make tonight's screenshots the next visual baseline
+        if: always() && github.event_name == 'schedule' && matrix.graph == 'neo4j' && matrix.variant == '' && hashFiles('qa-out/junit-e2e-visual*.xml') != ''
+        run: |
+          find frontend/test-results -name '*-actual.png' 2>/dev/null | while read -r f; do
+            cp "$f" "$RUNNER_TEMP/visual-baseline/$(basename "${f%-actual.png}").png"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'schedule' && matrix.graph == 'neo4j' && matrix.variant == '' && hashFiles('qa-out/junit-e2e-visual*.xml') != ''
+        with:
+          name: visual-baseline-${{ inputs.edition }}
+          path: ${{ runner.temp }}/visual-baseline
+          retention-days: 14
+          if-no-files-found: ignore
+
+  report:
+    needs: [plan, run-unit, run-stack]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+
+      # Rules, quarantine and the engine come from the base branch, so a PR
+      # cannot weaken its own selection; the engine runs against the PR tree.
+      # A PR that changes the rules or the engine still triggers a full run
+      # (scripts/qa/rules/always.toml).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - name: Pick the engine
+        run: |
+          if [[ -f qa-engine/scripts/qa/__main__.py ]]; then
+            echo "ENGINE=qa-engine/scripts/qa" >> "$GITHUB_ENV"
+          else
+            echo "::warning::The base branch has no QA engine yet, so this run uses the PR's engine."
+            echo "ENGINE=scripts/qa" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qa-*-${{ inputs.edition }}
+          path: qa-out
+          merge-multiple: true
+      - name: Auto quarantine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On failure, drop any copy an artifact brought in: no file means no auto entries.
+        run: |
+          python3 "$ENGINE" history fetch-quarantine --repo "$GITHUB_REPOSITORY" --to qa-out/quarantine-auto.json \
+            || { rm -f qa-out/quarantine-auto.json; echo "::warning::no auto quarantine; quarantined tests will block"; }
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          args=(--summary --run-url "$RUN_URL" --quiet --allow-not-run "$QA_ALLOW_NOT_RUN")
+          if [[ -n "$PR_NUMBER" && "$SAME_REPO" == true ]]; then
+            args+=(--comment --pr "$PR_NUMBER")
+          fi
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" report "${args[@]}"
+      - name: Install the planner CLI for the review
+        if: inputs.review && inputs.pr != '' && inputs.use_model && (vars.QA_PLANNER || 'claude_code') == 'claude_code'
+        run: npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || echo "planner CLI unavailable; the review runs without the model"
+      - name: Install LiteLLM for the review
+        if: inputs.review && inputs.pr != '' && inputs.use_model && vars.QA_PLANNER == 'litellm'
+        run: pip install litellm >/dev/null 2>&1 || echo "litellm unavailable; the review runs without the model"
+      # A second sticky comment that never gates. Only /qa review (write
+      # permission, fork code only via --trusted) sets inputs.review, so the
+      # model keys reach this step and no other step of this job.
+      - name: QA review
+        id: review
+        if: inputs.review && inputs.pr != ''
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ inputs.review && inputs.use_model && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ inputs.review && inputs.use_model && secrets.OPENAI_API_KEY || '' }}
+          AZURE_API_KEY: ${{ inputs.review && inputs.use_model && secrets.AZURE_API_KEY || '' }}
+          AZURE_API_BASE: ${{ inputs.review && inputs.use_model && secrets.AZURE_API_BASE || '' }}
+          AZURE_API_VERSION: ${{ vars.AZURE_API_VERSION }}
+          GEMINI_API_KEY: ${{ inputs.review && inputs.use_model && secrets.GEMINI_API_KEY || '' }}
+          QA_PLANNER: ${{ vars.QA_PLANNER || 'claude_code' }}
+          QA_PLANNER_MODEL: ${{ vars.QA_PLANNER_MODEL }}
+          QA_PLANNER_CMD: ${{ vars.QA_PLANNER_CMD }}
+          USE_MODEL: ${{ inputs.use_model }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          adapter="$QA_PLANNER"
+          if [[ "$USE_MODEL" != true \
+                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" ) \
+                || ( "$adapter" == litellm && -z "$QA_PLANNER_MODEL" ) \
+                || ( "$adapter" == command && -z "$QA_PLANNER_CMD" ) ]]; then
+            adapter=none
+          fi
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" review --pr "$PR" --adapter "$adapter" --comment --run-url "$RUN_URL"
+      - name: QA review failed
+        if: steps.review.outcome == 'failure'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: echo "::warning::QA review step failed; no review comment was posted. See $RUN_URL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qa-report-${{ inputs.edition }}
+          path: qa-out/report.md
+
+  gate:
+    needs: [plan, run-unit, run-stack, report]
+    if: always()
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+
+      # Rules, quarantine and the engine come from the base branch, so a PR
+      # cannot weaken its own selection; the engine runs against the PR tree.
+      # A PR that changes the rules or the engine still triggers a full run
+      # (scripts/qa/rules/always.toml).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          path: qa-engine
+          persist-credentials: false
+
+      - name: Pick the engine
+        run: |
+          if [[ -f qa-engine/scripts/qa/__main__.py ]]; then
+            echo "ENGINE=qa-engine/scripts/qa" >> "$GITHUB_ENV"
+          else
+            echo "::warning::The base branch has no QA engine yet, so this run uses the PR's engine."
+            echo "ENGINE=scripts/qa" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: needs.plan.result == 'success'
+        with:
+          pattern: qa-*-${{ inputs.edition }}
+          path: qa-out
+          merge-multiple: true
+      - name: Auto quarantine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On failure, drop any copy an artifact brought in: no file means no auto entries.
+        run: |
+          python3 "$ENGINE" history fetch-quarantine --repo "$GITHUB_REPOSITORY" --to qa-out/quarantine-auto.json \
+            || { rm -f qa-out/quarantine-auto.json; echo "::warning::no auto quarantine; quarantined tests will block"; }
+      - name: Gate
+        env:
+          PLAN: ${{ needs.plan.result }}
+          UNIT: ${{ needs.run-unit.result }}
+          STACK: ${{ needs.run-stack.result }}
+        run: |
+          if [[ "$PLAN" != success ]]; then echo "planning failed"; exit 1; fi
+          for r in "$UNIT" "$STACK"; do
+            if [[ "$r" == failure || "$r" == cancelled ]]; then echo "a run job ended $r"; exit 1; fi
+          done
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" report --gate --quiet --allow-not-run "$QA_ALLOW_NOT_RUN"

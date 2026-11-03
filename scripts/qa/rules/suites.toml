@@ -1,0 +1,179 @@
+# Every test suite the engine knows how to select and run.
+#
+# tests    repo-relative globs of the suite's test files
+# family   which runner adapter executes it (see scripts/qa/run/adapters.py)
+# cwd      working directory the runner uses; test paths are passed relative to it
+# grain    "file" (select whole files) or "test" (select single tests; the
+#          catalog lists every test function)
+# mirror   where the unit test for a source file is expected to live
+# stack    needs the docker-compose platform stack
+# marker_needs   pytest marker -> need added to every row carrying that marker
+# fixture_needs  helper function -> need; a test reaching a fixture that calls
+#          the helper inherits the need. In `env:` needs, `A|B+C` means A, or B and C.
+#
+# A file matching more than one suite belongs to the suite whose edition
+# matches the file's edition, so overlay suites can claim their own paths.
+
+[[suite]]
+id = "scripts"
+family = "unittest"
+edition = "oss"
+cwd = "."
+grain = "file"
+tests = ["scripts/test_*.py", "scripts/qa/test_*.py"]
+
+[[suite]]
+id = "py-unit"
+family = "pytest"
+edition = "oss"
+cwd = "backend/python"
+grain = "file"
+planned = true
+tests = ["backend/python/tests/unit/**/test_*.py"]
+mirror = [{ src = "backend/python/app/", test = "backend/python/tests/unit/", style = "py" }]
+import_graph = "python"
+
+[[suite]]
+id = "py-integration"
+family = "pytest"
+edition = "oss"
+cwd = "backend/python"
+grain = "file"
+tests = ["backend/python/tests/integration/**/test_*.py"]
+import_graph = "python"
+
+[[suite]]
+id = "py-evals"
+family = "pytest"
+edition = "oss"
+cwd = "backend/python"
+grain = "file"
+tests = ["backend/python/tests/evals/**/test_*.py"]
+
+[[suite]]
+id = "node-unit"
+family = "mocha"
+edition = "oss"
+cwd = "backend/nodejs/apps"
+grain = "file"
+tests = ["backend/nodejs/apps/tests/**/*.test.ts"]
+mocha_config = ".mocharc.yaml"
+ts_project = "tsconfig.test.json"
+mirror = [{ src = "backend/nodejs/apps/src/", test = "backend/nodejs/apps/tests/", style = "ts" }]
+import_graph = "typescript"
+
+[[suite]]
+id = "fe-unit"
+family = "vitest"
+edition = "oss"
+cwd = "frontend"
+grain = "file"
+tests = ["frontend/app/**/*.test.ts", "frontend/app/**/*.test.tsx", "frontend/lib/**/*.test.ts", "frontend/lib/**/*.test.tsx"]
+import_graph = "typescript"
+
+[[suite]]
+id = "electron"
+family = "npm-script"
+edition = "oss"
+cwd = "frontend"
+grain = "suite"
+script = "test:electron"
+tests = ["frontend/electron/**/__tests__/*.test.ts"]
+
+[[suite]]
+id = "e2e"
+family = "playwright"
+edition = "oss"
+cwd = "frontend"
+grain = "file"
+stack = true
+tests = ["frontend/tests/e2e/**/*.spec.ts"]
+# The visual project exists only with E2E_VISUAL=true (set by the e2e-visual suite), so that suite runs those files.
+exclude = ["frontend/tests/e2e/**/*visual.spec.ts"]
+
+# The nightly visual diff: full runs only. On a schedule qa-pipeline sets the previous
+# nightly's screenshots as the baseline.
+[[suite]]
+id = "e2e-visual"
+family = "playwright"
+edition = "oss"
+cwd = "frontend"
+grain = "file"
+stack = true
+tests = ["frontend/tests/e2e/**/*visual.spec.ts"]
+profiles = ["full"]
+# Adds the Playwright visual project for this suite's invocation only.
+env = { E2E_VISUAL = "true" }
+# A catalog directory of its own: two suites cannot share one.
+catalog = "integration-tests/catalog/visual"
+
+[[suite]]
+id = "it-helpers"
+family = "it-pytest"
+edition = "oss"
+cwd = "integration-tests"
+grain = "file"
+tests = ["integration-tests/unit/**/test_*.py"]
+
+[[suite]]
+id = "it-stack"
+family = "it-pytest"
+edition = "oss"
+marker_rules = true
+cwd = "integration-tests"
+grain = "test"
+planned = true
+stack = true
+# Same file patterns as integration-tests/pytest.ini `python_files`.
+tests = [
+  "integration-tests/**/integration_test_*.py",
+  "integration-tests/**/test_*.py",
+  "integration-tests/**/*_test.py",
+]
+exclude = [
+  "integration-tests/unit/**",
+  "integration-tests/helper/**",
+  "integration-tests/perf/**",
+  "integration-tests/weekly/**",
+  "integration-tests/validation/**",
+  "integration-tests/examples/**",
+]
+catalog = "integration-tests/catalog"
+
+[suite.fixture_needs]
+setup_test_llm_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_GEMINI_API_KEY|TEST_GROQ_API_KEY"
+setup_test_indexing_models = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_STAND_IN_MODEL_ENDPOINT"
+setup_test_embedding_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME|TEST_STAND_IN_MODEL_ENDPOINT"
+
+# A test marked live_model asserts on what a real model answers, so it keeps the
+# real-key need even where indexing alone can run on the stand-in model.
+[suite.marker_needs]
+live_model = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
+# Their pytest.ini descriptions say they need an LLM (relations are inferred by it); so does the demo acceptance test.
+postgres_incremental = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
+postgres_relations = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
+demo = "env:TEST_OPENAI_API_KEY|OPENAI_API_KEY|TEST_AZURE_OPENAI_API_KEY+TEST_AZURE_OPENAI_ENDPOINT+TEST_AZURE_OPENAI_DEPLOYMENT_NAME"
+
+# Runs only in the weekly profile (never in another profile's full run), each marker on a stack of its own.
+[[suite]]
+id = "it-weekly"
+family = "it-pytest"
+edition = "oss"
+marker_rules = true
+cwd = "integration-tests"
+grain = "test"
+stack = true
+tests = ["integration-tests/weekly/**/integration_test_*.py"]
+profiles = ["weekly"]
+# A catalog directory of its own: two suites cannot share one.
+catalog = "integration-tests/catalog/weekly"
+
+[suite.marker_needs]
+perf_smoke = "stack:perf"
+upgrade = "stack:upgrade"
+
+# Markers that need an extra docker-compose profile on the integration stack.
+[compose_profiles]
+selfhosted-sources = ["nextcloud", "bookstack"]
+zammad-source = ["zammad"]
+kafka = ["requires_kafka"]

@@ -45,6 +45,8 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
+pytestmark = pytest.mark.live_model
+
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 KB_ANSWER_KEYWORDS = ("disaster recovery",)
 CONVERSATION_ID_HEADER = "X-Conversation-Id"

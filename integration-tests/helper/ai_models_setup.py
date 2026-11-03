@@ -31,7 +31,13 @@ Env vars (first provider with complete credentials wins unless
 ``TEST_AI_MODEL_PROVIDER`` is set; on health-check failure the next configured
 provider is tried):
 
-    TEST_AI_MODEL_PROVIDER       – force provider id: openAI, azureOpenAI, gemini, groq
+    TEST_AI_MODEL_PROVIDER       – force provider id: openAI, azureOpenAI, gemini, groq,
+                                   or standIn (see below)
+
+    Stand-in (never chosen unless forced, so real keys are never bypassed by accident):
+        TEST_STAND_IN_MODEL_ENDPOINT – the web-fixtures stand-in's /v1/ URL as the stack
+                                       reaches it. Both models are added as ``openAICompatible``
+                                       against it, so indexing can finish with no paid account.
 
     OpenAI:
         TEST_OPENAI_API_KEY        – falls back to OPENAI_API_KEY
@@ -86,6 +92,9 @@ _PROVIDER_AZURE_OPENAI = "azureOpenAI"
 _PROVIDER_GEMINI = "gemini"
 _PROVIDER_GROQ = "groq"
 _PROVIDER_OLLAMA = "ollama"
+# TEST_AI_MODEL_PROVIDER value for the web-fixtures stand-in; the API sees it as openAICompatible.
+STAND_IN = "standIn"
+_PROVIDER_OPENAI_COMPATIBLE = "openAICompatible"
 
 _DEFAULT_LLM_MODEL_TYPE = "llm"
 _DEFAULT_EMBEDDING_MODEL_TYPE = "embedding"
@@ -239,6 +248,24 @@ def _build_openai_configuration(api_key: str, model_name: str) -> Dict[str, Any]
     return {"model": model_name, "apiKey": api_key}
 
 
+def _stand_in_configuration(model_name: str) -> Dict[str, Any]:
+    endpoint = _env("TEST_STAND_IN_MODEL_ENDPOINT")
+    if not endpoint:
+        raise RuntimeError(
+            "TEST_AI_MODEL_PROVIDER=standIn needs TEST_STAND_IN_MODEL_ENDPOINT "
+            "(the stand-in's /v1/ URL as the stack reaches it)"
+        )
+    return {"endpoint": endpoint, "apiKey": "stand-in", "model": model_name}
+
+
+def _stand_in_candidate(model_name: str) -> _ProviderCandidate:
+    return _ProviderCandidate(
+        provider=_PROVIDER_OPENAI_COMPATIBLE,
+        model_name=model_name,
+        configuration=_stand_in_configuration(model_name),
+    )
+
+
 def _build_ollama_configuration(model_name: str) -> Optional[Dict[str, Any]]:
     endpoint = _env("TEST_OLLAMA_ENDPOINT")
     if not endpoint:
@@ -266,6 +293,9 @@ def _build_llm_candidate(
     is_reasoning: bool,
     model_name: str | None,
 ) -> Optional[_ProviderCandidate]:
+    if provider == STAND_IN:
+        return _stand_in_candidate(model_name or "stand-in-llm")
+
     if provider == _PROVIDER_OPENAI:
         api_key = _openai_api_key()
         if not api_key:
@@ -330,6 +360,9 @@ def _build_embedding_candidate(
     *,
     model_name: str | None,
 ) -> Optional[_ProviderCandidate]:
+    if provider == STAND_IN:
+        return _stand_in_candidate(model_name or "stand-in-embedding")
+
     if provider == _PROVIDER_OPENAI:
         api_key = _openai_api_key()
         if not api_key:

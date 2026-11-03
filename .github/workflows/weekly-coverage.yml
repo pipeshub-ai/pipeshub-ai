@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  # unit-test.yml's changes job reads the PR's files; a called job may not ask for more than this.
+  pull-requests: read
 
 jobs:
   run-tests:

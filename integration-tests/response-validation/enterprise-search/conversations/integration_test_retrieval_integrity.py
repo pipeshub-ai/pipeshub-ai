@@ -45,7 +45,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 # nothing cannot bluff its way to a citation.
 GROUNDED_QUERY = "every year asana undertakes which exercise?"
 
-pytestmark = pytest.mark.xdist_group("retrieval-integrity")
+pytestmark = [pytest.mark.xdist_group("retrieval-integrity"), pytest.mark.live_model]
 
 
 def _stream_and_collect(

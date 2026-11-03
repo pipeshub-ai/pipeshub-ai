@@ -1,0 +1,117 @@
+name: QA command
+
+# `/qa` comments on a PR: plan | run | review | missing | since <sha> | range <a>[..<b>] | full.
+# The comment is untrusted: permission comes from the GitHub API and the
+# arguments are parsed by scripts/qa/command.py against fixed patterns. This
+# workflow never checks out PR code and holds no model or test secrets; it
+# only dispatches the QA workflows at a pinned commit.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: write
+
+jobs:
+  dispatch:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/qa')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check permission and parse the command
+        id: parse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.comment.body }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          REPO: ${{ github.repository }}
+          ADMIN_TEAM: ${{ vars.QA_ADMIN_TEAM }}
+        run: |
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission || echo none)
+          team_flag=()
+          if [[ -n "$ADMIN_TEAM" ]] && gh api "orgs/${REPO%%/*}/teams/$ADMIN_TEAM/memberships/$ACTOR" --jq .state 2>/dev/null | grep -qx active; then
+            team_flag=(--admin-team)
+          fi
+          python3 scripts/qa command --body "$BODY" --permission "$perm" "${team_flag[@]}" > parsed.json || true
+          jq -e . parsed.json >/dev/null 2>&1 || echo '{"ok":false,"error":"internal error"}' > parsed.json
+          jq -c . parsed.json
+          echo "json=$(jq -c . parsed.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch
+        if: fromJSON(steps.parse.outputs.json).ok
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          PARSED: ${{ steps.parse.outputs.json }}
+          ENFORCE: ${{ vars.QA_ENFORCE }}
+        run: |
+          read -r head fork state < <(gh pr view "$PR" --repo "$REPO" --json headRefOid,isCrossRepository,state --jq '"\(.headRefOid) \(.isCrossRepository) \(.state)"')
+          if [[ "$state" != OPEN ]]; then
+            gh pr comment "$PR" --repo "$REPO" --body "QA command not run: this PR is not open."
+            exit 0
+          fi
+          # A dispatched run has secrets. Fork code runs with them only after an
+          # admin reviewed this exact commit and asked for it with --trusted <sha>.
+          if [[ "$fork" == true && "$(jq -r .trusted <<<"$PARSED")" != true ]]; then
+            gh pr comment "$PR" --repo "$REPO" --body "QA command not run: this PR is from a fork. An admin can run it at the reviewed commit with \`/qa run --trusted <sha>\`."
+            exit 0
+          fi
+          # The parser guarantees a full 40-character sha; the PR head must be exactly it.
+          trusted_head=$(jq -r '.trusted_head // ""' <<<"$PARSED")
+          if [[ -n "$trusted_head" && "$head" != "$trusted_head" ]]; then
+            gh pr comment "$PR" --repo "$REPO" --body "QA command not run: the PR moved since \`${trusted_head:0:10}\`; review the new head first."
+            exit 0
+          fi
+          range_head=$(jq -r '.head // ""' <<<"$PARSED")
+          if [[ "$fork" == true && -n "$range_head" && "$range_head" != "$trusted_head" ]]; then
+            gh pr comment "$PR" --repo "$REPO" --body "QA command not run: On a fork PR, a range must end at the reviewed commit."
+            exit 0
+          fi
+          if [[ "$(jq -r .command <<<"$PARSED")" == commit ]] && ! gh pr view "$PR" --repo "$REPO" --json commits --jq '.commits[].oid' | grep -qx "$range_head"; then
+            gh pr comment "$PR" --repo "$REPO" --body "QA command not run: \`${range_head:0:10}\` is not a commit of this PR."
+            exit 0
+          fi
+          mode=$(jq -r .mode <<<"$PARSED")
+          base=$(jq -r '.base // ""' <<<"$PARSED")
+          head_arg=$(jq -r --arg h "$head" '.head // $h' <<<"$PARSED")
+          profile=$(jq -r .profile <<<"$PARSED")
+          plan_only=$(jq -r .plan_only <<<"$PARSED")
+          review=$(jq -r '.review // false' <<<"$PARSED")
+          [[ "$mode" == range || "$mode" == since || "$mode" == full ]] || mode="pr"
+          [[ "$profile" == full ]] && profile=standard
+          # Every QA workflow in this checkout that accepts these inputs; the
+          # OSS command never names an edition-specific workflow.
+          for wf in .github/workflows/qa*.yml; do
+            name=$(basename "$wf")
+            [[ "$name" == qa-command.yml || "$name" == qa-pipeline.yml ]] && continue
+            grep -q '^  workflow_dispatch:' "$wf" || continue
+            gh workflow run "$name" --repo "$REPO" --ref "${{ github.event.repository.default_branch }}" \
+              -f mode="$mode" -f pr="$PR" -f base_sha="$base" -f head_sha="$head_arg" \
+              -f profile="$profile" -f plan_only="$plan_only" -f review="$review" -f requested_by="$ACTOR"
+            echo "dispatched $name"
+          done
+          gh api "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null
+          if [[ "$ENFORCE" != true ]]; then
+            gh pr comment "$PR" --repo "$REPO" --body "Shadow mode: QA posts the plan only; the existing workflows run the tests."
+          fi
+
+      - name: Explain a rejected command
+        if: ${{ !fromJSON(steps.parse.outputs.json).ok }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          PARSED: ${{ steps.parse.outputs.json }}
+        run: |
+          gh pr comment "$PR" --repo "$REPO" --body "QA command not run: $(jq -r .error <<<"$PARSED")"

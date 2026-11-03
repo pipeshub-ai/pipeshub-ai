@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa run results",
+  "type": "object",
+  "required": [
+    "schema",
+    "tests",
+    "invocations",
+    "fatal"
+  ],
+  "properties": {
+    "environment": {
+      "type": "object",
+      "properties": {
+        "image": {"type": "string"},
+        "image_digest": {"type": ["string", "null"]},
+        "base_images": {"type": "object"},
+        "unpinned": {"type": "array", "items": {"type": "string"}},
+        "lockfiles": {"type": "object"},
+        "compose": {"type": "object"}
+      }
+    },
+    "schema": {
+      "const": "qa-results/v1"
+    },
+    "fatal": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "outcome"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "error",
+              "flaky",
+              "skip",
+              "not_run"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "secret",
+              "scope",
+              "profile",
+              "infra",
+              "toolchain",
+              "cancelled",
+              "no_result"
+            ]
+          },
+          "seconds": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "invocations": {
+      "type": "array"
+    }
+  }
+}

@@ -87,6 +87,7 @@ def _azure_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
         "TEST_OPENAI_API_KEY",
         "OPENAI_API_KEY",
         "TEST_OLLAMA_ENDPOINT",
+        "TEST_STAND_IN_MODEL_ENDPOINT",
         "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
         "TEST_AZURE_OPENAI_EMBEDDING_MODEL",
     ):
@@ -210,3 +211,47 @@ def test_a_default_llm_without_an_asked_for_capability_is_not_reused(monkeypatch
 
     assert (seeded.model_key, seeded.owned) == ("new-llm", True)
     assert [post["isReasoning"] for post in backend.posts] == [True]
+
+
+_STAND_IN_URL = "http://web-fixtures:8080/__fixtures__/openai/v1/"
+
+
+def test_forced_stand_in_seeds_llm_and_embedding_against_the_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "standIn")
+    monkeypatch.setenv("TEST_STAND_IN_MODEL_ENDPOINT", _STAND_IN_URL)
+    backend = _Backend([], post=_Response(200, {"details": {"modelKey": "k"}}))
+    monkeypatch.setattr(setup.requests, "get", lambda url, **_: _Response(200, {"models": []}))
+    monkeypatch.setattr(setup.requests, "post", backend.post)
+
+    setup.setup_test_indexing_models(_Client())
+
+    assert [(p["modelType"], p["provider"]) for p in backend.posts] == [
+        ("llm", "openAICompatible"),
+        ("embedding", "openAICompatible"),
+    ]
+    assert [p["configuration"] for p in backend.posts] == [
+        {"endpoint": _STAND_IN_URL, "apiKey": "stand-in", "model": "stand-in-llm"},
+        {"endpoint": _STAND_IN_URL, "apiKey": "stand-in", "model": "stand-in-embedding"},
+    ]
+
+
+def test_stand_in_is_never_chosen_unless_forced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_STAND_IN_MODEL_ENDPOINT", _STAND_IN_URL)
+    monkeypatch.delenv("TEST_AZURE_OPENAI_API_KEY")
+    monkeypatch.setenv("TEST_OPENAI_API_KEY", "real-key")
+    assert [c.provider for c in setup._llm_provider_candidates(is_reasoning=False, model_name=None)] == ["openAI"]
+    assert [c.provider for c in setup._embedding_provider_candidates(model_name=None)] == ["openAI"]
+
+    monkeypatch.delenv("TEST_OPENAI_API_KEY")
+    monkeypatch.setattr(setup.requests, "get", lambda url, **_: _Response(200, {"models": []}))
+    with pytest.raises(RuntimeError, match="No LLM provider credentials"):
+        setup.setup_test_indexing_models(_Client())
+
+
+def test_forced_stand_in_without_endpoint_names_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "standIn")
+    monkeypatch.delenv("TEST_STAND_IN_MODEL_ENDPOINT", raising=False)
+    monkeypatch.setattr(setup.requests, "get", lambda url, **_: _Response(200, {"models": []}))
+
+    with pytest.raises(RuntimeError, match="TEST_STAND_IN_MODEL_ENDPOINT"):
+        setup.setup_test_indexing_models(_Client())

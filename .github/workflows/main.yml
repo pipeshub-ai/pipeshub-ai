@@ -334,6 +334,13 @@ jobs:
       - name: Test the coverage script
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
+      # The QA engine's test catalog is generated from the tests' docstrings;
+      # a stale catalog means a model would plan from tests that no longer exist.
+      - name: QA catalog is current and its specs are valid
+        run: |
+          python3 scripts/qa catalog check
+          python3 scripts/qa catalog lint --max-warnings 0
+
       # Fails only when a connector is registered without an integration test
       # that was not already recorded as a known gap. Existing gaps do not fail
       # the build; the list can shrink freely and only grows on purpose.

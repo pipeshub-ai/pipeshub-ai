@@ -867,3 +867,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         graph_db=graph_db,
     )
 
+
+def pytest_itemcollected(item: pytest.Item) -> None:
+    """A ``planned`` test is a spec waiting for an implementation: never run it."""
+    if item.get_closest_marker("planned"):
+        item.add_marker(pytest.mark.skip(reason="planned: specified in the QA catalog, not implemented yet"))

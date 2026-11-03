@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa catalog row (one line of tests.jsonl)",
+  "type": "object",
+  "required": [
+    "id",
+    "suite",
+    "family",
+    "edition",
+    "path",
+    "tc",
+    "title",
+    "markers",
+    "covers",
+    "needs",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "suite": {
+      "type": "string"
+    },
+    "family": {
+      "type": "string",
+      "enum": [
+        "pytest",
+        "it-pytest",
+        "mocha",
+        "vitest",
+        "playwright",
+        "unittest",
+        "npm-script"
+      ]
+    },
+    "edition": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "tc": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "markers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "covers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "needs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "planned",
+        "quarantined"
+      ]
+    },
+    "ordered": {
+      "type": "boolean"
+    },
+    "tests": {
+      "type": "integer"
+    },
+    "module": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        null
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

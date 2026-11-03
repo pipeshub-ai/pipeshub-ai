@@ -24,7 +24,7 @@ from retrieval.ranking import describe, ranked_slugs, top, virtual_id_of
 
 logger = logging.getLogger("retrieval-quality")
 
-pytestmark = [pytest.mark.integration, pytest.mark.retrieval]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.retrieval]
 
 
 def _search(search_client: Any, corpus: Any, query: str, limit: int) -> Any:

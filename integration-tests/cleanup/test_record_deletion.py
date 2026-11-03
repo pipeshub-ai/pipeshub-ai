@@ -530,6 +530,7 @@ class TestAddingACopyWhileTheOriginalIsDeleted:
         assert copy_graph.edges > 0, f"The copy is in the graph with no edges: {copy_graph}."
 
     @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.live_model
     async def test_the_copy_is_searchable(self, raced, timing, vector_store, search_client) -> None:
         """Checked through the search API as well as the vector database.
 

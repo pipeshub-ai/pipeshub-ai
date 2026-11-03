@@ -39,7 +39,7 @@ from ai_agents.support import (
 from helper.agui_run import ArtifactRef, RunTrace, last_bot_message, parse_artifact_markers
 from helper.clients.conversations_client import ConversationsClient
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.ai_agents]
 
 _SKILL = "docx"
 # Calls that load a skill; searching for or listing skills is not loading one.

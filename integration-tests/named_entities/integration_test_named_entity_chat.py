@@ -18,7 +18,7 @@ import pytest
 from ai_agents.support import delete_conversation, stream_chat
 from helper.access_probe import _cited_ids
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.named_entities]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.named_entities]
 
 REFUND = {"amount": {"min": -800, "max": -700, "currency": "USD"}}
 

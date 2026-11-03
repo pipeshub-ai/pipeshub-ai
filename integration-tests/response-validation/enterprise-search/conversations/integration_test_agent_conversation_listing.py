@@ -44,6 +44,8 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
+pytestmark = pytest.mark.live_model
+
 logger = logging.getLogger(__name__)
 
 

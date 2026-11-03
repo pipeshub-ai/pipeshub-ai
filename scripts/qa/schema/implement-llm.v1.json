@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa generate --implement model output",
+  "type": "object",
+  "required": [
+    "content"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "type": "string",
+      "maxLength": 30000
+    }
+  }
+}
