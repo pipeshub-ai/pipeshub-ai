@@ -24,7 +24,7 @@ const cached = new Map<string, { value: boolean; at: number }>();
  */
 export type ProjectsSettingsSource = () => {
   cacheKey: string;
-  store: () => Promise<KeyValueStoreService>;
+  store: () => Promise<Pick<KeyValueStoreService, 'get'>>;
 } | null;
 
 const readSettingsDocument: ProjectsSettingsSource = () => {
