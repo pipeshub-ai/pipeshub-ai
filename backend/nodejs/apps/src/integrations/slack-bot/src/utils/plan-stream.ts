@@ -1840,7 +1840,7 @@ export class SlackPlanStream {
   private startLiveness(): void {
     if (this.liveness) return;
     this.liveness = setInterval(() => {
-      void this.pulse();
+      this.pulse();
     }, 1000);
     this.liveness.unref();
   }
