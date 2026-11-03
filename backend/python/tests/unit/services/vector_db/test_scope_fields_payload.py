@@ -21,7 +21,7 @@ from app.services.vector_db.redis.utils import (
     vector_point_to_hash_fields,
 )
 
-FIELDS = ScopeFields(Stamp.OVERRIDE, ("a", "b"), ("b",), ("u:x",))
+FIELDS = ScopeFields(Stamp.OVERRIDE, ("a", "b"), ("b",))
 
 
 def point(extra: dict | None = None) -> VectorPoint:
@@ -51,7 +51,7 @@ def test_a_redis_hash_round_trips_the_fields_and_omits_them_when_absent() -> Non
 
 
 def test_the_scope_indexes_are_separate_so_they_can_be_gated() -> None:
-    assert {f for f, _ in SCOPE_KEYWORD_INDEXES} == {"pathIds", "aclScope", "grantTokens", "scopeStamp"}
+    assert {f for f, _ in SCOPE_KEYWORD_INDEXES} == {"pathIds", "aclScope", "scopeStamp"}
     assert not {f for f, _ in SCOPE_KEYWORD_INDEXES} & {f for f, _ in PAYLOAD_KEYWORD_INDEXES}
 
 
@@ -71,7 +71,7 @@ async def test_the_registry_creates_the_scope_indexes_only_while_scope_fields_ar
     reg._vector_db_service, reg._logger = svc, MagicMock()
     await CollectionRegistry._ensure_payload_indexes(reg, "c")
     made = {c.kwargs["field_name"] for c in svc.create_index.await_args_list}
-    assert ("pathIds" in made) is on and "connectorIds" in made
+    assert ("pathIds" in made) is on and "connectorIds" in made and "grantTokens" not in made
 
 
 def _opensearch(mapping: dict):  # noqa: ANN202
@@ -102,3 +102,33 @@ async def test_an_index_that_maps_a_scope_field_as_text_gets_the_point_without_t
     svc.client.indices.put_mapping.assert_not_awaited()
     assert svc._without_scope({**FIELDS.to_payload(), "connectorIds": ["c"]}) == {"connectorIds": ["c"]}
     assert not await svc._guard_scope_mapping("idx", {"connectorIds"})  # blocked for good, whatever the next write carries
+
+
+async def test_a_missing_index_does_not_raise_into_the_write_and_is_not_remembered() -> None:
+    from opensearchpy.exceptions import NotFoundError
+
+    svc = _opensearch({})
+    svc.client.indices.get_mapping.side_effect = NotFoundError(404, "index_not_found_exception", {})
+    assert await svc._guard_scope_mapping("idx", set(SCOPE_KEYS))
+    assert "idx" not in svc.__dict__.get("_scope_mapped", set())
+
+
+async def test_every_index_behind_an_alias_is_checked_and_mapped() -> None:
+    from unittest.mock import AsyncMock
+
+    svc = _opensearch({})
+    svc.client.indices.get_mapping = AsyncMock(return_value={
+        "idx-1": {"mappings": {"properties": {}}}, "idx-2": {"mappings": {"properties": {"pathIds": {"type": "text"}}}}})
+    assert not await svc._guard_scope_mapping("alias", set(SCOPE_KEYS))  # one index maps a field as text: the whole name is blocked
+    svc2 = _opensearch({})
+    svc2.client.indices.get_mapping = AsyncMock(return_value={"a": {"mappings": {"properties": {}}}, "b": {"mappings": {"properties": {}}}})
+    assert await svc2._guard_scope_mapping("alias", set(SCOPE_KEYS))
+    assert {c.kwargs["index"] for c in svc2.client.indices.put_mapping.await_args_list} == {"a", "b"}
+
+
+async def test_what_was_learned_about_an_index_is_forgotten_when_it_is_created_or_deleted() -> None:
+    svc = _opensearch({"pathIds": {"type": "text"}})
+    assert not await svc._guard_scope_mapping("idx", set(SCOPE_KEYS))
+    svc._forget_scope_mapping("idx")
+    svc.client.indices.get_mapping.return_value = {"idx": {"mappings": {"properties": {}}}}
+    assert await svc._guard_scope_mapping("idx", set(SCOPE_KEYS))

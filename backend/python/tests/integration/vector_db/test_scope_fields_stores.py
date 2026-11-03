@@ -22,7 +22,7 @@ from tests.integration.vector_db.helpers import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 ORG = "ab" * 12
-FIELDS = ScopeFields(Stamp.UNION, ("pg-1", "page-2"), ("page-2", "seed-3"), ("u:x",))
+FIELDS = ScopeFields(Stamp.UNION, ("pg-1", "page-2"), ("page-2", "seed-3"))
 
 
 def _point(name: str, vrid: str, extra: dict | None = None) -> VectorPoint:
@@ -80,13 +80,18 @@ class TestOpenSearchScopeFields(_ScopeFieldsContract):
     async def vector_service(self, opensearch_service):  # noqa: ANN201
         return opensearch_service
 
-    async def test_a_new_index_maps_the_scope_fields_as_keyword(self, opensearch_service) -> None:
+    async def test_a_new_index_has_no_scope_mapping_while_the_fields_are_off_and_keyword_after_the_first_stamp(
+        self, opensearch_service, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
         col = make_collection("opensearch")
         try:
             await opensearch_service.create_collection(col, make_collection_config())
+            off = (await opensearch_service.client.indices.get_mapping(index=col))[col]["mappings"]["properties"]
+            assert not {"pathIds", "aclScope", "scopeStamp"} & set(off)
             await _upsert(opensearch_service, col, [_point("a", "v1", FIELDS.to_payload())])
             props = (await opensearch_service.client.indices.get_mapping(index=col))[col]["mappings"]["properties"]
-            assert all(props[f]["type"] == "keyword" for f in ("pathIds", "aclScope", "grantTokens", "scopeStamp"))
+            assert all(props[f]["type"] == "keyword" for f in ("pathIds", "aclScope", "scopeStamp"))
         finally:
             await opensearch_service.delete_collection(col)
 
