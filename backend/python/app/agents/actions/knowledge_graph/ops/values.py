@@ -352,13 +352,11 @@ async def _link_name(
         logger.warning("find_records_by_value: name lookup failed", exc_info=True)
         return [], LOOKUP_FAILED_MSG, ""
     result = linking.results[0]
+    # A cut-short access check is never mentioned, beside an accepted name or not: only
+    # candidates not yet found readable keep a check running, so saying so would hint
+    # that unreadable ones exist.
     if result.accepted:
-        caveats = accepted_caveats(result, linking.names)
-        if linking.timed_out:
-            caveats += " Access checks were cut short, so other entities by this name may be missing; retry."
-        return [candidate.entity_id for candidate in result.accepted], None, caveats
-    # Access checks cut short answer as an unknown name does: only a name with
-    # candidates is checked, so "too slow" would say it is mentioned somewhere.
+        return [candidate.entity_id for candidate in result.accepted], None, accepted_caveats(result, linking.names)
     # The ones it may be, with the ids to pass; each passed the permission check to be offered.
     options = [*result.namesakes, *result.unchecked]
     ids = "; ".join(f'{linking.names.get(c.entity_id, c.name)}: "{c.entity_id}"' for c in options)
