@@ -147,13 +147,44 @@ describe('slack-bot/utils/plan-stream', () => {
         output: '• Waiting for your approval',
       }]);
     });
+    it('never shows a secret as a call\'s argument, whatever its key', () => {
+      for (const key of ['password', 'token', 'api_key']) {
+        const plan = new SlackTaskPlan();
+        run(plan, 'mcp_x_login', 'X · login', 'c1', `Login — ${key}: "hunter2", user: "bob"`, 'completed', 'ok');
+        plan.toolStarted('mcp_x_login', 'X · login', 'c2');
+        plan.toolArgs('mcp_x_login', { summary: `Login — ${key}: "hunter2"` }, 'c2');
+        plan.toolFinished('mcp_x_login', 'X · login', 'completed', 'c2', { summary: 'ok' });
+        plan.endGroup();
+        const [row] = plan.takeSealed();
+        expect(row!.output, key).to.not.include('hunter2');
+        expect(row!.output!.split('\n')[0], key).to.equal('✓ "bob" → Ok');
+      }
+    });
+
+    it('masks secrets in narration and reasoning', () => {
+      const plan = new SlackTaskPlan();
+      expect(plan.narration('Using token=abc123 now.')[0]!.title).to.equal('Using token=[redacted]');
+      plan.reasoningDelta('Try password: hunter2');
+      plan.reasoningDone();
+      expect(plan.flushReasoning()!.output).to.equal('Try password: [redacted]');
+    });
+
+    it('keeps a sealed row\'s details for a replay after its status changes', () => {
+      const plan = new SlackTaskPlan();
+      run(plan, 'web_search', 'Searched the web', 'c1', 'Searched for "a"', 'completed', '4 results');
+      plan.endGroup();
+      plan.takeSealed();
+      plan.toolFinished('web_search', 'Searched the web', 'failed', 'c1', { summary: 'Failed: late' });
+      expect(plan.current('tools-1')).to.deep.include({ status: 'error', output: '✓ "a" → 4 results' });
+    });
+
 
     it('keeps the waiting title within the title limit', () => {
       const plan = new SlackTaskPlan();
-      plan.toolStarted('jira_create', 'x'.repeat(300), 'c1');
-      plan.toolFinished('jira_create', 'x'.repeat(300), 'awaiting_approval', 'c1');
+      plan.toolStarted('jira_create', `Created ${'x'.repeat(300)}`, 'c1');
+      plan.toolFinished('jira_create', `Created ${'x'.repeat(300)}`, 'awaiting_approval', 'c1');
       const [row] = plan.failRunning(new Set(['tools-1']));
-      expect(row!.title.startsWith('Waiting for your approval: x')).to.equal(true);
+      expect(row!.title.startsWith('Waiting for your approval: Created x')).to.equal(true);
       expect(row!.title.length).to.be.at.most(256);
     });
 
@@ -169,7 +200,7 @@ describe('slack-bot/utils/plan-stream', () => {
       const plan = new SlackTaskPlan();
       run(plan, 'jira_create', 'Created an issue', 'c1', '', 'blocked', 'Not allowed here');
       plan.endGroup();
-      expect(plan.takeSealed()[0]).to.deep.include({ status: 'error', output: '✗ blocked: Not allowed here' });
+      expect(plan.takeSealed()[0]).to.deep.include({ status: 'error', output: '✗ Not allowed here' });
     });
 
     it('puts a sub-agent in a row of its own, its calls named on their lines', () => {
@@ -332,6 +363,16 @@ describe('slack-bot/utils/plan-stream', () => {
         { type: 'url', url: 'https://www.docs.test/b', text: 'docs.test' },
       ]);
       expect(viewSources('nope')).to.deep.equal([]);
+    });
+
+    it('drops secret query parameters, masks secrets in a title and leaves out a link with a token in it', () => {
+      expect(viewSources({
+        kind: 'records',
+        rows: [
+          { cells: ['Report token=abc123'], url: 'https://h.example/x?api_key=SEKRET123&page=2' },
+          { cells: ['Leaky'], url: 'https://h.example/u/ghp_abcdefghijklmnopqrstuvwxyz0123' },
+        ],
+      })).to.deep.equal([{ type: 'url', url: 'https://h.example/x?page=2', text: 'Report token=[redacted]' }]);
     });
   });
 
@@ -500,7 +541,7 @@ describe('slack-bot/utils/plan-stream', () => {
         await push(plan.toolFinished('kb__search', 'Searched the knowledge base', 'completed', 'c2', { summary: 'late repeat' }));
         await s.stop();
 
-        expect(shown(c)[0]).to.deep.include({ status: 'complete', output: '✗ "a" → Timed out\n✓ "b" → late repeat' });
+        expect(shown(c)[0]).to.deep.include({ status: 'complete', output: '✗ "a" → Timed out\n✓ "b" → Late repeat' });
       });
 
       it('4) holds a call waiting for approval, then shows how it was answered, once', async () => {
@@ -558,6 +599,17 @@ describe('slack-bot/utils/plan-stream', () => {
         ]);
       });
 
+      it('7b) counts the calls a shrunk row already summed up', async () => {
+        const { c, s, plan, push, search } = setup();
+        for (let i = 0; i < 8; i += 1) await search(`c${String(i)}`, `q${String(i)}`);
+        const refusedAt = c.apiCall.callCount;
+        c.apiCall.withArgs('chat.appendStream').onCall(calls(c, 'chat.appendStream').length).rejects(tooLong());
+        await push(plan.narration('Next.'));
+        await s.stop();
+
+        expect(shown(c, new Set([refusedAt]))[0]!.output.split('\n').pop()).to.equal('+5 more');
+      });
+
       it('8) takes back a discarded model call without showing any row twice', async () => {
         const { c, s, plan, push, search } = setup();
         await search('c1', 'kept');
@@ -605,6 +657,67 @@ describe('slack-bot/utils/plan-stream', () => {
           ['tools-2', '✓ "b" → 4 results\n✓ "c" → 4 results'],
         ]);
       });
+      it('11) moves a row still open when its message expires to the next message, sealing it there once', async () => {
+        const { c, s, plan, push } = setup();
+        await push(plan.toolStarted('kb__search', 'Searched the knowledge base', 'c1'));
+        c.apiCall.withArgs('chat.appendStream').onCall(calls(c, 'chat.appendStream').length).rejects(expired());
+        await push(plan.toolArgs('kb__search', { summary: 'Searched for "a"' }, 'c1'));
+        await push(plan.toolFinished('kb__search', 'Searched the knowledge base', 'completed', 'c1', { summary: '4 results' }));
+        await push(plan.narration('Next.'));
+        await s.stop();
+
+        const rows = replayRows(c, tsOf);
+        for (const row of rows) expect(row.detailSends, row.id).to.be.at.most(1);
+        const copies = rows.filter((r) => r.id === 'tools-1');
+        expect(copies.map((r) => [r.status, r.output])).to.deep.equal([
+          ['in_progress', ''],
+          ['complete', '✓ "a" → 4 results'],
+        ]);
+      });
+
+      it('12) settles an open row by title and status when the answer rolls over, and seals it once in the next message', async () => {
+        const { c, s, plan, push } = setup();
+        await push(plan.toolStarted('kb__search', 'Searched the knowledge base', 'c1'));
+        const line = `${'x'.repeat(99)}\n`;
+        await s.answer(line.repeat(Math.ceil(SLACK_STREAM_MESSAGE_CHAR_LIMIT / line.length) + 5));
+        await push(plan.toolArgs('kb__search', { summary: 'Searched for "a"' }, 'c1'));
+        await push(plan.toolFinished('kb__search', 'Searched the knowledge base', 'completed', 'c1', { summary: '4 results' }));
+        await push(plan.narration('Next.'));
+        await s.stop();
+
+        const [settle] = calls(c, 'chat.stopStream');
+        expect(settle.chunks[0]).to.deep.equal({ type: 'task_update', id: 'tools-1', title: 'Searched the knowledge base', status: 'complete' });
+        const rows = replayRows(c, tsOf);
+        for (const row of rows) expect(row.detailSends, row.id).to.be.at.most(1);
+        expect(rows.filter((r) => r.id === 'tools-1').map((r) => [r.status, r.output])).to.deep.equal([
+          ['complete', ''],
+          ['complete', '✓ "a" → 4 results'],
+        ]);
+      });
+
+      it('13) names apps and actions in plain words, never internal names', async () => {
+        const { c, s, plan, push } = setup();
+        await push(plan.toolStarted('fetch_tools', 'Fetch Tools', 'c1'));
+        await push(plan.toolArgs('fetch_tools', { summary: 'Loading tools for "mcp_tracker"' }, 'c1'));
+        await push(plan.toolFinished('fetch_tools', 'Fetch Tools', 'completed', 'c1', { summary: 'Loaded 3 tools' }));
+        await push(plan.toolStarted('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'c2'));
+        await push(plan.toolArgs('mcp_tracker_create_ticket', { summary: 'Create Ticket — title: "Think", password: "hunter2"' }, 'c2'));
+        await push(plan.toolFinished('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'blocked', 'c2'));
+        await push(plan.toolStarted('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'c3'));
+        await push(plan.toolFinished('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'blocked', 'c3', { summary: 'Declined by the user.' }));
+        await s.stop();
+
+        const rows = shown(c).map(({ title, status, details, output }) => ({ title, status, details, output }));
+        expect(rows).to.deep.equal([
+          { title: 'Loaded tools', status: 'complete', details: '', output: '✓ Tracker → Loaded 3 tools' },
+          {
+            title: 'Create ticket', status: 'error', details: 'Tracker',
+            output: '✗ "Think" → Needs approval in the PipesHub app\n✗ Declined by the user',
+          },
+        ]);
+        expect(JSON.stringify(rows)).to.not.match(/hunter2|mcp_tracker|create_ticket|\bMCP\b/);
+      });
+
     });
 
     it('takes back a discarded call: reopens with the plan, every step at its final status, and the text before it', async () => {

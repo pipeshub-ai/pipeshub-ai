@@ -250,6 +250,8 @@ export function createSlackAGUIEventHandler(
 ): (event: SlackStreamEvent) => void {
   let textBuffer = "";
   let rawTextReceived = 0;
+  /** A model call was discarded: its late snapshots are skipped until the one marked /discarded. */
+  let awaitingRetryAfterDiscard = false;
   let state: AGUIStreamState = {
     citations: [],
     normalizedAnswer: "",
@@ -424,7 +426,10 @@ export function createSlackAGUIEventHandler(
           {
             ...(typeof data?.resultSummary === "string"
               ? { summary: data.resultSummary }
-              : {}),
+              : // A blocked call's reason comes as its content.
+                status === "blocked" && typeof data?.content === "string"
+                ? { summary: data.content }
+                : {}),
             view: data?.resultView,
           },
         );
@@ -453,6 +458,10 @@ export function createSlackAGUIEventHandler(
             textOps.push(op);
           }
         }
+        // Snapshots of a discarded call can come after its discard; the one marked /discarded ends them.
+        const endsDiscard = textOps.some((op) => op.path === "/discarded");
+        if (awaitingRetryAfterDiscard && !endsDiscard) break;
+        if (endsDiscard) awaitingRetryAfterDiscard = false;
         if (textOps.length > 0) {
           state = applyStatePatch(state, textOps);
           if (textOps.some((op) => op.path === "/citations")) {
@@ -490,6 +499,7 @@ export function createSlackAGUIEventHandler(
             textBuffer = '';
             rawTextReceived = 0;
             state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            awaitingRetryAfterDiscard = true;
             callbacks.onModelCallDiscarded?.();
             emitAnswer();
           }

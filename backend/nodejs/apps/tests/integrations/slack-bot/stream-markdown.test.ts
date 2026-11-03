@@ -46,7 +46,8 @@ describe('slack-bot streamed markdown', () => {
       expect(markers.resolve(marked, new Map([[1, row('q3')]]), false)).to.deep.equal([
         'Revenue grew [[1]](https://x.test/q3). Next part.', '',
       ]);
-      expect(markers.resolve(markers.mark('Late [source](ref8).'), new Map(), true)[0]).to.equal('Late [2].');
+      // A marker whose link never came is left out, so every number shown is in the Sources list.
+      expect(markers.resolve(markers.mark('Late [source](ref8).'), new Map(), true)[0]).to.equal('Late.');
       expect([...markers.sources().keys()]).to.deep.equal([1]);
     });
 

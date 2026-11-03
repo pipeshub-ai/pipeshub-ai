@@ -494,6 +494,9 @@ export function describeAnswerWiring(
         ...call('c6', 'artifacts__get_record_download_url', 'Got record download links',
           'Get Record Download Url — record_id: 8dc0d3d5-4b1e-4c2a-9f3d-2a6b7c8d9e0f', 'failed',
           'Failed: No download link for records from an external connector. Ask an admin to enable downloads.'),
+        ...call('c7', 'fetch_tools', 'Fetch Tools', 'Loading tools for "mcp_tracker"', 'completed', 'Loaded 3 tools'),
+        ...call('c8', 'mcp_tracker_create_ticket', 'Tracker · create_ticket',
+          'Create Ticket — title: "Asana Q3 follow-up", password: "hunter2"', 'blocked'),
         { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: cites }] },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
         ...tokens(answer, 5),
@@ -503,8 +506,8 @@ export function describeAnswerWiring(
       const rendered = renderReplay(client);
       if (process.env.SLACK_REPLAY_OUT) writeFileSync(process.env.SLACK_REPLAY_OUT, `${rendered}\n`);
       const rows = replayRows(client);
-      // No counts anywhere, and no text shown twice.
-      expect(rendered).to.not.match(/\b\d+ (calls?|tools|searches|running|failed)\b/);
+      // No counts in titles, details or lines (a call's own outcome, after "→", is the tool's words), and no text shown twice.
+      expect(rendered.replace(/ → .*/g, '')).to.not.match(/\b\d+ (calls?|tools|searches|running|failed)\b/);
       expect(rendered).to.not.match(/Ran \d|Explored \d|\(continued\)|Arguments:|Result:/);
       expect(rows.every((row) => row.detailSends <= 1)).to.equal(true);
       // Narration reads as a sentence; every tool row has its lines.
@@ -516,7 +519,13 @@ export function describeAnswerWiring(
         ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
         ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
         ['Got record download links', 'Artifacts', 'error'],
+        ['Loaded tools', '', 'complete'],
+        ['Create ticket', 'Tracker', 'error'],
       ]);
+      // Apps and actions in plain words; a call blocked for approval says where to answer.
+      expect(tools[3]!.output).to.equal('✓ Tracker → Loaded 3 tools');
+      expect(tools[4]!.output).to.equal('✗ "Asana Q3 follow-up" → Needs approval in the PipesHub app');
+      expect(rendered).to.not.match(/hunter2|mcp_tracker|create_ticket|\bMCP\b/);
       expect(tools[1]!.output.split('\n')).to.deep.equal([
         '✓ "Asana Q3 fiscal year 2026 third quarter revenue earnings results" → 4 results',
         '✗ "Asana Q3 fiscal 2025 third quarter revenue earnings results" → The search took too long',
@@ -667,10 +676,14 @@ export function describeAnswerWiring(
 
     it('never gives two different citations the same [n] in one reply', async () => {
       const opening = 'The older filing [source](ref9) covers this. '.repeat(40);
+      const older = [{ citationData: { chunkIndex: 1, metadata: { recordId: 'rec-9', recordName: 'Older filing', webUrl: 'https://x.test/older' } } }];
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
         ...tokens(opening, 40),
+        { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: older }] },
+        // The backend clears its live citations before a tool call; a link known by then stays.
+        { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: [] }] },
         { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
         { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
@@ -679,8 +692,34 @@ export function describeAnswerWiring(
       ]);
 
       const text = visibleText(client);
-      expect(text).to.include('The older filing [1] covers this.');
+      expect(text).to.include('The older filing [[1]](https://x.test/older) covers this.');
       expect(text.endsWith('Revenue grew 12% [[2]](https://x.test/q3).')).to.equal(true);
+      const sources = JSON.stringify(apiCalls(client, 'chat.stopStream').slice(-1)[0]?.blocks);
+      expect(sources).to.include('https://x.test/older').and.include('https://x.test/q3');
+    });
+
+    it('skips citation snapshots of a discarded call that come after the discard', async () => {
+      const cite = (url: string) => [{ citationData: { chunkIndex: 1, metadata: { recordId: 'r', recordName: 'Doc', webUrl: url } } }];
+      const delta = (value: unknown[], discarded = false) => ({
+        type: 'STATE_DELTA', runId: 'r1',
+        delta: [{ op: 'replace', path: '/citations', value }, ...(discarded ? [{ op: 'replace', path: '/discarded', value: true }] : [])],
+      });
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('Wrong idea. '.repeat(10)),
+        { type: 'CUSTOM', runId: 'r1', name: 'message_discarded', value: { messageId: 'm1' } },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('Right [source](ref1).'),
+        delta(cite('https://x.test/wrong')),
+        delta([], true),
+        delta(cite('https://x.test/right')),
+        finished('Right [source](ref1).', cite('https://x.test/right')),
+      ]);
+
+      const text = visibleText(client);
+      expect(text).to.include('Right [[1]](https://x.test/right).');
+      expect(JSON.stringify(apiCalls(client, 'chat.appendStream'))).to.not.include('x.test/wrong');
     });
 
     it('keeps line breaks, headings and ordinary links of a multi-paragraph answer streamed in small deltas', async () => {
@@ -724,7 +763,7 @@ export function describeAnswerWiring(
         ['Searched the knowledge base', 'complete', 'Knowledgegraph'],
         ['Read a web page', 'complete', ''],
       ]);
-      expect(rows[0]!.output).to.equal('✓ "Asana SOC 3" → 3 results\n✗ "Asana revenue" → no results');
+      expect(rows[0]!.output).to.equal('✓ "Asana SOC 3" → 3 results\n✗ "Asana revenue" → No results');
       expect(rows[1]!.output).to.equal('✓ Reading https://asana.com/trust → Read “Trust” (asana.com)');
       expect(rows.every((r) => r.detailSends === 1)).to.equal(true);
     });

@@ -4,7 +4,7 @@ import {
   type SlackBlock,
   type TypedSlackClient,
 } from '../helpers';
-import { groupToolsetLabel } from './tool-display';
+import { groupToolsetLabel, humanizeToolName } from './tool-display';
 
 /** Title of the plan block that holds the steps. */
 export const SLACK_PLAN_TITLE = 'Thinking';
@@ -14,8 +14,8 @@ export const MAX_TASK_TITLE_CHARS = 250;
 export const MAX_TASK_DETAILS_CHARS = 256;
 /**
  * Room for one row's per-call breakdown in `output`. Slack publishes no
- * threshold for msg_blocks_too_long, so rows stay small and a longer list
- * continues in a "(continued)" row: no call is dropped or cut in half.
+ * threshold for msg_blocks_too_long, so rows stay small; a row Slack still
+ * refuses is shrunk, never split.
  */
 export const MAX_TASK_OUTPUT_CHARS = 2500;
 const MAX_REASONING_CHARS = 2500;
@@ -353,14 +353,21 @@ export function viewSources(view: unknown): SlackUrlSource[] {
   const seen = new Set<string>();
   for (const { url, text } of found) {
     const link = realLink(url);
-    if (!link || seen.has(link.href)) continue;
+    if (!link) continue;
+    for (const key of [...link.searchParams.keys()]) {
+      if (isSecretKey(key)) link.searchParams.delete(key);
+    }
+    // A token elsewhere in the link (its path, its fragment): the link stays out.
+    if (redactSecrets(link.href) !== link.href || seen.has(link.href)) continue;
     seen.add(link.href);
     const title = typeof text === 'string' ? text.trim() : '';
     sources.push({
       type: 'url',
       url: link.href,
       text: clip(
-        title === '' ? link.hostname.replace(/^www\./, '') : title,
+        title === ''
+          ? link.hostname.replace(/^www\./, '')
+          : redactSecrets(title),
         120,
       ),
     });
@@ -397,8 +404,12 @@ function shortIds(text: string): string {
  * — record_id: 8dc0…" gives "record 8dc0d3d5"). Ids are cut to 8 characters.
  */
 function mainArgument(summary: string, label: string): string {
-  const quoted = /"([^"]+)"/.exec(summary)?.[1];
-  let text = quoted ?? summary;
+  // Redact first: a quoted value cut from its key can no longer be recognised as a secret.
+  const safe = redactSecrets(summary);
+  const quoted = [...safe.matchAll(/"([^"]+)"/g)]
+    .map((match) => match[1] ?? '')
+    .find((value) => value !== '' && !value.includes(REDACTED));
+  let text = quoted ?? safe;
   if (quoted === undefined) {
     const lower = text.toLowerCase();
     const name = label.toLowerCase();
@@ -409,10 +420,70 @@ function mainArgument(summary: string, label: string): string {
     text = text.replace(/^[^—\n]*?\s—\s/, '');
     text = text.replace(/\b([a-z]+)_id:\s*/gi, '$1 ');
   }
-  const shortened = shortIds(redactSecrets(text)).trim();
+  const shortened = shortIds(text).trim();
   if (!shortened) return '';
   const clipped = clip(shortened, MAX_ARGUMENT_CHARS);
   return quoted === undefined ? clipped : `"${clipped}"`;
+}
+
+const BLOCKED_OUTPUT = 'Needs approval in the PipesHub app';
+/** The tools that load an app's tools, by the app's id. */
+const TOOL_LOADERS = new Set(['fetch_tools']);
+/** Titles for the tools that find and load other tools: their names say nothing to a reader. */
+const META_TOOL_TITLES: Record<string, string> = {
+  list_toolsets: 'Listed apps',
+  fetch_tools: 'Loaded tools',
+  search_tools: 'Searched for tools',
+};
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** An identifier as words in sentence case: "create_ticket" gives "Create ticket". */
+function sentenceCase(name: string): string {
+  return capitalize(
+    name
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .split(/[_\-\s]+/)
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase(),
+  );
+}
+
+/** An app's id as its name: "mcp_tracker" gives "Tracker". */
+function appName(id: string): string {
+  return id
+    .replace(/^mcp_/, '')
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map(capitalize)
+    .join(' ');
+}
+
+/**
+ * A row's title, a plain action, and the app it acts in. A server's
+ * "Tracker · create_ticket" gives "Create ticket" in "Tracker"; a name with
+ * no display name is put in words.
+ */
+export function rowLabel(
+  toolName: string,
+  label: string,
+): { title: string; app?: string } {
+  const meta = META_TOOL_TITLES[toolName.replace(/^dynamic__/, '')];
+  if (meta !== undefined) return { title: meta };
+  const at = label.indexOf(' · ');
+  if (at > 0) {
+    const action = label.slice(at + 3).trim();
+    return {
+      title: /^[\w.-]+$/.test(action) ? sentenceCase(action) : action,
+      app: label.slice(0, at).trim(),
+    };
+  }
+  return /^[\w.-]+$/.test(label) || label === humanizeToolName(toolName)
+    ? { title: sentenceCase(label) }
+    : { title: label };
 }
 
 /** The first sentence (or line) of a result. */
@@ -429,10 +500,9 @@ function firstSentence(text: string): string {
 /**
  * Turns agent activity into rows of Slack's plan the way the dashboard's
  * thinking trail shows it: the agent's text as rows of its own, tool calls
- * with no text between them in one row ("Explored 3 searches", "Ran 2
- * tools"), each sub-agent in a row with its own calls, and reasoning in a row
- * of its own. A row's details is a one-line summary; its output lists every
- * call with the server's Arguments and Result summaries.
+ * of one kind with no text between them in one row titled by what they did,
+ * each sub-agent in a row with its own calls, and reasoning in a row of its
+ * own. A row's details names the app; its output has one line per call.
  */
 export class SlackTaskPlan {
   private readonly tasks = new Map<string, SlackTaskChunk>();
@@ -467,7 +537,7 @@ export class SlackTaskPlan {
   /** What the agent wrote before a step, as its own rows in the plan, in full. */
   narration(text: string): SlackTaskChunk[] {
     this.endGroup();
-    return splitIntoRows(text).map((title) =>
+    return splitIntoRows(redactSecrets(text)).map((title) =>
       this.put({
         type: 'task_update',
         id: `note-${String(++this.seq)}`,
@@ -497,7 +567,10 @@ export class SlackTaskPlan {
 
   /** Finished reasoning as its own row, before the next step or the answer. */
   flushReasoning(): SlackTaskChunk | null {
-    const text = clip(this.finishedReasoning, MAX_REASONING_CHARS);
+    const text = clip(
+      redactSecrets(this.finishedReasoning),
+      MAX_REASONING_CHARS,
+    );
     this.finishedReasoning = '';
     if (!text) return null;
     this.endGroup();
@@ -678,6 +751,12 @@ export class SlackTaskPlan {
     return rows;
   }
 
+  /** A tool or sub-agent row that hasn't sent its details and output yet. */
+  isOpen(id: string): boolean {
+    const group = this.groups.get(id);
+    return group !== undefined && group.sealed !== true;
+  }
+
   /** A row's latest state, to show it again in a replaced message. */
   current(id: string): SlackTaskChunk | undefined {
     return this.tasks.get(id);
@@ -707,28 +786,35 @@ export class SlackTaskPlan {
         : failed
           ? '✗'
           : '✓';
-    const argument = mainArgument(
+    let argument = mainArgument(
       call.args ?? (call.raw ? compactArgs(call.raw) : ''),
       call.label,
     );
+    // Loading an app's tools names the app, not its internal id ("mcp_tracker").
+    if (TOOL_LOADERS.has(call.toolName) && /^"[\w.-]+"$/.test(argument)) {
+      argument = appName(argument.slice(1, -1));
+    }
     const reason = firstSentence(call.result ?? '').replace(/^Failed:\s*/i, '');
-    const outcome =
+    const outcome = capitalize(
       call.status === 'awaiting_approval'
         ? APPROVAL_OUTPUT
         : call.status === 'blocked'
-          ? `blocked${reason ? `: ${reason}` : ''}`
+          ? reason !== ''
+            ? reason
+            : BLOCKED_OUTPUT
           : call.status === 'running'
             ? (call.progress ?? '')
             : failed && !reason
-              ? 'failed'
-              : reason;
+              ? 'Failed'
+              : reason,
+    );
     const chip = call.approvalAnswer
       ? APPROVAL_CHIPS[call.approvalAnswer]
       : undefined;
     // With nothing else to say, a line names its call rather than showing a bare mark.
     const what =
       [ownLabel, argument].filter(Boolean).join(': ') ||
-      (outcome ? '' : call.label);
+      (outcome !== '' ? '' : rowLabel(call.toolName, call.label).title);
     const shown = outcome
       ? `${what ? ' → ' : ''}${clip(shortIds(redactSecrets(outcome)), MAX_OUTCOME_CHARS)}`
       : '';
@@ -745,12 +831,16 @@ export class SlackTaskPlan {
     const entry = this.groups.get(group);
     if (!entry) return [];
     const { calls, agent } = entry;
+    const last = calls[calls.length - 1];
+    const label = last ? rowLabel(last.toolName, last.label) : undefined;
+    // The app the calls belong to; "MCP" names no app, so it isn't shown.
+    const toolset = groupToolsetLabel(calls.map((call) => call.toolName));
     const tag = agent
       ? undefined
-      : groupToolsetLabel(calls.map((call) => call.toolName));
-    // What was done, in the tool's own words: one kind of call per row.
+      : (label?.app ?? (toolset === 'MCP' ? undefined : toolset));
+    // What was done, as a plain action: one kind of call per row.
     const title = clip(
-      agent ? agent.role : (calls[calls.length - 1]?.label ?? ''),
+      agent ? agent.role : (label?.title ?? ''),
       MAX_TASK_TITLE_CHARS,
     );
 
@@ -792,7 +882,10 @@ export class SlackTaskPlan {
 
     // A sub-agent's calls can be of several kinds, so each line names its tool.
     const lines = calls.map((call) =>
-      this.callLine(call, agent ? call.label : undefined),
+      this.callLine(
+        call,
+        agent ? rowLabel(call.toolName, call.label).title : undefined,
+      ),
     );
     const shownLines =
       lines.length > MAX_OUTPUT_LINES
@@ -821,7 +914,14 @@ export class SlackTaskPlan {
   }
 
   private put(task: SlackTaskChunk): SlackTaskChunk {
-    this.tasks.set(task.id, task);
+    // A later title or status update keeps what the row showed, for a replay in a new message.
+    const { details, output, sources } = this.tasks.get(task.id) ?? {};
+    this.tasks.set(task.id, {
+      ...(details !== undefined ? { details } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(sources !== undefined ? { sources } : {}),
+      ...task,
+    });
     return task;
   }
 }
@@ -852,6 +952,8 @@ export class SlackPlanStream {
   private taskIds = new Set<string>();
   /** Rows of this message whose details, output and sources were sent: Slack adds a resent value to the shown one. */
   private detailed = new Set<string>();
+  /** Rows still open when their message ended: they go on in the next message, sealed there once. */
+  private moving: string[] = [];
   /** Each message's text and steps in order (steps by id), to show them again if part is taken back. */
   private logs: ({ text: string } | { task: string })[][] = [];
   private afterTask = false;
@@ -867,9 +969,14 @@ export class SlackPlanStream {
   ) {}
 
   async tasks(all: SlackTaskChunk[]): Promise<void> {
-    // A row shown in an earlier message stays there: sent here it would show again.
+    // A row settled in an earlier message stays there: sent here it would show again.
     const earlier = this.rowsOfEarlierMessages();
-    const chunks = all.filter((chunk) => !earlier.has(chunk.id));
+    const chunks = all.filter(
+      (chunk) =>
+        !earlier.has(chunk.id) ||
+        this.taskIds.has(chunk.id) ||
+        this.moving.includes(chunk.id),
+    );
     if (this.unavailable || this.stopped || chunks.length === 0) return;
     if (!this.ts) {
       await this.openWith(chunks);
@@ -910,13 +1017,16 @@ export class SlackPlanStream {
             }
           : chunk;
       }
-      const keep = Math.max(1, Math.floor(lines.length / 2));
+      // A row already summing up its last calls counts them in the new sum.
+      const summed = /^\+(\d+) more$/.exec(lines[lines.length - 1] ?? '');
+      const callLines = summed ? lines.slice(0, -1) : lines;
+      const keep = Math.max(1, Math.floor(callLines.length / 2));
+      const more = callLines.length - keep + Number(summed?.[1] ?? 0);
       return {
         ...chunk,
-        output: [
-          ...lines.slice(0, keep),
-          `+${String(lines.length - keep)} more`,
-        ].join('\n'),
+        output: [...callLines.slice(0, keep), `+${String(more)} more`].join(
+          '\n',
+        ),
       };
     });
     for (const attempt of [
@@ -1130,7 +1240,20 @@ export class SlackPlanStream {
   }
 
   /** Opens a message in plan mode. False (and unavailable) when Slack refuses the first one. */
-  private async openWith(chunks: SlackStreamChunk[]): Promise<boolean> {
+  private async openWith(fresh: SlackStreamChunk[]): Promise<boolean> {
+    const carried = this.moving
+      .filter(
+        (id) =>
+          !fresh.some(
+            (chunk) => chunk.type === 'task_update' && chunk.id === id,
+          ),
+      )
+      .flatMap((id) => {
+        const task = this.plan.current(id);
+        return task ? [task] : [];
+      });
+    this.moving = [];
+    const chunks = [...carried, ...fresh];
     const reopenFence = openFence(this.text);
     // The reply's first message titles its plan once it has a step.
     const titled: SlackStreamChunk[] =
@@ -1242,19 +1365,35 @@ export class SlackPlanStream {
     });
   }
 
-  /** The current message expired: keep it, and continue in a new one. */
+  /** The current message ended: keep it, and continue in a new one with its open rows. */
   private retire(): void {
+    this.moving = this.openRows();
     if (this.ts) this.earlier.push(this.ts);
     this.ts = null;
+  }
+
+  /** Rows of this message whose details and output haven't gone out yet. */
+  private openRows(): string[] {
+    return [...this.taskIds].filter((id) => this.plan.isOpen(id));
   }
 
   private async rollover(): Promise<void> {
     if (this.ts) {
       // A code fence left open would swallow the rest of this message's text.
       const fence = openFence(this.text);
-      const close: SlackStreamChunk[] = fence
-        ? [{ type: 'markdown_text', text: `\n${fence.marker}\n` }]
-        : [];
+      // A row that goes on in the next message ends here by title alone, not spinning.
+      const settled: SlackStreamChunk[] = this.openRows().flatMap((id) => {
+        const task = this.plan.current(id);
+        return task
+          ? [{ type: 'task_update', id, title: task.title, status: 'complete' }]
+          : [];
+      });
+      const close: SlackStreamChunk[] = [
+        ...settled,
+        ...(fence
+          ? [{ type: 'markdown_text' as const, text: `\n${fence.marker}\n` }]
+          : []),
+      ];
       try {
         await this.client.apiCall('chat.stopStream', {
           channel: this.channel,
