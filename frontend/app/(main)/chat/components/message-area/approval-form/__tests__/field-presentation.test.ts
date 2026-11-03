@@ -36,6 +36,15 @@ describe('isTechnical', () => {
     expect(isTechnical(field('site'), 'c7f37664-a798-44ef-a525-ecacfeb1087d')).toBe(true);
   });
 
+  it('is a format switch whose value names a format: contentFormat markdown, responseContentFormat adf', () => {
+    expect(isTechnical(field('contentFormat'), 'markdown')).toBe(true);
+    expect(isTechnical(field('responseContentFormat'), 'adf')).toBe(true);
+    expect(isTechnical(field('body_format'), 'HTML')).toBe(true);
+    // A format the person picks for what they get, not a wire setting, stays in view.
+    expect(isTechnical(field('imageFormat'), 'png')).toBe(false);
+    expect(isTechnical(field('format'), 'Quarterly report')).toBe(false);
+  });
+
   it('is not a field whose name only ends in the letters', () => {
     expect(isTechnical(field('paid', { type: 'boolean' }), true)).toBe(false);
     expect(isTechnical(field('summary'), 'Fix login')).toBe(false);
@@ -77,6 +86,34 @@ describe('documentLayout with values', () => {
     expect(l.body.map((f) => f.name)).toEqual(['description']);
     expect(l.pills.map((f) => f.label)).toEqual(['Project', 'Issue type']);
     expect(l.more.map((f) => f.label)).toEqual(['Cloud ID']);
+  });
+});
+
+describe('documentLayout of the Jira call as the model sent it', () => {
+  const schema = {
+    type: 'object',
+    required: ['cloudId', 'projectKey', 'issueTypeName', 'summary'],
+    properties: {
+      cloudId: { type: 'string' }, projectKey: { type: 'string' }, issueTypeName: { type: 'string' }, summary: { type: 'string' },
+      description: { type: 'string' }, parent: { type: 'string' }, assigneeAccountId: { type: 'string' },
+      contentFormat: { type: 'string', enum: ['markdown', 'adf'] }, responseContentFormat: { type: 'string', enum: ['markdown', 'adf'] },
+    },
+  };
+  const values = {
+    cloudId: 'c7f37664-a798-44ef-a525-ecacfeb1087d', projectKey: 'PP', issueTypeName: 'Task', summary: 'Test Slack automation and tool approvals',
+    description: 'Test Slack automation workflows.', contentFormat: 'markdown', responseContentFormat: 'markdown',
+  };
+  it('keeps the summary, Project, Issue type and the description in view; ids, format switches and unset optional fields fold away', () => {
+    const l = documentLayout(schemaFields(schema, values), values);
+    expect(l.headline?.name).toBe('summary');
+    expect(l.pills.map((f) => f.label)).toEqual(['Project', 'Issue type']);
+    expect(l.body.map((f) => f.name)).toEqual(['description']);
+    expect(l.more.map((f) => f.name)).toEqual(['cloudId', 'parent', 'assigneeAccountId', 'contentFormat', 'responseContentFormat']);
+  });
+
+  it('keeps a required field in view when it is empty, so it can be filled', () => {
+    const l = documentLayout(schemaFields(schema, { ...values, projectKey: '' }), { ...values, projectKey: '' });
+    expect(l.pills.map((f) => f.name)).toContain('projectKey');
   });
 });
 

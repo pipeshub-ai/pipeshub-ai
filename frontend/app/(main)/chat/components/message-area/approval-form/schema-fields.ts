@@ -107,9 +107,16 @@ export function fieldLabel(name: string, title?: string | null): string {
 const ID_WORD = new Set(['id', 'ids', 'uuid', 'guid']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** An id the person doesn't judge the call by (`cloudId`, a uuid): shown under Details, never dropped. */
+// What a format switch (`contentFormat`, `responseContentFormat`) is set to: how the call is sent, not what it does.
+const WIRE_FORMAT = new Set(['markdown', 'md', 'adf', 'html', 'json', 'text', 'plain', 'plaintext', 'xml', 'yaml', 'wiki', 'storage', 'rich_text', 'richtext']);
+
+/** A machine setting the person doesn't judge the call by: an id (`cloudId`, a uuid) or a format
+ * switch set to a format name. Shown under Details or More fields, never dropped. */
 export function isTechnical(field: FieldSpec, value: unknown): boolean {
-  return ID_WORD.has(lastWord(field.name)) || field.schema.format === 'uuid' || (typeof value === 'string' && UUID.test(value.trim()));
+  const word = lastWord(field.name);
+  if (ID_WORD.has(word) || field.schema.format === 'uuid') return true;
+  if (typeof value !== 'string') return false;
+  return UUID.test(value.trim()) || (word === 'format' && WIRE_FORMAT.has(value.trim().toLowerCase()));
 }
 
 // The type a value has, for an argument the schema doesn't describe.
