@@ -242,7 +242,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const f = await rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 1000, failAt: 'freeze' });
         expect(f.stage).to.equal('freeze');
       } finally {
-        delete process.env.MIGRATE_TEST_HOOKS;
+        process.env.MIGRATE_TEST_HOOKS = '1'; // the suite runs with the hooks on
       }
       expect(await running(), 'the job this call started is finished').to.deep.equal([]);
       expect((await sql("SELECT status FROM platform.jobs ORDER BY id DESC LIMIT 1"))[0].status).to.equal('failed');
@@ -256,6 +256,83 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(r.stage).to.equal('budget');
       expect(r.message).to.contain('read-only again').and.not.to.contain('writable');
       expect(await storeEpoch()).to.include({ readonly: true });
+    });
+
+    const withHooks = async <T>(f: () => Promise<T>): Promise<T> => {
+      process.env.MIGRATE_TEST_HOOKS = '1';
+      try {
+        return await f();
+      } finally {
+        process.env.MIGRATE_TEST_HOOKS = '1'; // the suite runs with the hooks on
+      }
+    };
+    const quiet = { reverse: false, allowWriters: false, log: () => undefined };
+
+    it('offline: a fence that was applied and then failed keeps PostgreSQL read-only and says where things stand', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const r = await withHooks(() => rollback(w.rt, { ...quiet, failAt: 'fence-applied' }));
+      expect(r.ok).to.equal(false);
+      expect(r.message).to.contain("fence reads 'active'").and.to.contain('stays read-only');
+      expect(await fence()).to.equal('active');
+      expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: true });
+    });
+
+    it('offline: a fence that was not applied is read back as retired and PostgreSQL is reopened', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      let msg = '';
+      await withHooks(() => rollback(w.rt, { ...quiet, failAt: 'fence-not-applied' })).catch((e: Error) => (msg = e.message));
+      expect(msg).to.contain('the fence was not applied');
+      expect(await fence()).to.equal('retired');
+      expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: false });
+    });
+
+    it('a freeze whose commit answer is lost is read back: applied is carried on, unknown reopens nothing, a retry never opens it', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      await sql('DELETE FROM conversation.chat_sessions WHERE id = (SELECT id FROM conversation.chat_sessions ORDER BY id LIMIT 1)');
+      const a = await withHooks(() => rollback(w.rt, { ...quiet, failAt: 'freeze-commit' }));
+      expect(a.mode, 'the freeze was read back as applied and the rollback went on').to.equal('refused');
+      expect(a.message).to.contain('differs from MongoDB');
+      expect(await storeEpoch(), 'and put back to what it was').to.include({ readonly: false });
+      const u = await withHooks(() => rollback(w.rt, { ...quiet, failAt: 'freeze-unknown' }));
+      expect(u.message).to.contain('unknown').and.to.contain('platform.store_epoch.readonly');
+      expect(await storeEpoch(), 'it may be frozen: nothing reopened it').to.include({ readonly: true });
+      const retry = await rollback(w.rt, quiet);
+      expect(retry.mode).to.equal('refused');
+      expect(await storeEpoch(), 'a retry does not take readonly = true for the value from before').to.include({ readonly: true });
+    });
+
+    it('two rollbacks at once: one hands over, the other is refused, and the epoch moves once', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const before = Number((await storeEpoch()).epoch);
+      const both = await Promise.all([rollback(w.rt, quiet), rollback(w.rt, quiet)]);
+      expect(both.filter((x) => x.ok)).to.have.length(1);
+      expect(both.filter((x) => !x.ok)[0]?.mode).to.equal('refused');
+      expect(Number((await storeEpoch()).epoch)).to.equal(before + 1);
+    });
+
+    it('online: a fence applied and then an error, or unreadable, keeps PostgreSQL read-only and reports the state', async () => {
+      expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+      expect((await cut()).out.ok).to.equal(true);
+      const a = await withHooks(() => rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 600000, failAt: 'fence-applied' }));
+      expect(a.stage).to.equal('finalize');
+      expect(a.message).to.contain("fence reads 'active'");
+      expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: true });
+      // the operator's repair: retired again, PostgreSQL reopened; then the fence cannot be read back
+      await w.mongo.client.db(DB).collection<any>('docstore_fence').updateOne({ _id: 'fence' }, { $set: { mode: 'retired' } });
+      await sql('UPDATE platform.store_epoch SET readonly = false');
+      const u = await withHooks(() => rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 600000, failAt: 'fence-unknown' }));
+      expect(u.stage).to.equal('finalize');
+      expect(u.message).to.contain('could not be read back').and.to.contain('stays read-only');
+      expect(await storeEpoch()).to.include({ readonly: true });
+    });
+
+    it('online: a freeze budget spent by the verify is caught before MongoDB is made live', async () => {
+      expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+      expect((await cut()).out.ok).to.equal(true);
+      const r = await withHooks(() => rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 600000, failAt: 'over-after-verify' }));
+      expect(r.stage).to.equal('budget');
+      expect(await fence()).to.equal('retired');
+      expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: false });
     });
 
     it('an offline rollback holds PostgreSQL read-only while it compares and copies, and hands it over closed', async () => {
@@ -350,7 +427,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(f.message).to.contain('MongoDB is NOT made live');
         expect(await storeEpoch()).to.include({ readonly: true });
       } finally {
-        delete process.env.MIGRATE_TEST_HOOKS;
+        process.env.MIGRATE_TEST_HOOKS = '1'; // the suite runs with the hooks on
       }
     });
 

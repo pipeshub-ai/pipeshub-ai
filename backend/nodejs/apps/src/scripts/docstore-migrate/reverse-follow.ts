@@ -26,8 +26,16 @@ import { idFilter } from './mongo-read';
 import { SPECIAL, reverseSpecial } from './reverse-special';
 import type { MigrationRuntime } from './runtime';
 import { JobState } from './state';
-import { readMongoFence, setMongoFence } from './fence';
-import { freezePostgres, notPostgresStore, releasePostgres } from './reverse';
+import { readMongoFence } from './fence';
+import {
+  BUSY,
+  freezePostgres,
+  freezeUnknown,
+  handOver,
+  notPostgresStore,
+  releasePostgres,
+  whileExclusive,
+} from './reverse';
 import { VerifyReport, verifyAll } from './verify';
 
 const ROOT = new Map<string, CollectionMapping>();
@@ -306,15 +314,29 @@ export async function rollbackOnline(
   rt: MigrationRuntime,
   o: { log: Log; sample?: number; maxFreezeMs: number; failAt?: string },
 ): Promise<OnlineRollbackReport> {
+  return whileExclusive<OnlineRollbackReport>(
+    rt,
+    () => ({ ok: false, stage: 'busy', message: BUSY }),
+    () => rollbackOnlineLocked(rt, o),
+  );
+}
+
+async function rollbackOnlineLocked(
+  rt: MigrationRuntime,
+  o: { log: Log; sample?: number; maxFreezeMs: number; failAt?: string },
+): Promise<OnlineRollbackReport> {
   const t0 = Date.now();
   let previous = false;
-  const unfreezePg = (): Promise<string> =>
-    releasePostgres(rt, previous, o.failAt);
+  const state = { released: false };
+  const unfreezePg = (): Promise<string> => {
+    state.released = true;
+    return releasePostgres(rt, previous, o.failAt);
+  };
   // what is true of PostgreSQL after the release: the value the freeze found is back, not always "writable"
   const restored = (note: string): string =>
     note ||
     (previous
-      ? 'PostgreSQL is read-only again, as it was before, and remains the store.'
+      ? "PostgreSQL is read-only again, as it was when this rollback started, and remains the store (if an earlier attempt froze it, reopen it with `UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'`)."
       : 'PostgreSQL is writable again and remains the store.');
   const notStore = await notPostgresStore(rt);
   if (notStore) return { ok: false, stage: 'fence', message: notStore };
@@ -326,22 +348,27 @@ export async function rollbackOnline(
       message: `the MongoDB fence is '${fenceBefore.mode}': it was not retired by a move to PostgreSQL`,
     };
   // a refusal above starts no job; a job this call started is finished if the freeze fails, so the next run starts fresh
-  const started = !(await JobState.current(rt));
-  const js = await JobState.attach(rt);
-  try {
-    if (o.failAt === 'freeze' && process.env.MIGRATE_TEST_HOOKS === '1')
-      throw new Error('injected failure of the freeze');
-    previous = await freezePostgres(rt);
-  } catch (e) {
-    if (started) await js.finish('failed').catch(() => undefined);
+  const { js, created } = await JobState.attachOrStart(rt);
+  const frozen = await freezePostgres(rt, o.failAt);
+  if (frozen.outcome !== 'applied') {
+    if (frozen.outcome === 'not_applied') {
+      if (created) await js.finish('failed').catch(() => undefined);
+      return {
+        ok: false,
+        stage: 'freeze',
+        message: `PostgreSQL could not be frozen: ${frozen.why}. Nothing was changed`,
+      };
+    }
     return {
       ok: false,
       stage: 'freeze',
-      message: `PostgreSQL could not be frozen: ${e instanceof Error ? e.message : String(e)}. Nothing was changed`,
+      message: freezeUnknown(frozen.why),
     };
   }
-  // how far the hand-over got decides what a failure may do: once MongoDB is writable again PostgreSQL stays read-only and is never unfrozen
-  let stage: 'before' | 'mongo_live' | 'epoch_done' = 'before';
+  previous = frozen.previous;
+  const overBudget = (): boolean => Date.now() - t0 > o.maxFreezeMs;
+  // how far the hand-over got decides what a failure may do: once MongoDB may be live again PostgreSQL stays read-only and is never unfrozen
+  let stage: 'before' | 'handed' = 'before';
   try {
     const r = await reverseFollow(rt, js, {
       log: o.log,
@@ -366,14 +393,15 @@ export async function rollbackOnline(
           ),
         );
     }
-    if (Date.now() - t0 > o.maxFreezeMs) {
+    const budget = async (): Promise<OnlineRollbackReport> => {
       const note = await unfreezePg();
       return {
         ok: false,
         stage: 'budget',
         message: `the freeze budget was used up; ${restored(note)}`,
       };
-    }
+    };
+    if (overBudget()) return await budget();
     const v = await verifyAll(rt, {
       log: o.log,
       afterReverse: true,
@@ -389,25 +417,40 @@ export async function rollbackOnline(
         message: `the reverse copy does not verify; ${restored(note)}`,
       };
     }
-    await setMongoFence(rt, 'active', fenceBefore.epoch + 1);
-    stage = 'mongo_live';
-    if (o.failAt === 'finalize-epoch')
-      throw new Error('injected failure before the store row');
-    const up = await rt.migratePool.query(
-      "UPDATE platform.store_epoch SET backend = 'mongo', epoch = epoch + 1, readonly = true, updated_at = now()",
-    );
-    if (up.rowCount !== 1)
-      throw new Error(
-        `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
-      );
-    stage = 'epoch_done';
-    if (o.failAt === 'finalize-checkpoint')
-      throw new Error('injected failure after the store row');
+    // MongoDB is not live yet, so a budget spent by the verify can still be undone
+    if (
+      overBudget() ||
+      (o.failAt === 'over-after-verify' &&
+        process.env.MIGRATE_TEST_HOOKS === '1')
+    )
+      return await budget();
+    stage = 'handed';
+    const h = await handOver(rt, fenceBefore.epoch + 1, o.failAt);
+    if (h.kind === 'stuck')
+      return { ok: false, stage: 'finalize', message: h.message };
+    if (h.kind === 'not_live') {
+      stage = 'before';
+      throw new Error(h.why);
+    }
     // the move is over: end the job (the import login's exemption closes with it) and leave no markers behind
-    js.progress.phase = 'rolled_back';
-    await js.checkpoint();
-    await js.finish('done');
-    await clearMarkers(rt);
+    try {
+      if (
+        o.failAt === 'finalize-checkpoint' &&
+        process.env.MIGRATE_TEST_HOOKS === '1'
+      )
+        throw new Error('injected failure after the store row');
+      js.progress.phase = 'rolled_back';
+      await js.checkpoint();
+      await js.finish('done');
+      await clearMarkers(rt);
+    } catch (e) {
+      return {
+        ok: true,
+        stage: 'done',
+        freezeMs: Date.now() - t0,
+        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${e instanceof Error ? e.message : String(e)}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now`,
+      };
+    }
     return {
       ok: true,
       stage: 'done',
@@ -419,20 +462,13 @@ export async function rollbackOnline(
     };
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    if (stage === 'mongo_live')
+    if (stage === 'handed')
       return {
         ok: false,
         stage: 'finalize',
-        message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${why}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo`,
+        message: `the hand-over failed (${why}). PostgreSQL stays read-only and was not unfrozen: read platform.store_epoch and the MongoDB fence before any manual write`,
       };
-    if (stage === 'epoch_done')
-      return {
-        ok: true,
-        stage: 'done',
-        freezeMs: Date.now() - t0,
-        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${why}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now`,
-      };
-    const note = await unfreezePg();
+    const note = state.released ? '' : await unfreezePg();
     return {
       ok: false,
       stage: 'error',

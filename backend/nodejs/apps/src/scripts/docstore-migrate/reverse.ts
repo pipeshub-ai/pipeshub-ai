@@ -28,6 +28,7 @@ import {
   readMongoFence,
   setMongoFence,
 } from './fence';
+import { storeEpochOnFreshConnection } from './online';
 import { JobState } from './state';
 import { VerifyReport, verifyAll } from './verify';
 
@@ -216,29 +217,70 @@ export async function reverseCopy(
   }
   return { reversed, notReversed };
 }
+const hookOn = (failAt: string | undefined, name: string): boolean =>
+  failAt === name && process.env.MIGRATE_TEST_HOOKS === '1';
+const errText = (e: unknown): string =>
+  e instanceof Error ? e.message : String(e);
+
+/**
+ * What a freeze did. `unknown`: the commit failed and the row could not be read back, so PostgreSQL may or may not be read-only; nothing
+ * may be written back to `readonly` until an operator has read it.
+ */
+export type Freeze =
+  | { outcome: 'applied'; previous: boolean }
+  | { outcome: 'not_applied'; why: string }
+  | { outcome: 'unknown'; why: string };
+
 /** PostgreSQL read-only: the barrier lock (waits for every writer in flight, later ones are refused) and `readonly` in one transaction. */
-export async function freezePostgres(rt: MigrationRuntime): Promise<boolean> {
+export async function freezePostgres(
+  rt: MigrationRuntime,
+  failAt?: string,
+): Promise<Freeze> {
+  let before: boolean;
+  try {
+    if (hookOn(failAt, 'freeze'))
+      throw new Error('injected failure of the freeze');
+    before =
+      (
+        await rt.migratePool.query<{ readonly: boolean }>(
+          'SELECT readonly FROM platform.store_epoch',
+        )
+      ).rows[0]?.readonly ?? false;
+  } catch (e) {
+    return { outcome: 'not_applied', why: errText(e) };
+  }
   const c = await rt.migratePool.connect();
   try {
     await c.query('BEGIN');
     await c.query("SET LOCAL lock_timeout = '20s'");
     await c.query('SELECT pg_advisory_xact_lock(7340, 1)');
-    // read under the lock, so it is the value the writers saw
-    const prev = await c.query<{ readonly: boolean }>(
-      'SELECT readonly FROM platform.store_epoch',
-    );
     await c.query(
       'UPDATE platform.store_epoch SET readonly = true, updated_at = now()',
     );
     await c.query('COMMIT');
-    return prev.rows[0]?.readonly ?? false;
+    if (hookOn(failAt, 'freeze-commit') || hookOn(failAt, 'freeze-unknown'))
+      throw new Error('injected: the freeze committed, then an error');
+    return { outcome: 'applied', previous: before };
   } catch (e) {
     await c.query('ROLLBACK').catch(() => undefined);
-    throw e;
+    // the commit may have reached the server before the error reached us: the row is read on a connection of its own
+    const now = await storeEpochOnFreshConnection(
+      rt,
+      hookOn(failAt, 'freeze-unknown'),
+    ).catch(() => null);
+    if (now === null) return { outcome: 'unknown', why: errText(e) };
+    // read-only before: the freeze changes nothing, so the value to restore is the same either way
+    return now.readonly
+      ? { outcome: 'applied', previous: before }
+      : { outcome: 'not_applied', why: errText(e) };
   } finally {
     c.release();
   }
 }
+
+/** The report text for a freeze that may have happened: nothing is reopened and the operator reads the row first. */
+export const freezeUnknown = (why: string): string =>
+  `whether PostgreSQL was frozen is unknown (${why}): platform.store_epoch.readonly could not be read back. Read it before any manual write; nothing else was changed and nothing was reopened`;
 
 /** Puts `readonly` back to what the freeze found, only while PostgreSQL is still the store. False: no row was updated. */
 export async function unfreezePostgres(
@@ -259,7 +301,7 @@ export async function releasePostgres(
   failAt?: string,
 ): Promise<string> {
   try {
-    if (failAt === 'unfreeze' && process.env.MIGRATE_TEST_HOOKS === '1')
+    if (hookOn(failAt, 'unfreeze'))
       throw new Error('injected failure of the unfreeze');
     if (await unfreezePostgres(rt, previous)) return '';
   } catch {
@@ -282,7 +324,104 @@ export async function notPostgresStore(
     : `the store is '${String(b)}', not PostgreSQL: there is nothing to roll back`;
 }
 
+/** One rollback at a time (a session lock on its own connection): two would hand the stores over twice or reopen what the other froze. */
+export async function whileExclusive<T>(
+  rt: MigrationRuntime,
+  busy: () => T,
+  run: () => Promise<T>,
+): Promise<T> {
+  const c = await rt.migratePool.connect();
+  try {
+    const got = (
+      await c.query<{ ok: boolean }>(
+        'SELECT pg_try_advisory_lock(7340, 2) AS ok',
+      )
+    ).rows[0]?.ok;
+    if (!got) return busy();
+    try {
+      return await run();
+    } finally {
+      await c
+        .query('SELECT pg_advisory_unlock(7340, 2)')
+        .catch(() => undefined);
+    }
+  } finally {
+    c.release();
+  }
+}
+export const BUSY =
+  'another rollback is running against this store: wait for it to finish';
+
+export type HandOver =
+  | { kind: 'done' }
+  | { kind: 'not_live'; why: string }
+  | { kind: 'stuck'; message: string };
+
+/**
+ * MongoDB live first, then the store row, each read back when its answer is lost. `not_live`: MongoDB is confirmed still retired, so the
+ * caller may reopen PostgreSQL. `stuck`: MongoDB is (or may be) live; PostgreSQL stays read-only and the message says where things stand.
+ */
+export async function handOver(
+  rt: MigrationRuntime,
+  epoch: number,
+  failAt?: string,
+): Promise<HandOver> {
+  try {
+    if (hookOn(failAt, 'fence-not-applied'))
+      throw new Error('injected: the fence was not applied');
+    await setMongoFence(rt, 'active', epoch);
+    if (hookOn(failAt, 'fence-applied') || hookOn(failAt, 'fence-unknown'))
+      throw new Error('injected: the fence was applied, then an error');
+  } catch (e) {
+    const why = errText(e);
+    const now = await (async () => {
+      if (hookOn(failAt, 'fence-unknown')) return null;
+      return readMongoFence(rt).catch(() => null);
+    })();
+    if (now?.mode === 'retired' && now.epoch === epoch - 1)
+      return { kind: 'not_live', why };
+    const seen = now
+      ? `the fence reads '${now.mode}' at epoch ${String(now.epoch)}`
+      : 'the fence could not be read back';
+    return {
+      kind: 'stuck',
+      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store`,
+    };
+  }
+  try {
+    if (hookOn(failAt, 'finalize-epoch'))
+      throw new Error('injected failure before the store row');
+    const up = await rt.migratePool.query(
+      "UPDATE platform.store_epoch SET backend = 'mongo', epoch = epoch + 1, readonly = true, updated_at = now()",
+    );
+    if (up.rowCount !== 1)
+      throw new Error(
+        `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
+      );
+  } catch (e) {
+    // it may have committed before the error reached us
+    const row = await storeEpochOnFreshConnection(rt, false).catch(() => null);
+    if (row?.backend === 'mongo') return { kind: 'done' };
+    return {
+      kind: 'stuck',
+      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo`,
+    };
+  }
+  return { kind: 'done' };
+}
+
 export async function rollback(
+  rt: MigrationRuntime,
+  o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
+): Promise<RollbackReport> {
+  return whileExclusive<RollbackReport>(
+    rt,
+    () => ({ ok: false, mode: 'refused', message: BUSY }),
+    () => rollbackLocked(rt, o),
+  );
+}
+
+async function rollbackLocked(
   rt: MigrationRuntime,
   o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
 ): Promise<RollbackReport> {
@@ -300,33 +439,38 @@ export async function rollback(
   const fence = await readMongoFence(rt);
   // an application on PostgreSQL could still write while the copy is compared and copied back, and those writes would be lost: PostgreSQL
   // is read-only from here until MongoDB is made the store (or the rollback ends without it)
-  let previous: boolean;
-  try {
-    previous = await freezePostgres(rt);
-  } catch (e) {
+  const frozen = await freezePostgres(rt, o.failAt);
+  if (frozen.outcome === 'not_applied')
     return {
       ok: false,
       mode: 'refused',
-      message: `PostgreSQL could not be frozen: ${e instanceof Error ? e.message : String(e)}. Nothing was changed`,
+      message: `PostgreSQL could not be frozen: ${frozen.why}. Nothing was changed`,
     };
-  }
-  const state = { handed: false };
-  // MongoDB live first, then the store row: a failure between them leaves MongoDB writable and PostgreSQL read-only, never both writable
-  const handOver = async (): Promise<void> => {
-    await setMongoFence(rt, 'active', fence.epoch + 1);
-    state.handed = true;
-    const up = await rt.migratePool.query(
-      "UPDATE platform.store_epoch SET backend = 'mongo', epoch = epoch + 1, readonly = true, updated_at = now()",
-    );
-    if (up.rowCount !== 1)
-      throw new Error(
-        `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
-      );
+  if (frozen.outcome === 'unknown')
+    return { ok: false, mode: 'refused', message: freezeUnknown(frozen.why) };
+  const { previous } = frozen;
+  const stuck = (message: string): RollbackReport => ({
+    ok: false,
+    mode: 'reverse',
+    message,
+  });
+  // the hand-over result decides what a failure may do: once MongoDB may be live PostgreSQL stays read-only
+  const state = { released: false };
+  const release = (): Promise<string> => {
+    state.released = true;
+    return releasePostgres(rt, previous, o.failAt);
   };
+  const finish = async (): Promise<HandOver> =>
+    handOver(rt, fence.epoch + 1, o.failAt);
   try {
     const v = await verifyAll(rt, { log: o.log });
     if (v.ok) {
-      await handOver();
+      const h = await finish();
+      if (h.kind === 'stuck') return stuck(h.message);
+      if (h.kind === 'not_live') {
+        const note = await release();
+        throw new Error(`${h.why}.${note}`);
+      }
       const cur = await JobState.latest(rt);
       return {
         ok: true,
@@ -336,7 +480,7 @@ export async function rollback(
       };
     }
     if (!o.reverse) {
-      const note = await releasePostgres(rt, previous, o.failAt);
+      const note = await release();
       return {
         ok: false,
         mode: 'refused',
@@ -350,19 +494,25 @@ export async function rollback(
     const after = await verifyAll(rt, { log: o.log, afterReverse: true });
     const manual = r.notReversed.length;
     if (!after.ok || manual > 0) {
-      const note = await releasePostgres(rt, previous, o.failAt);
+      const note = await release();
       return {
         ok: false,
         mode: 'reverse',
         verify: after,
         ...r,
-        message: manual
-          ? 'some collections need their own reverse step (see notReversed); MongoDB is not made live' +
-            note
-          : 'the reverse copy does not verify; MongoDB is not made live' + note,
+        message:
+          (manual
+            ? 'some collections need their own reverse step (see notReversed); MongoDB is not made live'
+            : 'the reverse copy does not verify; MongoDB is not made live') +
+          note,
       };
     }
-    await handOver();
+    const h = await finish();
+    if (h.kind === 'stuck') return stuck(h.message);
+    if (h.kind === 'not_live') {
+      const note = await release();
+      throw new Error(`${h.why}.${note}`);
+    }
     return {
       ok: true,
       mode: 'reverse',
@@ -372,16 +522,10 @@ export async function rollback(
         'PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application',
     };
   } catch (e) {
-    const why = e instanceof Error ? e.message : String(e);
-    if (state.handed)
-      // MongoDB is the store; the row that says so could not be written. PostgreSQL stays read-only and is not unfrozen.
-      return {
-        ok: false,
-        mode: 'reverse',
-        message: `MongoDB is the live store again, but platform.store_epoch was not updated (${why}). PostgreSQL is still read-only. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then set DOC_STORE=mongo and start the application`,
-      };
-    const note = await releasePostgres(rt, previous, o.failAt);
-    if (note && e instanceof Error) e.message += `.${note}`; // the original error stays, with what is left to do
+    if (!state.released) {
+      const note = await release();
+      if (note && e instanceof Error) e.message += `.${note}`; // the original error stays, with what is left to do
+    }
     throw e;
   }
 }
