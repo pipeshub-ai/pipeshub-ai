@@ -54,6 +54,9 @@ for lang in "${LANGS[@]}"; do
   (
     # Some names are unique in an org (connectors, OAuth configurations); each suite gets its own.
     export PIPESHUB_SDK_TEST_NAME="sdk-test-$RUN_NAME-$lang"
+    # Record lookup by URL answers with one record, so suites syncing the same feed at once would
+    # find each other's article; each syncs a feed whose article no other suite indexes.
+    export PIPESHUB_SDK_TEST_RSS_FEED_URL="http://web-fixtures:8080/feeds/sdk/$lang.xml"
     cd "$SDKS_DIR/pipeshub-sdk-$lang" && "run_$lang" "$base.xml"
     status=$?
     echo "$status" > "$base.exit"

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture SDK Go Feed</title>
+    <link>{{BASE_URL}}/feeds/sdk/</link>
+    <description>The go SDK suite's own feed: its article URL is indexed by no other suite.</description>
+    <item>
+      <guid isPermaLink="false">fixture-sdk-go-1</guid>
+      <title>SDK Go Feed: Release Notes</title>
+      <link>{{BASE_URL}}/feeds/sdk/go/release-notes.html</link>
+      <description>Summary for SDK Go Feed: Release Notes.</description>
+      <pubDate>Mon, 01 Sep 2025 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
