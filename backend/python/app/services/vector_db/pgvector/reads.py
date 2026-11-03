@@ -118,13 +118,14 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
 
 async def retrieve(tx: Tx, org: str, collection_id: int, space_id: int, ids: list[uuid.UUID]) -> list[VectorPoint]:
     rows = await tx.fetch(
-        f"""/* pipeshub:pgvector.retrieve */
-        SELECT p.point_id, p.vrid, p.block_id, p.ent_type, p.ent_id, p.ent_kind, p.ent_level, pt.payload, pt.page_content, coalesce(g.connector_ids, '{{}}') AS connector_ids,
-               coalesce(g.record_group_ids, '{{}}') AS record_group_ids, coalesce(g.root_record_group_ids, '{{}}') AS root_record_group_ids
+        """/* pipeshub:pgvector.retrieve */
+        SELECT p.point_id, p.vrid, p.block_id, p.ent_type, p.ent_id, p.ent_kind, p.ent_level, pt.payload, pt.page_content, coalesce(g.connector_ids, '{}') AS connector_ids,
+               coalesce(g.record_group_ids, '{}') AS record_group_ids, coalesce(g.root_record_group_ids, '{}') AS root_record_group_ids
         FROM retrieval.points p
         JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk
         LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
-        WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_id = ANY($4::uuid[]) AND {_ALIVE}""",
+        WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_id = ANY($4::uuid[])
+          AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)""",
         org, collection_id, space_id, ids,
     )
     return [to_point(r, None, org) for r in rows]

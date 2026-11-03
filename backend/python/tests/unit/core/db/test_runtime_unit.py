@@ -309,9 +309,10 @@ def test_no_caller_of_the_runtime_breaks_the_rules() -> None:
     """Every module that imports the runtime (outside the runtime itself) is scanned; none exist yet."""
     app = BACKEND / "python" / "app"
     users = [p for p in app.rglob("*.py") if "app.core.db" in p.read_text(encoding="utf-8", errors="ignore") and "core/db" not in str(p)]
-    # pgvector/writes.py splices a compiled filter (structure only, every value a bound parameter) into three statements; the rest of the
-    # package is scanned here, and those three sites are pinned in tests/unit/services/vector_db/test_pgvector_writes.py
-    assert sql_lint.scan_paths(users, exempt=[app / "services" / "vector_db" / "pgvector" / "writes.py"]) == []
+    # pgvector/writes.py and reads.py splice a compiled filter (structure only, every value a bound parameter) into four statements; the
+    # rest of the package is scanned here, and those four sites are pinned in tests/unit/services/vector_db/test_pgvector_writes.py
+    pgvector = app / "services" / "vector_db" / "pgvector"
+    assert sql_lint.scan_paths(users, exempt=[pgvector / "writes.py", pgvector / "reads.py"]) == []
 
 
 def test_org_predicate_lint_matches_the_documented_rule() -> None:

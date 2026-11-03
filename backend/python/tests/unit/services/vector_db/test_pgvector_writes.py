@@ -64,10 +64,11 @@ def test_a_payload_merge_cannot_move_a_point() -> None:
     assert writes._merge_args({"a": 1, "connectorIds": ["c"], "page_content": "t"}) == ('{"a":1}', "t")
 
 
-def test_the_only_string_built_statements_are_the_three_that_splice_a_compiled_filter() -> None:
+def test_the_only_string_built_statements_are_the_four_that_splice_a_compiled_filter() -> None:
     """The runtime's static SQL checks over the whole package (no session SQL, every literal statement tagged). A statement built from
-    parts is allowed in exactly three places of ``writes.py``, where the compiled filter's structure is spliced in (every value in it a
-    ``$n`` bound parameter, which ``test_sql_filters`` pins); any other built statement fails here and in the shared guard."""
+    parts is allowed in exactly four places, where a compiled filter's structure is spliced in (every value in it a ``$n`` bound
+    parameter, which ``test_sql_filters`` pins): three in ``writes.py`` and the scroll in ``reads.py``. Any other built statement fails here
+    and in the shared guard."""
     import ast
 
     from app.core.db import sql_lint
@@ -76,13 +77,16 @@ def test_the_only_string_built_statements_are_the_three_that_splice_a_compiled_f
     found = sql_lint.scan_paths(sorted(root.glob("*.py")))
     assert [str(f) for f in found if "string-built" not in f.rule] == []
     built = [f for f in found if "string-built" in f.rule]
-    assert {Path(f.path).name for f in built} == {"writes.py"}
-    tree = ast.parse((root / "writes.py").read_text())
-    owner = {n: f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) for n in range(f.lineno, f.end_lineno + 1)}
-    assert sorted(owner[f.line] for f in built) == ["delete_batch", "group_keys_matching", "merge_payload"]
+
+    def owner(path: str, line: int) -> str:
+        tree = ast.parse(Path(path).read_text())
+        return next(f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.lineno <= line <= f.end_lineno)
+
+    assert sorted((Path(f.path).name, owner(f.path, f.line)) for f in built) == [
+        ("reads.py", "scroll"), ("writes.py", "delete_batch"), ("writes.py", "group_keys_matching"), ("writes.py", "merge_payload")]
     for name in ("reads.py", "writes.py"):
         text = (root / name).read_text()
-        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 3
+        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 4
 
 
 def test_a_point_without_a_payload_is_refused_as_having_no_org_not_crashed_on() -> None:
