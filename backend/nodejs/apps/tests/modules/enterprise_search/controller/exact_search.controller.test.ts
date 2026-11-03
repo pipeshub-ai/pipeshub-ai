@@ -95,10 +95,15 @@ describe('entity search controller', () => {
     expect(error).to.be.instanceOf(Error)
   })
 
-  it('reports an unreachable AI service as unavailable', async () => {
-    execute.rejects(new Error('connect ECONNREFUSED'))
-    const { error } = await run(searchEntities(appConfig), { query: 'x' })
-    expect(error).to.be.instanceOf(Error)
+  it('reports an unreachable AI service as 503 and a slow one as 504, not as a 500', async () => {
+    execute.rejects(Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))
+    const refused = await run(searchEntities(appConfig), { query: 'x' })
+    expect(refused.error.statusCode).to.equal(503)
+    execute.rejects(Object.assign(new Error('timeout of 30000ms exceeded'), { name: 'TimeoutError' }))
+    for (const handler of [searchEntities(appConfig), entityNeighbors(appConfig)]) {
+      const slow = await run(handler, { query: 'x', entityId: 'e', entityType: 'topic' })
+      expect(slow.error.statusCode).to.equal(504)
+    }
   })
 })
 

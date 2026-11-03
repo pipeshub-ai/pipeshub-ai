@@ -9,17 +9,11 @@
  */
 import { NextFunction, Response } from 'express';
 import { InternalServerError } from '../../../libs/errors/http.errors';
-import {
-  handleBackendError,
-  SERVICE_UNAVAILABLE_MESSAGE,
-} from '../../../libs/errors/backend-error';
+import { handleBackendError } from '../../../libs/errors/backend-error';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
-
-const logger = Logger.getInstance({ service: 'Exact Search' });
 
 /** The fields each route sends on; anything else in the body is dropped. */
 const GREP_FIELDS = [
@@ -77,14 +71,8 @@ const forward =
           body,
         }).execute();
       } catch (error: unknown) {
-        logger.error(`${what} could not reach the AI service`, {
-          requestId: req.context?.requestId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new InternalServerError(
-          SERVICE_UNAVAILABLE_MESSAGE,
-          error as Error,
-        );
+        // an unreachable or slow AI service is a 503 or 504, as for every other route that calls it
+        throw handleBackendError(error, what);
       }
       if (!aiResponse.data) {
         throw new InternalServerError('Failed to get response from AI service');
