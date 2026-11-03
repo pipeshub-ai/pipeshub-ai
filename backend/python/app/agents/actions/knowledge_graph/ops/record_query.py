@@ -9,6 +9,7 @@ field's top values within the user's permissions when the model needs them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -109,7 +110,7 @@ JUDGED_NOTE = (
 )
 LIKELY_HEADER = "Likely matches (model judgement, not counted): {n}"
 STILL_POSSIBLE_HEADER = "Still possible (their text does not settle it): {n}"
-CONTRADICTED_LINE = "Left out {n} the model judged their text contradicts (not counted either way)."
+UNCLEAR_HINT = "To decide one of these, read it with fetch by its record_id."
 MENTIONS_NOTE = (
     "mentions matched values written in the records' text (as extracted), not record fields: "
     "count these records, never total or group the mentioned values."
@@ -332,9 +333,9 @@ async def _judge(
         candidates.append(Candidate(key, known, judge_module.bounded_passages(own)))
 
     async def model() -> Any:  # noqa: ANN401
-        # The request's own model: the call goes out under the identity the
-        # route bound for this turn, labelled as the judge for usage.
-        return state.get("llm")
+        llm, role = await _judge_model(state)
+        logger.info("record query %s judge: model role=%s", correlation_id, role)
+        return llm
 
     try:
         callbacks = build_langchain_opik_callbacks()
@@ -344,6 +345,31 @@ async def _judge(
         model, _judge_conditions(query, people, _names(state, people)), candidates, correlation_id=correlation_id,
         on_llm_usage=llm_usage_reporter(state, judge_module.USAGE_SOURCE), callbacks=callbacks,
     )
+
+
+async def _judge_model(state: ChatState) -> tuple[Any, str]:
+    """The ``query``-role model at low effort, as search_by_entities' name
+    check picks it; the chat's model only when none can be built. Either
+    way the call goes out under the identity the route bound for the turn."""
+    from app.agents.actions.knowledge_graph.ops.entity_search import (
+        VERIFIER_LLM_LOOKUP_SECONDS,
+        VERIFIER_LLM_ROLE,
+    )
+    from app.utils.llm import get_llm_for_role
+
+    config_service = state.get("config_service")
+    if config_service is not None:
+        try:
+            llm, _ = await asyncio.wait_for(
+                get_llm_for_role(config_service, VERIFIER_LLM_ROLE, reasoning_effort="low"),
+                timeout=VERIFIER_LLM_LOOKUP_SECONDS,
+            )
+            if llm is not None:
+                return llm, VERIFIER_LLM_ROLE
+        except Exception as exc:  # the chat's model below keeps the judge running
+            logger.info("record query judge: no %s-role model (%s), using the chat's",
+                        VERIFIER_LLM_ROLE, type(exc).__name__)
+    return state.get("llm"), "chat"
 
 
 _AGAIN = 'Call knowledgegraph__find_records again with that person\'s email as person.name.'
@@ -504,9 +530,9 @@ def _recall_lines(
             shown["record_id"] = shortener.shorten_record_ids_in_text(shown["record_id"])
         return "- " + json.dumps(shown, ensure_ascii=False, separators=(",", ":"))
 
-    lines = [f"Possible matches the graph could not confirm: {len(recall.possible)} "
-             f"(search found them; the graph lacks the facts to decide). {POSSIBLE_RULE}"]
     if judged is None or not judged.ran:
+        lines = [f"Possible matches the graph could not confirm: {len(recall.possible)} "
+                 f"(search found them; the graph lacks the facts to decide). {POSSIBLE_RULE}"]
         if judged is not None:
             lines.append(JUDGE_DID_NOT_RUN.format(why="no model" if judged.error == "no_model" else
                                                   "timed out" if judged.error == "TimeoutError" else "error"))
@@ -514,15 +540,20 @@ def _recall_lines(
     likely = [r for r in possible if judged.of(str(r.get("record_id"))) is Verdict.SUPPORTS]
     rest = [r for r in possible if r not in likely]
     contradicted = sum(1 for j in judged.verdicts.values() if j.verdict is Verdict.CONTRADICTS)
-    lines.append(JUDGED_NOTE)
+    # Contradicted ones are not possible any more; the rest past the shown ones were never judged.
+    remaining = len(recall.possible) - contradicted
+    breakdown = f"{len(likely)} likely by model judgement, {remaining - len(likely)} unclear"
+    if contradicted:
+        breakdown += f"; {contradicted} contradicted by their own text and dropped"
+    lines = [f"Possible matches the graph could not confirm: {remaining} ({breakdown}). {POSSIBLE_RULE}",
+             JUDGED_NOTE]
     if likely:
         lines.append(LIKELY_HEADER.format(n=len(likely)))
         lines += [listed(row) for row in likely]
     if rest:
         lines.append(STILL_POSSIBLE_HEADER.format(n=len(rest)))
         lines += [listed(row) for row in rest]
-    if contradicted:
-        lines.append(CONTRADICTED_LINE.format(n=contradicted))
+        lines.append(UNCLEAR_HINT)
     return lines
 
 

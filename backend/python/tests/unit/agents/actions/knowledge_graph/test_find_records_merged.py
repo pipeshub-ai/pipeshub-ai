@@ -338,7 +338,10 @@ async def test_judged_matches_list_supports_first_drop_contradicted_and_leave_th
     lines = text.splitlines()
     assert ok and len(model.prompts) == 1
     assert lines[0] == "Total: 3 matching records you can open (exact)"
-    assert op.JUDGED_NOTE in lines and op.CONTRADICTED_LINE.format(n=1) in lines
+    assert op.JUDGED_NOTE in lines and op.UNCLEAR_HINT in lines
+    (header,) = [line for line in lines if line.startswith("Possible matches the graph could not confirm:")]
+    assert header.startswith("Possible matches the graph could not confirm: 2 (1 likely by model judgement, "
+                             "1 unclear; 1 contradicted by their own text and dropped).")
     likely = lines.index(op.LIKELY_HEADER.format(n=1))
     still = lines.index(op.STILL_POSSIBLE_HEADER.format(n=1))
     assert likely < still
@@ -406,3 +409,49 @@ async def test_a_judge_that_breaks_before_its_call_never_fails_the_tool(
     monkeypatch.setattr(judge, "bounded_passages", MagicMock(side_effect=ValueError("bad passage")))
     ok, text = await op.execute_find_records(_state(llm=_JudgeModel()), where=[{"field": "status", "in": ["OPEN"]}])
     assert ok and op.JUDGE_DID_NOT_RUN.format(why="error") in text.splitlines() and '"record_id":"p0"' in text
+
+
+async def test_a_judgement_with_only_likely_matches_has_no_fetch_hint(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _judged_run(monkeypatch, [_possible("p0")], {"p0": ["Ravi owns it."]})
+    model = _JudgeModel(json.dumps({"verdicts": [{"id": "c1", "verdict": "supports", "quote": "Ravi owns it"}]}))
+    ok, text = await op.execute_find_records(_state(llm=model), where=[{"field": "status", "in": ["OPEN"]}])
+    assert ok and op.UNCLEAR_HINT not in text
+    assert "Possible matches the graph could not confirm: 1 (1 likely by model judgement, 0 unclear)." in text
+
+
+async def test_the_judge_uses_the_low_effort_query_role_model_and_logs_the_role(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    import app.utils.llm as llm_module
+
+    role_model, chat_model = _JudgeModel(), _JudgeModel()
+    lookup = AsyncMock(return_value=(role_model, {"configuration": {"model": "small"}}))
+    monkeypatch.setattr(llm_module, "get_llm_for_role", lookup)
+    _judged_run(monkeypatch, [_possible("p0")], {"p0": ["text"]})
+    with caplog.at_level(logging.INFO, logger=op.logger.name):
+        await op.execute_find_records(_state(llm=chat_model, config_service=MagicMock()),
+                                      where=[{"field": "status", "in": ["OPEN"]}])
+    assert len(role_model.prompts) == 1 and chat_model.prompts == []
+    assert lookup.await_args.args[1] == "query" and lookup.await_args.kwargs["reasoning_effort"] == "low"
+    assert any("judge: model role=query" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_judge_falls_back_to_the_chat_model_when_no_query_model_can_be_built(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    import app.utils.llm as llm_module
+
+    chat_model = _JudgeModel()
+    monkeypatch.setattr(llm_module, "get_llm_for_role", AsyncMock(side_effect=ValueError("no models")))
+    _judged_run(monkeypatch, [_possible("p0")], {"p0": ["text"]})
+    with caplog.at_level(logging.INFO, logger=op.logger.name):
+        await op.execute_find_records(_state(llm=chat_model, config_service=MagicMock()),
+                                      where=[{"field": "status", "in": ["OPEN"]}])
+    assert len(chat_model.prompts) == 1
+    assert any("judge: model role=chat" in r.getMessage() for r in caplog.records)

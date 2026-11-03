@@ -305,8 +305,11 @@ with possible matches to judge; `judge.JUDGE_ENABLED` switches it off.
   check already admitted, so nothing the user cannot open is sent. The
   whole prompt is held under `INPUT_TOKEN_BUDGET` (5,000 estimated tokens)
   by cutting the longest passages first.
-- **Model**: the request's own model (`state["llm"]`), the one the agent
-  runs on. The call is made inside the tool, so it goes out under the
+- **Model**: the `query`-role model at low effort, picked as
+  `search_by_entities`' name check picks it (`get_llm_for_role`, which
+  falls back to the default model when the role is unassigned); the chat's
+  own model (`state["llm"]`) only when none can be built. The log names the
+  role used (`query` or `chat`). The call is made inside the tool, so it goes out under the
   `ModelCallContext` the route bound for the turn
   (`docs/llm-gateway-identity.md`), labelled `record_judge` for usage
   (`llm_usage_source`, and the `UsageLedger` when the request opted in),
@@ -321,12 +324,14 @@ with possible matches to judge; `judge.JUDGE_ENABLED` switches it off.
   candidate's own passages is `unclear`; so is a candidate the reply leaves
   out. A passage that tells the model to approve every candidate can
   therefore decide at most its own record, and only by quoting itself.
-- **Render**: under the possible-matches header, a line that this is a
+- **Render**: the header counts only what is still possible: "Possible
+  matches the graph could not confirm: M (J likely by model judgement, U
+  unclear; C contradicted by their own text and dropped)", M = J + U
+  (unclear includes any past the ten judged). Then a line that this is a
   model judgement, not a graph fact, and that the exact total does not
-  change; then "Likely matches (model judgement, not counted): K", each
-  with its `judge_quote`; then "Still possible" for the unclear; then one
-  line counting the contradicted ones, which are left out of the list and
-  not cited.
+  change; "Likely matches (model judgement, not counted): J", each with its
+  `judge_quote`; "Still possible" for the unclear, followed by one line
+  saying `fetch` can decide one. Contradicted ones are not listed or cited.
 - **Bounds**: one call, never one per candidate; `JUDGE_DEADLINE_SECONDS`
   (5 s) covers the model lookup and the call. The output is not capped by
   a provider `max_tokens` (providers name it differently and reasoning
