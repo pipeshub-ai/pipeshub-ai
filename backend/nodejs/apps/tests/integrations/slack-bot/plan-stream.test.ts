@@ -6,6 +6,7 @@ import {
   SlackTaskPlan,
   type SlackTaskChunk,
   compactArgs,
+  isJunkSummary,
   isSecretKey,
   openFence,
   redactSecrets,
@@ -351,6 +352,15 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(sealed(plan).output).to.equal('✓ "assignee = currentUser()" → Saved the full result as a file');
     });
 
+    it('treats a summary that says nothing as junk, and keeps one that only starts with a bracket', () => {
+      for (const junk of ['{', '[{', '{}', 'null', 'undefined', '{\n  "issues"', '  [ ]  ', '--', '{"a":1,"b":2}']) {
+        expect(isJunkSummary(junk), junk).to.equal(true);
+      }
+      for (const fine of ['[DEMO-1] Fixed the export', 'Found 10 issues', '4 results', 'No results']) {
+        expect(isJunkSummary(fine), fine).to.equal(false);
+      }
+    });
+
     it('makes no row of an empty text part', () => {
       const plan = new SlackTaskPlan();
       expect(plan.narration('')).to.deep.equal([]);
@@ -411,8 +421,18 @@ describe('slack-bot/utils/plan-stream', () => {
       finish(plan);
       const [placeholder] = plan.thinking();
       const rows = plan.failRunning(new Set(['tools-1', placeholder!.id]));
-      expect(rows.find((r) => r.id === placeholder!.id)).to.deep.include({ status: 'complete' });
+      // Nothing was written, so it never says "Writing the answer".
+      expect(rows.find((r) => r.id === placeholder!.id)).to.deep.include({ title: 'Done', status: 'complete' });
       expect(rows.every((r) => r.title !== 'Thinking…')).to.equal(true);
+    });
+
+    it('says the reply stopped when it ends on an error before anything took its place', () => {
+      const plan = new SlackTaskPlan();
+      finish(plan);
+      const [placeholder] = plan.thinking();
+      expect(plan.failRunning(new Set([placeholder!.id]), { failed: true })).to.deep.equal([
+        { type: 'task_update', id: placeholder!.id, title: 'Stopped', status: 'error' },
+      ]);
     });
   });
 
@@ -709,6 +729,37 @@ describe('slack-bot/utils/plan-stream', () => {
         expect(titles.slice(1, 3)).to.deep.equal(['Thinking… 10s', 'Thinking… 15s']);
         expect(calls(c, 'chat.appendStream').length).to.be.at.most(2 + 1 + 4);
         await s.stop();
+      });
+
+      it('waits its turn behind other sends, so a refresh never lands after the row ended', async () => {
+        const { c, s, plan } = stream();
+        await s.tasks(plan.toolStarted('web_search', 'Searched the web', 'c1'));
+        await clock.tickAsync(11_000);
+        // The refresh due at 15s must wait a moment before it may send, so it is still queued when the reply ends.
+        SlackPlanStream.minIntervalMs = 40;
+        (s as AnyArgs).lastCallAt = Date.now() + 4000;
+        await clock.tickAsync(5000);
+        await s.stop();
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        SlackPlanStream.minIntervalMs = 0;
+
+        const [row] = replayRows(c, tsOf);
+        expect(row).to.deep.include({ title: 'Searched the web', status: 'error' });
+      });
+
+      it('ends "Writing the answer" in the message where the answer began, and never repeats it after a rollover', async () => {
+        const { c, s, plan } = stream();
+        await s.tasks(plan.toolStarted('web_search', 'Searched the web', 'c1'));
+        await s.tasks(plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1'));
+        await clock.tickAsync(3000);
+        await s.tasks(plan.answerStarted());
+        const line = `${'x'.repeat(99)}\n`;
+        await s.answer(line.repeat(Math.ceil(SLACK_STREAM_MESSAGE_CHAR_LIMIT / line.length) + 5));
+        await s.stop();
+
+        const writing = replayRows(c, tsOf).filter((r) => r.title === 'Writing the answer');
+        expect(writing.map((r) => r.status)).to.deep.equal(['complete']);
+        expect(calls(c, 'chat.startStream')).to.have.length(2);
       });
 
       it('stops its timer when the reply stops, is discarded, or the stream expires', async () => {

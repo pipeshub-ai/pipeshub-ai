@@ -29,6 +29,8 @@ const APPROVAL_OUTPUT = 'Waiting for your approval';
 /** The row that says the agent is still working between steps. */
 export const THINKING_TITLE = 'Thinking…';
 export const WRITING_TITLE = 'Writing the answer';
+const STOPPED_TITLE = 'Stopped';
+const DONE_TITLE = 'Done';
 /** The dashboard's chips for a call that needed approval. */
 const APPROVAL_CHIPS: Record<string, string> = {
   allowed: 'Approved',
@@ -340,6 +342,20 @@ function realLink(value: unknown): URL | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * A summary that says nothing: too short, a bare null, cut-off JSON
+ * ("{", "[{", "{\n  \"issues\"…"), or mostly punctuation. "[DEMO-1] Fixed it" is fine.
+ */
+export function isJunkSummary(summary: string): boolean {
+  const text = summary.trim();
+  return (
+    text.length < 3 ||
+    /^(?:null|undefined|none|nan|true|false)$/i.test(text) ||
+    /^[{[]\s*(?:["{[\]}]|$)/.test(text) ||
+    text.replace(/[^\p{L}]/gu, '').length < text.length * 0.3
+  );
 }
 
 /** A result view of records: its columns, rows (cells and maybe a link) and total. */
@@ -665,18 +681,7 @@ export class SlackTaskPlan {
    * behind. None while a step runs or waits, or once the answer began.
    */
   thinking(): SlackTaskChunk[] {
-    if (
-      this.placeholder !== null ||
-      this.writing !== null ||
-      this.tasks.size === 0
-    ) {
-      return [];
-    }
-    if (
-      [...this.tasks.values()].some((task) => task.status === 'in_progress')
-    ) {
-      return [];
-    }
+    if (!this.canThink()) return [];
     this.placeholder = `next-${String(++this.seq)}`;
     return [
       this.put({
@@ -686,6 +691,16 @@ export class SlackTaskPlan {
         status: 'in_progress',
       }),
     ];
+  }
+
+  /** A "Thinking…" row may open: there is a step, none runs or waits, and the answer hasn't begun. */
+  canThink(): boolean {
+    return (
+      this.placeholder === null &&
+      this.writing === null &&
+      this.tasks.size > 0 &&
+      ![...this.tasks.values()].some((task) => task.status === 'in_progress')
+    );
   }
 
   /** The answer began: the "Thinking…" row says so, and ends with the reply. */
@@ -703,9 +718,27 @@ export class SlackTaskPlan {
     ];
   }
 
-  /** Rows that are open without being a step: they move to a new message and end with the reply. */
+  /** A "Thinking…" row is open without being a step: it moves to a new message with the reply. */
   private isLiveRow(id: string): boolean {
-    return id === this.placeholder || id === this.writing;
+    return id === this.placeholder;
+  }
+
+  /**
+   * The "Writing the answer" row ends where the answer began: in that
+   * message, never repeated in the next.
+   */
+  endWriting(): SlackTaskChunk[] {
+    const id = this.writing;
+    if (id === null) return [];
+    this.writing = null;
+    return [
+      this.put({
+        type: 'task_update',
+        id,
+        title: WRITING_TITLE,
+        status: 'complete',
+      }),
+    ];
   }
 
   private takePlaceholder(): string | undefined {
@@ -900,7 +933,7 @@ export class SlackTaskPlan {
     call.progress = undefined;
     const summary = result.summary?.trim() ?? '';
     // A summary that is cut-off JSON ("{") says nothing: the result view says what was found.
-    const usable = summary.length >= 3 && !/^[{[]/.test(summary);
+    const usable = !isJunkSummary(summary);
     const view = recordsView(result.view);
     if (usable) {
       call.result = summary;
@@ -980,21 +1013,27 @@ export class SlackTaskPlan {
    * details and output, and none keeps spinning. A wait for approval ends as
    * said, not failed.
    */
-  failRunning(ids: ReadonlySet<string>): SlackTaskChunk[] {
-    // The reply ends: a "Thinking…" or "Writing the answer" row ends with it.
-    const live = [this.placeholder, this.writing].filter(
-      (id): id is string => id !== null && ids.has(id),
+  failRunning(
+    ids: ReadonlySet<string>,
+    ending: { failed?: boolean } = {},
+  ): SlackTaskChunk[] {
+    // The reply ends: "Writing the answer" ends with it; a "Thinking…" row that nothing took says how the run ended.
+    // (It never opens while a step waits for approval, and a question deletes the reply.)
+    const rows: SlackTaskChunk[] = this.endWriting().filter((row) =>
+      ids.has(row.id),
     );
-    this.placeholder = null;
-    this.writing = null;
-    const rows: SlackTaskChunk[] = live.map((id) =>
-      this.put({
-        type: 'task_update',
-        id,
-        title: WRITING_TITLE,
-        status: 'complete',
-      }),
-    );
+    const placeholder = this.takePlaceholder();
+    if (placeholder !== undefined && ids.has(placeholder)) {
+      rows.push(
+        this.put({
+          type: 'task_update',
+          id: placeholder,
+          ...(ending.failed === true
+            ? { title: STOPPED_TITLE, status: 'error' as const }
+            : { title: DONE_TITLE, status: 'complete' as const }),
+        }),
+      );
+    }
     for (const [id, group] of this.groups) {
       if (!ids.has(id)) continue;
       group.closed = true;
@@ -1251,9 +1290,11 @@ export class SlackPlanStream {
   private liveness: ReturnType<typeof setInterval> | null = null;
   private lastEventAt = Date.now();
   private lastTickAt = 0;
-  private inFlight = 0;
   /** When each row went in progress, and its title without the elapsed time. */
   private progressSince = new Map<string, number>();
+  /** Every send, the ticker's too, waits its turn: nothing lands out of order. */
+  private lock: Promise<unknown> = Promise.resolve();
+  private pulsing = false;
   private baseTitles = new Map<string, string>();
   /** Each message's text and steps in order (steps by id), to show them again if part is taken back. */
   private logs: ({ text: string } | { task: string })[][] = [];
@@ -1271,6 +1312,17 @@ export class SlackPlanStream {
 
   async tasks(all: SlackTaskChunk[]): Promise<void> {
     this.lastEventAt = Date.now();
+    return this.exclusive(() => this.tasksNow(all));
+  }
+
+  /** Runs one send after the ones before it. */
+  private exclusive<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.lock.then(run, run);
+    this.lock = next.catch(() => undefined);
+    return next;
+  }
+
+  private async tasksNow(all: SlackTaskChunk[]): Promise<void> {
     // A row settled in an earlier message stays there: sent here it would show again.
     const earlier = this.rowsOfEarlierMessages();
     const chunks = all.filter(
@@ -1361,6 +1413,13 @@ export class SlackPlanStream {
   ): Promise<void> {
     if (markdown === '') return;
     this.lastEventAt = Date.now();
+    return this.exclusive(() => this.answerNow(markdown, options));
+  }
+
+  private async answerNow(
+    markdown: string,
+    options: { paragraph?: boolean },
+  ): Promise<void> {
     let rest = markdown;
     let first = true;
     while (rest.length > 0 && !this.stopped && !this.unavailable) {
@@ -1415,12 +1474,26 @@ export class SlackPlanStream {
    * stream (none open, Slack refused, or it had expired): the caller posts them.
    */
   async stop(
-    options: { markdown?: string; blocks?: SlackBlock[] } = {},
+    options: {
+      markdown?: string;
+      blocks?: SlackBlock[];
+      failed?: boolean;
+    } = {},
   ): Promise<boolean> {
-    const nothingToDeliver = !options.markdown && !options.blocks?.length;
     this.stopLiveness();
+    return this.exclusive(() => this.stopNow(options));
+  }
+
+  private async stopNow(options: {
+    markdown?: string;
+    blocks?: SlackBlock[];
+    failed?: boolean;
+  }): Promise<boolean> {
+    const nothingToDeliver = !options.markdown && !options.blocks?.length;
     if (!this.ts || this.stopped || this.unavailable) return nothingToDeliver;
-    const settled = this.prepare(this.plan.failRunning(this.taskIds));
+    const settled = this.prepare(
+      this.plan.failRunning(this.taskIds, { failed: options.failed }),
+    );
     const chunks: SlackStreamChunk[] = [...settled];
     if (options.markdown) {
       chunks.push({ type: 'markdown_text', text: options.markdown });
@@ -1461,6 +1534,10 @@ export class SlackPlanStream {
    * retry follows.
    */
   async dropSegment(): Promise<void> {
+    return this.exclusive(() => this.dropSegmentNow());
+  }
+
+  private async dropSegmentNow(): Promise<void> {
     const all = [...this.earlier, ...(this.ts ? [this.ts] : [])];
     const affected = all.slice(this.segment.message);
     const segmentLog = this.logs[this.segment.message] ?? [];
@@ -1513,6 +1590,10 @@ export class SlackPlanStream {
   /** Deletes every message of this reply (e.g. the run asks a question instead). */
   async discard(): Promise<void> {
     this.stopLiveness();
+    return this.exclusive(() => this.discardNow());
+  }
+
+  private async discardNow(): Promise<void> {
     const all = [...this.earlier, ...(this.ts ? [this.ts] : [])];
     if (this.ts && !this.stopped) {
       try {
@@ -1574,7 +1655,6 @@ export class SlackPlanStream {
             ...titled,
           ]
         : titled;
-    this.inFlight += 1;
     try {
       await this.pace();
       const result = await this.client.apiCall('chat.startStream', {
@@ -1595,8 +1675,6 @@ export class SlackPlanStream {
       console.error('Error starting Slack stream:', error);
       this.unavailable = true;
       return false;
-    } finally {
-      this.inFlight -= 1;
     }
     this.everOpened = true;
     this.startLiveness();
@@ -1663,17 +1741,12 @@ export class SlackPlanStream {
   }
 
   private async append(chunks: SlackStreamChunk[]): Promise<void> {
-    this.inFlight += 1;
-    try {
-      await this.pace();
-      await this.client.apiCall('chat.appendStream', {
-        channel: this.channel,
-        ts: this.ts,
-        chunks: this.prepare(chunks),
-      });
-    } finally {
-      this.inFlight -= 1;
-    }
+    await this.pace();
+    await this.client.apiCall('chat.appendStream', {
+      channel: this.channel,
+      ts: this.ts,
+      chunks: this.prepare(chunks),
+    });
   }
 
   /**
@@ -1681,10 +1754,39 @@ export class SlackPlanStream {
    * on a row in progress for a while, its elapsed time in the title. Titles
    * and statuses replace in Slack, so nothing piles up.
    */
-  private async pulse(): Promise<void> {
-    if (!this.ts || this.stopped || this.unavailable || this.inFlight > 0) {
+  /** Whether a pulse would send anything now: only then does it wait for its turn to send. */
+  private pulseDue(): boolean {
+    const now = Date.now();
+    if (
+      now - this.lastEventAt >= SlackPlanStream.gapMs &&
+      this.plan.canThink()
+    ) {
+      return true;
+    }
+    if (now - this.lastTickAt < SlackPlanStream.tickerEveryMs) return false;
+    return [...this.progressSince].some(
+      ([id, since]) =>
+        this.taskIds.has(id) &&
+        now - Math.max(since, this.lastEventAt) >=
+          SlackPlanStream.tickerAfterMs,
+    );
+  }
+
+  /** Queues one refresh behind any send in progress; one at a time. */
+  private pulse(): void {
+    if (this.pulsing || !this.ts || this.stopped || this.unavailable) return;
+    this.pulsing = true;
+    void this.exclusive(() => this.pulseNow()).finally(() => {
+      this.pulsing = false;
+    });
+  }
+
+  private async pulseNow(): Promise<void> {
+    if (!this.ts || this.stopped || this.unavailable || !this.pulseDue()) {
       return;
     }
+    await this.pace();
+    // Built after the wait, from each row as it is now: a row that ended meanwhile is left alone.
     const now = Date.now();
     const opened =
       now - this.lastEventAt >= SlackPlanStream.gapMs
@@ -1694,10 +1796,16 @@ export class SlackPlanStream {
     if (now - this.lastTickAt >= SlackPlanStream.tickerEveryMs) {
       for (const [id, since] of this.progressSince) {
         const quiet = now - Math.max(since, this.lastEventAt);
-        if (!this.taskIds.has(id) || quiet < SlackPlanStream.tickerAfterMs) {
+        const base = this.baseTitles.get(id) ?? '';
+        const current = this.plan.current(id);
+        if (
+          !this.taskIds.has(id) ||
+          quiet < SlackPlanStream.tickerAfterMs ||
+          current?.status !== 'in_progress' ||
+          current.title !== base
+        ) {
           continue;
         }
-        const base = this.baseTitles.get(id) ?? '';
         const seconds = `${String(Math.floor((now - since) / 1000))}s`;
         refreshed.push({
           type: 'task_update',
@@ -1713,7 +1821,11 @@ export class SlackPlanStream {
     }
     if (opened.length + refreshed.length === 0) return;
     try {
-      await this.append([...opened, ...refreshed]);
+      await this.client.apiCall('chat.appendStream', {
+        channel: this.channel,
+        ts: this.ts,
+        chunks: this.prepare([...opened, ...refreshed]),
+      });
       this.track(opened);
       this.track(refreshed, true);
     } catch (error) {
@@ -1751,6 +1863,7 @@ export class SlackPlanStream {
 
   /** The current message ended: keep it, and continue in a new one with its open rows. */
   private retire(): void {
+    this.plan.endWriting();
     this.moving = this.openRows();
     if (this.ts) this.earlier.push(this.ts);
     this.ts = null;
@@ -1766,12 +1879,24 @@ export class SlackPlanStream {
       // A code fence left open would swallow the rest of this message's text.
       const fence = openFence(this.text);
       // A row that goes on in the next message ends here by title alone, not spinning.
-      const settled: SlackStreamChunk[] = this.openRows().flatMap((id) => {
-        const task = this.plan.current(id);
-        return task
-          ? [{ type: 'task_update', id, title: task.title, status: 'complete' }]
-          : [];
-      });
+      const settled: SlackStreamChunk[] = [
+        ...this.plan.endWriting().filter((row) => this.taskIds.has(row.id)),
+      ];
+      settled.push(
+        ...this.openRows().flatMap((id): SlackStreamChunk[] => {
+          const task = this.plan.current(id);
+          return task
+            ? [
+                {
+                  type: 'task_update',
+                  id,
+                  title: task.title,
+                  status: 'complete',
+                },
+              ]
+            : [];
+        }),
+      );
       const close: SlackStreamChunk[] = [
         ...settled,
         ...(fence

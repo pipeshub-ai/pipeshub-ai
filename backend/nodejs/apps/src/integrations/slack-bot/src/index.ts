@@ -528,7 +528,10 @@ async function processSlackMessage(
     answerStream
       ? answerStream.stop(
           markdownText
-            ? { markdown: truncateForSlackStreamMarkdown(markdownText) }
+            ? {
+                markdown: truncateForSlackStreamMarkdown(markdownText),
+                failed: true,
+              }
             : {},
         )
       : true;
@@ -634,6 +637,8 @@ async function processSlackMessage(
     // Plan updates and answer text share one queue: they go to the same stream, in order.
     let queuedStreamAppend: Promise<void> = Promise.resolve();
     let tableStreamingDisabled = false;
+    /** Tables (and what follows them) of text before a tool call: shown below the answer as blocks. */
+    const preambleTables: string[] = [];
     let streamTableProbeText = "";
     let streamedAnswerLength = 0;
     let ignoreAnswerChunks = false;
@@ -931,6 +936,9 @@ async function processSlackMessage(
     // Text already shown stays (no delete and repost); the answer goes on after it.
     function resetAnswerStream(): void {
       clearAnswerFlushTimer();
+      // A table in one model call's text must not stop the next call's text from streaming.
+      tableStreamingDisabled = false;
+      streamTableProbeText = '';
       pendingAppendText = '';
       heldAnswerText = '';
       streamedAnswerLength = 0;
@@ -952,10 +960,31 @@ async function processSlackMessage(
         });
     }
 
+    // Held lines that may start a table never go out as text: they go below it, as blocks if they are a table.
+    function holdTrailingTableRows(): void {
+      const rowsAt = trailingTableRowsStart(streamTableProbeText);
+      if (tableStreamingDisabled || rowsAt < 0) return;
+      const unsent = heldAnswerText + pendingAppendText;
+      const unsentAt = streamTableProbeText.length - unsent.length;
+      heldAnswerText = '';
+      pendingAppendText = unsent.slice(0, Math.max(0, rowsAt - unsentAt));
+      tableStreamingDisabled = true;
+    }
+
     // A tool call ends the text before it: send what is still buffered, then start over after it.
     function settleAnswerPreamble(): void {
       if (pushedAnswerLength > 0) {
+        holdTrailingTableRows();
         flushPendingAppend(true);
+        if (tableStreamingDisabled) {
+          // Its table never streamed: keep it, with its citations linked while they are known.
+          const rest = lastAnswerText.slice(pushedAnswerLength);
+          if (rest.trim() !== '') {
+            preambleTables.push(
+              citationMarkers.resolve(citationMarkers.mark(rest), liveCitationRows, true)[0],
+            );
+          }
+        }
         // Its citations are known only while this call lasts: link them now.
         const [ready] = citationMarkers.resolve(
           pendingStreamText,
@@ -1235,6 +1264,7 @@ async function processSlackMessage(
     });
 
     clearAnswerFlushTimer();
+    holdTrailingTableRows();
     flushPendingAppend(true);
     await queuedStreamAppend;
 
@@ -1366,6 +1396,9 @@ async function processSlackMessage(
         lastAnswerText = finalText;
       }
       pushedAnswerLength = beforeTable.length;
+      // A "Thinking…" row says the answer is being written, as when it streams.
+      pushPlan([answerPlan.answerStarted()]);
+      await queuedStreamAppend;
       if (beforeTable.trim() !== "") {
         await pushTextToSlackStream(citationMarkers.mark(beforeTable));
       }
@@ -1384,7 +1417,11 @@ async function processSlackMessage(
               botResponse.citations,
               getFrontendBaseUrl(),
             );
+      const preambleBlocks = (
+        await Promise.all(preambleTables.map(async (text) => toSlackBlocks(text, true)))
+      ).flat();
       const tailChunks = [
+        ...preambleBlocks,
         ...(unstreamed.trim() ? await toSlackBlocks(unstreamed, true) : []),
         ...(numberedSources.length > 0
           ? splitSlackBlocksByLimit(numberedSources)
@@ -1397,7 +1434,7 @@ async function processSlackMessage(
           ? { blocks: stopBlocks }
           : answered
             ? {}
-            : { markdown: FAILED_RESPONSE_GENERATION_MESSAGE },
+            : { markdown: FAILED_RESPONSE_GENERATION_MESSAGE, failed: true },
       );
       if (!stopped && !answered) {
         await sendOrUpdateNonStreamMessage(FAILED_RESPONSE_GENERATION_MESSAGE);

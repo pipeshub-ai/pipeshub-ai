@@ -1240,6 +1240,36 @@ export function describeAnswerWiring(
       });
     });
 
+    it('keeps a table written before a tool call, and still streams the final answer', async () => {
+      const preamble = `${'Here is what I have so far, before I check one more source. '.repeat(30)}\n\n| A | B |\n|---|---|\n| 1 | 2 |\n`;
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(preamble, 40),
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'web_search', displayName: 'Searched the web' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed', resultSummary: '4 results' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(ANSWER),
+        finished(NORMALIZED_ANSWER, CITATIONS),
+      ]);
+      expectNoStreamedTableRow(client);
+      expect(streamedText(client), 'the final answer streams').to.include('Revenue grew 12% [[1]](https://x.test/q3).');
+      expect(replyBlocks(client).some((b) => b.type === 'table'), 'the earlier table is kept').to.equal(true);
+    });
+
+    it('never streams a header row the run ended on', async () => {
+      const answer = 'The fields are:\n\n| Name | Type |\n';
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 5),
+        finished(answer),
+      ]);
+      expectNoStreamedTableRow(client);
+      expect(streamedText(client)).to.include('The fields are:');
+      expect(JSON.stringify(replyBlocks(client))).to.include('Name');
+    });
+
     it('puts two tables of one answer both as blocks', async () => {
       const answer = 'First:\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nThen:\n\n| C | D |\n|---|---|\n| 3 | 4 |\n\nDone.';
       const client = await ask([
@@ -1433,6 +1463,20 @@ export function describeAnswerWiring(
         // It said so while the answer streamed, not only at the end.
         const live = apiCalls(client, 'chat.appendStream').flatMap((c) => c.chunks as AnyArgs[]);
         expect(live).to.deep.include({ type: 'task_update', id: 'next-2', title: 'Writing the answer', status: 'in_progress' });
+      });
+
+      it('ends "Thinking…" as stopped, not "Writing the answer", when the run fails before anything came', async () => {
+        const client = await ask([
+          { type: 'RUN_STARTED', runId: 'r1' },
+          ...search('c1'),
+          { type: 'WAIT', ms: 3000 },
+          { type: 'RUN_ERROR', runId: 'r1', message: 'The model is not available.' },
+        ]);
+        const rows = replayRows(client);
+        expect(rows.map((r) => [r.title, r.status])).to.deep.equal([
+          ['Searched the web', 'complete'],
+          ['Stopped', 'error'],
+        ]);
       });
 
       it('shows how long a long step has taken, and its final title once it ends', async () => {
