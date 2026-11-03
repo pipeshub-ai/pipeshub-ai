@@ -163,12 +163,14 @@ function findQuestionField(req: Request): QuestionField | undefined {
   const body = req.body;
 
   // The search route MCP's pipeshub_search calls, and the web search box,
-  // and /retrieve, which takes the same plain-text query and renders nothing.
+  // and /retrieve and /search/entities, which take the same plain-text query and render nothing.
   if (
     req.path === '/api/v1/search' ||
     req.path === '/api/v1/search/' ||
     req.path === '/api/v1/retrieve' ||
-    req.path === '/api/v1/retrieve/'
+    req.path === '/api/v1/retrieve/' ||
+    req.path === '/api/v1/search/entities' ||
+    req.path === '/api/v1/search/entities/'
   ) {
     return typeof body.query === 'string'
       ? { holder: body, key: 'query' }

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
 import uuid
 
 import pytest
@@ -447,3 +448,58 @@ async def test_a_sync_point_update_removes_top_level_nulls_only(pg_db) -> None:
     assert await p.update_sync_point_if("sp", {"cursor": "c1"}, {"cursor": None, "nested": {"b": None}}, "syncPoints") is True
     got = await p.get_sync_point("sp", "syncPoints")
     assert "cursor" not in got and got["keep"] == {"a": None} and got["nested"] == {"b": None}
+
+
+async def _as_admin(sql: str, *args: object) -> list:
+    """Rows read as the superuser, so row-level security cannot hide a missing org predicate."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        return await con.fetch(sql, *args)
+    finally:
+        await con.close()
+
+
+async def test_stale_states_of_two_orgs_in_one_sweep_are_each_changed_in_their_own_org_only(pg_db) -> None:
+    from app.config.constants.arangodb import ProgressStatus
+    from app.core.org_context import for_org
+    from app.modules.pipeline.models import Priority, StageJob, StageState
+    from app.modules.pipeline.state import GraphStageStateStore, _to_document
+    from app.services.resource_governor.models import ParseTier
+
+    orgs = [new_org(), new_org()]
+    vrid = f"v-{uuid.uuid4().hex}"
+    for o in orgs:
+        job = StageJob(stage="classify", stage_version=1, org_id=o, virtual_record_id=vrid, rev="1", record_ids=("r",), connector_id="c",
+                       tier=ParseTier.LIGHT, priority=Priority.BULK, trigger="t", text_digest="t", blocks_digest="b", text_chars=1,
+                       has_tables=False, has_images=False)
+        doc = _to_document(StageState.from_job(job, ProgressStatus.PAUSED, 5))
+        del doc["orgId"]                                    # the org must come from the row, not from the stored document
+        await bound(pg_db, o).batch_upsert_nodes([{"_key": o, "name": "o"}], "organizations")
+        assert await bound(pg_db, o).stage_state_create(doc)
+    key = f"{vrid}:1:classify"
+    store = GraphStageStateStore(StandInProvider(logging.getLogger("cg"), pg_db))
+
+    with org_context.system("test.stale"):
+        mine = [s for s in await store.stale(statuses=(ProgressStatus.PAUSED,), updated_before_ms=1000, limit=100000) if s.virtual_record_id == vrid]
+        assert sorted(s.org_id for s in mine) == sorted(orgs)
+        first = next(s for s in mine if s.org_id == orgs[0])
+        with for_org(first.org_id, job="test.stale"):
+            assert await store.cas(first.key, expected=ProgressStatus.PAUSED, new=ProgressStatus.QUEUED)
+
+    rows = {r["org_id"]: r["status"] for r in await _as_admin("SELECT org_id, doc->>'status' AS status FROM graph.nodes WHERE coll = 'stageStates' AND id = $1", key)}
+    assert rows == {orgs[0]: "QUEUED", orgs[1]: "PAUSED"}
+
+
+async def test_the_retention_reads_carry_each_rows_org(pg_db) -> None:
+    orgs = [new_org(), new_org()]
+    tag = uuid.uuid4().hex
+    for i, o in enumerate(orgs):
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": o, "name": f"org{i}"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": f"v{i}-{tag}", "documentId": "d", "switchSeq": 1, "retired": [], "currentRev": "2"}], "virtualRecordToDocIdMapping")
+    sys_p = StandInProvider(logging.getLogger("cg"), pg_db)
+    with org_context.system("test.retention_reads"):
+        for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
+            got = {x["virtualRecordId"]: x["orgId"] for x in await read(None, 100000) if x["virtualRecordId"].endswith(tag)}
+            assert got == {f"v{i}-{tag}": o for i, o in enumerate(orgs)}
