@@ -237,3 +237,42 @@ async def test_no_holder_lookup_when_nothing_would_be_cut() -> None:
     out = await _merged(cov, 5, index_hits=[_rec("i1"), _rec("i2")], graph=graph)
     assert len(out) == 2 and cov.complete
     graph.get_virtual_record_holders.assert_not_called()
+
+
+@pytest.mark.parametrize("readable_only", [False, True])
+async def test_a_command_the_storage_validator_refuses_raises_before_anything_runs(readable_only) -> None:
+    index = AsyncMock()
+    with patch.object(pm, "_index_searcher", index), pytest.raises(ValueError, match="rejected"):
+        await pm.run_pattern_match_with_llm_grep(
+            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER, graph_provider=MagicMock(),
+            filters={}, logger_instance=MagicMock(), commands=['grep -rl -e "a" /etc'],
+            readable_only=readable_only,
+        )
+    index.assert_not_called()
+
+
+@pytest.mark.parametrize("cap", [0, -1])
+async def test_a_record_cap_below_one_is_an_error(cap) -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        await pm.run_pattern_match_with_llm_grep(
+            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER, graph_provider=MagicMock(),
+            filters={}, logger_instance=MagicMock(), commands=['grep -rl -e "a" .'],
+            max_records_per_connector=cap,
+        )
+
+
+async def test_a_record_cap_above_the_scan_limit_is_lowered_for_the_merge_and_the_scans_alike() -> None:
+    seen: list[int] = []
+
+    async def pipeline(**kwargs: object) -> list[dict]:
+        seen.append(kwargs["max_records_per_connector"])
+        return [_rec(f"r{i}", "c1") for i in range(30)]
+
+    with patch.object(pm, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
+         patch.object(pm, "execute_pattern_match_pipeline", pipeline):
+        out = await pm.run_pattern_match_with_llm_grep(
+            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER, graph_provider=MagicMock(),
+            filters={}, logger_instance=MagicMock(), commands=['grep -rl -e "a" .'],
+            max_records_per_connector=500,
+        )
+    assert seen == [pm._MAX_FIND_RECORDS] and len(out) == pm._MAX_FIND_RECORDS

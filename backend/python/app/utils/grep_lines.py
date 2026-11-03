@@ -187,6 +187,10 @@ def find_matches(
                 found = pattern.search(scanned, timeout=budget, concurrent=True)
             if not found:
                 continue
+            # A match touching the cut may exist only because the line was cut
+            # (`foo$`); the full line is not scanned, so the hit is dropped.
+            if scanned is not text and found.end() >= len(scanned):
+                continue
         except TimeoutError:
             complete = False
             timeouts += 1
@@ -264,7 +268,7 @@ async def find_matches_bounded(
     try:
         while not _may_start(key):
             if deadline is not None and time.monotonic() >= deadline:
-                break  # find_matches then returns at once, incomplete
+                return [], 0, None, False  # waited out: nothing read
             waiter = loop.create_future()
             _waiters.append(waiter)
             try:

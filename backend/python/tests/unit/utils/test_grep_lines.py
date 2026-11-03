@@ -192,3 +192,23 @@ def test_a_block_that_is_not_a_dict_has_no_code_metadata_and_is_skipped_by_the_s
     assert _code_meta(None) == {} and _code_meta("text") == {}
     blocks = [None, "text", _code(1, 9, "x", kind="function", qualified_name="f")]
     assert _symbol_at(blocks, 3)["name"] == "f"
+
+
+def test_a_match_that_exists_only_because_the_line_was_cut_is_not_reported() -> None:
+    cut = "x" * (MAX_SCAN_CHARS - 3) + "foo" + " and more text"
+    matches, total, _, complete = find_matches([{"data": cut}], _rx("foo$"), context_lines=0, max_matches=5)
+    assert (matches, total, complete) == ([], 0, False)
+
+
+async def test_a_request_that_waited_out_its_deadline_never_submits_the_record() -> None:
+    import time
+    from unittest.mock import patch
+
+    from app.utils import grep_lines
+
+    with patch.object(grep_lines, "_may_start", return_value=False), \
+         patch.object(grep_lines, "find_matches") as submitted:
+        result = await grep_lines.find_matches_bounded(
+            [{"data": "hit"}], _rx("hit"), context_lines=0, max_matches=5, deadline=time.monotonic() - 1,
+        )
+    assert result == ([], 0, None, False) and not submitted.called
