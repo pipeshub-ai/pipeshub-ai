@@ -125,13 +125,13 @@ def _rec(vrid: str, connector: str | None = None, count: int = 1) -> dict:
 
 
 async def _merged(coverage: pm.PatternMatchCoverage, cap: int, *, index_hits=(), scans=()) -> list[dict]:
-    async def through_index(cmds, searcher, *, found, **_kw):
+    async def through_index(cmds, searcher, *, found, **_kw) -> list[str]:
         pm._merge_command_hits(found, list(index_hits))
         return []
 
     scanned = iter(scans)
 
-    async def pipeline(**_kw):
+    async def pipeline(**_kw) -> list[dict]:
         return next(scanned)
 
     with patch.object(pm, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
