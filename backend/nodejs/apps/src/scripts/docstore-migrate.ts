@@ -12,6 +12,11 @@
  *     verify [--only a,b]    compare every document through the independent decoder
  *     drain [--wait s] [--force] [--cancel]   ask the running application for no new chat turns, wait for the turns in flight
  *     migrate --offline [--dry-run] [--allow-writers]   the compose cut, one command
+ *     migrate --online [--dry-run] [--sample f]   copy while the application keeps writing
+ *     cutover [--dry-run] [--fence-armed] [--shadow-clean] [--drain-wait s] [--max-freeze s]   the online switch to PostgreSQL
+ *     unfreeze               open MongoDB for writes again after an aborted cut
+ *     reverse [--until-idle s]   write the change log of PostgreSQL back to MongoDB
+ *     rollback [--reverse | --online [--sample f] [--max-freeze s]]   back to MongoDB (see docs)
  *     reset --yes            empty the copied tables and cancel the job (start the copy again)
  *     status                 job, phase and per-collection progress
  */

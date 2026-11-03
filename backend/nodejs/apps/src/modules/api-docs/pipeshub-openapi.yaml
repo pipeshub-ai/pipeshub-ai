@@ -247,9 +247,11 @@ tags:
       project.
 
       Projects are a Labs feature. While an admin has **Enable Projects**
-      turned off, every `/projects` route answers `403`, as do starting a
-      chat with a `projectId` and moving a chat into a project; an existing
-      project chat keeps answering, without its project's context.
+      turned off, every `/projects` route answers a signed-in caller with
+      `403`, as do starting a chat with a `projectId` and moving a chat into
+      a project; an existing project chat keeps answering, without its
+      project's context. A caller who is not signed in gets `401` first,
+      whatever the switch says.
 
       Name, description and instruction lengths count UTF-16 code units, the
       way a browser's `maxLength` does, so an emoji counts as two characters.
