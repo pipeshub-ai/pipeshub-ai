@@ -240,6 +240,12 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
     env, local, odd = _local_assignments(call, parents)
     env = {k: v for k, v in env.items() if k not in odd}    # a name bound in an unmodelled way is never a pure constant
 
+    def opaque(value: ast.expr) -> bool:
+        """A module constant or an argument, or a conditional of them: passed on as it would be on its own, not followed."""
+        if isinstance(value, ast.IfExp):
+            return opaque(value.body) and opaque(value.orelse)
+        return isinstance(value, ast.Name) and value.id not in local and value.id not in odd
+
     def name(name_id: str, seen: tuple[str, ...] = ()) -> tuple[str | None, bool]:
         if name_id in odd or name_id in seen:
             raise _Unresolvable
@@ -257,7 +263,7 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
                 cands = _bounded(c + t for c in cands or [""] for t in (value_text or "").split(_ALT))
             elif value_text is not None:
                 cands = _bounded([*cands, *value_text.split(_ALT)])     # a plain assignment adds candidates
-            elif not isinstance(value, ast.Constant):
+            elif not (isinstance(value, ast.Constant) or opaque(value)):
                 raise _Unresolvable          # a call, join or anything else not modelled
         return (_ALT.join(cands) or None), built
 
