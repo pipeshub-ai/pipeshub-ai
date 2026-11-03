@@ -1510,7 +1510,7 @@
       "webSearch": "Búsqueda web",
       "internalAndWebSearch": "Búsqueda interna + web"
     },
-    "searchDegraded": "Es posible que los resultados estén incompletos: el servicio de búsqueda estaba ocupado."
+    "searchDegraded": "Es posible que los resultados estén incompletos."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",

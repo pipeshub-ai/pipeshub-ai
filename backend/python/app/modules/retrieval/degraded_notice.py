@@ -4,6 +4,7 @@ The retrieval service notes it; the chat stream reads it when the run completes.
 tasks the request spawns, so a search made by a tool in another task is seen too.
 """
 from contextvars import ContextVar
+from typing import Any
 
 _seen: ContextVar[list[bool] | None] = ContextVar("search_degraded", default=None)
 
@@ -21,3 +22,10 @@ def note() -> None:
 
 def was_degraded() -> bool:
     return bool(_seen.get())
+
+
+def flag(completion_data: dict[str, Any]) -> dict[str, Any]:
+    """Mark a final answer whose request had a degraded search (the UI shows a note)."""
+    if was_degraded():
+        completion_data["searchDegraded"] = True
+    return completion_data

@@ -872,7 +872,6 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
-
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}
             {toolApproval && !questionPending && (

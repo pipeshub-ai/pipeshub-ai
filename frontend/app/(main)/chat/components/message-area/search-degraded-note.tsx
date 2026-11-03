@@ -5,7 +5,7 @@ import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
-/** Small, non-alarming note under an answer or search results when the search store was busy and answered with less than its full search. */
+/** Small, non-alarming note under an answer or search results when the search was answered from a partial search. */
 export function SearchDegradedNote() {
   const { t } = useTranslation();
   return (

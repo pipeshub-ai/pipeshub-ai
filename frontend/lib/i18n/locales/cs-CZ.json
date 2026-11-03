@@ -1643,7 +1643,7 @@
       "webSearch": "Vyhledávání na webu",
       "internalAndWebSearch": "Interní + webové vyhledávání"
     },
-    "searchDegraded": "Výsledky mohou být neúplné; vyhledávací služba byla vytížená."
+    "searchDegraded": "Výsledky mohou být neúplné."
   },
   "workspaceMenu": {
     "appearance": "Vzhled",

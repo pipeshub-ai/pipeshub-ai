@@ -9304,8 +9304,8 @@ components:
             searchDegraded:
               type: boolean
               description: |
-                Present (`true`) only when a search behind the answer was served with less
-                than the full search, for example because the search service was busy.
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentStreamCreateConversationRequest:
       allOf:
         - $ref: '#/components/schemas/AgentCreateConversationRequest'
@@ -9888,8 +9888,8 @@ components:
             searchDegraded:
               type: boolean
               description: |
-                Present (`true`) only when a search behind the answer was served with less
-                than the full search, for example because the search service was busy.
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentAddMessageStreamRequest:
       allOf:
         - $ref: '#/components/schemas/AgentAddMessageRequest'
@@ -12417,8 +12417,8 @@ components:
         searchDegraded:
           type: boolean
           description: |
-            Present (`true`) only when the search store answered with less than its full search, for
-            example because it was busy. The results are valid but may be incomplete.
+            Present (`true`) only when the search store answered from a partial search.
+            The results are valid but may be incomplete.
         searchIncomplete:
           type: string
           description: |
@@ -23415,8 +23415,8 @@ components:
             searchDegraded:
               type: boolean
               description: |
-                Present (`true`) only when a search behind the answer was served with less
-                than the full search, for example because the search service was busy.
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     StoredAIModelsConfig:
       type: object
       additionalProperties: false

@@ -123,13 +123,6 @@ class ProtocolFormatter(ABC):
     ) -> list[dict[str, Any]]: ...
 
 
-def _flag_degraded_search(completion_data: dict[str, Any]) -> dict[str, Any]:
-    """A search of this run was answered with less than the full search: say so on the final answer (the UI shows a note)."""
-    if degraded_notice.was_degraded():
-        completion_data["searchDegraded"] = True
-    return completion_data
-
-
 class LegacyFormatter(ProtocolFormatter):
     """Byte-identical to today's hand-built dict literals — the default
     for every request that doesn't explicitly negotiate `agui`."""
@@ -141,7 +134,7 @@ class LegacyFormatter(ProtocolFormatter):
         return [{"event": "answer_chunk", "data": data}]
 
     def answer_final(self, context, *, completion_data):
-        return [{"event": "complete", "data": _flag_degraded_search(completion_data)}]
+        return [{"event": "complete", "data": degraded_notice.flag(completion_data)}]
 
     def ask_user_question(self, context, *, status, tool_data):
         return [{"event": "ask_user_question", "data": {"status": status, "toolData": tool_data}}]
@@ -206,7 +199,7 @@ class AGUIFormatter(ProtocolFormatter):
         )]
 
     def answer_final(self, context, *, completion_data):
-        _flag_degraded_search(completion_data)
+        degraded_notice.flag(completion_data)
         return [
             frame(AGUIEventType.STATE_SNAPSHOT, runId=context.run_id, snapshot={"final": True, **completion_data}),
             frame(

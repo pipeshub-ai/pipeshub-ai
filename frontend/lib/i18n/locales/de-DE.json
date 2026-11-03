@@ -1488,7 +1488,7 @@
       "webSearch": "Websuche",
       "internalAndWebSearch": "Interne + Websuche"
     },
-    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig, da der Suchdienst ausgelastet war."
+    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",

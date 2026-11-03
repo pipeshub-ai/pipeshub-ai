@@ -1488,7 +1488,7 @@
       "webSearch": "वेब खोज",
       "internalAndWebSearch": "आंतरिक + वेब खोज"
     },
-    "searchDegraded": "परिणाम अधूरे हो सकते हैं; खोज सेवा व्यस्त थी।"
+    "searchDegraded": "परिणाम अधूरे हो सकते हैं।"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",

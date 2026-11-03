@@ -1577,7 +1577,7 @@
       "webSearch": "Web search",
       "internalAndWebSearch": "Internal + web search"
     },
-    "searchDegraded": "Results may be incomplete; the search service was busy."
+    "searchDegraded": "Results may be incomplete."
   },
   "workspaceMenu": {
     "appearance": "Appearance",

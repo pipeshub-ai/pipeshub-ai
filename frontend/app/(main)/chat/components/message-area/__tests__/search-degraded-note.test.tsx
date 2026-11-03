@@ -11,6 +11,6 @@ describe('SearchDegradedNote', () => {
   it('is a quiet status line in plain words', () => {
     render(<Theme><SearchDegradedNote /></Theme>);
 
-    expect(screen.getByRole('status').textContent).toContain('Results may be incomplete; the search service was busy.');
+    expect(screen.getByRole('status').textContent).toContain('Results may be incomplete.');
   });
 });
