@@ -8429,8 +8429,9 @@ class IGraphDBProvider(ABC):
         when none does, users whose full name, a word of it, or email local
         part starts with it (only for 3+ characters). Every user sharing the
         email of a match is returned too, so one person's several nodes come
-        back together. No permission check: org members' names and emails are
-        visible to members.
+        back together. No permission check, so a caller must not show a user
+        until a record linking them is readable
+        (``entity_permissions.readable_person_offsets``).
 
         Returns:
             ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``
