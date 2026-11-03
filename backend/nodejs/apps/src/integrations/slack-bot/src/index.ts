@@ -1340,8 +1340,8 @@ async function processSlackMessage(
 
     if (answerStream && pushedAnswerLength === 0 && !tableStreamingDisabled && botResponse.content) {
       // An answer that came only with the run's end still gets its tables as blocks.
-      // The finished answer's citations are links already; as [n] they match the Sources list.
-      const finalText = stripNumberedCitationLinkTargets(
+      // Its citations are numbered like the markers shown before it, so they match the Sources list.
+      const finalText = citationMarkers.renumber(
         botResponse.content,
         botResponse.citations,
         getFrontendBaseUrl(),
