@@ -7,12 +7,13 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 printf '#!/bin/sh\necho STARTED "$@"\n' > "$work/bin/docker-entrypoint.sh"; chmod +x "$work/bin/docker-entrypoint.sh"
 fail=0
+pw="POSTGRES_PASSWORD=x PG_NODE_PASSWORD=x PG_CONNECTORS_PASSWORD=x PG_INDEXING_PASSWORD=x PG_QUERY_PASSWORD=x PG_JOBS_PASSWORD=x PG_MIGRATE_PASSWORD=x PG_BACKUP_PASSWORD=x"
 run() { # name expected(0|78) pgdata, then the files (relative to the volume root) that hold a cluster
   local name="$1" want="$2" pgdata="$3"; shift 3
   rm -rf "$work/vol"; mkdir -p "$work/vol/data"
   for f in "$@"; do mkdir -p "$work/vol/$(dirname "$f")"; echo 17 > "$work/vol/$f"; done
   set +e
-  out="$(PATH="$work/bin:$PATH" PG_VOLUME_ROOT="$work/vol" PGDATA="${pgdata/#ROOT/$work/vol}" sh postgres/pg-entrypoint.sh postgres 2>&1)"; code=$?
+  out="$(env $pw ${EXTRA_ENV:-} PATH="$work/bin:$PATH" PG_ROLES_SCRIPT=/nonexistent PG_VOLUME_ROOT="$work/vol" PGDATA="${pgdata/#ROOT/$work/vol}" sh postgres/pg-entrypoint.sh postgres 2>&1)"; code=$?
   set -e
   ok=0
   if [ "$want" = 0 ]; then [ $code -eq 0 ] && [[ "$out" == *STARTED* ]] && ok=1; fi
@@ -30,4 +31,8 @@ run "empty volume starts with PGDATA in data/pgdata"            0  ROOT/data/pgd
 run "cluster in data/pgdata starts with PGDATA there"           0  ROOT/data/pgdata data/pgdata/PG_VERSION
 run "cluster in data/pgdata refused under the compose PGDATA"   78 ROOT/data data/pgdata/PG_VERSION
 run "cluster at data/ refused under PGDATA=data/pgdata"         78 ROOT/data/pgdata data/PG_VERSION
+# an empty password is refused before the stock entrypoint (which would create the cluster) is reached
+for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_BACKUP_PASSWORD; do
+  EXTRA_ENV="$v=" run "empty $v refused before anything is started" 78 ROOT/data
+done
 exit $fail

@@ -1,0 +1,83 @@
+#!/bin/bash
+# Creates what is missing of the database's role layout and refreshes the file PgBouncer authenticates against. Idempotent: an
+# existing role is never altered (a changed password needs ALTER ROLE, see README.md), so it runs at the first initialisation (from
+# initdb/10-roles.sh) and again on every start (from pg-entrypoint.sh), which repairs a volume left half-set-up.
+# Tables, policies and grants on them come with the migrations; this creates no privileges beyond the role layout.
+#
+# The server never sees a clear-text password: the SCRAM verifiers are computed here (scram-verifier.pl, password read from the
+# environment, not argv) and sent in their place, and this session turns off statement tracking and statement logging.
+set -euo pipefail
+user="${POSTGRES_USER:-postgres}"; db="${POSTGRES_DB:-pipeshub}"
+verifier() { perl "${PG_SCRAM_VERIFIER:-/usr/local/bin/scram-verifier.pl}" "$1"; }
+
+args=(-v db="$db" -v node="$(verifier PG_NODE_PASSWORD)" -v conn="$(verifier PG_CONNECTORS_PASSWORD)"
+      -v idx="$(verifier PG_INDEXING_PASSWORD)" -v qry="$(verifier PG_QUERY_PASSWORD)" -v jobs="$(verifier PG_JOBS_PASSWORD)"
+      -v mig="$(verifier PG_MIGRATE_PASSWORD)" -v bak="$(verifier PG_BACKUP_PASSWORD)")
+# PG_KV_PASSWORD is optional: without it the processes that only read configuration run as `query`.
+if [ -n "${PG_KV_PASSWORD:-}" ]; then args+=(-v kv="$(verifier PG_KV_PASSWORD)"); else args+=(-v kv=); fi
+
+psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" "${args[@]}" <<'SQL'
+SET log_statement = 'none';
+SET log_min_error_statement = 'panic';
+SET pg_stat_statements.track = 'none';
+-- no role below has SUPERUSER, CREATEROLE or BYPASSRLS
+DO $$ DECLARE r text; BEGIN
+  FOREACH r IN ARRAY ARRAY[
+    'pipeshub_owner',      -- owns every relation
+    'pipeshub_app',        -- policy group; never holds table privileges
+    'pipeshub_node', 'pipeshub_connectors', 'pipeshub_indexing', 'pipeshub_query',
+    'pipeshub_kv',         -- key-value table only: the processes that just read configuration
+    'pipeshub_restore', 'pipeshub_import',
+    'pipeshub_vetted_kernel', 'pipeshub_vetted_identity', 'pipeshub_vetted_platform'   -- owners of SECURITY DEFINER functions
+  ] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF;
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeshub_ro') THEN
+    CREATE ROLE pipeshub_ro LOGIN;   -- no password: unusable until an operator sets one
+  END IF;
+END $$;
+-- one login per service, a member of its own role only; it holds no privileges until the unit of work switches role, which the
+-- PgBouncer reset undoes between clients
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', r.n, r.v)
+  FROM (VALUES ('pipeshub_migrate', :'mig'), ('pipeshub_jobs', :'jobs'), ('pipeshub_backup', :'bak'),
+               ('pipeshub_node_login', :'node'), ('pipeshub_connectors_login', :'conn'),
+               ('pipeshub_indexing_login', :'idx'), ('pipeshub_query_login', :'qry')) AS r(n, v)
+  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r.n) \gexec
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', 'pipeshub_kv_login', :'kv')
+  WHERE :'kv' <> '' AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeshub_kv_login') \gexec
+GRANT pipeshub_owner TO pipeshub_migrate;
+GRANT pipeshub_app TO pipeshub_node, pipeshub_connectors, pipeshub_indexing, pipeshub_query, pipeshub_kv
+  WITH INHERIT TRUE, SET FALSE;                                      -- service roles inherit the policy group but cannot become it
+GRANT pipeshub_app TO pipeshub_ro WITH INHERIT TRUE, SET FALSE;
+GRANT pipeshub_node TO pipeshub_node_login WITH INHERIT FALSE, SET TRUE;
+GRANT pipeshub_connectors TO pipeshub_connectors_login WITH INHERIT FALSE, SET TRUE;
+GRANT pipeshub_indexing TO pipeshub_indexing_login WITH INHERIT FALSE, SET TRUE;
+GRANT pipeshub_query TO pipeshub_query_login WITH INHERIT FALSE, SET TRUE;
+SELECT 'GRANT pipeshub_kv TO pipeshub_kv_login WITH INHERIT FALSE, SET TRUE'
+  WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeshub_kv_login') \gexec
+-- the migration owner may only hand the vetted roles out (ADMIN), never use them
+GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform TO pipeshub_owner
+  WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+-- extensions are installed here, by the superuser, into schema ext (a migration cannot: pgvector is not a trusted extension)
+CREATE SCHEMA IF NOT EXISTS ext AUTHORIZATION pipeshub_owner;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA ext;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ext;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT CREATE ON DATABASE :"db" TO pipeshub_owner;
+REVOKE TEMPORARY ON DATABASE :"db" FROM PUBLIC;
+-- server-side large objects have no org; nobody but a superuser may call them
+DO $$ DECLARE f regprocedure; BEGIN
+  FOR f IN SELECT p.oid::regprocedure FROM pg_proc p WHERE p.pronamespace = 'pg_catalog'::regnamespace
+           AND p.proname ~ '^(lo_|lo(read|write)$)' LOOP
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
+  END LOOP; END $$;
+SQL
+
+# Verifier file for PgBouncer: the poolable logins only (migrate and backup connect to postgres directly). Rewritten on every run,
+# so a lost or recreated pgbouncer_auth volume is repaired by the next start.
+umask 077
+psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" -At -c \
+  "SELECT format('\"%s\" \"%s\"', rolname, rolpassword) FROM pg_authid
+   WHERE rolname IN ('pipeshub_node_login','pipeshub_connectors_login','pipeshub_indexing_login',
+                     'pipeshub_query_login','pipeshub_kv_login','pipeshub_jobs') ORDER BY 1" > /pgbouncer-auth/userlist.txt.new
+mv /pgbouncer-auth/userlist.txt.new /pgbouncer-auth/userlist.txt

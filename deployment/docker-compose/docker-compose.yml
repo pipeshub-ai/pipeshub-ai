@@ -607,13 +607,14 @@ services:
 
   # ---------------------------------------------------------------------------
   # PostgreSQL + PgBouncer — profile: postgres (opt-in)
-  # Image sources and the role/pooler setup: ./postgres/. Compose fills variables in before it drops
-  # inactive profiles, so the passwords below are checked when the container first initialises the
-  # data directory (an empty one stops the start with a message), not with ${VAR:?}.
+  # Image sources and the role/pooler setup: ./postgres/. Build it first (`docker compose --profile postgres build postgres`);
+  # no such image is published. Compose fills variables in before it drops inactive profiles, so the passwords are not checked
+  # with ${VAR:?}: the image's entrypoint refuses to start (exit 78) when one is empty.
   # ---------------------------------------------------------------------------
   postgres:
     profiles: ["postgres"]
     image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    pull_policy: build
     build:
       context: ./postgres
       args:
@@ -661,8 +662,10 @@ services:
     profiles: ["postgres"]
     image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
     user: postgres
-    entrypoint: ["pgbouncer"]
-    command: ["/etc/pgbouncer/pgbouncer.ini"]
+    # Waits for the verifier file the postgres service writes (pgbouncer reads it only at start). After a role or password change,
+    # restart this service so it reads the new file.
+    entrypoint: ["sh", "-c"]
+    command: ["until [ -s /pgbouncer-auth/userlist.txt ]; do sleep 1; done; exec pgbouncer /etc/pgbouncer/pgbouncer.ini"]
     restart: always
     # Both images declare a data volume (17: .../data, 18: the parent); the pooler stores nothing, so cover both instead of
     # leaving an empty anonymous volume behind on every up.

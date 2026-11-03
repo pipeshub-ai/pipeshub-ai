@@ -52,8 +52,9 @@ COPY --from=build /opt/pgbouncer/bin/pgbouncer /usr/local/bin/pgbouncer
 COPY pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
 COPY initdb/ /docker-entrypoint-initdb.d/
 COPY pg-entrypoint.sh /usr/local/bin/pg-entrypoint.sh
+COPY pg-roles.sh scram-verifier.pl /usr/local/bin/
 # /pgbouncer-auth carries the SCRAM verifier file from postgres (writer) to pgbouncer (reader)
-RUN chmod 0755 /usr/local/bin/pg-entrypoint.sh /docker-entrypoint-initdb.d/*.sh \
+RUN chmod 0755 /usr/local/bin/pg-entrypoint.sh /usr/local/bin/pg-roles.sh /usr/local/bin/scram-verifier.pl /docker-entrypoint-initdb.d/*.sh \
  && install -d -o postgres -g postgres -m 0700 /pgbouncer-auth \
  && pgbouncer --version >/dev/null
 ENTRYPOINT ["pg-entrypoint.sh"]
