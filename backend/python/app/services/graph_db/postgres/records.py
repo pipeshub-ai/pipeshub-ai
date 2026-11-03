@@ -46,6 +46,7 @@ def _rec(raw: Any) -> dict:  # noqa: ANN401
 
 async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
     """Upsert documents in id order (concurrent batches lock in one order); a field set to null is removed (``SET n += map``), the rest merge.
+    Only top-level nulls go: a null inside a nested value is kept, as a property of a node is flat on Neo4j and whatever it holds is stored as given.
     A repeated id applies its writes in order."""
     by_id: dict[str, dict] = {}
     for d in docs:
@@ -53,8 +54,8 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
     if not by_id:
         return
     await tx.execute("""/* pipeshub:graph.records_upsert_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))
-        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, jsonb_strip_nulls(x.doc) FROM x ORDER BY x.id
-        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = jsonb_strip_nulls(graph.nodes.doc || (SELECT x2.doc FROM x x2 WHERE x2.id = EXCLUDED.id))""",
+        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
+        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || (SELECT x2.doc FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
 
 
@@ -223,25 +224,28 @@ class RecordsMixin(PgBase):
             by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(rec.record_type), []).append(rec)
 
         async def go(tx: Tx) -> None:
+            # Row locks are taken in one order whatever the mix of types: every base document by id, then each type's documents by id
+            # (collections in name order), then the edges. Two concurrent batches over the same records cannot wait on each other.
             now = get_epoch_timestamp_in_ms()
-            for coll, group in by_type.items():
-                bases = [_node(r.to_arango_base_record(), _RECORDS) for r in group]
-                if release_trashed_external_ids:
-                    await tx.execute("""/* pipeshub:graph.release_trashed_external_ids */ UPDATE graph.nodes h
-                        SET doc = h.doc || jsonb_build_object('trashedExternalRecordId', h.doc->>'externalRecordId', 'externalRecordId', $3::text || h.id)
-                        FROM jsonb_to_recordset($2::jsonb) AS x(id text, ext text, cid text)
-                        WHERE h.org_id = $1 AND h.coll = 'records' AND x.ext IS NOT NULL AND h.doc->>'connectorId' = x.cid AND h.doc->>'externalRecordId' = x.ext
-                          AND h.id <> x.id AND coalesce((h.doc->>'isDeleted')::boolean, false)""",
-                                     org, _j([{"id": b["id"], "ext": b.get("externalRecordId"), "cid": b.get("connectorId")} for b in bases]), TRASHED_EXTERNAL_ID_PREFIX)
-                await _upsert_docs(tx, org, _RECORDS, bases)
-                if coll:
-                    types = [_node(r.to_arango_record(), coll) for r in group]
-                    await _upsert_docs(tx, org, coll, types)
-                    edges = {b["id"]: {"fi": b["id"], "ti": t["id"], "doc": {"createdAtTimestamp": now, "updatedAtTimestamp": now}} for b, t in zip(bases, types, strict=True)}
-                    await tx.execute("""/* pipeshub:graph.records_upsert_type_edges */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-                        SELECT $1, 'isOfType', 'records', x.fi, $2, x.ti, '', x.doc FROM jsonb_to_recordset($3::jsonb) AS x(fi text, ti text, doc jsonb)
-                        ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""",
-                                     org, coll, _j(list(edges.values())))
+            bases_by_type = {coll: [_node(r.to_arango_base_record(), _RECORDS) for r in group] for coll, group in by_type.items()}
+            all_bases = [b for bases in bases_by_type.values() for b in bases]
+            if release_trashed_external_ids:
+                await tx.execute("""/* pipeshub:graph.release_trashed_external_ids */ UPDATE graph.nodes h
+                    SET doc = h.doc || jsonb_build_object('trashedExternalRecordId', h.doc->>'externalRecordId', 'externalRecordId', $3::text || h.id)
+                    FROM jsonb_to_recordset($2::jsonb) AS x(id text, ext text, cid text)
+                    WHERE h.org_id = $1 AND h.coll = 'records' AND x.ext IS NOT NULL AND h.doc->>'connectorId' = x.cid AND h.doc->>'externalRecordId' = x.ext
+                      AND h.id <> x.id AND coalesce((h.doc->>'isDeleted')::boolean, false)""",
+                                 org, _j([{"id": b["id"], "ext": b.get("externalRecordId"), "cid": b.get("connectorId")} for b in all_bases]), TRASHED_EXTERNAL_ID_PREFIX)
+            await _upsert_docs(tx, org, _RECORDS, all_bases)
+            for coll in sorted(c for c in by_type if c):
+                types = [_node(r.to_arango_record(), coll) for r in by_type[coll]]
+                await _upsert_docs(tx, org, coll, types)
+                edges = {b["id"]: {"fi": b["id"], "ti": t["id"], "doc": {"createdAtTimestamp": now, "updatedAtTimestamp": now}}
+                         for b, t in zip(bases_by_type[coll], types, strict=True)}
+                await tx.execute("""/* pipeshub:graph.records_upsert_type_edges */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+                    SELECT $1, 'isOfType', 'records', x.fi, $2, x.ti, '', x.doc FROM jsonb_to_recordset($3::jsonb) AS x(fi text, ti text, doc jsonb)
+                    ORDER BY x.fi ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""",
+                                 org, coll, _j([edges[i] for i in sorted(edges)]))
         await self._q(go, transaction, write=True)
 
     async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str, transaction: str | None = None) -> None:
@@ -258,10 +262,14 @@ class RecordsMixin(PgBase):
         if not ids:
             return []
         extra = {"queuedAtTimestamp": get_epoch_timestamp_in_ms()} if new_status == ProgressStatus.QUEUED.value else {}
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
-            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
-            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
-                                                  org, ids, expected, new_status, _j(extra)), transaction, write=True)
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
+                SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
+                WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
+                                                      org, ids, expected, new_status, _j(extra)), transaction, write=True)
+        except Exception as e:      # as the Neo4j provider: a failure is logged and nothing is claimed (the callers read [] as "not claimed")
+            self.logger.error("compare_and_set_indexing_status failed: %s", e)
+            return []
         return [r["id"] for r in rows]
 
     async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
@@ -309,12 +317,12 @@ class RecordsMixin(PgBase):
         async def go(tx: Tx) -> None:
             # Update the point wherever it is stored (an older row may carry another id), otherwise insert it under id = key: the key is the
             # primary key, so two first upserts converge on one row.
-            n = await tx.fetchval("""/* pipeshub:graph.upsert_sync_point_update */ WITH u AS (UPDATE graph.nodes SET doc = jsonb_strip_nulls(doc || $4::jsonb)
+            n = await tx.fetchval("""/* pipeshub:graph.upsert_sync_point_update */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) e WHERE e.value <> 'null'::jsonb)
                 WHERE org_id = $1 AND coll = $2 AND doc->>'syncPointKey' = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, sync_point_key, _j(data))
             if not n:
                 await tx.execute("""/* pipeshub:graph.upsert_sync_point_insert */ INSERT INTO graph.nodes (org_id, coll, id, doc)
-                    VALUES ($1, $2, $3, jsonb_strip_nulls($4::jsonb || jsonb_build_object('id', $3::text, 'createdAtTimestamp', $5::bigint)))
-                    ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = jsonb_strip_nulls(graph.nodes.doc || $4::jsonb)""", org, collection, sync_point_key, _j(data), now)
+                    VALUES ($1, $2, $3, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each($4::jsonb || jsonb_build_object('id', $3::text, 'createdAtTimestamp', $5::bigint)) e WHERE e.value <> 'null'::jsonb))
+                    ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || $4::jsonb) e WHERE e.value <> 'null'::jsonb)""", org, collection, sync_point_key, _j(data), now)
         try:
             await self._q(go, transaction, write=True)
         except Exception:
