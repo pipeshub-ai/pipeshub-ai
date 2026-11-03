@@ -87,10 +87,12 @@ jobs:
         # expected, or a graph suite that did not run, fails the job.
         if: ${{ always() }}
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests 967 --expect-suite 'tests.test_graph=33' --expect-suite 'tests.test_retrieval=19' \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests 1316 --expect-suite 'tests.test_graph=33' --expect-suite 'tests.test_retrieval=19' \
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
             --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]' \
+            --allow='-kt.w_fence_add]' --allow='-kt.w_fence_remove]' --allow='-kt.w_fence_reason]' --allow='-kt.w_changes_ack]' \
+            --allow='-kt.w_keys_add]' --allow='-kt.w_pref_put]' \
             --allow='-retrieval.collection_create]' \
             --allow='-retrieval.collection_mark_deleting]' \
             --allow='-retrieval.collection_stamp_set]' \

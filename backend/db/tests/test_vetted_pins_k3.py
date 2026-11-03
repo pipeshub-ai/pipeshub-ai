@@ -1,0 +1,93 @@
+"""Further checks of the pinned vetted writers: statements the text checks never read (DO, SET and the rest), SQL-standard bodies in invoker routines, and the
+rule text of a quoted target. Each plant is a function the first two versions of the checks let through with a clean catalog; the catalog now names it.
+
+Runs on the fixture of test_vetted_pins (schema kt, the pinned test functions, every module of a migrated database)."""
+import pytest
+
+from .rls_fixture import ORG_B
+from .test_vetted_pins import conn, planted, violations
+from .test_vetted_pins import pdb as pdb  # the module fixture
+from .test_vetted_pins_k2 import DEL_FENCE, PIN_FENCE, hand
+
+OWNER = "SET LOCAL ROLE pipeshub_owner; "
+PIN_GRANTS = "'kt.grants', 'delete', '{principal_sk,node_sk,gtype}'"
+INV_ATOMIC = OWNER + "CREATE FUNCTION kt.inv_wipe() RETURNS void LANGUAGE sql BEGIN ATOMIC DELETE FROM kt.grants; END; "
+CALL_INV = hand("x_call_inv", "  PERFORM kt.inv_wipe();\n  RETURN 1;", writer="pipeshub_query")
+
+PLANTS = [
+    # ---- DO: the code is a string literal
+    ("DO in a pinned function", hand("d01", DEL_FENCE + "  DO 'BEGIN DELETE FROM kt.grants WHERE true; END';\n  RETURN 1;", pins=(PIN_FENCE,)), "130"),
+    ("DO in an unpinned write function", hand("d02", "  DO 'BEGIN DELETE FROM kt.grants; DELETE FROM kt.fences; END';\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("DO in a read-class function", hand("d03", "  DO 'BEGIN INSERT INTO kt.fences VALUES (current_setting(''app.org_id''), 99, ''x''); END';\n  RETURN 1;",
+                                          cls="read", writer="pipeshub_query"), "130"),
+    ("DO LANGUAGE plpgsql with a body that sets the org", hand("d04", f"  DO LANGUAGE plpgsql 'BEGIN PERFORM set_config(''app.org_id'', ''{ORG_B}'', true); DELETE FROM kt.grants; END';\n  RETURN 1;",
+                                                              writer="pipeshub_query"), "130"),
+    ("DO that changes the org and deletes, in a pinned function", hand("d07", f"  DO 'BEGIN PERFORM set_config(''app.org_id'', ''{ORG_B}'', true); DELETE FROM kt.fences; END';\n  RETURN 1;",
+                                                                      pins=(PIN_FENCE,)), "130"),
+    ("DO behind a label", hand("d10", "  <<l>>\n  BEGIN DO 'BEGIN NULL; END'; END;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("DO in an invoker routine called by a writer",
+     OWNER + "CREATE FUNCTION kt.inv_do() RETURNS void LANGUAGE plpgsql AS 'BEGIN DO ''BEGIN DELETE FROM kt.grants; END''; END'; " + hand("x_call_do", "  PERFORM kt.inv_do();\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    # ---- SET and RESET: they change app.org_id, the search path, the role
+    ("plain SET app.org_id then a DO", hand("d08", f"  SET app.org_id = '{ORG_B}';\n  DO 'BEGIN DELETE FROM kt.grants; END';\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("plain SET search_path first", hand("f01", "  SET search_path = kt, pg_catalog;\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "130"),
+    ("plain SET app.org_id in a pinned function", hand("f02", f"  SET app.org_id = '{ORG_B}';\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "130"),
+    ("plain SET app.org_id then a read", hand("f03", f"  SET app.org_id = '{ORG_B}';\n  RETURN (SELECT count(*) FROM kt.grants);", pins=(PIN_FENCE,)), "130"),
+    ("SET ROLE", hand("f04", "  SET ROLE pipeshub_owner;\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "130"),
+    ("SET LOCAL after THEN", hand("f05", "  IF p_id > 0 THEN SET LOCAL app.org_id = 'x'; END IF;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("RESET", hand("f06", "  RESET app.org_id;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("PREPARE", hand("f07", "  PREPARE q AS DELETE FROM kt.grants;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("DDL (ALTER) at a statement start", hand("f08", "  ALTER TABLE kt.grants NO FORCE ROW LEVEL SECURITY;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("GRANT at a statement start", hand("f09", "  GRANT DELETE ON kt.grants TO pipeshub_query;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    ("SET after an EXCEPTION handler", hand("f10", "  BEGIN\n    NULL;\n  EXCEPTION WHEN OTHERS THEN SET app.org_id = 'x';\n  END;\n  RETURN 1;", writer="pipeshub_query"), "130"),
+    # ---- set_config of anything but lock_timeout, wherever it is
+    ("set_config of the org in a function", hand("g01", f"  PERFORM set_config('app.org_id', '{ORG_B}', true);\n  RETURN 1;", writer="pipeshub_query"), "131"),
+    ("set_config with a computed name", hand("g02", "  PERFORM set_config('app.' || 'org_id', 'x', true);\n  RETURN 1;", writer="pipeshub_query"), "131"),
+    ("set_config of the org in an invoker routine",
+     OWNER + f"CREATE FUNCTION kt.inv_cfg() RETURNS void LANGUAGE plpgsql AS 'BEGIN PERFORM set_config(''app.org_id'', ''{ORG_B}'', true); END'; ", "131"),
+    # ---- SQL-standard bodies of invoker routines
+    ("invoker BEGIN ATOMIC that deletes the pinned table, called by a writer", INV_ATOMIC + CALL_INV, "112"),
+    ("the same with EXECUTE revoked from PUBLIC and granted to the vetted role",
+     INV_ATOMIC + "REVOKE ALL ON FUNCTION kt.inv_wipe() FROM PUBLIC; GRANT EXECUTE ON FUNCTION kt.inv_wipe() TO pipeshub_vetted_kt; " + CALL_INV, "112"),
+    ("invoker RETURN <expression> (a parse tree in prosqlbody)",
+     OWNER + "CREATE FUNCTION kt.inv_ret() RETURNS bigint LANGUAGE sql RETURN (SELECT count(*) FROM kt.grants); "
+     + hand("x_call_ret", "  PERFORM kt.inv_ret();\n  RETURN 1;", writer="pipeshub_query"), "112"),
+]
+
+
+
+
+@pytest.mark.parametrize("plant", PLANTS, ids=[p[0] for p in PLANTS])
+def test_a_route_the_second_review_found_is_named_by_the_catalog(pdb, plant):
+    _, sql, rule = plant
+    got = planted(pdb, sql)
+    assert any(r.startswith(rule) for r, _ in got), got
+
+
+def test_a_quoted_target_leaves_a_rule_text_and_is_still_a_violation(pdb):
+    got = planted(pdb, hand("q01", '  DELETE FROM "kt"."grants" WHERE true;\n  RETURN 1;', pins=(PIN_GRANTS,)))
+    assert got and all(r is not None for r, _ in got), got
+    assert any(r.startswith(("105", "98")) for r, _ in got), got
+
+
+def test_what_the_new_rules_forbid_is_in_none_of_the_routines_the_modules_install(pdb):
+    """Zero hits on every SQL and PL/pgSQL routine of a migrated database (all modules plus the fixture)."""
+    with conn(pdb) as c:
+        assert [v for v in violations(c, full=True) if v[0][:3] in ("112", "130", "131")] == []
+        n = c.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang "
+                      "WHERE l.lanname IN ('sql', 'plpgsql') AND n.nspname NOT IN ('pg_catalog', 'information_schema')").fetchone()[0]
+        assert n > 50, n        # the scan really saw the routines of every module (a sanity bound, not a count)
+
+
+def test_the_manifest_refuses_a_do_a_set_and_a_set_config():
+    from db.lib import vetted
+    for body, word in (("BEGIN DO 'x'; RETURN 1; END;", "DO"), ("BEGIN SET app.org_id = 'x'; RETURN 1; END;", "SET"), ("BEGIN RESET ALL; RETURN 1; END;", "RESET"),
+                       ("BEGIN IF true THEN SET LOCAL x.y = 1; END IF; RETURN 1; END;", "SET"), ("BEGIN PREPARE q AS SELECT 1; RETURN 1; END;", "PREPARE")):
+        with pytest.raises(vetted.ManifestError, match=word):
+            vetted.deny_unclassifiable(body, "t")
+    with pytest.raises(vetted.ManifestError, match="set_config"):
+        vetted.deny_unclassifiable("BEGIN PERFORM set_config('x.y', 'z', true); RETURN 1; END;", "t")
+    vetted.deny_unclassifiable("BEGIN INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO NOTHING; UPDATE t SET a = 2 WHERE a = 1; RETURN 1; END;", "t")
+
+
+
+
