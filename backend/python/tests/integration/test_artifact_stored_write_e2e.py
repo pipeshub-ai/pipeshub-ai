@@ -21,6 +21,7 @@ import aiohttp
 import pytest
 
 from app.config.constants.arangodb import ProgressStatus
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import SemanticMetadata
 from app.modules.artifacts import record_backend as backend_module
 from app.modules.artifacts.stored_retention import (
@@ -240,7 +241,8 @@ async def test_purge_races_cow_sink(world: World) -> None:
         await world.provider.delete_nodes([vrid], MAPPING)
 
     world.blob._retire_document = retire_then_purge  # type: ignore[method-assign]
-    await world.index(rec, _rev(B))
+    with pytest.raises(RecordDeletedError):
+        await world.index(rec, _rev(B))
 
     assert await world.mapping(vrid) == {}
     assert await world.documents(vrid) == []
@@ -276,7 +278,8 @@ async def test_lineage_tags_and_record_recheck(world: World) -> None:
         await world.provider.delete_nodes([gone.id], RECORDS)
 
     world.blob._retire_document = retire_and_delete_record  # type: ignore[method-assign]
-    await world.index(gone, _rev(C))
+    with pytest.raises(RecordDeletedError):
+        await world.index(gone, _rev(C))
     after = await world.mapping(vrid)
     assert (after["documentId"], after["switchSeq"]) == (before["documentId"], before["switchSeq"])
 

@@ -330,6 +330,12 @@ class TestStageStatesWithRecords:
 
         assert any("(n.connectorId, n.stage, n.status, n.id)" in index for index in _STAGE_STATE_INDEXES)
 
+    def test_neo4j_indexes_a_virtual_record_lookup_without_a_revision(self) -> None:
+        from app.services.graph_db.neo4j.neo4j_provider import _STAGE_STATE_INDEXES
+
+        # stage_state_org_for_virtual_record filters on virtualRecordId alone.
+        assert any(index.endswith("ON (n.virtualRecordId)") for index in _STAGE_STATE_INDEXES)
+
 
 def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, stages_ok: bool = True) -> None:
     """Stub every step of a connector delete but the stage states, which are what is checked."""

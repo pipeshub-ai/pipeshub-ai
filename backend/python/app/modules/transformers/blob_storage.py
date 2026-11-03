@@ -345,6 +345,14 @@ class StorageLookupUnavailableError(Exception):
     """Whether stored content exists could not be determined (not: it is absent)."""
 
 
+class ReconciliationMappingGoneError(Exception):
+    """The mapping disappeared between reading it and naming the metadata document on it.
+
+    Only a delete removes a mapping, so the record is most likely gone; the run fails
+    rather than report metadata no mapping names, and its retry ends on the deleted record.
+    """
+
+
 class StorageDocumentNotFoundError(aiohttp.ClientError):
     """The storage service has no live document with this id (404).
 
@@ -3457,6 +3465,7 @@ class BlobStorage(Transformer):
                 },
                 {"documentId": document_id, "switchSeq": node.get("switchSeq")},
             ):
+                await self._name_missing_mapping_org(node, org_id, virtual_record_id)
                 return
         fields: dict[str, Any] = {
             "record_metadata_doc_id": metadata_document_id,
@@ -3467,14 +3476,31 @@ class BlobStorage(Transformer):
             {"id": virtual_record_id, "orgId": org_id, "virtualRecordId": virtual_record_id, **fields},
         ):
             return
-        await self.graph_provider.batch_update_nodes(
+        if not await self.graph_provider.batch_update_nodes(
             [{"_key": virtual_record_id, **fields}], collection,
-        )
-        if node is not None and "orgId" not in node:
-            # An older reconciliation write left the org out; name it while it is still missing.
-            await self.graph_provider.update_node_fields_if_match(
-                virtual_record_id, collection, {"orgId": org_id}, {"orgId": None},
+        ):
+            raise ReconciliationMappingGoneError(
+                f"mapping for {virtual_record_id} disappeared before metadata document "
+                f"{metadata_document_id} was named on it"
             )
+        await self._name_missing_mapping_org(node, org_id, virtual_record_id)
+
+    async def _name_missing_mapping_org(
+        self, node: dict[str, Any] | None, org_id: str, virtual_record_id: str
+    ) -> None:
+        """Name the org on a mapping an older write left without one, while it is still missing.
+
+        The stored-content cleanup takes the org from the mapping; without it, purging the
+        content depends on a stage state still naming the org.
+        """
+        if node is None or "orgId" in node or not org_id:
+            return
+        await self.graph_provider.update_node_fields_if_match(
+            virtual_record_id,
+            CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+            {"orgId": org_id},
+            {"orgId": None},
+        )
 
     async def _update_metadata_buffer(
         self,

@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.blob_storage import (
+    BlobStorage,
+    ReconciliationMappingGoneError,
+)
 
 
 def _make_bs(*, config_service=None, graph_provider=None):
@@ -289,6 +292,50 @@ class TestSaveReconciliationMetadata:
         graph_provider.update_node_fields_if_match.assert_awaited_once_with(
             "vr", "virtualRecordToDocIdMapping", {"orgId": "org"}, {"orgId": None},
         )
+
+    @staticmethod
+    def _reusing(mapping: dict) -> tuple[AsyncMock, BlobStorage]:
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=mapping)
+        bs = _make_bs(graph_provider=graph_provider)
+        bs._find_unmapped_record_document = AsyncMock(return_value="meta-left-behind")
+        bs._update_metadata_buffer = AsyncMock(return_value=("meta-left-behind", 9))
+        bs._create_metadata_document = AsyncMock()
+        return graph_provider, bs
+
+    @pytest.mark.asyncio
+    async def test_a_switched_mapping_without_an_org_gets_it(self) -> None:
+        # A stored write switched an old org-less row before this reconciliation ran.
+        graph_provider, bs = self._reusing({"documentId": "doc-1", "switchSeq": 3})
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+
+        assert await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1}) == "meta-left-behind"
+
+        calls = graph_provider.update_node_fields_if_match.await_args_list
+        assert calls[0].args[3] == {"documentId": "doc-1", "switchSeq": 3}
+        assert calls[1].args == ("vr", "virtualRecordToDocIdMapping", {"orgId": "org"}, {"orgId": None})
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_that_names_its_org_is_not_touched_again(self) -> None:
+        graph_provider, bs = self._reusing({"documentId": "doc-1", "switchSeq": 3, "orgId": "org"})
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+
+        await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
+
+        graph_provider.update_node_fields_if_match.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_removed_before_the_metadata_is_named_fails_the_save(self) -> None:
+        # The record's delete took the mapping between the read and the write.
+        graph_provider, bs = self._reusing({"record_doc_id": "rec-doc"})
+        graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        bs._delete_replaced_document = AsyncMock()
+
+        with pytest.raises(ReconciliationMappingGoneError):
+            await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
+
+        graph_provider.update_node_fields_if_match.assert_not_awaited()
+        bs._delete_replaced_document.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failure_in_create_propagates(self):
