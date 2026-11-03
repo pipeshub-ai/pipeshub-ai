@@ -47,6 +47,15 @@ def point(org: str, n: int, vrid: str | None = None, *, conn: list[str] | None =
     return VectorPoint(id=pid(org, n), dense_vector=[1.0, n / 10, 0.0, 0.0], payload=payload)
 
 
+def lexical(org: str, n: int, terms: tuple[int, ...], *, conn: list[str] | None = None) -> VectorPoint:
+    p = point(org, n, conn=conn)
+    return dataclasses.replace(p, sparse_vector=SparseVector(list(terms), [1.0] * len(terms)))
+
+
+def lex(org: str, *terms: int, dense: bool = False, should: dict[str, list[str]] | None = None, **kw: object) -> HybridSearchRequest:
+    return dataclasses.replace(req(org, should=should, **kw), dense_query=Q if dense else None, sparse_query=SparseVector(list(terms), [1.0] * len(terms)))
+
+
 def req(org: str, *, should: dict[str, list[str]] | None = None, **kw: object) -> HybridSearchRequest:
     flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=org)], should=[FieldCondition(key=k, values=v) for k, v in (should or {}).items()])
     return HybridSearchRequest(dense_query=Q, filter=flt, **kw)  # type: ignore[arg-type]
@@ -112,8 +121,8 @@ async def test_deleted_points_are_not_found_and_the_refusals(store) -> None:
         await store.query_nearest_points("records", [HybridSearchRequest(dense_query=[1.0, 0.0], filter=req(A).filter)])
     with pytest.raises(CollectionNotFoundError):
         await store.query_nearest_points("nope", [req(A)])
-    with pytest.raises(NotImplementedError):
-        await store.query_nearest_points("records", [HybridSearchRequest(dense_query=Q, sparse_query=SparseVector([1], [1.0]), filter=req(A).filter)])
+    with pytest.raises(ValueError, match="term id"):
+        await store.query_nearest_points("records", [HybridSearchRequest(dense_query=Q, sparse_query=SparseVector([2**32], [1.0]), filter=req(A).filter)])
 
 
 async def test_every_tier_answers_the_same_nearest_points(store) -> None:
@@ -137,3 +146,34 @@ async def test_the_quantisation_check_stores_a_verdict_for_the_orgs_space(store)
     finally:
         await conn.close()
     assert row is not None and row["recall"] == pytest.approx(recall) and row["samples"] > 0
+
+
+async def test_the_lexical_leg_ranks_by_terms_stays_in_its_org_and_honours_membership_and_deletes(store) -> None:
+    await store.upsert_points("records", [lexical(A, 1, (10, 11, 12), conn=["c1"]), lexical(A, 2, (10, 11), conn=["c2"]), lexical(A, 3, (10,), conn=["c1"]),
+                                          lexical(A, 4, (99,), conn=["c1"])])
+    await store.upsert_points("records", [lexical(B, 1, (10, 11, 12))])
+    [hits] = await store.query_nearest_points("records", [lex(A, 10, 11, 12, limit=10)])
+    assert [h.id for h in hits] == [pid(A, 1), pid(A, 2), pid(A, 3)]                                    # more matching terms first; the term-less point is absent
+    assert [h.score for h in hits] == [pytest.approx(1 / 2), pytest.approx(1 / 3), pytest.approx(1 / 4)] and hits[0].payload["page_content"] == "text 1"
+    [c1] = await store.query_nearest_points("records", [lex(A, 10, 11, 12, should={"connectorIds": ["c1"]}, limit=10)])
+    assert [h.id for h in c1] == [pid(A, 1), pid(A, 3)]
+    [none] = await store.query_nearest_points("records", [lex(A, 10, should={"connectorIds": []}, limit=10)])
+    assert none == []
+    [other] = await store.query_nearest_points("records", [lex(C, 10, limit=10)])
+    assert other == []
+    await store.delete_points("records", FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.virtualRecordId", value="r1")]))
+    [after] = await store.query_nearest_points("records", [lex(A, 10, 11, 12, limit=10)])
+    assert [h.id for h in after] == [pid(A, 2), pid(A, 3)]
+    [one] = await store.query_nearest_points("records", [lex(A, 10, 11, 12, limit=1)])
+    assert [h.id for h in one] == [pid(A, 2)]
+
+
+async def test_a_hybrid_search_fuses_the_legs_and_a_condition_on_a_point_column_filters_the_lexical_leg(store) -> None:
+    await store.upsert_points("records", [lexical(A, 1, (7,)), lexical(A, 2, (7, 8)), lexical(A, 5, (8,)), lexical(A, 9, (70,))])
+    # dense order 1, 2, 5, 9; lexical order (terms 7 and 8) 2, then 1 and 5 (equal scores broken by point_sk), so 1 and 2 tie and go by id
+    [hits] = await store.query_nearest_points("records", [dataclasses.replace(lex(A, 7, 8, dense=True, limit=10))])
+    assert {h.id for h in hits} == {pid(A, n) for n in (1, 2, 5, 9)} and {h.id for h in hits[:2]} == {pid(A, 1), pid(A, 2)}
+    assert [h.score for h in hits[:2]] == [pytest.approx(1 / 2 + 1 / 3)] * 2                              # points 1 and 2 are first in one leg, second in the other: the sum
+    block = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.blockId", value="b5")])
+    [only] = await store.query_nearest_points("records", [HybridSearchRequest(dense_query=None, sparse_query=SparseVector([7, 8], [1.0, 1.0]), filter=block, limit=10)])
+    assert [h.id for h in only] == [pid(A, 5)]                                                         # the extra condition is applied to the lexical rows
