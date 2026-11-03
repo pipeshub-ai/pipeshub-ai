@@ -9268,6 +9268,11 @@ components:
             duration:
               type: integer
               minimum: 0
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -15966,6 +15971,7 @@ components:
           `result` is `{ conversation, recordsUsed, meta }` — the updated
           conversation plus request metadata after the regenerated response
           is persisted.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
           lookup failures, unauthorized conversation access, and regenerate
           rule failures such as "not the last message" are reported here.
@@ -16018,6 +16024,7 @@ components:
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
 
@@ -16075,6 +16082,7 @@ components:
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16135,6 +16143,7 @@ components:
           `{ conversation, recordsUsed, meta }`.
           `recordsUsed` is the count of citations attached to the new
           assistant message.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16192,6 +16201,8 @@ components:
         `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+        Optional `result.meta.searchDegraded` (`true`) is present on `RUN_FINISHED` only when a search behind the
+        answer was answered from a partial search.
       properties:
         event:
           type: string
@@ -16241,6 +16252,7 @@ components:
           parsed, citations are saved, and the updated conversation is
           persisted. The gateway emits `{ type, result }`; `result` carries
           `{ conversation, recordsUsed, meta }`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired for runtime failures after the stream has
           already started, including conversation lookup failures, upstream
           AI startup failures, save failures, and stream transport errors.
@@ -45436,6 +45448,7 @@ paths:
             `{ type, message, code? }` on failure. Forwarded lifecycle and
             child-run events may contain `runId`, `threadId`, and
             `parentRunId`. Clients should ignore unknown event names.
+            Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
 
             Refusals after validation are not HTTP errors. A missing, deleted
             or inaccessible conversation, a conversation with no messages, a
@@ -50132,6 +50145,7 @@ paths:
             Stable event names:
             - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
               updated conversation and metadata
+              Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
             - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
               authorization, or regenerate-rule failures
 

@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 export function SearchDegradedNote() {
   const { t } = useTranslation();
   return (
-    <Flex align="center" gap="1" role="status" style={{ marginBottom: 'var(--space-3)', color: 'var(--slate-11)' }}>
+    <Flex align="center" gap="1" role="status" style={{ marginBlock: 'var(--space-2)', color: 'var(--slate-11)' }}>
       <MaterialIcon name="info" size={14} color="var(--slate-11)" />
       <Text size="1">{t('chat.searchDegraded')}</Text>
     </Flex>

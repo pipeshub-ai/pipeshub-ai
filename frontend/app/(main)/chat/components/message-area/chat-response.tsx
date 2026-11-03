@@ -725,7 +725,6 @@ export const ChatResponse = React.memo(function ChatResponse({
           <Box style={{ padding: 'var(--space-4) 0' }}>
             {/* Show confidence only when not streaming and has answer */}
             {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
-            {!isStreaming && searchDegraded && <SearchDegradedNote />}
 
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
                 streamed live or rendered from the persisted transcript.
@@ -871,6 +870,8 @@ export const ChatResponse = React.memo(function ChatResponse({
                 />
               </Box>
             )}
+
+            {!isStreaming && searchDegraded && <SearchDegradedNote />}
 
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}

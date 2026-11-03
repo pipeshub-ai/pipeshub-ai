@@ -1584,6 +1584,8 @@ class RetrievalService:
         except Exception as exc:
             self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
             return [], {}
+        # These hits can join the response, so a partial search behind them is the response's too.
+        plan.degraded = plan.degraded or candidate_plan.degraded
         kept = [
             hit for hit in hits
             if isinstance(hit, dict) and hit_record_id(hit) in accessible
@@ -2697,13 +2699,14 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
+        degraded: list[bool] = []
         search_results = await self._fan_out_searches(
-            collections, requests, fused_limit, failed=failed_collections,
+            collections, requests, fused_limit, failed=failed_collections, degraded=degraded,
         )
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
-        if any(isinstance(getattr(hit, "degraded", None), str) for batch in search_results for hit in batch):
+        if degraded:
             degraded_notice.note()
             if plan is not None:
                 plan.degraded = True
@@ -2750,6 +2753,7 @@ class RetrievalService:
         limit: int,
         *,
         failed: list[str] | None = None,
+        degraded: list[bool] | None = None,
     ) -> list[list]:
         """Query every collection in parallel and reduce each query to one top-K.
 
@@ -2762,7 +2766,9 @@ class RetrievalService:
         A collection that fails degrades the result set instead of failing the
         search — a search over three collections should not error because one
         is briefly unreachable. Each one it could not search is appended to
-        ``failed``, so the caller can say the results are incomplete.
+        ``failed``, so the caller can say the results are incomplete. A hit a store
+        marked as coming from a partial search appends to ``degraded`` before the merge
+        trims it, so a degraded collection whose hits rank below the cut still counts.
         """
         if not collections:
             return [[] for _ in requests]
@@ -2796,6 +2802,10 @@ class RetrievalService:
                     outcome,
                 )
                 continue
+            if degraded is not None and any(
+                isinstance(getattr(hit, "degraded", None), str) for batch in outcome for hit in batch
+            ):
+                degraded.append(True)
             for i, batch in enumerate(outcome):
                 if i < len(per_query):
                     per_query[i].append(

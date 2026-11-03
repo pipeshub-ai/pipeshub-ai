@@ -231,3 +231,39 @@ async def test_a_complete_answer_carries_no_degraded_flag(service, mock_vector_d
     mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
 
     assert "searchDegraded" not in await _search(service)
+
+
+async def test_a_degraded_collection_whose_hits_fall_below_the_cut_still_flags_the_answer(service, mock_vector_db_service) -> None:
+    strong, weak = _point("strong"), _point("weak")
+    strong.score, strong.degraded = 0.9, None
+    weak.score, weak.degraded = 0.1, "timeout"
+
+    async def by_collection(collection_name: str, requests: list) -> list[list]:
+        return [[strong]] if collection_name == "full" else [[weak]]
+
+    mock_vector_db_service.query_nearest_points = AsyncMock(side_effect=by_collection)
+    plan = mod._QueryPlan(collections=["full", "partial"])
+
+    hits = await service._run_searches(["q"], None, 1, "o1", "u1", [[0.1]], [None], plan=plan)
+
+    assert len(hits) == 1  # the weak hit was trimmed ...
+    assert plan.degraded is True  # ... and the flag was kept
+
+
+async def test_a_deeper_read_for_source_diversity_passes_its_degraded_flag_on(service) -> None:
+    plan = mod._QueryPlan(dense=[[0.1]], sparse=[None], collections=["records"])
+
+    async def deeper_read(*_args: object, plan: mod._QueryPlan, **_kwargs: object) -> list:
+        plan.degraded = True
+        return []
+
+    service._execute_parallel_searches = AsyncMock(side_effect=deeper_read)
+    service._keep_permitted_hits = AsyncMock(return_value={})
+
+    await service._diversity_candidates(
+        ["q"], None, 30, "o1", "u1", plan, containers=None, enumerated={"vr1": "rec1"}, by_record_ids=AsyncMock(),
+        record_ids_first=False, record_cut=None, allow_requery=True, user_key="user-key",
+        scope_connector_ids=None, scopes=(),
+    )
+
+    assert plan.degraded is True
