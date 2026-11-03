@@ -1147,6 +1147,19 @@ class TestRunSync:
         processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [gone])
 
     @pytest.mark.asyncio
+    async def test_everyone_stored_is_withdrawn_when_a_complete_read_lists_nobody_eligible(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        connector._fetch_users = AsyncMock(return_value=[])
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[alice, guest])
+
+        await self._run(connector)
+
+        processor.on_new_app_users.assert_not_awaited()
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [alice, guest])
+
+    @pytest.mark.asyncio
     async def test_nobody_is_withdrawn_while_everyone_is_listed(self) -> None:
         connector = _make_connector()
         alice, guest, _ = self._prepare(connector)

@@ -752,7 +752,8 @@ class LinearConnector(BaseConnector):
             if linear_users:
                 await self.data_entities_processor.on_new_app_users(linear_users)
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
-                await self._withdraw_absent_app_users(linear_users)
+            # Also when nobody is eligible: everyone stored then loses the connector.
+            await self._withdraw_absent_app_users(linear_users)
 
             # Step 3: Get team_ids filter and fetch teams
             team_ids = None
