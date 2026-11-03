@@ -28805,10 +28805,12 @@ paths:
 
         Allows a logged-in user to change their password by providing the current password and a new password.
 
-        **Order of checks:** the access token is read before the body, so a request without
-        a valid session token answers `401` (or `403` for a personal access token or OAuth
-        access token) whatever its body holds. Body fields other
-        than the three below are dropped by the validator, and the query string is not read.
+        **Order of checks:** the app-wide body parsers and markup filter run first, so a body
+        they refuse, such as malformed JSON, is answered `400` before authentication. After
+        that, the access token is read before the body is validated, so a request without a
+        valid session token answers `401` (or `403` for a personal access token or OAuth
+        access token) whatever fields its body holds. Body fields other than the three below
+        are dropped by the validator, and the query string is not read.
 
         **Effect on sessions:** the change ends refresh tokens issued before it. The response
         carries a new access token.
