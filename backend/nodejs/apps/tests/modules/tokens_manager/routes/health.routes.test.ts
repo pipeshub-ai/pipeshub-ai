@@ -269,6 +269,18 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment.redisMode).to.equal('cluster')
     })
 
+    it('should not call the cache Redis when no Redis server is configured', async () => {
+      process.env.REDIS_MODE = 'inprocess'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].serviceNames.redis).to.equal('In-process cache')
+    })
+
     it('should show Redis (MemoryDB) in serviceNames when REDIS_MODE is memorydb', async () => {
       process.env.REDIS_MODE = 'memorydb'
       router = createHealthRouter(container, cmContainer)
