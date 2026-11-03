@@ -48,6 +48,7 @@ class FakeDB:
         FakeDB.instances.append(self)
 
     async def start(self) -> None:
+        await asyncio.sleep(0)                  # a real start yields: two connects at once interleave here
         if self.start_error:
             raise self.start_error
         self.started += 1
@@ -102,6 +103,32 @@ async def test_one_database_runtime_for_100_providers_on_one_config(config_servi
     assert FakeDB.instances[0].cfg.statement_cache_size == 0          # PgBouncer transaction mode
     assert FakeDB.instances[0].cfg.role == "pipeshub_indexing"        # the role of the login in the DSN
     assert len({id(p.get_service_client()) for p in providers}) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_connects_at_once_acquire_the_runtime_once(config_service) -> None:
+    s = PgVectorService(PgVectorConfig(dsn="postgresql://pipeshub_indexing_login@h/db"))
+    await asyncio.gather(*[s.connect() for _ in range(10)])
+    assert len(FakeDB.instances) == 1 and FakeDB.instances[0].started == 1
+    await s.disconnect()
+    assert FakeDB.instances[0].closed == 1                                       # released exactly what was acquired
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_gets_a_placement_policy_on_the_new_runtime(config_service) -> None:
+    s = PgVectorService(PgVectorConfig(dsn="postgresql://pipeshub_indexing_login@h/db"))
+    await s.connect()
+    first = s.placement
+    assert first is not None
+    await s.disconnect()
+    assert s.placement is None                                                   # the policy held the released runtime
+    await s.connect()
+    assert s.placement is not None and s.placement is not first and s.placement._db is s._db
+    own = PgVectorService(PgVectorConfig(dsn="postgresql://pipeshub_indexing_login@h/db"))
+    mine = own.placement = SimpleNamespace(before_first_write=AsyncMock())       # a policy the caller supplied is kept
+    await own.connect()
+    await own.disconnect()
+    assert own.placement is mine
 
 
 @pytest.mark.asyncio
@@ -165,7 +192,7 @@ async def test_health_reports_the_version_and_an_unreachable_catalog(svc) -> Non
     assert ok.status == HealthStatus.HEALTHY and ok.server_version == "pgvector 0.8.4" and ok.latency_ms is not None
     svc._catalog.collections = AsyncMock(side_effect=ConnectionResetError("gone"))
     bad = await svc.health_check()
-    assert bad.status == HealthStatus.UNHEALTHY and "gone" in bad.message
+    assert bad.status == HealthStatus.UNHEALTHY and "gone" not in bad.message and "ConnectionResetError" in bad.message   # no driver text, host or port
 
 
 def test_identity_and_capabilities() -> None:

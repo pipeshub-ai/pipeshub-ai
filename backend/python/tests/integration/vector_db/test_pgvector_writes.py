@@ -207,3 +207,76 @@ async def test_concurrent_writers_never_cross_orgs_and_two_writers_of_the_same_p
     for org in (A, B):
         assert (await live(store, org), await postings(store, org), await count_delta(store, org)) == (20, 20, 20)
     assert (await sql(store, "SELECT count(*) FROM retrieval.postings q JOIN retrieval.points p USING (org_id, point_sk) WHERE q.org_id <> p.org_id"))[0][0] == 0
+
+
+MEMBERS = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = $2 ORDER BY 1, 2"
+
+
+async def test_a_membership_write_that_carries_some_arrays_leaves_the_others_as_they_are(store) -> None:
+    now = datetime.now(UTC)
+    bulk = point(A, "p1", conn=["c1"])
+    bulk.payload.update({"recordGroupIds": ["g1"], "rootRecordGroupIds": ["rg1"]})
+    await store.upsert_points("records", [bulk], computed_at=now)
+    await store.set_payload("records", {"connectorIds": ["c9"]}, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=5))
+    assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "c9"), (2, "g1"), (3, "rg1")]          # only the connector arm moved
+    row = (await sql(store, "SELECT connector_ids, record_group_ids, root_record_group_ids FROM retrieval.point_groups WHERE org_id = $1", A))[0]
+    assert (row[0], row[1], row[2]) == (["c9"], ["g1"], ["rg1"])
+    await store.update_payload_by_ids("records", [pid(f"{A}/p1")], {"recordGroupIds": []}, org_id=A, computed_at=now + timedelta(seconds=9))
+    assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "c9"), (3, "rg1")]                    # an explicit empty list does empty one
+
+
+async def test_two_writers_of_one_group_leave_the_members_of_the_one_that_read_the_graph_later(store) -> None:
+    now = datetime.now(UTC)
+    seed = await store.env.admin()
+    other, first = await store.env.admin(), await store.env.admin()
+    try:
+        await writes.write_groups(seed, A, 1, {"r1": {"connectorIds": ["x"]}}, now, allow_empty=True)
+        tx_a = first.transaction()
+        await tx_a.start()
+        await writes.write_groups(first, A, 1, {"r1": {"connectorIds": ["a", "b"]}}, now + timedelta(seconds=1), allow_empty=True)   # not committed yet
+        tx_b = other.transaction()
+        await tx_b.start()
+        later = asyncio.ensure_future(writes.write_groups(other, A, 1, {"r1": {"connectorIds": ["b"]}}, now + timedelta(seconds=2), allow_empty=True))
+        await asyncio.sleep(0.5)
+        assert not later.done()                                                                       # it waits for the first writer's row lock
+        await tx_a.commit()
+        assert await asyncio.wait_for(later, 10) == 1
+        await tx_b.commit()
+    finally:
+        for c in (seed, other, first):
+            await c.close()
+    assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "b")]                          # not (1, a), (1, b)
+
+
+async def test_a_point_written_again_after_a_safe_mode_delete_is_counted_once_whichever_way_its_terms_change(store) -> None:
+    safe = dataclasses.replace(store.pg_capabilities, hnsw_safe_mode=True)
+    store.pg_capabilities = safe
+    await store.upsert_points("records", [point(A, "p1", terms=(3,)), point(A, "p2", terms=())])
+    assert await count_delta(store, A) == 1
+    await store.delete_points("records", flt(A, virtualRecordId="r1"))
+    assert await count_delta(store, A) == 0
+    await store.upsert_points("records", [point(A, "p1", terms=()), point(A, "p2", terms=(5,))])             # p1 loses its terms, p2 gains them
+    assert (await live(store, A), await postings(store, A), await count_delta(store, A)) == (2, 1, 1)         # only p2 has terms
+    await store.delete_points("records", flt(A, virtualRecordId="r1"))
+    await store.upsert_points("records", [point(A, "p1", terms=(3, 4)), point(A, "p2", terms=(5,))])
+    assert (await live(store, A), await postings(store, A), await count_delta(store, A)) == (2, 3, 2)
+
+
+async def test_an_overwrite_replaces_the_whole_payload_text_included(store) -> None:
+    await store.upsert_points("records", [point(A, "p1", text="keep me?")])
+    await store.overwrite_payload("records", {"only": 1}, flt(A, blockId="p1"))
+    row = (await sql(store, "SELECT page_content, payload::text AS payload FROM retrieval.point_text WHERE org_id = $1", A))[0]
+    assert row["payload"] == '{"only": 1}' and row["page_content"] is None
+    await store.set_payload("records", {"more": 2}, flt(A, blockId="p1"))                                      # a merge keeps what it does not carry
+    await store.upsert_points("records", [point(A, "p1", text="back")])
+    await store.set_payload("records", {"more": 2}, flt(A, blockId="p1"))
+    assert (await sql(store, "SELECT page_content FROM retrieval.point_text WHERE org_id = $1", A))[0][0] == "back"
+
+
+async def test_an_index_run_that_read_the_graph_before_the_sync_loses_to_it(store) -> None:
+    now = datetime.now(UTC)
+    p = point(A, "p1", conn=["old"])
+    await store.upsert_points("records", [p], computed_at=now)
+    await store.set_payload("records", {"connectorIds": ["synced"]}, flt(A, virtualRecordId="r1"), computed_at=now + timedelta(seconds=30))
+    await store.upsert_points("records", [point(A, "p1", conn=["stale"])], computed_at=now + timedelta(seconds=10))     # read before the sync wrote
+    assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "synced")]

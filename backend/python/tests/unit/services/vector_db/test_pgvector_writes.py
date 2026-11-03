@@ -64,18 +64,25 @@ def test_a_payload_merge_cannot_move_a_point() -> None:
     assert writes._merge_args({"a": 1, "connectorIds": ["c"], "page_content": "t"}) == ('{"a":1}', "t")
 
 
-def test_the_package_follows_the_database_runtime_rules() -> None:
-    """No session SQL and every literal statement tagged (the runtime's own static checks). Statements that splice in a compiled
-    filter (``sql_filters``: structure only, every value a ``$n`` bind) are the only string-built ones, and are tagged too."""
+def test_the_only_string_built_statements_are_the_three_that_splice_a_compiled_filter() -> None:
+    """The runtime's static SQL checks over the whole package (no session SQL, every literal statement tagged). A statement built from
+    parts is allowed in exactly three places of ``writes.py``, where the compiled filter's structure is spliced in (every value in it a
+    ``$n`` bound parameter, which ``test_sql_filters`` pins); any other built statement fails here and in the shared guard."""
+    import ast
+
     from app.core.db import sql_lint
 
     root = Path(writes.__file__).parent
     found = sql_lint.scan_paths(sorted(root.glob("*.py")))
     assert [str(f) for f in found if "string-built" not in f.rule] == []
-    assert {Path(f.path).name for f in found} <= {"reads.py", "writes.py"}
+    built = [f for f in found if "string-built" in f.rule]
+    assert {Path(f.path).name for f in built} == {"writes.py"}
+    tree = ast.parse((root / "writes.py").read_text())
+    owner = {n: f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) for n in range(f.lineno, f.end_lineno + 1)}
+    assert sorted(owner[f.line] for f in built) == ["delete_batch", "group_keys_matching", "merge_payload"]
     for name in ("reads.py", "writes.py"):
         text = (root / name).read_text()
-        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 1
+        assert text.count("/* pipeshub:pgvector.") >= text.count("tx.fetch") + text.count("tx.execute") - 3
 
 
 def test_a_point_without_a_payload_is_refused_as_having_no_org_not_crashed_on() -> None:
@@ -83,3 +90,81 @@ def test_a_point_without_a_payload_is_refused_as_having_no_org_not_crashed_on() 
 
     with pytest.raises(OrgRequired):
         writes.prepare([VectorPoint(id=str(uuid.UUID(int=1)), dense_vector=[1.0], payload=None)])
+
+
+# ---- every statement of a write names its org ----------------------------------------------------------------------------------------
+class RecordingTx:
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self.sql: list[str] = []
+        self.rows = rows or []
+
+    async def fetch(self, sql: str, *args: object) -> list[dict]:
+        self.sql.append(sql)
+        return self.rows
+
+    async def fetchval(self, sql: str, *args: object) -> int:
+        self.sql.append(sql)
+        return 0
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.sql.append(sql)
+        return "UPDATE 0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("safe", [False, True])
+async def test_every_statement_of_a_delete_pins_the_org_including_the_lock_that_selects_the_victims(safe: bool) -> None:
+    from app.services.vector_db.pgvector.sql_filters import Compiled
+
+    tx = RecordingTx([{"point_sk": 1}])
+    await writes.delete_batch(tx, A, 1, Compiled("p.vrid = ANY($3::text[])", [["r"]]), safe_mode=safe)
+    assert len(tx.sql) == 2
+    lock, victims = tx.sql
+    assert "p.org_id = $1" in lock and "FOR UPDATE" in lock
+    assert victims.count("org_id = $1") >= 3
+    for statement in tx.sql:
+        assert "$1" in statement and "org_id" in statement
+
+
+@pytest.mark.asyncio
+async def test_payload_and_group_statements_pin_the_org() -> None:
+    from datetime import UTC, datetime
+
+    from app.services.vector_db.pgvector.sql_filters import Compiled
+
+    tx = RecordingTx()
+    await writes.merge_payload(tx, A, 1, {"k": 1}, Compiled("true", []), None)
+    await writes.merge_payload(tx, A, 1, {"k": 1}, None, [uuid.UUID(int=1)])
+    await writes.group_keys_matching(tx, A, 1, Compiled("true", []))
+    await writes.group_keys_of_ids(tx, A, 1, [uuid.UUID(int=1)])
+    assert len(tx.sql) == 4
+    for statement in tx.sql:
+        assert "org_id = $1" in statement, statement[:80]
+    tx.sql.clear()
+    await writes.write_groups(tx, A, 1, {"g": {"connectorIds": ["c"]}}, datetime.now(UTC), allow_empty=True)
+    assert tx.sql and all("$1" in statement and "org_id" in statement for statement in tx.sql)       # $1 is the org of every group row
+
+
+@pytest.mark.asyncio
+async def test_a_group_write_replaces_only_the_arrays_it_carries() -> None:
+    from datetime import UTC, datetime
+
+    tx = RecordingTx([{"group_key": "g", "connector_ids": ["c9"], "record_group_ids": ["old"], "root_record_group_ids": []}])
+    seen: list[tuple] = []
+
+    async def fetch(sql: str, *args: object) -> list[dict]:
+        seen.append(args)
+        return tx.rows
+
+    async def execute(sql: str, *args: object) -> str:
+        seen.append(args)
+        return "INSERT 0 0"
+
+    tx.fetch, tx.execute = fetch, execute      # type: ignore[method-assign]
+    assert await writes.write_groups(tx, A, 1, {"g": {"connectorIds": ["c9"]}}, datetime.now(UTC), allow_empty=True) == 1
+    import json
+
+    rows = json.loads(seen[0][2])
+    assert rows == [{"k": "g", "c": ["c9"], "r": None, "x": None}]                        # the other two arrays are absent, not empty
+    members = json.loads(seen[1][2])
+    assert members == [{"k": "g", "kind": 1, "members": ["c9"]}]                             # and only connector members are diffed
