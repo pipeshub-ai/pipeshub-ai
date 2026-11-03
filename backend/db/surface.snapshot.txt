@@ -828,8 +828,8 @@ extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
-func graph.system_apps(boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=3c71850f7a99d119fe792c82fd086731 ext=-
-func graph.system_orgs(boolean,boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=2b87961baa35e054036be22941fd2d84 ext=-
+func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
+func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
 func identity.oldest_org() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=7b7fd3d718eb548a5a207136e23c8290 ext=-
 func identity.org_count(boolean) owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=892c38309b38ba7ac2fb88a0d1f3aaea ext=-
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
@@ -866,11 +866,11 @@ func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
-funcacl graph.system_apps(boolean,text,integer) pipeshub_connectors EXECUTE
-funcacl graph.system_apps(boolean,text,integer) pipeshub_indexing EXECUTE
-funcacl graph.system_orgs(boolean,boolean,text,integer) pipeshub_connectors EXECUTE
-funcacl graph.system_orgs(boolean,boolean,text,integer) pipeshub_indexing EXECUTE
-funcacl graph.system_orgs(boolean,boolean,text,integer) pipeshub_query EXECUTE
+funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.system_apps(boolean,text,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_query EXECUTE
 funcacl identity.oldest_org() pipeshub_node EXECUTE
 funcacl identity.org_count(boolean) pipeshub_node EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
@@ -932,11 +932,13 @@ index conversation.semantic_searches_by_user on conversation.semantic_searches u
 index conversation.semantic_searches_pkey on conversation.semantic_searches unique=true exclusion=false valid=true def=5afcff0ea8f2d669186c57738eb82fd3
 index graph.edges_by_target on graph.edges unique=false exclusion=false valid=true def=f87b2d07ea6c1bb8dcebe54000a174c1
 index graph.edges_pkey on graph.edges unique=true exclusion=false valid=true def=cb40875fb7aeea0903e6713524de17e3
+index graph.nodes_app_by_id on graph.nodes unique=false exclusion=false valid=true def=9fb2c424ad701514ef37f152dfa19f27
 index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=true def=49619dfd1628d521678017dab7b7b6fa
 index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
 index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
 index graph.nodes_group_external on graph.nodes unique=false exclusion=false valid=true def=82c18bdfd57b6cb002b36f3cedcdaca2
 index graph.nodes_ne_kind_key on graph.nodes unique=false exclusion=false valid=true def=47fc150762c94fa2fa36620a7a676ad7
+index graph.nodes_org_by_id on graph.nodes unique=false exclusion=false valid=true def=6385b1241b0a62b5d98a1ca4c43f3c8f
 index graph.nodes_pkey on graph.nodes unique=true exclusion=false valid=true def=de1eb284c514a58aa3faf661f3ec3508
 index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=false valid=true def=e9822c643d639761d85db36c3c97c7b7
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54

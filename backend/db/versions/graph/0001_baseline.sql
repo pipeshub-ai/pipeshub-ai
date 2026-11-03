@@ -1,6 +1,9 @@
 -- Schema for the PostgreSQL graph store (DATA_STORE=postgres): the nodes and edges the Neo4j and ArangoDB providers keep.
--- The owner of the SECURITY DEFINER functions of this schema (the vetted functions run after this file), normally created by the role bootstrap. The row
--- policy below names it, so it exists before it.
+-- No foreign keys between edges and nodes: they cannot be declared across the list and hash partitions, so deleting a node leaves its edges
+-- to the caller.
+--
+-- The role that owns the SECURITY DEFINER functions of this schema (they are created after this file) is normally made by the role bootstrap.
+-- The row policy below names it, so it must exist first.
 RESET ROLE;
 DO $$
 BEGIN

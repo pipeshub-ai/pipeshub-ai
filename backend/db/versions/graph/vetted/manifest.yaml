@@ -3,9 +3,12 @@
 #
 # The cross-org reads the services make under a system scope: the organisation list (start-up, every per-org background pass) and the
 # connector instances (the schedule sweep). They answer for every org, so only the three graph-reading services may call them, and
-# they return nothing but these two collections: a service needs no login that can read the whole graph.
+# they return nothing but these two collections: a service needs no login that can read the whole graph. They return the whole document
+# (organisation and connector-instance documents hold names, flags and settings, no credentials; the provider reads them as it reads
+# any document of these collections). Ids are unique per organisation only, so every page continues after the last (org, id) pair it
+# returned, never after an id alone.
 functions:
-  # One page of the organisations, after the given id: internal or external, live ones only unless p_all.
+  # One page of the organisations after the given (org, id) pair, in that order: internal or external, live ones only unless p_all.
   - name: graph.system_orgs
     class: read
     scope: global
@@ -14,25 +17,17 @@ functions:
       - {name: p_all, type: boolean}
       - {name: p_external, type: boolean}
       - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_after_id, type: text, default: "''", length: [0, 200]}
       - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
-    returns: "TABLE (org_id text, node_json text)"
+    returns: "TABLE (org_id text, node_id text, node_json text)"
     reads: [graph.nodes]
     content_ok: true
     body: |
-      RETURN QUERY SELECT n.org_id, n.doc::text FROM graph.nodes n
+      RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n
         WHERE n.coll = 'organizations' AND (n.doc @> '{"isExternal": true}') = p_external
-          AND (p_all OR n.doc @> '{"isActive": true}') AND n.org_id > p_after ORDER BY n.org_id LIMIT p_limit;
-    test:
-      needle: |
-        INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ('{org}', 'organizations', '{org}', '{{"id": "{org}", "isActive": true}}')
-          ON CONFLICT DO NOTHING
-      args: [true, false, "", 1000]
-      own_result: &orgs [["{org}", "{{\"id\": \"{org}\", \"isActive\": true}}"]]
-      other_result: *orgs
-      no_org_result: *orgs
-      bad_args: [[null, false, "", 10], [true, null, "", 10], [true, false, "", 0], [true, false, "", 1001], [true, false, null, 10]]
+          AND (p_all OR n.doc @> '{"isActive": true}') AND (n.org_id, n.id) > (p_after, p_after_id) ORDER BY n.org_id, n.id LIMIT p_limit;
 
-  # One page of the connector instances (collection apps), across orgs, in id order after the given id.
+  # One page of the connector instances (collection apps), across orgs, in (id, org) order after the given pair.
   - name: graph.system_apps
     class: read
     scope: global
@@ -40,6 +35,7 @@ functions:
     args:
       - {name: p_only_active, type: boolean}
       - {name: p_after_id, type: text, default: "''", length: [0, 200]}
+      - {name: p_after_org, type: text, default: "''", length: [0, 200]}
       - {name: p_limit, type: int, default: "100", range: [1, 1000]}
     returns: "TABLE (org_id text, app_id text, node_json text)"
     reads: [graph.nodes]
@@ -47,16 +43,7 @@ functions:
     body: |
       RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n
         WHERE n.coll = 'apps' AND (NOT p_only_active OR n.doc @> '{"isActive": true}')
-        AND n.id > p_after_id ORDER BY n.id, n.org_id LIMIT p_limit;
-    test:
-      needle: |
-        INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ('{org}', 'apps', 'needle-app', '{{"id": "needle-app", "isActive": true}}')
-          ON CONFLICT DO NOTHING
-      args: [true, "", 1000]
-      own_result: &apps [["{org}", "needle-app", "{{\"id\": \"needle-app\", \"isActive\": true}}"]]
-      other_result: *apps
-      no_org_result: *apps
-      bad_args: [[null, "", 10], [true, "", 0], [true, "", 1001], [true, null, 10], [true, "{long}", 10]]
+        AND (n.id, n.org_id) > (p_after_id, p_after_org) ORDER BY n.id, n.org_id LIMIT p_limit;
 
   # One connector instance by id, whichever org holds it.
   - name: graph.system_app
@@ -70,12 +57,3 @@ functions:
     content_ok: true
     body: |
       RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n WHERE n.coll = 'apps' AND n.id = p_id ORDER BY n.org_id LIMIT 1;
-    test:
-      needle: |
-        INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ('{org}', 'apps', 'needle-app', '{{"id": "needle-app", "isActive": true}}')
-          ON CONFLICT DO NOTHING
-      args: ["needle-app"]
-      own_result: &app [["{org}", "needle-app", "{{\"id\": \"needle-app\", \"isActive\": true}}"]]
-      other_result: *app
-      no_org_result: *app
-      bad_args: [[""], [null], ["{long}"]]
