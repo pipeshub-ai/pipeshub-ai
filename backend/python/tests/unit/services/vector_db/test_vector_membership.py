@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.vector_db.models import ScrollResult
+
 from app.config.constants.arangodb import CollectionNames
 from app.services.vector_db.collection_locator import StaticCollectionLocator
 from app.services.vector_db.const.const import (
@@ -599,6 +601,7 @@ class TestSyncAndRewriteMembership:
         gp = _graph(keys=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -1178,6 +1181,7 @@ class TestDeleteConfirmation:
         gp.delete_nodes = AsyncMock(side_effect=lambda **k: order.append("mapping"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
         vdb.delete_points = AsyncMock(side_effect=lambda **k: order.append("points"))
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS

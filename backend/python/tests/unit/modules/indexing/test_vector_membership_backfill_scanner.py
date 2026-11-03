@@ -516,3 +516,28 @@ async def test_rewound_pass_does_not_inherit_the_previous_vrid_count():
 
     _key, _collection, fields = graph.update_node.await_args.args
     assert fields[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_VRIDS] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_vrid_whose_records_name_no_org_is_skipped_and_does_not_block_the_connector():
+    """Retrying cannot name an org; counting it as a failure would hold the connector's backfill open for ever."""
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1"})
+    graph.page_records_for_vector_membership_backfill = AsyncMock(
+        return_value=[
+            {"_key": "r1", "virtualRecordId": "no-org", "orgId": None},
+            {"_key": "r2", "virtualRecordId": "good", "orgId": "o1"},
+        ]
+    )
+    graph.update_node = AsyncMock()
+    pipeline = AsyncMock()
+    logger = _logger()
+
+    await run_vector_membership_backfill_tick(
+        logger=logger, graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0,
+    )
+
+    assert [c.args for c in pipeline.sync_vector_membership.await_args_list] == [("good",)]
+    update = graph.update_node.await_args.args[2]
+    assert update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED] is True
+    assert ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS not in update or update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS] == 0

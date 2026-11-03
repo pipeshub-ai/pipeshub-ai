@@ -419,3 +419,26 @@ async def test_the_reconciliation_fallback_row_names_its_org() -> None:
     await store._map_reconciliation_document("vr-1", "doc-1", A)
     (row,) = store.graph_provider.batch_upsert_nodes.await_args.args[0]
     assert row["orgId"] == A and row["_key"] == "vr-1"
+
+
+# a legacy shared VRID: the one mapping row outlives the first org's cleanup
+async def test_the_mapping_row_is_kept_while_another_org_still_has_points(db) -> None:
+    released: list[list[str]] = []
+
+    async def release(ids: list[str]) -> None:
+        released.append(ids)
+
+    for _ in range(2):  # a second lap changes nothing and stays quiet
+        with _as(A):
+            outcome = await rewrite_or_delete_virtual_record(
+                db, StaticCollectionLocator([COLL]), _shared_graph({}), VRID, MagicMock(), release_mapping=release,
+            )
+    assert outcome == "deleted"
+    assert _ids(db) == {"b-b1", "b-b2"}
+    assert released == []
+    with _as(B):
+        await rewrite_or_delete_virtual_record(
+            db, StaticCollectionLocator([COLL]), _shared_graph({}), VRID, MagicMock(), release_mapping=release,
+        )
+    assert released == [[VRID]]
+

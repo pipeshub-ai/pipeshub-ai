@@ -863,6 +863,24 @@ async def rewrite_or_delete_virtual_record(
             )
 
 
+# VRIDs whose mapping row was kept for another org, so the warning comes once per process, not every sweep lap.
+_shared_row_kept: set[str] = set()
+
+
+async def _other_orgs_hold_points(vector_db, collections: Sequence[str], virtual_record_id: str, org_id: str) -> bool:  # noqa: ANN001
+    filt = await vector_db.filter_collection(
+        must={"virtualRecordId": virtual_record_id}, must_not={"orgId": org_id}
+    )
+    for collection_name in collections:
+        page = await vector_db.scroll(
+            collection_name=collection_name, scroll_filter=filt, limit=1,
+            with_payload=["metadata.virtualRecordId"],
+        )
+        if getattr(page, "points", None):
+            return True
+    return False
+
+
 async def _rewrite_or_delete_locked(
     vector_db,
     locator: CollectionLocator,
@@ -930,6 +948,18 @@ async def _rewrite_or_delete_locked(
             virtual_record_id,
             len(collections),
         )
+
+    # One mapping row per VRID serves every org that holds it. While another org still has points on
+    # it (a legacy shared VRID), the row is kept: it is the orphan sweep's only handle on them.
+    if await _other_orgs_hold_points(vector_db, collections, virtual_record_id, org_id):
+        if virtual_record_id not in _shared_row_kept:
+            _shared_row_kept.add(virtual_record_id)
+            if logger is not None:
+                logger.warning(
+                    "Kept the mapping of virtual record %s: another org still holds points on it", virtual_record_id,
+                )
+        return "deleted"
+    _shared_row_kept.discard(virtual_record_id)
 
     if release_mapping is not None:
         await release_mapping([virtual_record_id])

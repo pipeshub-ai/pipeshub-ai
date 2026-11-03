@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.vector_db.models import ScrollResult
+
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -66,6 +68,7 @@ def _graph(records):
 def _vdb():
     vdb = AsyncMock()
     vdb.filter_collection = AsyncMock(return_value={"vrid": "vr-1"})
+    vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
     return vdb
 
 

@@ -92,8 +92,8 @@ class FakeVectorDB:
     async def create_index(self, collection_name, field_name, field_schema) -> None:
         return None
 
-    async def filter_collection(self, must=None, should=None):
-        return {"must": must, "should": should}
+    async def filter_collection(self, must=None, should=None, must_not=None):
+        return {"must": must, "should": should, "must_not": must_not}
 
     async def set_payload(self, collection_name, payload, filter) -> None:
         self.payload_writes.append(collection_name)
@@ -105,7 +105,7 @@ class FakeVectorDB:
         self.searched.append(collection_name)
         return [[] for _ in requests]
 
-    async def scroll(self, collection_name, scroll_filter, limit, offset=None):
+    async def scroll(self, collection_name, scroll_filter, limit, offset=None, with_payload=None):
         from app.services.vector_db.models import ScrollResult
 
         return ScrollResult(points=[], next_offset=None)
