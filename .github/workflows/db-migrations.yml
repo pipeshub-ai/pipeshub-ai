@@ -127,6 +127,8 @@ jobs:
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
             --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]' \
+            --allow='-kt.w_fence_add]' --allow='-kt.w_fence_remove]' --allow='-kt.w_fence_reason]' --allow='-kt.w_changes_ack]' \
+            --allow='-kt.w_keys_add]' --allow='-kt.w_pref_put]' \
             --allow='-retrieval.collection_create]' \
             --allow='-retrieval.collection_mark_deleting]' \
             --allow='-retrieval.collection_stamp_set]' \
