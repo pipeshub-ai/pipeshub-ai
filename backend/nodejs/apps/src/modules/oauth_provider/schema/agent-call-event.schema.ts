@@ -12,7 +12,7 @@ import {
 export interface IAgentCallEvent extends Document {
   orgId: Types.ObjectId;
   userId: Types.ObjectId;
-  /** The token's `jti`, never the token or its hash. */
+  /** The stored token's id (the one token lists and revocation use), never the token, its hash or its `jti`. */
   tokenId: string;
   tokenKind: AgentTokenKind;
   oauthClientId?: string;

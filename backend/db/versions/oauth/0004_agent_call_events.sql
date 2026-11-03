@@ -24,6 +24,7 @@ CREATE TABLE oauth.agent_call_events (
 );
 CREATE INDEX agent_call_events_by_time ON oauth.agent_call_events (org_id, created_at DESC, id DESC);
 CREATE INDEX agent_call_events_by_token ON oauth.agent_call_events (org_id, token_id, created_at DESC);
+CREATE INDEX agent_call_events_by_created ON oauth.agent_call_events (created_at);   -- the retention sweep reads across orgs by age
 CREATE UNIQUE INDEX agent_call_events_rollup ON oauth.agent_call_events (org_id, token_id, method, route, bucket) WHERE bucket IS NOT NULL;
 
 SELECT kernel.apply_rls('oauth.agent_call_events', 'org', p_jobs => true);   -- the sweeper removes rows past their retention

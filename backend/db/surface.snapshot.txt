@@ -1028,6 +1028,7 @@ index oauth.access_tokens_by_user on oauth.access_tokens unique=false exclusion=
 index oauth.access_tokens_live_by_client on oauth.access_tokens unique=false exclusion=false valid=true def=2170d734051fe9766e3b38aa5cbb0580
 index oauth.access_tokens_org_id_token_hash_key on oauth.access_tokens unique=true exclusion=false valid=true def=ca972d18ab56fc408e20946a9ab50171
 index oauth.access_tokens_pkey on oauth.access_tokens unique=true exclusion=false valid=true def=b5ea82b7c419f8ffad63620bfbe53086
+index oauth.agent_call_events_by_created on oauth.agent_call_events unique=false exclusion=false valid=true def=c68c58134ae19b1edcc76034e95b675c
 index oauth.agent_call_events_by_time on oauth.agent_call_events unique=false exclusion=false valid=true def=fa675ea3829c1ca4d18604fe17d7c4cb
 index oauth.agent_call_events_by_token on oauth.agent_call_events unique=false exclusion=false valid=true def=370a094df593795d482826bf35dec7dc
 index oauth.agent_call_events_pkey on oauth.agent_call_events unique=true exclusion=false valid=true def=13f615535215bc1755675823e5654d48
