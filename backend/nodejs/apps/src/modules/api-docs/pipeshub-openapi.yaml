@@ -28805,12 +28805,17 @@ paths:
 
         Allows a logged-in user to change their password by providing the current password and a new password.
 
-        **Order of checks:** the app-wide body parsers and markup filter run first, so a body
-        they refuse, such as malformed JSON, is answered `400` before authentication. After
-        that, the access token is read before the body is validated, so a request without a
-        valid session token answers `401` (or `403` for a personal access token or OAuth
-        access token) whatever fields its body holds. Body fields other than the three below
-        are dropped by the validator, and the query string is not read.
+        **Order of checks:** these run before authentication, in this order:
+        - The app-wide body parsers refuse a body that is not valid JSON (`400`), a body past
+          the size limits (`413`), and an unsupported content encoding or character set (`415`).
+        - The markup filter refuses a field that looks like markup (`400`).
+        - The global rate limiter, which counts per IP at this point, answers `429` once its
+          limit is exceeded.
+
+        Only then is the access token read, before the body is validated, so a request
+        without a valid session token answers `401` (or `403` for a personal access token or
+        OAuth access token) whatever fields its body holds. Body fields other than the three
+        below are dropped by the validator, and the query string is not read.
 
         **Effect on sessions:** the change ends refresh tokens issued before it. The response
         carries a new access token.
@@ -28921,7 +28926,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Rate limit exceeded — auth limiter (MAX_AUTH_REQUESTS_PER_MINUTE per signed-in user)
+          description: |
+            Rate limit exceeded — the global rate limiter (MAX_REQUESTS_PER_MINUTE, counted per IP
+            before authentication), or the auth limiter (MAX_AUTH_REQUESTS_PER_MINUTE per
+            signed-in user) after it.
           content:
             application/json:
               schema:
