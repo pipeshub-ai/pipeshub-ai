@@ -193,6 +193,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
+  sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);

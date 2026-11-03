@@ -25973,6 +25973,76 @@ paths:
                 bearer_methods_supported: ["header"]
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
+  /auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: authMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
+  /.well-known/auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: wellKnownAuthMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
     get:
