@@ -16,7 +16,7 @@ import re
 from sqlglot import exp, parse_one
 
 PROVIDER = Path(__file__).resolve().parents[4] / "app" / "services" / "graph_db" / "postgres"
-MODULES = ["records.py", "codegraph.py", "core.py", "hierarchy.py", "trash.py", "lookups.py", "delete.py"]
+MODULES = [p.name for p in sorted(PROVIDER.glob("*.py")) if p.name not in ("__init__.py", "provider.py")]      # every module that holds statements
 PARTITIONED = {"graph.nodes", "graph.edges"}
 CALLS = {"fetch", "fetchrow", "fetchval", "execute", "_qrows", "_lrows", "_drows", "_rows", "_one", "_id_rows"}      # the helpers pass their SQL on
 
@@ -65,9 +65,12 @@ def statements(path: Path) -> list[tuple[int, str]]:
 @pytest.mark.parametrize("module", MODULES)
 def test_every_statement_binds_the_org_in_its_own_scope(module: str) -> None:
     found = statements(PROVIDER / module)
-    assert found, "no statement found: the scan is broken"
     bad = [(line, aliases) for line, sql in found if (aliases := unbound_tables(sql))]
     assert bad == [], f"{module}: statements with a graph table and no org predicate in their scope: {bad}"
+
+
+def test_the_scan_finds_the_statements_of_the_provider() -> None:
+    assert sum(len(statements(PROVIDER / m)) for m in MODULES) > 50, "the scan finds almost nothing: it is broken"
 
 
 def test_the_scan_catches_a_statement_that_forgot_the_org() -> None:
@@ -77,12 +80,7 @@ def test_the_scan_catches_a_statement_that_forgot_the_org() -> None:
     assert unbound_tables("DELETE FROM graph.nodes WHERE coll = $2") == ["nodes"]
 
 
-# identity.py builds six statements by formatting (a filter list, a page size, a SQL fragment); strict xfail: it turns red when they are rewritten.
-KNOWN = {"identity.py": "six statements built by formatting, still to be rewritten as literals"}
-
-
-@pytest.mark.parametrize("module", [pytest.param(p.name, marks=pytest.mark.xfail(strict=True, reason=KNOWN[p.name])) if p.name in KNOWN else p.name
-                                    for p in sorted(PROVIDER.glob("*.py"))])
+@pytest.mark.parametrize("module", [p.name for p in sorted(PROVIDER.glob("*.py"))])
 def test_no_statement_of_the_provider_is_built_by_formatting(module: str) -> None:
     """The runtime SQL guard sees only calls named fetch/execute; the provider's own helpers pass their SQL on, so they are read here."""
     built = []
