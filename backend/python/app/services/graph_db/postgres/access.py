@@ -279,7 +279,7 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
             pairs = await below_seed(tx, org, [x[0] for x in left], [x[1] for x in left], [x[2] for x in left], granted_l)
             seeds = sorted({r["seed"] for r in pairs})
             if seeds:
-                seed_app = {r["seed"]: next(x[2] for x in left if x[0] == r["sid"]) for r in pairs}
+                seed_app = {r["seed"]: app_of[r["sid"]] for r in pairs}
                 # a seed another arm admits is not a seed: its hierarchy-only children stay out
                 seed_coll = {r["seed"]: r["seed_coll"] for r in pairs}
                 bad = {r["sid"] for r in await from_app(tx, org, seeds, [seed_coll[s] for s in seeds],
