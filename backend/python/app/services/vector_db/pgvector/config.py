@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field
 
 from app.core.db import DbConfig
-from app.services.vector_db.pgvector.tuning import Tuning
-
-
-def _truthy(value: object) -> bool:
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
-
+from app.services.vector_db.pgvector.tuning import Tuning, parse_flag
 
 _LOGIN = re.compile(r"^pipeshub_(node|connectors|indexing|query)_login$")
 
@@ -32,7 +28,7 @@ class PgVectorConfig:
     # The service whose role the units of work take. Default: the one the login in ``dsn`` belongs to.
     service: str = ""
     pool_max: int = 10
-    # Refuse a pgvector below 0.8.2 instead of degrading (lld 1.2).
+    # Refuse a pgvector below 0.8.2 instead of degrading.
     strict: bool = False
     # pgbouncer_txn (default), azure_pgbouncer, pgbouncer_session or none: see app.core.db.DbConfig.
     pooler: str = "pgbouncer_txn"
@@ -76,20 +72,26 @@ class PgVectorConfig:
             value = data.get(key)
             return default if value is None else value
 
-        placement = str(pick("placement", os.getenv("PGVECTOR_PLACEMENT", "own_leaf")))
+        placement = str(pick("placement", os.getenv("PGVECTOR_PLACEMENT") or "own_leaf"))
         if placement not in ("own_leaf", "none"):
             raise ValueError(f"pgvector placement must be 'own_leaf' or 'none', not {placement!r}")
+        placement_wait = float(pick("placement_wait", 30.0))  # type: ignore[arg-type]
+        catalog_ttl = float(pick("catalog_ttl", 5.0))  # type: ignore[arg-type]
+        if not math.isfinite(placement_wait) or placement_wait <= 0:
+            raise ValueError(f"pgvector placement_wait must be a positive number of seconds, not {placement_wait!r}")
+        if not math.isfinite(catalog_ttl) or catalog_ttl < 0:
+            raise ValueError(f"pgvector catalog_ttl must be zero or a positive number of seconds, not {catalog_ttl!r}")
         return cls(
             dsn=dsn,
             jobs_dsn=jobs_dsn,
             service=str(pick("service", os.getenv("PGVECTOR_SERVICE") or _service_of(dsn))),
             pool_max=max(1, int(pick("pool_max", pick("max_size", 10)))),  # type: ignore[call-overload]
-            strict=_truthy(pick("strict", os.getenv("PGVECTOR_STRICT", "false"))),
-            pooler=str(pick("pooler", os.getenv("PGVECTOR_POOLER", "pgbouncer_txn"))),
-            fence=_truthy(pick("fence", os.getenv("PGVECTOR_FENCE", "true"))),
+            strict=parse_flag("strict (PGVECTOR_STRICT)", pick("strict", os.getenv("PGVECTOR_STRICT")), default=False),
+            pooler=str(pick("pooler", os.getenv("PGVECTOR_POOLER") or "pgbouncer_txn")),
+            fence=parse_flag("fence (PGVECTOR_FENCE)", pick("fence", os.getenv("PGVECTOR_FENCE")), default=True),
             placement=placement,
-            placement_wait=float(pick("placement_wait", 30.0)),  # type: ignore[arg-type]
-            catalog_ttl=float(pick("catalog_ttl", 5.0)),  # type: ignore[arg-type]
+            placement_wait=placement_wait,
+            catalog_ttl=catalog_ttl,
             search=Tuning.from_dict(data.get("search") if isinstance(data.get("search"), dict) else None),
         )
 

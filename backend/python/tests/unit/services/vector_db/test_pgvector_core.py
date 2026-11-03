@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Never
 
 import asyncpg
@@ -63,6 +65,56 @@ def test_a_stored_null_is_the_default_and_a_stored_false_is_false(monkeypatch) -
     assert (cfg.placement_wait, cfg.catalog_ttl, cfg.service) == (30.0, 5.0, "query")
     off = PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "fence": False, "strict": True, "placement": "none"})
     assert (off.fence, off.strict, off.placement) == (False, True, "none")
+
+
+@pytest.mark.parametrize("env_name", ["PGVECTOR_FENCE", "PGVECTOR_STRICT"])
+@pytest.mark.parametrize("bad", ["flase", "disabled", "ture", "2", "nope"])
+def test_a_misspelt_switch_is_a_startup_error_naming_the_variable(monkeypatch, env_name, bad) -> None:
+    monkeypatch.setenv(env_name, bad)
+    with pytest.raises(ValueError, match=env_name):
+        PgVectorConfig.from_dict({"dsn": "postgresql://h/db"})
+    monkeypatch.delenv(env_name)
+    with pytest.raises(ValueError, match=env_name):                                  # and the same value in the config store
+        PgVectorConfig.from_dict({"dsn": "postgresql://h/db", env_name.removeprefix("PGVECTOR_").lower(): bad})
+
+
+@pytest.mark.parametrize(("raw", "fence"), [("", True), ("  ", True), ("1", True), ("YES", True), (" On ", True), ("0", False), ("False", False),
+                                            ("no", False), ("OFF", False), (True, True), (False, False)])
+def test_a_switch_accepts_the_usual_spellings_and_empty_means_the_default(monkeypatch, raw, fence) -> None:
+    monkeypatch.delenv("PGVECTOR_FENCE", raising=False)
+    assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "fence": raw}).fence is fence
+    monkeypatch.setenv("PGVECTOR_FENCE", str(raw))
+    assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db"}).fence is fence
+
+
+def test_an_empty_environment_value_is_the_default_for_every_setting(monkeypatch) -> None:
+    for name in ("PGVECTOR_FENCE", "PGVECTOR_STRICT", "PGVECTOR_PLACEMENT", "PGVECTOR_POOLER", "PGVECTOR_SERVICE"):
+        monkeypatch.setenv(name, "")
+    cfg = PgVectorConfig.from_dict({"dsn": "postgresql://pipeshub_query_login@h/db"})
+    assert (cfg.fence, cfg.strict, cfg.placement, cfg.pooler, cfg.service) == (True, False, "own_leaf", "pgbouncer_txn", "query")
+
+
+@pytest.mark.parametrize("key", ["placement_wait", "catalog_ttl"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1, "nan"])
+def test_a_wait_that_is_not_a_finite_non_negative_number_is_refused(key, bad) -> None:
+    with pytest.raises(ValueError, match=key):
+        PgVectorConfig.from_dict({"dsn": "postgresql://h/db", key: bad})
+
+
+def test_a_placement_wait_of_zero_is_refused_and_a_zero_cache_time_is_allowed() -> None:
+    with pytest.raises(ValueError, match="placement_wait"):
+        PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "placement_wait": 0})
+    assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "catalog_ttl": 0}).catalog_ttl == 0
+
+
+def test_a_misspelt_search_switch_is_refused_and_a_fractional_whole_number_falls_back(monkeypatch) -> None:
+    from app.services.vector_db.pgvector.tuning import Tuning
+
+    with pytest.raises(ValueError, match="PGVECTOR_FUSED_SEARCH"):
+        Tuning.from_dict({"fused_search": "flase"})
+    assert Tuning.from_dict({"fused_search": "off"}).fused_search is False
+    assert Tuning.from_dict({"sampler_max_per_s": 12.9}).sampler_max_per_s == Tuning().sampler_max_per_s
+    assert Tuning.from_dict({"sampler_max_per_s": "12"}).sampler_max_per_s == 12
 
 
 def test_an_unknown_placement_policy_is_refused() -> None:
@@ -257,6 +309,55 @@ async def test_org_spaces_run_for_the_named_org_only_and_a_bad_org_never_reaches
 
 
 @pytest.mark.asyncio
+async def test_a_cached_answer_for_one_org_is_not_given_to_a_call_running_for_another() -> None:
+    db = FakeDB({"org_space_list": [], "org_space_named_by": []})
+    cat = Catalog(db, ttl=60)
+    with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+        await cat.org_spaces(ORG)
+        await cat.org_spaces(ORG)                                             # cached
+        with pytest.raises(OrgMismatch):
+            await cat.org_spaces("b" * 24)
+    with org_context.bind(org_context.OrgContext("b" * 24, None, "service", "t", "-")), pytest.raises(OrgMismatch):
+        await cat.org_spaces(ORG)                                             # the cache hit does not skip the check
+    assert len(db.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_started_before_a_write_does_not_store_what_it_saw() -> None:
+    gate, release = asyncio.Event(), asyncio.Event()
+    stale = rec(collection_id=1, sparse_enabled=True, sparse_idf=True, lexical_version="v", status="ready")
+
+    class Slow:
+        async def run(self, fn, **opts) -> object:
+            class Tx:
+                async def fetchrow(_s, sql, name) -> object:
+                    gate.set()
+                    await release.wait()
+                    return stale
+            return await fn(Tx())
+
+    cat = Catalog(Slow(), ttl=60)
+    task = asyncio.create_task(cat.collection("records"))
+    await gate.wait()
+    cat.forget("records")                                                     # a write finished while the read was in flight
+    release.set()
+    await task
+    assert "records" not in cat._collections
+
+
+@pytest.mark.asyncio
+async def test_a_configuration_error_other_than_the_missing_jobs_login_is_not_renamed() -> None:
+    from app.core.db import DbConfigError
+
+    class DB(FakeDB):
+        cfg = SimpleNamespace(jobs_dsn="postgresql://jobs@h/db")
+
+    cat = Catalog(DB({"collection_create": DbConfigError("pooler must be one of")}), ttl=0)
+    with pytest.raises(DbConfigError, match="pooler"):
+        await cat.create_collection("c", sparse_enabled=True, sparse_idf=True)
+
+
+@pytest.mark.asyncio
 async def test_adopting_a_space_does_not_swallow_a_unique_violation() -> None:
     cat = Catalog(FakeDB({"org_space_adopt": asyncpg.UniqueViolationError("dup")}), ttl=0)
     with pytest.raises(asyncpg.UniqueViolationError):
@@ -267,10 +368,13 @@ async def test_adopting_a_space_does_not_swallow_a_unique_violation() -> None:
 async def test_a_job_without_the_jobs_credential_names_the_command_and_a_duplicate_is_a_typed_error() -> None:
     from app.core.db import DbConfigError
 
-    cat = Catalog(FakeDB({"collection_create": DbConfigError("no jobs dsn")}), ttl=0)
+    class NoJobs(FakeDB):
+        cfg = SimpleNamespace(jobs_dsn="")
+
+    cat = Catalog(NoJobs({"collection_create": DbConfigError("no jobs dsn")}), ttl=0)
     with pytest.raises(PgVectorError, match="PGVECTOR_JOBS_DSN"):
         await cat.create_collection("c", sparse_enabled=True, sparse_idf=True)
-    cat = Catalog(FakeDB({"collection_create": asyncpg.UniqueViolationError("dup")}), ttl=0)
+    cat = Catalog(NoJobs({"collection_create": asyncpg.UniqueViolationError("dup")}), ttl=0)
     with pytest.raises(CollectionAlreadyExistsError):
         await cat.create_collection("c", sparse_enabled=True, sparse_idf=True)
 
@@ -284,7 +388,7 @@ async def test_vrid_lookup_splits_a_refused_batch_and_gives_up_on_one_vrid() -> 
                     self.calls.append(len(vrids))
                     if len(vrids) > 1:
                         raise asyncpg.ProgramLimitExceededError("too many")
-                    return [{"vrid": vrids[0], "org_id": ORG}]
+                    return [(vrids[0], ORG)]
             return await fn(Tx())
 
     db = Limit({})

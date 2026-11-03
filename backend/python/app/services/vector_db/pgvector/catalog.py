@@ -61,8 +61,11 @@ class Catalog:
         self._ttl = ttl
         self._collections: dict[str, tuple[float, CollectionRow]] = {}
         self._spaces: dict[str, tuple[float, list[OrgSpace]]] = {}
+        # Bumped by forget(): a read that started before it must not store what it saw (the write it raced with is not in it).
+        self._generation = 0
 
     def forget(self, name: str | None = None, org: str | None = None) -> None:
+        self._generation += 1
         if name is not None:
             self._collections.pop(name, None)
         if org is not None:
@@ -73,6 +76,7 @@ class Catalog:
         hit = self._collections.get(name)
         if hit and hit[0] > time.monotonic():
             return hit[1]
+        generation = self._generation
 
         async def read(tx: Tx) -> Any:  # noqa: ANN401
             return await tx.fetchrow(
@@ -85,7 +89,8 @@ class Catalog:
             self._collections.pop(name, None)
             return None
         found = _collection(name, row)
-        self._collections[name] = (time.monotonic() + self._ttl, found)
+        if generation == self._generation:
+            self._collections[name] = (time.monotonic() + self._ttl, found)
         return found
 
     async def require_collection(self, name: str) -> CollectionRow:
@@ -111,9 +116,11 @@ class Catalog:
             after = rows[-1]["collection_id"]
 
     async def org_spaces(self, org: str) -> list[OrgSpace]:
-        hit = self._spaces.get(org)
+        with org_scope(org):                  # the org is checked on every call, a cached answer included
+            hit = self._spaces.get(org)
         if hit and hit[0] > time.monotonic():
             return hit[1]
+        generation = self._generation
 
         async def read(tx: Tx) -> Any:  # noqa: ANN401
             rows = await tx.fetch("/* pipeshub:pgvector.org_space_list */ SELECT * FROM retrieval.org_space_list()")
@@ -123,7 +130,8 @@ class Catalog:
         with org_scope(org):
             rows, named_by = await self._db.run(read, custom_plan=True)
         spaces = [OrgSpace(r["space_id"], r["space_role"], r["model"], r["dim"], r["metric"], named_by.get(r["space_id"])) for r in rows]
-        self._spaces[org] = (time.monotonic() + self._ttl, spaces)
+        if generation == self._generation:
+            self._spaces[org] = (time.monotonic() + self._ttl, spaces)
         return spaces
 
     async def active_space(self, org: str) -> OrgSpace | None:
@@ -169,10 +177,8 @@ class Catalog:
                 half = len(batch) // 2
                 todo += [batch[:half], batch[half:]]
                 continue
-            for r in rows:
-                # org-safe: this is a column of the vetted global lookup's answer (the orgs that hold the vrid), not an org taken from a
-                # claim or payload to act for; the guard baseline counts it (tests/unit/core/org_context_baseline.json)
-                found.setdefault(r["vrid"], set()).add(r["org_id"])
+            for vrid, holder in rows:      # (vrid, org_id) of the vetted lookup: the orgs that hold the vrid, not an org to act for
+                found.setdefault(vrid, set()).add(holder)
         return found
 
     # ---- jobs paths ----------------------------------------------------------------------------------------------
@@ -181,10 +187,9 @@ class Catalog:
             with org_context.system("pgvector.catalog"):
                 return await self._db.run(fn, jobs=True, write=True, custom_plan=True)
         except DbConfigError as e:
-            raise PgVectorError(
-                f"{what} needs the jobs credential: set PGVECTOR_JOBS_DSN in this process, "
-                "or run the operator step (python -m db.maintain, see backend/db/README.md)"
-            ) from e
+            if self._db.cfg.jobs_dsn:          # some other configuration error: not the missing credential
+                raise
+            raise PgVectorError(f"{what} needs the jobs credential: set PGVECTOR_JOBS_DSN in this process") from e
 
     async def create_collection(self, name: str, *, sparse_enabled: bool, sparse_idf: bool, lexical_version: str = "unset") -> int:
         async def write(tx: Tx) -> Any:  # noqa: ANN401

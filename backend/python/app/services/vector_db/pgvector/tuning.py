@@ -59,6 +59,21 @@ _KNOBS: dict[str, tuple[float, float, float]] = {
 _FLAGS = {"validate_quantization": True, "eliminate_all_apps": True, "fused_search": True}
 
 
+def parse_flag(name: str, raw: object, *, default: bool) -> bool:
+    """A switch: empty or unset is the default, 1/true/yes/on and 0/false/no/off (any case) are the two answers, anything else is a
+    configuration error naming the setting (a misspelt "off" must not silently mean the default)."""
+    if raw is None:
+        return default
+    text = str(raw).strip().lower()
+    if text == "":
+        return default
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be one of 1, true, yes, on, 0, false, no, off; got {raw!r}")
+
+
 @dataclass(frozen=True)
 class Tuning:
     n_e0: int = 40_000
@@ -113,7 +128,11 @@ class Tuning:
             if raw is None or raw == "":
                 continue
             try:
-                value = type(default)(float(raw)) if isinstance(default, int) else float(raw)
+                value = float(raw)
+                if isinstance(default, int):
+                    if value != int(value):
+                        raise ValueError("not a whole number")
+                    value = int(value)
                 if not lo <= value <= hi or value != value:
                     raise ValueError("out of range")
             except (TypeError, ValueError):
@@ -121,8 +140,7 @@ class Tuning:
                 continue
             out[name] = value
         for name, default in _FLAGS.items():
-            raw = str(data.get(name, os.getenv(f"PGVECTOR_{name.upper()}", ""))).strip().lower()
-            out[name] = True if raw in ("1", "true", "yes", "on") else False if raw in ("0", "false", "no", "off") else default
+            out[name] = parse_flag(f"PGVECTOR_{name.upper()}", data.get(name, os.getenv(f"PGVECTOR_{name.upper()}")), default=default)
         return cls(**out)
 
     # ---- derived ----

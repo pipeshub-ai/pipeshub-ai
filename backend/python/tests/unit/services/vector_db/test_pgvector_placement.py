@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from typing import TYPE_CHECKING, Never
 
 import pytest
@@ -92,3 +93,16 @@ async def test_a_database_error_reaches_the_caller_and_the_org_is_not_remembered
     with pytest.raises(ConnectionResetError):
         await policy.before_first_write(ORG)
     assert ORG not in policy._placed
+
+
+@pytest.mark.asyncio
+async def test_a_placed_org_is_still_refused_to_a_call_running_for_another() -> None:
+    policy = OwnLeafPolicy(FakeRun([{"placed": True, "note": None}]), wait=1, poll=0.01)
+    await policy.before_first_write(ORG)
+
+    async def other_org() -> None:
+        with org_context.bind(org_context.OrgContext("b" * 24, None, "service", "t", "-")):
+            await policy.before_first_write(ORG)
+
+    with pytest.raises(OrgMismatch):                                          # a context of its own: the fixture's org is not ambient there
+        await asyncio.get_running_loop().create_task(other_org(), context=contextvars.Context())

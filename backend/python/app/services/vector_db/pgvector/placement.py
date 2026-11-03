@@ -3,8 +3,7 @@
 Every org's rows are either in the shared default partition tree or in a LIST leaf of the org's own. The default policy,
 :class:`OwnLeafPolicy`, makes sure the leaf exists BEFORE the org's first vector write, so an org's rows never enter the shared
 tree and are never moved. Creating a leaf is DDL, which only the migrate credential may run, so the writing service files a
-request (the vetted ``org_leaf_request``) and waits for the placement worker (``python -m db.maintain placement --watch``) to
-close it (``org_leaf_status``). Waiting is per process: once an org is placed it is remembered, and concurrent first writers of
+request (the vetted ``org_leaf_request``) and waits for the placement worker to close it (``org_leaf_status``). Waiting is per process: once an org is placed it is remembered, and concurrent first writers of
 one process share one wait; other processes poll the same request. Only a write that follows the wait is planned against the new
 partition map. If the worker does not answer in time the write fails with the command to run; it never falls back to the shared
 tree. A different policy (keep small orgs shared, promote large ones in a maintenance window) implements the same port.
@@ -39,11 +38,11 @@ class OwnLeafPolicy:
         self._asking: dict[str, asyncio.Task[None]] = {}
 
     async def before_first_write(self, org: str) -> None:
-        if org in self._placed:
-            return
-        # the requests below act for the ambient org: refuse a call that names another one
+        # the requests below act for the ambient org: refuse a call that names another one, a placed org included
         if ambient_org() != org:
             raise OrgMismatch("placement was asked for a different organisation than the one the call runs for")
+        if org in self._placed:
+            return
         task = self._asking.get(org)
         if task is None:
             # request-scoped child work: it keeps the caller's org context (the same org for every waiter)
@@ -67,13 +66,14 @@ class OwnLeafPolicy:
             if row is not None and row["placed"]:
                 self._placed.add(org)
                 return
+            # a note is written when the worker closes the request as failed (the schema's contract), never while it still retries
             if row is not None and row["note"]:
                 raise PgVectorError(f"the organisation cannot get a leaf of its own: {row['note']}")
             if time.monotonic() >= deadline:
                 raise PgVectorError(
                     f"placement did not finish in time ({self._wait:g}s): the organisation's own partition has not been created. Likely causes: "
-                    "the placement worker is not running (python -m db.maintain placement --watch, with PG_MIGRATE_URL and PG_JOBS_URL), "
-                    "it is busy or waiting for the migrate lock during a deployment, or its database connection is failing; check its log"
+                    "the placement worker is not running, it is busy or waiting for the migrate lock during a deployment, or its database "
+                    "connection is failing; check its log"
                 )
             await asyncio.sleep(delay)
             delay = min(delay * 2, 1.0)
