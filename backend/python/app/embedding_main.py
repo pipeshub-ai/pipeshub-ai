@@ -11,6 +11,7 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 import asyncio
 import base64
 import contextlib
+import copy
 import ctypes
 import gc
 import os
@@ -50,6 +51,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from sentence_transformers import SentenceTransformer
+    from transformers import PreTrainedTokenizerBase
 
 logger = create_logger("embedding_service")
 
@@ -500,6 +504,20 @@ def release_memory() -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
 
 
+@dataclass(eq=False)
+class _Counter:
+    """What counting needs from one loaded model.
+
+    ``tokenizer`` is a private copy, or ``None`` when none could be made.
+    ``lock`` serialises counts on the event loop.
+    """
+
+    model: Any
+    tokenizer: PreTrainedTokenizerBase | None
+    prompt_tokens: int
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
 class ModelManager:
     """Thread-safe cache of loaded SentenceTransformer models."""
 
@@ -521,6 +539,10 @@ class ModelManager:
         self._last_used: dict[str, float] = {}
         self._normalize = normalize_embeddings
         self._models: dict[str, Any] = {}
+        # Counting tokenizers, one per loaded model (see ``_build_counter``).
+        self._counters: dict[str, _Counter] = {}
+        # In-flight builds, so concurrent first counts share one copy.
+        self._counter_builds: dict[str, tuple[Any, asyncio.Future[_Counter]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
         self._encode_gate = EncodeGate(max_concurrency, query_reserved_slots)
@@ -548,10 +570,103 @@ class ModelManager:
 
     def prompt_tokens(self, model_name: str) -> int:
         model = self._models.get(self._cache_key(model_name))
-        prompt = self._default_prompt(model) if model is not None else ""
-        if not prompt:
+        if model is None or not self._default_prompt(model):
             return 0
-        return len(model.tokenizer([prompt], add_special_tokens=False)["input_ids"][0])
+        counter = self._counters.get(self._cache_key(model_name))
+        if counter is None or counter.model is not model:
+            # Normally built when the model loads. Never build here: this runs
+            # on the event loop, and counting on the encoders' tokenizer would
+            # bring the truncation race back. Start the shared build instead
+            # and report 0 until it is done (the next listing has the number).
+            with contextlib.suppress(RuntimeError):  # no running loop: nothing to start
+                self._start_counter_build(model_name, model)
+            return 0
+        return counter.prompt_tokens
+
+    def _build_counter(
+        self, model_name: str, model: SentenceTransformer, *, trust_remote_code: bool = False,
+    ) -> _Counter:
+        """A tokenizer that only counting uses, with the default prompt's length.
+
+        Fast tokenizers keep their truncation and padding settings on the
+        instance, and a call with ``truncation=False`` rewrites them for as
+        long as it runs. Sharing the model's tokenizer with the encoders let a
+        count running beside them make some encodes come back untruncated, so
+        counting works on a private copy. If neither a copy nor a fresh load is
+        possible, counting falls back to the model's own tokenizer, as it always
+        did, and goes through the encode gate.
+
+        Blocking (copying can take a while for a large vocabulary): run it off
+        the event loop.
+        """
+        tokenizer: PreTrainedTokenizerBase | None
+        try:
+            tokenizer = copy.deepcopy(model.tokenizer)
+        except Exception:
+            try:
+                from transformers import AutoTokenizer
+
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_name, local_files_only=True, trust_remote_code=trust_remote_code,
+                )
+            except Exception:
+                logger.warning(
+                    "Model '%s': no private tokenizer for counting; counting shares the "
+                    "encoder's tokenizer and takes an encode slot",
+                    model_name,
+                )
+                tokenizer = None
+        prompt = self._default_prompt(model)
+        source = tokenizer if tokenizer is not None else model.tokenizer
+        prompt_tokens = len(source([prompt], add_special_tokens=False)["input_ids"][0]) if prompt else 0
+        return _Counter(model=model, tokenizer=tokenizer, prompt_tokens=prompt_tokens)
+
+    async def _counter(
+        self, model_name: str, model: SentenceTransformer, *, trust_remote_code: bool = False,
+    ) -> _Counter:
+        key = self._cache_key(model_name)
+        counter = self._counters.get(key)
+        if counter is not None and counter.model is model:
+            return counter
+        build = self._start_counter_build(model_name, model, trust_remote_code=trust_remote_code)
+        # Shielded: a waiter that goes away must not cancel the build the others wait on.
+        return await asyncio.shield(build)
+
+    def _start_counter_build(
+        self, model_name: str, model: SentenceTransformer, *, trust_remote_code: bool = False,
+    ) -> asyncio.Future[_Counter]:
+        """The one build in flight for *model*, started if there is none. Needs a running loop."""
+        key = self._cache_key(model_name)
+        pending = self._counter_builds.get(key)
+        if pending is not None and pending[0] is model:
+            return pending[1]
+        build = spawn_detached(
+            self._build_and_store(key, model_name, model, trust_remote_code), name="embedding-counter-build",
+        )
+        pending = (model, build)
+        self._counter_builds[key] = pending
+
+        def _forget(_: object) -> None:
+            if self._counter_builds.get(key) is pending:
+                del self._counter_builds[key]
+            if not build.cancelled() and build.exception() is not None:
+                # Waiters raise it themselves; this covers a build nobody awaits.
+                logger.warning("Model '%s': could not prepare token counting", model_name)
+
+        build.add_done_callback(_forget)
+        return build
+
+    async def _build_and_store(
+        self, key: str, model_name: str, model: SentenceTransformer, trust_remote_code: bool,  # noqa: FBT001
+    ) -> _Counter:
+        built = await asyncio.to_thread(
+            self._build_counter, model_name, model, trust_remote_code=trust_remote_code,
+        )
+        counter = self._counters.get(key)
+        if counter is not None and counter.model is model:
+            return counter
+        self._counters[key] = built
+        return built
 
     def max_seq_length(self, model_name: str) -> int | None:
         limit = getattr(self._models.get(self._cache_key(model_name)), "max_seq_length", None)
@@ -662,6 +777,7 @@ class ModelManager:
             del self._models[key]
             self._last_used.pop(key, None)
             self._locks.pop(key, None)
+            self._counters.pop(key, None)
         return dropped
 
     async def run_idle_reaper(self) -> None:
@@ -780,6 +896,18 @@ class ModelManager:
                     return model
 
             model = await asyncio.to_thread(_load)
+            # Best effort: a model that can embed must load even if its counting
+            # tokenizer cannot be prepared; the first count tries again.
+            try:
+                self._counters[cache_key] = await asyncio.to_thread(
+                    self._build_counter, model_name, model, trust_remote_code=trust_remote_code,
+                )
+            except Exception:
+                logger.warning(
+                    "Model '%s': could not prepare token counting; it will be retried on first use",
+                    model_name,
+                    exc_info=True,
+                )
             self._models[cache_key] = model
             self._last_used[cache_key] = time.monotonic()
             logger.info("Embedding model '%s' loaded", model_name)
@@ -791,14 +919,35 @@ class ModelManager:
         """Tokens the model itself reads for each text, special tokens included."""
         async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
             prompt = self._default_prompt(model)
+            counter = await self._counter(model_name, model, trust_remote_code=trust_remote_code)
+            tokenizer = counter.tokenizer if counter.tokenizer is not None else model.tokenizer
 
             def _count() -> list[int]:
                 # What encode reads: the default prompt, then the text.
-                ids = model.tokenizer([prompt + t for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
+                ids = tokenizer([prompt + t for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
                 return [len(i) for i in ids]
 
-            async with self._encode_gate.slot(EncodePriority.BULK):
-                return await asyncio.to_thread(_count)
+            if counter.tokenizer is None:
+                async with self._encode_gate.slot(EncodePriority.BULK):
+                    return await asyncio.to_thread(_count)
+            # No encode slot: counting never touches the model weights, so it
+            # must not compete with indexing for encode capacity. Counts queue
+            # on the event loop, not on worker threads: a thread parked behind
+            # another count would be taken from every other ``to_thread`` call,
+            # query encodes included.
+            # The lock is held until the thread has finished, not until this
+            # coroutine stops waiting: a cancelled request must not let the next
+            # count onto a tokenizer that is still in use.
+            await counter.lock.acquire()
+            work = spawn_detached(asyncio.to_thread(_count), name="embedding-count")
+
+            def _release(done: asyncio.Future[list[int]]) -> None:
+                counter.lock.release()
+                if not done.cancelled():
+                    done.exception()  # mark retrieved when nobody is waiting any more
+
+            work.add_done_callback(_release)
+            return await asyncio.shield(work)
 
     async def encode(
         self,
