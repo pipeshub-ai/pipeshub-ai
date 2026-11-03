@@ -14,6 +14,7 @@ import { JobState } from '../../../src/scripts/docstore-migrate/state';
 import { reverseFollow } from '../../../src/scripts/docstore-migrate/reverse-follow';
 import { reverseSpecial } from '../../../src/scripts/docstore-migrate/reverse-special';
 import { rollback } from '../../../src/scripts/docstore-migrate/reverse';
+import { rollbackOnline } from '../../../src/scripts/docstore-migrate/reverse-follow';
 import { haveMongod } from './mongo-harness';
 import { World, startWorld } from './world';
 
@@ -290,6 +291,38 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(r.out.message).to.contain('MongoDB is the store again').and.to.contain('job record could not be finished');
       expect(await fence()).to.equal('active');
       expect(await storeEpoch()).to.include({ backend: 'mongo', readonly: true });
+    });
+
+    it('a second rollback, with MongoDB already the store, is refused and changes nothing', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      expect((await rollback(w.rt, { reverse: false, allowWriters: false, log: () => undefined })).ok).to.equal(true);
+      const before = await storeEpoch();
+      const again = await rollback(w.rt, { reverse: false, allowWriters: false, log: () => undefined });
+      expect(again).to.include({ ok: false, mode: 'refused' });
+      expect(again.message).to.contain('nothing to roll back');
+      const online = await rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 1000 });
+      expect(online.ok).to.equal(false);
+      expect(online.message).to.contain('nothing to roll back');
+      expect(await storeEpoch()).to.deep.include({ backend: before.backend, readonly: true, epoch: before.epoch });
+    });
+
+    it('a refused rollback puts readonly back to the value it found, and says so when it cannot', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      await sql('DELETE FROM conversation.chat_sessions WHERE id = (SELECT id FROM conversation.chat_sessions ORDER BY id LIMIT 1)');
+      await sql('UPDATE platform.store_epoch SET readonly = true');
+      const r = await rollback(w.rt, { reverse: false, allowWriters: false, log: () => undefined });
+      expect(r.mode).to.equal('refused');
+      expect(await storeEpoch(), 'it was read-only before, and stays so').to.include({ backend: 'postgres', readonly: true });
+      await sql('UPDATE platform.store_epoch SET readonly = false');
+      process.env.MIGRATE_TEST_HOOKS = '1';
+      try {
+        const f = await rollback(w.rt, { reverse: false, allowWriters: false, log: () => undefined, failAt: 'unfreeze' });
+        expect(f.message).to.contain('PostgreSQL is still read-only').and.to.contain('UPDATE platform.store_epoch SET readonly = false');
+        expect(f.message).to.contain('MongoDB is NOT made live');
+        expect(await storeEpoch()).to.include({ readonly: true });
+      } finally {
+        delete process.env.MIGRATE_TEST_HOOKS;
+      }
     });
 
     it('a rollback whose reverse verify fails leaves PostgreSQL the store and writable', async () => {
