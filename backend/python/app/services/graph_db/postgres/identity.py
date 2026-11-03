@@ -22,6 +22,7 @@ from app.core.org_context import (
     current_org_id,
 )
 from app.models.entities import AppRole, AppUserGroup, User
+from app.services.graph_db.common.utils import dedupe_agents_by_id
 from app.services.graph_db.postgres.base import (
     NotImplementedInPostgres,
     PgBase,
@@ -33,6 +34,13 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+
+
+_ORG_FIELD = "orgId"  # the org property of a graph document, not a claim
+
+
+def _js(v: Any) -> Any:  # noqa: ANN401
+    return json.loads(v) if isinstance(v, str) else v
 
 
 _SERVICE_SUFFIX = f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}"
@@ -107,6 +115,22 @@ class IdentityMixin(PgBase):
 
     async def _id_rows(self, sql: str, args: list[Any], transaction: str | None, *, write: bool = False) -> list:
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction, write=write)
+
+    async def _enrich_created_by(self, entities: list[dict], transaction: str | None = None) -> None:
+        """createdByUser (graph id, userId, name, email) from the createdBy graph keys, one query for all of them."""
+        keys = list({e["createdBy"] for e in entities if e and e.get("createdBy") and e["createdBy"] != "system"})
+        users: dict[str, dict] = {}
+        if keys:
+            rows = await self._id_rows("/* pipeshub:graph.created_by_users */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = ANY($2::text[])",
+                                    [current_org_id(), keys], transaction)
+            users = {r["id"]: _doc(r["doc"]) for r in rows}
+        for e in entities:
+            if not e:
+                continue
+            key = e.pop("createdBy", None)
+            u = users.get(key) if key and key != "system" else None
+            e["createdByUser"] = ({"id": key, "userId": u["userId"], "name": u.get("fullName") or "", "email": u.get("email") or ""}
+                                  if u and u.get("userId") else None)
 
     # ---- users and orgs ------------------------------------------------------------------------------------------
     @_soft(None, flag=True)
@@ -460,3 +484,210 @@ class IdentityMixin(PgBase):
             SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
             WHERE NOT coalesce((a.doc->>'isHidden')::boolean, false)""", [current_org_id(), user_key], transaction)
         return [r["id"] for r in rows]
+
+    # ---- connector instances -------------------------------------------------------------------------------------
+    @_soft(list)
+    async def get_user_connector_instances(self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, transaction: str | None = None) -> list[dict]:
+        if not self._mine(org_id):
+            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_user_connector_instances */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+            AND EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = 'orgAppRelation' AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)
+            AND (n.doc->>'scope' = $3 OR (n.doc->>'scope' = $4 AND n.doc->>'createdBy' = $5))""",
+                                [current_org_id(), collection, team_scope, personal_scope, user_id], transaction)
+        return [_arango(_doc(r["doc"]), collection) for r in rows]
+
+    @_soft(lambda: ([], 0))
+    async def get_filtered_connector_instances(self, collection: str, edge_collection: str, org_id: str, user_id: str, scope: str | None = None,
+                                               search: str | None = None, skip: int = 0, limit: int = 20, *, exclude_kb: bool = True,
+                                               kb_connector_type: str | None = None, is_admin: bool = False, is_authenticated: bool | None = None,
+                                               is_active: bool | None = None, connector_type_filter: str | None = None, is_configured: bool | None = None,
+                                               is_agent_active: bool | None = None, allowed_connector_types: list[str] | None = None,
+                                               transaction: str | None = None) -> tuple[list[dict], int]:
+        if not org_id or not self._mine(org_id):
+            return [], 0
+        q = _Args(current_org_id(), collection, edge_collection)
+        # The org edge is the tenant boundary of an instance; only the creator sees a personal one, admins included.
+        w = ["EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = $3 AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)",
+             f"(n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = {q(user_id)})"]
+        uid = f"${len(q.a)}"
+        if exclude_kb and kb_connector_type:
+            w.append(f"n.doc->>'type' <> {q(kb_connector_type)}")
+        if scope == "personal":
+            w.append(f"n.doc->>'scope' = 'personal' AND n.doc->>'createdBy' = {uid}")
+        elif scope == "team":
+            w.append("n.doc->>'scope' = 'team'")
+            if not is_admin:  # team apps reached directly or through a team the user holds
+                w.append(f"""n.id IN (SELECT e.to_id FROM graph.nodes u JOIN graph.edges e ON e.org_id = u.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = u.id
+                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = {uid}
+                    UNION SELECT t.to_id FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
+                    JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id
+                    WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = {uid})""")
+        if search:
+            ph = q(search)
+            w.append("(" + " OR ".join(_contains(f"n.doc->>'{k}'", ph) for k in ("name", "type", "appGroup")) + ")")
+        if is_authenticated is not None:
+            w.append(f"n.doc->'isAuthenticated' = to_jsonb({q(is_authenticated)}::boolean)")
+        if is_active is not None:
+            w.append(f"n.doc->'isActive' = to_jsonb({q(is_active)}::boolean)")
+        if connector_type_filter:
+            w.append(f"n.doc->>'type' = {q(connector_type_filter)}")
+        if is_configured is not None:
+            w.append(f"coalesce((n.doc->>'isConfigured')::boolean, false) = {q(is_configured)}")
+        if is_agent_active is not None:
+            w.append(f"coalesce((n.doc->>'isAgentActive')::boolean, false) = {q(is_agent_active)}")
+        if allowed_connector_types is not None:
+            w.append(f"n.doc->>'type' = ANY({q(list(allowed_connector_types))}::text[])")
+        off, lim = q(max(skip, 0)), q(max(limit, 0))
+        rows = await self._id_rows(f"""/* pipeshub:graph.get_filtered_connector_instances */ WITH f AS (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
+              AND {' AND '.join(w)}), cnt AS (SELECT count(*) AS total FROM f)
+            SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT doc FROM f ORDER BY doc->'createdAtTimestamp' DESC, id OFFSET {off} LIMIT {lim}) p ON true""", q.a, transaction)
+        return [_arango(_doc(r["doc"]), collection) for r in rows if r["doc"] is not None], (rows[0]["total"] if rows else 0)
+
+    @_soft(False)
+    async def check_connector_name_exists(self, collection: str, instance_name: str, scope: str, org_id: str | None = None, user_id: str | None = None,
+                                          transaction: str | None = None, exclude_connector_id: str | None = None) -> bool:
+        if org_id and not self._mine(org_id):
+            return False
+        if scope != "personal" and not org_id:      # a team connector is looked up under an org
+            return False
+        q = _Args(current_org_id(), collection, instance_name.strip().lower(), scope)
+        cond = ["n.doc->>'scope' = $4", "lower(regexp_replace(n.doc->>'name', '^\\s+|\\s+$', '', 'g')) = $3"]
+        if scope == "personal":
+            cond.append(f"n.doc->>'createdBy' = {q(user_id)}")
+        else:  # the organization's team connectors
+            cond.append("EXISTS (SELECT 1 FROM graph.edges o WHERE o.org_id = n.org_id AND o.coll = 'orgAppRelation' AND o.from_coll = 'organizations' AND o.from_id = n.org_id AND o.to_id = n.id)")
+        if exclude_connector_id:
+            cond.append(f"n.id <> {q(exclude_connector_id)}")
+        rows = await self._id_rows(f"/* pipeshub:graph.check_connector_name_exists */ SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND {' AND '.join(cond)} LIMIT 1", q.a, transaction)
+        return bool(rows)
+
+    @_soft(0)
+    async def batch_update_connector_status(self, collection: str, connector_keys: list[str], *, is_active: bool, is_agent_active: bool, transaction: str | None = None) -> int:
+        org = current_org_id()
+        if not connector_keys:
+            return 0
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.batch_update_connector_status */ WITH u AS (UPDATE graph.nodes SET doc = doc || jsonb_build_object('isActive', $4::boolean, 'isAgentActive', $5::boolean)
+            WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM u""", org, collection, list(connector_keys), is_active, is_agent_active),
+                             transaction, write=True)
+
+    async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the live agents whose knowledge names the connector (distinct agents with the same name count apart)."""
+        rows = await self._id_rows("""/* pipeshub:graph.check_connector_in_use */ SELECT DISTINCT a.id AS "agentId", a.doc->>'name' AS "agentName" FROM graph.nodes k
+            JOIN graph.edges e ON e.org_id = k.org_id AND e.coll = 'agentHasKnowledge' AND e.to_coll = 'agentKnowledge' AND e.to_id = k.id
+            JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'agentInstances' AND a.id = e.from_id AND coalesce((a.doc->>'isDeleted')::boolean, false) = false
+            WHERE k.org_id = $1 AND k.coll = 'agentKnowledge' AND k.doc->>'connectorId' = $2""", [current_org_id(), connector_id], transaction)
+        return dedupe_agents_by_id([dict(r) for r in rows])
+
+    # ---- teams ---------------------------------------------------------------------------------------------------
+    _TEAM_MEMBERS = """(SELECT coalesce(jsonb_agg(jsonb_build_object('id', mu.id, 'userId', mu.doc->'userId', 'userName', mu.doc->'fullName', 'userEmail', mu.doc->'email',
+              'role', mp.doc->'role', 'joinedAt', mp.doc->'createdAtTimestamp', 'isOwner', coalesce(mp.doc->>'role' = 'OWNER', false)) ORDER BY mu.id), '[]'::jsonb)
+          FROM graph.edges mp JOIN graph.nodes mu ON mu.org_id = mp.org_id AND mu.coll = 'users' AND mu.id = mp.from_id
+          WHERE mp.org_id = t.org_id AND mp.coll = 'permission' AND mp.from_coll = 'users' AND mp.to_coll = 'teams' AND mp.to_id = t.id
+            AND coalesce((mu.doc->>'isActive')::boolean, false){member_filter})"""
+
+    @staticmethod
+    def _team_dict(t: dict, cur_role: str | None, members: list, count: int, *, is_org_admin: bool = False) -> dict:
+        owner = is_org_admin or cur_role == "OWNER"
+        org = t.get(_ORG_FIELD)
+        return {"id": t.get("id"), "name": t.get("name"), "description": t.get("description"), "createdBy": t.get("createdBy"), "orgId": org,
+                "createdAtTimestamp": t.get("createdAtTimestamp"), "updatedAtTimestamp": t.get("updatedAtTimestamp"), "members": members, "memberCount": count,
+                "canEdit": owner, "canDelete": owner and org is not None and t.get("id") != f"all_{org}", "canManageMembers": owner}
+
+    @_soft(lambda: ([], 0))
+    async def get_user_teams(self, user_key: str, search: str | None = None, page: int = 1, limit: int = 100, created_by: str | None = None,
+                             created_after: int | None = None, created_before: int | None = None, transaction: str | None = None, *,
+                             include_service_accounts: bool = False, org_id: str | None = None, is_org_admin: bool = False) -> tuple[list[dict], int]:
+        """The user's teams; for an organisation administrator (with ``org_id``), every team of the organisation."""
+        everyone = bool(is_org_admin and org_id)
+        if everyone and not self._mine(org_id):
+            return [], 0
+        q = _Args(current_org_id())
+        source = (f"SELECT t.org_id, t.id, t.doc, NULL::text AS cur FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = 'teams' AND t.doc->>'orgId' = {q(org_id)}" if everyone else
+                  f"""SELECT t.org_id, t.id, t.doc, p.doc->>'role' AS cur FROM graph.edges p
+              JOIN graph.nodes t ON t.org_id = p.org_id AND t.coll = 'teams' AND t.id = p.to_id
+              WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = {q(user_key)} AND p.to_coll = 'teams'""")
+        w = ""
+        if search:
+            ph = q(search)
+            w += f" AND ({_contains('t.doc->>' + chr(39) + 'name' + chr(39), ph)} OR {_contains('t.doc->>' + chr(39) + 'description' + chr(39), ph)})"
+        if created_by:
+            w += f" AND t.doc->>'createdBy' = {q(created_by)}"
+        if created_after is not None:
+            w += f" AND (t.doc->>'createdAtTimestamp')::numeric >= {q(created_after)}"
+        if created_before is not None:
+            w += f" AND (t.doc->>'createdAtTimestamp')::numeric <= {q(created_before)}"
+        members_only = "" if include_service_accounts else f" AND {_not_service('mu')}"
+        off, lim = q((page - 1) * limit), q(limit)
+        rows = await self._id_rows(f"""/* pipeshub:graph.get_user_teams */ WITH t AS ({source}{w}),
+            cnt AS (SELECT count(DISTINCT id) AS total FROM t)
+            SELECT cnt.total, pg.doc, pg.cur, pg.members FROM cnt LEFT JOIN LATERAL (SELECT t.doc, t.cur, {self._TEAM_MEMBERS.format(member_filter=members_only)} AS members
+              FROM t ORDER BY t.doc->'createdAtTimestamp' DESC, t.id OFFSET {off} LIMIT {lim}) pg ON true""", q.a, transaction)
+        teams = []
+        for r in rows:
+            if r["doc"] is None:
+                continue
+            m = _js(r["members"])
+            teams.append(self._team_dict(_doc(r["doc"]), r["cur"], m, len(m), is_org_admin=everyone))
+        await self._enrich_created_by(teams, transaction)
+        return teams, (rows[0]["total"] if rows else 0)
+
+    async def _team_view(self, team_id: str, org_id: str, user_key: str, search: str | None, offset: int | None, limit: int | None,
+                         transaction: str | None, *, include_service_accounts: bool = False, is_org_admin: bool = False) -> dict | None:
+        if not self._mine(org_id):
+            return None
+        q = _Args(current_org_id(), team_id, user_key, current_org_id())
+        mf = "" if include_service_accounts else f" AND {_not_service('mu')}"
+        if search:
+            ph = q(search)
+            mf += f" AND ({_contains('mu.doc->>' + chr(39) + 'fullName' + chr(39), ph)} OR {_contains('mu.doc->>' + chr(39) + 'email' + chr(39), ph)})"
+        rows = await self._id_rows(f"""/* pipeshub:graph.team_view */ SELECT t.doc, (SELECT cp.doc->>'role' FROM graph.edges cp WHERE cp.org_id = t.org_id AND cp.coll = 'permission'
+              AND cp.from_coll = 'users' AND cp.from_id = $3 AND cp.to_coll = 'teams' AND cp.to_id = t.id LIMIT 1) AS cur, {self._TEAM_MEMBERS.format(member_filter=mf)} AS members
+            FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = 'teams' AND t.id = $2 AND t.doc->>'orgId' = $4""", q.a, transaction)
+        if not rows:
+            return None
+        members = _js(rows[0]["members"])
+        shown = members if offset is None else members[offset:offset + (limit or 0)]
+        team = self._team_dict(_doc(rows[0]["doc"]), rows[0]["cur"], shown, len(members), is_org_admin=is_org_admin)
+        await self._enrich_created_by([team], transaction)
+        return team
+
+    @_soft(None)
+    async def get_team_with_users(self, team_id: str, org_id: str, user_key: str, transaction: str | None = None, *,
+                                  include_service_accounts: bool = False, is_org_admin: bool = False) -> dict | None:
+        return await self._team_view(team_id, org_id, user_key, None, None, None, transaction,
+                                     include_service_accounts=include_service_accounts, is_org_admin=is_org_admin)
+
+    async def find_team_by_name(self, org_id: str, name: str, exclude_team_id: str | None = None, transaction: str | None = None) -> dict | None:
+        """The first team of the organisation with this name, ignoring case and surrounding whitespace (``{"id", "name"}``)."""
+        if not self._mine(org_id):
+            return None
+        r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.find_team_by_name */ SELECT t.id, t.doc->>'name' AS name FROM graph.nodes t
+            WHERE t.org_id = $1 AND t.coll = 'teams' AND t.doc->>'orgId' = $2 AND jsonb_typeof(t.doc->'name') = 'string'
+              AND lower(btrim(t.doc->>'name')) = $3 AND t.id <> $4 ORDER BY t.id LIMIT 1""",
+                                                 current_org_id(), org_id, name.strip().lower(), exclude_team_id or ""), transaction)
+        return {"id": r["id"], "name": r["name"]} if r else None
+
+    @_soft(None)
+    async def get_team_users(self, team_id: str, org_id: str, user_key: str, search: str | None = None, page: int = 1, limit: int = 100,
+                             transaction: str | None = None, *, include_service_accounts: bool = False) -> dict | None:
+        return await self._team_view(team_id, org_id, user_key, search, (page - 1) * limit, limit, transaction,
+                                     include_service_accounts=include_service_accounts)
+
+    @_soft(list)
+    async def delete_team_member_edges(self, team_id: str, user_ids: list[str], transaction: str | None = None) -> list[dict]:
+        rows = await self._id_rows("""/* pipeshub:graph.delete_team_member_edges */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_coll = 'users'
+            AND from_id = ANY($2::text[]) AND to_coll = 'teams' AND to_id = $3 RETURNING doc, from_id, to_id""", [current_org_id(), list(user_ids), team_id], transaction, write=True)
+        out = []
+        for r in rows:
+            e = {**_doc(r["doc"]), "from_id": r["from_id"], "to_id": r["to_id"], "from_collection": "users", "to_collection": "teams"}
+            e["_from"], e["_to"] = f"users/{r['from_id']}", f"teams/{r['to_id']}"
+            if "id" in e:
+                e.setdefault("_key", e["id"])
+            out.append(e)
+        return out
+
+    async def get_team_owner_removal_info(self, team_id: str, user_ids: list[str], transaction: str | None = None) -> dict[str, Any]:
+        rows = await self._id_rows("""/* pipeshub:graph.get_team_owner_removal_info */ SELECT array_agg(p.from_id) FILTER (WHERE p.from_coll = 'users' AND p.from_id = ANY($3::text[])) AS removing,
+              count(*) AS total FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'teams' AND p.to_id = $2 AND p.doc->>'role' = 'OWNER'""",
+                                [current_org_id(), team_id, list(user_ids)], transaction)
+        return {"owners_being_removed": list(rows[0]["removing"] or []), "total_owner_count": rows[0]["total"]}
