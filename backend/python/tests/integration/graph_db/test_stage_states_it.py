@@ -149,6 +149,14 @@ async def test_concurrent_compare_and_sets_succeed_exactly_once(provider: IGraph
 
 
 @pytest.mark.asyncio
+async def test_the_org_of_a_virtual_record_is_read_from_its_stage_states(provider: IGraphDBProvider) -> None:
+    vrid = str(uuid.uuid4())
+    assert await provider.stage_state_org_for_virtual_record(vrid) is None
+    assert await provider.stage_state_create(_document(vrid))
+    assert await provider.stage_state_org_for_virtual_record(vrid) == ORG
+
+
+@pytest.mark.asyncio
 async def test_a_stored_state_round_trips_through_the_model(provider: IGraphDBProvider) -> None:
     document = _document(str(uuid.uuid4()))
     assert await provider.stage_state_create(document)

@@ -6,15 +6,25 @@ import { normalizeReasoningEffort } from '@/chat/types';
 import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
 import { chatModelOptions } from '@/config';
 import { isModelInList } from './model-in-list';
+import { onSwrNamespaceRevalidate, SWR_NS } from '@/lib/api/swr-cache';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 /**
- * Freshness window: within this many milliseconds the cached model list is
- * considered up-to-date and won't be refetched unless `force: true`.
+ * Freshness window for agent model lists: within this many milliseconds the
+ * cached list is reused unless `force: true`. The org list (`ASSISTANT_CTX`) is
+ * kept for the session and dropped when an AI-model write invalidates it.
  */
 const FRESHNESS_MS = 60_000;
 
 /** In-flight fetch dedupe: one concurrent request per context key at a time. */
 const inflight = new Map<string, Promise<AvailableLlmModel[]>>();
+
+/** Agent contexts whose list is the org list (the agent has no models of its own). */
+const orgListContexts = new Set<string>();
+
+// Bumped when the org's model config changes / when the session ends: a response started before is not cached.
+let configGeneration = 0;
+let sessionGeneration = 0;
 
 /**
  * Convert an agent-configured model (from AgentsApi.getAgent) into the shared
@@ -93,8 +103,9 @@ export class OrgModelsFetchError extends Error {
  *     Re-validation also runs on cache hits so hydration from conversation
  *     cannot leave a removed model selected.
  *
- * Fetches for the same ctxKey are deduped and reused while in flight, and the
- * cached result is reused for `FRESHNESS_MS` afterwards.
+ * Fetches for the same ctxKey are deduped and reused while in flight. The org
+ * list is then reused for the session (an agent with no models reads it too);
+ * agent lists are reused for `FRESHNESS_MS`.
  */
 export async function fetchModelsForContext(
   ctxKey: string,
@@ -103,7 +114,7 @@ export async function fetchModelsForContext(
   const store = useChatStore.getState();
   const cached = store.settings.availableModels[ctxKey];
 
-  if (!opts.force && cached && Date.now() - cached.fetchedAt < FRESHNESS_MS) {
+  if (!opts.force && cached && (ctxKey === ASSISTANT_CTX || Date.now() - cached.fetchedAt < FRESHNESS_MS)) {
     clearSelectedModelIfNotInList(ctxKey, cached.models);
     return cached.models;
   }
@@ -115,9 +126,13 @@ export async function fetchModelsForContext(
     return inflight.get(ctxKey)!;
   }
 
-  const promise = (async (): Promise<AvailableLlmModel[]> => {
+  const startedInConfig = configGeneration;
+  const startedInSession = sessionGeneration;
+  const promise: Promise<AvailableLlmModel[]> = (async () => {
     let models: AvailableLlmModel[];
     let newChatDefault: ModelOverride | null = null;
+    let agentDefaultEffort: ReasoningEffort | null = null;
+    let usesOrgList = false;
     if (ctxKey === ASSISTANT_CTX) {
       const catalog = await ChatApi.fetchOrgLlmCatalog();
       models = catalog.models;
@@ -131,19 +146,34 @@ export async function fetchModelsForContext(
         // An agent with no models configured falls back to the organization's
         // default LLM at chat time (see `usesOrgDefault` in the agent API), so
         // show that same org-wide list here instead of an empty/error state.
+        usesOrgList = true;
         try {
-          models = await ChatApi.fetchAvailableLlms();
+          // A forced refresh (model picker) must reach the org list this agent shows.
+          models = await fetchModelsForContext(ASSISTANT_CTX, opts);
         } catch (err) {
           throw new OrgModelsFetchError(err);
         }
       }
-      const agentDefaultEffort = normalizeReasoningEffort(
+      agentDefaultEffort = normalizeReasoningEffort(
         (agent?.defaultReasoningEffort as ReasoningEffort | undefined) ?? null,
       );
-      useChatStore.getState().setAgentDefaultReasoningEffort(ctxKey, agentDefaultEffort);
+    }
+
+    // A response from before sign-out belongs to the last user: keep it out of the store.
+    if (startedInSession !== sessionGeneration) return models;
+    // The org's models changed while this was in flight: ask again instead of caching the old list.
+    // An agent's own models are not the org's, so they are kept.
+    if (startedInConfig !== configGeneration && (ctxKey === ASSISTANT_CTX || usesOrgList)) {
+      if (inflight.get(ctxKey) === promise) inflight.delete(ctxKey);
+      return fetchModelsForContext(ctxKey, opts);
     }
 
     const s = useChatStore.getState();
+    if (ctxKey !== ASSISTANT_CTX) {
+      s.setAgentDefaultReasoningEffort(ctxKey, agentDefaultEffort);
+      if (usesOrgList) orgListContexts.add(ctxKey);
+      else orgListContexts.delete(ctxKey);
+    }
     s.setAvailableModelsForCtx(ctxKey, models);
     if (ctxKey === ASSISTANT_CTX) s.setNewChatDefaultModel(newChatDefault);
 
@@ -166,7 +196,8 @@ export async function fetchModelsForContext(
   try {
     return await promise;
   } finally {
-    inflight.delete(ctxKey);
+    // A sign-out or invalidation may have put a newer request under this key.
+    if (inflight.get(ctxKey) === promise) inflight.delete(ctxKey);
   }
 }
 
@@ -192,3 +223,16 @@ export function invalidateModelsForContext(ctxKey: string): void {
   inflight.delete(ctxKey);
 }
 
+// An AI-model write in Settings changes the org list and every agent list that falls back to it.
+onSwrNamespaceRevalidate(SWR_NS.aiModelConfig, () => {
+  configGeneration += 1;
+  [ASSISTANT_CTX, ...orgListContexts].forEach(invalidateModelsForContext);
+  orgListContexts.clear();
+});
+
+// The store copy is reset with the chat store; the requests of the last session must not be joined.
+onSessionEnd(() => {
+  sessionGeneration += 1;
+  inflight.clear();
+  orgListContexts.clear();
+});

@@ -131,7 +131,6 @@ export function StepAiModel({ nextGateRef }: StepAiModelProps) {
             <Box ref={rolesSectionRef} style={{ marginTop: '16px' }}>
               <ModelRolesSection
                 configuredModels={manager.configuredModels}
-                onRolesUpdated={manager.loadModels}
                 variant="onboarding"
                 highlighted={rolesHighlighted}
                 onAcknowledgedChange={(v) => setRolesAcknowledged(v)}
