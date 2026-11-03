@@ -343,6 +343,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     rawMessages: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
+    sharedWith: isNew ? [] : null,
   };
 }
 
@@ -1142,33 +1143,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   closeAgentsSidebar: () => set({ isAgentsSidebarOpen: false }),
 
+  // Resets only the sidebar's own state. The agent's tools, knowledge, name and access belong to
+  // the chat page, which sets and clears them from the agent detail as the URL's agent changes.
   setAgentSidebarAgentId: (id) =>
     set((state) => {
-      if (id === null) {
-        return {
-          agentSidebarAgentId: null,
-          agentConversations: [],
-          agentConversationsPagination: null,
-          agentConversationsError: null,
-          isAgentMoreChatsPanelOpen: false,
-          agentMoreChatsPagination: null,
-          agentStreamTools: null,
-          agentToolCatalogFullNames: [],
-          agentChatConnectors: [],
-          agentChatKbIds: [],
-          agentKnowledgeCollectionRows: [],
-          agentChatToolGroups: [],
-          agentChatMcpGroups: [],
-          agentKnowledgeDefaults: { apps: [], kb: [] },
-          agentKnowledgeScope: null,
-          agentContextDisplayName: null,
-          agentContextCreatedBy: null,
-          agentContextAccess: null,
-          agentDeprecatedToolNames: [],
-          isAgentsSidebarOpen: false,
-        };
-      }
-      if (state.agentSidebarAgentId === id) {
+      if (id !== null && state.agentSidebarAgentId === id) {
         return state.isAgentsSidebarOpen ? { isAgentsSidebarOpen: false } : state;
       }
       return {
@@ -1178,19 +1157,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentConversationsError: null,
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
-        agentStreamTools: null,
-        agentToolCatalogFullNames: [],
-        agentChatConnectors: [],
-        agentChatKbIds: [],
-        agentKnowledgeCollectionRows: [],
-        agentChatToolGroups: [],
-        agentChatMcpGroups: [],
-        agentKnowledgeDefaults: { apps: [], kb: [] },
-        agentKnowledgeScope: null,
-        agentContextDisplayName: null,
-        agentContextCreatedBy: null,
-        agentContextAccess: null,
-        agentDeprecatedToolNames: [],
         isAgentsSidebarOpen: false,
       };
     }),

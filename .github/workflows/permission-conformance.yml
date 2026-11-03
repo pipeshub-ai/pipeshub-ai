@@ -17,7 +17,6 @@ on:
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/**'
       - 'backend/python/tests/unit/services/permissions/**'
-      - 'scripts/assert_no_skips.py'
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'scripts/assert_no_skips.py'

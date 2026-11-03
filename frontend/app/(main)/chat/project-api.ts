@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api';
-import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { revalidateSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
 import type {
   CreateProjectInput,
   ListProjectsParams,
@@ -12,6 +12,29 @@ import type {
 } from './project-types';
 
 const PROJECTS_BASE_URL = '/api/v1/projects';
+
+/** SWR key of one project's detail (`GET /projects/:projectId`). */
+export const projectDetailKey = (projectId: string) => [SWR_NS.projectDetails, projectId] as const;
+
+/**
+ * Marks a deleted or left project as gone (`null`) without asking the server:
+ * that would only bring back a 404. Readers treat `null` like that 404.
+ */
+function forgetProject(projectId: string): void {
+  writeSwrKey<ProjectDetail | null>(projectDetailKey(projectId), null);
+}
+
+/** Pin, unpin, archive or unarchive; readers of the cached project then refetch it. */
+async function postProjectAction(
+  projectId: string,
+  action: 'archive' | 'unarchive' | 'pin' | 'unpin',
+): Promise<ProjectDetail> {
+  const { data } = await apiClient.post<{ project: ProjectDetail }>(
+    `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/${action}`,
+  );
+  revalidateSwrKey(projectDetailKey(projectId));
+  return data.project;
+}
 
 /** One row from `GET /:projectId/conversations` — raw `chatSessions` fields (not the enriched `/conversations` shape). */
 export interface ProjectConversationRow {
@@ -87,35 +110,13 @@ export const ProjectApi = {
     await apiClient.delete(`${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}`);
     // The server unlinks the project's chats, so they move into Recents.
     revalidateSwrNamespace(SWR_NS.conversationLists);
+    forgetProject(projectId);
   },
 
-  async archive(projectId: string): Promise<ProjectDetail> {
-    const { data } = await apiClient.post<{ project: ProjectDetail }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/archive`,
-    );
-    return data.project;
-  },
-
-  async unarchive(projectId: string): Promise<ProjectDetail> {
-    const { data } = await apiClient.post<{ project: ProjectDetail }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/unarchive`,
-    );
-    return data.project;
-  },
-
-  async pin(projectId: string): Promise<ProjectDetail> {
-    const { data } = await apiClient.post<{ project: ProjectDetail }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/pin`,
-    );
-    return data.project;
-  },
-
-  async unpin(projectId: string): Promise<ProjectDetail> {
-    const { data } = await apiClient.post<{ project: ProjectDetail }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/unpin`,
-    );
-    return data.project;
-  },
+  archive: (projectId: string) => postProjectAction(projectId, 'archive'),
+  unarchive: (projectId: string) => postProjectAction(projectId, 'unarchive'),
+  pin: (projectId: string) => postProjectAction(projectId, 'pin'),
+  unpin: (projectId: string) => postProjectAction(projectId, 'unpin'),
 
   async listConversations(
     projectId: string,
@@ -177,6 +178,13 @@ export const ProjectApi = {
     );
     // Older servers omit `removed`; a 200 from them always meant a removal.
     return { members: data.members ?? [], removed: data.removed !== false };
+  },
+
+  /** Removes the caller (`myUserId`) from the project; once left, it is no longer theirs to open. */
+  async leave(projectId: string, myUserId: string): Promise<{ members: ProjectMember[]; removed: boolean }> {
+    const result = await ProjectApi.removeMember(projectId, myUserId);
+    if (result.removed) forgetProject(projectId);
+    return result;
   },
 
   async setConversationProject(

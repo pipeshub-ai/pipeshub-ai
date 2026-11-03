@@ -614,6 +614,23 @@ describe('Knowledge base page — inside a collection', () => {
     expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
   });
 
+  it('loads the members of an open collection once, even as the tree fills in', async () => {
+    await openEngineering();
+    await waitFor(() => expect(share.getSharedMembers).toHaveBeenCalledTimes(1));
+
+    // What the sidebar tree's children fetch does once it lands.
+    act(() => {
+      useKnowledgeBaseStore.getState().addNodes([
+        hubNode({ id: 'folder-late', name: 'Late folder', nodeType: 'folder', parentId: 'kb-eng' }),
+      ]);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(share.getSharedMembers).toHaveBeenCalledTimes(1);
+  });
+
   it('sends a user whose access was removed back to the collections list', async () => {
     withCollections();
     api.hub.loadFolderData.mockRejectedValue({ type: 'AUTHORIZATION_ERROR', message: 'No access', statusCode: 403 });
