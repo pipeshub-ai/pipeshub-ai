@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.services.graph_db.postgres.base import NotImplementedInPostgres
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -212,6 +214,8 @@ def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str)
 
 
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
+    if access.get("probe"):      # a browse that tests grants from the node: its grants are not in ``by_connector``, so it is not answered by guessing
+        raise NotImplementedInPostgres("an access check with a grant probe is not implemented")
     gated = set(access["gated_app_ids"])
     granted = {g for ids in access["by_connector"].values() for g in ids}
     granted_l = sorted(granted)

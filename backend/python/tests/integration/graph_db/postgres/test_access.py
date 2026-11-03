@@ -235,3 +235,11 @@ async def test_a_call_without_an_org_fails_instead_of_denying(pg_provider) -> No
         await pg_provider.check_access("u", "o", node_ids=["r"])
     with pytest.raises(MissingOrgContext):
         await pg_provider.get_knowledge_hub_access_v3("u", "o")
+
+
+async def test_an_access_with_a_grant_probe_is_refused_rather_than_answered_without_its_grants(w: World) -> None:
+    from app.services.graph_db.postgres.base import NotImplementedInPostgres
+    await w.nodes("records", rec("r"))
+    await w.child(("apps", APP), ("records", "r"))
+    with pytest.raises(NotImplementedInPostgres):
+        await w.p.check_access("u", w.org, node_ids=["r"], access={"grantee_ids": ["u"], "gated_app_ids": [APP], "by_connector": {}, "probe": {"connector_id": APP, "grantees": ["u"]}})
