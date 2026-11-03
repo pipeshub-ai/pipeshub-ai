@@ -168,15 +168,14 @@ def anchor_words(pattern: str) -> list[str]:
 def plan_command(command: str) -> IndexPlan | None:
     """The lookups that answer *command*, or None when some stage cannot be
     looked up (no whole word, an inverted or whole-line match, a pattern the
-    verifier cannot compile exactly, a stage that reads only some files) and
-    the command must be scanned."""
+    verifier cannot compile exactly) and the command must be scanned."""
     stages: list[IndexStage] = []
     for stage_text in _split_pipeline_stages(command):
         stage = grep_stage(stage_text)
         if stage is None:
             # e.g. a trailing `head`; it selects lines, it does not match.
             continue
-        if stage.inverted or stage.line or stage.narrows_files or not stage.patterns:
+        if stage.inverted or stage.line or not stage.patterns:
             return None
         regexes: list[regex.Pattern[str]] = []
         words: list[str] = []

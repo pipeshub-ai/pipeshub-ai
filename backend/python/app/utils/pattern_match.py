@@ -171,7 +171,12 @@ class PatternMatchCoverage:
 _SCAN_NO_WORD = "no_word"
 _SCAN_INDEX_FAILED = "index_failed"
 _SCAN_INDEX_MISS = "index_miss"
+_SCAN_UNSHAPED = "unshaped"
 _SCAN_NOTES = {
+    _SCAN_UNSHAPED: (
+        "A command that names paths, file filters or options the keyword index "
+        "cannot honour was matched by a time-bounded scan of stored files instead."
+    ),
     _SCAN_INDEX_MISS: (
         "A keyword search the index found nothing for was run again as a "
         "time-bounded scan of stored files, which matches inside words and "
@@ -1489,11 +1494,18 @@ async def _match_through_index(
     every command is scanned too (grep is complete there), and on a large one
     each command the index found nothing for is.
     """
-    plans = {cmd: plan_command(cmd) for cmd in commands}
+    # Only a command in the strict shape (one bare `.`, known flags, grep stages
+    # only) reads every file; any other may narrow them (a path, `--`, a glob, a
+    # find stage), which a whole-store lookup cannot honour, so the scan answers it.
+    unshaped = {cmd for cmd in commands if not validate_pattern_match_command(cmd)[0]}
+    plans = {cmd: None if cmd in unshaped else plan_command(cmd) for cmd in commands}
     unplanned = [cmd for cmd, plan in plans.items() if plan is None]
     planned = [cmd for cmd, plan in plans.items() if plan is not None]
-    if unplanned and coverage is not None and not small_store:
-        coverage.scan_reasons.add(_SCAN_NO_WORD)
+    if coverage is not None and not small_store:
+        if unshaped:
+            coverage.scan_reasons.add(_SCAN_UNSHAPED)
+        if len(unplanned) > len(unshaped):
+            coverage.scan_reasons.add(_SCAN_NO_WORD)
     if not planned:
         return unplanned
     try:
