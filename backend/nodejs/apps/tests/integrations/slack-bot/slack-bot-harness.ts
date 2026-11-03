@@ -296,6 +296,37 @@ const goldenCall = (id: string, name: string, label: string, args: string, statu
   { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: id, status, ...(summary ? { resultSummary: summary } : {}) },
 ];
 
+/**
+ * A saved conversation's parts (golden/<file>) as the stream events that
+ * produced them: text parts as text (empty ones too), tool calls with their
+ * display name, argument summary, result summary, view and preview.
+ */
+export function conversationFrames(file: string): Record<string, unknown>[] {
+  const saved = JSON.parse(readFileSync(join(GOLDEN_DIR, file), 'utf8')) as { parts: AnyArgs[] };
+  const frames: Record<string, unknown>[] = [{ type: 'RUN_STARTED', runId: 'r1' }];
+  let answer = '';
+  for (const part of saved.parts) {
+    if (part.type === 'text') {
+      frames.push({ type: 'TEXT_MESSAGE_START', runId: 'r1' });
+      if (String(part.isFinal) === 'True') answer = String(part.content);
+      frames.push(...tokens(String(part.content ?? ''), 40));
+    } else if (part.type === 'tool_call') {
+      frames.push(
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: part.toolCallId, toolCallName: part.toolName,
+          ...(part.displayName ? { displayName: part.displayName } : {}) },
+        { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: part.toolCallId, delta: part.args ?? '{}',
+          ...(part.argsSummary ? { argsSummary: part.argsSummary } : {}) },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: part.toolCallId, status: part.status,
+          content: part.resultPreview,
+          ...(part.resultSummary !== undefined ? { resultSummary: part.resultSummary } : {}),
+          ...(part.resultView ? { resultView: part.resultView } : {}) },
+      );
+    }
+  }
+  frames.push(finished(answer));
+  return frames;
+}
+
 /** Whole runs whose Slack view is kept in golden/<name>.txt. `clock` runs them with a fake clock for WAIT frames. */
 export const GOLDEN_RUNS: { name: string; clock?: boolean; frames: () => Record<string, unknown>[] }[] = [
   { name: 'asana-research', frames: asanaResearchFrames },
@@ -340,6 +371,7 @@ export const GOLDEN_RUNS: { name: string; clock?: boolean; frames: () => Record<
       finished(''),
     ],
   },
+  { name: 'jira-conversation', frames: () => conversationFrames('jira-conversation.json') },
   {
     name: 'long-answer-rollover',
     frames: () => {
@@ -671,7 +703,7 @@ export function describeAnswerWiring(
         ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
         ['Got record download links', 'Artifacts', 'error'],
         ['Loaded tools', '', 'complete'],
-        ['Create ticket', 'Tracker', 'error'],
+        ['Created ticket', 'Tracker', 'error'],
       ]);
       // Apps and actions in plain words; a call blocked for approval says where to answer.
       expect(tools[3]!.output).to.equal('✓ Tracker → Loaded 3 tools');
@@ -963,7 +995,7 @@ export function describeAnswerWiring(
       const steps = [...finalSteps(client).values()];
       expect(steps.map((t) => [t.title, t.status])).to.deep.equal([
         ['Let me check the reports.', 'complete'],
-        ['Search', 'complete'],
+        ['Searched', 'complete'],
       ]);
     });
 
