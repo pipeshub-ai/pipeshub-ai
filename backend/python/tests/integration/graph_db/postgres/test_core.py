@@ -346,3 +346,18 @@ async def test_a_node_wide_read_or_delete_over_node_relations_covers_hierarchy_a
         assert await p.delete_edges_from("x", "records", "recordLinks") == 3
         assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 1
         assert await p.delete_edges_from("x", "records", "nodeRelations") == 1
+
+
+async def test_hierarchy_edges_are_never_links_for_any_reader_or_deleter_of_record_links(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    e = {"from_id": "x", "from_collection": "records", "to_id": "y", "to_collection": "records"}
+    with org_ctx(a):
+        await p.batch_create_edges([{**e, "relationshipType": "PARENT_CHILD"}, {**e, "to_id": "z", "relationshipType": "ATTACHMENT"}, {**e, "to_id": "w"}], "nodeRelations")
+        assert await p.get_edge("x", "records", "y", "records", "recordLinks") is None
+        assert await p.get_edges_from_node("records/x", "recordLinks") == []
+        assert await p.get_edges_to_node("records/y", "recordLinks") == []
+        assert await p.batch_delete_edges([e], "recordLinks") == 0
+        assert await p.delete_edges_from("x", "records", "recordLinks") == 0
+        assert await p.delete_edges_to("y", "records", "recordLinks") == 0
+        assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 3
