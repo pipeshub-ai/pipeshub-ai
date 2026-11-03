@@ -96,6 +96,18 @@ async def test_text_search_on_a_missing_path_is_an_error_naming_what_exists() ->
         assert "nothing was searched" in out["error"], wide
 
 
+async def test_a_missing_path_names_only_what_this_connector_holds() -> None:
+    """The hint lists directories, so it is scoped like the search: another
+    connector's (or repo's) files may lie outside a connected app's limit."""
+    graph = QueryGraphProvider()
+    graph.code_files["rec-x"] = "other_secret/x.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2",
+                              "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(), pattern="x", mode="text", path="nope/")
+    assert "nothing was searched" in out["error"]
+    assert "other_secret" not in out["error"] and "src" in out["error"]
+
+
 async def test_text_search_skips_a_suffix_only_another_connector_holds() -> None:
     graph = QueryGraphProvider()
     graph.code_files["rec-x"] = "repo/src/b.py"
