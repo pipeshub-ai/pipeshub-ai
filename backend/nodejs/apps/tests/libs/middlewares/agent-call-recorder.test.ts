@@ -87,6 +87,7 @@ describe('Agent call recorder', () => {
     kb.get('/:kbId/records', requireScopes(OAuthScopeNames.KB_READ), (_q, s) => s.json({ ok: true }))
     kb.post('/:kbId/records', requireScopes(OAuthScopeNames.KB_WRITE), (_q, s) => s.status(201).json({}))
     kb.get('/:kbId/boom', (_q, _s, next) => next(new Error('nope')))
+    kb.get('/:kbId/moved', (_q, s) => s.redirect(302, '/elsewhere'))
     app.use('/api/v1/knowledgeBase', kb)
     const mcp = express.Router()
     mcp.post('/', auth.authenticate, (_q, s) => s.json({ ok: true }))
@@ -171,6 +172,14 @@ describe('Agent call recorder', () => {
     await call(`${base}/api/v1/knowledgeBase/kb1/records`, { method: 'POST', body: '{}' })
     await settle()
     expect(repo.rows.map((r) => [r.method, r.statusCode, r.rollup])).to.deep.equal([['POST', 201, false], ['POST', 201, false]])
+  })
+
+  it('gives a redirected GET its own row: only 2xx GETs are folded', async () => {
+    asBearer()
+    const base = await start()
+    await call(`${base}/api/v1/knowledgeBase/kb1/moved`, { redirect: 'manual' })
+    await settle()
+    expect(repo.rows[0]).to.deep.include({ route: '/api/v1/knowledgeBase/:kbId/moved', statusCode: 302, rollup: false })
   })
 
   it('gives a scope denial its own row, flagged', async () => {

@@ -102,7 +102,10 @@ export function recordAgentCall(
         scopeDenied: scopeDenied.has(req),
         ...(requestId !== undefined && { requestId }),
         rollup:
-          req.method === 'GET' && statusCode < 400 && mcpTool === undefined,
+          req.method === 'GET' &&
+          statusCode >= 200 &&
+          statusCode < 300 &&
+          mcpTool === undefined,
       };
       void runWithOrgContext(
         makeOrgContext({ orgId, userId, kind: 'user', source: 'agent_audit' }),
