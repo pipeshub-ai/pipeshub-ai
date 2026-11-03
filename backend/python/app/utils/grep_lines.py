@@ -24,6 +24,9 @@ LINE_MATCH_TIMEOUT_SECS = 0.05
 MAX_LINE_TIMEOUTS = 3
 _QUICK_SECS = 0.001
 MAX_LINE_CHARS = 400
+# A line is searched up to this many characters: the regex time limit only works inside backtracking, so a very long line
+# (a record stored as one line) would otherwise be scanned in full. Matches further along are missed and the answer says so.
+MAX_SCAN_CHARS = 20_000
 
 
 class _Line(NamedTuple):
@@ -167,17 +170,21 @@ def find_matches(
             if budget <= 0:
                 complete = False
                 break
+        scanned = text
+        if len(text) > MAX_SCAN_CHARS:
+            scanned = text[:MAX_SCAN_CHARS]
+            complete = False
         try:
             try:
                 # Most lines are quick, and releasing the GIL for each makes threads
                 # queue behind each other: try without, for a millisecond.
-                found = pattern.search(text, timeout=min(budget, _QUICK_SECS))
+                found = pattern.search(scanned, timeout=min(budget, _QUICK_SECS))
             except TimeoutError:
                 if budget <= _QUICK_SECS:
                     raise
                 # A slow line: from here concurrent=True lets other threads (the
                 # event loop) run during the search.
-                found = pattern.search(text, timeout=budget, concurrent=True)
+                found = pattern.search(scanned, timeout=budget, concurrent=True)
             if not found:
                 continue
         except TimeoutError:

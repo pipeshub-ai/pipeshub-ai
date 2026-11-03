@@ -1214,6 +1214,8 @@ async def run_pattern_match_with_llm_grep(
     command is answered from that index (``exact_text_index``), and only a
     command it cannot express is scanned file by file.
     """
+    if commands is not None and not commands:
+        raise ValueError("commands must not be empty: pass None to let the search choose its own")
     if found is None:
         found = {}
     try:
