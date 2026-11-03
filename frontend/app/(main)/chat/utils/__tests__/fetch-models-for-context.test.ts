@@ -69,6 +69,18 @@ describe('fetchModelsForContext: the org list', () => {
     expect(chatApi.fetchOrgLlmCatalog).toHaveBeenCalledTimes(2);
   });
 
+  it('a forced refresh of an agent without models rereads the org list once', async () => {
+    agentsApi.getAgent.mockResolvedValue({ agent: { models: [] } });
+    await fetchModelsForContext('agent-1');
+    chatApi.fetchOrgLlmCatalog.mockResolvedValue(orgList(model('gpt', true), model('added-by-other-admin')));
+
+    const models = await fetchModelsForContext('agent-1', { force: true });
+
+    expect(keys(models)).toEqual(['gpt', 'added-by-other-admin']);
+    expect(chatApi.fetchOrgLlmCatalog).toHaveBeenCalledTimes(2);
+    expect(agentsApi.getAgent).toHaveBeenCalledTimes(2);
+  });
+
   it('a failure is not cached: the next call asks again', async () => {
     chatApi.fetchOrgLlmCatalog.mockRejectedValueOnce(new Error('down'));
     await expect(fetchModelsForContext(ASSISTANT_CTX)).rejects.toThrow('down');

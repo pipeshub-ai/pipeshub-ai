@@ -148,7 +148,8 @@ export async function fetchModelsForContext(
         // show that same org-wide list here instead of an empty/error state.
         usesOrgList = true;
         try {
-          models = await fetchModelsForContext(ASSISTANT_CTX);
+          // A forced refresh (model picker) must reach the org list this agent shows.
+          models = await fetchModelsForContext(ASSISTANT_CTX, opts);
         } catch (err) {
           throw new OrgModelsFetchError(err);
         }
