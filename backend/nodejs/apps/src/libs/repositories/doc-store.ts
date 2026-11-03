@@ -64,7 +64,13 @@ export function schemaRequirements(): SchemaRequirements {
           },
         }
       : {}),
-    ...(['oauth-app', 'oauth-token', 'identity-lookup', 'delegation', 'agent-call-event'].some(onPg)
+    ...([
+      'oauth-app',
+      'oauth-token',
+      'identity-lookup',
+      'delegation',
+      'agent-call-event',
+    ].some(onPg)
       ? { oauth: { requires: OAUTH_EPOCH, code: OAUTH_EPOCH } }
       : {}),
     ...(onPg('slack-thread')
