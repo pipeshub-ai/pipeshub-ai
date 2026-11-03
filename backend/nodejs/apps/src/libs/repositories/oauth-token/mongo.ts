@@ -564,6 +564,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
           },
         },
       ],
+      { updatePipeline: true },
     );
   }
 
