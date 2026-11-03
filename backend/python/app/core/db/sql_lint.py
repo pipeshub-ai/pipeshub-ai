@@ -1,6 +1,6 @@
 """Static SQL checks for code that talks to the database through ``KernelDB``.
 
-* :func:`scan_file` finds, in string literals passed to ``fetch`` / ``fetchrow`` / ``fetchval`` / ``execute`` /
+* :func:`scan_source` finds, in string literals passed to (or assigned to a local name that is passed to) ``fetch`` / ``fetchrow`` / ``fetchval`` / ``execute`` /
   ``executemany``: session-level SQL that survives past a transaction, string-built SQL, and untagged statements.
 * :func:`org_predicate_violations` (needs ``sqlglot``) requires ``<alias>.org_id = $n`` on every reference to an
   org-partitioned table, in the same scope. A correlation (``c.org_id = p.org_id``) does not count.
@@ -83,12 +83,49 @@ def _sql_text(node: ast.expr) -> tuple[str | None, bool]:
     return None, False
 
 
+def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> dict[str, list[ast.expr]]:
+    """The values assigned to plain local names in the functions around ``call`` (``q = ...``, ``q: str = ...``, ``q += ...``). A statement
+    built into a variable and passed by name is as built as one built in the call; only simple local assignments are followed, not
+    module-level constants (composed from other constants when the module loads) and not names that arrive as arguments."""
+    out: dict[str, list[ast.expr]] = {}
+    node: ast.AST | None = call
+    while node is not None:
+        node = parents.get(node)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for n in ast.walk(node):
+                if isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        if isinstance(t, ast.Name):
+                            out.setdefault(t.id, []).append(n.value)
+                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value is not None:
+                    out.setdefault(n.target.id, []).append(n.value)
+                elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and isinstance(n.op, ast.Add | ast.Mod):
+                    out.setdefault(n.target.id, []).append(ast.BinOp(left=n.target, op=n.op, right=n.value))      # q += ... builds q
+    return out
+
+
+def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[str | None, bool]:
+    """(constant text or None, is_string_built) of the statement a call is given: the argument itself, or what the local name it passes
+    was assigned (built when any assignment builds it)."""
+    text, built = _sql_text(arg)
+    if text is not None or not isinstance(arg, ast.Name):
+        return text, built
+    built = False
+    for value in _local_assignments(call, parents).get(arg.id, []):
+        value_text, value_built = _sql_text(value)
+        built = built or value_built
+        text = text if text is not None else value_text
+    return text, built
+
+
 def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -> list[Finding]:
     found: list[Finding] = []
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _CALLS and node.args):
             continue
-        text, built = _sql_text(node.args[0])
+        text, built = _statement(node.args[0], node, parents)
         if text is None or not (_SQL_START.match(text) or (built and _KEYWORDS.search(text))):
             continue  # not SQL (an HTTP client's execute, a Redis call, ...)
         if built:

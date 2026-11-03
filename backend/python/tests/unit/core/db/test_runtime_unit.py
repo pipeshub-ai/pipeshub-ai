@@ -305,6 +305,46 @@ async def f(con, redis, name):
                      "string-built SQL (use bound parameters)", "string-built SQL (use bound parameters)"]
 
 
+BUILT = "string-built SQL (use bound parameters)"
+UNTAGGED = "statement without a /* pipeshub:<module>.<fn> */ tag"
+
+
+@pytest.mark.parametrize("body", [
+    'q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = "SELECT * FROM t WHERE a = " + x\n    await tx.fetchrow(q)',
+    'q = "SELECT * FROM t WHERE a = %s" % x\n    await tx.fetchval(q)',
+    'q = "SELECT * FROM t WHERE a = {}".format(x)\n    await tx.execute(q)',
+    'q = "SELECT * FROM t"\n    q += f" WHERE a = {x}"\n    await tx.fetch(q)',
+    'q: str = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = "SELECT 1"\n    if x:\n        q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = f"SELECT * FROM t WHERE a = {x}"\n    async def inner():\n        await tx.fetch(q)',
+], ids=["f-string", "plus", "percent", "format", "augmented", "annotated", "one of two assignments", "read by a nested function"])
+def test_a_statement_built_into_a_variable_is_as_built_as_one_built_in_the_call(body) -> None:
+    src = f"async def f(tx, x):\n    {body}\n"
+    assert BUILT in [f.rule for f in sql_lint.scan_source(src)]
+
+
+def test_a_variable_that_holds_a_literal_statement_is_checked_like_the_literal() -> None:
+    tagged = 'async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    await tx.fetch(q)\n'
+    assert sql_lint.scan_source(tagged) == []
+    untagged = 'async def f(tx):\n    q = "SELECT 1"\n    await tx.fetch(q)\n'
+    assert [f.rule for f in sql_lint.scan_source(untagged)] == [UNTAGGED]
+    session = 'async def f(tx):\n    q = "/* pipeshub:m.f */ SET ROLE x"\n    await tx.execute(q)\n'
+    assert any("session SET" in f.rule for f in sql_lint.scan_source(session))
+
+
+def test_only_simple_local_assignments_are_followed() -> None:
+    clean = [
+        'Q = f"SELECT {A} FROM t"\nasync def f(tx):\n    await tx.fetch(Q)\n',            # a module constant, composed when the module loads
+        'async def f(tx, q):\n    await tx.fetch(q)\n',                                   # a name that arrives as an argument
+        'async def g():\n    q = f"SELECT {x}"\nasync def f(tx):\n    await tx.fetch(q)\n',   # assigned in another function
+        'async def f(client, x):\n    q = f"hello {x}"\n    await client.execute(q)\n',     # not SQL (a Redis or HTTP client)
+        'async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    await tx.fetch(q)\n',
+    ]
+    for src in clean:
+        assert sql_lint.scan_source(src) == [], src
+
+
 def test_no_caller_of_the_runtime_breaks_the_rules() -> None:
     """Every module that imports the runtime (outside the runtime itself) is scanned; none exist yet."""
     app = BACKEND / "python" / "app"
