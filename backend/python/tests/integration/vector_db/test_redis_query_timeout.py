@@ -134,3 +134,40 @@ class TestRedisKeyScan:
             assert len(keys) == n == len(set(keys))
         finally:
             await redis_service.delete_collection(col)
+
+    async def test_a_truncated_cursor_raises_instead_of_answering_with_a_part(self, redis_service) -> None:
+        """The scan is held to a separate count of the matches: a cursor that ends early (here, cut after its
+        first batch) must not be taken for the whole set."""
+        n = 3000
+        col = make_collection("redis_key_scan_cut")
+        await redis_service.create_collection(col, make_collection_config())
+        try:
+            await redis_service.upsert_points(col, [
+                VectorPoint(
+                    id=f"pt-{i}", dense_vector=make_dense([1.0]),
+                    payload={"page_content": f"c{i}", "metadata": {"orgId": "org1", "virtualRecordId": f"vr-{i % 50}"}},
+                )
+                for i in range(n)
+            ])
+
+            async def indexed() -> bool:
+                return await _count(redis_service, col) >= n
+
+            await wait_for(indexed, timeout=120, poll=0.2)
+            real = redis_service.client.execute_command
+
+            async def cut(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                if args[:2] == ("FT.CURSOR", "READ"):
+                    return [[0], 0]  # the cursor "ends" after the first batch
+                return await real(*args, **kwargs)
+
+            redis_service.client.execute_command = cut
+            try:
+                with pytest.raises(RuntimeError, match=r"of 3000 counted"):
+                    await redis_service._keys_matching_filter(
+                        col, FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")]),
+                    )
+            finally:
+                redis_service.client.execute_command = real
+        finally:
+            await redis_service.delete_collection(col)
