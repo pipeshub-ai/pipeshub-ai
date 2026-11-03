@@ -103,7 +103,7 @@ class CoreMixin(PgBase):
                 docs.append(_arango(_doc(json.loads(r["node_json"])), "apps"))
             if len(rows) < want:
                 break
-            after, after_org = rows[-1]["app_id"], rows[-1]["org_id"]
+            after, after_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row: the cursor
         docs = docs[:limit]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
