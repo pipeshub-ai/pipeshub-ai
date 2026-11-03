@@ -86,13 +86,15 @@ jobs:
           tests/integration/vector_db/test_pgvector_probe.py
           tests/integration/vector_db/test_pgvector_writes.py
           tests/integration/vector_db/test_pgvector_reads.py
+          tests/integration/vector_db/test_pgvector_search.py
           -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/pgvector-junit.xml"
 
       - name: No unexpected skips, and every case ran
         if: ${{ always() }}
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 50
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 62
           --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=8'
           --expect-suite 'tests.integration.vector_db.test_pgvector_probe=2'
           --expect-suite 'tests.integration.vector_db.test_pgvector_writes=30'
           --expect-suite 'tests.integration.vector_db.test_pgvector_reads=10'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_search=12'
