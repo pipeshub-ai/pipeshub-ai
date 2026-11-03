@@ -1,21 +1,27 @@
-"""Knowledge-graph entity search and lookup as API routes.
+"""Exact-text (grep) search and knowledge-graph entities as API routes.
 
-Both reuse what the assistant's tools run, so access is decided in the same
-place: ``entity_permissions`` (search through ``execute_search_entities``,
-neighbours through ``list_accessible_entity_records``). Neither route has a
-way to see a record the caller cannot read, and the caller is always the signed-in
-user: the bodies carry no organisation or user id.
+All reuse what the assistant's tools run, so access is decided in the same
+places: grep through ``merge_pattern_match_results`` (the permission check
+semantic search uses, after a storage grep that sees only readable records),
+entities through ``entity_permissions``. No route has a way to see a record
+the caller cannot read, and the caller is always the signed-in user: the
+bodies carry no organisation or user id.
 """
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
-from typing import Any, Literal
+import re
+import shlex
+import time
+from typing import TYPE_CHECKING, Any, Literal
 
+import regex
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     _named_entities_enabled,
@@ -28,12 +34,18 @@ from app.agents.actions.knowledge_graph.views import _compact_date
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
+from app.core.org_context import spawn_in_request
 from app.models.entities import resolve_weburl
 from app.models.source_dates import RecordDates
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.retrieval.entity_permissions import (
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessError,
     list_accessible_entity_records,
+)
+from app.modules.retrieval.filter_schema import validate_request_filters
+from app.modules.retrieval.retrieval_service import (
+    RetrievalService,  # noqa: TC001 - FastAPI reads the annotation
 )
 from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,  # noqa: TC001 - FastAPI reads the annotation
@@ -43,13 +55,42 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_ENTITY_TYPE_BY_COLLECTION,
 )
 from app.utils.chat_helpers import resolve_frontend_url
+from app.utils.grep_lines import (
+    COMPRESSED_MARK,
+    ere_prefilter,
+    find_matches_bounded,
+    literal_prefilter,
+)
+from app.utils.pattern_match import (
+    PatternMatchCoverage,
+    await_pattern_match,
+    check_pattern_match_eligible,
+    merge_pattern_match_results,
+    render_pattern_match_coverage_note,
+    run_pattern_match_with_llm_grep,
+    validate_pattern_match_command,
+)
+from app.utils.user_messages import action_failed
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
 
 router = APIRouter(tags=["Search"])
 logger = logging.getLogger(__name__)
 
 SEARCH_SCOPES = (OAuthScopes.SEMANTIC_READ, OAuthScopes.SEMANTIC_WRITE)
-# Records read for labels at once.
+MAX_PATTERN_CHARS = 500
+_BACKREFERENCE = re.compile(r"\\[1-9]")
+# Records read for line matches (or labels) at once; each is a blob fetch.
 _LOAD_CONCURRENCY = 8
+# Readable records one app may give back (the request's ``limit`` cuts after).
+MAX_RECORDS_PER_APP = 100
+# Share of ``timeBudgetMs`` for finding records; the rest is for reading them.
+_FIND_SHARE = 0.6
+
+
+async def _retrieval_service(request: Request) -> RetrievalService:
+    return await request.app.container.retrieval_service()
 
 
 async def _graph_provider(request: Request) -> IGraphDBProvider:
@@ -62,6 +103,221 @@ def _user(request: Request) -> tuple[str, str]:
     if not org_id or not user_id:
         raise HTTPException(status_code=401, detail="Sign in again; your session has no organisation or user.")
     return org_id, user_id
+
+
+
+# ---------------------------------------------------------------------------
+# grep
+# ---------------------------------------------------------------------------
+class GrepQuery(BaseModel):
+    pattern: str = Field(..., min_length=1, max_length=MAX_PATTERN_CHARS)
+    # False: the pattern is literal text. True: an extended regular expression.
+    regex: bool = False
+    caseSensitive: bool = False
+    # Same shape and meaning as search: connector ids in ``apps``, collection ids in ``kb``.
+    filters: dict[str, Any] | None = None
+    # Shell-style globs on the record name (and a code file's path); a record
+    # matching any is kept. Applied after the access check.
+    paths: list[str] | None = Field(default=None, max_length=20)
+    limit: int = Field(20, ge=1, le=100)
+    contextLines: int = Field(2, ge=0, le=10)
+    maxMatchesPerRecord: int = Field(5, ge=1, le=50)
+    timeBudgetMs: int = Field(8000, ge=500, le=30000)
+
+    _validate_filters = field_validator("filters")(validate_request_filters)
+
+    @field_validator("pattern")
+    @classmethod
+    def _single_line(cls, value: str) -> str:
+        if "\n" in value or "\r" in value or "\x00" in value:
+            raise ValueError("pattern must be one line")
+        return value
+
+
+def _grep_command(body: GrepQuery) -> tuple[str, regex.Pattern[str]]:
+    """The grep command the pattern-match layer runs, and the compiled pattern
+    that finds the matching lines. 400 for a pattern it will not run.
+
+    Python's ``regex`` decides which lines match. Records are stored as one
+    line of JSON, so grep only picks the records worth reading, by a fixed
+    string of plain characters that every match must contain and the storage
+    writer never escapes (see ``ere_prefilter``); a pattern with no such text
+    picks every record.
+    """
+    if body.regex and _BACKREFERENCE.search(body.pattern):
+        raise HTTPException(status_code=400, detail="Back-references are not supported; remove \\1 style groups.")
+    ignore_case = not body.caseSensitive
+    try:
+        compiled = regex.compile(
+            body.pattern if body.regex else regex.escape(body.pattern),
+            regex.IGNORECASE if ignore_case else 0,
+        )
+        if body.regex:
+            prefilter, ignore_case = ere_prefilter(body.pattern, ignore_case=ignore_case)
+        else:
+            prefilter = literal_prefilter(body.pattern, ignore_case=ignore_case)
+    except regex.error as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid regular expression: {exc}") from exc
+    # The prefilter has only characters that are plain in an extended regular
+    # expression, so it can be joined with the mark of records stored
+    # compressed (always read, as grep cannot see their text).
+    command = (
+        f"grep -rc{'i' if ignore_case else ''}{'E' if prefilter else 'F'} "
+        f"-e {shlex.quote(f'{prefilter}|{COMPRESSED_MARK}' if prefilter else '')} ."
+    )
+    ok, error = validate_pattern_match_command(command)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"This pattern cannot be searched: {error}")
+    return command, compiled
+
+
+async def _reachable_scope(
+    graph_provider: IGraphDBProvider, org_id: str, user_id: str, filters: dict[str, Any],
+) -> dict[str, Any] | None:
+    """*filters* with ``apps`` and ``kb`` cut to the connectors and collections
+    the caller reaches, or None when the request named some and none are left.
+    A connector the caller cannot reach is never grepped, so nothing about it
+    (that it exists, how long it took) can show in the answer."""
+    named = {k: list(filters[k]) for k in ("apps", "kb") if filters.get(k)}
+    if not named:
+        return filters
+    reach = {a["_key"] for a in await graph_provider.get_org_apps(org_id, active_only=False) if a.get("_key")}
+    containers = await graph_provider.get_accessible_containers(user_id=user_id, org_id=org_id)
+    # Grants to single records name no connector, and a fallback names no
+    # containers at all: there the org's apps are the bound, and the access
+    # check on each record is what decides.
+    if containers is not None and not containers.fallback_reason and not containers.direct_records:
+        groups = containers.record_group_ids | containers.root_group_ids
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORD_GROUPS.value, "id", sorted(groups), ["id", "connectorId"],
+        ) if groups else []
+        reach &= set(containers.app_ids) | {r["connectorId"] for r in rows or [] if r.get("connectorId")}
+    kept = {k: [i for i in ids if i in reach] for k, ids in named.items()}
+    if not any(kept.values()):
+        return None
+    return {**filters, **kept}
+
+
+def _path_matches(globs: list[str] | None, record: dict[str, Any]) -> bool:
+    if not globs:
+        return True
+    names = [record.get("recordName") or "", record.get("filePath") or "", record.get("path") or ""]
+    return any(fnmatch.fnmatchcase(n.lower(), g.lower()) for g in globs for n in names if n)
+
+
+async def _load_blocks(blob_store: Any, vrid: str, org_id: str) -> list[dict[str, Any]]:  # noqa: ANN401
+    stored = await record_artifact_reader(blob_store).read_record(vrid, org_id)
+    containers = (stored or {}).get("block_containers") or {}
+    blocks = containers.get("blocks") if isinstance(containers, dict) else None
+    return blocks if isinstance(blocks, list) else []
+
+
+@router.post("/search/grep", dependencies=[Depends(require_scopes(*SEARCH_SCOPES))])
+async def grep(
+    request: Request,
+    body: GrepQuery,
+    retrieval_service: RetrievalService = Depends(_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(_graph_provider),
+) -> JSONResponse:
+    """Find records whose text contains a literal string or a regular expression."""
+    org_id, user_id = _user(request)
+    container = request.app.container
+    log = container.logger()
+    config_service: ConfigurationService = container.config_service()
+    command, compiled = _grep_command(body)
+    if not await check_pattern_match_eligible(config_service, log):
+        raise HTTPException(
+            status_code=501,
+            detail="Exact-text search needs local file storage. Use search for this deployment.",
+        )
+    # One deadline for the whole request: finding the records, then reading them.
+    started = time.monotonic()
+    owner = object()  # this request's share of the line-matching workers
+    deadline = started + body.timeBudgetMs / 1000
+    try:
+        filters = await _reachable_scope(graph_provider, org_id, user_id, body.filters or {})
+        found: dict[str, dict[str, Any]] = {}
+        coverage = PatternMatchCoverage()
+        entries: list[dict[str, Any]] = []
+        by_vrid: dict[str, dict[str, Any]] = {}
+        if filters is not None:
+            task = spawn_in_request(run_pattern_match_with_llm_grep(
+                query=body.pattern, config_service=config_service, org_id=org_id, user_id=user_id,
+                graph_provider=graph_provider, filters=filters, logger_instance=log,
+                found=found, coverage=coverage, retrieval_service=None, commands=[command],  # no word index: it misses substrings
+                max_records_per_connector=MAX_RECORDS_PER_APP, readable_only=True,
+            ))
+            raw = await await_pattern_match(
+                task, log, wait_budget=body.timeBudgetMs * _FIND_SHARE / 1000, found_so_far=found, coverage=coverage,
+            )
+            entries = await merge_pattern_match_results(
+                raw_records=raw, virtual_record_id_to_result=by_vrid, user_id=user_id, org_id=org_id,
+                blob_store=retrieval_service.blob_store, graph_provider=graph_provider,
+                is_multimodal_llm=False, logger_instance=log, filters=filters or None,
+                config_service=config_service, coverage=coverage,
+                max_records=MAX_RECORDS_PER_APP if body.paths else body.limit,
+            )
+        kept = [(e["virtual_record_id"], by_vrid[e["virtual_record_id"]]) for e in entries]
+        kept = [(v, r) for v, r in kept if _path_matches(body.paths, r)]
+        if len(kept) > body.limit:
+            coverage.records_truncated = True  # readable records only, so this says nothing about the rest
+            kept = kept[: body.limit]
+        frontend_url = await resolve_frontend_url(config_service)
+        gate = asyncio.Semaphore(_LOAD_CONCURRENCY)
+
+        async def one(vrid: str, graph_rec: dict[str, Any]) -> dict[str, Any] | None:
+            async with gate:
+                try:
+                    blocks = await asyncio.wait_for(
+                        _load_blocks(retrieval_service.blob_store, vrid, org_id),
+                        timeout=max(deadline - time.monotonic(), 0.001),
+                    )
+                except Exception:
+                    log.warning("grep: could not read record %s", graph_rec.get("_key"), exc_info=True)
+                    coverage.stop("some records could not be read in time")
+                    return None
+                matches, total, language, complete = await find_matches_bounded(
+                    blocks, compiled,
+                    context_lines=body.contextLines, max_matches=body.maxMatchesPerRecord, deadline=deadline,
+                    owner=owner,
+                )
+            if not complete:
+                coverage.stop("some records were not read in full within the time limit")
+            record_id = graph_rec.get("_key") or graph_rec.get("id")
+            url = None if graph_rec.get("hideWeburl") else resolve_weburl(graph_rec.get("webUrl"), frontend_url)
+            for m in matches:
+                m["citation"] = {"recordId": record_id, "blockIndex": m.pop("blockIndex"), "line": m["line"]}
+            item: dict[str, Any] = {
+                "recordId": record_id,
+                "recordName": graph_rec.get("recordName"),
+                "recordType": graph_rec.get("recordType"),
+                "app": graph_rec.get("connectorName") or graph_rec.get("appName"),
+                "webUrl": url,
+                "matchCount": total,
+                "matches": matches,
+            }
+            if language:
+                item["language"] = language
+            if not total and graph_rec.get("_match_snippet"):
+                # Matched in the stored file (title or metadata), not in a passage line.
+                item["preview"] = graph_rec["_match_snippet"]
+            return item
+
+        records = [r for r in await asyncio.gather(*(one(v, r) for v, r in kept)) if r is not None]
+        note = render_pattern_match_coverage_note(coverage).strip()
+        return JSONResponse(content={
+            "status": "success",
+            "pattern": body.pattern,
+            "regex": body.regex,
+            "totalRecords": len(records),
+            "records": records,
+            "coverage": {"complete": coverage.complete, **({"note": note} if note else {})},
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("grep failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("run this search")) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 /**
- * Knowledge-graph entity search and lookup.
+ * Exact-text (grep) search and knowledge-graph entities.
  *
  * Thin proxies to the AI service. It decides what the caller may read, in the
  * places search and the assistant's own tools decide it; nothing here widens
@@ -22,6 +22,17 @@ import { AppConfig } from '../../tokens_manager/config/config';
 const logger = Logger.getInstance({ service: 'Exact Search' });
 
 /** The fields each route sends on; anything else in the body is dropped. */
+const GREP_FIELDS = [
+  'pattern',
+  'regex',
+  'caseSensitive',
+  'filters',
+  'paths',
+  'limit',
+  'contextLines',
+  'maxMatchesPerRecord',
+  'timeBudgetMs',
+] as const;
 const ENTITY_SEARCH_FIELDS = [
   'query',
   'entityTypes',
@@ -91,6 +102,10 @@ const forward =
       next(error);
     }
   };
+
+/** POST /api/v1/search/grep */
+export const grepRecords = (appConfig: AppConfig): Handler =>
+  forward(appConfig, 'grep', GREP_FIELDS, 'Exact-text search');
 
 /** POST /api/v1/search/entities */
 export const searchEntities = (appConfig: AppConfig): Handler =>
