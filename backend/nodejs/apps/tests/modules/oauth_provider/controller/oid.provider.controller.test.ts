@@ -184,12 +184,12 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('resource_metadata="http://localhost:3000/.well-known/oauth-protected-resource/mcp"')
     })
 
-    // Sending the listed scopes would drop offline_access, and the token could not refresh.
-    it('tells a raw device sign-in to send no scope, and says it refreshes only where offline_access is offered', async () => {
+    // The scope is spelled out: the listed scopes, plus offline_access only where it is offered, so the token can refresh.
+    it('gives a raw device sign-in the exact scope, with offline_access only where it is offered', async () => {
       mockAppConfig.mcpScopes = ['offline_access', 'kb:read', 'semantic:write']
       let out = await md()
-      expect(out).to.include('and no `scope`')
-      expect(out).to.include('plus `offline_access`, so it can refresh')
+      expect(out).to.include('`scope=semantic:write kb:read offline_access`')
+      expect(out).to.include('plus `offline_access` so it can refresh')
       expect(out).to.include('comes with a refresh token')
       expect(out).to.include('grant_type=refresh_token')
       // A pending poll is HTTP 400; a client that stops on 400 never finishes.
@@ -197,6 +197,7 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('slow_down')
       mockAppConfig.mcpScopes = ['kb:read']
       out = await md()
+      expect(out).to.include('`scope=kb:read`')
       expect(out).to.not.include('offline_access')
       expect(out).to.not.include('refresh token')
     })

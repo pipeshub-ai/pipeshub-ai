@@ -25,6 +25,12 @@ export function renderAuthMd(info: AuthMdInfo): string {
   const oauth = `${origin}/api/v1/oauth2`;
   const ways: string[] = [];
 
+  // Explicit, so the grant is exactly what this page lists (the device app's stored preset can be wider).
+  const deviceScope = [
+    ...info.agentScopes,
+    ...(info.deviceRefreshes ? ['offline_access'] : []),
+  ].join(' ');
+
   if (info.deviceClientId) {
     ways.push(`### Sign in as the person (device code, RFC 8628)
 
@@ -40,7 +46,7 @@ npx -y -p @pipeshub-ai/mcp pipeshub login --wait
 
 The CLI stores the sign-in (\`~/.config/pipeshub/credentials.json\`, mode 0600) and refreshes it. \`npx -y @pipeshub-ai/mcp start\` uses it, so an MCP client config needs no token.
 
-Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and no \`scope\` (the sign-in gets the agent scopes below${info.deviceRefreshes ? ' plus `offline_access`, so it can refresh' : ''}), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token. Until the person approves, that call answers HTTP 400 with \`error: authorization_pending\`: keep polling. On \`slow_down\`, add 5 seconds to the interval. Stop on \`access_denied\` or \`expired_token\`.`);
+Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and \`scope=${deviceScope}\` (the agent scopes below${info.deviceRefreshes ? ', plus `offline_access` so it can refresh' : ''}), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token. Until the person approves, that call answers HTTP 400 with \`error: authorization_pending\`: keep polling. On \`slow_down\`, add 5 seconds to the interval. Stop on \`access_denied\` or \`expired_token\`.`);
   }
 
   if (info.dcrEnabled) {
