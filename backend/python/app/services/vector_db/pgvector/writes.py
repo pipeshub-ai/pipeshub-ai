@@ -119,7 +119,9 @@ def prepare(points: list[VectorPoint]) -> Prepared:
         out.payloads.append(json.dumps(stored, separators=(",", ":")))
         out.contents.append(payload.get("page_content"))
         if any(k in payload for k in MEMBERSHIP_KEYS):
-            out.groups[out.group_keys[-1]] = membership_of(payload)       # only the arrays the payload carries: the others are left as they are
+            # Only the arrays a payload carries, merged per key over the batch's other points of the same group (a group is one record, so its
+            # points should agree; where they do not, the later point of the batch wins that key).
+            out.groups.setdefault(out.group_keys[-1], {}).update(membership_of(payload))
     if org is None:
         raise OrgRequired("no points to write")
     out.org = org
