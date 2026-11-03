@@ -460,3 +460,16 @@ def test_no_shipped_table_uses_the_lineage_class():
     found = [str(p.relative_to(versions)) for p in sorted(versions.rglob("*"))
              if p.suffix in (".sql", ".py") and use.search(p.read_text(encoding="utf-8"))]
     assert found == [], f"these revisions register the lineage class: {found}"
+
+
+def test_every_test_file_is_in_exactly_one_shard_of_the_db_migrations_workflow():
+    """CI runs the tests in shards by file; a test file that no shard names would not run, and one named twice would run twice."""
+    import yaml
+
+    workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "db-migrations.yml"
+    if not workflow.is_file():
+        pytest.skip("no workflow file in this checkout (the backend is packaged alone)")
+    matrix = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["migrations"]["strategy"]["matrix"]
+    named = [f for shard in matrix["include"] for f in shard["files"].split()]
+    assert sorted(named) == sorted(f"tests/{p.name}" for p in Path(__file__).parent.glob("test_*.py")), named
+    assert sorted(s["shard"] for s in matrix["include"]) == sorted(matrix["shard"])
