@@ -85,8 +85,12 @@ check "--flip exits 0" "$rc" 0
 check "the running application was asked to drain" "$(head -1 "$work/out/node.log" | tr -d '\r' | cut -d' ' -f1-2)" "/app/backend/dist/scripts/docstore-migrate.js drain"
 check "after --flip the application's environment selects PostgreSQL" "$(store)" postgres
 check "and it connects through the pooler" "$($DOCKER exec "$proj-pipeshub-ai-1" sh -c 'echo "${PG_NODE_URL%%@*}" | cut -d: -f1; echo "${PG_NODE_URL#*@}"' | tr -d '\r' | tr '\n' ' ')" "postgresql pgbouncer:6432/pipeshub "
-check "the install's override list now names the PostgreSQL override" "$(grep -c 'docker-compose.postgres-docstore.yml' "$work/env")" 1
+check "the install's override list now names the PostgreSQL override" "$(grep -c '^PIPESHUB_COMPOSE_OVERRIDES=.*docker-compose.postgres-docstore.yml' "$work/env")" 1
 check "the import login is closed after --flip" "$(role_login)" f
+# a plain compose command (no -f) reads COMPOSE_FILE from the env file: a restart keeps the store
+plain() { $DOCKER compose --env-file "$work/env" -p "$proj" "$@"; }
+plain up -d --no-build --force-recreate pipeshub-ai >/dev/null 2>&1
+check "a plain 'docker compose up -d' after --flip keeps the application on PostgreSQL" "$(store)" postgres
 
 # rollback: the application is recreated on MongoDB
 rm -f "$work/out/args.txt"
@@ -95,7 +99,9 @@ scripts/rollback-to-mongo.sh > "$work/rb.log" 2>&1 && rc=0 || rc=$?
 check "rollback exits 0" "$rc" 0
 check "the migrator was given the rollback command" "$(head -1 "$work/out/args.txt" | tr -d '\r')" "rollback"
 check "after rollback the application's environment selects MongoDB" "$(store)" mongo
-check "the override is gone from the install's list" "$(grep -c 'docker-compose.postgres-docstore.yml' "$work/env")" 0
+plain up -d --no-build --force-recreate pipeshub-ai >/dev/null 2>&1
+check "a plain 'docker compose up -d' after rollback keeps the application on MongoDB" "$(store)" mongo
+check "the override is gone from the install's list" "$(grep -c 'docker-compose.postgres-docstore.yml' "$work/env" || true)" 0
 check "the import login is closed after rollback" "$(role_login)" f
 check "and its password is gone from the env file" "$(grep -c '^PG_IMPORT_PASSWORD=' "$work/env" || true)" 0
 

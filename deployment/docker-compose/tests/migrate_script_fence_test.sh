@@ -47,6 +47,7 @@ off="$(pos 'ALTER ROLE pipeshub_import NOLOGIN')"; up="$(pos '^compose up -d$' t
 [ -n "$off" ] && [ -n "$up" ] && [ "$off" -lt "$up" ] || fail "the import login was not shut before the final up -d ($off/$up)"
 grep -q '^PG_IMPORT_PASSWORD=' "$W/with space/env" && fail "PG_IMPORT_PASSWORD was left in the env file"
 grep -q 'docker-compose.postgres-docstore.yml' "$W/with space/env" || fail "flip did not record the override"
+grep -q '^COMPOSE_FILE=docker-compose.yml:.*docker-compose.postgres-docstore.yml$' "$W/with space/env" || fail "flip did not write COMPOSE_FILE"
 grep -q '^COMPOSE_PROJECT_NAME=second$' "$W/with space/env" || fail "an existing line was lost"
 # the real docker sees the project and the env file (checked on the raw call, not the normalised log)
 cat > "$W/bin/docker2" <<STUB
@@ -64,6 +65,11 @@ off="$(pos 'ALTER ROLE pipeshub_import NOLOGIN')"; up="$(pos '^compose up -d$' t
 [ -n "$off" ] && [ -n "$up" ] && [ "$off" -lt "$up" ] || fail "rollback did not shut the import login before up -d ($off/$up)"
 grep -q 'postgres-docstore' "$W/env4" && fail "rollback left the PostgreSQL override"
 grep -q '^PG_IMPORT_PASSWORD=' "$W/env4" && fail "rollback left PG_IMPORT_PASSWORD in the env file"
+grep -qx 'COMPOSE_FILE=docker-compose.yml' "$W/env4" || fail "rollback did not restore COMPOSE_FILE"
+# a CRLF env file: no carriage return reaches the file list or the project name
+reset; printf 'COMPOSE_PROJECT_NAME=crlf\r\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replset.yml\r\n' > "$W/envcr"; : > "$W/raw.log"
+(cd "$HERE/.." && PATH="$W/p:$PATH" PIPESHUB_ENV_FILE="$W/envcr" scripts/migrate-to-postgres.sh --dry-run >/dev/null 2>&1) || fail "dry run with a CRLF env file failed"
+grep -q -- "-p crlf -f docker-compose.yml -f docker-compose.mongo-replset.yml " "$W/raw.log" || fail "a carriage return reached the docker arguments"
 # 5. no application container: refused before anything is changed
 reset; touch "$W/noapp"; : > "$W/env5"
 run "$W/env5" scripts/migrate-to-postgres.sh && fail "a project without an application container must be refused"
@@ -79,7 +85,7 @@ grep -q "drain --cancel" "$W/calls.log" || fail "SIGTERM did not cancel the drai
 # 7. a login that cannot be closed is reported and its password kept
 reset; touch "$W/failoff"; : > "$W/env7"
 run "$W/env7" scripts/migrate-to-postgres.sh --dry-run && fail "an unclosable import login must fail the run"
-grep -q "WARNING: could not close the PostgreSQL import login" "$W/out" || fail "no warning"
+[ "$(grep -c "WARNING: could not close the PostgreSQL import login" "$W/out")" = 1 ] || fail "the warning was not printed exactly once"
 grep -q '^PG_IMPORT_PASSWORD=' "$W/env7" || fail "the password was dropped while the login may be open"
 # 8. options: no value, a non-number, an unknown one
 reset; : > "$W/env8"
