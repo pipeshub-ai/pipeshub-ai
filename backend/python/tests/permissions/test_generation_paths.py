@@ -359,6 +359,72 @@ async def test_remove_and_readd_in_one_transaction(backend) -> None:
     assert await _in_tx(backend, conn, flip)
 
 
+# ---- created counts: a concurrent re-add is seen from the write's own result ----
+
+def _inherit_edge(child_id: str, parent_id: str) -> dict:
+    return {"from_id": child_id, "from_collection": CollectionNames.RECORDS.value, "to_id": parent_id,
+            "to_collection": CollectionNames.RECORDS.value}
+
+
+async def test_the_edge_writers_say_how_many_edges_they_created_and_which_nodes_they_touched(backend) -> None:
+    from app.services.graph_db import edge_effects
+
+    _, conn, _, _, page, child, lone = await _writers_world(backend)
+    p = backend.provider
+    coll = CollectionNames.INHERIT_PERMISSIONS.value
+    fresh = [_inherit_edge(lone.id, page.id), _inherit_edge(child.id, lone.id)]
+    again = [_inherit_edge(lone.id, page.id)]
+    # create_edges_if_absent: two new edges, then nothing new
+    with edge_effects.track() as made:
+        assert await p.create_edges_if_absent(fresh, coll, count_created=True) == 2
+    assert made == {lone.id, page.id, child.id}
+    with edge_effects.track() as made:
+        assert await p.create_edges_if_absent(fresh, coll, count_created=True) == 0
+    assert not made
+    # batch_create_edges rewrites a found edge (SET props / UPDATE) but does not count it as created; the default return is unchanged
+    with edge_effects.track() as made:
+        assert await p.batch_create_edges(again, coll, count_created=True) == 0
+    assert not made
+    assert await p.batch_create_edges(again, coll) is True
+    other = [_inherit_edge(page.id, lone.id)]
+    with edge_effects.track() as made:
+        assert await p.batch_create_edges(other, coll, count_created=True) == 1
+    assert made == {page.id, lone.id}
+    assert await p.create_edges_if_absent(fresh, coll) is None
+    # batch_upsert_node_relations (the hierarchy edges of a sync): the first call creates, the second finds
+    rel = [{**_inherit_edge(page.id, lone.id), "relationshipType": "ATTACHMENT"}]
+    assert await p.batch_upsert_node_relations(rel, count_created=True) == 1
+    assert await p.batch_upsert_node_relations(rel, count_created=True) == 0
+    assert await p.batch_upsert_node_relations(rel) is True
+
+
+async def test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation(backend, monkeypatch) -> None:
+    """The store reads the node's structure, the writer runs, the store reads again: a writer that re-creates an edge another
+    transaction deleted in between leaves the two reads equal. Only the writer's own result (an edge created) shows it."""
+    if isinstance(backend, _ArangoBackend):
+        pytest.skip("on ArangoDB the shared edge document conflicts and the block is retried (test_concurrent_structural_syncs...)")
+    _, conn, _, _, page, child, _ = await _writers_world(backend)
+    p = backend.provider
+    coll = CollectionNames.INHERIT_PERMISSIONS.value
+    store_tx = _store(backend)
+    edge = _inherit_edge(child.id, page.id)
+    async with store_tx.transaction() as tx:
+        await tx.create_edges_if_absent([edge], coll)           # the edge exists (a writer before it may have put it there)
+    real = p.create_edges_if_absent
+
+    async def removed_meanwhile(edges, collection, transaction=None, **kw) -> object:
+        # the other transaction: delete the edge after this one has read the structure and before its write
+        await p.delete_edge(child.id, CollectionNames.RECORDS.value, page.id, CollectionNames.RECORDS.value, coll)
+        return await real(edges, collection, transaction, **kw)
+
+    monkeypatch.setattr(p, "create_edges_if_absent", removed_meanwhile)
+    assert await _in_tx(backend, conn, lambda tx: tx.create_edges_if_absent([edge], coll))
+    monkeypatch.setattr(p, "create_edges_if_absent", real)
+    # and an idempotent re-add that finds the edge does not
+    assert not await _in_tx(backend, conn, lambda tx: tx.create_edges_if_absent([edge], coll))
+
+
+
 # ---- every shape of edge delete: whichever end the writer names, the change in structure is seen ---------------------------------
 R_, G_ = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
 REL, BEL, INH = CollectionNames.NODE_RELATIONS.value, CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value

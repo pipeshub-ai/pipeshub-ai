@@ -24,6 +24,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.core import org_context
 from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.models.entities import (
     AppMetadata,
@@ -38,6 +39,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db import edge_effects
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
@@ -1296,7 +1298,7 @@ class GraphTransactionStore(TransactionStore):
             )
 
     async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
-        return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
+        return bool(await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn))
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
         await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
@@ -1517,13 +1519,23 @@ class GraphDataStore(DataStoreProvider):
         for connector_id in sorted(connector_ids):
             await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
 
+    async def _mark_unsafe_after_unclassified_write(self, tx_store: "GraphTransactionStore") -> None:
+        """A write nobody classified reached the provider, and which connector it touched is not known (the proxy sees a method
+        name, not a target): every connector of the organisation this block runs for may have changed structurally, so none of their
+        stamps is current. The connectors the transaction saw are marked first, then the organisation's, also when the block never
+        resolved a connector. The organisation comes from the ambient context, resolved here and not inside any ``try``: with none the
+        block fails (``MissingOrgContext``), because it cannot say what it changed and must not commit as if it were harmless."""
+        seen = {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors
+        await self._mark_unsafe(tx_store, seen)
+        org_id = org_context.current().org_id
+        apps = await self.graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        await self._mark_unsafe(tx_store, {str(k) for a in apps if (k := a.get("_key") or a.get("id"))} - seen)
+
     async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
         if not tx_store.tracked:
             return
         if tx_store.unclassified_write:
-            # A write nobody classified reached the provider: whichever connectors this transaction saw may have changed. (A block that
-            # never resolved a connector marks nothing here: that case is the whole-organisation fallback, a later change.)
-            await self._mark_unsafe(tx_store, {c for c in tx_store._connector_of.values() if c} | tx_store.structural_connectors)
+            await self._mark_unsafe_after_unclassified_write(tx_store)
         touched = sorted(tx_store.structural_connectors)
         if not touched:
             return
@@ -1746,10 +1758,13 @@ def _wrap_structural(name: str, targets: Callable[[dict], list[tuple[str, str | 
         candidates = [t for t in nodes if t not in self.new_nodes]
         existing = await self._connectors_of(candidates)
         before = await self._structures_of(list(existing))
-        result = await original(self, *args, **kwargs)
+        # The providers report the edges their statements really created. An edge another transaction removed after the read above
+        # and this write put back looks unchanged to the comparison, but it was created.
+        with edge_effects.track(_STRUCTURAL_EDGES) as created:
+            result = await original(self, *args, **kwargs)
         after = await self._structures_of(list(existing))
         for t, connector in existing.items():
-            if after[t] != before[t]:
+            if t[1] in created or after[t] != before[t]:
                 self.structural_connectors.add(connector)
         return result
 

@@ -128,6 +128,7 @@ from app.schema.node_schema_registry import (
 )
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
+from app.services.graph_db import edge_effects
 from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
@@ -558,6 +559,14 @@ _EDGE_MOVE_BATCH = 5000
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
+def _created_ends(rows: list[dict] | None) -> list[str]:
+    """The node ids at both ends of the edges a statement reported as created (`made`: a list of `[from, to]` pairs)."""
+    made = (rows[0].get("made") if rows and isinstance(rows[0], dict) else None) or []
+    return [i for pair in made for i in pair]
+
+
+# Set on an edge by the MERGE that creates it and read in the same statement: tells a created edge from a found one.
+_EDGE_NEW = "edgeNew"
 # Written, then removed or deleted, inside one purge statement to take a node's write lock.
 _PURGE_LOCK = "purgeLock"
 # Written and removed at the start of a move statement to take its new parent's write lock.
@@ -2575,8 +2584,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> bool:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch create edges/relationships.
 
@@ -2584,13 +2595,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edges: List of edges with _from and _to fields
             collection: Edge collection name
             transaction: Optional transaction ID
+            count_created: return how many edges this call created (an existing one that was only rewritten is not counted)
+                instead of True. Whatever the flag, `edge_effects.note_created` gets the ids at the ends of the created edges.
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the created count with ``count_created``)
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()  # only then does the statement say which edges it created
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
             relationship_type = edge_collection_to_relationship(collection)
 
@@ -2610,7 +2625,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     grouped_edges.setdefault((from_label, to_label, is_link), []).append(edge)
 
             if not grouped_edges:
-                return True
+                return 0 if count_created else True
             # Process each group separately, in the lock order _edges_by_labels gave it
             for (from_label, to_label, is_link), group_edges in grouped_edges.items():
                 merge = (
@@ -2626,19 +2641,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Cypher keeps no row order unless asked; this is the lock order.
                 WITH edge, from, to ORDER BY edge.from_key, edge.to_key
                 {merge}
+                {f"ON CREATE SET r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, from, to, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
                 SET r = edge.props
-                {"WITH from, to, r" if refresh else ""}
+                {("WITH edge, from, to, r, isNew" if report else "WITH from, to, r") if refresh else ""}
                 {refresh}
-                RETURN count(r) AS created
+                {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS created"}
                 """
 
-                await self.client.execute_query(
+                rows = await self.client.execute_query(
                     query,
                     parameters={"edges": group_edges},
-                    txn_id=transaction
+                    txn_id=transaction,
                 )
+                if report:
+                    made = _created_ends(rows)
+                    edge_effects.note_created(made, collection)
+                    created_total += len(made) // 2
 
-            return True
+            return created_total if count_created else True
 
         except Exception as e:
             self.logger.error(f"❌ Batch create edges failed: {str(e)}")
@@ -2648,16 +2669,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> None:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its properties.
 
         Not batch_create_edges: that does ``SET r = edge.props``, which would reset
         a live edge (a sync state, a role) when a repair re-runs over it.
+        With ``count_created`` it returns how many edges this call created.
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return
+                return 0 if count_created else None
 
             relationship_type = edge_collection_to_relationship(collection)
 
@@ -2667,14 +2693,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
                 MERGE (from)-[r:{relationship_type}]->(to)
-                ON CREATE SET r = edge.props
-                RETURN count(r) AS matched
+                ON CREATE SET r = edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
+                {f"REMOVE r.{_EDGE_NEW}" if report else ""}
+                {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS matched"}
                 """
-                await self.client.execute_query(
+                rows = await self.client.execute_query(
                     query,
                     parameters={"edges": group_edges},
-                    txn_id=transaction
+                    txn_id=transaction,
                 )
+                if report:
+                    made = _created_ends(rows)
+                    edge_effects.note_created(made, collection)
+                    created_total += len(made) // 2
+            return created_total if count_created else None
 
         except Exception as e:
             self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
@@ -9168,8 +9201,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_node_relations(
         self,
         edges: list[dict],
-        transaction: Optional[str] = None
-    ) -> bool:
+        transaction: Optional[str] = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch upsert record relation edges.
 
@@ -9183,11 +9218,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             transaction: Optional transaction ID
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the number of edges it created with ``count_created``)
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
             self.logger.debug("Batch upserting record relation edges")
 
@@ -9258,20 +9295,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     UNWIND $edges AS edge
                     {endpoints}
                     MERGE (from)-[r:{rel_type} {{relationshipType: edge.relationshipType, constraintName: edge.constraintName}}]->(to)
-                    ON CREATE SET r += edge.props
+                    ON CREATE SET r += edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
                     ON MATCH SET r += edge.updateProps
-                    {"WITH from, to, r" if refresh else ""}
+                    {f"WITH edge, from, to, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
+                    {f"REMOVE r.{_EDGE_NEW}" if report else ""}
+                    {("WITH edge, from, to, r, isNew" if report else "WITH from, to, r") if refresh else ""}
                     {refresh}
-                    RETURN count(r) AS upserted
+                    {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS upserted"}
                     """
-                    await self.client.execute_query(
+                    result = await self.client.execute_query(
                         query,
                         parameters={"edges": rows},
-                        txn_id=transaction
+                        txn_id=transaction,
                     )
+                    if report:
+                        made = _created_ends(result)
+                        edge_effects.note_created(made, CollectionNames.NODE_RELATIONS.value)
+                        created_total += len(made) // 2
 
             self.logger.debug(f"Successfully upserted {len(edge_data)} record relation edges.")
-            return True
+            return created_total if count_created else True
 
         except Exception as e:
             self.logger.error(f"Batch record relation upsert failed: {str(e)}")
