@@ -67,7 +67,7 @@ def _graph() -> tuple[list, list]:
     nodes += [
         app("vc-kb-dead", "Dead", connector="KB", app_group="KB"), app("vc-kb-live", "Live", connector="KB", app_group="KB"),
         rec("vc-kb-d1", "d1", isDeleted=True), rec("vc-kb-d2", "d2", isPlaceholder=True),
-        rec("vc-kb-d3", "d3", orgId="org-2"), rec("vc-kb-l1", "l1"),
+        rec("vc-kb-d3", "d3", orgId="org-2"), rec("vc-kb-l1", "l1", connector_id="vc-kb-live"),      # a record is read by the rules of the App it is filed in
     ]
     edges += [bt(k, "vc-kb-dead") for k in ("vc-kb-d1", "vc-kb-d2", "vc-kb-d3")] + [bt("vc-kb-l1", "vc-kb-live")]
     return nodes, edges
