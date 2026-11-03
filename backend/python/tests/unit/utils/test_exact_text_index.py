@@ -69,18 +69,9 @@ class TestPlanCommand:
         'grep -rciE "(a+)+b" .',  # the verifier would have to match it literally
         'grep -rciE "colou?r" .',  # "colo" is not a word of "colour"
         'grep -rciE "error.*rollback" .',  # the verifier would bound ".*"
-        'grep -rl -e invoice ./team-A',  # a path: the lookup would search every file
-        'grep -rli invoice team-A',
-        "grep -rl --include='*.md' invoice .",  # a file filter likewise
-        'rg -l -g "*.md" invoice .',
-        'grep -rliZ "invoice" . | xargs -0 grep -l "overdue" docs',
     ])
     def test_a_command_the_index_cannot_express_is_left_to_the_scan(self, command: str) -> None:
         assert plan_command(command) is None
-
-    @pytest.mark.parametrize("command", ['grep -rli invoice .', 'grep -rl -e invoice ./', 'grep -rliZ "invoice" . | xargs -0 grep -l "overdue"'])
-    def test_the_connector_root_is_not_a_narrowing_path(self, command: str) -> None:
-        assert plan_command(command) is not None
 
     def test_case_is_kept_when_grep_is_case_sensitive(self) -> None:
         sensitive = plan_command('grep -rc "Kafka" .')

@@ -286,3 +286,33 @@ async def test_a_record_cap_above_the_scan_limit_is_lowered_for_the_merge_and_th
             max_records_per_connector=500,
         )
     assert seen == [pm._MAX_FIND_RECORDS] and len(out) == pm._MAX_FIND_RECORDS
+
+
+@pytest.mark.parametrize("command", [
+    "grep -rl -e invoice ./team-A",
+    "grep -rl -e invoice -- -team",
+    "grep -rl --include=*.md invoice .",
+    "rg -lg'*.md' invoice .",
+    "find ./team-A -type f -print0 | xargs -0 grep -l invoice",
+])
+async def test_a_command_that_may_read_only_some_files_is_scanned_not_looked_up(command) -> None:
+    lookup = AsyncMock()
+    cov = pm.PatternMatchCoverage()
+    with patch.object(pm, "run_index_pattern_match", lookup):
+        left = await pm._match_through_index(
+            [command], MagicMock(), user_id=USER, org_id=ORG, filters=None, found={}, coverage=cov,
+            logger_instance=MagicMock(), small_store=False,
+        )
+    assert left == [command] and cov.scan_reasons == {pm._SCAN_UNSHAPED}
+    lookup.assert_not_called()
+
+
+async def test_a_command_over_the_whole_connector_is_still_looked_up() -> None:
+    lookup = AsyncMock(return_value=MagicMock(hits=[[]], capped=False, truncated=False, unverified=[False],
+                                              lookup_failed=False, failed_collections=0, searched_collections=1))
+    with patch.object(pm, "run_index_pattern_match", lookup):
+        await pm._match_through_index(
+            ["grep -rliZ invoice . | xargs -0 grep -l overdue"], MagicMock(), user_id=USER, org_id=ORG,
+            filters=None, found={}, coverage=None, logger_instance=MagicMock(), small_store=False,
+        )
+    lookup.assert_called_once()

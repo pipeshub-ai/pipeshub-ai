@@ -1186,10 +1186,6 @@ _GREP_VALUE_FLAGS = frozenset({
     "--max-count", "--include", "--exclude", "--exclude-dir", "--glob",
     "--type", "--type-not", "--context", "--after-context", "--before-context",
 })
-# Value flags that choose which files a stage reads.
-_GREP_FILE_SELECT_FLAGS = frozenset({
-    "-g", "-t", "-T", "--include", "--exclude", "--exclude-dir", "--glob", "--iglob", "--type", "--type-not",
-})
 # A quantified group, e.g. "(a+)+", can backtrack exponentially in Python's
 # engine; grep's DFA is immune, so only the Python-side ranking needs this.
 _NESTED_QUANTIFIER_RE = re.compile(r"\)[*+?{]")
@@ -1238,9 +1234,6 @@ class GrepStage:
     inverted: bool
     word: bool
     line: bool
-    # A path other than the root, or an include/exclude/glob/type flag: the
-    # stage reads only some files, which a whole-store lookup cannot honour.
-    narrows_files: bool = False
 
 
 def grep_stage(stage: str) -> GrepStage | None:
@@ -1269,14 +1262,9 @@ def grep_stage(stage: str) -> GrepStage | None:
             if not arg.startswith("-"):
                 positionals.append(arg)
             i += 1
-    paths = positionals if patterns else positionals[1:]
     if not patterns:
         patterns = positionals[:1]
     return GrepStage(
-        narrows_files=(
-            any(p not in (".", "./") for p in paths)
-            or any(a.split("=", 1)[0] in _GREP_FILE_SELECT_FLAGS for a in args)
-        ),
         patterns=tuple(patterns),
         fixed=binary == "fgrep" or "F" in short_flags or "--fixed-strings" in args,
         extended=binary in ("egrep", "rg") or "E" in short_flags or "--extended-regexp" in args,
