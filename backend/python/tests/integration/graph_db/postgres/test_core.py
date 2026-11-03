@@ -98,10 +98,11 @@ async def test_edges_are_written_read_and_deleted_and_a_node_delete_takes_its_ed
         assert await p.delete_edges_to("t", "things", "belongsTo") == 1
 
 
-async def test_a_record_delete_waits_for_the_records_module_instead_of_leaving_its_documents_behind(pg_provider, orgs, org_ctx) -> None:
-    from app.services.graph_db.postgres.base import NotImplementedInPostgres
-    with org_ctx(orgs[0]), pytest.raises(NotImplementedInPostgres):
+async def test_deleting_a_record_through_the_generic_delete_removes_its_edges_and_documents(pg_provider, orgs, org_ctx) -> None:
+    with org_ctx(orgs[0]):
+        await pg_provider.batch_upsert_nodes([{"_key": "r1"}], "records")
         await pg_provider.delete_nodes_and_edges(["r1"], "records")
+        assert await pg_provider.get_document("r1", "records") is None
 
 
 async def test_every_call_stays_in_the_ambient_org(pg_provider, orgs, org_ctx) -> None:
@@ -292,14 +293,13 @@ async def test_a_collection_prefix_must_name_the_collection_asked(pg_provider, o
         assert await p.get_nodes_by_field_in("things", "_key", ["users/x"]) == []            # a key has no collection prefix
 
 
-async def test_deleting_records_by_key_waits_for_the_records_module_too(pg_provider, orgs, org_ctx) -> None:
-    from app.services.graph_db.postgres.base import NotImplementedInPostgres
+async def test_deleting_records_by_key_reports_whether_every_key_went(pg_provider, orgs, org_ctx) -> None:
     a, _ = orgs
     with org_ctx(a):
         await pg_provider.batch_upsert_nodes([{"_key": "r1"}], "records")
-        with pytest.raises(NotImplementedInPostgres):
-            await pg_provider.delete_nodes(["r1"], "records")
-        assert await pg_provider.get_document("r1", "records") is not None                   # nothing was deleted
+        assert await pg_provider.delete_nodes(["r1"], "records") is True
+        assert await pg_provider.get_document("r1", "records") is None
+
 
 
 async def test_all_edges_of_a_node_go_in_both_directions_within_one_collection_and_one_org(pg_provider, orgs, org_ctx) -> None:
