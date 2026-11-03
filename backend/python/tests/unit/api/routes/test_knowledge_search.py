@@ -5,10 +5,14 @@ check the routes hand them every result, return nothing the check refuses, and
 take the caller from the session, never from the body.
 """
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jsonschema
 import pytest
+import yaml
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 import app.edition_config  # noqa: F401  (the route module loads cleanly only after this)
 from app.api.routes import knowledge_search as ks
@@ -155,3 +159,95 @@ def test_both_graph_providers_answer_the_calls_the_routes_make(provider) -> None
         method = getattr(cls, name)
         assert callable(method) and not getattr(method, "__isabstractmethod__", False), (provider, name)
     assert not getattr(cls, "__abstractmethods__", frozenset())
+
+
+_SPEC = Path(__file__).resolve().parents[4].parent / "nodejs" / "apps" / "src" / "modules" / "api-docs" / "pipeshub-openapi.yaml"
+
+
+def _validate(schema_name: str, payload: dict) -> None:
+    """Check a payload against the published schema (resolved against the spec's own components)."""
+    components = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]
+    jsonschema.validate(payload, {"$ref": f"#/components/schemas/{schema_name}", "components": components})
+
+
+def _neighbors_graph(record: dict, **overrides) -> tuple[MagicMock, EntityRecordPage]:
+    graph = MagicMock()
+    graph.get_record_taxonomy_links = AsyncMock(return_value=[
+        {"recordId": RID, "collection": "topics", "entityId": "t1", "name": "Orders"},
+    ])
+    graph.get_named_entities_for_record = AsyncMock(return_value=[])
+    for name, value in overrides.items():
+        setattr(graph, name, value)
+    return graph, EntityRecordPage(records=[record], next_cursor="c1")
+
+
+async def _neighbors(graph: MagicMock, page: EntityRecordPage, *, named: bool = False) -> JSONResponse:
+    with _patch_entity_state(), patch.object(ks, "_named_entities_enabled", AsyncMock(return_value=named)), \
+         patch.object(ks, "load_entity_access_context", AsyncMock(return_value=_context())), \
+         patch.object(ks, "list_accessible_entity_records", AsyncMock(return_value=page)), \
+         patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
+        return await ks.entity_neighbors(
+            _request(), ks.EntityNeighborsQuery(entityId="self", entityType="topic"), graph,
+        )
+
+
+async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_record_like_the_search_does() -> None:
+    record = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1",
+              "sourceLastModifiedTimestamp": 1_777_500_000_000, "webUrl": "https://x/y"}
+    graph, page = _neighbors_graph(record)
+    out = json.loads((await _neighbors(graph, page)).body)
+    _validate("EntityNeighborsResponse", out)
+    row = out["records"][0]
+    dates = {k: v for k, v in row.items() if k in {"modified", "dated", "fileModified", "uploaded"}}
+    assert dates == {"modified": "2026-04-29"}
+    # the same row, previewed by the search, carries the same key and text
+    from app.agents.actions.knowledge_graph.ops.entity_discovery import _preview_row
+    preview = _preview_row(record, _context(), None)
+    assert {k: v for k, v in preview.items() if k in dates} == dates
+
+
+async def test_the_search_answer_matches_the_published_schema_with_its_notes() -> None:
+    payload = {
+        "status": "success", "results": [], "ignoredEntityTypes": ["galaxy"], "kindNotes": ["x is not searched"],
+        "scopeNote": "limited",
+    }
+    _validate("EntitySearchResponse", payload)
+    with pytest.raises(jsonschema.ValidationError):
+        _validate("EntitySearchResponse", {"results": [{"entityId": 1}]})
+
+
+@pytest.mark.parametrize("failing", ["get_record_taxonomy_links", "get_named_entities_for_record"])
+async def test_a_graph_database_error_while_labelling_is_the_documented_503_not_a_500(failing) -> None:
+    graph, page = _neighbors_graph({"_key": RID, "recordName": "Doc", "connectorId": "c1"})
+    setattr(graph, failing, AsyncMock(side_effect=ConnectionError("graph database is not connected")))
+    with pytest.raises(HTTPException) as err:
+        await _neighbors(graph, page, named=True)
+    assert err.value.status_code == 503 and "try again" in err.value.detail
+    assert "not connected" not in err.value.detail
+
+
+@pytest.mark.parametrize(("error", "status"), [
+    ({"status": "error", "message": "Entity search timed out", "retryable": True}, 503),
+    ({"status": "error", "message": "Entity search is not available", "retryable": True}, 503),
+    ({"status": "error", "message": "Unsupported entity_types ['x']; failed to match"}, 400),
+    ({"status": "error", "message": "Named-entity search is not available on this plan"}, 400),
+])
+async def test_the_status_follows_what_the_search_reports_not_the_wording_of_its_message(error, status) -> None:
+    state = {"org_id": ORG, "user_id": USER, "config_service": MagicMock(), "filters": {}}
+    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)), \
+         patch.object(ks, "execute_search_entities", AsyncMock(return_value=(False, json.dumps(error)))):
+        with pytest.raises(HTTPException) as err:
+            await ks.search_entities(_request(), ks.EntitySearchQuery(query="payments"), MagicMock())
+    assert err.value.status_code == status
+
+
+async def test_the_search_marks_the_failures_that_are_retryable() -> None:
+    from app.agents.actions.knowledge_graph.ops import entity_discovery as ed
+
+    ok, text = await ed.execute_search_entities({"graph_provider": None}, "x")
+    assert not ok and json.loads(text)["retryable"] is True
+    ok, text = await ed.execute_search_entities(
+        {"graph_provider": MagicMock(), "entity_vector_store": MagicMock(), "config_service": MagicMock(), "filters": {}},
+        "x", ["galaxy"],
+    )
+    assert not ok and "retryable" not in json.loads(text)

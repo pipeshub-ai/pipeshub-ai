@@ -23914,6 +23914,25 @@ components:
       type: string
       description: Kind of knowledge-graph entity.
       enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
+    EntityRecordDate:
+      type: object
+      description: >-
+        The one date shown for a record, under the key that says what it is: `modified` (last change in the source),
+        `dated` (the document's own date), `fileModified` (the file's last change) or `uploaded` (when it was added).
+        Absent when the record has no date. The same shape in `POST /search/entities` and `POST /search/entities/neighbors`.
+      properties:
+        modified:
+          type: string
+          example: '2026-04-30'
+        dated:
+          type: string
+          example: '2026-04-30'
+        fileModified:
+          type: string
+          example: '2026-04-30'
+        uploaded:
+          type: string
+          example: '2026-04-30'
     EntitySearchRequest:
       type: object
       description: Request body for `POST /search/entities`.
@@ -23976,20 +23995,33 @@ components:
                 type: array
                 description: A few readable records, for the first entities only.
                 items:
-                  type: object
-                  properties:
-                    recordId:
-                      type: string
-                    name:
-                      type: string
-                    type:
-                      type: string
-                    app:
-                      type: string
-                    modified:
-                      type: string
+                  allOf:
+                    - $ref: '#/components/schemas/EntityRecordDate'
+                    - type: object
+                      properties:
+                        recordId:
+                          type: string
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        app:
+                          type: string
               moreRecords:
                 type: boolean
+        scopeNote:
+          type: string
+          description: Set when the caller's access covers only part of some connectors' records, so matches can be missing.
+        ignoredEntityTypes:
+          type: array
+          description: Requested `entityTypes` this search does not cover; they were left out.
+          items:
+            type: string
+        kindNotes:
+          type: array
+          description: Why some requested `namedEntityKinds` were not searched.
+          items:
+            type: string
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
@@ -24041,22 +24073,21 @@ components:
           type: array
           description: Readable records connected to the entity, newest first.
           items:
-            type: object
-            properties:
-              recordId:
-                type: string
-              recordName:
-                type: string
-              recordType:
-                type: string
-              app:
-                type: string
-              webUrl:
-                type: string
-                nullable: true
-              modified:
-                type: integer
-                description: Last change in the source, epoch milliseconds.
+            allOf:
+              - $ref: '#/components/schemas/EntityRecordDate'
+              - type: object
+                properties:
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  recordType:
+                    type: string
+                  app:
+                    type: string
+                  webUrl:
+                    type: string
+                    nullable: true
         relatedEntities:
           type: array
           description: Entities those records share with this one, most shared first.

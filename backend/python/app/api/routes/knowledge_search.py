@@ -24,10 +24,12 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     load_entity_access_context,
 )
+from app.agents.actions.knowledge_graph.views import _compact_date
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
 from app.models.entities import resolve_weburl
+from app.models.source_dates import RecordDates
 from app.modules.retrieval.entity_permissions import (
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessError,
@@ -103,9 +105,11 @@ async def search_entities(
     )
     payload = json.loads(text)
     if not ok:
-        message = payload.get("message", "Entity search failed.")
-        unusable = "not available" in message or "timed out" in message or "failed" in message
-        raise HTTPException(status_code=503 if unusable else 400, detail=message)
+        # the producing module says whether the search could not run (503) or the request was wrong (400)
+        raise HTTPException(
+            status_code=503 if payload.get("retryable") else 400,
+            detail=payload.get("message", "Entity search failed."),
+        )
     return JSONResponse(content=payload)
 
 
@@ -146,7 +150,11 @@ async def _related_entities(
         entry["_records"].add(record_id)
         relations.add(relation)
 
-    rows = await graph_provider.get_record_taxonomy_links(record_keys, include_departments=True) or []
+    try:
+        rows = await graph_provider.get_record_taxonomy_links(record_keys, include_departments=True) or []
+    except Exception as exc:  # whatever the graph database raises is "try again", never a 500
+        logger.warning("entity neighbors: taxonomy lookup failed", exc_info=True)
+        raise EntityAccessError("taxonomy lookup failed") from exc
     for row in rows:
         collection = row.get("collection")
         entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(collection or "")
@@ -160,7 +168,12 @@ async def _related_entities(
             async with gate:
                 return key, await graph_provider.get_named_entities_for_record(key) or []
 
-        for key, nodes in await asyncio.gather(*(mentions(k) for k in record_keys)):
+        try:
+            labelled = await asyncio.gather(*(mentions(k) for k in record_keys))
+        except Exception as exc:  # as above
+            logger.warning("entity neighbors: named-entity lookup failed", exc_info=True)
+            raise EntityAccessError("named-entity lookup failed") from exc
+        for key, nodes in labelled:
             for node in nodes:
                 add(
                     str(node.get("_key") or node.get("id") or ""), "named_entity",
@@ -170,6 +183,13 @@ async def _related_entities(
     return [
         {**{k: v for k, v in e.items() if k != "_records"}, "sharedRecords": len(e["_records"])} for e in ranked
     ], sorted(relations)
+
+
+def _listing_date(row: dict[str, Any]) -> dict[str, str]:
+    """The one date key the assistant's entity tools show for a record (modified, dated, fileModified or uploaded), as YYYY-MM-DD."""
+    dated = RecordDates.from_graph(row).listing_date(row.get("updatedAtTimestamp"))
+    day = _compact_date(dated[1]) if dated else None
+    return {dated[0]: day} if dated and day else {}
 
 
 @router.post("/search/entities/neighbors", dependencies=[Depends(require_scopes(*SEARCH_SCOPES))])
@@ -211,7 +231,7 @@ async def entity_neighbors(
         "recordType": r.get("recordType"),
         "app": context.app_names.get(r.get("connectorId")),
         "webUrl": None if r.get("hideWeburl") else resolve_weburl(r.get("webUrl"), frontend_url),
-        "modified": r.get("sourceLastModifiedTimestamp") or r.get("updatedAtTimestamp"),
+        **_listing_date(r),
     } for r in page.records]
     return JSONResponse(content={
         "status": "success",
