@@ -24903,7 +24903,11 @@ paths:
                   - $ref: '#/components/schemas/OpenAIModelError'
                   - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No configured chat model has this id (`model_not_found`), or the conversation of `previous_response_id` is gone or not the caller's (`previous_response_not_found`, `param: previous_response_id`).
+          description: |
+            No configured chat model has this id (`model_not_found`), or the
+            conversation of `previous_response_id` is gone or not the caller's
+            (`previous_response_not_found`, with `param` set to
+            `previous_response_id`).
           content:
             application/json:
               schema:
