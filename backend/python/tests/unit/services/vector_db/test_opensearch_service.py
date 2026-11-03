@@ -28,7 +28,7 @@ from app.services.vector_db.errors import OrgRequired
 
 pytest.importorskip("opensearchpy", reason="opensearch-py not installed")
 
-from app.services.vector_db.opensearch.opensearch import OpenSearchService
+from app.services.vector_db.opensearch.opensearch import _MERGE_IF_ORG_SCRIPT, OpenSearchService
 from app.services.vector_db.opensearch.config import OpenSearchConfig
 from app.services.vector_db.opensearch.utils import OpenSearchUtils
 from app.services.vector_db.models import (
@@ -1873,7 +1873,7 @@ class TestUpdatePayloadByIds:
             assert action["script"]["params"] == {
                 "org": "o1", "doc": {"connectorIds": ["c1"], "metadata": {"level": "1"}},
             }
-            assert "params.org" in action["script"]["source"] and "'noop'" in action["script"]["source"]
+            assert action["script"]["source"] == _MERGE_IF_ORG_SCRIPT
         connected_service.client.mget.assert_not_called()
         assert bulk.await_args.kwargs["refresh"] is False
 
