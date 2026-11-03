@@ -3,7 +3,7 @@ import inspect
 import logging
 import os
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -582,14 +582,8 @@ async def recover_in_progress_records(
         # keeps a store that scans globally from returning the same records for every org.
         # Every organisation, active or not, internal or external: the scan this replaces was global, so a stuck record
         # in any of them is still recovered.
-        with system("stale_recovery"):
-            org_ids: set[str] = set()
-            for active in (True, False):
-                for is_external in (False, True):
-                    for o in await graph_provider.get_all_orgs(active=active, is_external=is_external) or []:
-                        if o.get("_key") or o.get("id"):
-                            org_ids.add(str(o.get("_key") or o.get("id")))
-        for org_id in sorted(org_ids):
+        org_ids = await _all_org_ids(graph_provider)
+        for org_id in org_ids:
             with for_org(org_id, job="stale_recovery"):
                 for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
                     offset = 0
@@ -656,30 +650,38 @@ async def recover_in_progress_records(
         # Deliberately narrow: it only ever marks records whose connector is
         # gone or inactive. Re-queuing QUEUED rows for *live* connectors would
         # duplicate work, because a message for them may still be in the broker.
-        queued_swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph_provider,
-            logger=logger,
-            page_size=page_size,
-        )
+        queued_swept = 0
+        for org_id in org_ids:
+            with for_org(org_id, job="queued_sweep"):
+                queued_swept += await _sweep_queued_records_for_inactive_connectors(
+                    graph_provider=graph_provider,
+                    logger=logger,
+                    page_size=page_size,
+                    org_id=org_id,
+                )
         total_records += queued_swept
 
         # The counterpart for *live* connectors: a row whose event was lost or
         # never published is invisible to both the scan above and the sweep.
         # STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0 disables it.
-        total_records += await _republish_stranded_records(
-            graph_provider=graph_provider,
-            logger=logger,
-            producer=retry_producer,
-            run_coordination=run_coordination,
-            concurrency_manager=concurrency_manager,
-            page_size=page_size,
-            read_backlog=read_backlog,
-        )
+        for org_id in org_ids:
+            with for_org(org_id, job="stranded_republish"):
+                total_records += await _republish_stranded_records(
+                    graph_provider=graph_provider,
+                    logger=logger,
+                    producer=retry_producer,
+                    run_coordination=run_coordination,
+                    concurrency_manager=concurrency_manager,
+                    page_size=page_size,
+                    read_backlog=read_backlog,
+                    org_id=org_id,
+                )
 
         await _upkeep_lanes(
             graph_provider=graph_provider,
             read_backlog=read_backlog,
             logger=logger,
+            org_ids=org_ids,
         )
 
         # Vectors whose last referencing record was repointed elsewhere are
@@ -694,12 +696,15 @@ async def recover_in_progress_records(
             pipeline = None
             logger.warning(f"Indexing pipeline unavailable for orphan sweep: {exc}")
         if pipeline is not None:
-            total_records += await _sweep_orphaned_virtual_record_mappings(
-                graph_provider=graph_provider,
-                pipeline=pipeline,
-                logger=logger,
-                page_size=page_size,
-            )
+            for org_id in org_ids:
+                with for_org(org_id, job="orphan_mapping_sweep"):
+                    total_records += await _sweep_orphaned_virtual_record_mappings(
+                        graph_provider=graph_provider,
+                        pipeline=pipeline,
+                        logger=logger,
+                        page_size=page_size,
+                        org_id=org_id,
+                    )
 
         # A primary whose handler could not copy its taxonomy to promoted
         # duplicates keeps duplicateReconcilePending; a redelivery finds
@@ -786,6 +791,18 @@ async def recover_in_progress_records(
                 )
 
 
+async def _all_org_ids(graph_provider: IGraphDBProvider) -> list[str]:
+    """Every organisation, active or not, internal or external, read under a system context."""
+    found: set[str] = set()
+    with system("recovery_orgs"):
+        for active in (True, False):
+            for is_external in (False, True):
+                for o in await graph_provider.get_all_orgs(active=active, is_external=is_external) or []:
+                    if o.get("_key") or o.get("id"):
+                        found.add(str(o.get("_key") or o.get("id")))
+    return sorted(found)
+
+
 def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]:
     """``read``, run on first call only; later calls get the same answer or error."""
     outcome: list[tuple[_T | None, BaseException | None]] = []
@@ -809,6 +826,7 @@ async def _upkeep_lanes(
     graph_provider: IGraphDBProvider,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
     logger: logging.Logger,
+    org_ids: Sequence[str],
 ) -> None:
     """Keep the Redis Streams lane map in step, when producers place by it.
 
@@ -831,6 +849,7 @@ async def _upkeep_lanes(
             graph_provider=graph_provider,
             backlog=backlog,
             logger=logger,
+            org_ids=org_ids,
         )
     except Exception as e:
         logger.warning(
@@ -846,7 +865,7 @@ async def _upkeep_lanes(
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 # Between pages, while the indexing loop is busy (see LoopShare).
 ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
-_orphan_sweep_cursor = 0
+_orphan_sweep_cursor: dict[str, int] = {}
 
 
 
@@ -1070,6 +1089,7 @@ async def _sweep_orphaned_virtual_record_mappings(
     pipeline: "IndexingPipeline",
     logger: logging.Logger,
     page_size: int,
+    org_id: str,
 ) -> int:
     """Clean up VRIDs whose vectors outlived every graph record referencing them.
 
@@ -1090,10 +1110,8 @@ async def _sweep_orphaned_virtual_record_mappings(
     rather than all at once. The cursor is per-process and resets on restart —
     acceptable, since nothing here is required to be timely.
     """
-    global _orphan_sweep_cursor  # noqa: PLW0603 - the cursor is per process by design
-
     swept = 0
-    offset = _orphan_sweep_cursor
+    offset = _orphan_sweep_cursor.get(org_id, 0)
     pages_scanned = 0
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
@@ -1102,6 +1120,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
             skip=offset,
             limit=page_size,
+            filters={"orgId": org_id},
             sort_field="_key",
             raise_on_error=False,
         )
@@ -1161,7 +1180,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             break
         offset += len(page) - swept_this_page
 
-    _orphan_sweep_cursor = offset
+    _orphan_sweep_cursor[org_id] = offset
 
     if swept:
         logger.info(
@@ -1177,6 +1196,7 @@ async def _sweep_queued_records_for_inactive_connectors(
     graph_provider: IGraphDBProvider,
     logger: logging.Logger,
     page_size: int,
+    org_id: str,
 ) -> int:
     """Move stranded records on gone/inactive connectors to AUTO_INDEX_OFF.
 
@@ -1248,7 +1268,7 @@ async def _sweep_queued_records_for_inactive_connectors(
                 CollectionNames.RECORDS.value,
                 skip=offset,
                 limit=page_size,
-                filters={"indexingStatus": status_value},
+                filters={"indexingStatus": status_value, "orgId": org_id},
                 sort_field="_key",
                 raise_on_error=False,
             )
@@ -1364,6 +1384,7 @@ async def _republish_stranded_records(
     run_coordination: CoordinationRunner,
     concurrency_manager: DistributedConcurrencyManager | None,
     page_size: int,
+    org_id: str,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
 ) -> int:
     """Re-publish records that have been waiting on an event that never came.
@@ -1570,7 +1591,7 @@ async def _republish_stranded_records(
                 CollectionNames.RECORDS.value,
                 skip=offset,
                 limit=page_size,
-                filters={"indexingStatus": status_value},
+                filters={"indexingStatus": status_value, "orgId": org_id},
                 sort_field="_key",
                 raise_on_error=False,
             )
@@ -1597,7 +1618,7 @@ async def _republish_stranded_records(
                 CollectionNames.APPS.value,
                 skip=offset,
                 limit=page_size,
-                filters={"isActive": True},
+                filters={"isActive": True, "orgId": org_id},
                 sort_field="_key",
                 raise_on_error=False,
             )
@@ -1622,6 +1643,7 @@ async def _republish_stranded_records(
                         "connectorId": connector_id,
                         "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                         "reason": CONNECTOR_OFF,
+                        "orgId": org_id,
                     },
                     sort_field="_key",
                     raise_on_error=False,

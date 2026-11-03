@@ -6507,6 +6507,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LIMIT @limit
                 RETURN {{
                     _key: r._key,
+                    orgId: r.orgId,
                     duplicateReconcileAttempts: r.duplicateReconcileAttempts,
                     duplicateReconcileDueAt: r.duplicateReconcileDueAt,
                 }}

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org
 from app.services.messaging.config import messaging_env
 from app.services.messaging.lanes.assignment_policy import is_large_class
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
@@ -31,7 +32,7 @@ from app.services.messaging.lanes.lifecycle import connector_class_of
 from app.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from logging import Logger
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -95,8 +96,12 @@ async def run_lane_upkeep(
     graph_provider: IGraphDBProvider,
     backlog: LaneBacklog | None,
     logger: Logger,
+    org_ids: Sequence[str],
 ) -> LaneReport:
-    """One upkeep pass. ``backlog`` is None when the broker could not be read."""
+    """One upkeep pass. ``backlog`` is None when the broker could not be read.
+
+    The lane map holds every organisation's connectors, so the connectors are read for each of ``org_ids`` in turn, each under
+    its own organisation, and a lane is freed only when the connector is missing from all of them."""
     topic = assignments.topic
     oldest_by_lane = (
         None if backlog is None else _by_lane_number(topic, backlog.oldest_waiting_ms)
@@ -107,11 +112,11 @@ async def run_lane_upkeep(
     # Read before the graph, so a connector created while the graph is read is
     # not in it, and cannot be mistaken for one whose document is gone.
     entries = await assignments.read_map()
-    apps = await _read_apps(graph_provider, logger)
+    apps = await _read_apps(graph_provider, logger, org_ids)
     released = corrected = 0
     if apps is not None:
         released, corrected = await _reconcile_with_graph(
-            assignments, graph_provider, entries, apps, logger
+            assignments, graph_provider, entries, apps, logger, org_ids
         )
 
     if settled.fenced or settled.cleared or released or corrected:
@@ -150,33 +155,39 @@ def _by_lane_number(topic: str, by_stream: Mapping[str, float]) -> dict[int, flo
     return lanes
 
 
-async def _read_apps(graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, _App] | None:
-    """Every connector and knowledge base; None if they could not all be read,
+async def _read_apps(graph_provider: IGraphDBProvider, logger: Logger, org_ids: Sequence[str]) -> dict[str, _App] | None:
+    """Every connector and knowledge base of every organisation, each read under its own; None if they could not all be read,
     so nothing is freed on a partial answer."""
     apps: dict[str, _App] = {}
-    skip = 0
+    if not org_ids:      # nothing to read the connectors under: an empty answer would free every lane
+        return None
     try:
-        while True:
-            page = await graph_provider.get_documents_paginated(
-                CollectionNames.APPS.value,
-                skip=skip,
-                limit=_PAGE,
-                sort_field="_key",
-                raise_on_error=True,
-            )
-            for doc in page:
-                key = doc.get("_key") or doc.get("id")
-                if not key:
-                    continue
-                apps[str(key)] = _App(
-                    connector_class=connector_class_of(doc.get("type"), doc.get("scope")),
-                    name=doc.get("name"),
-                    org_id=doc.get("orgId"),
-                    connector_type=doc.get("type"),
-                )
-            if len(page) < _PAGE:
-                return apps
-            skip += len(page)
+        for org_id in org_ids:
+            with for_org(org_id, job="lane_upkeep"):
+                skip = 0
+                while True:
+                    page = await graph_provider.get_documents_paginated(
+                        CollectionNames.APPS.value,
+                        skip=skip,
+                        limit=_PAGE,
+                        filters={"orgId": org_id},
+                        sort_field="_key",
+                        raise_on_error=True,
+                    )
+                    for doc in page:
+                        key = doc.get("_key") or doc.get("id")
+                        if not key:
+                            continue
+                        apps[str(key)] = _App(
+                            connector_class=connector_class_of(doc.get("type"), doc.get("scope")),
+                            name=doc.get("name"),
+                            org_id=doc.get("orgId") or org_id,
+                            connector_type=doc.get("type"),
+                        )
+                    if len(page) < _PAGE:
+                        break
+                    skip += len(page)
+        return apps
     except Exception as e:
         logger.warning(
             "Queue lanes: could not read the connectors, so no lane was freed or "
@@ -193,6 +204,7 @@ async def _reconcile_with_graph(
     entries: Mapping[str, LaneEntry],
     apps: Mapping[str, _App],
     logger: Logger,
+    org_ids: Sequence[str],
 ) -> tuple[int, int]:
     released = corrected = 0
     for connector_id, entry in entries.items():
@@ -204,9 +216,12 @@ async def _reconcile_with_graph(
                 # The paged scan can miss a live connector when one before it
                 # is removed mid-scan, so a lane is freed only when a direct
                 # read says the connector is gone. A failed read frees nothing.
-                gone = not await graph_provider.get_document(
-                    connector_id, CollectionNames.APPS.value, raise_on_error=True
-                )
+                gone = True
+                for org_id in org_ids:       # one organisation's read cannot see another's connector
+                    with for_org(org_id, job="lane_upkeep"):
+                        if await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True):
+                            gone = False
+                            break
                 if gone:
                     released += await assignments.release(connector_id)
             elif app.connector_class != entry.connector_class:

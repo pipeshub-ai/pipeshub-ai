@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.core.org_context import for_org, system
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
@@ -170,29 +171,36 @@ async def retry_pending_duplicate_reconciles(
     ``MAX_RECONCILE_ATTEMPTS`` the flag is cleared and the count kept, so an
     operator can find the record. Returns how many records were reconciled.
     """
-    rows = await graph_provider.get_records_pending_duplicate_reconcile(
-        due_before_ms=now_ms(), limit=page_size,
-    )
+    # The read spans every organisation; each row's follow-up is bound to the organisation the row carries.
+    with system("duplicate_reconcile"):
+        rows = await graph_provider.get_records_pending_duplicate_reconcile(
+            due_before_ms=now_ms(), limit=page_size,
+        )
     reconciled = 0
     for row in rows:
         record_id = row.get("_key")
         if not record_id:
             continue
+        org_id = row.get("orgId")
+        if not org_id:
+            logger.warning("duplicate_reconcile: record %s has no organisation and is skipped", record_id)
+            continue
         due = row.get(DUPLICATE_RECONCILE_DUE_AT_FIELD)
-        try:
-            if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):
-                reconciled += 1
-        except Exception:
-            logger.warning(
-                "duplicate_reconcile: retry failed for record %s", record_id, exc_info=True,
-            )
+        with for_org(str(org_id), job="duplicate_reconcile"):
             try:
-                await _record_failure(
-                    graph_provider, logger, record_id,
-                    _int(row.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)), due, now_ms,
-                )
+                if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):
+                    reconciled += 1
             except Exception:
-                logger.warning("duplicate_reconcile: could not count the failure on %s", record_id)
+                logger.warning(
+                    "duplicate_reconcile: retry failed for record %s", record_id, exc_info=True,
+                )
+                try:
+                    await _record_failure(
+                        graph_provider, logger, record_id,
+                        _int(row.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)), due, now_ms,
+                    )
+                except Exception:
+                    logger.warning("duplicate_reconcile: could not count the failure on %s", record_id)
     if rows:
         logger.info(
             "duplicate_reconcile: retried %d pending record(s), reconciled %d", len(rows), reconciled,

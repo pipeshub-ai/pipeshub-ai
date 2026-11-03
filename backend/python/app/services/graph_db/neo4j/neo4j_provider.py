@@ -4888,6 +4888,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.duplicateReconcileDueAt, 0) < $due_before_ms
               AND {cypher_live_record("r")}
             RETURN r.id AS _key,
+                   r.orgId AS orgId,
                    r.duplicateReconcileAttempts AS duplicateReconcileAttempts,
                    r.duplicateReconcileDueAt AS duplicateReconcileDueAt
             LIMIT $limit

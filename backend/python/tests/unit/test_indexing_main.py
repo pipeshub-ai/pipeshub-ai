@@ -2243,7 +2243,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         graph.get_document = AsyncMock(side_effect=unreadable_graph)
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2279,7 +2280,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         graph.get_document = AsyncMock(side_effect=unreadable_graph)
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2306,7 +2308,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2332,7 +2335,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2359,7 +2363,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2387,7 +2392,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2407,7 +2413,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         graph.get_document = AsyncMock(return_value=None)
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2427,7 +2434,8 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
         )
 
         swept = await _sweep_queued_records_for_inactive_connectors(
-            graph_provider=graph, logger=MagicMock(), page_size=100
+            graph_provider=graph, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2491,9 +2499,9 @@ class TestSweepOrphanedVirtualRecordMappings:
         """The scan cursor is module state that persists across ticks."""
         import app.indexing_main as m
 
-        m._orphan_sweep_cursor = 0
+        m._orphan_sweep_cursor = {}
         yield
-        m._orphan_sweep_cursor = 0
+        m._orphan_sweep_cursor = {}
 
     @pytest.mark.asyncio
     async def test_rows_left_by_an_incomplete_drop_are_reclaimed(self):
@@ -2518,6 +2526,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 2
@@ -2541,6 +2550,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
         swept = await _sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2565,6 +2575,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2587,6 +2598,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2613,6 +2625,7 @@ class TestSweepOrphanedVirtualRecordMappings:
             pipeline=pipeline,
             logger=MagicMock(),
             page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 1
@@ -2632,17 +2645,19 @@ class TestSweepOrphanedVirtualRecordMappings:
         pipeline = AsyncMock()
 
         await m._sweep_orphaned_virtual_record_mappings(
-            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5,
+            org_id="org-1",
         )
 
         scanned = m.ORPHAN_SCAN_MAX_PAGES_PER_TICK * 5
         assert _scanned_vrids(graph) == [f"vr{i}" for i in range(scanned)]
         assert graph.get_virtual_record_ids_in_use.await_count == m.ORPHAN_SCAN_MAX_PAGES_PER_TICK
-        assert m._orphan_sweep_cursor == scanned
+        assert m._orphan_sweep_cursor == {"org-1": scanned}
 
         graph.get_virtual_record_ids_in_use.reset_mock()
         await m._sweep_orphaned_virtual_record_mappings(
-            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5,
+            org_id="org-1",
         )
 
         assert _scanned_vrids(graph)[0] == f"vr{scanned}"
@@ -2665,6 +2680,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
         swept = await _sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert graph.get_virtual_record_ids_in_use.await_count == 2
@@ -2687,6 +2703,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
         swept = await _sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+            org_id="org-1",
         )
 
         assert swept == 0
@@ -2702,10 +2719,11 @@ class TestSweepOrphanedVirtualRecordMappings:
         graph = _orphan_graph(rows, records_by_vrid={"vr-live": [{}]})
 
         await m._sweep_orphaned_virtual_record_mappings(
-            graph_provider=graph, pipeline=AsyncMock(), logger=MagicMock(), page_size=5
+            graph_provider=graph, pipeline=AsyncMock(), logger=MagicMock(), page_size=5,
+            org_id="org-1",
         )
 
-        assert m._orphan_sweep_cursor == 0
+        assert m._orphan_sweep_cursor == {"org-1": 0}
 
 
 # ===================================================================
@@ -2739,6 +2757,7 @@ async def _run_stranded(graph, producer=None, concurrency_manager=None, read_bac
         concurrency_manager=concurrency_manager,
         page_size=100,
         read_backlog=read_backlog,
+        org_id="org-1",
     )
 
 
@@ -3678,6 +3697,7 @@ class TestRecoveryAsksTheRecordConsumerForItsBacklog:
         graph = AsyncMock()
         graph.get_documents_paginated = AsyncMock(side_effect=_paged)
         graph.get_document = AsyncMock(return_value={"isActive": True})
+        graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
 
         with _stranded_env():
             await recover_in_progress_records(container, graph)
@@ -3714,7 +3734,7 @@ class TestLaneUpkeepInTheRecoveryPass:
         with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
              patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(),
+                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(), org_ids=["org-1"],
             )
 
         upkeep.assert_not_awaited()
@@ -3735,6 +3755,7 @@ class TestLaneUpkeepInTheRecoveryPass:
                 graph_provider=MagicMock(),
                 read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
                 logger=logger,
+                org_ids=["org-1"],
             )
 
         assert upkeep.await_args.kwargs["backlog"] is None
@@ -4041,3 +4062,96 @@ class TestStopKafkaConsumersClosesRecordHandler:
         c.logger = MagicMock(return_value=MagicMock())
 
         await stop_kafka_consumers(c)
+
+
+class TestSweepsRunUnderEachOrganisation:
+    """The sweeps after the record scan read and write under the organisation they are given, and none runs without one."""
+
+    @staticmethod
+    def _graph(orgs: dict[str, list[dict]]) -> AsyncMock:
+        from app.core.org_context import current_org_id
+
+        seen: list[tuple[str, str]] = []
+        graph = AsyncMock()
+        graph.seen = seen
+        graph.get_all_orgs = AsyncMock(return_value=[{"_key": o} for o in orgs])
+
+        async def paged(collection, skip=0, limit=50, filters=None, sort_field=None, raise_on_error=False, **_: object) -> list[dict]:
+            org = current_org_id()          # raises, as the PostgreSQL store does, when no organisation is bound
+            seen.append((collection, org))
+            if skip:
+                return []
+            return [r for r in orgs[org] if r["orgId"] == (filters or {}).get("orgId") and r.get("indexingStatus") == (filters or {}).get("indexingStatus")]
+
+        graph.get_documents_paginated = AsyncMock(side_effect=paged)
+        graph.get_document = AsyncMock(return_value={"isActive": False})
+
+        async def update_node(key, collection, fields, *a, **k: object) -> bool:
+            seen.append(("update:" + key, current_org_id()))
+            return True
+
+        graph.update_node = AsyncMock(side_effect=update_node)
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_the_inactive_connector_sweep_updates_each_record_under_its_own_org(self) -> None:
+        from app.core.org_context import for_org
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        rec = lambda o: {"_key": f"r-{o}", "orgId": o, "connectorId": "c", "origin": "CONNECTOR", "indexingStatus": "QUEUED"}  # noqa: E731
+        graph = self._graph({"o1": [rec("o1")], "o2": [rec("o2")]})
+        for org in ("o1", "o2"):
+            with for_org(org, job="test"):
+                assert await _sweep_queued_records_for_inactive_connectors(graph_provider=graph, logger=MagicMock(), page_size=10, org_id=org) == 1
+        updates = {(k, o) for k, o in graph.seen if k.startswith("update:")}
+        assert updates == {("update:r-o1", "o1"), ("update:r-o2", "o2")}
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_without_an_org_context_reads_nothing(self) -> None:
+        from app.core.org_context import MissingOrgContext
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = self._graph({"o1": []})
+        with pytest.raises(MissingOrgContext):
+            await _sweep_queued_records_for_inactive_connectors(graph_provider=graph, logger=MagicMock(), page_size=10, org_id="o1")
+
+    @pytest.mark.asyncio
+    async def test_the_orphan_sweep_keeps_a_cursor_for_each_org(self) -> None:
+        import app.indexing_main as m
+        from app.core.org_context import for_org
+
+        m._orphan_sweep_cursor = {}
+        mapping = lambda o, i: {"_key": f"v{o}{i}", "orgId": o}  # noqa: E731
+        calls: list[tuple[str, int]] = []
+
+        async def paged(collection, skip=0, limit=50, filters=None, **_: object) -> list[dict]:
+            from app.core.org_context import current_org_id
+            calls.append((current_org_id(), skip))
+            return [mapping(filters["orgId"], i) for i in range(limit)] if skip == 0 else []
+
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=paged)
+        graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=lambda v, **k: set(v))
+        for org in ("o1", "o2"):
+            with for_org(org, job="test"):
+                await m._sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=MagicMock(), logger=MagicMock(), page_size=3, org_id=org)
+        assert set(m._orphan_sweep_cursor) == {"o1", "o2"}
+        assert all(o in ("o1", "o2") for o, _ in calls)
+        m._orphan_sweep_cursor = {}
+
+    @pytest.mark.asyncio
+    async def test_lane_upkeep_reads_every_orgs_connectors_and_frees_only_a_lane_found_in_none(self) -> None:
+        from app.modules.indexing import lane_upkeep
+
+        apps = {"o1": [{"_key": "c1", "type": "SLACK", "scope": "team", "orgId": "o1"}], "o2": [{"_key": "c2", "type": "SLACK", "scope": "team", "orgId": "o2"}]}
+
+        async def paged(collection, skip=0, limit=50, filters=None, **_: object) -> list[dict]:
+            from app.core.org_context import current_org_id
+            org = current_org_id()
+            return [] if skip else [a for a in apps[org] if a["orgId"] == filters["orgId"]]
+
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=paged)
+        found = await lane_upkeep._read_apps(graph, MagicMock(), ["o1", "o2"])
+        assert set(found) == {"c1", "c2"}
+        assert await lane_upkeep._read_apps(graph, MagicMock(), []) is None      # no organisation to read under: nothing is freed

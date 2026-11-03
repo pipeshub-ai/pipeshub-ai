@@ -81,7 +81,7 @@ class FakeGraph:
     ) -> list[dict]:
         self.pending_queries.append((due_before_ms, limit))
         rows = [
-            {"_key": k, RECONCILE_ATTEMPTS_FIELD: d.get(RECONCILE_ATTEMPTS_FIELD), DUE_AT: d.get(DUE_AT)}
+            {"_key": k, "orgId": d.get("orgId"), RECONCILE_ATTEMPTS_FIELD: d.get(RECONCILE_ATTEMPTS_FIELD), DUE_AT: d.get(DUE_AT)}
             for k, d in sorted(self.docs.items())
             if d.get(DUPLICATE_RECONCILE_PENDING_FIELD) is True
             and (d.get(DUE_AT) or 0) < due_before_ms
@@ -270,6 +270,25 @@ class TestRetrySweep:
         assert doc[DUPLICATE_RECONCILE_PENDING_FIELD] is False
         assert doc[RECONCILE_ATTEMPTS_FIELD] == 0 and doc[DUE_AT] is None
         assert graph.pending_queries == [(NOW, 10)]
+
+    async def test_each_row_is_followed_up_under_its_own_org_and_a_row_with_none_is_skipped(self) -> None:
+        from app.core.org_context import current_org_id
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["p2"] = {**graph.docs["p1"], "_key": "p2", "orgId": "org-2"}
+        graph.docs["p3"] = {**graph.docs["p1"], "_key": "p3", "orgId": None}
+        seen: dict[str, str] = {}
+        read = graph.get_document
+
+        async def get_document(key, collection, **kw: object) -> dict | None:
+            seen.setdefault(key, current_org_id())
+            return await read(key, collection, **kw)
+
+        graph.get_document = get_document  # type: ignore[method-assign]
+        reconciler, _ = _reconciler(graph)
+        await _sweep(graph, reconciler)
+        assert (seen["p1"], seen["p2"], "p3" in seen) == (graph.docs["p1"]["orgId"], "org-2", False)      # p3 has no organisation: nothing ran for it
 
     async def test_not_yet_due_is_left_alone(self) -> None:
         graph = FakeGraph()

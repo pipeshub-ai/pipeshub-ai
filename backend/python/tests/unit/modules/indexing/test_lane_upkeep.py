@@ -97,6 +97,7 @@ async def _upkeep(
         graph_provider=graph,  # type: ignore[arg-type]
         backlog=backlog if backlog is not None else LaneBacklog(TOPIC, {}),
         logger=logging.getLogger("test_lane_upkeep"),
+        org_ids=["org-1"],
     )
 
 
@@ -265,6 +266,7 @@ class TestTheLaneView:
             graph_provider=graph,  # type: ignore[arg-type]
             backlog=None,
             logger=logging.getLogger("t"),
+            org_ids=["org-1"],
         )
 
         assert report.as_dict()["backlogRead"] is False

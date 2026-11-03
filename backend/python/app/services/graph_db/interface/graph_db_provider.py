@@ -2357,7 +2357,9 @@ class IGraphDBProvider(ABC):
         undone. See ``app.modules.indexing.duplicate_reconcile``.
 
         Returns:
-            ``[{"_key", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``.
+            ``[{"_key", "orgId", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``. The read spans
+            every organisation (the caller runs it under a system context); ``orgId`` is the organisation
+            the follow-up for that row runs under.
 
         Raises:
             Exception: on query failure.
