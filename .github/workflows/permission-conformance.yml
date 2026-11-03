@@ -169,7 +169,7 @@ jobs:
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 609 \
             --allow "test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
             --allow "test_the_tree_labels_follow_the_edges[arango]"
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 130 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 132 \
             --allow "test_an_edge_another_transaction_removed_and_this_write_put_back_moves_the_generation[arango]"
 
       - name: Upload the regressions the generator filed

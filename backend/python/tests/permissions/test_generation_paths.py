@@ -551,6 +551,18 @@ async def test_a_grant_written_as_an_edge_moves_the_generation_when_it_flips_the
     assert await _in_tx(backend, conn, lambda tx: tx.delete_edges_from(user, CollectionNames.USERS.value, perm)), "from the principal's end"
 
 
+async def test_a_user_losing_access_to_the_connector_moves_its_generation_when_it_was_the_last_grant(backend) -> None:
+    """The user's only grant on a page goes with `remove_user_access_to_connector`; the generation must move (it did not when the
+    writer was classified harmless)."""
+    _, conn, _, _, page, child, lone = await _writers_world(backend)
+    perm = CollectionNames.PERMISSION.value
+    user = await _seed_user(backend, f"member-{_suffix()}@example.com")
+    edge = {"from_id": user, "from_collection": CollectionNames.USERS.value, "to_id": lone.id, "to_collection": R_}
+    assert await _in_tx(backend, conn, lambda tx: tx.create_edges_if_absent([edge], perm)), "first grant on a record"
+    assert await _in_tx(backend, conn, lambda tx: tx.remove_user_access_to_connector(conn, user)), "the user's last grant is gone"
+    assert not await backend.provider.get_edges_to_node(f"{R_}/{lone.id}", perm), "the grant is gone"
+
+
 async def test_a_grant_on_a_record_group_moves_the_generation_when_it_flips_the_group(backend) -> None:
     _, conn, space, _, page, *_ = await _writers_world(backend)
     group = await _group_id(backend, conn, space)
