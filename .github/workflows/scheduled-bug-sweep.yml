@@ -136,15 +136,25 @@ jobs:
           echo "changed_count=$(wc -l < recently-changed.txt)" >> "$GITHUB_OUTPUT"
           echo "Recently changed source files: $(wc -l < recently-changed.txt)"
 
-      - name: Remove git metadata before the review
+      - name: Remove git metadata and agent startup files before the review
         # Agent mode in the pinned action rewrites origin to
         # https://x-access-token:<github_token>@github.com/... in .git/config
         # (src/github/operations/git-config.ts), where the reviewer could read
         # it. With no repository here that rewrite fails, the action logs
         # "Failed to configure git authentication" and carries on, and the token
         # is written nowhere. Nothing after this step uses git.
+        #
+        # The action restores the checkout's startup files from a trusted ref
+        # only on a pull_request event (src/entrypoints/run.ts), and this job is
+        # scheduled. Whatever is on the default branch would be loaded as-is: a
+        # settings hook, an apiKeyHelper or a permissions.allow entry runs
+        # outside the allow list below, and .mcp.json servers start because the
+        # action sets enableAllProjectMcpServers itself. --setting-sources user
+        # keeps the project and local tiers out; deleting the files means there
+        # is nothing to load even if that flag stops being honoured. CLAUDE.md
+        # stays: the prompt asks the reviewer to read it.
         run: |
-          rm -rf .git
+          rm -rf .git .claude .mcp.json
           if git rev-parse --git-dir >/dev/null 2>&1; then
             echo "::error::A git repository is still reachable from the workspace, so the review would get a token in its git config. Stopping before the review runs."
             exit 1
@@ -260,6 +270,12 @@ jobs:
           # path is one a later step might execute or git might read as config,
           # and any shell command can read the process environment. The report
           # comes back as structured output.
+          # Bash is denied, not just left off: the pinned action runs a built-in
+          # read-only set (echo, cat, grep, read-only git and others) with no
+          # prompt in every permission mode, and `echo "$ANTHROPIC_API_KEY"`
+          # names no path, so neither the read fence nor Read(//proc/**) stops
+          # it. A prompt planted in a merged file could otherwise put the key or
+          # the job token into a finding, which this workflow then files.
           # Glob and Grep are left off the allow list: a bare entry approves them
           # for any path. They still run inside the checkout, which needs no
           # approval, and blockReadsOutsideWorkingDirectories fences Read, Grep
@@ -269,7 +285,9 @@ jobs:
           settings: '{"permissions": {"blockReadsOutsideWorkingDirectories": true, "deny": ["Read(//proc/**)", "Read(//sys/**)", "Read(./.git/**)"]}}'
           claude_args: >-
             --model claude-opus-5
+            --setting-sources user
             --allowedTools "Read(./**)"
+            --disallowedTools Bash
             --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"scanned":{"type":"object"},"findings":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["kind","title","file","line","severity","summary","failure_scenario"],"properties":{"kind":{"enum":["security","bug"]},"title":{"type":"string"},"file":{"type":"string"},"line":{"type":"integer","minimum":1},"severity":{"enum":["critical","high","medium","low"]},"area":{"enum":["python","javascript","connectors","sdk","performance","agent_builder",""]},"summary":{"type":"string"},"failure_scenario":{"type":"string"},"suggested_fix":{"type":"string"},"cwe":{"type":"string"}}}}}}'
 
       - name: Save the report
