@@ -286,6 +286,8 @@ class DeleteMixin(PgBase):
 
     async def unlink_nodes_missed_by_full_sync(self, connector_id: str, seen: Mapping[str, Collection[str]], *, window_start_ms: int | None = None,
                                                windowed_group_types: Collection[str] = (), transaction: str | None = None) -> tuple[int, bool]:
+        """Remove the edges of the nodes of ``connector_id`` that a full sync did not see (the nodes stay); outside its window only the grants.
+        Answers ``(edges removed, ok)``; on ``False`` inside a caller's transaction the statement may have aborted it, so the caller must roll back."""
         current_org_id()      # resolved before the try: a missing org raises, it is not a failed delete
         try:
             collected = await self._collect_connector_entities(connector_id, transaction)
@@ -332,9 +334,9 @@ class DeleteMixin(PgBase):
 
     async def _delete_all_edges_for_nodes(self, transaction: str, node_ids: list[str], edge_collections: list[str]) -> tuple[int, list[str]]:
         """Delete the edges of the given collections around ``'<coll>/<key>'`` nodes: all or none. (count, collections that failed)."""
+        org = current_org_id()
         if not node_ids or not edge_collections:
             return (0, [])
-        org = current_org_id()
         try:
             n = await self._q(lambda tx: _sweep_edges(tx, org, list(edge_collections), node_ids), transaction or None, write=True)
             return (n, [])

@@ -120,3 +120,62 @@ async def test_a_delete_inside_a_caller_transaction_rolls_back_with_it(pg_db) ->
     assert (await p.delete_record("a", "ext-u", p.org, t))["success"]
     await p.rollback_transaction(t)
     assert await p.get_existing_record_keys(["a"]) == {"a"}
+
+
+async def test_a_full_sync_touches_only_its_own_connector_in_the_org(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "c1r"), rec(p.org, "c2r", connectorId="c2")], "records")
+    await p.batch_upsert_nodes([{"_key": "g1", "orgId": p.org, "connectorId": "c1"}, {"_key": "g2", "orgId": p.org, "connectorId": "c2"}], "recordGroups")
+    await p.batch_create_edges([{"from_id": "c1r", "from_collection": "records", "to_id": "g1", "to_collection": "recordGroups"},
+                                {"from_id": "c2r", "from_collection": "records", "to_id": "g2", "to_collection": "recordGroups"}], "belongsTo")
+    n, ok = await p.unlink_nodes_missed_by_full_sync("c1", {})                                                 # c1 saw nothing: all its nodes are unlinked
+    assert ok is True and n >= 1
+    assert await p.get_edges_to_node("recordGroups/g1", "belongsTo") == []
+    assert [e["from_id"] for e in await p.get_edges_to_node("recordGroups/g2", "belongsTo")] == ["c2r"]          # the other connector keeps its edge
+
+
+async def test_outside_the_window_only_the_grants_go_and_inside_everything_does(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "old", sourceCreatedAtTimestamp=10), rec(p.org, "new", sourceCreatedAtTimestamp=900)], "records")
+    await p.batch_upsert_nodes([{"_key": "g", "orgId": p.org, "connectorId": "c1"}], "recordGroups")
+    await p.batch_upsert_nodes([{"_key": "u", "orgId": p.org, "userId": "ext-u"}], "users")
+    await p.batch_create_edges([{"from_id": i, "from_collection": "records", "to_id": "g", "to_collection": "recordGroups"} for i in ("old", "new")], "belongsTo")
+    await p.batch_create_edges([{"from_id": "u", "from_collection": "users", "to_id": i, "to_collection": "records", "type": "USER", "role": "READER"} for i in ("old", "new")],
+                               "permission")
+    n, ok = await p.unlink_nodes_missed_by_full_sync("c1", {"recordGroups": ["g"]}, window_start_ms=500)       # neither record was seen; "old" predates the window
+    assert ok is True and n >= 1
+    assert [e["from_id"] for e in await p.get_edges_to_node("recordGroups/g", "belongsTo")] == ["old"]          # old keeps its structure, new lost it
+    assert await p.get_edges_to_node("records/old", "permission") == [] and await p.get_edges_to_node("records/new", "permission") == []   # both lost their grants
+
+
+async def test_a_failed_hard_delete_by_external_id_raises_so_the_caller_rolls_back(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "kb1", "orgId": p.org, "type": "KB", "name": "Docs"}], "apps")
+    await p.batch_upsert_nodes([rec(p.org, "file", origin="UPLOAD", connectorName="KB", connectorId="kb1")], "records")
+    await p.batch_create_edges([{"from_id": "file", "from_collection": "records", "to_id": "kb1", "to_collection": "apps"}], "belongsTo")
+    await p.batch_upsert_nodes([{"_key": "n", "userId": "ext-n", "orgId": p.org}], "users")           # a user with no role on the collection
+    with pytest.raises(Exception, match="Deletion failed"):
+        await p.delete_record_by_external_id("kb1", "x-file", "ext-n")
+    assert await p.get_existing_record_keys(["file"]) == {"file"}
+
+
+async def test_a_soft_delete_of_a_collection_record_trashes_it_with_its_subtree(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "kb1", "orgId": p.org, "type": "KB", "name": "Docs"}], "apps")
+    await p.batch_upsert_nodes([rec(p.org, "folder", origin="UPLOAD", connectorName="KB", connectorId="kb1"),
+                                rec(p.org, "file", origin="UPLOAD", connectorName="KB", connectorId="kb1", externalParentId="x-folder")], "records")
+    await p.batch_create_edges([{"from_id": i, "from_collection": "records", "to_id": "kb1", "to_collection": "apps"} for i in ("folder", "file")], "belongsTo")
+    await p.batch_create_edges([{"from_id": "folder", "from_collection": "records", "to_id": "file", "to_collection": "records", "relationshipType": "PARENT_CHILD"}], "nodeRelations")
+    await p.batch_upsert_nodes([{"_key": "w", "userId": "ext-w", "orgId": p.org}], "users")
+    await p.batch_create_edges([{"from_id": "w", "from_collection": "users", "to_id": "kb1", "to_collection": "apps", "type": "USER", "role": "OWNER"}], "permission")
+    out = await p.delete_record("folder", "ext-w", p.org, soft_delete=True)
+    assert out["success"] and out["softDeleted"]
+    assert {i: (await p.get_document(i, "records"))["isDeleted"] for i in ("folder", "file")} == {"folder": True, "file": True}
+
+
+async def test_delete_by_external_id_never_reaches_another_orgs_record(pg_db) -> None:
+    a, b = bound(pg_db), bound(pg_db)
+    await b.batch_upsert_nodes([rec(b.org, "same")], "records")
+    assert await a.delete_record_by_external_id("c1", "x-same", "ext-u") is None
+    assert await a.delete_record_by_external_id("c1", "x-same", "ext-u", soft_delete=True) is None
+    assert await b.get_existing_record_keys(["same"]) == {"same"}
