@@ -13,10 +13,12 @@ interface McpLogoFieldProps {
   /** What the server will show: its saved logo, or the one just picked. */
   logo: string | null;
   onChange: (logo: string | null) => void;
+  /** True while the latest picked file is still being read: saving then would leave it out. */
+  onReadingChange: (reading: boolean) => void;
 }
 
 /** A custom server's logo: pick an image, or remove it. Saved with the rest of the form. */
-export function McpLogoField({ logo, onChange }: McpLogoFieldProps) {
+export function McpLogoField({ logo, onChange, onReadingChange }: McpLogoFieldProps) {
   const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
   // Reading a file takes a moment: only the latest pick or remove may change the logo.
@@ -25,6 +27,7 @@ export function McpLogoField({ logo, onChange }: McpLogoFieldProps) {
   const pick = async (file: File) => {
     const action = ++latestAction.current;
     setError(null);
+    onReadingChange(true);
     try {
       const logo = await imageFileToLogo(file);
       if (action === latestAction.current) onChange(logo);
@@ -32,6 +35,8 @@ export function McpLogoField({ logo, onChange }: McpLogoFieldProps) {
       if (action !== latestAction.current) return;
       const problem = e instanceof McpLogoFileError ? e.problem : 'unreadable';
       setError(t(`workspace.mcpServers.form.logoErrors.${problem}`));
+    } finally {
+      if (action === latestAction.current) onReadingChange(false);
     }
   };
 
@@ -48,6 +53,7 @@ export function McpLogoField({ logo, onChange }: McpLogoFieldProps) {
         onRemove={() => {
           latestAction.current++;
           setError(null);
+          onReadingChange(false);
           onChange(null);
         }}
       />

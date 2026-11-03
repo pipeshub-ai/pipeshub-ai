@@ -164,6 +164,7 @@ export function McpInstanceConfigPanel({
   const savedLogo = useMcpServerLogo(mode === 'edit' ? editingInstance?._id : null);
   /** undefined: unchanged; null: remove it; a data URL: the new logo. */
   const [logoDraft, setLogoDraft] = useState<string | null | undefined>(undefined);
+  const [isReadingLogo, setIsReadingLogo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
@@ -490,7 +491,7 @@ export function McpInstanceConfigPanel({
   });
 
   const handleSave = () => {
-    if (!isValid) return;
+    if (!isValid || isReadingLogo) return;
     if (mode === 'edit' && editingInstance) {
       const impact = mcpEditCredentialImpact(editingInstance, buildPayload());
       if (impact !== 'none') {
@@ -714,7 +715,11 @@ export function McpInstanceConfigPanel({
       </FormField>
 
       {!isTemplateBased && !isReadOnly && (
-        <McpLogoField logo={logoDraft === undefined ? savedLogo : logoDraft} onChange={setLogoDraft} />
+        <McpLogoField
+          logo={logoDraft === undefined ? savedLogo : logoDraft}
+          onChange={setLogoDraft}
+          onReadingChange={setIsReadingLogo}
+        />
       )}
 
       {!isTemplateBased && (
@@ -1045,7 +1050,7 @@ export function McpInstanceConfigPanel({
         }
         primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}
         secondaryLabel={t('common.cancel')}
-        primaryDisabled={!isValid}
+        primaryDisabled={!isValid || isReadingLogo}
         primaryLoading={isSaving}
         onPrimaryClick={handleSave}
         hideFooter={!showFooter}

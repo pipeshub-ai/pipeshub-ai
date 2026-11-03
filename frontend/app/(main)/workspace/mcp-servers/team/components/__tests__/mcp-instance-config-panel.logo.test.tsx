@@ -38,11 +38,21 @@ vi.mock('../../../components', () => ({
 }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
   useWorkspaceDrawerNestedModalHost: () => null,
-  WorkspaceRightPanel: ({ open, children, onPrimaryClick }: { open: boolean; children: React.ReactNode; onPrimaryClick?: () => void }) =>
+  WorkspaceRightPanel: ({
+    open,
+    children,
+    primaryDisabled,
+    onPrimaryClick,
+  }: {
+    open: boolean;
+    children: React.ReactNode;
+    primaryDisabled?: boolean;
+    onPrimaryClick?: () => void;
+  }) =>
     open ? (
       <div>
         {children}
-        <button type="button" onClick={onPrimaryClick}>
+        <button type="button" disabled={primaryDisabled} onClick={onPrimaryClick}>
           save
         </button>
       </div>
@@ -244,5 +254,65 @@ describe('McpInstanceConfigPanel logo', () => {
     await act(async () => finish(NEW));
 
     expect(preview()).toBeNull();
+  });
+
+  describe('while a picked file is still being read', () => {
+    const saveButton = () => screen.getByRole('button', { name: 'save' }) as HTMLButtonElement;
+
+    it('holds Save until the file is read, then saves that logo', async () => {
+      let finish: (logo: string) => void = () => {};
+      picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
+      render(panel(editCustom));
+      await waitFor(() => expect(preview()).toBe(SAVED));
+
+      await pickFile();
+      expect(saveButton().disabled).toBe(true);
+
+      await act(async () => finish(NEW));
+      expect(saveButton().disabled).toBe(false);
+      await save();
+
+      expect(api.setLogo).toHaveBeenCalledWith('inst-1', NEW);
+    });
+
+    it('frees Save when the file cannot be read', async () => {
+      let fail: (error: Error) => void = () => {};
+      picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((_, reject) => (fail = reject)));
+      render(panel(editCustom));
+
+      await pickFile();
+      expect(saveButton().disabled).toBe(true);
+      await act(async () => fail(new McpLogoFileError('unreadable')));
+
+      expect(saveButton().disabled).toBe(false);
+    });
+
+    it('keeps Save held for the latest pick when an earlier one finishes first', async () => {
+      let finishFirst: (logo: string) => void = () => {};
+      let finishLatest: (logo: string) => void = () => {};
+      picked.imageFileToLogo
+        .mockReturnValueOnce(new Promise<string>((resolve) => (finishFirst = resolve)))
+        .mockReturnValueOnce(new Promise<string>((resolve) => (finishLatest = resolve)));
+      render(panel(editCustom));
+
+      await pickFile();
+      await pickFile();
+      await act(async () => finishFirst(FIRST));
+      expect(saveButton().disabled).toBe(true);
+
+      await act(async () => finishLatest(NEW));
+      expect(saveButton().disabled).toBe(false);
+    });
+
+    it('frees Save when the logo is removed instead', async () => {
+      picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>(() => {}));
+      render(panel(editCustom));
+      await waitFor(() => expect(preview()).toBe(SAVED));
+
+      await pickFile();
+      fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.logoRemove' }));
+
+      expect(saveButton().disabled).toBe(false);
+    });
   });
 });
