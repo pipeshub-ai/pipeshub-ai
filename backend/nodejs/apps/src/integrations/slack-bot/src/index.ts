@@ -80,6 +80,7 @@ import {
   BACKEND_STREAM_TIMEOUT_MS,
   TABLE_STREAMING_PAUSED_HINT,
   truncateForSlack,
+  slackBlocksFallbackText,
   truncateForSlackStreamMarkdown,
   splitByLengthPreferringNewlines,
   hasMarkdownTableStartOutsideCodeFences,
@@ -531,7 +532,7 @@ async function processSlackMessage(
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: "",
+        text: slackBlocksFallbackText(chunk),
         blocks: chunk,
         ...NO_UNFURL_OPTIONS,
       });
@@ -1488,7 +1489,7 @@ async function processSlackMessage(
           await typedClient.chat.update({
             channel: typedMessage.channel!,
             ts: streamTs,
-            text: "",
+            text: slackBlocksFallbackText(firstFinalChunk),
             blocks: firstFinalChunk,
             ...NO_UNFURL_OPTIONS,
           });
@@ -1514,7 +1515,7 @@ async function processSlackMessage(
             await typedClient.chat.postMessage({
               channel: typedMessage.channel!,
               thread_ts: threadId,
-              text: "",
+              text: slackBlocksFallbackText(firstFinalChunk),
               blocks: firstFinalChunk,
               ...NO_UNFURL_OPTIONS,
             });
@@ -1537,7 +1538,7 @@ async function processSlackMessage(
         await typedClient.chat.postMessage({
           channel: typedMessage.channel!,
           thread_ts: threadId,
-          text: "",
+          text: slackBlocksFallbackText(firstFinalChunk),
           blocks: firstFinalChunk,
           ...NO_UNFURL_OPTIONS,
         });
