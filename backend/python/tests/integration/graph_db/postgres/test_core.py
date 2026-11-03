@@ -156,6 +156,8 @@ CALLS = [
     ("delete_edge", ("x", "things", "y", "things", "belongsTo"), {}),
     ("delete_edges_from", ("x", "things", "belongsTo"), {}),
     ("delete_edges_to", ("y", "things", "belongsTo"), {}),
+    ("delete_all_edges_for_node", ("things/x", "belongsTo"), {}),
+    ("delete_inherit_permissions_relation_record_group", ("r", "g"), {}),
 ]
 
 
@@ -300,6 +302,34 @@ async def test_deleting_records_by_key_waits_for_the_records_module_too(pg_provi
         assert await pg_provider.get_document("r1", "records") is not None                   # nothing was deleted
 
 
+async def test_all_edges_of_a_node_go_in_both_directions_within_one_collection_and_one_org(pg_provider, orgs, org_ctx) -> None:
+    a, b = orgs
+    p = pg_provider
+
+    def edge(f: str, t: str) -> dict:
+        return {"from_id": f, "from_collection": "things", "to_id": t, "to_collection": "things"}
+    for org in (a, b):
+        with org_ctx(org):
+            await p.batch_create_edges([edge("n", "o"), edge("m", "n"), edge("p", "q")], "belongsTo")
+            await p.batch_create_edges([edge("n", "o")], "other")
+    with org_ctx(a):
+        assert await p.delete_all_edges_for_node("things/n", "belongsTo") == 2
+        assert await p.delete_all_edges_for_node("n", "belongsTo") == 0                  # no collection in the key: nothing, as on the other stores
+        assert await p.get_edge("p", "things", "q", "things", "belongsTo") is not None
+        assert await p.get_edge("n", "things", "o", "things", "other") is not None       # another edge collection stays
+    with org_ctx(b):
+        assert await p.get_edge("n", "things", "o", "things", "belongsTo") is not None   # another org stays
+
+
+async def test_the_inherit_permissions_edge_of_a_record_goes(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_create_edges([{"from_id": "r", "from_collection": "records", "to_id": "g", "to_collection": "recordGroups"}], "inheritPermissions")
+        assert await p.get_edge("r", "records", "g", "recordGroups", "inheritPermissions") is not None
+        await p.delete_inherit_permissions_relation_record_group("r", "g")
+        assert await p.get_edge("r", "records", "g", "recordGroups", "inheritPermissions") is None
+
 async def test_a_link_stored_with_no_key_is_found_and_deleted_under_its_own_collection(pg_provider, orgs, org_ctx) -> None:
     """``recordLinks`` rows carry no edge key; they are links all the same (a ``nodeRelations`` link is the one with a key)."""
     a, _ = orgs
@@ -348,6 +378,16 @@ async def test_a_node_wide_read_or_delete_over_node_relations_covers_hierarchy_a
         assert await p.delete_edges_from("x", "records", "nodeRelations") == 1
 
 
+async def test_all_edges_of_a_node_over_record_links_are_the_links_only(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    await _links_and_a_hierarchy_edge(p, org_ctx, a)
+    with org_ctx(a):
+        assert await p.delete_all_edges_for_node("records/y", "recordLinks") == 2                       # the keyed link and the keyless row ending at y
+        assert await p.get_edge("x", "records", "y", "records", "nodeRelations") is not None
+        assert await p.delete_all_edges_for_node("records/y", "nodeRelations") == 1                      # what is left of y's: the hierarchy edge
+
+
 async def test_hierarchy_edges_are_never_links_for_any_reader_or_deleter_of_record_links(pg_provider, orgs, org_ctx) -> None:
     a, _ = orgs
     p = pg_provider
@@ -360,4 +400,23 @@ async def test_hierarchy_edges_are_never_links_for_any_reader_or_deleter_of_reco
         assert await p.batch_delete_edges([e], "recordLinks") == 0
         assert await p.delete_edges_from("x", "records", "recordLinks") == 0
         assert await p.delete_edges_to("y", "records", "recordLinks") == 0
+        assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 0
         assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 3
+
+
+async def test_deleting_all_edges_of_a_node_follows_the_relationship_type_of_the_collection(pg_provider, orgs, org_ctx) -> None:
+    """As the Neo4j provider: ``nodeRelations`` is the hierarchy edge, ``recordLinks`` the links; neither touches the other."""
+    a, _ = orgs
+    p = pg_provider
+
+    async def seed() -> None:
+        await p.batch_create_edges([{"from_id": "x", "from_collection": "records", "to_id": "y", "to_collection": "records", "relationshipType": "PARENT_CHILD"},
+                                    {"from_id": "z", "from_collection": "records", "to_id": "x", "to_collection": "records", "relationshipType": "BOOKMARK"}], "nodeRelations")
+    with org_ctx(a):
+        await seed()
+        assert await p.delete_all_edges_for_node("records/x", "nodeRelations") == 1                                  # the hierarchy edge only
+        assert [e["relationshipType"] for e in await p.get_edges_to_node("records/x", "recordLinks")] == ["BOOKMARK"]
+        assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 1                                    # the link only
+        await seed()
+        assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 1
+        assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 1                                   # the hierarchy edge stayed
