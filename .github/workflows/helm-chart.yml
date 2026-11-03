@@ -13,6 +13,7 @@ name: Helm chart
 # Hub, which moves without any change to this repository.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - main
     paths:
@@ -28,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: helm-chart-${{ github.event.pull_request.number || github.run_id }}
+  group: helm-chart-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 env:
@@ -40,6 +41,7 @@ env:
 
 jobs:
   check:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: Lint and validate every configuration
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -76,6 +78,7 @@ jobs:
         run: bash deployment/helm/tests/check_chart.sh
 
   install:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: Install on kind (${{ matrix.variant }})
     needs: check
     runs-on: ubuntu-latest

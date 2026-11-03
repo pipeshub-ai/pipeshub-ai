@@ -17,6 +17,7 @@ name: integration-suite-guards
 
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
   push:
@@ -28,11 +29,12 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: integration-suite-guards-${{ github.event.pull_request.number || github.sha }}
+  group: integration-suite-guards-${{ github.event.pull_request.number || github.sha }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
   integration-suite-guards:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: integration-suite-guards
     runs-on: ubuntu-latest
     timeout-minutes: 30

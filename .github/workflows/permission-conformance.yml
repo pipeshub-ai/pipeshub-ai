@@ -10,6 +10,7 @@ name: permission-conformance
 
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -35,7 +36,7 @@ permissions:
 
 concurrency:
   # The event is part of the group, so a push to main cannot cancel the nightly run in progress.
-  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -48,6 +49,7 @@ env:
 
 jobs:
   oracle:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -79,7 +81,7 @@ jobs:
           pytest tests/permissions -m "not integration" -v -rx
 
   graph:
-    if: github.event_name != 'schedule'
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (github.event_name != 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     services:
@@ -165,7 +167,7 @@ jobs:
           if-no-files-found: ignore
 
   nightly:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:

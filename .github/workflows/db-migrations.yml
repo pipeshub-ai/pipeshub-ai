@@ -3,6 +3,7 @@ name: db-migrations
 # Lints the migration tree and runs the migration tests against real PostgreSQL 17 and 18.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -16,6 +17,7 @@ permissions:
 
 jobs:
   migrations:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

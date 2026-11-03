@@ -12,6 +12,7 @@ name: ARM64 first-run
 # published image.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - main
     # What decides whether the arm64 build works: the image definitions and the
@@ -35,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: arm64-smoke-${{ github.event.pull_request.number || github.run_id }}
+  group: arm64-smoke-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 env:
@@ -44,6 +45,7 @@ env:
 
 jobs:
   slim:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: Build and start slim (arm64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45

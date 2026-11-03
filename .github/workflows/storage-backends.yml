@@ -13,6 +13,7 @@ name: Storage backends
 # needs is secret; the emulators use throwaway or published development keys.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -38,7 +39,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: storage-backends-${{ github.event.pull_request.number || github.run_id }}
+  group: storage-backends-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 env:
@@ -50,6 +51,7 @@ env:
 
 jobs:
   file-storage:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: File storage (${{ matrix.backend }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -114,6 +116,7 @@ jobs:
         run: npx mocha --no-config --require ts-node/register --exit tests/stores/storage-adapters.itest.ts
 
   mongodb:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: MongoDB (${{ matrix.topology }})
     runs-on: ubuntu-latest
     timeout-minutes: 20

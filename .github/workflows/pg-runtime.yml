@@ -8,6 +8,7 @@ name: pg-runtime
 # suites skip only when a service is missing, which in CI means the workflow is broken.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -47,11 +48,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: pg-runtime-${{ github.ref }}
+  group: pg-runtime-${{ github.ref }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
   python:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -140,6 +142,7 @@ jobs:
         run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=78'
 
   node:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

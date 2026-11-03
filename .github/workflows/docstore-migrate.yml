@@ -5,6 +5,7 @@ name: docstore-migrate
 # schema. A skip is a failure here: the suites skip only when a service is missing, which in CI means the workflow is broken.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -30,11 +31,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: docstore-migrate-${{ github.ref }}
+  group: docstore-migrate-${{ github.ref }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
   migrate:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
     runs-on: ubuntu-24.04
     timeout-minutes: 60

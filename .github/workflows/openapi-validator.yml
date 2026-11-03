@@ -6,6 +6,7 @@ name: OpenAPI Spec Validation
 
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
 
@@ -17,6 +18,7 @@ env:
 
 jobs:
   lint:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: Lint the spec with Spectral
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -34,6 +36,7 @@ jobs:
         run: spectral lint "$SPEC" --ruleset .spectral.yaml --fail-severity error
 
   breaking:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: Detect breaking changes
     runs-on: ubuntu-latest
     timeout-minutes: 10

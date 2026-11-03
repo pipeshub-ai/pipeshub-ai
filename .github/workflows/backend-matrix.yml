@@ -37,6 +37,7 @@ name: backend-matrix
 
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -151,7 +152,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: backend-matrix-${{ github.event.pull_request.number || github.run_id }}
+  group: backend-matrix-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
@@ -160,6 +161,7 @@ jobs:
   # matrix cannot be filtered, so a leg whose suite did not change starts and
   # skips every step (SUITE_RUNS) in a few seconds.
   changes:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -183,6 +185,7 @@ jobs:
         uses: ./.github/actions/pr-changes
 
   backend:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     name: ${{ matrix.suite }} · ${{ matrix.backend }}
     needs: changes
     runs-on: ubuntu-latest
@@ -387,7 +390,7 @@ jobs:
   storage:
     name: storage · ${{ matrix.backend }}
     needs: changes
-    if: needs.changes.outputs.matrix_storage == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.matrix_storage == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

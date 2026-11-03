@@ -11,6 +11,7 @@ name: E2E Smoke
 # the runner is self-hosted.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
   workflow_dispatch:
@@ -19,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-smoke-${{ github.event.pull_request.number || github.run_id }}
+  group: e2e-smoke-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 env:
@@ -29,6 +30,7 @@ jobs:
   # Which of the jobs below this pull request's changes can affect
   # (scripts/pr_changes.py). Every other event runs them all.
   changes:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -52,7 +54,8 @@ jobs:
     # Self-hosted runner: never run a fork's code on it (same guard as published-hub-smoke.yml).
     # Skipped when the pull request changes only docs, which the stack never reads.
     if: >-
-      needs.changes.outputs.e2e_smoke == 'true' &&
+      (github.event_name != 'pull_request' || github.event.label.name == '/run-checks')
+      && needs.changes.outputs.e2e_smoke == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 60

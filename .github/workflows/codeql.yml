@@ -15,6 +15,7 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
+    types: [labeled]
     branches: [ "main" ]
   schedule:
     - cron: '18 8 * * 5'
@@ -24,6 +25,7 @@ jobs:
   # (scripts/pr_changes.py). A pull request analyses only the languages it
   # changed; a push to main and the weekly schedule analyse every language.
   changes:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -44,7 +46,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: changes
-    if: needs.changes.outputs.codeql_languages != '[]'
+    if: ${{ (github.event_name != 'pull_request' || github.event.label.name == '/run-checks') && (needs.changes.outputs.codeql_languages != '[]') }}
     # Runner size impacts CodeQL analysis time. To learn more, please see:
     #   - https://gh.io/recommended-hardware-resources-for-running-codeql
     #   - https://gh.io/supported-runners-and-hardware-resources

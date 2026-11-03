@@ -3,6 +3,7 @@ name: node-pg-runtime
 # Integration tests of the Node PostgreSQL runtime against real PostgreSQL 17 and 18 and PgBouncer, and the generated-types drift check.
 on:
   pull_request:
+    types: [labeled]
     branches:
       - 'main'
     paths:
@@ -17,6 +18,7 @@ permissions:
 
 jobs:
   pg-runtime:
+    if: github.event_name != 'pull_request' || github.event.label.name == '/run-checks'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
