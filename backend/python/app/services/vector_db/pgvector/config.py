@@ -21,10 +21,10 @@ def _service_of(dsn: str) -> str:
 
 @dataclass(frozen=True)
 class PgVectorConfig:
-    dsn: str
+    dsn: str = field(repr=False)          # a DSN can hold a password: not in repr, logs or assertion diffs
     # Optional credential of the jobs role: creating or dropping a collection.
     # Without it those calls fail with the command that performs them.
-    jobs_dsn: str = ""
+    jobs_dsn: str = field(default="", repr=False)
     # The service whose role the units of work take. Default: the one the login in ``dsn`` belongs to.
     service: str = ""
     pool_max: int = 10
