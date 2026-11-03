@@ -1,3 +1,26 @@
+cast double precision[] -> ext.halfvec function=ext.array_to_halfvec context=a
+cast double precision[] -> ext.sparsevec function=ext.array_to_sparsevec context=a
+cast double precision[] -> ext.vector function=ext.array_to_vector context=a
+cast ext.halfvec -> ext.halfvec function=ext.halfvec context=i
+cast ext.halfvec -> ext.sparsevec function=ext.halfvec_to_sparsevec context=i
+cast ext.halfvec -> ext.vector function=ext.halfvec_to_vector context=a
+cast ext.halfvec -> real[] function=ext.halfvec_to_float4 context=a
+cast ext.sparsevec -> ext.halfvec function=ext.sparsevec_to_halfvec context=a
+cast ext.sparsevec -> ext.sparsevec function=ext.sparsevec context=i
+cast ext.sparsevec -> ext.vector function=ext.sparsevec_to_vector context=a
+cast ext.vector -> ext.halfvec function=ext.vector_to_halfvec context=i
+cast ext.vector -> ext.sparsevec function=ext.vector_to_sparsevec context=i
+cast ext.vector -> ext.vector function=ext.vector context=i
+cast ext.vector -> real[] function=ext.vector_to_float4 context=i
+cast integer[] -> ext.halfvec function=ext.array_to_halfvec context=a
+cast integer[] -> ext.sparsevec function=ext.array_to_sparsevec context=a
+cast integer[] -> ext.vector function=ext.array_to_vector context=a
+cast numeric[] -> ext.halfvec function=ext.array_to_halfvec context=a
+cast numeric[] -> ext.sparsevec function=ext.array_to_sparsevec context=a
+cast numeric[] -> ext.vector function=ext.array_to_vector context=a
+cast real[] -> ext.halfvec function=ext.array_to_halfvec context=a
+cast real[] -> ext.sparsevec function=ext.array_to_sparsevec context=a
+cast real[] -> ext.vector function=ext.array_to_vector context=a
 column content.documents.alternate_document_name type=text notnull=false identity= generated= default=-
 column content.documents.artifact_set type=jsonb notnull=false identity= generated= default=-
 column content.documents.awaiting_direct_upload type=boolean notnull=false identity= generated= default=-
@@ -617,6 +640,96 @@ column platform.store_epoch.epoch type=integer notnull=true identity= generated=
 column platform.store_epoch.one type=boolean notnull=true identity= generated= default=true
 column platform.store_epoch.readonly type=boolean notnull=true identity= generated= default=false
 column platform.store_epoch.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.collection_stats.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.collection_stats.n_points type=bigint notnull=true identity= generated= default=-
+column retrieval.collection_stats.org_id type=text notnull=true identity= generated= default=-
+column retrieval.collection_stats.space_id type=smallint notnull=true identity= generated= default=-
+column retrieval.collections.collection_id type=smallint notnull=true identity=a generated= default=-
+column retrieval.collections.created_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.collections.lexical_version type=text notnull=true identity= generated= default=-
+column retrieval.collections.name type=text notnull=true identity= generated= default=-
+column retrieval.collections.sparse_enabled type=boolean notnull=true identity= generated= default=-
+column retrieval.collections.sparse_idf type=boolean notnull=true identity= generated= default=-
+column retrieval.collections.stamp type=text notnull=false identity= generated= default=-
+column retrieval.collections.status type=text notnull=true identity= generated= default='ready'::text
+column retrieval.embedding_spaces.dim type=integer notnull=true identity= generated= default=-
+column retrieval.embedding_spaces.metric type=text notnull=true identity= generated= default=-
+column retrieval.embedding_spaces.model type=text notnull=true identity= generated= default=-
+column retrieval.embedding_spaces.space_id type=smallint notnull=true identity=a generated= default=-
+column retrieval.embedding_spaces.status type=text notnull=true identity= generated= default='building'::text
+column retrieval.group_members.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.group_members.group_key type=text notnull=true identity= generated= default=-
+column retrieval.group_members.kind type=smallint notnull=true identity= generated= default=-
+column retrieval.group_members.member_id type=text notnull=true identity= generated= default=-
+column retrieval.group_members.org_id type=text notnull=true identity= generated= default=-
+column retrieval.lexical_df_delta.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.lexical_df_delta.d type=integer notnull=true identity= generated= default=-
+column retrieval.lexical_df_delta.org_id type=text notnull=true identity= generated= default=-
+column retrieval.lexical_df_delta.seq type=bigint notnull=true identity=a generated= default=-
+column retrieval.lexical_df_delta.space_id type=smallint notnull=true identity= generated= default=-
+column retrieval.lexical_df_delta.term type=bigint notnull=true identity= generated= default=-
+column retrieval.member_stats.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.member_stats.kind type=smallint notnull=true identity= generated= default=-
+column retrieval.member_stats.member_id type=text notnull=true identity= generated= default=-
+column retrieval.member_stats.n_points type=bigint notnull=true identity= generated= default=-
+column retrieval.member_stats.org_id type=text notnull=true identity= generated= default=-
+column retrieval.member_stats.space_id type=smallint notnull=true identity= generated= default=-
+column retrieval.org_spaces.dim type=smallint notnull=true identity= generated= default=-
+column retrieval.org_spaces.named_by type=text notnull=false identity= generated= default=-
+column retrieval.org_spaces.org_id type=text notnull=true identity= generated= default=-
+column retrieval.org_spaces.role type=text notnull=true identity= generated= default=-
+column retrieval.org_spaces.since type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.org_spaces.space_id type=smallint notnull=true identity= generated= default=-
+column retrieval.placement_requests.attempts type=integer notnull=true identity= generated= default=0
+column retrieval.placement_requests.done_at type=timestamp with time zone notnull=false identity= generated= default=-
+column retrieval.placement_requests.failed_at type=timestamp with time zone notnull=false identity= generated= default=-
+column retrieval.placement_requests.next_try_at type=timestamp with time zone notnull=false identity= generated= default=-
+column retrieval.placement_requests.note type=text notnull=false identity= generated= default=-
+column retrieval.placement_requests.org_id type=text notnull=true identity= generated= default=-
+column retrieval.placement_requests.requested_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.point_groups.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.point_groups.computed_at type=timestamp with time zone notnull=true identity= generated= default=-
+column retrieval.point_groups.connector_ids type=text[] notnull=true identity= generated= default='{}'::text[]
+column retrieval.point_groups.group_key type=text notnull=true identity= generated= default=-
+column retrieval.point_groups.org_id type=text notnull=true identity= generated= default=-
+column retrieval.point_groups.record_group_ids type=text[] notnull=true identity= generated= default='{}'::text[]
+column retrieval.point_groups.root_record_group_ids type=text[] notnull=true identity= generated= default='{}'::text[]
+column retrieval.point_text.org_id type=text notnull=true identity= generated= default=-
+column retrieval.point_text.page_content type=text notnull=false identity= generated= default=-
+column retrieval.point_text.payload type=jsonb notnull=true identity= generated= default=-
+column retrieval.point_text.point_sk type=bigint notnull=true identity= generated= default=-
+column retrieval.point_tombstones.deleted_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column retrieval.point_tombstones.org_id type=text notnull=true identity= generated= default=-
+column retrieval.point_tombstones.point_sk type=bigint notnull=true identity= generated= default=-
+column retrieval.points.block_id type=text notnull=false identity= generated= default=-
+column retrieval.points.bq type=bit varying notnull=false identity= generated=s default=ext.binary_quantize(embedding)
+column retrieval.points.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.points.embedding type=ext.halfvec notnull=true identity= generated= default=-
+column retrieval.points.embedding_dim type=smallint notnull=true identity= generated= default=-
+column retrieval.points.ent_id type=text notnull=false identity= generated= default=-
+column retrieval.points.ent_kind type=text notnull=false identity= generated= default=-
+column retrieval.points.ent_level type=text notnull=false identity= generated= default=-
+column retrieval.points.ent_type type=text notnull=false identity= generated= default=-
+column retrieval.points.group_key type=text notnull=true identity= generated= default=-
+column retrieval.points.lex_terms type=bigint[] notnull=false identity= generated= default=-
+column retrieval.points.org_id type=text notnull=true identity= generated= default=-
+column retrieval.points.point_id type=uuid notnull=true identity= generated= default=-
+column retrieval.points.point_sk type=bigint notnull=true identity=a generated= default=-
+column retrieval.points.space_id type=smallint notnull=true identity= generated= default=-
+column retrieval.points.vrid type=text notnull=false identity= generated= default=-
+column retrieval.postings.collection_id type=smallint notnull=true identity= generated= default=-
+column retrieval.postings.org_id type=text notnull=true identity= generated= default=-
+column retrieval.postings.point_sk type=bigint notnull=true identity= generated= default=-
+column retrieval.postings.space_id type=smallint notnull=true identity= generated= default=-
+column retrieval.postings.term type=integer notnull=true identity= generated= default=-
+column retrieval.postings.w type=real notnull=true identity= generated= default=-
+column retrieval.space_checks.attempts type=integer notnull=true identity= generated= default=0
+column retrieval.space_checks.checked_at type=timestamp with time zone notnull=false identity= generated= default=-
+column retrieval.space_checks.next_try_at type=timestamp with time zone notnull=false identity= generated= default=-
+column retrieval.space_checks.org_id type=text notnull=true identity= generated= default=-
+column retrieval.space_checks.recall type=real notnull=false identity= generated= default=-
+column retrieval.space_checks.samples type=integer notnull=false identity= generated= default=-
+column retrieval.space_checks.space_id type=smallint notnull=true identity= generated= default=-
 constraint content.documents documents_permissions_check c def=1555164b1275eacd102b354b33a4861b
 constraint content.documents documents_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint content.documents documents_storage_vendor_check c def=dffac3739b9e430c685ececcad5d3181
@@ -821,12 +934,63 @@ constraint platform.store_epoch store_epoch_backend_check c def=555fa520c8f4d93b
 constraint platform.store_epoch store_epoch_epoch_check c def=7a8151e7105396955e8374258e85d35c
 constraint platform.store_epoch store_epoch_one_check c def=21c1ed2340b0cfd00c3a8b8b5b6635c5
 constraint platform.store_epoch store_epoch_pkey p def=2f0d4b6d30e5d97037ac5ea5a91e2055
+constraint retrieval.collection_stats collection_stats_pkey p def=a0e1e519074bfa68e74187cc357ba717
+constraint retrieval.collection_stats org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.collection_stats org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.collections collections_pkey p def=65e270e9117ab3646d63c78489c7225f
+constraint retrieval.collections collections_status_check c def=c0e77117990f6063e78a1dbb67e45666
+constraint retrieval.embedding_spaces embedding_spaces_dim_check c def=404e805d4c0f2946f4555fbeddb66431
+constraint retrieval.embedding_spaces embedding_spaces_metric_check c def=52fe5e7baa732e5c38e4cf6937e01f56
+constraint retrieval.embedding_spaces embedding_spaces_model_dim_metric_key u def=1a24612c57d8b1202441827dd6199ad3
+constraint retrieval.embedding_spaces embedding_spaces_pkey p def=b6a6c6e8072ad14299469e74903f7d2e
+constraint retrieval.embedding_spaces embedding_spaces_status_check c def=43fab1afe5d71741fd4c3b4f6630081b
+constraint retrieval.group_members group_members_kind_check c def=5f98950dec5b97c275e5bdf929471240
+constraint retrieval.group_members group_members_pkey p def=18e9bd91b19dda8f7f72b1c172e66de6
+constraint retrieval.group_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.group_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.lexical_df_delta lexical_df_delta_pkey p def=6f291a42b38b0822cbc1d6c6e4d6a7a9
+constraint retrieval.lexical_df_delta org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.lexical_df_delta org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.member_stats member_stats_pkey p def=7a91376594bac7a5bdc2eb9f4b11c88a
+constraint retrieval.member_stats org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.member_stats org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.org_spaces org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.org_spaces org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.org_spaces org_spaces_org_id_space_id_dim_key u def=a20548b99dfbca3bb03c970bc4a195c3
+constraint retrieval.org_spaces org_spaces_pkey p def=73fbef559719e79c014d1209fa96821d
+constraint retrieval.org_spaces org_spaces_role_check c def=e409829c524d86fcbd2752e1ec0dd3a3
+constraint retrieval.placement_requests org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.placement_requests org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.placement_requests placement_requests_pkey p def=23790d7e3b152b2426b0cd980c7b2821
+constraint retrieval.point_groups org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.point_groups org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.point_groups point_groups_pkey p def=c5a4a91f96597a6e92b6b08820f9f380
+constraint retrieval.point_text org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.point_text org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.point_text point_text_pkey p def=971694d0132b437c1da56c7941d96c64
+constraint retrieval.point_tombstones org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.point_tombstones org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.point_tombstones point_tombstones_pkey p def=971694d0132b437c1da56c7941d96c64
+constraint retrieval.points org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.points org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.points points_check c def=10563024ef5a5b02af86689f852d0f5f
+constraint retrieval.points points_org_id_collection_id_space_id_point_id_key u def=69eec7ee56ae9ba29a5e554b6e5ca1ba
+constraint retrieval.points points_org_id_space_id_embedding_dim_fkey f def=57d9167e19e798e896e86dc43a36298b
+constraint retrieval.points points_pkey p def=971694d0132b437c1da56c7941d96c64
+constraint retrieval.postings org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.postings org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.postings postings_pkey p def=3c3967e5e733792222e6871ee0423763
+constraint retrieval.space_checks org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint retrieval.space_checks org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint retrieval.space_checks space_checks_org_id_space_id_fkey f def=15363db4aaee5360d75fb72b4e88f5e1
+constraint retrieval.space_checks space_checks_pkey p def=73fbef559719e79c014d1209fa96821d
 database owner=<bootstrap-superuser>
 databaseacl PUBLIC CONNECT grantable=false
 databaseacl pipeshub_owner CREATE grantable=false
 extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
+extension vector schema=ext owner=<bootstrap-superuser>
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
@@ -864,6 +1028,21 @@ func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+func retrieval.collection_create(text,boolean,boolean,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=6881aa406340bf1c4dcee0d6fc6c7b25 ext=-
+func retrieval.collection_get(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=14c63d7ec9cef2ed8b66e1241e62fd0d ext=-
+func retrieval.collection_list(integer,integer) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=b79897367c042993d52db548ede4b30a ext=-
+func retrieval.collection_mark_deleting(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=f59caf211ce785ac12f2f50629b462c1 ext=-
+func retrieval.collection_stamp_get(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=bcb5ce019a56dbac7b864300c73e0a6a ext=-
+func retrieval.collection_stamp_set(text,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=a358ba71caf938fef247ab25db065cee ext=-
+func retrieval.org_leaf_request() owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=121cc10a4b241c64c98211721b1ba6eb ext=-
+func retrieval.org_leaf_status() owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=49b06a05dc27d7fd4cf7d1151b4c79a0 ext=-
+func retrieval.org_space_adopt(text,integer,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=8da01d32de7aaac6ad09c37230533d9c ext=-
+func retrieval.org_space_list() owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=92292535cd87a7ec3c8843985dce2050 ext=-
+func retrieval.org_space_name(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=8fbdb6d6e297987d4f47c1fbc4648e14 ext=-
+func retrieval.org_space_named_by() owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=a88c56b36a816e8b8dea17f0a111210f ext=-
+func retrieval.org_space_replace_empty(text,integer,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=1dfeb2fbdd5d12c80f3daf9de061cc5b ext=-
+func retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ce5bcad4fa9558b623eaccbb91db886b ext=-
+func retrieval.vrid_orgs(text[]) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=053b81fdd72b9c2dc3be4dde01323756 ext=-
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
 funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE
@@ -900,6 +1079,21 @@ funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
+funcacl retrieval.collection_create(text,boolean,boolean,text) pipeshub_jobs EXECUTE
+funcacl retrieval.collection_get(text) pipeshub_app EXECUTE
+funcacl retrieval.collection_list(integer,integer) pipeshub_app EXECUTE
+funcacl retrieval.collection_mark_deleting(text) pipeshub_jobs EXECUTE
+funcacl retrieval.collection_stamp_get(text) pipeshub_app EXECUTE
+funcacl retrieval.collection_stamp_set(text,text) pipeshub_indexing EXECUTE
+funcacl retrieval.org_leaf_request() pipeshub_indexing EXECUTE
+funcacl retrieval.org_leaf_status() pipeshub_app EXECUTE
+funcacl retrieval.org_space_adopt(text,integer,text) pipeshub_indexing EXECUTE
+funcacl retrieval.org_space_list() pipeshub_app EXECUTE
+funcacl retrieval.org_space_name(text) pipeshub_indexing EXECUTE
+funcacl retrieval.org_space_named_by() pipeshub_app EXECUTE
+funcacl retrieval.org_space_replace_empty(text,integer,text) pipeshub_indexing EXECUTE
+funcacl retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) pipeshub_app EXECUTE
+funcacl retrieval.vrid_orgs(text[]) pipeshub_indexing EXECUTE
 index content.documents_artifact_set on content.documents unique=true exclusion=false valid=true def=66b66cb22ee4b83b8ce15ce05c5b6ef2
 index content.documents_by_connector on content.documents unique=false exclusion=false valid=true def=758d149d5d885f2d089e87f7a5cb02f0
 index content.documents_by_name on content.documents unique=false exclusion=false valid=true def=989ea889f3b9334e327fa9cca1444de7
@@ -1055,6 +1249,30 @@ index platform.sched_jobs_due on platform.sched_jobs unique=false exclusion=fals
 index platform.sched_jobs_pkey on platform.sched_jobs unique=true exclusion=false valid=true def=c648c9c85ecf24b08822678f915456b1
 index platform.sched_repeats_pkey on platform.sched_repeats unique=true exclusion=false valid=true def=0704607f8fae1f2d85e4d8270ab35624
 index platform.store_epoch_pkey on platform.store_epoch unique=true exclusion=false valid=true def=6f2b38c345e73c59514153010e2ada47
+index retrieval.collection_stats_pkey on retrieval.collection_stats unique=true exclusion=false valid=true def=74a543b78b4241666b0871377a66b518
+index retrieval.collections_name_live on retrieval.collections unique=true exclusion=false valid=true def=318660606d166b8e9a68ef2408e4bb36
+index retrieval.collections_pkey on retrieval.collections unique=true exclusion=false valid=true def=72b4106db01f004fe20b3368adfd1e7a
+index retrieval.embedding_spaces_model_dim_metric_key on retrieval.embedding_spaces unique=true exclusion=false valid=true def=d9f6fb4133350d5c6851165f0d109d5a
+index retrieval.embedding_spaces_pkey on retrieval.embedding_spaces unique=true exclusion=false valid=true def=f3b675683c09fbe20d87c942e82e53fd
+index retrieval.group_members_member on retrieval.group_members unique=false exclusion=false valid=true def=116b9f55ba4e70065ec2925f112a933e
+index retrieval.group_members_pkey on retrieval.group_members unique=true exclusion=false valid=true def=39239c9a5c238b1b73cb096738a1e6cb
+index retrieval.lexical_df_delta_count on retrieval.lexical_df_delta unique=false exclusion=false valid=true def=18ae9e46a947b9afd182a2b9110c324a
+index retrieval.lexical_df_delta_pkey on retrieval.lexical_df_delta unique=true exclusion=false valid=true def=e549fc595c3305bddb94c73fd9d2ae15
+index retrieval.member_stats_pkey on retrieval.member_stats unique=true exclusion=false valid=true def=07d00888fdba4a3afaff417af5314abb
+index retrieval.org_spaces_one_active on retrieval.org_spaces unique=true exclusion=false valid=true def=c7f5e587f0f970415b16a0054b757a65
+index retrieval.org_spaces_org_id_space_id_dim_key on retrieval.org_spaces unique=true exclusion=false valid=true def=6de4d50e0a135e4ceae8f32b2e141df0
+index retrieval.org_spaces_pkey on retrieval.org_spaces unique=true exclusion=false valid=true def=6a6a099b1d026347b9922ec8da59839d
+index retrieval.placement_requests_pkey on retrieval.placement_requests unique=true exclusion=false valid=true def=8b64591813648d4884dc2d8727d7b248
+index retrieval.point_groups_pkey on retrieval.point_groups unique=true exclusion=false valid=true def=4fe7b20d77746a5920f4e32dea129aea
+index retrieval.point_text_pkey on retrieval.point_text unique=true exclusion=false valid=true def=6fdd38a83a55b65d012339e5a9219a4c
+index retrieval.point_tombstones_pkey on retrieval.point_tombstones unique=true exclusion=false valid=true def=74be445f3936b9ebc234894b5354c0dd
+index retrieval.points_block on retrieval.points unique=false exclusion=false valid=true def=6f818e261e684aa7cfc6b36409269ab5
+index retrieval.points_entity on retrieval.points unique=false exclusion=false valid=true def=8828af5e42df037067b630f17e6815d0
+index retrieval.points_group on retrieval.points unique=false exclusion=false valid=true def=2a611b704bcbd2521520ffb21b0b2e2e
+index retrieval.points_org_id_collection_id_space_id_point_id_key on retrieval.points unique=true exclusion=false valid=true def=2531d16bb575a37478769b2b742c354d
+index retrieval.points_pkey on retrieval.points unique=true exclusion=false valid=true def=c8de9f68c7fde00d2dd3757beacd9dda
+index retrieval.postings_pkey on retrieval.postings unique=true exclusion=false valid=true def=0e878a8544bc82103056102494590f81
+index retrieval.space_checks_pkey on retrieval.space_checks unique=true exclusion=false valid=true def=66be36c60824f769344c35c25e2f62e2
 language c trusted=false owner=<bootstrap-superuser>
 language internal trusted=false owner=<bootstrap-superuser>
 language plpgsql trusted=true owner=<bootstrap-superuser>
@@ -1077,19 +1295,60 @@ member pipeshub_owner -> pipeshub_vetted_graph inherit=false set=false admin=tru
 member pipeshub_owner -> pipeshub_vetted_identity inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_kernel inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_platform inherit=false set=false admin=true
+member pipeshub_owner -> pipeshub_vetted_retrieval inherit=false set=false admin=true
 member pipeshub_query -> pipeshub_app inherit=true set=false admin=false
 member pipeshub_query_login -> pipeshub_query inherit=false set=true admin=false
 member pipeshub_ro -> pipeshub_app inherit=true set=false admin=false
 operator ext.%(text,text) owner=<bootstrap-superuser> function=ext.similarity_op
 operator ext.%>(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_commutator_op
 operator ext.%>>(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_commutator_op
+operator ext.*(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_mul
+operator ext.*(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_mul
+operator ext.+(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_add
+operator ext.+(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_add
+operator ext.-(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_sub
+operator ext.-(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_sub
+operator ext.<#>(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_negative_inner_product
+operator ext.<#>(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_negative_inner_product
+operator ext.<#>(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_negative_inner_product
 operator ext.<%(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_op
+operator ext.<%>(bit,bit) owner=<bootstrap-superuser> function=ext.jaccard_distance
+operator ext.<(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_lt
+operator ext.<(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_lt
+operator ext.<(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_lt
+operator ext.<+>(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.l1_distance
+operator ext.<+>(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.l1_distance
+operator ext.<+>(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.l1_distance
+operator ext.<->(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.l2_distance
+operator ext.<->(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.l2_distance
+operator ext.<->(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.l2_distance
 operator ext.<->(text,text) owner=<bootstrap-superuser> function=ext.similarity_dist
 operator ext.<->>(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_dist_commutator_op
 operator ext.<->>>(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_dist_commutator_op
 operator ext.<<%(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_op
 operator ext.<<->(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_dist_op
 operator ext.<<<->(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_dist_op
+operator ext.<=(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_le
+operator ext.<=(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_le
+operator ext.<=(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_le
+operator ext.<=>(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.cosine_distance
+operator ext.<=>(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.cosine_distance
+operator ext.<=>(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.cosine_distance
+operator ext.<>(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_ne
+operator ext.<>(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_ne
+operator ext.<>(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_ne
+operator ext.<~>(bit,bit) owner=<bootstrap-superuser> function=ext.hamming_distance
+operator ext.=(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_eq
+operator ext.=(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_eq
+operator ext.=(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_eq
+operator ext.>(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_gt
+operator ext.>(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_gt
+operator ext.>(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_gt
+operator ext.>=(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_ge
+operator ext.>=(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> function=ext.sparsevec_ge
+operator ext.>=(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_ge
+operator ext.||(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_concat
+operator ext.||(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_concat
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.documents import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy content.documents org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -1261,6 +1520,68 @@ policy platform.outbox import_all cmd=* permissive=true roles=pipeshub_import us
 policy platform.outbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy platform.outbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.outbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.collection_stats backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.collection_stats jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.collection_stats org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.collection_stats restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.collection_stats vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.group_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.group_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.group_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.group_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.group_members vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.lexical_df_delta backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.lexical_df_delta jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.lexical_df_delta org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.lexical_df_delta restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.lexical_df_delta vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.member_stats backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.member_stats jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.member_stats org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.member_stats restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.member_stats vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.org_spaces backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.org_spaces jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.org_spaces org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.org_spaces restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.org_spaces vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.org_spaces vetted_write cmd=* permissive=true roles=pipeshub_vetted_retrieval using=true check=true
+policy retrieval.placement_requests backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.placement_requests jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.placement_requests org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.placement_requests restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.placement_requests vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.placement_requests vetted_write cmd=* permissive=true roles=pipeshub_vetted_retrieval using=true check=true
+policy retrieval.point_groups backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.point_groups jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.point_groups org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.point_groups restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.point_groups vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.point_text backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.point_text jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.point_text org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.point_text restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.point_text vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.point_tombstones backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.point_tombstones jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.point_tombstones org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.point_tombstones restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.point_tombstones vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.points backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.points jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.points org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.points restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.points vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.postings backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.postings jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.postings org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.postings restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.postings vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
+policy retrieval.space_checks backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy retrieval.space_checks jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.space_checks org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy retrieval.space_checks restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy retrieval.space_checks vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 rel content.documents kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel content.project_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel content.projects kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
@@ -1332,6 +1653,24 @@ rel platform.queue_messages_id_seq kind=S owner=pipeshub_owner rls=false force=f
 rel platform.sched_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.sched_repeats kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.store_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.collection_stats kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.collections kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.collections_collection_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.embedding_spaces kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.embedding_spaces_space_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.group_members kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.lexical_df_delta kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.lexical_df_delta_seq_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.member_stats kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.org_spaces kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.placement_requests kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.point_groups kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.point_text kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.point_tombstones kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.points kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.points_point_sk_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel retrieval.postings kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel retrieval.space_checks kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 relacl content.documents pipeshub_backup SELECT grantable=false
 relacl content.documents pipeshub_import DELETE grantable=false
 relacl content.documents pipeshub_import INSERT grantable=false
@@ -1868,6 +2207,139 @@ relacl platform.sched_repeats pipeshub_node INSERT grantable=false
 relacl platform.sched_repeats pipeshub_node SELECT grantable=false
 relacl platform.sched_repeats pipeshub_node UPDATE grantable=false
 relacl platform.store_epoch pipeshub_vetted_kernel SELECT grantable=false
+relacl retrieval.collection_stats pipeshub_backup SELECT grantable=false
+relacl retrieval.collection_stats pipeshub_indexing SELECT grantable=false
+relacl retrieval.collection_stats pipeshub_jobs DELETE grantable=false
+relacl retrieval.collection_stats pipeshub_jobs INSERT grantable=false
+relacl retrieval.collection_stats pipeshub_jobs SELECT grantable=false
+relacl retrieval.collection_stats pipeshub_jobs UPDATE grantable=false
+relacl retrieval.collection_stats pipeshub_query SELECT grantable=false
+relacl retrieval.collection_stats pipeshub_restore INSERT grantable=false
+relacl retrieval.collection_stats pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.collections pipeshub_backup SELECT grantable=false
+relacl retrieval.collections pipeshub_vetted_retrieval INSERT grantable=false
+relacl retrieval.collections pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.collections pipeshub_vetted_retrieval UPDATE grantable=false
+relacl retrieval.embedding_spaces pipeshub_backup SELECT grantable=false
+relacl retrieval.embedding_spaces pipeshub_vetted_retrieval INSERT grantable=false
+relacl retrieval.embedding_spaces pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.embedding_spaces pipeshub_vetted_retrieval UPDATE grantable=false
+relacl retrieval.group_members pipeshub_backup SELECT grantable=false
+relacl retrieval.group_members pipeshub_indexing DELETE grantable=false
+relacl retrieval.group_members pipeshub_indexing INSERT grantable=false
+relacl retrieval.group_members pipeshub_indexing SELECT grantable=false
+relacl retrieval.group_members pipeshub_indexing UPDATE grantable=false
+relacl retrieval.group_members pipeshub_jobs DELETE grantable=false
+relacl retrieval.group_members pipeshub_jobs INSERT grantable=false
+relacl retrieval.group_members pipeshub_jobs SELECT grantable=false
+relacl retrieval.group_members pipeshub_jobs UPDATE grantable=false
+relacl retrieval.group_members pipeshub_query SELECT grantable=false
+relacl retrieval.group_members pipeshub_restore INSERT grantable=false
+relacl retrieval.group_members pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.lexical_df_delta pipeshub_backup SELECT grantable=false
+relacl retrieval.lexical_df_delta pipeshub_indexing INSERT grantable=false
+relacl retrieval.lexical_df_delta pipeshub_jobs DELETE grantable=false
+relacl retrieval.lexical_df_delta pipeshub_jobs INSERT grantable=false
+relacl retrieval.lexical_df_delta pipeshub_jobs SELECT grantable=false
+relacl retrieval.lexical_df_delta pipeshub_jobs UPDATE grantable=false
+relacl retrieval.lexical_df_delta pipeshub_restore INSERT grantable=false
+relacl retrieval.lexical_df_delta pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.member_stats pipeshub_backup SELECT grantable=false
+relacl retrieval.member_stats pipeshub_indexing SELECT grantable=false
+relacl retrieval.member_stats pipeshub_jobs DELETE grantable=false
+relacl retrieval.member_stats pipeshub_jobs INSERT grantable=false
+relacl retrieval.member_stats pipeshub_jobs SELECT grantable=false
+relacl retrieval.member_stats pipeshub_jobs UPDATE grantable=false
+relacl retrieval.member_stats pipeshub_query SELECT grantable=false
+relacl retrieval.member_stats pipeshub_restore INSERT grantable=false
+relacl retrieval.member_stats pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.org_spaces pipeshub_backup SELECT grantable=false
+relacl retrieval.org_spaces pipeshub_jobs DELETE grantable=false
+relacl retrieval.org_spaces pipeshub_jobs INSERT grantable=false
+relacl retrieval.org_spaces pipeshub_jobs SELECT grantable=false
+relacl retrieval.org_spaces pipeshub_jobs UPDATE grantable=false
+relacl retrieval.org_spaces pipeshub_restore INSERT grantable=false
+relacl retrieval.org_spaces pipeshub_vetted_retrieval INSERT grantable=false
+relacl retrieval.org_spaces pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.org_spaces pipeshub_vetted_retrieval UPDATE grantable=false
+relacl retrieval.placement_requests pipeshub_backup SELECT grantable=false
+relacl retrieval.placement_requests pipeshub_jobs SELECT grantable=false
+relacl retrieval.placement_requests pipeshub_jobs UPDATE grantable=false
+relacl retrieval.placement_requests pipeshub_restore INSERT grantable=false
+relacl retrieval.placement_requests pipeshub_vetted_retrieval INSERT grantable=false
+relacl retrieval.placement_requests pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.placement_requests pipeshub_vetted_retrieval UPDATE grantable=false
+relacl retrieval.point_groups pipeshub_backup SELECT grantable=false
+relacl retrieval.point_groups pipeshub_indexing DELETE grantable=false
+relacl retrieval.point_groups pipeshub_indexing INSERT grantable=false
+relacl retrieval.point_groups pipeshub_indexing SELECT grantable=false
+relacl retrieval.point_groups pipeshub_indexing UPDATE grantable=false
+relacl retrieval.point_groups pipeshub_jobs DELETE grantable=false
+relacl retrieval.point_groups pipeshub_jobs INSERT grantable=false
+relacl retrieval.point_groups pipeshub_jobs SELECT grantable=false
+relacl retrieval.point_groups pipeshub_jobs UPDATE grantable=false
+relacl retrieval.point_groups pipeshub_query SELECT grantable=false
+relacl retrieval.point_groups pipeshub_restore INSERT grantable=false
+relacl retrieval.point_groups pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.point_text pipeshub_backup SELECT grantable=false
+relacl retrieval.point_text pipeshub_indexing DELETE grantable=false
+relacl retrieval.point_text pipeshub_indexing INSERT grantable=false
+relacl retrieval.point_text pipeshub_indexing SELECT grantable=false
+relacl retrieval.point_text pipeshub_indexing UPDATE grantable=false
+relacl retrieval.point_text pipeshub_jobs DELETE grantable=false
+relacl retrieval.point_text pipeshub_jobs INSERT grantable=false
+relacl retrieval.point_text pipeshub_jobs SELECT grantable=false
+relacl retrieval.point_text pipeshub_jobs UPDATE grantable=false
+relacl retrieval.point_text pipeshub_query SELECT grantable=false
+relacl retrieval.point_text pipeshub_restore INSERT grantable=false
+relacl retrieval.point_text pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.point_tombstones pipeshub_backup SELECT grantable=false
+relacl retrieval.point_tombstones pipeshub_indexing DELETE grantable=false
+relacl retrieval.point_tombstones pipeshub_indexing INSERT grantable=false
+relacl retrieval.point_tombstones pipeshub_indexing SELECT grantable=false
+relacl retrieval.point_tombstones pipeshub_jobs DELETE grantable=false
+relacl retrieval.point_tombstones pipeshub_jobs INSERT grantable=false
+relacl retrieval.point_tombstones pipeshub_jobs SELECT grantable=false
+relacl retrieval.point_tombstones pipeshub_jobs UPDATE grantable=false
+relacl retrieval.point_tombstones pipeshub_query SELECT grantable=false
+relacl retrieval.point_tombstones pipeshub_restore INSERT grantable=false
+relacl retrieval.point_tombstones pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.points pipeshub_backup SELECT grantable=false
+relacl retrieval.points pipeshub_indexing DELETE grantable=false
+relacl retrieval.points pipeshub_indexing INSERT grantable=false
+relacl retrieval.points pipeshub_indexing SELECT grantable=false
+relacl retrieval.points pipeshub_indexing UPDATE grantable=false
+relacl retrieval.points pipeshub_jobs DELETE grantable=false
+relacl retrieval.points pipeshub_jobs INSERT grantable=false
+relacl retrieval.points pipeshub_jobs SELECT grantable=false
+relacl retrieval.points pipeshub_jobs UPDATE grantable=false
+relacl retrieval.points pipeshub_query SELECT grantable=false
+relacl retrieval.points pipeshub_restore INSERT grantable=false
+relacl retrieval.points pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.postings pipeshub_backup SELECT grantable=false
+relacl retrieval.postings pipeshub_indexing DELETE grantable=false
+relacl retrieval.postings pipeshub_indexing INSERT grantable=false
+relacl retrieval.postings pipeshub_indexing SELECT grantable=false
+relacl retrieval.postings pipeshub_indexing UPDATE grantable=false
+relacl retrieval.postings pipeshub_jobs DELETE grantable=false
+relacl retrieval.postings pipeshub_jobs INSERT grantable=false
+relacl retrieval.postings pipeshub_jobs SELECT grantable=false
+relacl retrieval.postings pipeshub_jobs UPDATE grantable=false
+relacl retrieval.postings pipeshub_restore INSERT grantable=false
+relacl retrieval.postings pipeshub_vetted_retrieval SELECT grantable=false
+relacl retrieval.space_checks pipeshub_backup SELECT grantable=false
+relacl retrieval.space_checks pipeshub_indexing INSERT grantable=false
+relacl retrieval.space_checks pipeshub_indexing SELECT grantable=false
+relacl retrieval.space_checks pipeshub_indexing UPDATE grantable=false
+relacl retrieval.space_checks pipeshub_jobs DELETE grantable=false
+relacl retrieval.space_checks pipeshub_jobs INSERT grantable=false
+relacl retrieval.space_checks pipeshub_jobs SELECT grantable=false
+relacl retrieval.space_checks pipeshub_jobs UPDATE grantable=false
+relacl retrieval.space_checks pipeshub_query INSERT grantable=false
+relacl retrieval.space_checks pipeshub_query SELECT grantable=false
+relacl retrieval.space_checks pipeshub_query UPDATE grantable=false
+relacl retrieval.space_checks pipeshub_restore INSERT grantable=false
+relacl retrieval.space_checks pipeshub_vetted_retrieval SELECT grantable=false
 role <bootstrap-superuser> login=true super=true inherit=true createrole=true createdb=true replication=true bypassrls=true connlimit=-1 valid_until=-
 role pipeshub_app login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_backup login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
@@ -1891,6 +2363,7 @@ role pipeshub_vetted_graph login=false super=false inherit=true createrole=false
 role pipeshub_vetted_identity login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_kernel login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_platform login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_vetted_retrieval login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 schema content owner=pipeshub_owner
 schema conversation owner=pipeshub_owner
 schema ext owner=pipeshub_owner
@@ -1901,6 +2374,7 @@ schema kernel owner=pipeshub_owner
 schema oauth owner=pipeshub_owner
 schema platform owner=pipeshub_owner
 schema public owner=pg_database_owner
+schema retrieval owner=pipeshub_owner
 schemaacl content pipeshub_backup USAGE grantable=false
 schemaacl content pipeshub_import USAGE grantable=false
 schemaacl content pipeshub_node USAGE grantable=false
@@ -1911,6 +2385,7 @@ schemaacl conversation pipeshub_jobs USAGE grantable=false
 schemaacl conversation pipeshub_node USAGE grantable=false
 schemaacl conversation pipeshub_restore USAGE grantable=false
 schemaacl ext pipeshub_app USAGE grantable=false
+schemaacl ext pipeshub_jobs USAGE grantable=false
 schemaacl graph pipeshub_backup USAGE grantable=false
 schemaacl graph pipeshub_connectors USAGE grantable=false
 schemaacl graph pipeshub_indexing USAGE grantable=false
@@ -1954,6 +2429,14 @@ schemaacl platform pipeshub_restore USAGE grantable=false
 schemaacl platform pipeshub_vetted_kernel USAGE grantable=false
 schemaacl platform pipeshub_vetted_platform USAGE grantable=false
 schemaacl public PUBLIC USAGE grantable=false
+schemaacl retrieval pipeshub_backup USAGE grantable=false
+schemaacl retrieval pipeshub_connectors USAGE grantable=false
+schemaacl retrieval pipeshub_indexing USAGE grantable=false
+schemaacl retrieval pipeshub_jobs USAGE grantable=false
+schemaacl retrieval pipeshub_node USAGE grantable=false
+schemaacl retrieval pipeshub_query USAGE grantable=false
+schemaacl retrieval pipeshub_restore USAGE grantable=false
+schemaacl retrieval pipeshub_vetted_retrieval USAGE grantable=false
 settings admins= extensions=plpgsql,vector,pg_trgm,pg_textsearch,btree_gin,pg_search,pg_stat_statements services=pipeshub_node,pipeshub_connectors,pipeshub_indexing,pipeshub_query,pipeshub_kv
 sysfuncs@17 count=3330 md5=4ffc20628a8498ed9cac0aa6b3560b9e
 sysfuncs@18 count=3413 md5=e1d09e84fd442d7baa0c82daf2e7df8a
