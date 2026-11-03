@@ -41,6 +41,7 @@ from app.services.messaging.disposition import describe_message, notify_abandone
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
@@ -84,6 +85,10 @@ def _loads(value: str) -> Any:  # noqa: ANN401
         json.loads(raw) if isinstance(raw, str) else raw
     )  # a double-encoded body, as the Redis consumers accept
 
+
+class _ExpectedOutcome(str):
+    """The error text of an outcome nobody acts on (deleted while indexed, refused by
+    the source), so settling it does not log a second, warning-level line."""
 
 class PgMessagingConsumer(IMessagingConsumer):
     def __init__(
@@ -440,9 +445,9 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason=reason,
             attempts=d.attempts,
         )
-        self.logger.warning(
-            "Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason
-        )
+        # An expected outcome was logged once at INFO when the handler raised it.
+        log = self.logger.info if isinstance(reason, _ExpectedOutcome) else self.logger.warning
+        log("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
         await self.queue.dead(self.config.group_id, d, reason)
 
     async def _process(
@@ -486,16 +491,25 @@ class PgMessagingConsumer(IMessagingConsumer):
         except RequeueWithoutAttempt:
             raise
         except Exception as e:
-            self.logger.error(
-                "Error in message handler for %s: %s", d.message_id, e, exc_info=True
-            )
+            expected = is_expected_outcome(e)
+            if expected:
+                # Expected (deleted while indexed, refused by the source): the handler
+                # already logged it once, so no traceback at error level here.
+                self.logger.info(
+                    "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                )
+            else:
+                self.logger.error(
+                    "Error in message handler for %s: %s", d.message_id, e, exc_info=True
+                )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
                 == MessageErrorType.TERMINAL
             )
             if terminal and parsed is not None:
                 parsed.is_final_failure = True
-            return False, terminal, parsed, f"{type(e).__name__}: {e}"
+            reason = f"{type(e).__name__}: {e}"
+            return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
         finally:
             reset_context(token)
 
