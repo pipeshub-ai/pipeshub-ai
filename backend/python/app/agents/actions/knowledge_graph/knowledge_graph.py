@@ -1285,10 +1285,11 @@ class KnowledgeGraph:
 
     @tool(
         path="/tools/knowledgegraph/find_records_by_person",
-        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        short_description="List the records a person is assigned, reported, created, wrote, received, reviews, owns, leads or is mentioned in",
         description=(
             "List the records the connectors link to a person by role (assignee, reporter, "
-            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "creator, author, owner, reviewer, recipient, lead, mentioned, involved) that you "
+            "can read, newest first. Use it for "
             "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
             "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
             "the links the connectors write (mentioned/involved come from indexing): for any "
@@ -1307,11 +1308,18 @@ class KnowledgeGraph:
             ToolParameter(
                 name="roles",
                 type=ParameterType.ARRAY,
-                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                description=(
+                    "Optional roles: assignee, reporter, creator, author (a mail's sender, a comment's "
+                    "writer), owner, reviewer, recipient (to/cc of a mail), lead, mentioned, involved. "
+                    "Omit for all."
+                ),
                 required=False,
                 items={
                     "type": "string",
-                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                    "enum": [
+                        "assignee", "reporter", "creator", "author", "owner", "reviewer", "recipient",
+                        "lead", "mentioned", "involved",
+                    ],
                 },
             ),
             ToolParameter(

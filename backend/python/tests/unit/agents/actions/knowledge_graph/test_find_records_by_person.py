@@ -188,9 +188,9 @@ class TestRoles:
         assert listing.await_args.kwargs["edge_types"] == list(ROLE_EDGES.values())
 
     async def test_an_unknown_role_is_refused_with_the_valid_ones(self, listing) -> None:
-        ok, text = await execute_find_records_by_person(_state([DARSHAN]), "Darshan", roles=["owner"])
+        ok, text = await execute_find_records_by_person(_state([DARSHAN]), "Darshan", roles=["watcher"])
         assert ok is False
-        assert "owner" in text and all(role in text for role in ROLE_EDGES)
+        assert "watcher" in text and all(role in text for role in ROLE_EDGES)
         listing.assert_not_awaited()
 
 
@@ -316,3 +316,50 @@ class TestRouting:
     def test_the_exploration_child_gets_the_tool(self) -> None:
         explorer = next(d for d in DOMAIN_AGENT_DEFINITIONS if d.name == "internal_exploration_agent")
         assert "knowledgegraph__find_records_by_person" in explorer.tool_names
+
+
+class TestEveryLinkedEdgeIsReachable:
+    """Each Record -> member edge record_people writes is one this tool can
+    list: in the providers' Record->User allow-list and asked for by a role.
+    An edge outside either is stored and never read."""
+
+    @staticmethod
+    def _written_edge_types() -> set[str]:
+        from app.config.constants.arangodb import Connectors, OriginTypes
+        from app.connectors.core.base.data_processor.record_people import person_links
+        from app.models.entities import (
+            CommentRecord,
+            DealRecord,
+            MailRecord,
+            ProjectRecord,
+            PullRequestRecord,
+            RecordType,
+            TicketRecord,
+        )
+
+        base = {
+            "id": "rec-1", "org_id": "org-1", "external_record_id": "ext-1", "record_name": "r",
+            "origin": OriginTypes.CONNECTOR.value, "connector_name": Connectors.GOOGLE_MAIL,
+            "connector_id": "conn-1", "version": 1,
+        }
+        records = [
+            TicketRecord(record_type=RecordType.TICKET, assignee_email="a@x.com", creator_email="c@x.com",
+                         reporter_email="r@x.com", **base),
+            TicketRecord(record_type=RecordType.TICKET, is_email_hidden=True, assignee_source_id=["s1"],
+                         reporter_source_id="s2", **base),
+            ProjectRecord(record_type=RecordType.PROJECT, lead_email="l@x.com", **base),
+            MailRecord(record_type=RecordType.MAIL, from_email="f@x.com", to_emails=["t@x.com"], **base),
+            CommentRecord(record_type=RecordType.COMMENT, author_source_id="s3", **base),
+            PullRequestRecord(record_type=RecordType.PULL_REQUEST, creator_email="c@x.com",
+                              assignee_email=["a@x.com"], review_email=["v@x.com"], **base),
+            DealRecord(record_type=RecordType.DEAL, owner_id="s4", **base),
+        ]
+        return {link.edge_type.value for record in records for link in person_links(record)}
+
+    def test_the_providers_read_every_edge_the_linker_writes(self) -> None:
+        from app.services.graph_db.common.utils import PERSON_EDGES_TO_USER
+
+        assert self._written_edge_types() <= set(PERSON_EDGES_TO_USER)
+
+    def test_every_edge_the_linker_writes_has_a_role(self) -> None:
+        assert self._written_edge_types() <= set(ROLE_EDGES.values())
