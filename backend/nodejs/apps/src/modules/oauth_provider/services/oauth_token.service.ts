@@ -24,6 +24,7 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
   InvalidScopeError,
+  InvalidTargetError,
 } from '../../../libs/errors/oauth.errors';
 import {
   APP_WORKSPACE_MISMATCH_MESSAGE,
@@ -145,6 +146,7 @@ export class OAuthTokenService {
       // minted under the previous answer survives to be honoured.
       createdBy: app.tokenIdentityUserId ?? app.createdBy,
       knowledgeLimit,
+      ...(opts?.audience === undefined ? {} : { aud: opts.audience }),
     };
 
     // A delegated token speaks as the person named in `userId`, so every
@@ -226,6 +228,8 @@ export class OAuthTokenService {
         accountType,
         // Same resolved identity as the access token above.
         createdBy: app.tokenIdentityUserId ?? app.createdBy,
+        // Kept in the signed token, so a refresh keeps the audience with nothing stored.
+        ...(opts?.audience === undefined ? {} : { resource: opts.audience }),
       };
 
       const refreshToken = jwt.sign(
@@ -420,6 +424,29 @@ export class OAuthTokenService {
     return payload;
   }
 
+  /** The MCP endpoint: the one protected resource this server issues audience-bound tokens for. */
+  get mcpResource(): string {
+    return `${this.issuer}/mcp`;
+  }
+
+  /**
+   * The audience for the RFC 8707 `resource` of a token request. A request that names none
+   * gets a token without an audience, as before resource indicators were read, so clients that
+   * do not send one keep working.
+   */
+  audienceFor(resource: string | string[] | undefined): string | undefined {
+    const named = (Array.isArray(resource) ? resource : [resource]).filter(
+      (r): r is string => typeof r === 'string' && r !== '',
+    );
+    if (named.length === 0) return undefined;
+    if (named.every((r) => r.replace(/\/$/, '') === this.mcpResource)) {
+      return this.mcpResource;
+    }
+    throw new InvalidTargetError(
+      `Tokens are issued only for ${this.mcpResource}`,
+    );
+  }
+
   /**
    * Refresh tokens - rotates refresh token for security
    */
@@ -427,8 +454,20 @@ export class OAuthTokenService {
     app: OAuthAppDto,
     refreshToken: string,
     requestedScopes?: string[],
+    requestedAudience?: string,
   ): Promise<GeneratedTokens> {
     const payload = this.readRefreshPayload(refreshToken);
+    // RFC 8707 §2.2: a refresh may name the resource again, but not swap it for another.
+    if (
+      requestedAudience !== undefined &&
+      payload.resource !== undefined &&
+      requestedAudience !== payload.resource
+    ) {
+      throw new InvalidTargetError(
+        'The refresh token was issued for another resource',
+      );
+    }
+    const audience = payload.resource ?? requestedAudience;
 
     // Ends refresh tokens that an app got for another workspace before the check existed.
     if (!isAppUsableInOrg(app, payload.orgId)) {
@@ -511,6 +550,7 @@ export class OAuthTokenService {
       {
         recheckAppScopes: true,
         grantedKnowledgeLimit: storedToken.knowledgeLimit,
+        audience,
       },
     );
 

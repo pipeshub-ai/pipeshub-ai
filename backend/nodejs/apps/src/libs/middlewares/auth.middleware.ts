@@ -300,6 +300,7 @@ export class AuthMiddleware {
       isOAuth: true,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
+      oauthAudience: payload.aud,
     };
     setContextOrgId(orgId);
     // The web app's client name lets an agent run wait for a person to approve a tool call.

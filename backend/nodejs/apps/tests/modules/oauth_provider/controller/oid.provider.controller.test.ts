@@ -17,6 +17,7 @@ describe('OIDCProviderController', () => {
     delete process.env.PIPESHUB_ENABLE_DCR
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
     mockOAuthTokenService = {
+      mcpResource: 'http://localhost:3000/mcp',
       getAlgorithm: sinon.stub().returns('HS256'),
       getPublicKey: sinon.stub().returns(undefined),
       getKeyId: sinon.stub().returns(undefined),

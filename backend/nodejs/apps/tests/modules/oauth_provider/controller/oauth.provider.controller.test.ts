@@ -69,6 +69,7 @@ describe('OAuthProviderController', () => {
       isGrantTypeAllowed: sinon.stub(),
     }
     mockOAuthTokenService = {
+      audienceFor: sinon.stub().returns(undefined),
       generateTokens: sinon.stub(),
       revokeToken: sinon.stub(),
       introspectToken: sinon.stub(),

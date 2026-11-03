@@ -13,10 +13,12 @@ import { AuthMiddleware } from '../../../config';
 import { BaseError } from '../../../libs/errors/base.error';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Logger } from '../../../libs/services/logger.service';
+import { OAuthTokenService } from '../../oauth_provider/services/oauth_token.service';
 import { handleMCPRequest } from '../controller/mcp.controller';
 import {
   mcpOriginGuard,
   mcpRateLimiters,
+  mcpTokenGuard,
   sendMcpError,
 } from '../middlewares/mcp-guard.middleware';
 
@@ -38,6 +40,9 @@ export function createMCPRouter(container: Container): Router {
     mcpOriginGuard([appConfig.oauthIssuer, appConfig.frontendUrl]),
     limits.rejectedTokens,
     authMiddleware.authenticate,
+    mcpTokenGuard(
+      () => container.get<OAuthTokenService>('OAuthTokenService').mcpResource,
+    ),
     limits.perAccount,
   ];
 

@@ -19,6 +19,7 @@ import {
   UnsupportedGrantTypeError,
   TokenExchangeError,
   InvalidScopeError,
+  InvalidTargetError,
   AccessDeniedError,
   InvalidRedirectUriError,
   DeviceGrantError,
@@ -130,6 +131,8 @@ export class OAuthProviderController {
     }
 
     try {
+      this.oauthTokenService.audienceFor(query.resource);
+
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(
         query.scope,
@@ -699,6 +702,8 @@ export class OAuthProviderController {
     if (!request.redirect_uri) {
       throw new InvalidGrantError('redirect_uri is required');
     }
+    // Checked before the code is spent, so a bad resource does not cost the client its code.
+    const audience = this.oauthTokenService.audienceFor(request.resource);
 
     // Get app
     const app = await this.oauthAppService.getAppByClientId(clientId);
@@ -782,6 +787,7 @@ export class OAuthProviderController {
       {
         recheckAppScopes: true,
         grantedKnowledgeLimit: codeResult.knowledgeLimit ?? null,
+        audience,
       },
     );
 
@@ -966,6 +972,7 @@ export class OAuthProviderController {
       app,
       request.refresh_token,
       requestedScopes,
+      this.oauthTokenService.audienceFor(request.resource),
     );
 
     this.logger.info('Refresh token grant completed', { clientId });
@@ -995,6 +1002,8 @@ export class OAuthProviderController {
       errorCode = 'unsupported_grant_type';
     } else if (error instanceof InvalidScopeError) {
       errorCode = 'invalid_scope';
+    } else if (error instanceof InvalidTargetError) {
+      errorCode = 'invalid_target';
     } else if (error instanceof AccessDeniedError) {
       errorCode = 'access_denied';
     }

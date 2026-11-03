@@ -331,6 +331,12 @@ tool makes on its behalf are not counted again. An address is limited only on
 requests with an invalid or expired token, so many users behind one address
 (an office, or a hosted AI client) do not share a limit.
 
+`/mcp` accepts OAuth access tokens and personal access tokens, not web session
+tokens. A client that sends the RFC 8707 `resource` parameter (this instance's
+`/mcp` URL) gets an access token whose audience is `/mcp`; `/mcp` refuses a
+token whose audience is anything else. Tokens without an audience are accepted
+as before.
+
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
 `device_authorization_endpoint` and the device grant type only while the
 device grant is on, and `registration_endpoint` only when DCR is on. When

@@ -1,4 +1,6 @@
 import { RequestHandler, Response } from 'express';
+import { InvalidTokenError } from '../../../libs/errors/oauth.errors';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { Logger } from '../../../libs/services/logger.service';
 
@@ -81,5 +83,34 @@ export function mcpRateLimiters(
       message: `This account has made more than ${String(maxRequestsPerMinute)} PipesHub requests in the last minute. Wait a minute and try again.`,
       respond,
     }),
+  };
+}
+
+/**
+ * After authentication: the tokens /mcp accepts. A web session token is refused (an MCP
+ * client gets an OAuth or personal access token), and so is a token whose audience is
+ * another resource. A token without an audience, issued before resource indicators were read
+ * or to a client that sends none, is accepted. Both refusals are 401s, so the client learns
+ * where to sign in again from WWW-Authenticate.
+ */
+export function mcpTokenGuard(mcpResource: () => string): RequestHandler {
+  return (req, _res, next) => {
+    const user = (req as AuthenticatedUserRequest).user;
+    if (user?.isOAuth !== true) {
+      next(
+        new InvalidTokenError(
+          'Use an OAuth access token or a personal access token for /mcp.',
+        ),
+      );
+      return;
+    }
+    const audience: unknown = user.oauthAudience;
+    if (audience !== undefined && audience !== mcpResource()) {
+      next(
+        new InvalidTokenError('This token was issued for another resource.'),
+      );
+      return;
+    }
+    next();
   };
 }

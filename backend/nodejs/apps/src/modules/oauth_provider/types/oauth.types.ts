@@ -35,6 +35,10 @@ export interface OAuthTokenPayload {
   act?: { sub: string };
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
+  /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
+  aud?: string;
+  /** Refresh tokens: the resource the access tokens it mints are for. */
+  resource?: string;
 }
 
 // Generated Tokens Response
@@ -75,6 +79,8 @@ export interface GenerateTokensOptions {
    * the app's current limit.
    */
   grantedKnowledgeLimit?: KnowledgeLimit | null;
+  /** The resource (RFC 8707) the tokens are for; see `OAuthTokenService.audienceFor`. */
+  audience?: string;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -99,6 +105,8 @@ export interface AuthorizeRequest {
   code_challenge?: string;
   code_challenge_method?: 'S256';
   nonce?: string;
+  /** RFC 8707: checked here so the client hears of an unknown resource before consent. */
+  resource?: string | string[];
 }
 
 // Token Request Parameters
@@ -122,6 +130,8 @@ export interface TokenRequest {
   subject_token_type?: string;
   /** The person the caller wants to act as, by user id or email address. */
   requested_subject?: string;
+  /** RFC 8707: the resource the token is for (repeatable in a form body). */
+  resource?: string | string[];
 }
 
 // Revoke Request

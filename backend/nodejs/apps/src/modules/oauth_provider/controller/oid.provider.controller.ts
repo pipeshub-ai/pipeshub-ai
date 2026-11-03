@@ -231,7 +231,7 @@ export class OIDCProviderController {
       : null;
 
     const metadata: OAuthProtectedResourceMetadata = {
-      resource: `${backendUrl}/mcp`,
+      resource: this.oauthTokenService.mcpResource,
       authorization_servers: [backendUrl],
       scopes_supported: mcpDiscoveryScopes(this.appConfig.mcpScopes),
       bearer_methods_supported: ['header'],

@@ -19,7 +19,10 @@ describe('MCP Routes — createMCPRouter', () => {
     container = new Container()
 
     mockAuthMiddleware = {
-      authenticate: sinon.stub().callsFake((_req: any, _res: any, next: any) => next()),
+      authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
+        req.user = { userId: 'user-1', isOAuth: true }
+        next()
+      }),
     }
     mockAppConfig = {
       oauthBackendUrl: 'http://localhost:3001',
@@ -32,6 +35,7 @@ describe('MCP Routes — createMCPRouter', () => {
     container.bind('AuthMiddleware').toConstantValue(mockAuthMiddleware)
     container.bind('AppConfig').toConstantValue(mockAppConfig)
     container.bind('Logger').toConstantValue(createMockLogger())
+    container.bind('OAuthTokenService').toConstantValue({ mcpResource: 'https://pipeshub.example.com/mcp' })
   })
 
   afterEach(() => {
@@ -145,21 +149,21 @@ describe('MCP Routes — createMCPRouter', () => {
   // Middleware chain
   // =========================================================================
   describe('middleware chain', () => {
-    it('should guard POST with origin, limits and auth before the handler', () => {
+    it('should guard POST with origin, limits, auth and the token check before the handler', () => {
       const router = createMCPRouter(container)
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
       // route.stack contains the handler layers for that route
-      expect(postLayer.route.stack).to.have.length(5)
+      expect(postLayer.route.stack).to.have.length(6)
     })
 
-    it('should guard GET with origin, limits and auth before the 405 handler', () => {
+    it('should guard GET with origin, limits, auth and the token check before the 405 handler', () => {
       const router = createMCPRouter(container)
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      expect(getLayer.route.stack).to.have.length(5)
+      expect(getLayer.route.stack).to.have.length(6)
     })
 
     it('should authenticate after the origin check and the rejected-token limit on POST', () => {
@@ -185,7 +189,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const postLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.post,
       )
-      const secondHandler = postLayer.route.stack[4].handle
+      const secondHandler = postLayer.route.stack[5].handle
       // handleMCPRequest(appConfig) returns an async function
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
@@ -196,7 +200,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const getLayer = router.stack.find(
         (layer: any) => layer.route && layer.route.methods.get,
       )
-      const secondHandler = getLayer.route.stack[4].handle
+      const secondHandler = getLayer.route.stack[5].handle
       expect(secondHandler).to.be.a('function')
       expect(secondHandler).to.not.equal(mockAuthMiddleware.authenticate)
     })
@@ -348,11 +352,12 @@ describe('MCP Routes — createMCPRouter', () => {
   describe('guard', () => {
     let user: string | undefined
     let authFails: boolean
+    let audience: string | undefined
 
     async function serve(): Promise<{ get: (headers?: Record<string, string>) => Promise<Response>; close: () => void }> {
       mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
         if (authFails) return next(new UnauthorizedError('Invalid token'))
-        req.user = { userId: user }
+        req.user = { userId: user, isOAuth: true, oauthAudience: audience }
         next()
       }
       const app = express()
@@ -371,6 +376,42 @@ describe('MCP Routes — createMCPRouter', () => {
     beforeEach(() => {
       user = 'user-1'
       authFails = false
+      audience = undefined
+    })
+
+    it('takes a token for /mcp and one with no audience, and refuses one for another resource', async () => {
+      const { get, close } = await serve()
+      try {
+        expect((await get()).status).to.equal(405)
+        audience = 'https://pipeshub.example.com/mcp'
+        expect((await get()).status).to.equal(405)
+        audience = 'https://other.example/api'
+        const refused = await get()
+        expect(refused.status).to.equal(401)
+        expect(refused.headers.get('www-authenticate')).to.contain('resource_metadata=')
+      } finally {
+        close()
+      }
+    })
+
+    it('refuses a web session token, which is not meant for MCP clients', async () => {
+      mockAuthMiddleware.authenticate = (req: any, _res: any, next: any) => {
+        req.user = { userId: 'user-1' }
+        next()
+      }
+      const app = express()
+      app.use('/mcp', createMCPRouter(container))
+      app.use((err: any, _req: any, res: any, _next: any) => {
+        res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
+      })
+      const server = app.listen(0)
+      try {
+        const { port } = server.address() as AddressInfo
+        const res = await fetch(`http://127.0.0.1:${port}/mcp`)
+        expect(res.status).to.equal(401)
+      } finally {
+        server.close()
+      }
     })
 
     it('refuses a browser page from another origin, before authentication', async () => {
