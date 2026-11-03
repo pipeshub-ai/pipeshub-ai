@@ -238,7 +238,7 @@ async def test_only_top_level_nulls_are_removed_a_nested_null_is_kept(pg_db) -> 
     assert got["cursor"] == {"a": None, "b": 2} and "gone" not in got and got["n"] == 1
 
 
-async def test_a_failed_status_claim_claims_nothing_as_on_neo4j(pg_db, monkeypatch) -> None:
+async def test_a_database_error_in_a_status_claim_raises_so_the_consumer_can_retry(pg_db, monkeypatch) -> None:
     p = bound(pg_db)
     await p.batch_upsert_records([code(p.org, "s1", indexing_status=ProgressStatus.COMPLETED.value)])
 
@@ -246,7 +246,8 @@ async def test_a_failed_status_claim_claims_nothing_as_on_neo4j(pg_db, monkeypat
         raise RuntimeError("down")
     with monkeypatch.context() as m:
         m.setattr(type(p._p), "_q", boom)
-        assert await p.compare_and_set_indexing_status(["s1"], ProgressStatus.COMPLETED.value, ProgressStatus.QUEUED.value) == []
+        with pytest.raises(RuntimeError, match="down"):
+            await p.compare_and_set_indexing_status(["s1"], ProgressStatus.COMPLETED.value, ProgressStatus.QUEUED.value)
     assert (await p.get_document("s1", "records"))["indexingStatus"] == ProgressStatus.COMPLETED.value
 
 

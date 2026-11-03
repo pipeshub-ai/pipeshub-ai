@@ -262,14 +262,12 @@ class RecordsMixin(PgBase):
         if not ids:
             return []
         extra = {"queuedAtTimestamp": get_epoch_timestamp_in_ms()} if new_status == ProgressStatus.QUEUED.value else {}
-        try:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
-                SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
-                WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
-                                                      org, ids, expected, new_status, _j(extra)), transaction, write=True)
-        except Exception as e:      # as the Neo4j provider: a failure is logged and nothing is claimed (the callers read [] as "not claimed")
-            self.logger.error("compare_and_set_indexing_status failed: %s", e)
-            return []
+        # A database error raises (Neo4j logs it and returns []): the Kafka handler reads [] as "the record moved on" and discards the message, which
+        # would drop the final FAILED marking and leave the record in its old status; raising lets the consumer retry.
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
+            SET doc = doc || jsonb_build_object('indexingStatus', $4::text) || $5::jsonb
+            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'indexingStatus' = $3 RETURNING id""",
+                                              org, ids, expected, new_status, _j(extra)), transaction, write=True)
         return [r["id"] for r in rows]
 
     async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:

@@ -402,3 +402,13 @@ async def test_hierarchy_edges_are_never_links_for_any_reader_or_deleter_of_reco
         assert await p.delete_edges_to("y", "records", "recordLinks") == 0
         assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 0
         assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 3
+
+
+async def test_only_top_level_nulls_are_removed_on_write_and_update(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    with org_ctx(a):
+        await pg_provider.batch_upsert_nodes([{"_key": "n1", "v": None, "w": {"x": None, "y": 1}}], "things")
+        got = await pg_provider.get_document("n1", "things")
+        assert "v" not in got and got["w"] == {"x": None, "y": 1}                                  # the nested null stays, the top-level one goes
+        await pg_provider.update_node("n1", "things", {"w": {"z": None}, "gone": None})
+        assert (await pg_provider.get_document("n1", "things"))["w"] == {"z": None}
