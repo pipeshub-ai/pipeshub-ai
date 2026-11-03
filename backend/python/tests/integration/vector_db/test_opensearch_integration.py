@@ -253,7 +253,10 @@ class TestOpenSearchMutations:
             opensearch_service._unrefreshed[col] = aged
 
             await opensearch_service.delete_points(
-                col, FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]),
+                col, FilterExpression(must=[
+                    FieldCondition(key="metadata.orgId", value="org1"),
+                    FieldCondition(key="metadata.virtualRecordId", value="r1"),
+                ]),
             )
             await _refresh(opensearch_service, col)
 

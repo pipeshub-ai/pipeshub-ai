@@ -827,6 +827,7 @@ class TestDeletePoints:
         client.indices.refresh = AsyncMock()
         connected_service._unrefreshed = {"my-idx": {"vr-9": time.monotonic()}}
         flt = FilterExpression(must=[
+            GenericFieldCondition(key="metadata.orgId", value="org1"),
             GenericFieldCondition(key="metadata.connectorIds", value="c1"),
             GenericFieldCondition(key="metadata.virtualRecordId", values_count_lte=1),
         ])

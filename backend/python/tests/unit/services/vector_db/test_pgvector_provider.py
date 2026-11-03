@@ -272,8 +272,11 @@ async def test_filter_collection_builds_a_provider_neutral_expression(svc) -> No
     keys = {c.key: (c.value, c.values) for c in flt.must}
     assert keys["metadata.orgId"][0] == ORG and keys["metadata.virtualRecordId"][1] == ["v1", "v2"]
     assert any(c.key == "metadata.origin" for c in flt.must) or any(c.key == "metadata.origin" for c in flt.should)
-    blank = await svc.filter_collection(FilterMode.MUST, must={"orgId": None, "x": ""})
+    blank = await svc.filter_collection(FilterMode.MUST, must={"x": "", "y": None})
     assert blank.must == []
+    # A blank org would be dropped and widen the filter to every org: it raises instead.
+    with pytest.raises(OrgRequired):
+        await svc.filter_collection(FilterMode.MUST, must={"orgId": None, "x": ""})
 
 
 # ---- stamps, orgs of records, the spaces of an org ------------------------------------------------------------------------------------
