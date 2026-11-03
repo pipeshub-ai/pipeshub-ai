@@ -192,6 +192,10 @@ class PgBase:
         async with self._db.runtime_uow() as tx:
             return await fn(tx)
 
+    async def ping(self) -> None:
+        """Raises unless the store answers: one constant select through the service's own role (what the health probe calls)."""
+        await self._system_read(lambda tx: tx.fetchval("/* pipeshub:graph.ping */ SELECT 1"))
+
     async def connect(self) -> bool:
         return True  # the caller starts the KernelDB
 
