@@ -322,7 +322,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           'conversation.semantic_search_members', 'conversation.semantic_searches',
           'identity.org_auth_config', 'identity.org_logos', 'identity.orgs', 'identity.slug_counters', 'identity.used_reset_links',
           'identity.user_activities', 'identity.user_credentials', 'identity.user_group_members', 'identity.user_groups', 'identity.user_pictures', 'identity.users', 'integrations.slack_threads', 'oauth.access_tokens',
-          'oauth.apps', 'oauth.authorization_codes', 'oauth.delegation_events', 'oauth.device_authorizations', 'oauth.refresh_tokens',
+          'oauth.agent_call_events', 'oauth.apps', 'oauth.authorization_codes', 'oauth.delegation_events', 'oauth.device_authorizations', 'oauth.refresh_tokens',
           'oauth.service_account_delegations',
           'platform.connectors_config', 'platform.docstore_changes', 'platform.mail_log', 'platform.notifications', 'platform.outbox', 'platform.store_epoch',
         ])
