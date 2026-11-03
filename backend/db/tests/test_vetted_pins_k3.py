@@ -61,7 +61,9 @@ PLANTS = [
      hand("n03", DEL_FENCE + "  MERGE INTO kt.fences t USING (SELECT p_id AS id) k ON t.org_id = v_org AND t.id = k.id WHEN NOT MATCHED THEN INSERT (org_id, id, reason) VALUES (v_org, k.id, 'x');\n  RETURN 1;",
           pins=(PIN_FENCE,)), "105"),
     ("UPDATE ONLY in a pinned function", hand("n04", DEL_FENCE + "  UPDATE ONLY kt.grants SET role = 9 WHERE org_id = v_org;\n  RETURN 1;", pins=(PIN_FENCE,)), "105"),
-    ("DELETE FROM ONLY in a pinned function", hand("n05", "  DELETE FROM ONLY kt.fences t WHERE t.org_id = v_org AND t.id = p_id;\n  RETURN 1;", pins=(PIN_FENCE,)), "105"),
+    ("MERGE ... UPDATE of the pinned table itself in a function that pins only its delete",
+     hand("n05", DEL_FENCE + "  MERGE INTO kt.fences t USING (SELECT p_id AS id) k ON t.org_id = v_org AND t.id = k.id WHEN MATCHED THEN UPDATE SET reason = 'x';\n  RETURN 1;",
+          pins=(PIN_FENCE,)), "105"),
     ("UPDATE ONLY of a pinned table in a function with no pin", hand("n06", "  UPDATE ONLY kt.grants SET role = 9;\n  RETURN 1;", writer="pipeshub_query"), "114"),
     ("DELETE FROM ONLY of a pinned table in a function with no pin", hand("n07", "  DELETE FROM ONLY kt.fences;\n  RETURN 1;", writer="pipeshub_query"), "114"),
     ("MERGE ... DELETE of a pinned table in a function with no pin",
@@ -79,7 +81,41 @@ PLANTS = [
     ("an invoker routine that sets app.org_id for its own run, called by a pinned function",
      f"CREATE FUNCTION public.evil_org() RETURNS void LANGUAGE sql SET app.org_id = '{ORG_B}' AS 'DELETE FROM kt.fences'; "
      + hand("c03", DEL_FENCE + "  PERFORM public.evil_org();\n  RETURN 1;", pins=(PIN_FENCE,)), "133"),
-    ("a routine with an app.* setting that nothing calls", "CREATE FUNCTION public.lonely() RETURNS int LANGUAGE sql SET app.org_id = 'x' AS 'SELECT 1'; ", "133"),
+    ("an app.* setting on a routine an unpinned write function calls, with no pin at all",
+     f"DELETE FROM kernel.vetted_write_pins; CREATE FUNCTION public.rd() RETURNS text LANGUAGE sql SET app.org_id = '{ORG_B}' AS 'SELECT reason FROM kt.fences LIMIT 1'; "
+     + hand("c06", "  PERFORM public.rd();\n  RETURN 1;", writer="pipeshub_connectors"), "133"),
+    # ---- routines the server runs by itself, which no function text names (the review's probes)
+    ("a trigger on a pinned table whose function sets the org",
+     f"CREATE FUNCTION public.trg3() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN OLD; END$$; "
+     "CREATE TRIGGER tr_evil BEFORE DELETE ON kt.fences FOR EACH ROW EXECUTE FUNCTION public.trg3(); " + hand("t01", DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("a user operator whose function sets the org, used by a pinned function",
+     f"CREATE FUNCTION public.opf(a bigint, b bigint) RETURNS bigint LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN 1; END$$; "
+     "CREATE OPERATOR public.@+@ (LEFTARG = bigint, RIGHTARG = bigint, FUNCTION = public.opf); " + hand("t02", "  PERFORM p_id @+@ 1;\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("a column default of a pinned table that calls a function that sets the org",
+     f"CREATE FUNCTION public.dflt() RETURNS text LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN 'x'; END$$; "
+     "ALTER TABLE kt.fences ALTER COLUMN reason SET DEFAULT public.dflt(); " + hand("t03", DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("a domain CHECK function that sets the org, used by a cast in a pinned function",
+     f"CREATE FUNCTION public.chk(v int) RETURNS boolean LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN true; END$$; "
+     "CREATE DOMAIN public.dd AS int CHECK (public.chk(VALUE)); " + hand("t04", "  PERFORM p_id::int::public.dd;\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("a user cast function that sets the org",
+     f"CREATE FUNCTION public.castf(v bigint) RETURNS date LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN current_date; END$$; "
+     "CREATE CAST (bigint AS date) WITH FUNCTION public.castf(bigint); " + hand("t05", "  PERFORM p_id::date;\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("attribute notation: a function of the pinned table's row type called as (t).fx",
+     OWNER + f"CREATE FUNCTION kt.fx(r kt.fences) RETURNS text LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN 'x'; END$$; "
+     + hand("t06", "  PERFORM (t).fx FROM kt.fences t WHERE t.org_id = v_org;\n" + DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("an index expression of a pinned table that calls a function that sets the org",
+     OWNER + f"CREATE FUNCTION kt.ixf(v bigint) RETURNS bigint LANGUAGE plpgsql IMMUTABLE AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN v; END$$; "
+     "CREATE INDEX fences_ix ON kt.fences (kt.ixf(id)); " + hand("t07", DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    # ---- dynamic SQL in a routine a vetted role can run: rule 56's list, invoker helpers included
+    ("query_to_xml builds set_config in an invoker helper an unpinned writer calls",
+     f"CREATE FUNCTION public.h6x() RETURNS void LANGUAGE plpgsql AS $$BEGIN PERFORM query_to_xml('SELECT set_' || 'config(''app.org_id'', ''{ORG_B}'', true)', true, true, ''); END$$; "
+     + hand("d11", "  PERFORM public.h6x();\n  RETURN 1;", writer="pipeshub_query"), "134"),
+    ("format() builds the setting name in an invoker helper",
+     f"CREATE FUNCTION public.h7x() RETURNS void LANGUAGE plpgsql AS $$BEGIN PERFORM set_config(format('app.%s', 'org_id'), '{ORG_B}', true); END$$; "
+     + hand("d12", "  PERFORM public.h7x();\n  RETURN 1;", writer="pipeshub_query"), "134"),
+    ("EXECUTE in an invoker helper",
+     "CREATE FUNCTION public.h8x() RETURNS void LANGUAGE plpgsql AS $$BEGIN EXECUTE 'SELECT 1'; END$$; " + hand("d13", "  PERFORM public.h8x();\n  RETURN 1;", writer="pipeshub_query"), "134"),
+
 ]
 
 
@@ -139,3 +175,13 @@ def test_a_helper_a_vetted_function_calls_is_read_however_deep(pdb):
                      "CREATE FUNCTION public.h_mid() RETURNS void LANGUAGE sql AS 'SELECT public.h_deep()'; ")
     got = planted(pdb, chain + hand("c05", "  PERFORM public.h_mid();\n  RETURN 1;", writer="pipeshub_query"))
     assert any(r.startswith("130") for r, _ in got), got
+
+
+def test_a_routine_nothing_vetted_reaches_may_carry_an_app_setting(pdb):
+    got = planted(pdb, "CREATE FUNCTION public.lonely() RETURNS int LANGUAGE sql SET app.org_id = 'x' AS 'SELECT 1'; ")
+    assert not [r for r, _ in got if r.startswith(("133", "134"))], got
+
+
+def test_a_function_name_with_regex_characters_does_not_break_the_checks(pdb):
+    got = planted(pdb, 'CREATE FUNCTION public."odd(name+"() RETURNS int LANGUAGE sql AS \'SELECT 1\'; ' + hand("e01", "  PERFORM 1;\n  RETURN 1;", writer="pipeshub_query"))
+    assert isinstance(got, list)
