@@ -16,7 +16,7 @@ import re
 from sqlglot import exp, parse_one
 
 PROVIDER = Path(__file__).resolve().parents[4] / "app" / "services" / "graph_db" / "postgres"
-MODULES = ["records.py", "codegraph.py", "core.py", "hierarchy.py", "trash.py", "lookups.py"]
+MODULES = ["records.py", "codegraph.py", "core.py", "hierarchy.py", "trash.py", "lookups.py", "delete.py"]
 PARTITIONED = {"graph.nodes", "graph.edges"}
 CALLS = {"fetch", "fetchrow", "fetchval", "execute"}
 
