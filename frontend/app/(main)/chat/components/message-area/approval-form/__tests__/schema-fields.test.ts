@@ -14,6 +14,23 @@ describe('schemaFields', () => {
     expect(control({})).toBe('json');
   });
 
+  it('edits text the call wrote where the schema leaves the type open, as many MCP servers do', () => {
+    const fields = (properties: Record<string, object>, values: Record<string, unknown>) =>
+      Object.fromEntries(schemaFields({ type: 'object', properties }, values).map((f) => [f.name, f.control]));
+    // Untyped, or a union with a text branch (markdown or a rich-text object): text while the value is text.
+    expect(fields(
+      { description: { description: 'Issue description' }, body: { anyOf: [{ type: 'string' }, { type: 'object' }] }, title: {} },
+      { description: 'Steps to reproduce', body: 'Hello', title: 'Login fails' },
+    )).toEqual({ description: 'textarea', body: 'textarea', title: 'text' });
+    // A list with untyped items, as Atlassian's labels are: chips while every item is text.
+    expect(fields({ labels: { type: 'array', items: {} } }, { labels: ['bug'] })).toEqual({ labels: 'chips' });
+    // Anything else stays read-only: an object value, a list of objects, an open field the call didn't set.
+    expect(fields(
+      { body: { anyOf: [{ type: 'string' }, { type: 'object' }] }, labels: { type: 'array', items: {} }, extra: {} },
+      { body: { type: 'doc' }, labels: [{ name: 'x' }] },
+    )).toEqual({ body: 'json', labels: 'json', extra: 'json' });
+  });
+
   it('keeps enum values as they are', () => {
     const [f] = schemaFields({ type: 'object', properties: { n: { type: 'integer', enum: [1, 2] } } });
     expect(f.options).toEqual([{ value: 1, label: '1' }, { value: 2, label: '2' }]);

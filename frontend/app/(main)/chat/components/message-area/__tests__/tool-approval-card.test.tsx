@@ -404,6 +404,33 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', arguments: { title: 'Login broken' } });
   });
 
+  it('edits a description whose schema leaves its type open, and sends the new text', async () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({
+          toolName: 'createJiraIssue',
+          arguments: { projectKey: 'P', summary: 'Login fails', description: 'Old steps', labels: ['bug'] },
+          inputSchema: {
+            type: 'object',
+            required: ['projectKey', 'summary'],
+            properties: {
+              projectKey: { type: 'string' }, summary: { type: 'string' },
+              description: { description: 'Issue description in markdown' }, labels: { type: 'array', items: {} },
+            },
+          },
+        })}
+        isLatest
+        rowId="row-1"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: /Description/ }), { target: { value: 'New steps' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow with changes' }));
+
+    await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ arguments: { summary: 'Login fails', description: 'New steps', labels: ['bug'] } });
+  });
+
   it('still sends when the check itself fails, for the server to decide', async () => {
     chat.validate.mockRejectedValueOnce(new Error('offline'));
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);

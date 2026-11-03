@@ -513,6 +513,11 @@ class TestTheGate:
         assert ctx.decision == PreDecision.DENY
         assert "approve it in the PipesHub app" in (ctx.decision_reason or "")
 
+    async def test_nobody_watching_logs_the_client_that_couldnt_ask(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("INFO", logger=approvals.__name__):
+            await _gate(_context(client_name="slack"), _adapter(read_only=False), title="Bug")
+        assert "not run: nobody can approve it from client 'slack'" in caplog.text
+
     async def test_the_persons_own_block_says_so(self) -> None:
         store = _Store()
         await approvals.save_own_rules(store, ToolRules(tools={"create_issue": "block"}), user_id="user-1", instance_id="inst-1")  # type: ignore[arg-type]

@@ -96,7 +96,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const canSend = Boolean(onAnswer) || ownsActive;
 
   const canEdit = approval.editable === true && Boolean(approval.inputSchema) && original !== null;
-  const fields = useMemo(() => (canEdit && approval.inputSchema ? schemaFields(approval.inputSchema) : []), [canEdit, approval.inputSchema]);
+  const fields = useMemo(() => (canEdit && approval.inputSchema ? schemaFields(approval.inputSchema, original ?? {}) : []), [canEdit, approval.inputSchema, original]);
   const changed = useMemo(
     () => new Set(Object.keys({ ...original, ...values }).filter((name) => !same(values[name], original?.[name]))),
     [values, original],
