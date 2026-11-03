@@ -96,6 +96,8 @@ const COMMANDS = new Set([
   'unfreeze',
   'reset',
   'status',
+  'reverse',
+  'rollback',
 ]);
 
 /**
@@ -132,6 +134,16 @@ export const FLAGS: Record<string, string[]> = {
   unfreeze: [],
   reset: ['yes', 'force'],
   status: [],
+  reverse: ['until-idle'],
+  rollback: [
+    'reverse',
+    'online',
+    'allow-clients',
+    'allow-writers',
+    'sample',
+    'max-freeze',
+    'fail-at',
+  ],
 };
 
 /** The flags that take a value; every other flag is a switch and takes none (`--force false` would otherwise turn force on). */
@@ -173,6 +185,15 @@ export function checkFlags(a: Args): void {
     throw new UsageError(
       'use `migrate --offline` or `migrate --online`, not both',
     );
+  if (a.cmd === 'rollback') {
+    if (a.flags.has('online') && a.flags.has('reverse'))
+      throw new UsageError(
+        '`rollback --online` follows the change log back: --reverse is the full copy of the offline rollback',
+      );
+    for (const k of ['sample', 'max-freeze'])
+      if (a.flags.has(k) && !a.flags.has('online'))
+        throw new UsageError(`--${k} is a flag of \`rollback --online\``);
+  }
   if (a.cmd === 'verify' && a.flags.has('incremental') && a.flags.has('only'))
     throw new UsageError(
       'an incremental verify has no collection scope: --only does not apply',
@@ -229,7 +250,7 @@ const log: Log = (event, data) =>
     `${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`,
   );
 
-export const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reset, status
+export const HELP = `commands: preflight, schema, bulk, follow, post_load, verify, drain, migrate --offline, migrate --online, cutover, unfreeze, reverse, rollback [--reverse|--online], reset, status
 --confirm-fence-armed (drain): every application process runs with DOC_STORE_FENCE=on. Without it drain refuses while a connected
   application client does not name its connections pipeshub-fenced, because a process that does not wrap its writes keeps writing
   whatever the fence says.
@@ -242,7 +263,7 @@ export async function runCli(
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
   const a = parse(argv);
-  if (a.cmd === 'help' || a.flags.has('help')) {
+  if (a.cmd === 'help' || a.cmd === '--help' || a.flags.has('help')) {
     process.stdout.write(`${HELP}\n`);
     return 0;
   }
@@ -439,6 +460,53 @@ export async function runCli(
         const changed = await unfreeze(rt);
         out({ ok: true, changed, fence: (await readMongoFence(rt)).mode });
         return 0;
+      }
+      case 'reverse': {
+        // loaded when used: the reverse path brings in every Mongoose model of the application, which no other command needs
+        const { reverseFollow } = await import('./reverse-follow');
+        const js = await JobState.attach(rt);
+        const ac = new AbortController();
+        const onSignal = (): void => {
+          ac.abort();
+        };
+        process.once('SIGTERM', onSignal);
+        process.once('SIGINT', onSignal);
+        try {
+          const r = await reverseFollow(rt, js, {
+            untilIdleMs: p.idleMs,
+            stop: ac.signal,
+            log,
+          });
+          out({ ok: true, ...r });
+          return 0;
+        } finally {
+          process.off('SIGTERM', onSignal);
+          process.off('SIGINT', onSignal);
+        }
+      }
+      case 'rollback': {
+        if (a.flags.has('online')) {
+          const { rollbackOnline } = await import('./reverse-follow');
+          const r = await rollbackOnline(rt, {
+            log,
+            maxFreezeMs: (p.secs['max-freeze'] ?? 900) * 1000,
+            ...(p.failAt !== undefined && env.MIGRATE_TEST_HOOKS === '1'
+              ? { failAt: p.failAt }
+              : {}),
+            ...(p.sample !== undefined ? { sample: p.sample } : {}),
+          });
+          out(r);
+          return r.ok ? 0 : 1;
+        }
+        const { rollback } = await import('./reverse');
+        const r = await rollback(rt, {
+          reverse: a.flags.has('reverse'),
+          allowWriters:
+            a.flags.has('allow-clients') || a.flags.has('allow-writers'),
+          log,
+        });
+        out(r);
+        return r.ok ? 0 : 1;
       }
       case 'reset': {
         const r = await reset(rt, { force: a.flags.has('force') });
