@@ -274,3 +274,19 @@ async def test_the_first_of_two_duplicate_edges_in_a_batch_wins(pg_db) -> None:
                                     link("a", "b", "PARENT_CHILD"), link("a", "b", "ATTACHMENT")], "nodeRelations")
     edges = {e["relationshipType"]: e for e in await p.get_edges_from_node("records/a", "nodeRelations")}
     assert edges["BOOKMARK"]["note"] == "first" and edges["PARENT_CHILD"]["to_id"] == "b" and "ATTACHMENT" not in edges      # one hierarchy edge per pair: the first
+
+
+async def test_a_recursive_delete_waits_for_a_writer_that_is_attaching_a_type_document_with_another_id(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "w")], "records")
+    txn = await p.begin_transaction(read=[], write=[])
+    await p.batch_update_nodes([{"id": "w", "recordName": "W2"}], "records", transaction=txn)               # the writer holds the record's row
+    await p.batch_upsert_nodes([{"_key": "typedoc", "name": "t"}], "files", transaction=txn)
+    await p.batch_create_edges([{"from_id": "w", "from_collection": "records", "to_id": "typedoc", "to_collection": "files"}], "isOfType", transaction=txn)
+    deleting = asyncio.create_task(p.delete_records_recursive(["w"], "c1"))
+    await asyncio.sleep(0.5)
+    assert not deleting.done()                                                                       # it waits on the record's row before it reads what hangs on it
+    await p.commit_transaction(txn)
+    out = await asyncio.wait_for(deleting, 20)
+    assert out["success"] and out["successfully_deleted"] == 1
+    assert await p.get_document("typedoc", "files") is None and await p.get_edges_from_node("records/w", "isOfType") == []
