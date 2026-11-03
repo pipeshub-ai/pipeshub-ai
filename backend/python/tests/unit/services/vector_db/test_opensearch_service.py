@@ -882,6 +882,17 @@ class TestDeletePoints:
         assert set(connected_service._unrefreshed["my-idx"]) == {"vr-new"}
 
     @pytest.mark.asyncio
+    async def test_an_empty_upsert_with_refresh_clears_nothing(self, connected_service) -> None:
+        """No bulk request is sent for no points, so no refresh happens and the pending writes are still pending."""
+        import time
+
+        connected_service._unrefreshed = {"my-idx": {"vr-1": time.monotonic() - 1}}
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=AsyncMock(return_value=(0, []))):
+            await connected_service.upsert_points("my-idx", [], refresh=True)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-1"}
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("refresh", [False, True])
     async def test_points_of_a_bulk_that_fails_part_way_are_still_noted(self, connected_service, refresh) -> None:
         from app.services.vector_db.models import VectorPoint

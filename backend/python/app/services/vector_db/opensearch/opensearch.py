@@ -997,7 +997,7 @@ class OpenSearchService(IVectorDBService):
             # Earlier chunks may be indexed and unrefreshed; a later delete must still see them.
             self._note_unrefreshed(collection_name, points)
             raise
-        if refresh:
+        if refresh and actions:  # an empty batch sends no bulk request, so no refresh ran
             self._forget_refreshed(collection_name, started)
         else:
             self._note_unrefreshed(collection_name, points)
