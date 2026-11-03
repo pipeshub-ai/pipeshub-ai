@@ -39,6 +39,10 @@ COMPROMISED_RELEASES = {
 
 # Files those releases drop into site-packages; a .pth runs before any test does.
 COMPROMISED_FILES = ("cook.pth", "cook.py")
+# 1.107.0 also dropped a sitecustomize.py (it runs at every interpreter start too). Legitimate environments can hold
+# a file of that name, so it counts only when it carries the payload's markers: the lookalike exfiltration host and
+# the lock file its daemon holds.
+PAYLOAD_SITECUSTOMIZE_MARKERS = ("litellm.dev", "remote_code_loader")
 
 
 def _specifiers(manifest: Path) -> dict[str, str]:
@@ -74,7 +78,31 @@ def test_manifest_excludes_compromised_releases(package: str) -> None:
         assert not specifier.contains(release, prereleases=True), f"{BACKEND_MANIFEST} admits {package} {release}"
 
 
+def _compromised_files(directories: set[Path]) -> list[str]:
+    found = [str(d / name) for d in directories for name in COMPROMISED_FILES if (d / name).exists()]
+    for d in directories:
+        custom = d / "sitecustomize.py"
+        if custom.is_file() and any(m in custom.read_text(encoding="utf-8", errors="replace") for m in PAYLOAD_SITECUSTOMIZE_MARKERS):
+            found.append(str(custom))
+    return found
+
+
 def test_no_compromised_file_in_site_packages() -> None:
     directories = {Path(p) for p in [*site.getsitepackages(), site.getusersitepackages(), *sys.path] if p}
-    found = [str(d / name) for d in directories for name in COMPROMISED_FILES if (d / name).exists()]
-    assert not found, f"remove the environment and rebuild it: {found}"
+    found = _compromised_files(directories)
+    # The payload sends credentials out and its files run at every Python start, this test run included.
+    assert not found, (
+        f"found {found}: rotate the credentials reachable from this environment, remove these files from a shell "
+        "before running Python again, then rebuild the environment"
+    )
+
+
+def test_the_check_finds_each_payload_file_and_leaves_a_legitimate_sitecustomize_alone(tmp_path: Path) -> None:
+    clean, dropped = tmp_path / "clean", tmp_path / "dropped"
+    clean.mkdir()
+    dropped.mkdir()
+    (clean / "sitecustomize.py").write_text("import os\nos.environ.setdefault('TZ', 'UTC')\n")
+    (dropped / "cook.pth").write_text("import cook\n")
+    (dropped / "sitecustomize.py").write_text("LOCK = '/tmp/remote_code_loader.lock'\n")
+    assert _compromised_files({clean}) == []
+    assert sorted(_compromised_files({dropped})) == sorted([str(dropped / "cook.pth"), str(dropped / "sitecustomize.py")])
