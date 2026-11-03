@@ -17,23 +17,37 @@ export interface Args {
   cmd: string;
   sub?: string;
   flags: Map<string, string | true>;
+  /** Flags given more than once and words after the first: refused by `checkFlags` (the last of a repeated flag would win). */
+  repeated?: string[];
+  extra?: string[];
 }
 
 export function parse(argv: string[]): Args {
   const [cmd = 'help', ...rest] = argv;
   const flags = new Map<string, string | true>();
+  const repeated: string[] = [];
+  const extra: string[] = [];
   let sub: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i] as string;
     if (a.startsWith('--')) {
+      const k = a.slice(2);
+      if (flags.has(k)) repeated.push(k);
       const next = rest[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
-        flags.set(a.slice(2), next);
+        flags.set(k, next);
         i += 1;
-      } else flags.set(a.slice(2), true);
-    } else sub ??= a;
+      } else flags.set(k, true);
+    } else if (sub === undefined) sub = a;
+    else extra.push(a);
   }
-  return { cmd, ...(sub ? { sub } : {}), flags };
+  return {
+    cmd,
+    ...(sub ? { sub } : {}),
+    flags,
+    ...(repeated.length ? { repeated } : {}),
+    ...(extra.length ? { extra } : {}),
+  };
 }
 
 /** A command line that cannot be run as written: exit 2, before anything is touched. */
@@ -128,23 +142,58 @@ export const FLAGS: Record<string, string[]> = {
     'allow-writers',
     'sample',
     'max-freeze',
+    'fail-at',
   ],
 };
+
+/** The flags that take a value; every other flag is a switch and takes none (`--force false` would otherwise turn force on). */
+export const VALUE_FLAGS = new Set([
+  'only',
+  'stop-after-batches',
+  'until-idle',
+  'sample',
+  'wait',
+  'drain-wait',
+  'max-freeze',
+  'grace',
+  'max-lag',
+  'fail-at',
+]);
 
 /** What can be refused from the words alone: a flag the command does not have, a `follow` that is neither `start` nor `run`, and flags that exclude each other. */
 export function checkFlags(a: Args): void {
   const allowed = FLAGS[a.cmd] ?? [];
-  for (const k of a.flags.keys())
+  if (a.repeated?.length)
+    throw new UsageError(`--${a.repeated[0]} is given more than once`);
+  // only follow takes a word (start or run); any other word is a mistake, not something to ignore
+  const words = [...(a.sub !== undefined ? [a.sub] : []), ...(a.extra ?? [])];
+  if (words.length > (a.cmd === 'follow' ? 1 : 0))
+    throw new UsageError(
+      `'${a.cmd}' does not take '${words[words.length - 1]}'`,
+    );
+  for (const [k, v] of a.flags) {
     if (k !== 'help' && !allowed.includes(k))
       throw new UsageError(
         `--${k} is not a flag of '${a.cmd}'${allowed.length ? ` (it has ${allowed.map((x) => `--${x}`).join(', ')})` : ' (it has none)'}`,
       );
+    if (!VALUE_FLAGS.has(k) && v !== true)
+      throw new UsageError(`--${k} takes no value (got '${v}')`);
+  }
   if (a.cmd === 'follow' && a.sub !== 'start' && a.sub !== 'run')
     throw new UsageError('follow needs `start` or `run`');
   if (a.cmd === 'migrate' && a.flags.has('offline') && a.flags.has('online'))
     throw new UsageError(
       'use `migrate --offline` or `migrate --online`, not both',
     );
+  if (a.cmd === 'rollback') {
+    if (a.flags.has('online') && a.flags.has('reverse'))
+      throw new UsageError(
+        '`rollback --online` follows the change log back: --reverse is the full copy of the offline rollback',
+      );
+    for (const k of ['sample', 'max-freeze'])
+      if (a.flags.has(k) && !a.flags.has('online'))
+        throw new UsageError(`--${k} is a flag of \`rollback --online\``);
+  }
   if (a.cmd === 'verify' && a.flags.has('incremental') && a.flags.has('only'))
     throw new UsageError(
       'an incremental verify has no collection scope: --only does not apply',
@@ -214,7 +263,7 @@ export async function runCli(
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
   const a = parse(argv);
-  if (a.cmd === 'help' || a.flags.has('help')) {
+  if (a.cmd === 'help' || a.cmd === '--help' || a.flags.has('help')) {
     process.stdout.write(`${HELP}\n`);
     return 0;
   }
@@ -441,6 +490,9 @@ export async function runCli(
           const r = await rollbackOnline(rt, {
             log,
             maxFreezeMs: (p.secs['max-freeze'] ?? 900) * 1000,
+            ...(p.failAt !== undefined && env.MIGRATE_TEST_HOOKS === '1'
+              ? { failAt: p.failAt }
+              : {}),
             ...(p.sample !== undefined ? { sample: p.sample } : {}),
           });
           out(r);

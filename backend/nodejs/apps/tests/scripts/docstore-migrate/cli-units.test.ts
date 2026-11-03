@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { FLAGS, HELP, UsageError, checkFlags, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
+import { FLAGS, HELP, UsageError, VALUE_FLAGS, checkFlags, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 
 const flag = (...argv: string[]) => parse(['drain', ...argv])
@@ -79,7 +79,12 @@ describe('flags the command line does not have, and words that do not go togethe
     for (const [cmd, flags] of Object.entries(FLAGS)) {
       const sub = cmd === 'follow' ? ['run'] : []
       ok(cmd, ...sub)
-      for (const f of flags) if (!(cmd === 'migrate' && f === 'online')) ok(cmd, ...sub, `--${f}`)
+      for (const f of flags) {
+        if (cmd === 'migrate' && f === 'online') continue
+        // these belong to the online rollback and are refused without it
+        if (cmd === 'rollback' && ['sample', 'max-freeze', 'fail-at'].includes(f)) ok(cmd, '--online', `--${f}`)
+        else ok(cmd, ...sub, `--${f}`)
+      }
       ok(cmd, ...sub, '--help')
     }
   })
@@ -97,12 +102,51 @@ describe('flags the command line does not have, and words that do not go togethe
     expect(() => ok('status', '--yes')).to.throw(UsageError, 'it has none')
   })
 
+  it('a flag given twice, or a word the command does not take, is refused: the last one would otherwise win', () => {
+    expect(() => ok('reset', '--yes', '--force', 'false', '--force')).to.throw(UsageError, '--force is given more than once')
+    expect(() => ok('bulk', '--only', 'users', '--only', 'orgs')).to.throw(UsageError, '--only is given more than once')
+    expect(() => ok('reset', 'now', '--yes')).to.throw(UsageError, "'reset' does not take 'now'")
+    expect(() => ok('follow', 'run', 'start')).to.throw(UsageError, "'follow' does not take 'start'")
+    ok('follow', 'run', '--until-idle', '5')
+  })
+
+  it('a switch takes no value: --force false does not turn force on', () => {
+    expect(() => ok('reset', '--yes', '--force', 'false')).to.throw(UsageError, '--force takes no value')
+    expect(() => ok('migrate', '--offline', '--allow-writers', 'false')).to.throw(UsageError, '--allow-writers takes no value')
+    expect(() => ok('reset', '--yes', 'no')).to.throw(UsageError, '--yes takes no value')
+    ok('reset', '--yes', '--force')
+    // every flag of every command is either a switch or listed as taking a value, and each kind parses as such
+    for (const [cmd, flags] of Object.entries(FLAGS))
+      for (const k of flags) {
+        if (VALUE_FLAGS.has(k)) expect(() => ok(cmd, `--${k}`, 'x'), `${cmd} --${k} x`).to.not.throw(/takes no value/)
+        else expect(() => ok(cmd, `--${k}`, 'x'), `${cmd} --${k} x`).to.throw(UsageError, 'takes no value')
+      }
+  })
+
   it('follow wants start or run, and migrate one mode, and an incremental verify has no collection scope', () => {
     for (const bad of [['follow'], ['follow', 'stop']]) expect(() => ok(...bad), bad.join(' ')).to.throw(UsageError, 'follow needs')
     expect(() => ok('migrate', '--offline', '--online')).to.throw(UsageError, 'not both')
     expect(() => ok('verify', '--incremental', '--only', 'users')).to.throw(UsageError, 'no collection scope')
     ok('follow', 'start')
     ok('verify', '--incremental', '--sample', '0.1')
+  })
+
+  it('the two ways to roll back do not mix: --online follows the log, --reverse is the offline copy, and the online flags need --online', () => {
+    expect(() => ok('rollback', '--online', '--reverse')).to.throw(UsageError, '--reverse')
+    expect(() => ok('rollback', '--sample', '0.1')).to.throw(UsageError, '`rollback --online`')
+    expect(() => ok('rollback', '--max-freeze', '5')).to.throw(UsageError, '`rollback --online`')
+    ok('rollback', '--online', '--sample', '0.1', '--max-freeze', '5')
+    ok('rollback', '--reverse')
+  })
+
+  it('--help as the first word is help', async () => {
+    const w = process.stdout.write
+    process.stdout.write = (() => true) as never
+    try {
+      expect(await runCli(['--help'], {})).to.equal(0)
+    } finally {
+      process.stdout.write = w
+    }
   })
 
   it('each of them exits 2 from the command line before anything is read', async () => {
@@ -117,6 +161,8 @@ describe('flags the command line does not have, and words that do not go togethe
         ['verify', '--force'],
         ['follow'],
         ['rollback', '--reversee'],
+        ['rollback', '--online', '--reverse'],
+        ['rollback', '--sample', '0.5'],
         ['reverse', '--force'],
         ['migrate', '--offline', '--online'],
         ['verify', '--incremental', '--only', 'users'],

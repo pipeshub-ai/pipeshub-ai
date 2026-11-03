@@ -51,11 +51,19 @@ async function credentials(rt: MigrationRuntime): Promise<Counts> {
       for (const k of ['createdAt', 'updatedAt', 'blockExpiresAt'] as const)
         if (typeof rest[k] === 'string') rest[k] = new Date(rest[k]);
       keep.push(String(_id));
-      await col.replaceOne(
-        { userId: String(_id), orgId: rest.orgId },
+      const filter = { userId: String(_id), orgId: rest.orgId };
+      const kept = await col.findOneAndReplace(
+        filter,
         { ...rest, userId: String(_id), isDeleted: false },
-        { upsert: true },
+        { upsert: true, returnDocument: 'after', projection: { _id: 1 } },
       );
+      // MongoDB may hold several live documents for one account (the copy took the newest): only the one written stays
+      if (kept)
+        await col.deleteMany({
+          ...filter,
+          isDeleted: { $ne: true },
+          _id: { $ne: kept._id },
+        });
       written += 1;
     }
     after = String(rows[rows.length - 1]?.user_id);
