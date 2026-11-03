@@ -137,7 +137,7 @@ def targeted() -> list[tuple[str, World]]:
         Node("t2", "record", "B", rule="STRICT", parents=(Parent("X"),), inherits=("X",))),
         grants=(Grant("u", "t2"), Grant("w", "t1")), gates=(Gate("u", "B"), Gate("w", "B")))
     out.append(("SM1", sm))
-    # The shape of a shared cell: a record t below a granted record s, both members of one record-group-level group g (t2 belongs to another group, t3 breaks inheritance).
+    # RGL1: a record t below a granted record s, both members of one record-group-level group g (t2 belongs to another group, t3 breaks inheritance).
     # v holds s and g, so the oracle does not read t2 through s (g admits s by R8) while the monotone clause {s} would: t2 is the one record that must stay refused.
     mk = lambda i, g, par, inh=True, **kw: Node(i, "record", "S", parents=(Parent(par),), inherits=(par,) if inh else (), belongs=(g,), **kw)   # noqa: E731
     grp = lambda i: Node(i, "group", "S", parents=(Parent("S"),), belongs=("S",), model="RECORD_GROUP_LEVEL")   # noqa: E731

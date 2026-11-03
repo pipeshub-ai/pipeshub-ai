@@ -39,12 +39,12 @@ def _clean(tally, examples, *, min_pairs: int) -> None:
 
 async def test_the_targeted_worlds_agree_with_the_oracle_under_every_typing() -> None:
     tally, examples = await run(targeted())
-    _clean(tally, examples, min_pairs=300)
+    _clean(tally, examples, min_pairs=500)
     assert tally["refusal:deep_below_seed"] >= 1           # T1: the chain near the hop cap behind a cycle is refused, not guessed
 
 
 async def test_a_record_below_a_seed_of_its_own_group_has_a_class_and_one_below_a_seed_of_another_group_is_refused() -> None:
-    """The cell's shape (records under a granted record, all in one record-group-level group) was refused as a whole; only the record whose seed has a group it does not share is."""
+    """In the targeted world RGL1 (records under a granted record, all in one record-group-level group) the whole shape was once refused; only the record whose seed has a group it does not share is."""
     tally, examples = await run([w for w in targeted() if w[0] == "RGL1"], typings=("as_written",))
     _clean(tally, examples, min_pairs=20)
     assert tally["refusal:rgl_below_seed"] == 1, dict(tally)
@@ -53,14 +53,24 @@ async def test_a_record_below_a_seed_of_its_own_group_has_a_class_and_one_below_
 @pytest.mark.parametrize("typing", list(RETYPE))
 async def test_the_corpus_agrees_with_the_oracle(typing: str) -> None:
     tally, examples = await run(_corpus(), typings=(typing,))
-    _clean(tally, examples, min_pairs=4000)
-    assert tally["pairs_legacy"] <= 0.02 * tally["pairs"]  # the realistic legacy share is below one in a hundred pairs
+    _clean(tally, examples, min_pairs=4400)                 # observed: 4452 pairs per typing
+    assert tally["pairs_legacy"] <= 0.02 * tally["pairs"]  # the realistic legacy share is below one in a hundred pairs (observed 0.3%)
+
+
+async def test_a_gate_that_drops_a_tenth_of_the_corpus_is_noticed() -> None:
+    worlds = _corpus()
+    kept = [w for i, w in enumerate(worlds) if i % 10]
+    tally, examples = await run(kept, typings=("as_written",))
+    with pytest.raises(AssertionError):
+        _clean(tally, examples, min_pairs=4400)
 
 
 @pytest.mark.parametrize("seed", SEEDS)
 async def test_generated_worlds_agree_with_the_oracle(seed: int) -> None:
     tally, examples = await run(_generated(seed), typings=("as_written", "container", "override"))
-    _clean(tally, examples, min_pairs=1000)
+    _clean(tally, examples, min_pairs=124000)               # observed 125,208 to 136,386 pairs per seed
+    # The adversarial generators build deep and cross-group worlds the compiler refuses on purpose: 8% to 15% of pairs were observed, against 0.3% in the corpus.
+    assert tally["pairs_legacy"] <= 0.16 * tally["pairs"]
     assert tally["apps_shallow"] > 0 and tally["apps_per_record_memo"] > 0       # both memo modes are exercised
 
 
