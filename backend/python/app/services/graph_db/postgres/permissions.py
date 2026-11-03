@@ -4,7 +4,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import current_org_id
-from app.models.permission import ORG_SHARE_PERMISSION_TYPES
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
+from app.services.graph_db.common.team_grant_role import (
+    TEAM_GRANT_ROLE_CAP,
+    TEAM_GRANT_ROLES,
+)
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase
 
@@ -14,7 +18,30 @@ if TYPE_CHECKING:
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
 
 
+_ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2, "COMMENTER": 1}
+
+
 class PermissionsMixin(PgBase):
+    async def get_user_kb_permission(self, kb_id: str, user_id: str, transaction: str | None = None) -> str | None:
+        """The user's effective role on a collection: the highest of the direct grant and what each team the collection is shared with gives its members.
+        A team's grant gives the role on its own edge, else the member's role in the team, and never more than ``TEAM_GRANT_ROLE_CAP``: a team owner
+        does not own what the team is shared with. A retired role reads as READER; a role that is none of the grant roles gives nothing."""
+        org = current_org_id()
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_kb_permission */
+            WITH me AS (SELECT 1 FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2),
+            kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $3 AND k.doc->>'type' = 'KB')
+            SELECT d.doc->>'role' AS role FROM me, kb JOIN graph.edges d ON d.org_id = $1 AND d.coll = 'permission' AND d.from_coll = 'users' AND d.from_id = $2
+              AND d.to_id = kb.id AND d.doc->>'type' = 'USER'
+            UNION ALL
+            SELECT CASE WHEN b.role = 'OWNER' THEN $4::text WHEN b.role = ANY($5::text[]) THEN 'READER' WHEN b.role = ANY($6::text[]) THEN b.role END
+            FROM me, kb JOIN graph.edges ut ON ut.org_id = $1 AND ut.coll = 'permission' AND ut.from_coll = 'users' AND ut.from_id = $2 AND ut.to_coll = 'teams' AND ut.doc->>'type' = 'USER'
+              JOIN graph.nodes t ON t.org_id = $1 AND t.coll = 'teams' AND t.id = ut.to_id
+              JOIN graph.edges tg ON tg.org_id = $1 AND tg.coll = 'permission' AND tg.from_coll = 'teams' AND tg.from_id = t.id AND tg.to_id = kb.id AND tg.doc->>'type' = 'TEAM',
+              LATERAL (SELECT CASE WHEN tg.doc->>'role' IS NOT NULL AND tg.doc->>'role' <> '' THEN tg.doc->>'role' ELSE ut.doc->>'role' END AS role) b""",
+                                                  org, user_id, kb_id, TEAM_GRANT_ROLE_CAP, sorted(RETIRED_ROLES), list(TEAM_GRANT_ROLES)), transaction)
+        roles = [r["role"] for r in rows if r["role"]]
+        return read_role(max(roles, key=lambda x: _ROLE_RANK.get(x, 0))) if roles else None
+
     async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, Any]:
         """Who this user is (the user, the groups, roles and teams they hold a USER permission on, their organization), the apps they pass the
         connector gate for, and the records and groups granted to them, per connector. An org other than the ambient one is nobody's."""

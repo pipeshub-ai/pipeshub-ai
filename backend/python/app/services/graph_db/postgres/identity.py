@@ -12,7 +12,7 @@ import functools
 import json
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.config.constants.service_accounts import SERVICE_ACCOUNT_EMAIL_DOMAIN
 from app.core.org_context import (
     MissingOrgContext,
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
 
+_KB = Connectors.KNOWLEDGE_BASE.value
 _ORG_FIELD = "orgId"  # the org property of a graph document, not a claim
 
 
@@ -691,3 +692,31 @@ class IdentityMixin(PgBase):
               count(*) AS total FROM graph.edges p WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'teams' AND p.to_id = $2 AND p.doc->>'role' = 'OWNER'""",
                                 [current_org_id(), team_id, list(user_ids)], transaction)
         return {"owners_being_removed": list(rows[0]["removing"] or []), "total_owner_count": rows[0]["total"]}
+
+    # ---- knowledge bases: the collection itself ------------------------------------------------------------------
+    async def get_knowledge_base(self, kb_id: str, user_id: str, transaction: str | None = None) -> dict | None:
+        """The collection with the user's role and its folders; None when it does not exist or the user holds no role on it."""
+        role = await self.get_user_kb_permission(kb_id, user_id, transaction)
+        rows = await self._id_rows("""/* pipeshub:graph.get_knowledge_base */ SELECT kb.doc, (SELECT coalesce(jsonb_agg(jsonb_build_object('id', f.id, 'name', f.doc->'recordName',
+              'createdAtTimestamp', f.doc->'createdAtTimestamp', 'updatedAtTimestamp', f.doc->'updatedAtTimestamp', 'webUrl', f.doc->'webUrl', 'mimeType', f.doc->'mimeType')
+              ORDER BY f.doc->>'recordName', f.id), '[]'::jsonb) FROM graph.edges b JOIN graph.nodes f ON f.org_id = b.org_id AND f.coll = 'records' AND f.id = b.from_id
+              WHERE b.org_id = kb.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_id = kb.id AND f.doc->>'mimeType' = ANY($3::text[])) AS folders
+            FROM graph.nodes kb WHERE kb.org_id = $1 AND kb.coll = 'apps' AND kb.id = $2 AND kb.doc->>'type' = $4""", [current_org_id(), kb_id, FOLDER_MIME_TYPES, _KB], transaction)
+        if not rows or not role:
+            return None
+        d = _doc(rows[0]["doc"])
+        return {"id": d.get("id"), "name": d.get("name") if d.get("name") is not None else "Untitled", "description": d.get("description"),
+                "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"), "createdBy": d.get("createdBy"),
+                "userRole": role, "status": d.get("status"), "folders": _js(rows[0]["folders"])}
+
+    async def update_knowledge_base(self, kb_id: str, updates: dict, transaction: str | None = None) -> dict | None:
+        clean = {k: v for k, v in updates.items() if k not in ("id", "_key")}
+        rows = await self._id_rows("""/* pipeshub:graph.update_knowledge_base */ UPDATE graph.nodes SET doc = jsonb_strip_nulls(doc || $3::jsonb)
+            WHERE org_id = $1 AND coll = 'apps' AND id = $2 AND doc->>'type' = $4 RETURNING doc""", [current_org_id(), kb_id, _j(clean), _KB], transaction, write=True)
+        return _arango(_doc(rows[0]["doc"]), "apps") if rows else None
+
+    async def _get_kb_context_for_record(self, record_id: str, transaction: str | None = None) -> dict | None:
+        rows = await self._id_rows("""/* pipeshub:graph.get_kb_context_for_record */ SELECT kb.id, kb.doc->>'name' AS name, kb.doc->>'orgId' AS org FROM graph.edges b
+            JOIN graph.nodes kb ON kb.org_id = b.org_id AND kb.coll = 'apps' AND kb.id = b.to_id AND kb.doc->>'type' = $3
+            WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2 ORDER BY kb.id LIMIT 1""", [current_org_id(), record_id, _KB], transaction)
+        return {"kb_id": rows[0]["id"], "kb_name": rows[0]["name"], "org_id": rows[0]["org"]} if rows else None
