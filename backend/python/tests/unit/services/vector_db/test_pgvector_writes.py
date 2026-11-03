@@ -31,7 +31,7 @@ def test_prepare_builds_columns_and_groups() -> None:
     assert b.embeddings[0] == "[0.5,-0.25]" and b.contents == ["t1", "t2"]
     assert (b.term_start, b.term_end, b.terms, b.weights) == ([0, 2], [2, 2], [3, 9], [1.0, 2.0])
     assert '"extra":"x"' in b.payloads[0] and "connectorIds" not in b.payloads[0] and "page_content" not in b.payloads[0]
-    assert b.groups == {"r1": {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "rootRecordGroupIds": []}}
+    assert b.groups == {"r1": {"connectorIds": ["c1"], "recordGroupIds": ["g1"]}}   # only the arrays the payload carries
 
 
 def test_prepare_keeps_one_weight_per_term() -> None:
