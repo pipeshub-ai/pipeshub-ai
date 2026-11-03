@@ -7,17 +7,21 @@ from __future__ import annotations
 
 import os
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
 
 from app.core import org_context
-from app.core.org_context import SystemContextNotAllowed, bind, OrgContext
+from app.core.org_context import OrgContext, SystemContextNotAllowed, bind
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def two_orgs(pg_provider, org_ctx):
+async def two_orgs(pg_provider, org_ctx) -> AsyncIterator[tuple[str, str, str]]:
     os.environ.pop("PG_JOBS_URL", None)            # proves the reads need no jobs login
     tag = uuid.uuid4().hex[:8]
     a, b = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]

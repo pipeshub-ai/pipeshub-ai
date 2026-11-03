@@ -7,6 +7,7 @@ import dataclasses
 import logging
 import os
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -14,6 +15,9 @@ from app.core.db import DbConfig, KernelDB
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.base import TransactionClosed
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.integration
 
@@ -23,7 +27,7 @@ def _org() -> str:
 
 
 @pytest.fixture
-async def one_connection():
+async def one_connection() -> AsyncIterator[tuple[PostgresGraphProvider, KernelDB]]:
     """A provider whose pool holds a single connection: a second open unit has nowhere to go."""
     if not os.environ.get("PG_CORE_URL"):
         pytest.skip("PG_CORE_URL is not set")
@@ -40,10 +44,10 @@ async def test_a_unit_that_cannot_open_ends_the_call_with_the_error(one_connecti
         t1 = await p.begin_transaction([], [])
         await p.get_document("x", "records", transaction=t1)       # holds the only connection
         t2 = await p.begin_transaction([], [])
-        with pytest.raises(Exception) as err:                       # PoolTimeout, not a wait for ever
+        with pytest.raises(Exception) as err:
             await asyncio.wait_for(p.get_document("y", "records", transaction=t2, raise_on_error=True), 100)
         assert not isinstance(err.value, TimeoutError)
-        with pytest.raises(Exception):                              # later calls on the failed transaction fail at once
+        with pytest.raises(Exception):  # later calls on the failed transaction fail at once  # noqa: B017
             await asyncio.wait_for(p.get_document("y", "records", transaction=t2, raise_on_error=True), 5)
         await asyncio.wait_for(p.rollback_transaction(t2), 5)
         await p.rollback_transaction(t1)
@@ -62,9 +66,9 @@ async def test_a_lost_connection_fails_the_call_and_the_transaction(one_connecti
             await con.execute("SELECT pg_terminate_backend($1)", pid)
         finally:
             await con.close()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             await asyncio.wait_for(p._q(lambda tx: tx.fetchval("SELECT 1"), t), 30)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             await asyncio.wait_for(p._q(lambda tx: tx.fetchval("SELECT 1"), t), 5)
         await asyncio.wait_for(p.rollback_transaction(t), 10)
         assert await p.get_document("x", "records") is None         # the pool is whole again

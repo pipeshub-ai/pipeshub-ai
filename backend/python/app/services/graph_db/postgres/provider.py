@@ -9,13 +9,15 @@ mixin defines raises ``NotImplementedInPostgres``; ``unimplemented()`` lists the
 from __future__ import annotations
 
 import abc
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import instrument_org_methods
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
 from app.services.graph_db.postgres.core import CoreMixin
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 

@@ -6,10 +6,15 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
+from asyncpg.exceptions import InsufficientPrivilegeError
 
 from app.core.org_context import MissingOrgContext
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.integration
 
@@ -19,7 +24,7 @@ def _org() -> str:
 
 
 @pytest.fixture
-async def orgs(pg_provider, pg_db, org_ctx):
+async def orgs(pg_provider, pg_db, org_ctx) -> AsyncIterator[tuple[str, str]]:
     a, b = _org(), _org()
     yield a, b
     for o in (a, b):
@@ -61,7 +66,9 @@ async def test_documents_are_written_read_updated_and_deleted(pg_provider, orgs,
 async def test_edges_are_written_read_and_deleted_and_a_node_delete_takes_its_edges(pg_provider, orgs, org_ctx) -> None:
     a, _ = orgs
     p = pg_provider
-    edge = lambda f, t, **kw: {"from_id": f, "from_collection": "things", "to_id": t, "to_collection": "things", **kw}  # noqa: E731
+    def edge(f: str, t: str, **kw: str) -> dict:
+        return {"from_id": f, "from_collection": "things", "to_id": t, "to_collection": "things", **kw}
+
     with org_ctx(a):
         await p.batch_create_edges([edge("a", "b"), edge("a", "c")], "belongsTo")
         assert await p.get_edge("a", "things", "b", "things", "belongsTo") is not None
@@ -157,7 +164,7 @@ async def test_a_transaction_stays_in_the_org_it_began_in(pg_provider, orgs, org
     try:
         with org_ctx(b):
             assert await p.get_document("k", "things", transaction=t) is None
-            with pytest.raises(Exception):
+            with pytest.raises(InsufficientPrivilegeError):          # row-level security refuses the other org's row
                 await p.batch_upsert_nodes([{"_key": "k2", "v": "b"}], "things", transaction=t)
     finally:
         await p.rollback_transaction(t)

@@ -329,13 +329,11 @@ class CoreMixin(PgBase):
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
             AND from_coll = $3 AND from_id = $4 RETURNING 1) SELECT count(*) FROM d""", org, collection, from_collection, from_id), transaction, write=True)
-        return r
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
             AND to_coll = $3 AND to_id = $4 RETURNING 1) SELECT count(*) FROM d""", org, collection, to_collection, to_id), transaction, write=True)
-        return r
 

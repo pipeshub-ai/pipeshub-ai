@@ -4,16 +4,16 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Awaitable, Callable
-from logging import Logger
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.db import KernelDB
 from app.core.org_context import current_or_system, spawn_in_request
 
 if TYPE_CHECKING:
-    from app.core.db import Tx
+    from collections.abc import Awaitable, Callable
+    from logging import Logger
+
+    from app.core.db import KernelDB, Tx
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
 
@@ -170,7 +170,7 @@ class PgBase:
         self._txns: dict[str, _Txn] = {}
 
     # ---- plumbing ----------------------------------------------------------------------------------------------
-    async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, write: bool = False) -> Any:  # noqa: ANN401
+    async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, *, write: bool = False) -> Any:  # noqa: ANN401
         if transaction:
             return await self._txns[transaction].run(fn)
         # Fails closed: no ambient org raises MissingOrgContext. A system context (org enumeration at start-up) reads through the jobs role.
@@ -190,7 +190,7 @@ class PgBase:
     async def ensure_schema(self) -> bool:
         return True  # the migration branch `graph` owns the schema
 
-    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:  # noqa: FBT001 (the interface's signature)
         tid = str(uuid.uuid4())
         self._txns[tid] = _Txn(self._db)
         return tid
