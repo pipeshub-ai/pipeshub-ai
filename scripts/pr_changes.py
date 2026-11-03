@@ -147,6 +147,10 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
     f"{PYTHON}/tests/unit/services/vector_db/test_strategy_contract.py",
     f"{PYTHON}/tests/unit/web/qa/lab.py",
+    f"{PYTHON}/tests/permissions/graph.py",
+    f"{PYTHON}/tests/permissions/model.py",
+    f"{PYTHON}/tests/permissions/runner.py",
+    f"{PYTHON}/tests/permissions/scenario.py",
 )
 
 # backend-matrix.yml's Python suites. Their tests import more than their own
