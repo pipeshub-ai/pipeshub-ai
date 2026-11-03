@@ -5,6 +5,7 @@ import express from 'express';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { Container } from 'inversify';
+import { PASSWORD_RESET_REQUESTED, SIGN_IN_CODE_REQUESTED } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { createUserAccountRouter } from '../../../../src/modules/auth/routes/userAccount.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
@@ -20,6 +21,8 @@ describe('per-address limit on the public sign-in routes (HTTP)', () => {
   let counts: Map<string, number>;
   let authenticated: sinon.SinonStub;
   let tokens: AuthTokenService;
+  let forgot: sinon.SinonStub;
+  let otp: sinon.SinonStub;
   const saved = process.env.ADDRESS_RATE_LIMIT_PER_MINUTE;
 
   const send = async (method: string, path: string, headers: Record<string, string>) => {
@@ -42,12 +45,14 @@ describe('per-address limit on the public sign-in routes (HTTP)', () => {
     counts = new Map();
     authenticated = sinon.stub().callsFake((_req: unknown, res: express.Response) => res.status(200).json({ message: 'Fully authenticated' }));
     const logger = { debug: sinon.stub(), info: sinon.stub(), warn: sinon.stub(), error: sinon.stub() } as unknown as Logger;
+    forgot = sinon.stub().callsFake((_req: unknown, res: express.Response) => res.status(200).send(PASSWORD_RESET_REQUESTED));
+    otp = sinon.stub().callsFake((_req: unknown, res: express.Response) => res.status(200).send(SIGN_IN_CODE_REQUESTED));
     const controller = {
       initAuth: (_req: unknown, res: express.Response) => res.status(200).json({ message: 'Authentication initialized' }),
       authenticate: authenticated,
-      forgotPasswordEmail: (_req: unknown, res: express.Response) => res.status(200).json({ data: 'sent if the account exists' }),
+      forgotPasswordEmail: forgot,
       validateEmailChange: (_req: unknown, res: express.Response) => res.status(200).json({ message: 'changed' }),
-      getLoginOtp: (_req: unknown, res: express.Response) => res.status(200).send('requested'),
+      getLoginOtp: otp,
     };
     const container = new Container();
     container.bind('Logger').toConstantValue(logger);
@@ -80,15 +85,15 @@ describe('per-address limit on the public sign-in routes (HTTP)', () => {
     await new Promise((resolve) => server.close(resolve));
   });
 
-  it('answers the sixth password-reset request about one address with 429 and Retry-After, and still lets that person sign in', async () => {
-    const statuses: number[] = [];
-    let last: Awaited<ReturnType<typeof post>> | undefined;
+  it('answers the sixth password-reset request about one address exactly like the first, sends nothing, and still lets that person sign in', async () => {
+    const answers: unknown[] = [];
     for (let i = 0; i < 6; i++) {
-      last = await post('/userAccount/password/forgot', { email: 'ada@acme.test' });
-      statuses.push(last.status);
+      const r = await post('/userAccount/password/forgot', { email: 'ada@acme.test' });
+      answers.push([r.status, r.retryAfter, JSON.stringify(r.body)]);
     }
-    expect(statuses).to.deep.equal([200, 200, 200, 200, 200, 429]);
-    expect(Number(last?.retryAfter)).to.be.within(1, 60);
+    expect(new Set(answers.map((a) => JSON.stringify(a))).size).to.equal(1);
+    expect((answers[0] as [number])[0]).to.equal(200);
+    expect(forgot.callCount).to.equal(5);
 
     // the owner signs in with the right password in the same minute
     const init = await post('/userAccount/initAuth', { email: 'ada@acme.test' });
@@ -98,11 +103,22 @@ describe('per-address limit on the public sign-in routes (HTTP)', () => {
     expect(authenticated.calledOnce).to.equal(true);
   });
 
+  it('answers a throttled sign-in-code request like an accepted one and sends no code', async () => {
+    const first = await post('/userAccount/login/otp/generate', { email: 'ada@acme.test' });
+    for (let i = 0; i < 4; i++) await post('/userAccount/login/otp/generate', { email: 'ada@acme.test' });
+    const over = await post('/userAccount/login/otp/generate', { email: 'ada@acme.test' });
+    expect([over.status, over.retryAfter]).to.deep.equal([first.status, first.retryAfter]);
+    expect(otp.callCount).to.equal(5);
+  });
+
   it('counts each address on its own, and the sign-in-code request has its own count', async () => {
     for (let i = 0; i < 5; i++) await post('/userAccount/password/forgot', { email: 'ada@acme.test' });
-    expect((await post('/userAccount/password/forgot', { email: 'ADA@acme.test' })).status).to.equal(429);
-    expect((await post('/userAccount/password/forgot', { email: 'bob@acme.test' })).status).to.equal(200);
-    expect((await post('/userAccount/login/otp/generate', { email: 'ada@acme.test' })).status).to.equal(200);
+    await post('/userAccount/password/forgot', { email: 'ADA@acme.test' });
+    expect(forgot.callCount).to.equal(5);
+    await post('/userAccount/password/forgot', { email: 'bob@acme.test' });
+    expect(forgot.callCount).to.equal(6);
+    await post('/userAccount/login/otp/generate', { email: 'ada@acme.test' });
+    expect(otp.callCount).to.equal(1);
   });
 
   it('limits the email-change confirmation by the new address in the verified token, not by anything the client sends', async () => {

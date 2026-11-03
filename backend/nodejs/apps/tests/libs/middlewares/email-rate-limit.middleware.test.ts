@@ -15,7 +15,7 @@ function counter() {
   const seen = new Map<string, number>()
   return {
     seen,
-    increment: sinon.spy(async (key: string, _o?: { ttl?: number }) => {
+    increment: sinon.spy(async (key: string) => {
       seen.set(key, (seen.get(key) ?? 0) + 1)
       return seen.get(key) as number
     }),
@@ -36,6 +36,17 @@ describe('per-address rate limiter', () => {
     expect(await run(mw, 'a@example.com')).to.be.instanceOf(TooManyRequestsError)
     // another address has its own count
     expect(await run(mw, 'b@example.com')).to.equal(undefined)
+  })
+
+  it('answers a request over the limit with the route\'s own answer when onLimit is given, and does not continue', async () => {
+    const redis = counter()
+    const onLimit = sinon.stub()
+    const mw = createEmailRateLimiter(redis as any, logger, { prefix: 'p', maxPerMinute: 1, emailOf: (r) => r.body?.email, onLimit })
+    const res = { setHeader: sinon.stub() }
+    expect(await run(mw, 'a@example.com', res)).to.equal(undefined)
+    expect(await run(mw, 'a@example.com', res)).to.equal('pending')
+    expect(onLimit.calledOnceWithExactly(res)).to.equal(true)
+    expect(res.setHeader.called).to.equal(false)
   })
 
   it('tells the client when to come back: Retry-After is the seconds left in the minute', async () => {

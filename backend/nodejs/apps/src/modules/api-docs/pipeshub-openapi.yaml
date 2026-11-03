@@ -27490,6 +27490,10 @@ paths:
 
         - Multiple OTP requests may be rate-limited
         - Wait for the current OTP to expire before requesting a new one
+        - Requests about **one email address** are also limited across all clients
+          (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+          the same `200` and message but no code is sent, so the limit does not show whether the
+          address has an account. Password sign-in is not affected.
 
         **CAPTCHA:**
 
@@ -27564,6 +27568,10 @@ paths:
         email is registered. If the account exists a reset link is sent;
         otherwise the request is silently ignored. Internal lookup or mail
         delivery failures are logged server-side and do not change the response.
+
+        Requests about **one email address** are also limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+        the same `200` and message but no email is sent.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -27708,6 +27716,10 @@ paths:
 
         **Known defects:** a value that is not an email is stored although the answer is `422`;
         a token without a `newEmail` claim stores the word `undefined` the same way.
+
+        **Rate limit:** confirmations for one new address are limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute); the address is the one in the
+        verified token. Over the limit the answer is `429` with `Retry-After`.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -27757,6 +27769,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many confirmations for this new address in the current minute. Try again after `Retry-After` seconds.
+          headers:
+            Retry-After:
+              description: Seconds until the current minute ends.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error. Also returned when the token's `userId` is not a valid

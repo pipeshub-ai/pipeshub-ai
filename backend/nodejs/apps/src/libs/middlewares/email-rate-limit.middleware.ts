@@ -11,13 +11,17 @@ export interface EmailRateLimiterOptions {
   maxPerMinute: number;
   /** The address the request asks about, if it names one. */
   emailOf: (req: Request) => string | undefined;
+  /** Answers a request over the limit instead of the 429 (a route that must look the same for every address). */
+  onLimit?: (res: Response) => void;
 }
 
 /**
  * Limits the requests that ask about ONE address before any organisation is known (a password-reset or sign-in-code request, an address change). It is never put on the internal address lookup that a correct sign-in also uses, so it cannot lock out the owner. The
  * IP-keyed limiters stop one client from asking about many addresses; this one stops many clients (or one service that
  * relays them all) from probing a single address. The counter lives in Redis, so it is shared by every replica, and only a
- * hash of the address is stored. One counter per clock minute: a burst across a minute boundary can reach twice the limit.
+ * hash of the address is stored. Trade-off: a third party who keeps sending requests about an address can delay the code and
+ * reset emails to it for as long as they keep sending (a minute at a time); password sign-in is unaffected. The limit is what
+ * stops mail flooding a victim. One counter per clock minute: a burst across a minute boundary can reach twice the limit.
  * If Redis cannot be reached the request goes ahead (the IP limiter still applies) and the failure is logged.
  */
 export function createEmailRateLimiter(
@@ -25,7 +29,7 @@ export function createEmailRateLimiter(
   logger: Logger,
   options: EmailRateLimiterOptions,
 ): RequestHandler {
-  const { prefix, maxPerMinute, emailOf } = options;
+  const { prefix, maxPerMinute, emailOf, onLimit } = options;
   return async (
     req: Request,
     res: Response,
@@ -47,6 +51,10 @@ export function createEmailRateLimiter(
       );
       if (count > maxPerMinute) {
         logger.warn('Rate limit exceeded for one address', { prefix });
+        if (onLimit) {
+          onLimit(res);
+          return;
+        }
         res.setHeader(
           'Retry-After',
           String(60 - (Math.floor(Date.now() / 1000) % 60)),

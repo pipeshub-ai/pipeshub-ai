@@ -9,7 +9,11 @@ import {
 } from '../middlewares/userAuthentication.middleware';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
-import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  PASSWORD_RESET_REQUESTED,
+  SIGN_IN_CODE_REQUESTED,
+  UserAccountController,
+} from '../controller/userAccount.controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
@@ -177,6 +181,10 @@ export function createUserAccountRouter(container: Container) {
         prefix: 'otp-request',
         maxPerMinute: addressRateLimitPerMinute(),
         emailOf: (req) => (req.body as { email?: string } | undefined)?.email,
+        // the answer a request gets whether or not the address has an account
+        onLimit: (res) => {
+          res.status(200).send(SIGN_IN_CODE_REQUESTED);
+        },
       },
     ),
     ValidationMiddleware.validate(otpGenerationValidationSchema),
@@ -312,6 +320,10 @@ export function createUserAccountRouter(container: Container) {
         prefix: 'password-forgot',
         maxPerMinute: addressRateLimitPerMinute(),
         emailOf: (req) => (req.body as { email?: string } | undefined)?.email,
+        // the answer a request gets whether or not the address has an account
+        onLimit: (res) => {
+          res.status(200).send(PASSWORD_RESET_REQUESTED);
+        },
       },
     ),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
@@ -357,8 +369,7 @@ export function createUserAccountRouter(container: Container) {
         maxPerMinute: addressRateLimitPerMinute(),
         emailOf: (req) =>
           (req as AuthenticatedServiceRequest).tokenPayload?.newEmail as
-            | string
-            | undefined,
+            string | undefined,
       },
     ),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
