@@ -437,12 +437,12 @@ function spaceAdjacentMarkers(text: string): string {
   return text.replace(/(\[\[\d+\]\]\([^)\s]*\)|\[\d+\])(?=\[\[?\d+\])/g, '$1 ');
 }
 
-const SOURCES_PER_BLOCK = 10;
-
 /** A cited source: where `[n]` links and what the Sources list calls it. */
 export interface SlackSourceRow {
   name: string;
   url: string;
+  /** The record it comes from: citations of one record are one document. */
+  recordId?: string;
 }
 
 /** Each citation number's absolute link and name; record citations go to the PipesHub record page. */
@@ -460,9 +460,11 @@ export function citationRows(
       resolveCitationWebUrl(citation, frontendBaseUrl),
     );
     if (!/^https?:\/\//i.test(url)) continue;
+    const recordId = citation.citationData.metadata.recordId;
     rows.set(citationNumber, {
       name: citation.citationData.metadata.recordName?.trim() || 'Source',
       url,
+      ...(recordId ? { recordId } : {}),
     });
   }
   return rows;
@@ -473,31 +475,97 @@ export function linkedCitationMarker(n: number, url: string): string {
   return `[[${String(n)}]](${url.replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
 }
 
-/** The numbered Sources list for the given rows. */
+/** One cited document and the citation numbers that point into it. */
+export interface SlackSourceDocument {
+  name: string;
+  url: string;
+  numbers: number[];
+}
+
+/**
+ * Citations grouped by document: the same record, or the same link without
+ * its fragment (a page or passage anchor). Ordered by first citation number.
+ */
+export function groupSources(
+  rows: ReadonlyMap<number, SlackSourceRow>,
+): SlackSourceDocument[] {
+  const documents = new Map<string, SlackSourceDocument>();
+  for (const [n, row] of [...rows.entries()].sort(([a], [b]) => a - b)) {
+    const url = row.url.split('#')[0] ?? row.url;
+    const key =
+      row.recordId !== undefined ? `record:${row.recordId}` : `url:${url}`;
+    const found = documents.get(key);
+    if (found) found.numbers.push(n);
+    else documents.set(key, { name: row.name, url, numbers: [n] });
+  }
+  return [...documents.values()];
+}
+
+/** Documents shown at once; the rest go in a section Slack may fold behind "Show more". */
+const SOURCES_SHOWN = 3;
+/** Room in one mrkdwn text object (Slack allows 3000 characters). */
+const SOURCES_TEXT_LIMIT = 2900;
+
+function sourceLine(document: SlackSourceDocument): string {
+  // A name can't break its link: <, > and & are escaped, and | would end the link text.
+  const name = document.name
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\|/g, '¦');
+  const url = document.url.replace(/\|/g, '%7C').replace(/>/g, '%3E');
+  const numbers = document.numbers.map((n) => `[${String(n)}]`).join(' ');
+  return `• <${url}|${name}>${numbers === '' ? '' : `  ${numbers}`}`;
+}
+
+/** Lines in texts of at most `limit` characters. */
+function packLines(lines: string[], limit: number): string[] {
+  const texts: string[] = [];
+  for (const line of lines) {
+    const last = texts[texts.length - 1];
+    if (last !== undefined && last.length + 1 + line.length <= limit) {
+      texts[texts.length - 1] = `${last}\n${line}`;
+    } else {
+      texts.push(line.slice(0, limit));
+    }
+  }
+  return texts;
+}
+
+/**
+ * The Sources list, kept secondary to the answer: a small "Sources" label
+ * and the first documents in a context block (Slack's small grey text, links
+ * clickable), the rest in a section with `expand: false` that Slack folds
+ * behind "Show more" when it is long. Nothing when nothing was cited.
+ */
+export function sourcesBlocks(
+  documents: SlackSourceDocument[],
+): Record<string, unknown>[] {
+  if (documents.length === 0) return [];
+  const head = [
+    '*Sources*',
+    ...documents.slice(0, SOURCES_SHOWN).map(sourceLine),
+  ].join('\n');
+  const rest = documents.slice(SOURCES_SHOWN).map(sourceLine);
+  const section = (text: string) => ({
+    type: 'section',
+    expand: false,
+    text: { type: 'mrkdwn', text },
+  });
+  return [
+    // A context element holds one text object; one too long for it goes in a section.
+    head.length <= SOURCES_TEXT_LIMIT
+      ? { type: 'context', elements: [{ type: 'mrkdwn', text: head }] }
+      : section(head.slice(0, SOURCES_TEXT_LIMIT)),
+    ...packLines(rest, SOURCES_TEXT_LIMIT).map(section),
+  ];
+}
+
+/** The numbered Sources list for the given rows, one line per document. */
 export function numberedSourcesBlocks(
   rows: ReadonlyMap<number, SlackSourceRow>,
 ): Record<string, unknown>[] {
-  const ordered = [...rows.entries()].sort(([a], [b]) => a - b);
-  if (ordered.length === 0) {
-    return [];
-  }
-  const blocks: Record<string, unknown>[] = [
-    { type: 'section', text: { type: 'mrkdwn', text: '*Sources:*' } },
-  ];
-  for (let i = 0; i < ordered.length; i += SOURCES_PER_BLOCK) {
-    const elements = ordered
-      .slice(i, i + SOURCES_PER_BLOCK)
-      .flatMap(([citationNumber, row]) => [
-        { type: 'text', text: `[${String(citationNumber)}] ` },
-        { type: 'link', url: row.url, text: row.name },
-        { type: 'text', text: '\n' },
-      ]);
-    blocks.push({
-      type: 'rich_text',
-      elements: [{ type: 'rich_text_section', elements }],
-    });
-  }
-  return blocks;
+  return sourcesBlocks(groupSources(rows));
 }
 
 /**
