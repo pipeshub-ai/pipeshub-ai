@@ -544,6 +544,74 @@ describe('Stop, when the stream then closes without a terminal frame', () => {
     expect(s.messages[1].metadata?.custom?.status).toBe('stopped');
   });
 
+  const regenOptions = { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' };
+  const degradedSlot = () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      searchDegraded: true,
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    return slotId;
+  };
+
+  it('keeps the old answer\'s degraded-search note when a regenerate is stopped before any text arrives', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlot();
+    const close = openBody();
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).regenerateMessageId).toBe('a1'));
+    expect(slot(slotId).searchDegraded).toBe(false);
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const s = slot(slotId);
+    expect(s.isStreaming).toBe(false);
+    expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
+    expect(s.searchDegraded).toBe(true);
+    expect(s.regenSearchDegraded).toBeNull();
+  });
+
+  it('drops the old note when the stopped regenerate had already replaced the answer with streamed text', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlot();
+    const close = openBody(frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new text' }));
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('new text'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(texts(slotId)[1]).toEqual(['assistant', 'new text']);
+    expect(slot(slotId).searchDegraded).toBe(false);
+  });
+
+  it('keeps the old answer\'s degraded-search note when a regenerate with no run id is cancelled', async () => {
+    const slotId = degradedSlot();
+    const close = openBody();
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).regenerateMessageId).toBe('a1'));
+    useChatStore.getState().updateSlot(slotId, { runId: null });
+
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+
+    const s = slot(slotId);
+    expect(s.isStreaming).toBe(false);
+    expect(s.searchDegraded).toBe(true);
+    expect(s.regenSearchDegraded).toBeNull();
+  });
+
   it('keeps the partial answer as a stopped reply when the Stop comes back as an abort RUN_ERROR', async () => {
     fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
     const slotId = newSlot('conv-1');

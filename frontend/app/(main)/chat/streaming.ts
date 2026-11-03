@@ -224,6 +224,10 @@ function followRemoteRun(slotId: string, convId: string): void {
   useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
 }
 
+/** The note of the answer a regenerate leaves in place when its run ends without replacing it. */
+const keptSearchDegraded = (slotId: string): boolean =>
+  useChatStore.getState().slots[slotId]?.regenSearchDegraded ?? false;
+
 /**
  * Builds the post-stop message list for the offline fallback (grace-timeout
  * abort) — commits whatever text streamed so far as a locally-synthesized
@@ -991,6 +995,7 @@ export async function streamMessageForSlot(
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
+    regenSearchDegraded: null,
     searchDegraded: false,
     streamingQuestion,
     streamingContent: '',
@@ -1774,9 +1779,6 @@ export async function streamRegenerateForSlot(
   const abortController = new AbortController();
   const runId = generateRunId();
   const streamRunId = runId ?? null;
-  // The old answer stays on screen if the run fails, and so must its note.
-  const previousSearchDegraded = slot.searchDegraded;
-
   store.updateSlot(slotId, {
     // An answered card is not this run's: left in the slot it would be opened again when the run ends,
     // and the next click on it would add an answer message after the reply.
@@ -1784,6 +1786,8 @@ export async function streamRegenerateForSlot(
       ? { pendingAskUserQuestion: null }
       : {}),
     isStreaming: true,
+    // The old answer stays on screen if this run ends without replacing it (a failure or a stop), and so must its note.
+    regenSearchDegraded: slot.searchDegraded,
     searchDegraded: false,
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
@@ -2019,6 +2023,7 @@ export async function streamRegenerateForSlot(
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           regenerateMessageId: null,
+          regenSearchDegraded: null,
           streamingAssistantId: null,
           streamingContent: '',
           currentStatusMessage: null,
@@ -2065,7 +2070,8 @@ export async function streamRegenerateForSlot(
           abortController: null,
           runId: null,
           stopping: false,
-          searchDegraded: previousSearchDegraded,
+          searchDegraded: keptSearchDegraded(slotId),
+          regenSearchDegraded: null,
         });
         debugLog.flush('regenerate-reload-error', { slotId });
       }
@@ -2097,7 +2103,8 @@ export async function streamRegenerateForSlot(
         abortController: null,
         runId: null,
         stopping: false,
-        ...(dropped ? {} : { searchDegraded: previousSearchDegraded }),
+        ...(dropped ? {} : { searchDegraded: keptSearchDegraded(slotId) }),
+        regenSearchDegraded: null,
       });
       if (dropped) followRemoteRun(slotId, editConvId);
       debugLog.flush('regenerate-error', { slotId });
@@ -2200,6 +2207,8 @@ export async function streamRegenerateForSlot(
       ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,
       regenerateMessageId: null,
+      ...(dropped ? {} : { searchDegraded: keptSearchDegraded(slotId) }),
+      regenSearchDegraded: null,
       streamingAssistantId: null,
       streamingContent: '',
       currentStatusMessage: null,
@@ -2265,6 +2274,8 @@ export function cancelStreamForSlot(slotId: string): void {
       stopping: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
+      ...(slot.regenerateMessageId ? { searchDegraded: keptSearchDegraded(slotId) } : {}),
+      regenSearchDegraded: null,
     });
     if (isTemp) {
       store.clearPendingConversation(slotId);
@@ -2329,6 +2340,9 @@ export function cancelStreamForSlot(slotId: string): void {
       stopping: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
+      // A regenerate stopped before any text arrived leaves the old answer on screen: its note stays.
+      ...(cur.regenerateMessageId && messages === cur.messages ? { searchDegraded: keptSearchDegraded(slotId) } : {}),
+      regenSearchDegraded: null,
       messages,
     });
     if (cur.isTemp) {
