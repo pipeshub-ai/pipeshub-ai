@@ -24895,7 +24895,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks `conversation:chat`, or the conversation of `previous_response_id` is not the caller's.
+          description: The token lacks `conversation:chat`.
           content:
             application/json:
               schema:
