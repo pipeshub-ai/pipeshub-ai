@@ -26,6 +26,7 @@ on:
       - 'backend/python/app/services/graph_db/graph_db_provider_factory.py'
       - 'backend/python/app/models/permission.py'
       - 'backend/python/tests/integration/graph_db/postgres/**'
+      - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
       - 'backend/python/pyproject.toml'
