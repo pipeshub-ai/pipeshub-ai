@@ -1487,7 +1487,8 @@
       "internalSearch": "Interne Suche",
       "webSearch": "Websuche",
       "internalAndWebSearch": "Interne + Websuche"
-    }
+    },
+    "searchDegraded": "Die Ergebnisse sind möglicherweise unvollständig."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",

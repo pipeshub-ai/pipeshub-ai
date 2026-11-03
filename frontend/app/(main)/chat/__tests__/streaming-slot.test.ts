@@ -91,6 +91,35 @@ function newSlot(convId: string | null = null): string {
 }
 
 const slot = (id: string) => useChatStore.getState().slots[id];
+/** Ids of the assistant rows that carry the partial-search note. */
+const degradedRows = (id: string) =>
+  slot(id).messages
+    .filter((m) => m.role === 'assistant' && (m.metadata?.custom as { searchDegraded?: boolean } | undefined)?.searchDegraded === true)
+    .map((m) => m.id);
+const regenOptions = { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' };
+const degradedSlot = () => {
+  const slotId = newSlot('conv-1');
+  useChatStore.getState().updateSlot(slotId, {
+    messages: [
+      { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+      { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }], metadata: { custom: { searchDegraded: true } } },
+    ],
+  });
+  return slotId;
+};
+/** The same old answer under a row id that differs from its backend message id (the id regenerate names). */
+const degradedSlotWithBackendId = () => {
+  const slotId = newSlot('conv-1');
+  useChatStore.getState().updateSlot(slotId, {
+    messages: [
+      { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+      { id: 'row-a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }], metadata: { custom: { messageId: 'a1', searchDegraded: true } } },
+    ],
+  });
+  return slotId;
+};
+
+
 const texts = (id: string) => slot(id).messages.map((m) => [m.role, getThreadMessagePlainText(m)]);
 
 function respondWith(plan: StreamPlan | string[] | Response) {
@@ -190,6 +219,39 @@ describe('a new conversation, start to finish', () => {
 
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['b1']);
     expect(useChatStore.getState().slots).toEqual({});
+  });
+
+  it('puts the degraded-search note on the answer it belongs to, and the next answer does not inherit it', async () => {
+    const slotId = newSlot();
+    const finish = (meta: Record<string, unknown>) => respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue was $4.2M.' }),
+      frame('TEXT_MESSAGE_END'),
+      frame('RUN_FINISHED', { result: { conversation: finishedConversation('Revenue was $4.2M.'), meta } }),
+    ]);
+
+    finish({ searchDegraded: true });
+    await streamMessageForSlot(slotId, Q, request());
+    expect(degradedRows(slotId)).toHaveLength(1);
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const secondTurn = {
+      ...finishedConversation('x'),
+      messages: [
+        ...finishedConversation('x').messages,
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: 'And Q4?' }),
+        storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Q4 was lower.' }),
+      ],
+    };
+    fetchMock.mockImplementationOnce(async () => { await gate; return sseResponse([frame('RUN_FINISHED', { result: { conversation: secondTurn, meta: {} } })]); });
+    const earlier = degradedRows(slotId);
+    const next = streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-real' }));
+    release();
+    await next;
+    // the new answer has no note of its own and the earlier one keeps its note
+    expect(earlier).toEqual(['a1']);
+    expect(degradedRows(slotId)).toEqual(['a1']);
   });
 
   it('ignores an artifact event with no payload instead of failing the run', async () => {
@@ -519,6 +581,121 @@ describe('Stop, when the stream then closes without a terminal frame', () => {
       ['assistant', 'Revenue was'],
     ]);
     expect(s.messages[1].metadata?.custom?.status).toBe('stopped');
+  });
+
+  it('keeps the old answer\'s degraded-search note when a regenerate is stopped before any text arrives', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlot();
+    const close = openBody();
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).regenerateMessageId).toBe('a1'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const s = slot(slotId);
+    expect(s.isStreaming).toBe(false);
+    expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
+    expect(degradedRows(slotId)).toEqual(['a1']);
+  });
+
+  it('drops the old note when the stopped regenerate had already replaced the answer with streamed text', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlot();
+    const close = openBody(frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new text' }));
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('new text'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(texts(slotId)[1]).toEqual(['assistant', 'new text']);
+    expect(degradedRows(slotId)).toEqual([]);
+  });
+
+  it('keeps the old answer\'s degraded-search note when a regenerate with no run id is cancelled', async () => {
+    const slotId = degradedSlot();
+    const close = openBody();
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).regenerateMessageId).toBe('a1'));
+    useChatStore.getState().updateSlot(slotId, { runId: null });
+
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+
+    expect(slot(slotId).isStreaming).toBe(false);
+    expect(degradedRows(slotId)).toEqual(['a1']);
+  });
+
+  it('stopped before any text, the old answer under a different row id keeps its note', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlotWithBackendId();
+    const close = openBody();
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).regenerateMessageId).toBe('a1'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
+    expect(degradedRows(slotId)).toEqual(['row-a1']);
+  });
+
+  it('stopped after text, the answer under a different row id is replaced by the streamed text and drops the old note', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlotWithBackendId();
+    const close = openBody(frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new text' }));
+    const run = streamRegenerateForSlot(slotId, 'a1', regenOptions);
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('new text'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close();
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(texts(slotId)[1]).toEqual(['assistant', 'new text']);
+    expect(degradedRows(slotId)).toEqual([]);
+  });
+
+
+  it('does not put the note on an earlier answer when a new turn is stopped before it produced a reply', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlot();
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    const stoppedTurn = {
+      ...finishedConversation('x'),
+      messages: [
+        ...finishedConversation('x').messages,
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: 'And Q4?' }),
+      ],
+    };
+    const close = openBody();
+    const run = streamMessageForSlot(slotId, 'And Q4?', request({ query: 'And Q4?', conversationId: 'conv-1' }));
+    await vi.waitFor(() => expect(slot(slotId).isStreaming).toBe(true));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close(frame('RUN_FINISHED', { result: { conversation: stoppedTurn, meta: { searchDegraded: true } } }));
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(degradedRows(slotId)).toEqual([]);
   });
 
   it('keeps the partial answer as a stopped reply when the Stop comes back as an abort RUN_ERROR', async () => {
@@ -1313,6 +1490,131 @@ describe('regenerating an answer', () => {
     await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
 
     expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ assistantMessageId: 'a1', status: 'pending' });
+  });
+
+  it('shows the degraded-search note on a regenerated answer', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: { meta: { searchDegraded: true } } })]);
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: { ...finishedConversation('new answer'), id: 'conv-1' } },
+    });
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(degradedRows(slotId)).toEqual(['a1']);
+  });
+
+  it('keeps the degraded-search note of the old answer when the regenerate request fails', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }], metadata: { custom: { searchDegraded: true } } },
+      ],
+    });
+    respondWith(jsonResponse(500, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(degradedRows(slotId)).toEqual(['a1']);
+  });
+
+  it('keeps the degraded-search note of the old answer when reloading the regenerated one fails', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }], metadata: { custom: { searchDegraded: true } } },
+      ],
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: { meta: {} } })]);
+    vi.spyOn(apiClient, 'get').mockRejectedValueOnce(new Error('reload failed'));
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(degradedRows(slotId)).toEqual(['a1']);
+  });
+
+  describe('the note stays with its answer on every way a regenerate can end', () => {
+    const cardCustom = {
+      searchDegraded: true,
+      persistedAskUserQuestion: { name: 'ask_user_question', questions: [{ question: 'Which region?', options: [{ label: 'EU' }] }] },
+      persistedAskUserQuestionAnswers: { q1: { questionUuid: 'q1', selectedOptionIds: ['o1'], userInputs: {} } },
+    };
+    const answeredCardSlot = () => {
+      const slotId = newSlot('conv-1');
+      useChatStore.getState().updateSlot(slotId, {
+        messages: [
+          { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+          { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }], metadata: { custom: cardCustom } },
+        ],
+      });
+      return slotId;
+    };
+    const failingBody = () => {
+      const encoder = new TextEncoder();
+      fetchMock.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(frame('TEXT_MESSAGE_START')));
+          controller.error(new Error('connection lost'));
+        },
+      }), { status: 200 }));
+    };
+
+    it('an edited question whose request is refused keeps the old answer and its note', async () => {
+      const slotId = degradedSlot();
+      respondWith(jsonResponse(500, {}));
+      await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      expect(degradedRows(slotId)).toEqual(['a1']);
+    });
+
+    it('an edited question whose stream drops mid-way (the server may still finish it) keeps the old answer\'s note', async () => {
+      const slotId = degradedSlot();
+      failingBody();
+      await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
+      expect(degradedRows(slotId)).toEqual(['a1']);
+      expect(slot(slotId).remoteRunInProgress).toBe(true);
+    });
+
+    it('an edited question whose request fails outright (the server may still run it) keeps the old answer\'s note', async () => {
+      const slotId = degradedSlot();
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+      await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
+      expect(degradedRows(slotId)).toEqual(['a1']);
+      expect(slot(slotId).remoteRunInProgress).toBe(true);
+    });
+
+    it('an answered question card regenerated and refused keeps the answer\'s note', async () => {
+      const slotId = answeredCardSlot();
+      respondWith(jsonResponse(500, {}));
+      await streamRegenerateForSlot(slotId, 'a1', regenOptions);
+      expect(degradedRows(slotId)).toEqual(['a1']);
+    });
+
+    it('an answered question card whose regenerate stream drops keeps the answer\'s note (the card goes, the note stays)', async () => {
+      const slotId = answeredCardSlot();
+      failingBody();
+      await streamRegenerateForSlot(slotId, 'a1', regenOptions);
+      expect(degradedRows(slotId)).toEqual(['a1']);
+    });
+
+    it('a regenerated answer without a partial search does not inherit the old answer\'s note', async () => {
+      const slotId = degradedSlot();
+      respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: { meta: {} } })]);
+      vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+        data: { conversation: { ...finishedConversation('new answer'), id: 'conv-1' } },
+      });
+      await streamRegenerateForSlot(slotId, 'a1', regenOptions);
+      expect(degradedRows(slotId)).toEqual([]);
+    });
   });
 
   it('leaves the previous answer in place when the regenerate request fails', async () => {
