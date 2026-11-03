@@ -1,5 +1,6 @@
 """Unit tests for ``ops/entity_records.py`` (``find_records_by_entity`` and
 record-group scoping for ``search(entity_ids)``)."""
+import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -151,6 +152,31 @@ class TestFindRecordsByEntity:
         assert ok and 'Pinecrest (organization): knowledgegraph__find_records_by_entity(entity_id="short-1"' in first
         assert "add them to a count" in first
         assert ok_next and "learned alias" not in later
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_alias_lookup_is_left_out_and_the_listing_still_returns(
+        self, patched, monkeypatch,
+    ) -> None:
+        """The alias note is optional: a graph read inside it that never answers must not
+        hold the listing, and the reply must read as one with no alias."""
+        async def stall(*_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "alias_family", stall)
+        monkeypatch.setattr(entity_records, "ALIAS_NOTE_SECONDS", 0.05, raising=False)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+
+        ok, listed = await asyncio.wait_for(
+            execute_find_records_by_entity(_state(), "e1", entity_type="named_entity"), timeout=2,
+        )
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor=None)
+        ok_empty, empty = await asyncio.wait_for(
+            execute_find_records_by_entity(_state(), "e1", entity_type="named_entity"), timeout=2,
+        )
+
+        assert ok and "record_id=r1" in listed and "learned alias" not in listed
+        assert (ok_empty, empty) == (True, NO_ACCESSIBLE_RECORDS_MSG)
 
     @pytest.mark.asyncio
     async def test_no_alias_note_for_other_entity_types_or_when_turned_off(self, patched, monkeypatch) -> None:

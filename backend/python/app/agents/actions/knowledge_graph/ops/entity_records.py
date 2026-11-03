@@ -8,6 +8,7 @@ response, so the tool never confirms that inaccessible data exists.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,7 @@ from app.modules.named_entities.domain.config import load_named_entity_config
 from app.modules.named_entities.linking.candidates import alias_family
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
+    SEARCH_DEADLINE_SECONDS,
     SEARCH_SCOPE_MAX_ENTITIES,
     SEARCH_SCOPE_MAX_RECORDS,
     SEARCH_SCOPE_MAX_SCAN,
@@ -64,6 +66,10 @@ NAMED_ENTITY_TYPE = "named_entity"
 _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
 _MAX_READ_HINT_IDS = 8
+# The alias note is optional, but its keyed reads (the nodes, their alias carriers,
+# readable spellings) have no deadline of their own; a second above the alias probe's
+# own deadline lets a slow probe still answer.
+ALIAS_NOTE_SECONDS = SEARCH_DEADLINE_SECONDS + 1.0
 NO_ACCESSIBLE_RECORDS_MSG = "No accessible records found for this entity."
 NO_FURTHER_RECORDS_MSG = (
     "No further accessible records for this entity - the previous page was the last."
@@ -167,9 +173,14 @@ async def _alias_note(state: "ChatState", context: EntityAccessContext, entity_i
     if entity_type != NAMED_ENTITY_TYPE:
         return ""
     try:
-        if not (await load_named_entity_config(state.get("config_service"))).link_aliases:
-            return ""
-        family = await alias_family(state["graph_provider"], context, entity_id)
+        family = await asyncio.wait_for(_linked_aliases(state, context, entity_id), timeout=ALIAS_NOTE_SECONDS)
+    except TimeoutError:
+        # Left out exactly as when there is no alias, so a slow lookup says nothing more.
+        logger.warning(
+            "find_records_by_entity: alias lookup timed out org=%s entity=%s after %.1fs",
+            context.org_id, entity_id, ALIAS_NOTE_SECONDS,
+        )
+        return ""
     except Exception:
         # Only a pointer to more records: the listing stands without it.
         logger.warning("find_records_by_entity: alias lookup failed", exc_info=True)
@@ -185,6 +196,12 @@ async def _alias_note(state: "ChatState", context: EntityAccessContext, entity_i
         f"\nThe same entity is also stored under a learned alias; list these too for every record "
         f"(and add them to a count): {calls}."
     )
+
+
+async def _linked_aliases(state: "ChatState", context: EntityAccessContext, entity_id: str) -> list[dict[str, Any]]:
+    if not (await load_named_entity_config(state.get("config_service"))).link_aliases:
+        return []
+    return await alias_family(state["graph_provider"], context, entity_id)
 
 
 def _continue_call(entity_ref: str, entity_type: str, cursor: str) -> str:
