@@ -75,8 +75,8 @@ export async function accessibleProjectIdsFor(
  */
 function assertProjectReadScope(caller: ProjectCaller | undefined): void {
   const scopes = caller?.oauthScopes;
-  if (scopes && !scopes.includes(OAuthScopeNames.PROJECT_READ)) {
-    caller?.onScopeDenied?.();
+  if (caller && scopes && !scopes.includes(OAuthScopeNames.PROJECT_READ)) {
+    caller.onScopeDenied?.();
     throw new ForbiddenError(
       `Insufficient scope. Required: ${OAuthScopeNames.PROJECT_READ}`,
     );
