@@ -82,6 +82,7 @@ function ArtifactsPageContent() {
   const clearFilters = useArtifactsStore((s) => s.clearFilters);
 
   const hydratedRef = useRef(false);
+  const [isHydrated, setIsHydrated] = useState(false);
   const skipUrlSyncRef = useRef(true);
 
   useEffect(() => {
@@ -103,6 +104,7 @@ function ArtifactsPageContent() {
       setIsSearchActive(true);
     }
     hydratedRef.current = true;
+    setIsHydrated(true);
   }, [searchParams, hydrateFromUrl]);
 
   const listParams = useMemo(
@@ -138,9 +140,11 @@ function ArtifactsPageContent() {
     }
   }, [listParams, setError, setItems, setLoading, t]);
 
+  // Wait for the URL's filters: listing with the params from before hydration
+  // and again with the hydrated ones made two identical requests per visit.
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (isHydrated) void load();
+  }, [isHydrated, load]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;

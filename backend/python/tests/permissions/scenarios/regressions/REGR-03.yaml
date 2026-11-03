@@ -1,0 +1,39 @@
+- id: REGR-03
+  title: 'Org grants: only ORG/ORGANIZATION-typed edges grant, only to org members; the member leaves'
+  source: independent review of the conformance harness
+  rule: org-grant
+  world:
+    principals:
+      - {id: u}
+      - {id: x, org_member: false}
+    nodes:
+      - {id: D, kind: app}
+      - {id: F, kind: group, connector: D, rule: OPEN, parents: [D], belongs: [D]}
+      - {id: r-org, kind: record, connector: D, rule: OPEN, parents: [F]}
+      - {id: r-orgz, kind: record, connector: D, rule: OPEN, parents: [F]}
+      - {id: r-domain, kind: record, connector: D, rule: OPEN, parents: [F]}
+      - {id: r-user, kind: record, connector: D, rule: OPEN, parents: [F]}
+      - {id: r-anyone, kind: record, connector: D, rule: OPEN, parents: [F]}
+      - {id: up-org, kind: record, connector: no-app, rule: OPEN, origin: UPLOAD}
+      - {id: up-domain, kind: record, connector: no-app, rule: OPEN, origin: UPLOAD}
+    grants:
+      - [org, r-org, ORG]
+      - [org, r-orgz, ORGANIZATION]
+      - [org, r-domain, DOMAIN]
+      - [org, r-user]
+      - [org, r-anyone, ANYONE]
+      - [org, up-org, ORGANIZATION]
+      - [org, up-domain, DOMAIN]
+    gates:
+      - [u, D]
+      - [x, D]
+  mutations:
+    - {kind: user_removed, node: u}
+  expect:
+    before:
+      u: {r-org: admit, r-orgz: admit, r-domain: deny, r-user: deny, r-anyone: deny, up-org: admit, up-domain: deny}
+      x: {r-org: deny, r-orgz: deny, up-org: deny}
+    verdicts:
+      u: {r-org: deny, r-orgz: deny, up-org: deny}
+  tags: [regression, qa, org-grant, upload]
+  comment: x is gated but not an org member. ANYONE is not storable on ArangoDB (its schema rejects the type).
