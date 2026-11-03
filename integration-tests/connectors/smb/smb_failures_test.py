@@ -63,7 +63,7 @@ def succeeded(outcome: str | None) -> bool:
 
 
 class SmbWorld:
-    """One personal connector on one folder of the share; its creator must be able to open its records."""
+    """One team connector on one folder of the share; its creator must be able to open its records."""
 
     def __init__(self, client: PipeshubClient, storage: SmbStorageHelper) -> None:
         self.client = client
@@ -91,7 +91,8 @@ class SmbWorld:
             self.write(rel, data)
         config = smb_connector_config()
         created = self.client.create_connector(
-            connector_type="SMB", instance_name=f"smb-it-{uuid.uuid4().hex[:6]}", scope="personal",
+            # The test share is on a private address, which personal connectors cannot reach.
+            connector_type="SMB", instance_name=f"smb-it-{uuid.uuid4().hex[:6]}", scope="team",
             config=config, auth_type="BASIC_AUTH",
         )
         self.connector_id = created.connector_id
