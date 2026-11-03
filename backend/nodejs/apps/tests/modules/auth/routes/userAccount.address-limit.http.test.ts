@@ -42,6 +42,8 @@ describe('per-address limit on the public sign-in routes (HTTP)', () => {
 
   beforeEach(async () => {
     process.env.ADDRESS_RATE_LIMIT_PER_MINUTE = '5';
+    // Date only, fixed 20 s into a minute (the counter is per clock minute); restored by sinon.restore() below
+    sinon.useFakeTimers({ now: 1_700_000_000_000, toFake: ['Date'] });
     counts = new Map();
     authenticated = sinon.stub().callsFake((_req: unknown, res: express.Response) => res.status(200).json({ message: 'Fully authenticated' }));
     const logger = { debug: sinon.stub(), info: sinon.stub(), warn: sinon.stub(), error: sinon.stub() } as unknown as Logger;

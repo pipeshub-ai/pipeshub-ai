@@ -29,6 +29,14 @@ const run = async (mw: any, email?: string, res: any = { setHeader: sinon.stub()
 }
 
 describe('per-address rate limiter', () => {
+  // Date only, fixed 20 s into a minute: the counter is per clock minute, and a rollover mid-test would split it
+  beforeEach(() => {
+    sinon.useFakeTimers({ now: 1_700_000_000_000, toFake: ['Date'] })
+  })
+  afterEach(() => {
+    sinon.restore()
+  })
+
   it('lets the first requests about an address through and refuses the ones over the limit', async () => {
     const redis = counter()
     const mw = createEmailRateLimiter(redis as any, logger, { prefix: 'address-lookup', maxPerMinute: 3, emailOf: (r) => r.body?.email })
