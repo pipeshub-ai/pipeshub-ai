@@ -59,7 +59,7 @@ class Scope:
     def key(self) -> str:
         """A cache key: a digest of a canonical encoding, equal for equal scopes (lists and extra conditions) and, unlike ``hash()``, the
         same in every process and without collisions to speak of."""
-        canon = json.dumps([self.args(), repr(self.extra)], separators=(",", ":"), default=list)
+        canon = json.dumps([self.args(), repr(self.extra)], separators=(",", ":"))
         return hashlib.sha256(canon.encode()).hexdigest()
 
     def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
