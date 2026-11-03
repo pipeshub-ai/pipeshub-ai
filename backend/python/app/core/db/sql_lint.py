@@ -6,6 +6,12 @@
   org-partitioned table, in the same scope. A correlation (``c.org_id = p.org_id``) does not count.
 
 The runtime module itself is exempt: it is the only place allowed to set a role or a setting.
+
+String building is followed where it is visible in one function: an f-string, ``%``, ``.format``, ``+`` with a non-constant operand,
+``q += <non-constant>``, a conditional expression with a built branch, the argument or a ``query=`` / ``sql=`` keyword. Joining pure
+constants (``"SELECT ..." + "WHERE a = $1"``, ``q += " AND b = $2"``) is not building. Known limits (not seen): statements built with
+``str.join``, through an alias (``r = q``), in a module-level f-string constant, in another function that returns the text, or by a wrapper
+helper such as ``_q(tx, f"...")``; names that arrive as arguments. The pin tests of the modules that build statements cover those.
 """
 
 from __future__ import annotations
@@ -67,55 +73,102 @@ def sql_rules(sql: str) -> list[str]:
     return out
 
 
-def _sql_text(node: ast.expr) -> tuple[str | None, bool]:
-    """(constant text or None, is_string_built)."""
+_Env = dict[str, list[tuple[ast.expr, bool]]]       # name -> (assigned value, assigned by ``+=``) for each assignment
+_STATEMENT_KEYWORDS = {"query", "sql", "statement", "stmt"}
+
+
+def _pure(node: ast.expr, env: _Env, seen: tuple[str, ...] = ()) -> str | None:
+    """The text of a pure string constant: a literal, a ``+`` of pure constants, or a name assigned exactly once to one. Else None."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value, False
+        return node.value
+    if isinstance(node, ast.JoinedStr) and all(isinstance(v, ast.Constant) for v in node.values):
+        return "".join(str(v.value) for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _pure(node.left, env, seen), _pure(node.right, env, seen)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.Name) and node.id not in seen and len(env.get(node.id, [])) == 1:
+        value, augmented = env[node.id][0]
+        return None if augmented else _pure(value, env, (*seen, node.id))
+    return None
+
+
+def _sql_text(node: ast.expr, env: _Env | None = None) -> tuple[str | None, bool]:
+    """(constant text or None, is_string_built). Joining pure constants (``"a" + "b"``, ``PREFIX + "..."``) is not building."""
+    env = env or {}
+    pure = _pure(node, env)
+    if pure is not None:
+        return pure, False
     if isinstance(node, ast.JoinedStr):
-        text = "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
-        return text, any(isinstance(v, ast.FormattedValue) for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
-        left, _ = _sql_text(node.left)
-        return left, True
+        return "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str)), True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Mod):
+        left, _ = _sql_text(node.left, env)
+        right, _ = _sql_text(node.right, env) if isinstance(node.op, ast.Add) else (None, False)
+        return (left or "") + (right or "") or None, True
+    if isinstance(node, ast.IfExp):
+        (a, a_built), (b, b_built) = _sql_text(node.body, env), _sql_text(node.orelse, env)
+        return (a if a is not None else b), a_built or b_built
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-        text, _ = _sql_text(node.func.value)
+        text, _ = _sql_text(node.func.value, env)
         return text, True
     return None, False
 
 
-def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> dict[str, list[ast.expr]]:
-    """The values assigned to plain local names in the functions around ``call`` (``q = ...``, ``q: str = ...``, ``q += ...``). A statement
-    built into a variable and passed by name is as built as one built in the call; only simple local assignments are followed, not
-    module-level constants (composed from other constants when the module loads) and not names that arrive as arguments."""
-    out: dict[str, list[ast.expr]] = {}
+def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[_Env, set[str]]:
+    """The values assigned to plain local names in the functions around ``call`` (``q = ...``, ``q: str = ...``, ``q += ...``), and the
+    module's own plain assignments (for names of constants). Only simple assignments are followed: not names that arrive as arguments, and not
+    aliases, joins or wrapper helpers (see the module docstring)."""
+    out: _Env = {}
+
+    def collect(scope: ast.AST, *, walk: bool) -> None:
+        for n in (ast.walk(scope) if walk else getattr(scope, "body", [])):
+            if isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        out.setdefault(t.id, []).append((n.value, False))
+            elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value is not None:
+                out.setdefault(n.target.id, []).append((n.value, False))
+            elif walk and isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and isinstance(n.op, ast.Add | ast.Mod):
+                out.setdefault(n.target.id, []).append((n.value, True))
+
     node: ast.AST | None = call
+    scopes: list[ast.AST] = []
     while node is not None:
         node = parents.get(node)
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            for n in ast.walk(node):
-                if isinstance(n, ast.Assign):
-                    for t in n.targets:
-                        if isinstance(t, ast.Name):
-                            out.setdefault(t.id, []).append(n.value)
-                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value is not None:
-                    out.setdefault(n.target.id, []).append(n.value)
-                elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and isinstance(n.op, ast.Add | ast.Mod):
-                    out.setdefault(n.target.id, []).append(ast.BinOp(left=n.target, op=n.op, right=n.value))      # q += ... builds q
-    return out
+            scopes.append(node)
+        elif isinstance(node, ast.Module):
+            collect(node, walk=False)      # module-level constants first: a local name of the same spelling replaces them below
+    module = dict(out)
+    out.clear()
+    for scope in reversed(scopes):         # outermost first
+        collect(scope, walk=True)
+    return {**module, **out}, set(out)
 
 
 def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[str | None, bool]:
     """(constant text or None, is_string_built) of the statement a call is given: the argument itself, or what the local name it passes
-    was assigned (built when any assignment builds it)."""
-    text, built = _sql_text(arg)
+    was assigned (built when any assignment builds it; ``q += x`` builds unless ``x`` is a pure constant)."""
+    env, local = _local_assignments(call, parents)
+    if isinstance(arg, ast.Name) and arg.id not in local:
+        return None, False               # a module constant or an argument: not followed
+    text, built = _sql_text(arg, env)
     if text is not None or not isinstance(arg, ast.Name):
         return text, built
     built = False
-    for value in _local_assignments(call, parents).get(arg.id, []):
-        value_text, value_built = _sql_text(value)
-        built = built or value_built
-        text = text if text is not None else value_text
+    for value, augmented in env.get(arg.id, []):
+        value_text, value_built = _sql_text(value, env)
+        built = built or value_built or (augmented and _pure(value, env) is None)
+        if augmented:
+            text = (text or "") + (value_text or "") or None
+        elif not text:
+            text = value_text
     return text, built
+
+
+def _statement_argument(node: ast.Call) -> ast.expr | None:
+    if node.args:
+        return node.args[0]
+    return next((k.value for k in node.keywords if k.arg in _STATEMENT_KEYWORDS), None)
 
 
 def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -> list[Finding]:
@@ -123,9 +176,12 @@ def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -
     tree = ast.parse(source)
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _CALLS and node.args):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _CALLS):
             continue
-        text, built = _statement(node.args[0], node, parents)
+        arg = _statement_argument(node)
+        if arg is None:
+            continue
+        text, built = _statement(arg, node, parents)
         if text is None or not (_SQL_START.match(text) or (built and _KEYWORDS.search(text))):
             continue  # not SQL (an HTTP client's execute, a Redis call, ...)
         if built:

@@ -318,9 +318,16 @@ UNTAGGED = "statement without a /* pipeshub:<module>.<fn> */ tag"
     'q: str = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
     'q = "SELECT 1"\n    if x:\n        q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
     'q = f"SELECT * FROM t WHERE a = {x}"\n    async def inner():\n        await tx.fetch(q)',
-], ids=["f-string", "plus", "percent", "format", "augmented", "annotated", "one of two assignments", "read by a nested function"])
+    'P = "/* pipeshub:m.f */ SELECT * FROM t WHERE "\nasync def f(tx, x):\n    await tx.fetch(P + f"a = {x}")',
+    'q = "/* pipeshub:m.f */ SELECT * FROM t"\n    q += f" WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = ""\n    q += f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)',
+    'q = "SELECT * FROM t"\n    q += x\n    await tx.fetch(q)',
+    'await tx.fetch(f"SELECT 1 WHERE a = {x}" if x else "SELECT 2")',
+    'await tx.fetch(query=f"SELECT * FROM t WHERE a = {x}")',
+], ids=["f-string", "plus", "percent", "format", "augmented", "annotated", "one of two assignments", "read by a nested function",
+        "constant prefix plus f-string", "tagged then += f-string", "empty then += f-string", "+= a variable", "conditional expression", "query keyword"])
 def test_a_statement_built_into_a_variable_is_as_built_as_one_built_in_the_call(body) -> None:
-    src = f"async def f(tx, x):\n    {body}\n"
+    src = body if body.startswith("P =") else f"async def f(tx, x):\n    {body}\n"
     assert BUILT in [f.rule for f in sql_lint.scan_source(src)]
 
 
@@ -331,6 +338,18 @@ def test_a_variable_that_holds_a_literal_statement_is_checked_like_the_literal()
     assert [f.rule for f in sql_lint.scan_source(untagged)] == [UNTAGGED]
     session = 'async def f(tx):\n    q = "/* pipeshub:m.f */ SET ROLE x"\n    await tx.execute(q)\n'
     assert any("session SET" in f.rule for f in sql_lint.scan_source(session))
+
+
+@pytest.mark.parametrize("body", [
+    'q = "/* pipeshub:m.f */ SELECT * FROM t WHERE a = $1"\n    q += " AND b = $2"\n    await tx.fetch(q, 1, 2)',
+    'await tx.fetch("/* pipeshub:m.f */ SELECT * FROM t " + "WHERE a = $1", 1)',
+    'await tx.fetch(("/* pipeshub:m.f */ SELECT * FROM t " "WHERE a = $1"), 1)',
+    'q = "/* pipeshub:m.f */ SELECT * FROM t "\n    q += "WHERE a = $1"\n    await tx.fetch(q, 1)',
+    'await tx.fetch("/* pipeshub:m.f */ SELECT 1" if x else "/* pipeshub:m.g */ SELECT 2")',
+    'await tx.fetch(query="/* pipeshub:m.f */ SELECT 1")',
+], ids=["+= a constant", "constant plus constant", "implicit concatenation", "= then += constants", "conditional of constants", "query keyword"])
+def test_joining_pure_constants_is_not_building(body) -> None:
+    assert sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n") == []
 
 
 def test_only_simple_local_assignments_are_followed() -> None:
