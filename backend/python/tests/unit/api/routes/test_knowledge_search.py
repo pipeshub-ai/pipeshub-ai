@@ -136,6 +136,16 @@ def test_grep_accepts_code_tokens(pattern) -> None:
     assert ks._grep_command(ks.GrepQuery(pattern=pattern))[0].startswith("grep -rci")
 
 
+@pytest.mark.parametrize("pattern", ["compute_invoice_total_v2", "a.bcd", r"^\d+$", "ab", "café"])
+@pytest.mark.parametrize("use_regex", [False, True])
+@pytest.mark.parametrize("case_sensitive", [False, True])
+def test_grep_command_is_one_the_explicit_command_rules_accept(pattern, use_regex, case_sensitive) -> None:
+    from app.utils.pattern_match import _explicit_command_error
+
+    command, _ = ks._grep_command(ks.GrepQuery(pattern=pattern, regex=use_regex, caseSensitive=case_sensitive))
+    assert _explicit_command_error(command, readable_only=True) is None
+
+
 def test_grep_command_is_a_fixed_string_of_plain_characters() -> None:
     assert ks._grep_command(ks.GrepQuery(pattern="a.bcd"))[0] == "grep -rciE -e 'bcd|\"isCompressed\": true' ."
     assert ks._grep_command(ks.GrepQuery(pattern="a.bcd", regex=True, caseSensitive=True))[0] == "grep -rcE -e 'bcd|\"isCompressed\": true' ."
