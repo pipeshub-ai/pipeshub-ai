@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.agents.actions.storage_search.storage_search import (
     _GREP_SHORT_VALUE_LETTERS,
     _SHORT_VALUE_LETTERS,
+    _MAX_FIND_RECORDS,
     StoragePatternMatch,
     _validate_command,
     is_local_storage,
@@ -590,6 +591,9 @@ def _explicit_command_error(command: str, *, readable_only: bool) -> str | None:
     _, short, long_flags = parsed
     if not (short & {"l", "c"} or long_flags & {"--files-with-matches", "--count"}):
         return "the command must list files (-l, --files-with-matches) or count matches (-c, --count)"
+    ok, err = _validate_command(command)
+    if not ok:
+        return err
     if readable_only:
         ok, err = validate_pattern_match_command(command)
         if not ok:
@@ -1234,7 +1238,14 @@ async def run_pattern_match_with_llm_grep(
     With *retrieval_service* and a store that keeps a lexical index, each
     command is answered from that index (``exact_text_index``), and only a
     command it cannot express is scanned file by file.
+
+    *max_records_per_connector* must be at least 1; a scan lists at most
+    ``_MAX_FIND_RECORDS`` records per connector, so a larger value is lowered to
+    that here and the merge and the scans use the same cap.
     """
+    if max_records_per_connector < 1:
+        raise ValueError("max_records_per_connector must be at least 1")
+    max_records_per_connector = min(max_records_per_connector, _MAX_FIND_RECORDS)
     if commands is not None and not commands:
         raise ValueError("commands must not be empty: pass None to let the search choose its own")
     for cmd in commands or []:
