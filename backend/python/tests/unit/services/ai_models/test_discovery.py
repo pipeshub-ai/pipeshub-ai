@@ -117,6 +117,24 @@ async def test_openai_wrong_regional_host_names_the_base_url_to_use() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_gateway_passing_on_a_wrong_openai_region_keeps_its_base_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {
+            "message": "Attempted to access resource with incorrect regional hostname. "
+                       "Please make your request to us.api.openai.com",
+            "type": "invalid_request_error", "param": None, "code": "incorrect_hostname",
+        }})
+
+    result = await _service(handler).discover(DiscoveryRequest(
+        provider="openAICompatible",
+        configuration={"apiKey": "sk-secret", "endpoint": "https://litellm.internal:4000/v1"},
+    ))
+    assert result.error_code.value == "auth_error"
+    assert "Change the Base URL" not in result.message
+    assert "https://us.api.openai.com/v1" in result.message
+
+
+@pytest.mark.asyncio
 async def test_anthropic_paginates_with_after_id():
     seen = []
 

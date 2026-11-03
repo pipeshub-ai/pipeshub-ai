@@ -12,7 +12,7 @@ from app.services.ai_models.discovery.types import (
 )
 from app.utils.aimodels import require_allowed_endpoint
 from app.utils.model_egress import guarded_async_client
-from app.utils.openai_hosts import openai_wrong_host
+from app.utils.openai_hosts import openai_wrong_host, openai_wrong_host_message
 
 TIMEOUT_S = 15.0
 MAX_PAGES = 20
@@ -39,15 +39,14 @@ def _auth_error_message(response: httpx.Response | None) -> str:
     host = openai_wrong_host(payload)
     if host is None:
         return "The provider rejected these credentials."
-    if not host:
-        return (
-            "OpenAI serves this API key's project from a different regional host. "
-            "Change the Base URL to that region's host."
-        )
-    return (
-        f"OpenAI serves this API key's project from {host}, not this host. "
-        f"Change the Base URL to https://{host}/v1."
-    )
+    return openai_wrong_host_message(host, _called_url(response))
+
+
+def _called_url(response: httpx.Response | None) -> str | None:
+    try:
+        return str(response.request.url) if response is not None else None
+    except RuntimeError:  # a Response built without its request
+        return None
 
 
 class DiscoveryHttp:

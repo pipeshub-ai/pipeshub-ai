@@ -26,6 +26,7 @@ def _no_dns() -> Iterator[None]:
     ("http://vllm.internal:8000/v1/completions", "http://vllm.internal:8000/v1"),
     ("https://gw.example.com/openai/v1/embeddings", "https://gw.example.com/openai/v1"),
     ("https://gw.example.com/v1/Responses", "https://gw.example.com/v1"),
+    ("https://us.api.openai.com/v1/models", "https://us.api.openai.com/v1"),
 ])
 @pytest.mark.parametrize("provider", ["openAI", "openAICompatible", "litellmProxy"])
 async def test_operation_path_in_endpoint_is_refused_with_the_base_url(

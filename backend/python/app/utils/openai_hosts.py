@@ -67,6 +67,27 @@ def openai_wrong_host(source: object) -> str | None:
     return None
 
 
+def openai_wrong_host_message(wrong_host: str, called_url: str | None, key_label: str = "this API key") -> str:
+    """What to tell the admin after OpenAI's ``incorrect_hostname``.
+
+    *called_url* is the endpoint the request went to; empty means OpenAI's
+    default host. A gateway (LiteLLM, a corporate proxy) passes OpenAI's error
+    on unchanged, and there the gateway's own OpenAI setting is wrong:
+    pointing PipesHub straight at OpenAI would bypass the gateway.
+    """
+    region = wrong_host or "a different regional host"
+    base = f"https://{wrong_host}/v1" if wrong_host else "that region's host"
+    if not called_url or is_openai_api_url(called_url):
+        return (
+            f"OpenAI serves {key_label} from {region}, not from this endpoint. "
+            f"Change the Base URL to {base} in Workspace > AI Models, then try again."
+        )
+    return (
+        f"The service at this Base URL forwards requests to OpenAI, which serves that service's "
+        f"OpenAI key from {region}. Set the service's OpenAI base URL to {base} and keep this Base URL as it is."
+    )
+
+
 # Providers whose endpoint the OpenAI SDK takes as base_url and appends the
 # operation path to. A pasted full URL (".../v1/responses") doubles that path,
 # and the provider's 404 then reads as "model not found".
@@ -74,7 +95,7 @@ OPENAI_SDK_BASE_URL_PROVIDERS = frozenset({
     "openAI", "openAICompatible", "litellmProxy", "lmStudio", "together",
 })
 _OPENAI_OPERATION_PATHS = (
-    "/chat/completions", "/completions", "/responses", "/embeddings",
+    "/chat/completions", "/completions", "/responses", "/embeddings", "/models",
     "/images/generations", "/audio/speech", "/audio/transcriptions",
 )
 

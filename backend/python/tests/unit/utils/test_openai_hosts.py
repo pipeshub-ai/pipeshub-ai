@@ -6,6 +6,7 @@ from app.utils.openai_hosts import (
     is_openai_api_host,
     is_openai_api_url,
     openai_wrong_host,
+    openai_wrong_host_message,
 )
 
 _WRONG_HOST = {
@@ -75,3 +76,28 @@ def test_other_auth_errors_are_not_a_wrong_host() -> None:
     assert openai_wrong_host(_sdk_error({"code": "invalid_api_key", "message": "Incorrect API key"})) is None
     assert openai_wrong_host({"error": "nope"}) is None
     assert openai_wrong_host(None) is None
+
+
+@pytest.mark.parametrize("called", [None, "", "https://api.openai.com/v1/models", "https://US.api.openai.com/v1"])
+def test_wrong_host_on_openai_itself_says_to_change_the_base_url(called: str | None) -> None:
+    message = openai_wrong_host_message("us.api.openai.com", called, "the API key for Team GPT")
+    assert "Change the Base URL to https://us.api.openai.com/v1" in message
+    assert "the API key for Team GPT" in message
+
+
+def test_wrong_host_without_a_named_host_points_at_the_region() -> None:
+    message = openai_wrong_host_message("", "https://api.openai.com/v1")
+    assert "Change the Base URL to that region's host" in message
+
+
+@pytest.mark.parametrize("called", [
+    "https://litellm.internal:4000/v1/chat/completions",
+    "https://api.openai.com.gw.example/v1",
+])
+def test_wrong_host_through_a_gateway_keeps_the_gateway_base_url(called: str) -> None:
+    """A gateway that passes OpenAI's error on needs its own OpenAI setting fixed;
+    pointing PipesHub straight at OpenAI would bypass the gateway."""
+    message = openai_wrong_host_message("us.api.openai.com", called)
+    assert "Change the Base URL" not in message
+    assert "https://us.api.openai.com/v1" in message
+    assert "keep this Base URL" in message

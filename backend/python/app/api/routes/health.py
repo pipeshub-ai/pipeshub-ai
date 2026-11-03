@@ -42,7 +42,11 @@ from app.utils.aimodels import (
     openai_async_client_kwargs,
     require_public_endpoint,
 )
-from app.utils.openai_hosts import endpoint_path_problem, openai_wrong_host
+from app.utils.openai_hosts import (
+    endpoint_path_problem,
+    openai_wrong_host,
+    openai_wrong_host_message,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
 from app.web.deadline import Deadline
@@ -285,14 +289,7 @@ def _rejected_settings_message(
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
     wrong_host = openai_wrong_host(exc) if code == "auth_error" else None
     if wrong_host is not None:
-        target = (
-            f"Change the Base URL to https://{wrong_host}/v1"
-            if wrong_host else "Change the Base URL to that region's host"
-        )
-        return (
-            f"OpenAI serves the API key for {name} from {wrong_host or 'a different regional host'}, "
-            f"not from this endpoint. {target} in Workspace > AI Models, then try again."
-        )
+        return openai_wrong_host_message(wrong_host, configuration.get("endpoint"), f"the API key for {name}")
     if _normalize_provider_key(model_config.get("provider")) == "bedrock":
         from app.utils.aimodels import (
             bedrock_inference_profile_hint,
