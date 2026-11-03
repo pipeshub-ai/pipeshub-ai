@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from app.core.db import KernelDB, Tx
+    from app.core.org_context import OrgContext
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
 
@@ -73,6 +74,10 @@ class TransactionClosed(RuntimeError):
     """A call on an explicit transaction that has already failed, been cancelled or been rolled back."""
 
 
+class TransactionOrgMismatch(RuntimeError):
+    """A call on an explicit transaction ran under another org than the one that began it."""
+
+
 class _Txn:
     """One explicit transaction: a task that owns a unit of work and runs what it is handed, so the transaction and the callers'
     other (non-transaction) calls never nest.
@@ -81,8 +86,9 @@ class _Txn:
     error, and later calls fail at once; a caller is never left awaiting a task that is gone. Cancelling the calling task rolls the unit back and
     gives the connection up."""
 
-    def __init__(self, db: KernelDB) -> None:
+    def __init__(self, db: KernelDB, ctx: OrgContext) -> None:
         self._db = db
+        self._who = (ctx.kind, ctx.org_id)       # the org the transaction began under; every call must run under it
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
         self._ended: BaseException | None = None
@@ -124,6 +130,9 @@ class _Txn:
         return e if isinstance(e, Exception) else TransactionClosed("the transaction was cancelled")
 
     async def run(self, fn: Callable[[Tx], Awaitable[Any]]) -> Any:  # noqa: ANN401
+        now = current_or_system()
+        if (now.kind, now.org_id) != self._who:
+            raise TransactionOrgMismatch(f"a transaction begun under org {self._who[1]} was used under org {now.org_id}")
         if self._ended is not None:
             raise self._ended_error()
         if self._task is None:
@@ -172,7 +181,7 @@ class PgBase:
     # ---- plumbing ----------------------------------------------------------------------------------------------
     async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, *, write: bool = False) -> Any:  # noqa: ANN401
         if transaction:
-            return await self._txns[transaction].run(fn)
+            return await self._txn(transaction).run(fn)
         # Fails closed: no ambient org raises MissingOrgContext. A system context (org enumeration at start-up) reads through the jobs role.
         return await self._db.run(fn, write=write, jobs=current_or_system().kind == "system")
 
@@ -190,12 +199,19 @@ class PgBase:
     async def ensure_schema(self) -> bool:
         return True  # the migration branch `graph` owns the schema
 
-    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:  # noqa: FBT001 (the interface's signature)
+    def _txn(self, transaction: str) -> _Txn:
+        try:
+            return self._txns[transaction]
+        except KeyError:
+            raise TransactionClosed(f"no open transaction {transaction}: it was never begun here, or it has ended") from None
+
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         tid = str(uuid.uuid4())
-        self._txns[tid] = _Txn(self._db)
+        self._txns[tid] = _Txn(self._db, current_or_system())     # the org is fixed here
         return tid
 
     async def commit_transaction(self, transaction: str) -> None:
+        self._txn(transaction)
         await self._txns.pop(transaction).finish("commit")
 
     async def rollback_transaction(self, transaction: str) -> None:
@@ -206,7 +222,8 @@ class PgBase:
     def is_write_conflict(self, error: BaseException) -> bool:
         return type(error).__name__ in ("SerializationConflict", "DeadlockDetected", "LockTimeout")
 
-    is_transient_error = lambda self, error, *, explicit=None: self.is_write_conflict(error)  # noqa: E731
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return self.is_write_conflict(error)
 
     @staticmethod
     def _shape(doc: dict, collection: str, fields: list[str] | None) -> dict:

@@ -9,9 +9,12 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from asyncpg.exceptions import InsufficientPrivilegeError
 
-from app.core.org_context import MissingOrgContext
+from app.core.org_context import MissingOrgContext, SystemContextNotAllowed
+from app.services.graph_db.postgres.base import (
+    TransactionClosed,
+    TransactionOrgMismatch,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -129,11 +132,69 @@ async def test_every_call_stays_in_the_ambient_org(pg_provider, orgs, org_ctx) -
         assert (await p.get_document("same", "things"))["v"] == "b"
 
 
-async def test_a_call_without_an_org_fails_instead_of_reading_every_org(pg_provider) -> None:
+_EDGE = {"from_id": "x", "from_collection": "things", "to_id": "y", "to_collection": "things"}
+# every implemented read and write method, as (name, args, kwargs)
+CALLS = [
+    ("get_document", ("k", "things"), {}),
+    ("get_all_documents", ("things",), {}),
+    ("get_documents_paginated", ("things",), {}),
+    ("get_nodes_by_filters", ("things", {"v": "a"}), {}),
+    ("get_nodes_by_field_in", ("things", "v", ["a"]), {}),
+    ("get_existing_keys", ("things", ["k"]), {}),
+    ("batch_upsert_nodes", ([{"_key": "k"}], "things"), {}),
+    ("create_node_if_absent", ("k", "things", {}), {}),
+    ("update_node", ("k", "things", {"v": 1}), {}),
+    ("batch_update_nodes", ([{"_key": "k", "v": 1}], "things"), {}),
+    ("update_node_fields_if_match", ("k", "things", {"v": 1}, {"v": 0}), {}),
+    ("delete_nodes", (["k"], "things"), {}),
+    ("delete_nodes_and_edges", (["k"], "things"), {}),
+    ("batch_create_edges", ([_EDGE], "belongsTo"), {}),
+    ("get_edge", ("x", "things", "y", "things", "belongsTo"), {}),
+    ("get_edges_to_node", ("things/y", "belongsTo"), {}),
+    ("get_edges_from_node", ("things/x", "belongsTo"), {}),
+    ("batch_delete_edges", ([_EDGE], "belongsTo"), {}),
+    ("delete_edge", ("x", "things", "y", "things", "belongsTo"), {}),
+    ("delete_edges_from", ("x", "things", "belongsTo"), {}),
+    ("delete_edges_to", ("y", "things", "belongsTo"), {}),
+]
+
+
+def test_the_no_org_cases_cover_every_method_the_module_implements() -> None:
+    from app.services.graph_db.postgres.core import CoreMixin
+    public = {n for n, f in vars(CoreMixin).items() if not n.startswith("_") and callable(f)}
+    assert public == {c[0] for c in CALLS}
+
+
+@pytest.mark.parametrize(("name", "args", "kwargs"), CALLS, ids=[c[0] for c in CALLS])
+async def test_a_call_without_an_org_fails_instead_of_answering_empty(pg_provider, name, args, kwargs) -> None:
+    """Also for the methods that swallow a database error and answer None or []: a missing org is a programming error, not an empty graph."""
     with pytest.raises(MissingOrgContext):
-        await pg_provider.get_all_documents("things")
-    with pytest.raises(MissingOrgContext):
-        await pg_provider.batch_upsert_nodes([{"_key": "x"}], "things")
+        await getattr(pg_provider, name)(*args, **kwargs)
+
+
+@pytest.mark.parametrize(("name", "args"), [("get_document", ("k", "things")), ("get_nodes_by_filters", ("things", {"v": "a"})),
+                                           ("get_edges_from_node", ("things/x", "belongsTo")), ("get_edges_to_node", ("things/y", "belongsTo"))])
+async def test_a_system_scope_cannot_read_org_data_through_the_swallowing_readers(pg_provider, name, args) -> None:
+    from app.core import org_context
+    with org_context.system("test.system"), pytest.raises(SystemContextNotAllowed):
+        await getattr(pg_provider, name)(*args)
+
+
+async def test_a_repeated_id_in_one_batch_keeps_the_last(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    with org_ctx(a):
+        assert await pg_provider.batch_upsert_nodes([{"_key": "d", "v": 1, "keep": 1}, {"_key": "d", "v": 2}, {"_key": "e"}], "things")
+        got = await pg_provider.get_document("d", "things")
+        assert got["v"] == 2 and "keep" not in got
+
+
+async def test_a_keyset_page_needs_a_key_order(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    with org_ctx(a):
+        await pg_provider.batch_upsert_nodes([{"_key": "k1", "v": 2}, {"_key": "k2", "v": 1}], "things")
+        with pytest.raises(ValueError, match="after_key"):
+            await pg_provider.get_documents_paginated("things", sort_field="v", after_key="k1", raise_on_error=True)
+        assert [d["_key"] for d in await pg_provider.get_documents_paginated("things", sort_field="v")] == ["k2", "k1"]
 
 
 async def test_a_transaction_commits_or_rolls_back_as_a_whole(pg_provider, orgs, org_ctx) -> None:
@@ -153,22 +214,39 @@ async def test_a_transaction_commits_or_rolls_back_as_a_whole(pg_provider, orgs,
         assert await p.get_document("t1", "things") is not None
 
 
-async def test_a_transaction_stays_in_the_org_it_began_in(pg_provider, orgs, org_ctx) -> None:
-    """The unit opens on its first call and row-level security binds it to that call's org: another org's call on it reads nothing and cannot write."""
+async def test_a_transaction_refuses_a_call_of_another_org(pg_provider, orgs, org_ctx) -> None:
+    """The org is fixed when the transaction begins: a call under another org (first or later) raises instead of binding to it or reading nothing."""
     a, b = orgs
     p = pg_provider
     with org_ctx(a):
         await p.batch_upsert_nodes([{"_key": "k", "v": "a"}], "things")
         t = await p.begin_transaction([], [])
         assert (await p.get_document("k", "things", transaction=t))["v"] == "a"
+        t2 = await p.begin_transaction([], [])
     try:
         with org_ctx(b):
-            assert await p.get_document("k", "things", transaction=t) is None
-            with pytest.raises(InsufficientPrivilegeError):          # row-level security refuses the other org's row
+            with pytest.raises(TransactionOrgMismatch):
+                await p.get_document("k", "things", transaction=t, raise_on_error=True)
+            with pytest.raises(TransactionOrgMismatch):
                 await p.batch_upsert_nodes([{"_key": "k2", "v": "b"}], "things", transaction=t)
+            with pytest.raises(TransactionOrgMismatch):      # the first use is under another org
+                await p.batch_upsert_nodes([{"_key": "k3"}], "things", transaction=t2)
     finally:
         await p.rollback_transaction(t)
-    with org_ctx(a):
-        assert (await p.get_document("k", "things"))["v"] == "a"
+        await p.rollback_transaction(t2)
     with org_ctx(b):
-        assert await p.get_document("k2", "things") is None
+        assert await p.get_all_documents("things") == []
+
+
+async def test_an_unknown_or_finished_transaction_is_a_clear_error(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    with org_ctx(a):
+        with pytest.raises(TransactionClosed, match="nope"):
+            await pg_provider.commit_transaction("nope")
+        await pg_provider.rollback_transaction("nope")                                  # tolerated, as on the other stores
+        with pytest.raises(TransactionClosed, match="nope"):
+            await pg_provider.batch_upsert_nodes([{"_key": "k"}], "things", transaction="nope")
+        t = await pg_provider.begin_transaction([], [])
+        await pg_provider.commit_transaction(t)
+        with pytest.raises(TransactionClosed):
+            await pg_provider.commit_transaction(t)

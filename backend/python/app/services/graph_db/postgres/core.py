@@ -35,11 +35,11 @@ class CoreMixin(PgBase):
 
     # ---- generic documents -------------------------------------------------------------------------------------
     async def get_document(self, document_key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
+        org = None if _system_apps(collection) else current_org_id()     # a missing org raises: it is not an empty graph
         try:
-            if _system_apps(collection):
+            if org is None:
                 row = await self._system_read(lambda tx: tx.fetchrow("/* pipeshub:graph.system_app */ SELECT app_id, node_json FROM graph.system_app($1)", document_key))
                 return _arango(_doc(json.loads(row["node_json"])), collection) if row else None
-            org = current_org_id()
             r = await self._q(lambda tx: tx.fetchrow("/* pipeshub:graph.get_document */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3",
                                                     org, collection, document_key), transaction)
             return _arango(_doc(r["doc"]), collection) if r else None
@@ -59,17 +59,25 @@ class CoreMixin(PgBase):
                                       after_key: str | None = None, return_fields: list[str] | None = None) -> list[dict]:
         """A keyset or offset page; ``return_fields`` projects, and a literal predicate on the indexed keys of ``_HOT`` lets the planner use them."""
         key_sort = sort_field in (None, "_key", "id")
+        if after_key is not None and not key_sort:
+            raise ValueError("after_key continues an order by key; with another sort_field use skip and limit")
         if _system_apps(collection):
             return await self._system_apps_page(skip, limit, filters, after_key, return_fields)
         org = current_org_id()          # before the unit opens: a system scope reads no other collection
         keys, vals = [_field(k) for k in (filters or {})], [_j(v) for v in (filters or {}).values()]
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_documents_paginated */ SELECT n.doc FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.id > $3)
-              AND NOT EXISTS (SELECT 1 FROM unnest($8::text[], $9::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
-              AND ($10::text IS NULL OR n.doc->>'recordId' = $10) AND ($11::text IS NULL OR n.doc->>'nameFolded' = $11) AND ($12::text IS NULL OR n.doc->>'filePath' = $12)
-            ORDER BY CASE WHEN $4 THEN n.id ELSE n.doc->>$5 END, n.id OFFSET $6 LIMIT $7""",
-                                                  org, collection, after_key, key_sort, sort_field or "id", skip, limit, keys, vals,
-                                                  *_hot_values(collection, filters)), transaction)
+        hot = _hot_values(collection, filters)
+        if key_sort:      # the primary-key order: the limit stops the scan
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_documents_paginated */ SELECT n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.id > $3)
+                  AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
+                  AND ($8::text IS NULL OR n.doc->>'recordId' = $8) AND ($9::text IS NULL OR n.doc->>'nameFolded' = $9) AND ($10::text IS NULL OR n.doc->>'filePath' = $10)
+                ORDER BY n.id OFFSET $4 LIMIT $5""", org, collection, after_key, skip, limit, keys, vals, *hot), transaction)
+        else:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_documents_paginated_by_field */ SELECT n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2
+                  AND NOT EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) f(k, v) WHERE n.doc->f.k IS DISTINCT FROM f.v::jsonb)
+                  AND ($8::text IS NULL OR n.doc->>'recordId' = $8) AND ($9::text IS NULL OR n.doc->>'nameFolded' = $9) AND ($10::text IS NULL OR n.doc->>'filePath' = $10)
+                ORDER BY n.doc->>$3, n.id OFFSET $4 LIMIT $5""", org, collection, sort_field, skip, limit, keys, vals, *hot), transaction)
         docs = [_arango(_doc(r["doc"]), collection) for r in rows]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
@@ -103,7 +111,7 @@ class CoreMixin(PgBase):
         if not nodes:
             return True
         org = current_org_id()
-        docs = [_node(n, collection) for n in nodes]
+        docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
         # a field set to None is removed (``SET n += {x: null}``), so the nulls are cleared before the merge
         payload = _j([{"id": d["id"], "doc": d} for d in docs])
         clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None])])
@@ -174,6 +182,7 @@ class CoreMixin(PgBase):
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
                                    transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
         """A null filter matches an absent or null field; the indexed keys of ``_HOT`` get a literal predicate."""
+        org = current_org_id()
         keys, vals = list(filters), [_j(v) for v in filters.values()]
         hot = _hot_values(collection, filters)
         try:
@@ -181,7 +190,7 @@ class CoreMixin(PgBase):
                 AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
                     WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)
                 AND ($5::text IS NULL OR n.doc->>'recordId' = $5) AND ($6::text IS NULL OR n.doc->>'nameFolded' = $6) AND ($7::text IS NULL OR n.doc->>'filePath' = $7)""",
-                                                  current_org_id(), collection, [_field(k) for k in keys], vals, *hot), transaction)
+                                                  org, collection, [_field(k) for k in keys], vals, *hot), transaction)
         except Exception:
             if raise_on_error:
                 raise
@@ -267,15 +276,15 @@ class CoreMixin(PgBase):
 
     # A node's edges read its links too: in ``nodeRelations`` that is the hierarchy rows and the link rows (``ekey`` is the link type), and the
     # link collection ``recordLinks`` is the same rows by another name; both edge shapes are given.
-    async def _node_edges(self, node_id: str, edge_collection: str, *, incoming: bool, transaction: str | None) -> list[dict]:
+    async def _node_edges(self, node_id: str, edge_collection: str, *, org: str, incoming: bool, transaction: str | None) -> list[dict]:
         coll, key = node_id.split("/", 1) if "/" in node_id else ("records", node_id)
         colls = _LINK_COLLS if edge_collection == "nodeRelations" else [edge_collection]
         if incoming:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_edges_to_node */ SELECT e.from_coll AS fc, e.from_id AS fi, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4""", current_org_id(), colls, coll, key), transaction)
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4""", org, colls, coll, key), transaction)
         else:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_edges_from_node */ SELECT e.to_coll AS fc, e.to_id AS fi, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4""", current_org_id(), colls, coll, key), transaction)
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4""", org, colls, coll, key), transaction)
         out = []
         for r in rows:
             far_ref = f"{r['fc']}/{r['fi']}"
@@ -286,8 +295,9 @@ class CoreMixin(PgBase):
         return out
 
     async def get_edges_to_node(self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
+        org = current_org_id()
         try:
-            return await self._node_edges(node_id, edge_collection, incoming=True, transaction=transaction)
+            return await self._node_edges(node_id, edge_collection, org=org, incoming=True, transaction=transaction)
         except Exception:
             if raise_on_error:
                 raise
@@ -295,8 +305,9 @@ class CoreMixin(PgBase):
             return []
 
     async def get_edges_from_node(self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
+        org = current_org_id()
         try:
-            return await self._node_edges(node_id, edge_collection, incoming=False, transaction=transaction)
+            return await self._node_edges(node_id, edge_collection, org=org, incoming=False, transaction=transaction)
         except Exception:
             if raise_on_error:
                 raise
