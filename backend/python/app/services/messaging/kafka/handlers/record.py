@@ -871,14 +871,13 @@ class RecordEventHandler(BaseEventService):
             )
             self._edge_request_failures = 0
 
-    async def _hand_over_shared_copy(self, payload: dict) -> None:
+    async def _hand_over_shared_copy(self, payload: dict, org_id: str | None) -> None:
         """The deleted record may be the one its shared content is filed under;
         that copy moves under a record that still holds it.
 
         Never raises: the survivors still read the copy where it is, so a failed
         handover leaves it misfiled, not lost, and must not fail the delete.
         """
-        org_id = payload.get("orgId")
         connector_id = payload.get("connectorId")
         virtual_record_id = payload.get("virtualRecordId")
         if not (org_id and connector_id and virtual_record_id):
@@ -1634,8 +1633,9 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
+                org_id = payload.get("orgId") or None
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    [virtual_record_id], org_id=payload.get("orgId") or None
+                    [virtual_record_id], org_id=org_id
                 )
                 entity_store = self._entity_vector_store()
                 if entity_store is not None:
@@ -1643,7 +1643,6 @@ class RecordEventHandler(BaseEventService):
                     # match no point and strand the entity. The fallback read
                     # is non-raising: the embeddings are already gone, and an
                     # unreadable graph must not fail the delete.
-                    org_id = payload.get("orgId")
                     if not org_id:
                         record_doc = await self.event_processor.graph_provider.get_document(
                             record_id, CollectionNames.RECORDS.value
@@ -1662,7 +1661,7 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
-                await self._hand_over_shared_copy(payload)
+                await self._hand_over_shared_copy(payload, org_id)
                 await self._request_code_edge_build_for_deleted(payload)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
