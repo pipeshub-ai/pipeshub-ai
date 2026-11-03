@@ -38,9 +38,13 @@ RETURN n.id AS id, CASE WHEN n:Record THEN 'record' WHEN n:RecordGroup THEN 'gro
        EXISTS {{ (n)-[:BELONGS_TO]->(:App) }} AS belongsApp
 """
 
+# Paged by the (connectorId, id) index in its order (ensure_schema creates it), as the knowledge-hub scope read does: the cursor seeks, and
+# nothing sorts the connector's records. The hint fails the read, never the answer, when the index is missing.
 PAGE = """
-MATCH (r:Record) WHERE r.connectorId = $app AND r.orgId = $org AND ($after IS NULL OR r.id > $after)
-RETURN r.id AS id ORDER BY r.id LIMIT $limit
+MATCH (r:Record) USING INDEX r:Record(connectorId, id)
+WHERE r.connectorId = $app AND r.id > $after AND r.orgId = $org
+WITH r ORDER BY r.connectorId, r.id LIMIT $limit
+RETURN r.id AS id
 """
 
 
@@ -80,7 +84,7 @@ class Neo4jStampGraph:
         return {n.id: n for n in map(to_node, rows)}
 
     async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
-        return [str(r["id"]) for r in await self._rows(PAGE, app=app_id, org=org_id, after=after, limit=limit)]
+        return [str(r["id"]) for r in await self._rows(PAGE, app=app_id, org=org_id, after=after or "", limit=limit)]
 
 
 instrument_org_methods(Neo4jStampGraph)

@@ -18,6 +18,13 @@ import sys
 EXIT_FAILED = 1
 
 
+def _pages(raw: str) -> int:
+    n = int(raw)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scope_projection", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -27,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--connector", action="append", required=True, help="connector instance (app) id")
     run = sub.choices["run"]
     run.add_argument("--restart", action="store_true")
-    run.add_argument("--max-pages", type=int, default=20)
+    run.add_argument("--max-pages", type=_pages, default=20)
     return parser
 
 
@@ -37,7 +44,7 @@ async def _main(argv: list[str]) -> int:
     from app.modules.indexing.vector_membership_backfill import (
         _resolve_indexing_pipeline,
     )
-    from app.services.vector_db.scope_backfill import AppDocCheckpoints, ScopeBackfill
+    from app.services.vector_db.scope_backfill import ScopeBackfill, status
 
     container = IndexingAppContainer.init("scope_projection")
     logger = container.logger()
@@ -48,11 +55,15 @@ async def _main(argv: list[str]) -> int:
         return EXIT_FAILED
     try:
         if args.command == "status":
-            store = AppDocCheckpoints(graph_provider)
+            code = 0
             for connector in args.connector:
-                row = await store.load(connector)
-                sys.stdout.write(f"{args.org}/{connector}  " + (row.line() if row else "not started") + "\n")
-            return 0
+                try:
+                    row = await status(graph_provider, args.org, connector)
+                    sys.stdout.write(f"{args.org}/{connector}  " + (row.line() if row else "not started") + "\n")
+                except Exception as exc:  # one connector's failure does not hide the others
+                    sys.stdout.write(f"{args.org}/{connector}  error {type(exc).__name__}: {exc}\n")
+                    code = EXIT_FAILED
+            return code
         pipeline = await _resolve_indexing_pipeline(container)
         if pipeline is None:
             sys.stderr.write(json.dumps({"error": "no indexing pipeline (vector store not configured)"}) + "\n")
@@ -60,7 +71,12 @@ async def _main(argv: list[str]) -> int:
         job = ScopeBackfill(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger)
         code = 0
         for connector in args.connector:
-            progress = await job.run_connector(args.org, connector, restart=args.restart, max_pages=args.max_pages)
+            try:
+                progress = await job.run_connector(args.org, connector, restart=args.restart, max_pages=args.max_pages)
+            except Exception as exc:
+                sys.stdout.write(f"{args.org}/{connector}  error {type(exc).__name__}: {exc}\n")
+                code = EXIT_FAILED
+                continue
             sys.stdout.write(f"{args.org}/{connector}  {progress.line()}\n")
             if progress.state == "failed" or progress.stale:
                 code = EXIT_FAILED

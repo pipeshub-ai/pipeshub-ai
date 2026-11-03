@@ -11,7 +11,12 @@ import pytest
 
 from app.core import org_context as oc
 from app.services.permissions.mode import ENV_SCOPE_FIELDS
-from app.services.permissions.scope_fields import SCOPE_KEYS, ScopeFields
+from app.services.permissions.scope_fields import (
+    ENV_SCOPE_GENERATION,
+    SCOPE_KEYS,
+    ScopeFields,
+)
+from app.services.vector_db import scope_backfill
 from app.services.vector_db.membership import STALE_SCOPE, sync_vector_membership
 from app.services.vector_db.models import VectorPoint
 from app.services.vector_db.scope_backfill import (
@@ -21,6 +26,7 @@ from app.services.vector_db.scope_backfill import (
     ScopeBackfill,
     ScopeFieldsOff,
     UnknownConnector,
+    status,
 )
 from tests.support.in_memory_vector_db import (
     InMemoryVectorDBService as InMemoryVectorDB,
@@ -219,3 +225,112 @@ async def test_a_live_membership_write_running_beside_the_back_fill_leaves_the_f
     got = await read_stamps(vdb, loaded)
     assert all(got[v] == f for v, f in want.items() if f is not None and got[v] is not None)
     assert sum(g is not None for g in got.values()) >= 5
+
+
+async def test_a_done_checkpoint_of_an_older_generation_is_not_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    """on (generation 1), run to done, off, a permission change, on (generation 2): the run goes over the connector again."""
+    monkeypatch.setenv(ENV_SCOPE_GENERATION, "1")
+    vdb, loaded, job, app = await setup()
+    assert (await job.run_connector(ORG, app)).state == DONE
+    assert loaded.graph.app_docs[app]["scopeBackfillGeneration"] == 1
+    monkeypatch.delenv(ENV_SCOPE_FIELDS)
+    want = await expected(loaded)
+    target = next(i for i, n in loaded.graph.stamps.node_map.items() if n.kind == "record" and n.vrid and want.get(n.vrid) == ScopeFields.container())
+    n = loaded.graph.stamps.node_map[target]
+    loaded.graph.stamps.node_map = {**loaded.graph.stamps.node_map, target: replace(n, rule="RESTRICTED", granted=True)}
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    assert (await job.run_connector(ORG, app)).state == DONE  # same generation: not read again, the old stamp stays
+    assert (await read_stamps(vdb, loaded))[n.vrid] == ScopeFields.container()
+    monkeypatch.setenv(ENV_SCOPE_GENERATION, "2")
+    again = await job.run_connector(ORG, app)
+    assert again.state == DONE and again.generation == 2 and again.records > 0
+    assert (await read_stamps(vdb, loaded))[n.vrid] == (await expected(loaded))[n.vrid] != ScopeFields.container()
+
+
+async def test_the_stale_marker_write_is_tried_again_and_a_marker_that_never_lands_is_reported(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, loaded, job, app = await setup()
+    loaded.graph.stamps.failure = None
+    real_nodes = loaded.graph.stamps.nodes
+    calls = {"n": 0}
+
+    async def flaky(org: str, ids: frozenset[str]) -> dict:
+        calls["n"] += 1
+        if calls["n"] > 1:  # the page listing works; every projection read fails, so every point wants the marker
+            raise RuntimeError("graph down")
+        return await real_nodes(org, ids)
+
+    loaded.graph.stamps.nodes = flaky  # type: ignore[method-assign]
+    real, failures = vdb.set_payload, {"left": 1}
+
+    async def once(*a, **k) -> None:  # noqa: ANN002, ANN003
+        if failures["left"]:
+            failures["left"] -= 1
+            raise RuntimeError("store down")
+        await real(*a, **k)
+
+    vdb.set_payload = once  # type: ignore[method-assign]
+    p = await job.run_connector(ORG, app)
+    assert p.stale > 0 and sum(f == STALE_SCOPE for f in (await read_stamps(vdb, loaded)).values()) == p.stale  # the first failure was retried
+
+    async def never(*a, **k) -> None:  # noqa: ANN002, ANN003
+        raise RuntimeError("store down")
+
+    vdb.set_payload = never  # type: ignore[method-assign]
+    calls["n"] = 0
+    with caplog.at_level(logging.ERROR):
+        again = await job.run_connector(ORG, app, restart=True)
+    assert again.stale > 0 and "could not be marked stale" in caplog.text
+
+
+async def test_a_point_that_keeps_its_own_fields_because_the_marker_cannot_be_written_is_reported(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, loaded, job, app = await setup()
+    real_write, state = vdb.set_payload, {"stamped": False}
+
+    async def broken(name: str, payload: dict, flt) -> None:  # noqa: ANN001
+        if payload.get("scopeStamp") == "legacy" and payload.get("scopeFieldsVersion") == 0:
+            raise RuntimeError("marker store down")
+        await real_write(name, payload, flt)
+        state["stamped"] = True
+        loaded.graph.stamps.failure = RuntimeError("graph down after the first write")  # the read-back then fails
+
+    vdb.set_payload = broken  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR):
+        p = await job.run_connector(ORG, app)
+    assert state["stamped"] and p.stale >= 1 and "could not be marked stale" in caplog.text
+
+
+async def test_status_refuses_a_connector_of_another_organisation() -> None:
+    _, loaded, _, app = await setup()
+    assert await status(loaded.graph, ORG, app) is None
+    with pytest.raises(UnknownConnector):
+        await status(loaded.graph, "cd" * 12, app)
+
+
+async def test_a_page_written_again_after_a_failure_is_not_counted_twice() -> None:
+    vdb, loaded, job, app = await setup(page_size=100)
+    real_nodes, n = loaded.graph.stamps.nodes, {"c": 0}
+
+    async def flaky(org: str, ids: frozenset[str]) -> dict:
+        n["c"] += 1
+        if n["c"] > 1:
+            raise RuntimeError("graph down")
+        return await real_nodes(org, ids)
+
+    loaded.graph.stamps.nodes = flaky  # type: ignore[method-assign]
+    real_save, saves = job._checkpoints.save, {"n": 0}
+
+    async def save_once_failing(a: str, p: scope_backfill.Progress) -> None:
+        saves["n"] += 1
+        if saves["n"] == 1:
+            raise RuntimeError("checkpoint store down")
+        await real_save(a, p)
+
+    job._checkpoints.save = save_once_failing  # type: ignore[method-assign]
+    failed = await job.run_connector(ORG, app)
+    assert failed.state == FAILED and loaded.graph.app_docs[app]["scopeBackfillStale"] == 0
+    n["c"] = 0
+    done = await job.run_connector(ORG, app)
+    first_page_vrids = len({v for v in loaded.records})
+    assert done.state == DONE and 0 < done.stale <= first_page_vrids

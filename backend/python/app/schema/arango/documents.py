@@ -214,6 +214,7 @@ app_schema = {
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
             "scopeBackfillVersion": {"type": ["integer", "null"]},
+            "scopeBackfillGeneration": {"type": ["integer", "null"]},
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
