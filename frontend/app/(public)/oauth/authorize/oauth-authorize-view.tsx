@@ -4,7 +4,7 @@ import { asArray } from '@/lib/utils/safe';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
-import { Box, Button, Flex, Separator, Text } from '@radix-ui/themes';
+import { Box, Button, Checkbox, Flex, Separator, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
@@ -174,6 +174,8 @@ export function OAuthAuthorizeView() {
   const [codeChallenge, setCodeChallenge] = useState('');
   const [codeChallengeMethod, setCodeChallengeMethod] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  // Scopes the person unticked; everything listed starts ticked.
+  const [unticked, setUnticked] = useState<Set<string>>(() => new Set());
   const triedWorkspaceSwitchRef = useRef(false);
 
   const clientId = searchParams.get('client_id');
@@ -300,8 +302,24 @@ export function OAuthAuthorizeView() {
     };
   }, [outcome]);
 
+  const listedScopes = asArray(consentData?.scopes).map((s) => s.name);
+  const tickedScopes = listedScopes.filter((name) => !unticked.has(name));
+  const toggleScope = (name: string, ticked: boolean) => {
+    setUnticked((prev) => {
+      const next = new Set(prev);
+      if (ticked) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
   const handleConsent = async (consent: 'granted' | 'denied') => {
     if (!clientId || !redirectUri) return;
+    // The server re-checks these against the app, so the person can only narrow the request.
+    const postedScope =
+      consent === 'granted' && listedScopes.length > 0
+        ? tickedScopes.join(' ')
+        : normalizeScopeForPost(scope);
 
     setSubmitting(true);
     try {
@@ -317,7 +335,7 @@ export function OAuthAuthorizeView() {
         {
           client_id: clientId,
           redirect_uri: redirectUri,
-          scope: normalizeScopeForPost(scope),
+          scope: postedScope,
           state: state ?? '',
           code_challenge: cc,
           code_challenge_method: ccm,
@@ -493,7 +511,7 @@ export function OAuthAuthorizeView() {
     const granted = outcome.consent === 'granted';
     const scopePermissionSummary = asArray(consentData.scopes).map((s) => ({
       name: s.name,
-      granted,
+      granted: granted && !unticked.has(s.name),
     }));
     return (
       <OAuthConnectionOutcome
@@ -635,36 +653,44 @@ export function OAuthAuthorizeView() {
             }}
           >
             {asArray(consentData.scopes).map((scopeItem) => (
-              <Flex
-                key={scopeItem.name}
-                direction="column"
-                gap="1"
-                align="start"
-                p="3"
-                width="100%"
-                style={{
-                  borderRadius: 'var(--radius-2)',
-                  border: '1px solid var(--gray-6)',
-                  background: 'var(--gray-2)',
-                }}
-              >
-                <Text
-                  as="div"
-                  size="2"
-                  weight="medium"
-                  style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
+              <Text as="label" key={scopeItem.name} style={{ cursor: 'pointer' }}>
+                <Flex
+                  gap="3"
+                  align="start"
+                  p="3"
+                  width="100%"
+                  style={{
+                    borderRadius: 'var(--radius-2)',
+                    border: '1px solid var(--gray-6)',
+                    background: 'var(--gray-2)',
+                  }}
                 >
-                  {scopeItem.name}
-                </Text>
-                <Text
-                  as="div"
-                  size="2"
-                  color="gray"
-                  style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
-                >
-                  {scopeItem.description}
-                </Text>
-              </Flex>
+                  <Checkbox
+                    mt="1"
+                    checked={!unticked.has(scopeItem.name)}
+                    onCheckedChange={(value) => toggleScope(scopeItem.name, value === true)}
+                    disabled={submitting}
+                  />
+                  <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
+                    <Text
+                      as="div"
+                      size="2"
+                      weight="medium"
+                      style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
+                    >
+                      {scopeItem.name}
+                    </Text>
+                    <Text
+                      as="div"
+                      size="2"
+                      color="gray"
+                      style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
+                    >
+                      {scopeItem.description}
+                    </Text>
+                  </Flex>
+                </Flex>
+              </Text>
             ))}
           </Box>
 
@@ -755,6 +781,7 @@ export function OAuthAuthorizeView() {
               variant="solid"
               size={isBelowDesktop ? '3' : '2'}
               loading={submitting}
+              disabled={listedScopes.length > 0 && tickedScopes.length === 0}
               loadingLabel={t('oauthConsent.submitting')}
               style={{ flex: 1, minHeight: 32, ...touchTarget(isBelowDesktop) }}
               onClick={() => handleConsent('granted')}

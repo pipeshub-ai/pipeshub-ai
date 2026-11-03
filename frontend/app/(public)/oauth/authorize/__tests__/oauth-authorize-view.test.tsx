@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
@@ -27,10 +27,11 @@ vi.mock('@/config', () => ({
 }));
 
 const get = vi.fn();
+const post = vi.fn();
 vi.mock('@/lib/api', () => ({
   apiClient: {
     get: (...args: unknown[]) => get(...args),
-    post: vi.fn(),
+    post: (...args: unknown[]) => post(...args),
   },
 }));
 
@@ -39,20 +40,20 @@ vi.mock('@/lib/api/api-error', () => ({
   processError: () => ({ message: 'error' }),
 }));
 
+// One `t` for every render, as i18next gives; a new one each render re-runs the page's load effect.
+const t = (key: string) => {
+  const parts = key.split('.');
+  let cur: unknown = en;
+  for (const part of parts) {
+    if (typeof cur !== 'object' || cur === null || !(part in cur)) {
+      return key;
+    }
+    cur = (cur as Record<string, unknown>)[part];
+  }
+  return typeof cur === 'string' ? cur : key;
+};
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string) => {
-      const parts = key.split('.');
-      let cur: unknown = en;
-      for (const part of parts) {
-        if (typeof cur !== 'object' || cur === null || !(part in cur)) {
-          return key;
-        }
-        cur = (cur as Record<string, unknown>)[part];
-      }
-      return typeof cur === 'string' ? cur : key;
-    },
-  }),
+  useTranslation: () => ({ t }),
 }));
 
 vi.mock('@/app/components/ui/lottie-loader', () => ({
@@ -63,16 +64,19 @@ import { OAuthAuthorizeView } from '../oauth-authorize-view';
 
 const h = React.createElement;
 
+type Scope = { name: string; description: string; category: string };
+
 function consentResponse(
-  notGrantedScopes: { name: string; description: string; category: string }[],
+  notGrantedScopes: Scope[],
   isDynamic = false,
+  scopes: Scope[] = [{ name: 'kb:read', description: 'Read knowledge bases', category: 'Knowledge Base' }],
 ) {
   return {
     data: {
       requiresConsent: true,
       consentData: {
         app: { name: 'Claude', isDynamic },
-        scopes: [{ name: 'kb:read', description: 'Read knowledge bases', category: 'Knowledge Base' }],
+        scopes,
         notGrantedScopes,
         user: { email: 'u@e.com' },
         redirectUri: 'https://claude.ai/api/mcp/auth_callback',
@@ -147,5 +151,46 @@ describe('OAuthAuthorizeView layout', () => {
     expect(wrapper).toBeTruthy();
     expect(wrapper.style.height).toBe('100dvh');
     expect(wrapper.style.minHeight).toBe('');
+  });
+});
+
+describe('OAuthAuthorizeView scope choice', () => {
+  const scopes: Scope[] = [
+    { name: 'offline_access', description: 'Refresh tokens', category: 'Identity' },
+    { name: 'kb:read', description: 'Read knowledge bases', category: 'Knowledge Base' },
+    { name: 'agent:read', description: 'Read agents', category: 'Agents' },
+  ];
+
+  beforeEach(() => {
+    get.mockReset();
+    post.mockReset();
+    post.mockResolvedValue({ data: { redirectUrl: 'https://claude.ai/api/mcp/auth_callback?code=c' } });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('posts only the scopes left ticked', async () => {
+    get.mockResolvedValue(consentResponse([], false, scopes));
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    const boxes = await screen.findAllByRole('checkbox');
+    expect(boxes.map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'true', 'true']);
+    fireEvent.click(screen.getByText('agent:read'));
+    fireEvent.click(screen.getByRole('button', { name: en.oauthConsent.allow }));
+
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('offline_access kb:read');
+  });
+
+  it('disables Allow when every scope is unticked', async () => {
+    get.mockResolvedValue(consentResponse([], false, scopes));
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    for (const box of await screen.findAllByRole('checkbox')) fireEvent.click(box);
+    expect(
+      (screen.getByRole('button', { name: en.oauthConsent.allow }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });
