@@ -33,12 +33,13 @@ SECURITY_FLOORS = {
 
 # package -> malicious releases that must never resolve, whatever the floor.
 COMPROMISED_RELEASES = {
-    # 1.107.0 shipped cook.pth, which runs at every interpreter start and posts credentials out.
-    "litellm": (Version("1.107.0"),),
+    # 1.82.7 and 1.82.8 (March 2026) and 1.107.0 (October 2026) shipped credential stealers; 1.82.8 and 1.107.0
+    # also dropped a .pth that runs at every interpreter start.
+    "litellm": (Version("1.82.7"), Version("1.82.8"), Version("1.107.0")),
 }
 
 # Files those releases drop into site-packages; a .pth runs before any test does.
-COMPROMISED_FILES = ("cook.pth", "cook.py")
+COMPROMISED_FILES = ("cook.pth", "cook.py", "litellm_init.pth")
 # 1.107.0 also dropped a sitecustomize.py (it runs at every interpreter start too). Legitimate environments can hold
 # a file of that name, so it counts only when it carries the payload's markers: the lookalike exfiltration host and
 # the lock file its daemon holds.
