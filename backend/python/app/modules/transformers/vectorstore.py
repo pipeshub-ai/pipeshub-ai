@@ -1266,7 +1266,7 @@ class VectorStore(Transformer):
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         with stage("vector.delete"):
-            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
         tokens = await self._bind_membership(virtual_record_id)
         try:
             await self._process_document_chunks([summary_doc], record_id, collection_name)
@@ -1652,12 +1652,12 @@ class VectorStore(Transformer):
         )
 
     async def delete_blocks_by_ids(
-        self, block_ids: set, virtual_record_id: str, collection_name: str
+        self, block_ids: set, virtual_record_id: str, collection_name: str, *, org_id: str | None = None,
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
-        org_id = org_for_filter()
+        org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
@@ -1677,8 +1677,8 @@ class VectorStore(Transformer):
     # Embeddings deletion (full record)
     # ------------------------------------------------------------------
 
-    async def delete_embeddings(self, virtual_record_id: str, collection_name: str) -> None:
-        org_id = org_for_filter()
+    async def delete_embeddings(self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None) -> None:
+        org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "virtualRecordId": virtual_record_id}
@@ -1699,7 +1699,7 @@ class VectorStore(Transformer):
         """Delete all vector points for a record, resolving the collection internally."""
         ctx = self._record_context(org_id, record)
         collection_name = self.collection_registry.resolve_write_collection(ctx)
-        await self.delete_embeddings(virtual_record_id, collection_name)
+        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -2058,6 +2058,7 @@ class VectorStore(Transformer):
         record_id: str,
         virtual_record_id: str,
         collection_name: str,
+        org_id: str | None = None,
     ) -> None:
         if not chunks:
             raise EmbeddingError("No chunks provided for embedding creation")
@@ -2073,7 +2074,7 @@ class VectorStore(Transformer):
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
         with stage("vector.delete"):
-            await self.delete_embeddings(virtual_record_id, collection_name)
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -2140,7 +2141,7 @@ class VectorStore(Transformer):
                 summary_block_id_set = {
                     f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
                 }
-                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
 
                 if record is not None:
                     semantic_metadata = getattr(record, "semantic_metadata", None)
@@ -2153,7 +2154,7 @@ class VectorStore(Transformer):
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
@@ -2475,7 +2476,7 @@ class VectorStore(Transformer):
             if not documents_to_embed:
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
@@ -2489,7 +2490,7 @@ class VectorStore(Transformer):
                 # sit beside their replacements, so they go first.
                 reindexed_ids = {b.id for b in blocks} | {bg.id for bg in block_groups}
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name, org_id=org_id)
                 if block_ids_to_delete:
                     # A block id in both sets was just replaced; deleting it now would drop
                     # the new points.
@@ -2505,12 +2506,12 @@ class VectorStore(Transformer):
                     )
                     await self._store_image_points(points, collection_name)
             else:
-                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name)
+                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "

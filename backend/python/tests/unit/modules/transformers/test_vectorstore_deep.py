@@ -392,7 +392,7 @@ class TestCreateEmbeddings:
 
         await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
-        vs.delete_embeddings.assert_awaited_once_with("vr-1", "test_collection")
+        vs.delete_embeddings.assert_awaited_once_with("vr-1", "test_collection", org_id=None)
         vs._process_document_chunks.assert_awaited_once()
 
     @pytest.mark.asyncio

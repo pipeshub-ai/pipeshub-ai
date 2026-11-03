@@ -1,5 +1,6 @@
 """How a record's blocks become points under EMBED_POINT_POLICY A (default), B and C."""
 
+from collections.abc import Iterator
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import AsyncMock
@@ -18,12 +19,18 @@ from app.models.blocks import (
     GroupType,
 )
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from tests.support.bound_org import bind_test_org
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore_p1
 
 LONG = " ".join(f"Sentence number {i} has some words in it to count." for i in range(20))
 
-
 pytestmark = pytest.mark.usefixtures("bound_org")
+
+
+@pytest.fixture
+def bound_org() -> Iterator[str]:
+    """These tests index for org "o"; the delete they trigger must run for it."""
+    yield from bind_test_org("o")
 
 
 def _points(policy: str | None, monkeypatch: pytest.MonkeyPatch, text: str = LONG,
