@@ -134,3 +134,18 @@ async def test_orgs_of_virtual_records_names_only_orgs_that_hold_them(svc, env) 
     found = await svc.orgs_of_virtual_records(["vr-1", "vr-2", "vr-none"])
     assert found == {"vr-1": {ORG_A, ORG_B}, "vr-2": {ORG_A}}
     assert await svc.orgs_of_virtual_records([]) == {}
+
+
+async def test_a_provider_works_again_after_a_disconnect_and_a_connect(env) -> None:  # noqa: F811
+    port = env.start_bouncer()
+    s = await PgVectorService.create(PgVectorConfig(dsn=env.dsn("indexing", port), jobs_dsn=env.dsn("jobs", port), placement="own_leaf"))
+    try:
+        await s.disconnect()
+        with pytest.raises(PgVectorError, match="not connected"):
+            await s.get_collections()
+        await s.connect()
+        assert s.placement is not None and s.placement._db is s._db               # the new runtime, not the released one
+        assert {c.name for c in await s.get_collections()} >= {"records", "entities"}
+        assert (await s.health_check()).status.value == "healthy"
+    finally:
+        await s.disconnect()

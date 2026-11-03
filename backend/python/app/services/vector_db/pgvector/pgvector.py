@@ -8,6 +8,7 @@ raise ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import time
 import uuid
@@ -117,6 +118,8 @@ class PgVectorService(IVectorDBService):
         self._catalog: Catalog | None = None
         self.pg_capabilities: PgCapabilities | None = None
         self.placement: PlacementPolicy | None = None     # None: no policy (rows stay in the shared tree); see PgVectorConfig.placement
+        self._own_placement = False                        # connect() made the policy (it holds this connection's database), so disconnect() drops it
+        self._lifecycle = asyncio.Lock()                   # one connect or disconnect at a time: two connects must not both acquire the runtime
 
     @classmethod
     async def create(
@@ -135,39 +138,43 @@ class PgVectorService(IVectorDBService):
         return PgVectorConfig.from_dict(raw if isinstance(raw, dict) else None)
 
     async def connect(self) -> None:
-        if self._db is not None:
-            return
-        cfg = await self._load_config()
-        try:
-            db = await acquire_db(cfg.to_db_config())
-        except CapabilityError as e:
-            raise PgVectorUnsupportedError(str(e)) from e
-        try:
-            version = db.capabilities.versions.get("vector") if db.capabilities else None
-            if version is None:
-                raise PgVectorUnsupportedError(
-                    "pgvector extension is not installed in this database "
-                    "(run CREATE EXTENSION vector WITH SCHEMA ext as a privileged role)"
-                )
-            self.pg_capabilities = evaluate(db.capabilities.pg_major, version, strict=cfg.strict)
-        except BaseException:
-            await release_db(cfg.to_db_config())
-            raise
-        self._cfg, self._db, self._catalog = cfg, db, Catalog(db, cfg.catalog_ttl)
-        if self.placement is None and cfg.placement == "own_leaf":
-            self.placement = OwnLeafPolicy(db, wait=cfg.placement_wait)
-        logger.info(
-            "pgvector provider ready (PostgreSQL %s, pgvector %s, safe_mode=%s)",
-            self.pg_capabilities.pg_major,
-            self.pg_capabilities.pgvector_version,
-            self.pg_capabilities.hnsw_safe_mode,
-        )
+        async with self._lifecycle:
+            if self._db is not None:
+                return
+            cfg = await self._load_config()
+            try:
+                db = await acquire_db(cfg.to_db_config())
+            except CapabilityError as e:
+                raise PgVectorUnsupportedError(str(e)) from e
+            try:
+                version = db.capabilities.versions.get("vector") if db.capabilities else None
+                if version is None:
+                    raise PgVectorUnsupportedError(
+                        "pgvector extension is not installed in this database "
+                        "(run CREATE EXTENSION vector WITH SCHEMA ext as a privileged role)"
+                    )
+                self.pg_capabilities = evaluate(db.capabilities.pg_major, version, strict=cfg.strict)
+            except BaseException:
+                await release_db(cfg.to_db_config())
+                raise
+            self._cfg, self._db, self._catalog = cfg, db, Catalog(db, cfg.catalog_ttl)
+            if self.placement is None and cfg.placement == "own_leaf":
+                self.placement, self._own_placement = OwnLeafPolicy(db, wait=cfg.placement_wait), True
+            logger.info(
+                "pgvector provider ready (PostgreSQL %s, pgvector %s, safe_mode=%s)",
+                self.pg_capabilities.pg_major,
+                self.pg_capabilities.pgvector_version,
+                self.pg_capabilities.hnsw_safe_mode,
+            )
 
     async def disconnect(self) -> None:
-        if self._db is None:
-            return
-        cfg, self._db, self._catalog = self._cfg, None, None
-        await release_db(cfg.to_db_config())
+        async with self._lifecycle:
+            if self._db is None:
+                return
+            cfg, self._db, self._catalog = self._cfg, None, None
+            if self._own_placement:
+                self.placement, self._own_placement = None, False
+            await release_db(cfg.to_db_config())
 
     def _assert_connected(self) -> tuple[KernelDB, Catalog]:
         if self._db is None or self._catalog is None:
@@ -216,7 +223,8 @@ class PgVectorService(IVectorDBService):
         try:
             await self._catalog.collections()
         except Exception as e:
-            return VectorDBHealth(status=HealthStatus.UNHEALTHY, message=str(e))
+            logger.warning("pgvector health check failed: %s", e)       # the detail (host, port, driver text) stays in the log
+            return VectorDBHealth(status=HealthStatus.UNHEALTHY, message=f"catalog unreachable ({type(e).__name__})")
         return VectorDBHealth(
             latency_ms=round((time.monotonic() - start) * 1000, 2),
             server_version=f"pgvector {self.pg_capabilities.pgvector_version}",
