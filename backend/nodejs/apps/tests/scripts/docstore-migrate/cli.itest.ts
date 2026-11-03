@@ -29,7 +29,7 @@ const TABLE_SCHEMAS = ['identity', 'conversation', 'access', 'content', 'oauth',
 const KEEP = new Set(['platform.store_epoch', 'platform.deployment_profile', 'platform.consumer_inbox']);
 
 for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
-  suite(`docstore-migrate CLI end to end (${bin})`, function () {
+  suite(`docstore-migrate: CLI end to end (${bin})`, function () {
     this.timeout(600_000);
     let stack: PgStack;
     let mongo: TestMongo;

@@ -148,3 +148,4 @@ jobs:
           --expect-suite 'docstore-migrate: follow, drain, reset and schema=15'
           --expect-suite 'docstore-migrate: command line gates=6'
           --expect-suite 'docstore-migrate: rollback and the reverse copy=17'
+          --expect-suite 'docstore-migrate: CLI end to end=40'
