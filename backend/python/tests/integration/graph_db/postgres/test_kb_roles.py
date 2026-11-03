@@ -117,3 +117,23 @@ async def test_updating_a_collection_removes_top_level_nulls_only(w: World) -> N
     await w.p.update_knowledge_base("kb1", {"description": None})
     got = await w.p.update_knowledge_base("kb1", {"note": "n"})
     assert got["settings"] == {"a": None, "b": 1} and "description" not in got and got["note"] == "n"
+
+
+@pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "", "owner"])
+async def test_a_direct_grant_of_an_unknown_role_gives_nothing_and_opens_no_collection(w: World, role: str) -> None:
+    """Fail closed: a stored role that is none of the grant roles (and no retired one) is no access, not a role to rank or to hand back."""
+    await kb(w, status="ACTIVE")
+    await w.nodes("records", {"_key": "folder", "recordName": "F", "mimeType": "application/vnd.folder", "connectorId": "kb1"})
+    await w.edge("belongsTo", ("records", "folder"), ("apps", "kb1"))
+    await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role=role)
+    assert await w.p.get_user_kb_permission("kb1", "me") is None
+    assert await w.p.get_knowledge_base("kb1", "me") is None
+
+
+async def test_an_unknown_direct_role_does_not_beat_or_replace_a_team_role(w: World) -> None:
+    await kb(w, status="ACTIVE")
+    await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role="ADMIN")
+    await via_team(w, grant="READER", member="OWNER")
+    assert await w.p.get_user_kb_permission("kb1", "me") == "READER"                  # the team's role stands; the unknown one is nothing
+    await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role="ORGANIZER")
+    assert await w.p.get_user_kb_permission("kb1", "me") == "READER"                  # a retired direct role reads as READER
