@@ -1214,50 +1214,56 @@ class RedisVectorService(IVectorDBService):
     ) -> list[bytes]:
         """Return all Redis keys in a collection matching a filter expression.
 
-        Uses iterative re-query-from-offset-0 after each page deletion to avoid
-        the stale-offset problem that arises when keys are deleted mid-iteration.
-        For pure reads (delete_points = False context), returns all matching keys.
+        Read through an aggregate cursor, not ``FT.SEARCH ... LIMIT offset``: an unsorted offset page is not
+        stable across calls (documents still settling in the index move between pages), so a page-by-page
+        scan repeats some keys and misses others, and a payload write would then skip the missed points.
+        A cursor can still repeat a key, so keys are de-duplicated, and a scan that ends with fewer distinct
+        keys than the index reported for the query raises instead of answering with a part.
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
 
-        # Single bulk read: paginate until exhausted.
-        # Caller is responsible for not modifying the index between calls.
-        page_size = 1000
-        offset = 0
-        all_keys: list[bytes] = []
-
-        while True:
-            try:
-                raw = await self.client.execute_command(  # type: ignore
-                    "FT.SEARCH", idx, query,
-                    "NOCONTENT",
-                    "LIMIT", str(offset), str(page_size),
-                    *_NO_TIMEOUT,
+        found: dict[bytes, None] = {}
+        total = 0
+        cursor = 0
+        try:
+            reply = await self.client.execute_command(  # type: ignore
+                "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key",
+                "WITHCURSOR", "COUNT", "1000", *_NO_TIMEOUT,
+            )
+            while True:
+                if not isinstance(reply, (list, tuple)) or len(reply) != 2:
+                    raise RuntimeError(f"unexpected reply {reply!r}")
+                rows, cursor = reply
+                if rows and not total:
+                    total = int(rows[0])
+                for row in rows[1:]:
+                    fields = dict(zip(row[::2], row[1::2]))
+                    key = fields.get(b"__key") or fields.get("__key")
+                    if key is not None:
+                        found[key if isinstance(key, bytes) else key.encode()] = None
+                if not cursor:
+                    break
+                reply = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, cursor, "COUNT", "1000",
                 )
-            except Exception as e:
-                # A partial key list would silently update only some of a VRID's
-                # chunks while reporting success.
-                raise RuntimeError(
-                    f"Key lookup on '{collection_name}' failed after "
-                    f"{len(all_keys)} key(s): {e}"
-                ) from e
+        except Exception as e:
+            if cursor:
+                try:
+                    await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
+                except Exception:  # noqa: S110 - best effort; the cursor expires on its own
+                    pass
+            # A partial key list would silently update only some of a VRID's
+            # chunks while reporting success.
+            raise RuntimeError(
+                f"Key lookup on '{collection_name}' failed after {len(found)} key(s): {e}"
+            ) from e
 
-            if not raw or not isinstance(raw, (list, tuple)):
-                break
-            total = int(raw[0]) if raw else 0
-            keys_in_page = [
-                k if isinstance(k, bytes) else k.encode()
-                for k in raw[1:]
-            ]
-            if not keys_in_page:
-                break
-            all_keys.extend(keys_in_page)
-            offset += len(keys_in_page)
-            if offset >= total:
-                break
-
-        return all_keys
+        if len(found) < total:
+            raise RuntimeError(
+                f"Key lookup on '{collection_name}' returned {len(found)} of {total} matching key(s)"
+            )
+        return list(found)
 
     # ------------------------------------------------------------------
     # Internal guards

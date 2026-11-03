@@ -11,6 +11,9 @@ leave points behind.
 """
 
 import asyncio
+import fcntl
+import os
+import tempfile
 from collections.abc import AsyncIterator
 
 import pytest
@@ -63,15 +66,23 @@ async def seeded(redis_service) -> AsyncIterator[tuple[str, FilterExpression]]:
         FieldCondition(key="metadata.orgId", value="org1"),
         FieldCondition(key="metadata.virtualRecordId", values=[f"vr-{i}" for i in range(VRIDS)]),
     ])
-    original = (await redis_service.client.execute_command(
-        "CONFIG", "GET", "search-timeout"))[1]
-    await redis_service.client.execute_command("CONFIG", "SET", "search-timeout", "1")
-    try:
-        yield col, filt
-    finally:
-        await redis_service.client.execute_command(
-            "CONFIG", "SET", "search-timeout", original)
-        await redis_service.delete_collection(col)
+    # search-timeout belongs to the server, not to this test: under xdist two workers that each read the
+    # "original" while the other has it at 1 ms would restore 1 ms for good. The lock makes the tests of
+    # this module take turns, so the original is only ever read while nobody has changed it.
+    with open(os.path.join(tempfile.gettempdir(), "pipeshub-redis-search-timeout.lock"), "w") as lock:
+        await asyncio.to_thread(fcntl.flock, lock, fcntl.LOCK_EX)
+        original = (await redis_service.client.execute_command(
+            "CONFIG", "GET", "search-timeout"))[1]
+        if str(original) in ("1", "b'1'"):  # left behind by a run that died before restoring it
+            original = "500"
+        await redis_service.client.execute_command("CONFIG", "SET", "search-timeout", "1")
+        try:
+            yield col, filt
+        finally:
+            await redis_service.client.execute_command(
+                "CONFIG", "SET", "search-timeout", original)
+            await redis_service.delete_collection(col)
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 class TestRedisFilterOpsUnderTimeout:
@@ -84,6 +95,13 @@ class TestRedisFilterOpsUnderTimeout:
         col, filt = seeded
         await redis_service.set_payload(col, {"recordGroupIds": ["g1"]}, filt)
         assert await _count(redis_service, col, "@recordGroupIds:{g1}") == POINTS
+
+    async def test_key_scan_sees_every_point_exactly_once(self, redis_service, seeded) -> None:
+        """An unsorted offset page repeats some keys and misses others while documents are still settling
+        in the index, so a payload write skipped points."""
+        col, filt = seeded
+        keys = await redis_service._keys_matching_filter(col, filt)
+        assert len(keys) == POINTS == len(set(keys))
 
     async def test_scroll_returns_the_requested_page(self, redis_service, seeded) -> None:
         col, filt = seeded
