@@ -41,11 +41,20 @@ export class FenceOpsTimeoutError extends Error {
   }
 }
 
-/** Tests of the command line set MIGRATE_FENCE_TEST_MS (with MIGRATE_TEST_HOOKS=1) to shorten the two fixed waits of a cutover. */
-const testMs = (): number | undefined =>
-  process.env.MIGRATE_TEST_HOOKS === '1' && process.env.MIGRATE_FENCE_TEST_MS
-    ? Number(process.env.MIGRATE_FENCE_TEST_MS)
-    : undefined;
+/**
+ * Tests of the command line set MIGRATE_FENCE_TEST_MS (with MIGRATE_TEST_HOOKS=1) to shorten the two fixed waits of a cutover.
+ * Anything but a non-negative whole number is refused, so a typo cannot change the timing silently.
+ */
+export const fenceTestMs = (): number | undefined => {
+  const raw = process.env.MIGRATE_FENCE_TEST_MS;
+  if (process.env.MIGRATE_TEST_HOOKS !== '1' || raw === undefined)
+    return undefined;
+  if (!/^\d+$/.test(raw))
+    throw new Error(
+      `MIGRATE_FENCE_TEST_MS must be a non-negative whole number of milliseconds, got ${JSON.stringify(raw)}`,
+    );
+  return Number(raw);
+};
 
 /** Tunables; tests shorten them. `opsTimeoutMs` is the operator's limit (MIGRATE_FENCE_OPS_TIMEOUT_S, default 120 s). */
 export const fenceTuning = {
@@ -108,7 +117,7 @@ async function enforceDrainDwell(
       `the fence must be 'draining' before '${to}' (it is '${mode}')`,
     );
   const opts = fenceTuning.clientOptions(rt);
-  const shortened = testMs();
+  const shortened = fenceTestMs();
   const wait =
     shortened === undefined
       ? fenceCutoverWaitMs(opts)
@@ -125,7 +134,7 @@ async function enforceDrainDwell(
     const running = await fenceTuning.fencedOpsRunning(rt);
     if (running === 0) {
       clean += 1;
-      if (clean < 2) await sleep.ms(testMs() ?? fenceTuning.pollMs);
+      if (clean < 2) await sleep.ms(fenceTestMs() ?? fenceTuning.pollMs);
       continue;
     }
     clean = 0;
@@ -137,7 +146,7 @@ async function enforceDrainDwell(
       waitedMs: waited,
       timeoutMs: fenceTuning.opsTimeoutMs,
     });
-    await sleep.ms(testMs() ?? fenceTuning.pollMs);
+    await sleep.ms(fenceTestMs() ?? fenceTuning.pollMs);
   }
 }
 

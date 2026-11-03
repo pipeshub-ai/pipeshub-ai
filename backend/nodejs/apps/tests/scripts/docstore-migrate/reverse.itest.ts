@@ -25,7 +25,6 @@ const FLAGS = ['--fence-armed', '--shadow-clean', '--drain-wait', '20', '--grace
 
 for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
   suite(`docstore-migrate: rollback and the reverse copy (${bin})`, function () {
-    this.timeout(600_000);
     let w: World;
     const hooks = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS, ms: process.env.MIGRATE_FENCE_TEST_MS };
     const base = (): Record<string, unknown[]> => ({ ...identityDocs(), ...conversationDocs(), ...contentDocs() });
