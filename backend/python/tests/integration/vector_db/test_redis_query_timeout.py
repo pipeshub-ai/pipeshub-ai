@@ -156,7 +156,7 @@ class TestRedisKeyScan:
             await wait_for(indexed, timeout=120, poll=0.2)
             real = redis_service.client.execute_command
 
-            async def cut(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            async def cut(*args, **kwargs) -> list:
                 if args[:2] == ("FT.CURSOR", "READ"):
                     return [[0], 0]  # the cursor "ends" after the first batch
                 return await real(*args, **kwargs)
