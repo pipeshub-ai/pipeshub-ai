@@ -138,20 +138,25 @@ function mayReadCode(user: Record<string, unknown> | undefined): boolean {
 
 /**
  * The MCP tool scopes to mount for this caller. A token without both
- * kb:write and kb:upload is offered the read tools only, so an agent is not
- * shown tools that would answer 403. Session users get every tool, as in
- * requireScopes; undefined mounts everything.
+ * kb:write and kb:upload is offered the read tools only, and one without
+ * connector:write and connector:sync is not offered the `connect` tools
+ * (pipeshub_add_web_source), so an agent is not shown tools that would answer
+ * 403. Session users get every tool, as in requireScopes; undefined mounts
+ * everything.
  */
 export function mcpToolScopes(
   user: Record<string, unknown> | undefined,
-): Array<'read'> | undefined {
+): Array<'read' | 'write'> | undefined {
   if (!user?.isOAuth) return undefined;
   const scopes: unknown = user.oauthScopes;
   const held = Array.isArray(scopes) ? scopes : [];
-  return held.includes(OAuthScopeNames.KB_WRITE) &&
-    held.includes(OAuthScopeNames.KB_UPLOAD)
+  const holds = (...wanted: OAuthScopeNames[]): boolean =>
+    wanted.every((scope) => held.includes(scope));
+  if (!holds(OAuthScopeNames.KB_WRITE, OAuthScopeNames.KB_UPLOAD))
+    return ['read'];
+  return holds(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.CONNECTOR_SYNC)
     ? undefined
-    : ['read'];
+    : ['read', 'write'];
 }
 
 /** The Grafana counter for the same step: org and domain only. */

@@ -29,6 +29,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
@@ -870,6 +871,36 @@ class RecordEventHandler(BaseEventService):
             )
             self._edge_request_failures = 0
 
+    async def _hand_over_shared_copy(self, payload: dict, org_id: str | None) -> None:
+        """The deleted record may be the one its shared content is filed under;
+        that copy moves under a record that still holds it.
+
+        Raises IndexingError so the consumer retries, then dead-letters: the
+        record is already gone from the graph, so nothing else would move the
+        copy, and every step of the delete is idempotent.
+        """
+        connector_id = payload.get("connectorId")
+        virtual_record_id = payload.get("virtualRecordId")
+        if not (org_id and connector_id and virtual_record_id):
+            return
+        helper = StorageCleanupHelper(
+            self.logger, self.event_processor.graph_provider, self.config_service
+        )
+        record_id = payload.get("recordId")
+        try:
+            await helper.hand_over_after_record_delete(
+                org_id, connector_id, virtual_record_id, deleted_record_id=record_id
+            )
+        except Exception as e:
+            raise IndexingError(
+                f"Deleted record {record_id}: the content it shared with other records could "
+                "not be moved under a record that still holds it",
+                record_id=record_id,
+                details={"org_id": org_id, "virtual_record_id": virtual_record_id},
+            ) from e
+        finally:
+            await helper.close()
+
     async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
         """A deleted code file changes the repo's graph too.
 
@@ -1606,8 +1637,9 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
+                org_id = payload.get("orgId") or None
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    [virtual_record_id], org_id=payload.get("orgId") or None
+                    [virtual_record_id], org_id=org_id
                 )
                 entity_store = self._entity_vector_store()
                 if entity_store is not None:
@@ -1615,7 +1647,6 @@ class RecordEventHandler(BaseEventService):
                     # match no point and strand the entity. The fallback read
                     # is non-raising: the embeddings are already gone, and an
                     # unreadable graph must not fail the delete.
-                    org_id = payload.get("orgId")
                     if not org_id:
                         record_doc = await self.event_processor.graph_provider.get_document(
                             record_id, CollectionNames.RECORDS.value
@@ -1635,6 +1666,7 @@ class RecordEventHandler(BaseEventService):
                             record_id,
                         )
                 await self._request_code_edge_build_for_deleted(payload)
+                await self._hand_over_shared_copy(payload, org_id)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
