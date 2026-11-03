@@ -1,5 +1,6 @@
 """An embedding-model change on a provider whose org spaces are tied to the model that first wrote to them (pgvector): refused while the
 org holds a point, allowed (read only) while it holds none; the full provider:model identity counts as the model."""
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,8 +9,11 @@ from fastapi import HTTPException
 from app.api.routes.health import (
     EMBEDDING_CHANGE_UNSUPPORTED_CODE,
     _identity_of,
+    check_collection_info,
     handle_model_change,
 )
+from app.core import org_context
+from app.services.vector_db.collections import CollectionType
 from app.services.vector_db.models import VectorDBCapabilities
 
 
@@ -83,3 +87,34 @@ async def test_other_stores_keep_their_behaviour(monkeypatch) -> None:
 def test_identity_is_provider_and_the_first_model() -> None:
     assert _identity_of({"provider": "openai", "configuration": {"model": " a , b"}}) == "openai:a"
     assert _identity_of({"configuration": {"model": "a"}}) is None
+
+
+async def test_with_no_org_bound_the_check_fails_closed_instead_of_seeing_an_empty_store() -> None:
+    """The provider's survey is the calling org's: with none bound it sees no space and no point, which read as "nothing
+    indexed" and allowed the change."""
+    svc = _service(holds_points=True)
+    svc.collection_registry.list_managed_collections = AsyncMock(
+        return_value=[SimpleNamespace(name="records", collection_type=CollectionType.RECORDS.value)]
+    )
+    svc.vector_db_service.get_collection_info = AsyncMock(return_value=MagicMock(exists=True, dense_dimension=0, points_count=0))
+    svc.get_current_embedding_model_name = AsyncMock(return_value="m1")
+    svc.get_embedding_model_name = MagicMock(return_value="m2")
+
+    with pytest.raises(HTTPException) as exc:
+        await check_collection_info(svc, MagicMock(), 512, MagicMock())
+
+    assert exc.value.status_code == 503
+    svc.vector_db_service.org_holds_points.assert_not_awaited()
+
+
+async def test_with_an_org_bound_the_check_goes_on() -> None:
+    svc = _service(holds_points=False)
+    svc.collection_registry.list_managed_collections = AsyncMock(
+        return_value=[SimpleNamespace(name="records", collection_type=CollectionType.RECORDS.value)]
+    )
+    svc.vector_db_service.get_collection_info = AsyncMock(return_value=MagicMock(exists=True, dense_dimension=0, points_count=0))
+    svc.get_current_embedding_model_name = AsyncMock(return_value="m1")
+    svc.get_embedding_model_name = MagicMock(return_value="m1")
+
+    with org_context.for_org("org-1", job="test"):
+        await check_collection_info(svc, MagicMock(), 512, MagicMock())

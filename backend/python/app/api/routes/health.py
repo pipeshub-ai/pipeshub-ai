@@ -22,6 +22,7 @@ from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflic
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
 from app.config.constants.service import config_node_constants
+from app.core import org_context
 from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
@@ -1081,6 +1082,23 @@ async def check_collection_info(
     new_config: dict | None = None,
 ) -> None:
     """Check and validate collection information using provider-neutral get_collection_info()."""
+    if _spaces_per_org(retrieval_service):
+        # The survey of such a provider is the calling org's: with no org bound it sees no space and no point, which would read as
+        # "nothing indexed" and let the change through. Fail closed.
+        try:
+            org_context.current_org_id()
+        except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+            logger.error("Refusing to validate the embedding change: no organisation is bound to this request")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "not healthy",
+                    "error": (
+                        "Could not tell which organisation's vector space this embedding model change affects, "
+                        "so it cannot be validated. Retry the request."
+                    ),
+                },
+            ) from None
     try:
         existing_vector_size, points_count = await survey_managed_collections(
             retrieval_service, logger

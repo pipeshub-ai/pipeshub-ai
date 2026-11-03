@@ -1047,6 +1047,29 @@ describe('tokens_manager/routes/health.routes', () => {
     })
   })
 
+  describe('GET / - vector store name', () => {
+    for (const [vectorDbType, name] of [
+      ['qdrant', 'Qdrant'],
+      ['opensearch', 'OpenSearch'],
+      ['redis', 'Redis'],
+      ['pgvector', 'pgvector'],
+    ]) {
+      it(`should name the ${vectorDbType} vector store ${name}`, async () => {
+        mockAppConfig.deployment = { ...mockAppConfig.deployment, vectorDbType }
+        router = createHealthRouter(container, cmContainer)
+        const handler = findHandler('/', 'get')
+        const res = mockRes()
+
+        const axiosModule = require('axios')
+        sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+        await handler({}, res, sinon.stub())
+
+        expect(res.json.firstCall.args[0].serviceNames.vectorDb).to.equal(name)
+      })
+    }
+  })
+
   // =========================================================================
   // Deployment configuration combinations
   // =========================================================================

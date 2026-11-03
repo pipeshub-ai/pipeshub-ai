@@ -122,3 +122,24 @@ async def test_an_org_other_than_the_bound_one_is_refused() -> None:
     with org_context.for_org(ORG_A, job="test"):
         outcome = await store.upsert_entities_batch([_entity(ORG_B, "t2")])
     assert outcome.failed == 1 and not db.entity_points
+
+
+async def test_two_orgs_sharing_a_collection_are_never_written_in_one_batch() -> None:
+    """A provider with a space per org takes one org per write; grouping a batch by collection alone would mix them."""
+    db = _OrgSpaceDB()
+    batches: list[set[str]] = []
+    real = db.upsert_points
+
+    async def spy(collection_name: str, points: list[VectorPoint], *a: object, **k: object) -> None:
+        batches.append({p.payload["metadata"]["orgId"] for p in points if "orgId" in p.payload.get("metadata", {})})
+        await real(collection_name, points, *a, **k)
+
+    db.upsert_points = spy
+    store = _store(db)
+    assert store._collection_name_for(ORG_A) == store._collection_name_for(ORG_B)    # one shared collection
+
+    await store.upsert_entities_batch([_entity(ORG_A, "t1"), _entity(ORG_B, "t2"), _entity(ORG_A, "t3")])
+
+    written = [b for b in batches if b]
+    assert written and all(len(b) == 1 for b in written)
+    assert set().union(*written) == {ORG_A, ORG_B}

@@ -1,8 +1,8 @@
 # pgvector provider
 
-The PostgreSQL + pgvector vector store. `PgVectorService` implements `IVectorDBService` for collections, the catalog, writes and reads (scroll,
-retrieve); search and the `VECTOR_DB_TYPE=pgvector` factory entry arrive in later changes, so until then nothing selects this package and the
-default vector store (Qdrant) is unchanged. Schema: `backend/db/versions/retrieval/`.
+The PostgreSQL + pgvector vector store. `PgVectorService` implements `IVectorDBService`: collections, the catalog, writes, reads (scroll,
+retrieve) and search (dense and lexical, fused). It is chosen only by `VECTOR_DB_TYPE=pgvector`; unset, the default vector store (Qdrant) is
+used, and an unknown value is a startup error naming the setting. Schema: `backend/db/versions/retrieval/`.
 
 | File | Role |
 | --- | --- |
