@@ -702,3 +702,23 @@ def test_an_older_build_tells_the_operator_to_roll_forward_when_the_newer_schema
     _as_newer_build(cluster, name, min_code=99)
     r = run_migrate(url)
     assert r.returncode == 2 and "roll forward" in r.stdout, r.stdout
+
+
+def test_an_install_with_such_helpers_upgrades_to_the_pinned_writes_revision(db):
+    """kernel_0015 -> kernel_0016 on a database that already holds admin-owned helpers with constructs the routine rules refuse in a vetted function's reach:
+    the run must succeed (the migrate job exits 4 and rolls back on any catalog violation)."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip").returncode == 0
+    r = run_migrate(url, "downgrade", "kernel_0015", PG_MIGRATE_ALLOW_DOWNGRADE="1", PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with cluster.admin(name) as c:
+        c.execute("CREATE FUNCTION public.h_set() RETURNS void LANGUAGE plpgsql AS 'BEGIN SET LOCAL statement_timeout = 5; END'")
+        c.execute("CREATE FUNCTION public.h_analyze() RETURNS void LANGUAGE plpgsql AS 'BEGIN ANALYZE; END'")
+        c.execute("CREATE FUNCTION public.h_temp() RETURNS void LANGUAGE plpgsql AS 'BEGIN CREATE TEMP TABLE h_t (a int); END'")
+        c.execute("CREATE FUNCTION public.h_cfg() RETURNS text LANGUAGE sql AS $$ SELECT set_config('statement_timeout', '5', true) $$")
+        c.execute("CREATE FUNCTION public.h_ret(a int) RETURNS int LANGUAGE sql RETURN a + 1")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
