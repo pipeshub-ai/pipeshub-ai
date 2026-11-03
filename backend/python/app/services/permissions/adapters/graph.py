@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, cast
 
+from app.core.org_context import spawn_in_request
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 
 from ..errors import ViewerScopesUnavailable
@@ -67,7 +68,7 @@ class GraphPrincipalView:
                     # A placeholder stub is listed so a browse can open it; it is navigable, not readable content.
                     return found.node_ids - found.placeholder_ids
 
-            tasks = [asyncio.ensure_future(check(ids[i:i + self._chunk])) for i in range(0, len(ids), self._chunk)]
+            tasks = [spawn_in_request(check(ids[i:i + self._chunk])) for i in range(0, len(ids), self._chunk)]
             try:
                 checks = await asyncio.gather(*tasks)
             finally:

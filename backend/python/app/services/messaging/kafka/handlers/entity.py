@@ -541,9 +541,10 @@ class EntityEventService(BaseEventService):
                 self.logger.error(f"User not found with mail: {payload['email']}")
                 return False
 
+            org_id = payload["orgId"]
             user_data = {
                 "id": existing_user_id,
-                "orgId": payload["orgId"],
+                "orgId": org_id,
                 "email": payload["email"],
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -554,7 +555,7 @@ class EntityEventService(BaseEventService):
                 [user_data], CollectionNames.USERS.value
             )
             # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
-            await notify_principals_changed(payload["orgId"])
+            await notify_principals_changed(org_id)
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
