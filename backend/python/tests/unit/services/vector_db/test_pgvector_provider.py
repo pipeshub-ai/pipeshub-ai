@@ -588,7 +588,12 @@ async def test_a_degraded_leg_is_flagged_on_every_hit_and_the_space_check_starts
         return dense.Leg([(10, str(__import__("uuid").UUID(int=1)))], plan, "timeout"), SimpleNamespace(leaf_rows=9, n_hat=9)
 
     monkeypatch.setattr(dense, "search", degraded)
+    from app.modules.retrieval import degraded_notice
+
+    degraded_notice.track()
+    before = degraded_notice.count()
     for _ in range(2):
         [hits] = await svc.query_nearest_points("records", [request()])
         assert [h.degraded for h in hits] == ["timeout"]
+    assert degraded_notice.count() == before + 2                                                         # noted for the request, hits or not
     assert started == ["pgvector-bit-recall-check"]                                                      # the verdict is read once per ttl, not per search

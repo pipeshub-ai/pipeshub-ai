@@ -21,6 +21,7 @@ from app.config.constants.service import config_node_constants
 from app.core import org_context
 from app.core.db import CapabilityError, DbError
 from app.core.db.shared import acquire_db, release_db
+from app.modules.retrieval import degraded_notice
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -482,6 +483,8 @@ class PgVectorService(IVectorDBService):
             bq_ok = self._bq.get((org, space.space_id), True) and self.pg_capabilities.bit_hnsw
             found, sizing = await dense.search(db, self._sizer, q, cfg, bq_ok=bq_ok)
             self._after_dense(q, found, sizing, space.space_id)
+            if found.degraded:
+                degraded_notice.note(found.degraded)          # the provider contract: an empty answer is flagged too
             ranked = fusion.rrf([[pid for _, pid in found.rows]], req.limit)
             if not req.with_payload:
                 return [SearchResult(id=pid, score=score, degraded=found.degraded) for pid, score in ranked]

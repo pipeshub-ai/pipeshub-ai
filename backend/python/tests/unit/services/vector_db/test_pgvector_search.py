@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import logging
 
 import pytest
 
@@ -71,15 +70,13 @@ def test_fusion_matches_the_one_leg_and_two_leg_scores_of_qdrant() -> None:
     assert fusion.rrf([["b"], ["a"]], 2) == [("a", 0.5), ("b", 0.5)]                    # equal scores: by id, every time
 
 
-def test_every_knob_has_a_default_and_a_value_out_of_range_falls_back_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+def test_every_knob_has_a_default_and_a_value_that_is_not_one_is_refused() -> None:
     assert Tuning.from_dict(None) == Tuning() and Tuning.from_dict({}).n_e0 == 40_000
-    with caplog.at_level(logging.WARNING):
-        t = Tuning.from_dict({"h_slots": -3, "sampler_rate": 7, "ef_cap": 5000, "validate_quantization": "off", "e0_slots": "12", "r_min": 900.0})
-    assert (t.h_slots, t.sampler_rate, t.ef_cap) == (64, 0.01, 1000)
+    t = Tuning.from_dict({"validate_quantization": "off", "e0_slots": "12", "r_min": 900.0})
     assert t.validate_quantization is False
     assert (t.e0_slots, t.r_min) == (12, 900)                                      # good values pass, strings and floats included
-    assert sum("pgvector search setting" in r.message for r in caplog.records) == 3
-    for bad in ({"n_e0": "lots"}, {"promotion_share": float("nan")}, {"validate_quantization": "maybe"}):    # not a number or a switch: refused
+    for bad in ({"n_e0": "lots"}, {"promotion_share": float("nan")}, {"validate_quantization": "maybe"}, {"h_slots": -3}, {"sampler_rate": 7},
+                {"ef_cap": 5000}):                                                 # not a number or a switch, or outside the range: refused
         with pytest.raises(ValueError, match="PGVECTOR_"):
             Tuning.from_dict(bad)
 
