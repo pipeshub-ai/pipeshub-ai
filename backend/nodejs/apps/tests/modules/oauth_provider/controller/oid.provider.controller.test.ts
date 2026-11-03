@@ -192,6 +192,9 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('plus `offline_access` so it can refresh')
       expect(out).to.include('comes with a refresh token')
       expect(out).to.include('grant_type=refresh_token')
+      // Refresh tokens rotate; reusing a spent one revokes the sign-in.
+      expect(out).to.include('keep the `refresh_token` from the device-code response')
+      expect(out).to.include('store it in place of the old one')
       // A pending poll is HTTP 400; a client that stops on 400 never finishes.
       expect(out).to.include('authorization_pending`: keep polling')
       expect(out).to.include('slow_down')
