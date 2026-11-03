@@ -9,7 +9,11 @@ import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
 import { runCommand } from './cli-run';
 import { contentDocs } from './fixtures/content';
 import { conversationDocs } from './fixtures/conversation';
-import { identityDocs } from './fixtures/identity';
+import { MEMBER_A, identityDocs } from './fixtures/identity';
+import { JobState } from '../../../src/scripts/docstore-migrate/state';
+import { reverseFollow } from '../../../src/scripts/docstore-migrate/reverse-follow';
+import { reverseSpecial } from '../../../src/scripts/docstore-migrate/reverse-special';
+import { rollback } from '../../../src/scripts/docstore-migrate/reverse';
 import { haveMongod } from './mongo-harness';
 import { World, startWorld } from './world';
 
@@ -69,6 +73,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(refused.code).to.equal(1);
       expect(refused.out.mode).to.equal('refused');
       expect(await fence()).to.equal('retired');
+      expect(await storeEpoch(), 'PostgreSQL is writable again after a refusal').to.include({ backend: 'postgres', readonly: false });
       const r = await run(['rollback', '--reverse']);
       expect(r.out.ok, r.out.message).to.equal(true);
       expect(r.code).to.equal(0);
@@ -221,6 +226,70 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(back.out.ok).to.equal(false);
       expect(await fence()).to.equal('retired');
       expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: false });
+    });
+
+    it('an offline rollback holds PostgreSQL read-only while it compares and copies, and hands it over closed', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const probes: Array<Promise<any[]>> = [];
+      const r = await rollback(w.rt, {
+        reverse: false,
+        allowWriters: false,
+        log: () => {
+          // the verify reports as it goes: the store row is read at each report
+          probes.push(sql('SELECT readonly FROM platform.store_epoch'));
+        },
+      });
+      expect(r).to.include({ ok: true, mode: 'no_pg_writes' });
+      expect(probes.length, 'the verify reported').to.be.greaterThan(0);
+      for (const p of probes) expect((await p)[0].readonly, 'read-only while the rollback verifies').to.equal(true);
+      expect(await storeEpoch()).to.include({ backend: 'mongo', readonly: true });
+      expect(await fence()).to.equal('active');
+    });
+
+    it('the reverse follower writes a counter bump that arrives late in its run before it returns', async () => {
+      expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+      expect((await cut()).out.ok).to.equal(true);
+      const js = await JobState.attach(w.rt);
+      // the first pass of the follower sweeps at once; the bump comes after it, and the run ends on idleness before the next sweep is due
+      const running = reverseFollow(w.rt, js, { log: () => undefined, untilIdleMs: 2500 });
+      await new Promise((r) => setTimeout(r, 1200));
+      await sql('UPDATE identity.slug_counters SET next_value = next_value + 500');
+      await running;
+      const top = Number((await sql("SELECT max(next_value)::int AS n FROM identity.slug_counters WHERE kind = 'User'"))[0].n);
+      const ctr = await w.mongo.client.db(DB).collection<any>('counters').findOne({ name: 'User' });
+      expect(ctr.seq, 'MongoDB counters stay above every number PostgreSQL handed out').to.be.at.least(top);
+    });
+
+    it('credentials: several live documents for one account end as exactly one, holding the row of PostgreSQL', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const col = w.mongo.client.db(DB).collection<any>('userCredentials');
+      expect(await col.countDocuments({ userId: String(MEMBER_A), isDeleted: { $ne: true } }), 'the fixture has two for this account').to.be.greaterThan(1);
+      await reverseSpecial(w.rt, 'userCredentials');
+      const live = await col.find({ userId: String(MEMBER_A), isDeleted: { $ne: true } }).toArray();
+      expect(live).to.have.length(1);
+      const row = (await sql('SELECT password_hash FROM identity.user_credentials WHERE user_id = $1', [String(MEMBER_A)]))[0];
+      expect(live[0].hashedPassword).to.equal(row.password_hash);
+    });
+
+    it('a failure after MongoDB is live again never unfreezes PostgreSQL, and says where things stand', async () => {
+      expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+      expect((await cut()).out.ok).to.equal(true);
+      const r = await run(['rollback', '--online', '--fail-at', 'finalize-epoch'], ONLINE);
+      expect(r.code).to.equal(1);
+      expect(r.out.stage).to.equal('finalize');
+      expect(r.out.message).to.contain('MongoDB is the live store again').and.to.contain('was not updated').and.to.contain('not unfrozen');
+      expect(await fence()).to.equal('active');
+      expect(await storeEpoch(), 'PostgreSQL stays read-only').to.include({ backend: 'postgres', readonly: true });
+    });
+
+    it('a failure after the store row is written is reported as done: MongoDB is the store, PostgreSQL closed', async () => {
+      expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+      expect((await cut()).out.ok).to.equal(true);
+      const r = await run(['rollback', '--online', '--fail-at', 'finalize-checkpoint'], ONLINE);
+      expect(r.code).to.equal(0);
+      expect(r.out.message).to.contain('MongoDB is the store again').and.to.contain('job record could not be finished');
+      expect(await fence()).to.equal('active');
+      expect(await storeEpoch()).to.include({ backend: 'mongo', readonly: true });
     });
 
     it('a rollback whose reverse verify fails leaves PostgreSQL the store and writable', async () => {
