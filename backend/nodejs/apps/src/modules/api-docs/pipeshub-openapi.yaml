@@ -918,6 +918,243 @@ components:
               type: string
             code:
               type: string
+    OpenAIAgentModel:
+      type: object
+      required: [id, object, created, owned_by, name, description]
+      properties:
+        id:
+          type: string
+          description: Agent key; pass it as `model`.
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+          description: Unix seconds the agent was created; 0 when unknown.
+        owned_by:
+          type: string
+          enum: [pipeshub]
+        name:
+          type: string
+        description:
+          type: string
+    OpenAIAgentModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIAgentModel'
+    OpenAIUrlCitation:
+      type: object
+      required: [type, url, title, start_index, end_index]
+      description: A source the answer cites. The indices span the whole text.
+      properties:
+        type:
+          type: string
+          enum: [url_citation]
+        url:
+          type: string
+        title:
+          type: string
+        start_index:
+          type: integer
+        end_index:
+          type: integer
+    OpenAIChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: Agent key from `GET /openai/models`.
+        messages:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [system, developer, user, assistant]
+              content:
+                oneOf:
+                  - type: string
+                  - type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                        text:
+                          type: string
+        stream:
+          type: boolean
+          default: false
+    OpenAIChatCompletion:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+        model:
+          type: string
+        conversation_id:
+          type: string
+          description: The PipesHub conversation this answer was saved to.
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              finish_reason:
+                type: string
+                enum: [stop]
+              message:
+                type: object
+                properties:
+                  role:
+                    type: string
+                    enum: [assistant]
+                  content:
+                    type: string
+                  annotations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: [url_citation]
+                        url_citation:
+                          type: object
+                          properties:
+                            url:
+                              type: string
+                            title:
+                              type: string
+                            start_index:
+                              type: integer
+                            end_index:
+                              type: integer
+        usage:
+          type: object
+          nullable: true
+          description: Always null; token counts are not reported.
+    OpenAIResponseRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model:
+          type: string
+          description: Agent key from `GET /openai/models`.
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [message]
+                  role:
+                    type: string
+                    enum: [system, developer, user, assistant]
+                  content:
+                    oneOf:
+                      - type: string
+                      - type: array
+                        items:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                            text:
+                              type: string
+        instructions:
+          type: string
+          nullable: true
+        previous_response_id:
+          type: string
+          nullable: true
+          description: An `id` this server returned; continues that conversation.
+        stream:
+          type: boolean
+          default: false
+    OpenAIResponse:
+      type: object
+      required: [id, object, created_at, status, model, output]
+      properties:
+        id:
+          type: string
+          description: Pass as `previous_response_id` to continue the conversation.
+        object:
+          type: string
+          enum: [response]
+        created_at:
+          type: integer
+        status:
+          type: string
+          enum: [completed, in_progress, failed]
+        model:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        previous_response_id:
+          type: string
+          nullable: true
+        error:
+          type: object
+          nullable: true
+        output:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [message]
+              id:
+                type: string
+              status:
+                type: string
+              role:
+                type: string
+                enum: [assistant]
+              content:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [output_text]
+                    text:
+                      type: string
+                    annotations:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/OpenAIUrlCitation'
+        output_text:
+          type: string
+          description: The answer text (non-streaming responses only).
+        usage:
+          type: object
+          nullable: true
+          description: Always null; token counts are not reported.
     DiscoveredAIModel:
       type: object
       required: [id, displayName, capabilities, source]
@@ -24420,6 +24657,252 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /openai/models:
+    get:
+      tags:
+        - Agents
+      summary: List agents as models (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models` shape, where each model is an agent the caller
+        can use. Set an OpenAI client's base URL to `{instance}/api/v1/openai`
+        and pass a model `id` (the agent key) as `model` to
+        `/openai/chat/completions` or `/openai/responses`.
+
+        The configured LLMs are listed by `GET /models` instead.
+      operationId: listAgentModelsOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      responses:
+        '200':
+          description: The caller's agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIAgentModelList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth access token lacks the `agent:read` scope (`HTTP_FORBIDDEN`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The agent list could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/models/{modelId}:
+    get:
+      tags:
+        - Agents
+      summary: Retrieve one agent as a model (OpenAI-compatible)
+      description: OpenAI `GET /v1/models/{model}` for one agent the caller can use.
+      operationId: retrieveAgentModelOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Agent key
+      responses:
+        '200':
+          description: The agent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIAgentModel'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth access token lacks the `agent:read` scope (`HTTP_FORBIDDEN`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The caller has no agent with this key (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/chat/completions:
+    post:
+      tags:
+        - Agents
+      summary: Chat with an agent (OpenAI Chat Completions)
+      description: |
+        OpenAI `POST /v1/chat/completions` backed by an agent. `model` is the
+        agent key. Each call starts a new agent conversation, visible in the
+        caller's chat history, in `quick` mode. Chat Completions clients resend
+        the whole history, so earlier `messages` (and `system`/`developer`
+        messages) are folded into the query as a plain-text transcript ahead of
+        the last user message. Only text content is read.
+
+        Fields this endpoint does not use (`temperature`, `tools`, `max_tokens`,
+        ...) are accepted and ignored. `usage` is `null`. Citations come back as
+        `url_citation` annotations on the message, and `conversation_id` names the
+        PipesHub conversation.
+
+        With `stream: true` the answer is sent as `chat.completion.chunk` events
+        ending in `data: [DONE]`. The text arrives in one chunk when the agent
+        finishes; `: keepalive` comments are sent while it works. An error after
+        the stream opens is sent as one `data: {"error": ...}` event.
+      operationId: createAgentChatCompletionOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIChatCompletionRequest'
+      responses:
+        '200':
+          description: The answer, or an SSE stream of chunks when `stream` is true.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIChatCompletion'
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: |
+            `model` or `messages` is missing, or no message is a user message with
+            text (`invalid_request`), or the body failed validation (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `agent:execute`, or the caller cannot use this agent.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No agent with this key (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '502':
+          description: The agent run failed before streaming started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/responses:
+    post:
+      tags:
+        - Agents
+      summary: Chat with an agent (OpenAI Responses)
+      description: |
+        OpenAI `POST /v1/responses` backed by an agent. `model` is the agent key.
+        Without `previous_response_id` a new agent conversation starts; with
+        it, the turn is added to that response's conversation, so the client
+        sends only the new message. A `previous_response_id` this server did not
+        return is refused.
+
+        `input` is a string or a list of message items; only their text is read,
+        and other item types are ignored. `instructions` is passed to the agent
+        with the message. Other fields (`tools`, `temperature`, `store`, ...) are
+        accepted and ignored. Citations come back as `url_citation` annotations
+        on the `output_text` part.
+
+        With `stream: true` the Responses events are sent in order
+        (`response.created`, `response.in_progress`, `response.output_item.added`,
+        `response.content_part.added`, `response.output_text.delta`,
+        `response.output_text.annotation.added` per citation,
+        `response.output_text.done`, `response.content_part.done`,
+        `response.output_item.done`, `response.completed`), each with a
+        `sequence_number`. The text arrives in one delta when the agent finishes;
+        `: keepalive` comments are sent while it works. An error after the
+        stream opens ends it with `response.failed`.
+      operationId: createAgentResponseOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIResponseRequest'
+      responses:
+        '200':
+          description: The response, or an SSE stream of Responses events when `stream` is true.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIResponse'
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: |
+            `model` or `input` is missing, no input item is a user message with text,
+            or `previous_response_id` was not returned by this server
+            (`invalid_request`), or the body failed validation (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `agent:execute`, or the caller cannot use this agent or conversation.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No agent with this key, or the previous response's conversation is gone (`model_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '502':
+          description: The agent run failed before streaming started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
 
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
