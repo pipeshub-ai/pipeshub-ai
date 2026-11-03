@@ -44,7 +44,7 @@ FOR id IN @ids
           inherits: (FOR i IN {_INH} FILTER i._from == d._id RETURN PARSE_IDENTIFIER(i._to).key),
           granted: LENGTH(FOR p IN {_PERM} FILTER p._to == d._id LIMIT 1 RETURN 1) > 0,
           groups: (FOR b IN {_BEL} FILTER b._from == d._id AND STARTS_WITH(b._to, "{_GRP}/") RETURN PARSE_IDENTIFIER(b._to).key),
-          belongsApp: LENGTH(FOR b IN {_BEL} FILTER b._from == d._id AND STARTS_WITH(b._to, "{_APP}/") LIMIT 1 RETURN 1) > 0}}
+          belongsApp: LENGTH(FOR b IN {_BEL} FILTER b._from == d._id AND b._to == CONCAT("{_APP}/", d.connectorId) LIMIT 1 RETURN 1) > 0}}
 """
 
 PAGE = f"""

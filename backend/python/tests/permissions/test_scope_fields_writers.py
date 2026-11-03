@@ -283,3 +283,24 @@ async def test_the_purge_marker_matches_only_the_points_of_the_bound_org(flag_on
     await write_membership_batch_locked(vdb, COLL, [v], ["gone"], None, log)
     assert not set(SCOPE_KEYS) & set(vdb.collections[COLL]["other-org-point"].payload)
     assert ScopeFields.from_payload(vdb.collections[COLL][loaded.points[v][0]].payload) == STALE_SCOPE
+
+
+async def test_the_summary_point_gets_the_same_stamp_as_its_siblings(flag_on) -> None:
+    """`index_record_summary` binds the membership of a virtual record with no record in hand: the organisation then comes from the
+    ambient context, as in the other writers, not from a record that is not there."""
+    from app.modules.transformers.vectorstore import VectorStore
+
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+    v = next(iter(loaded.records))
+    await sync_all(loaded, vdb)
+    sibling = await _stamp_state(vdb, loaded, v)
+    assert sibling.trusted
+    store = VectorStore.__new__(VectorStore)
+    store.graph_provider, store.logger = loaded.graph, log
+    tokens = await store._bind_membership(v)  # no record: the summary point
+    try:
+        point = vector_point_payload({}, "summary")
+    finally:
+        reset_membership_context(tokens)
+    assert ScopeFields.from_payload(point) == sibling

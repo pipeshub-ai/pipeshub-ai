@@ -35,7 +35,7 @@ RETURN n.id AS id, CASE WHEN n:Record THEN 'record' WHEN n:RecordGroup THEN 'gro
        [(n)-[:INHERIT_PERMISSIONS]->(q) | q.id] AS inherits,
        EXISTS {{ ()-[:PERMISSION]->(n) }} AS granted,
        [(n)-[:BELONGS_TO]->(g:RecordGroup) | g.id] AS groups,
-       EXISTS {{ (n)-[:BELONGS_TO]->(:App) }} AS belongsApp
+       EXISTS {{ (n)-[:BELONGS_TO]->(a:App) WHERE a.id = n.connectorId }} AS belongsApp
 """
 
 # Paged by the (connectorId, id) index in its order (ensure_schema creates it), as the knowledge-hub scope read does: the cursor seeks, and

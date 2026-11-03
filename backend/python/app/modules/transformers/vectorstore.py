@@ -1498,7 +1498,7 @@ class VectorStore(Transformer):
         # point is marked stale and the post-index resync or the back-fill recomputes it.
         scope = None
         if scope_fields_enabled():
-            org_id = getattr(record, "org_id", None)
+            org_id = getattr(record, "org_id", None) or scope_org_id()  # the summary point has no record in hand
             scope = await scope_fields_for_state(self.graph_provider, state, org_id, self.logger) if org_id else STALE_SCOPE
         return set_membership_context(
             connector_ids, record_group_ids, root_record_group_ids, scope
