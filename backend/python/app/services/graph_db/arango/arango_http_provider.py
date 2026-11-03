@@ -3009,6 +3009,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [self._stage_doc_from_arango(row) for row in rows]
 
     @override
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        rows = await self._stage_aql(
+            "FOR doc IN @@collection FILTER doc.virtualRecordId == @vrid AND doc.orgId != null "
+            "LIMIT 1 RETURN doc.orgId",
+            {"vrid": virtual_record_id},
+        )
+        return rows[0] if rows else None
+
+    @override
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         arango_doc = {k: v for k, v in document.items() if k != "id"}
         arango_doc["_key"] = document["id"]

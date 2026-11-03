@@ -38,6 +38,8 @@ export interface UserProfile {
   /** Object URL created from the logo blob, or null if not set */
   avatarUrl: string | null;
   hasLoggedIn: boolean;
+  /** null = none set; undefined = unknown (the users/:id request failed). */
+  designation?: string | null;
 }
 
 interface UserProfileState {
@@ -171,6 +173,7 @@ export const useUserStore = create<UserProfileStore>()(
                 isAdmin: state.profile.isAdmin,
                 avatarUrl: null,
                 hasLoggedIn: state.profile.hasLoggedIn,
+                designation: state.profile.designation,
               }
             : null,
         }),

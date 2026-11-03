@@ -1,4 +1,6 @@
+import { mutate } from 'swr';
 import { apiClient } from '@/lib/api';
+import { ORG_KEYS } from '@/app/(main)/workspace/general/api';
 import type {
   OrgProfileFormData,
   StorageFormData,
@@ -67,6 +69,7 @@ export async function updateOrgProfile(data: OrgProfileFormData): Promise<void> 
       country: data.country,
     },
   });
+  void mutate(ORG_KEYS.details);
 }
 
 // ===============================
