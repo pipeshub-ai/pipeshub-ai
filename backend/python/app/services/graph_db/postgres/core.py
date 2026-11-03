@@ -358,8 +358,8 @@ class CoreMixin(PgBase):
             return 0
         org = current_org_id()
         colls, kind = _edge_scope(collection)
-        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_all_edges_for_node */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
-            AND e.coll = ANY($2::text[]) AND ((e.from_coll = $3 AND e.from_id = $4) OR (e.to_coll = $3 AND e.to_id = $4)) AND {_kind_sql(5)}
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_all_edges_for_node */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND ((e.from_coll = $3 AND e.from_id = $4) OR (e.to_coll = $3 AND e.to_id = $4)) AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
             RETURNING 1) SELECT count(*) FROM d""", org, colls, coll, key, kind), transaction, write=True)
 
     async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str, transaction: str | None = None) -> None:
