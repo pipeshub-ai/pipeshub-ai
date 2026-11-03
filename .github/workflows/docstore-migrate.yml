@@ -90,6 +90,7 @@ jobs:
         run: npm run test:docstore-migrate -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-migrate-junit.xml"
 
       - name: Start MongoDB for the fence tests (a replica set and a single server)
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/mongo-rs" "$RUNNER_TEMP/mongo-single"
           nohup mongod --dbpath "$RUNNER_TEMP/mongo-rs" --port 27018 --bind_ip 127.0.0.1 --replSet rs0 --setParameter enableTestCommands=1 > "$RUNNER_TEMP/mongo-rs.log" 2>&1 &
@@ -106,6 +107,7 @@ jobs:
           exit 1
 
       - name: Fence suites on a replica set (test:docstore-fence)
+        if: ${{ !cancelled() }}
         working-directory: backend/nodejs/apps
         env:
           PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
@@ -118,6 +120,7 @@ jobs:
         run: npm run test:docstore-fence -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-fence-junit.xml"
 
       - name: Mongo fence on a single server
+        if: ${{ !cancelled() }}
         working-directory: backend/nodejs/apps
         env:
           MONGO_IT_URI: mongodb://127.0.0.1:27019
