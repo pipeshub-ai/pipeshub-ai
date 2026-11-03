@@ -59,11 +59,11 @@ MCP clients that support OAuth register at \`${oauth}/register\` and sign the pe
 
 The person creates one in **Workspace → Developer settings → Personal access tokens** and puts it in your environment as \`PIPESHUB_TOKEN\` (with \`PIPESHUB_BASE_URL=${origin}\`). Never ask them to paste it into the chat.`);
 
-  // Refresh tokens rotate, and reusing a spent one revokes the whole sign-in.
+  // Refresh tokens rotate: a spent one is refused (and where replay detection is on, it ends the sign-in).
   const refresh =
     'A device sign-in comes with a refresh token: keep the `refresh_token` from the device-code response, then `POST ' +
     `${oauth}/token\` with \`grant_type=refresh_token\`, \`refresh_token\` and \`client_id\`` +
-    '. Each refresh returns a new `refresh_token`: store it in place of the old one, which stops working (sending it again ends the sign-in). The CLI does this for you. Otherwise sign';
+    '. Each refresh returns a new `refresh_token`: store it in place of the old one, which stops working, and never send an old one again. The CLI does this for you. Otherwise sign';
 
   return `# PipesHub: authentication for agents
 
