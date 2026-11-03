@@ -33,8 +33,11 @@ def scoped(stream: Callable[_P, AsyncGenerator[_T, None]]) -> Callable[_P, Async
     async def run(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[_T, None]:
         token = _seen.set([])
         try:
-            async for item in stream(*args, **kwargs):
-                yield item
+            # aclosing: a wrapper that is closed (a client disconnect) must close the run it wraps now, so the run's own teardown
+            # (its task registry, its timing logs) runs where it always did, not whenever the inner generator is collected.
+            async with contextlib.aclosing(stream(*args, **kwargs)) as run_events:
+                async for item in run_events:
+                    yield item
         finally:
             # ValueError: finalised from another context (an abandoned stream), which ends with it
             with contextlib.suppress(ValueError):

@@ -42,3 +42,22 @@ async def test_the_scope_ends_with_the_stream() -> None:
 async def test_both_chat_entry_points_start_their_own_scope() -> None:
     assert hasattr(stream_bridge.run_agent_loop_stream, "__wrapped__")
     assert hasattr(bridge.run_chat_stream, "__wrapped__")
+
+
+async def test_closing_the_wrapped_stream_closes_the_run_it_wraps_at_once() -> None:
+    ended: list[str] = []
+
+    @degraded_notice.scoped
+    async def run() -> AsyncGenerator[int, None]:
+        try:
+            yield 1
+            await asyncio.sleep(60)
+        finally:
+            ended.append("teardown")
+
+    stream = run()
+    await stream.__anext__()
+    await stream.aclose()
+
+    assert ended == ["teardown"]
+    assert degraded_notice.was_degraded() is False
