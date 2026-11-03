@@ -400,6 +400,16 @@ def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
         assert NOT_RESOLVABLE in rules(unmodelled), unmodelled
 
 
+def test_the_sql_start_check_is_fast_on_hostile_comments() -> None:
+    import time
+
+    start = time.perf_counter()
+    for text in ("-- " * 50_000 + "x", "/* " * 50_000, "--" * 50_000, "/**/ " * 50_000 + "x"):
+        assert not sql_lint._starts_sql(text)
+    assert time.perf_counter() - start < 2
+    assert sql_lint._starts_sql("-- a\n/* b */ -- c\n  SET x = 1") and not sql_lint._starts_sql("/* open SET x")
+
+
 def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
     src = ('async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    def inner(x):\n        q = f"SELECT {x}"\n        return q\n'
            '    await tx.fetch(q)\n')
@@ -745,8 +755,8 @@ def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
 
     from app.core.db import sql_lint
 
-    assert sql_lint._SQL_START.match("/* tag */ /* more */\n  select 1")
-    assert not sql_lint._SQL_START.match("not sql at all")
+    assert sql_lint._starts_sql("/* tag */ /* more */\n  select 1")
+    assert not sql_lint._starts_sql("not sql at all")
     started = time.monotonic()
-    sql_lint._SQL_START.match("/*" + "*//*" * 20000 + "x")
+    sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
     assert time.monotonic() - started < 1.0

@@ -26,8 +26,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 _CALLS = {"fetch", "fetchrow", "fetchval", "execute", "executemany"}
-_SQL_START = re.compile(r"\s*(?:(?:/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*)\s*)*(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
-                        r"prepare|execute|deallocate|discard|close|fetch|move|savepoint|release|rollback|commit|begin|end|abort|start)\b", re.I | re.S)
+_KEYWORD_START = re.compile(r"(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
+                            r"prepare|execute|deallocate|discard|close|fetch|move|savepoint|release|rollback|commit|begin|end|abort|start)\b", re.I)
 _TAG = re.compile(r"/\*\s*pipeshub:[A-Za-z0-9_.]{1,80}\s*\*/")
 _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 _STARTS = {
@@ -60,6 +60,17 @@ class Finding:
 
     def __str__(self) -> str:
         return f"{self.path}:{self.line}: {self.rule}"
+
+
+def _starts_sql(text: str) -> bool:
+    """Whether the text, after any leading ``--`` and ``/* */`` comments, starts with an SQL keyword. A loop, not a regex: no backtracking."""
+    text = text.lstrip()
+    while text.startswith(("--", "/*")):
+        end = text.find("\n" if text.startswith("--") else "*/", 2)
+        if end < 0:
+            return False                 # an unterminated comment
+        text = text[end + 1:].lstrip() if text.startswith("--") else text[end + 2:].lstrip()
+    return _KEYWORD_START.match(text) is not None
 
 
 def sql_rules(sql: str) -> list[str]:
@@ -240,7 +251,7 @@ def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -
             continue
         if text is None:
             continue
-        alts = [a for a in text.split(_ALT) if _SQL_START.match(a) or (built and _KEYWORDS.search(a))]   # the rest are not SQL (an HTTP client's execute, ...)
+        alts = [a for a in text.split(_ALT) if _starts_sql(a) or (built and _KEYWORDS.search(a))]   # the rest are not SQL (an HTTP client's execute, ...)
         if not alts:
             continue
         if built:
