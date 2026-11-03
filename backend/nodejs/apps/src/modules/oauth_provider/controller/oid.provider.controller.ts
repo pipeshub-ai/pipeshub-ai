@@ -16,8 +16,9 @@ import {
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
-import { mcpDiscoveryScopes } from '../config/scopes.config';
+import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
 import { cimdEnabled } from '../services/client_metadata_document';
+import { renderAuthMd } from '../utils/auth-md';
 
 /**
  * OpenID Connect Provider Controller
@@ -176,6 +177,40 @@ export class OIDCProviderController {
     };
 
     res.json(config);
+  }
+
+  /**
+   * GET /auth.md and /.well-known/auth.md: how an agent gets a credential for
+   * this instance and uses it (Markdown). Built from the same settings as
+   * discovery, so the two never disagree.
+   */
+  async authMd(
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+    extraSections: (origin: string) => string[],
+  ): Promise<void> {
+    try {
+      const origin = this.appConfig.oauthIssuer;
+      const deviceEnabled =
+        process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
+      const offered = new Set(this.appConfig.mcpScopes);
+      res.type('text/markdown; charset=utf-8').send(
+        renderAuthMd({
+          origin,
+          deviceClientId: deviceEnabled
+            ? await this.firstPartyDeviceAppService.getOrCreate()
+            : null,
+          dcrEnabled: process.env.PIPESHUB_ENABLE_DCR === 'true',
+          agentScopes: AgentMcpScopes.filter((s) => offered.has(s)),
+          // The device app's preset adds offline_access where MCP_SCOPES allows it.
+          deviceRefreshes: deviceEnabled && offered.has('offline_access'),
+          extraSections: extraSections(origin),
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
   }
 
   /**

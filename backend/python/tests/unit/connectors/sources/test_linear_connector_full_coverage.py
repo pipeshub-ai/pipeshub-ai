@@ -119,6 +119,7 @@ def _make_connector():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()

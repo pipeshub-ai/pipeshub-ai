@@ -136,6 +136,9 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/support/**",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/fake_storage.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/image_harness.py",
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
@@ -144,6 +147,10 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
     f"{PYTHON}/tests/unit/services/vector_db/test_strategy_contract.py",
     f"{PYTHON}/tests/unit/web/qa/lab.py",
+    f"{PYTHON}/tests/permissions/graph.py",
+    f"{PYTHON}/tests/permissions/model.py",
+    f"{PYTHON}/tests/permissions/runner.py",
+    f"{PYTHON}/tests/permissions/scenario.py",
 )
 
 # backend-matrix.yml's Python suites. Their tests import more than their own

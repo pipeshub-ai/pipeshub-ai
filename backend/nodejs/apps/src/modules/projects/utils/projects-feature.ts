@@ -13,7 +13,55 @@ export const PROJECTS_DISABLED_MESSAGE =
 /** Long enough to spare a settings read per request, short enough that a Labs toggle applies almost at once. */
 const CACHE_TTL_MS = 5_000;
 
-let cached: { value: boolean; at: number } | null = null;
+/** Enough for every workspace one process serves; past it the oldest answer goes first. */
+const CACHE_MAX_KEYS = 10_000;
+
+const cached = new Map<string, { value: boolean; at: number }>();
+
+function remember(cacheKey: string, value: boolean): void {
+  // Deleting first moves the key to the newest end of the Map's insertion order.
+  cached.delete(cacheKey);
+  if (cached.size >= CACHE_MAX_KEYS) {
+    const now = Date.now();
+    for (const [key, entry] of cached) {
+      if (now - entry.at >= CACHE_TTL_MS) cached.delete(key);
+    }
+    if (cached.size >= CACHE_MAX_KEYS) {
+      const oldest = cached.keys().next().value;
+      if (oldest !== undefined) cached.delete(oldest);
+    }
+  }
+  cached.set(cacheKey, { value, at: Date.now() });
+}
+
+/**
+ * The cache slot this request's answer goes in, and the store to read it
+ * from on a miss; null while no store can be read yet. The default reads the
+ * one settings document. A build that keeps settings per workspace supplies
+ * its own at boot, so each workspace's Labs switch decides for that workspace;
+ * the store is resolved only on a miss because finding it can cost reads.
+ */
+export type ProjectsSettingsSource = () => {
+  cacheKey: string;
+  store: () => Promise<Pick<KeyValueStoreService, 'get'>>;
+} | null;
+
+const readSettingsDocument: ProjectsSettingsSource = () => {
+  const store = ProjectsFeature.settingsStore();
+  return store.isConnected()
+    ? { cacheKey: '', store: () => Promise.resolve(store) }
+    : null;
+};
+
+let resolveSource: ProjectsSettingsSource = readSettingsDocument;
+
+/** Replaces where the Projects flag is read from; no argument restores the default. */
+export function setProjectsSettingsSource(
+  fn: ProjectsSettingsSource = readSettingsDocument,
+): void {
+  resolveSource = fn;
+  cached.clear();
+}
 
 /**
  * Whether the ENABLE_PROJECTS Labs flag is on. Turning it off used to hide
@@ -29,17 +77,20 @@ export const ProjectsFeature = {
   },
 
   async isEnabled(): Promise<boolean> {
-    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
-      return cached.value;
-    }
     try {
-      const store = ProjectsFeature.settingsStore();
-      if (!store.isConnected()) {
+      const source = resolveSource();
+      if (!source) {
         return true;
       }
-      const { featureFlags } = await getPlatformSettingsFromStore(store);
+      const hit = cached.get(source.cacheKey);
+      if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+        return hit.value;
+      }
+      const { featureFlags } = await getPlatformSettingsFromStore(
+        await source.store(),
+      );
       const value = featureFlags.ENABLE_PROJECTS === true;
-      cached = { value, at: Date.now() };
+      remember(source.cacheKey, value);
       return value;
     } catch (error) {
       logger.warn('Could not read the Projects flag; leaving Projects on', {
@@ -58,7 +109,7 @@ export const ProjectsFeature = {
 
   /** Drops the cached flag value, so a test sees the flag it just set. */
   resetCache(): void {
-    cached = null;
+    cached.clear();
   },
 };
 

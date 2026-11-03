@@ -26,11 +26,15 @@ from .conftest import BACKEND, EXTENSIONS, VETTED, _drop_roles, _free_port, run_
 from .rls_fixture import ORG_A, ORG_B, OrgDb, start_pgbouncer, uow
 
 CORE = BACKEND / "db" / "versions" / "kernel" / "vetted" / "manifest.yaml"
+RETRIEVAL = BACKEND / "db" / "versions" / "retrieval" / "vetted" / "manifest.yaml"
 PLATFORM = BACKEND / "db" / "versions" / "platform" / "vetted" / "manifest.yaml"
+GRAPH = BACKEND / "db" / "versions" / "graph" / "vetted" / "manifest.yaml"
 IDENTITY = BACKEND / "db" / "versions" / "identity" / "vetted" / "manifest.yaml"
 FIXTURE = Path(__file__).with_name("vetted_manifest.yaml")
-FNS = vetted.load_all([CORE, PLATFORM, IDENTITY, FIXTURE])
-ALL = list(FNS.values())
+FNS = vetted.load_all([CORE, RETRIEVAL, PLATFORM, IDENTITY, FIXTURE])
+# the catalog agreement check sees every manifest a migrated database holds; the generated suite runs on those that fit the fixture schema (graph is covered in test_graph.py)
+FNS.update(vetted.load_all([GRAPH]))
+ALL = [f for f in FNS.values() if f.schema != "graph"]
 IDS = [f.qualified for f in ALL]
 DB_NAME = "t_vetted"
 

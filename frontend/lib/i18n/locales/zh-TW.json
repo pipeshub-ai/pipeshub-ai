@@ -1572,7 +1572,8 @@
       "internalSearch": "內部搜尋",
       "webSearch": "網路搜尋",
       "internalAndWebSearch": "內部 + 網路搜尋"
-    }
+    },
+    "searchDegraded": "結果可能不完整。"
   },
   "workspaceMenu": {
     "appearance": "外觀",

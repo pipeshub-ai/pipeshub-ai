@@ -8,6 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 import asyncio
+import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -15,7 +16,9 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     DeleteSource,
+    OriginTypes,
     ProgressStatus,
     RecordRelations,
 )
@@ -27,6 +30,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.conditions import Cond
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
@@ -61,6 +65,23 @@ class MoveDestinationMissing(RuntimeError):
             f"Record {record_id} was not moved: its new parent {parent_record_id} "
             "is not in the graph or is in the trash"
         )
+
+
+@dataclass(frozen=True)
+class RefAccess:
+    """What ``IGraphDBProvider.get_ref_access`` found for a set of storage document ids.
+
+    ``linked``: ids named by any record or file link (so the id is somebody's content, whoever uploaded it).
+    ``readable``: ids with a granting record the caller can read. Record ids are never exposed.
+    """
+
+    linked: frozenset[str] = frozenset()
+    readable: frozenset[str] = frozenset()
+
+
+#: Linking records taken per document and per call; any readable one grants, more than the cap is not an error.
+REF_LINKS_PER_DOC = 8
+REF_LINKS_PER_CALL = 128
 
 
 @dataclass(frozen=True)
@@ -401,6 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
+    from app.services.permissions.ports import HierarchyView
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -504,6 +526,172 @@ class IGraphDBProvider(ABC):
         super().__init_subclass__(**kwargs)
         instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
 
+
+    # ==================== Methods callers use that were once only on the concrete providers ====================
+
+    def _normalize_name(self, name: str | None) -> str | None:
+        """Normalize a file/folder name to NFC and trim whitespace."""
+        if name is None:
+            return None
+        try:
+            return unicodedata.normalize("NFC", str(name)).strip()
+        except Exception:
+            return str(name).strip()
+
+    def _normalized_name_variants_lower(self, name: str) -> list[str]:
+        """Provide lowercase variants for equality comparisons (NFC and NFD)."""
+        nfc = self._normalize_name(name) or ""
+        try:
+            nfd = unicodedata.normalize("NFD", nfc)
+        except Exception:
+            nfd = nfc
+        return [nfc.lower(), nfd.lower()]
+
+    def _generate_upload_message(self, result: dict, upload_type: str) -> str:
+        """Generate success message"""
+        total_created = result["total_created"]
+        folders_created = result["folders_created"]
+        failed_files = len(result.get("failed_files", []))
+        skipped_files = len(result.get("skipped_files", []))
+
+        message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
+
+        if folders_created > 0:
+            message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
+
+        if failed_files > 0:
+            message += f". {failed_files} file{'s' if failed_files != 1 else ''} failed to upload"
+
+        if skipped_files > 0:
+            message += f". {skipped_files} file{'s' if skipped_files != 1 else ''} skipped (name already exists)"
+
+        return message + "."
+
+    def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
+        """
+        Analyze folder structure - creates folder hierarchy map based on file paths
+        """
+        folder_hierarchy = {}  # path -> {name: str, parent_path: str, level: int}
+        file_destinations = {}  # file_index -> {type: "root"|"folder", folder_name: str|None, folder_hierarchy_path: str|None}
+
+        for index, file_data in enumerate(files):
+            file_path = file_data["filePath"]
+
+            if "/" in file_path:
+                # File is in a subfolder - analyze the hierarchy
+                path_parts = file_path.split("/")
+                folder_parts = path_parts[:-1]
+
+                # Build folder hierarchy
+                current_path = ""
+                for i, folder_name in enumerate(folder_parts):
+                    parent_path = current_path if current_path else None
+                    current_path = f"{current_path}/{folder_name}" if current_path else folder_name
+
+                    if current_path not in folder_hierarchy:
+                        folder_hierarchy[current_path] = {
+                            "name": folder_name,
+                            "parent_path": parent_path,
+                            "level": i + 1
+                        }
+
+                # File goes to the deepest folder
+                file_destinations[index] = {
+                    "type": "folder",
+                    "folder_name": folder_parts[-1],
+                    "folder_hierarchy_path": current_path,
+                }
+            else:
+                # File goes to upload target (KB root or parent folder)
+                file_destinations[index] = {
+                    "type": "root",
+                    "folder_name": None,
+                    "folder_hierarchy_path": None,
+                }
+
+        # Sort folders by level (create parents first)
+        sorted_folder_paths = sorted(folder_hierarchy.keys(), key=lambda x: folder_hierarchy[x]["level"])
+
+        # Add parent folder context
+        parent_folder_id = None
+        if validation_result["upload_target"] == "folder":
+            parent_folder_id = validation_result["parent_folder"].get("id") or validation_result["parent_folder"].get("_key")
+
+        return {
+            "folder_hierarchy": folder_hierarchy,
+            "sorted_folder_paths": sorted_folder_paths,
+            "file_destinations": file_destinations,
+            "upload_target": validation_result["upload_target"],
+            "parent_folder_id": parent_folder_id,
+            "summary": {
+                "total_folders": len(folder_hierarchy),
+                "root_files": len([d for d in file_destinations.values() if d["type"] == "root"]),
+                "folder_files": len([d for d in file_destinations.values() if d["type"] == "folder"])
+            }
+        }
+
+    def _populate_file_destinations(self, folder_analysis: dict, folder_map: dict[str, str]) -> None:
+        """Update file destinations with resolved folder IDs"""
+        for destination in folder_analysis["file_destinations"].values():
+            if destination["type"] == "folder":
+                hierarchy_path = destination["folder_hierarchy_path"]
+                if hierarchy_path in folder_map:
+                    destination["folder_id"] = folder_map[hierarchy_path]
+
+    @abstractmethod
+    async def _get_kb_context_for_record(self, record_id: str, transaction: str | None=None) -> dict | None:
+        """Get KB context for a record."""
+        pass
+
+    @abstractmethod
+    async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None=None, *, raise_on_error: bool=False) -> set[tuple[str, str]]:
+        """Return (name_lower, mime_type_str) tuples for all non-deleted file"""
+        pass
+
+    @abstractmethod
+    async def _validate_upload_context(self, kb_id: str, user_id: str, org_id: str, parent_folder_id: str | None=None) -> dict:
+        """Unified validation for all upload scenarios"""
+        pass
+
+    @abstractmethod
+    async def get_user_app_ids(self, user_key: str, transaction: str | None=None) -> list[str]:
+        """Get list of app IDs the user has access to."""
+        pass
+
+    @abstractmethod
+    async def get_user_permission_app_ids(self, user_key: str, org_id: str, transaction: str | None=None) -> list[str]:
+        """Get app IDs the user can access via a direct or team-based PERMISSION"""
+        pass
+
+    @abstractmethod
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None=None, request: Optional["Request"]=None, record_id: str | None=None) -> dict:
+        """Create reindex event payload"""
+        pass
+
+    @abstractmethod
+    async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str, transaction: str | None=None) -> None:
+        """Delete INHERIT_PERMISSIONS edge from record to record group."""
+        pass
+
+    @abstractmethod
+    async def get_user_apps(self, user_id: str, transaction: str | None=None) -> list:
+        """The Apps this user (by graph key) passes the connector gate for, in"""
+        pass
+
+    @abstractmethod
+    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None=None) -> int:
+        """Delete all edges connected to a node (both incoming and outgoing)."""
+        pass
+
+    @abstractmethod
+    async def get_template(self, template_id: str, user_id: str, transaction: str | None=None) -> dict | None:
+        """Get a template by ID with user permissions"""
+        pass
+
+    @abstractmethod
+    async def clone_agent_template(self, template_id: str, transaction: str | None=None) -> str | None:
+        """Clone an agent template"""
+        pass
 
     # ==================== Connection Management ====================
 
@@ -2220,6 +2408,52 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into the node only while every condition holds, in
+        one statement. ``update_node_fields_if_match`` with named operators
+        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``) instead of
+        equality only, so "unset or not newer than" can be asked. A ``None`` in
+        ``updates`` removes or nulls the field.
+
+        Returns:
+            True iff the write applied.
+
+        Raises:
+            ValueError: when ``conditions`` is empty.
+            NotImplementedError: from a provider without it.
+            Exception: on query failure.
+        """
+        raise NotImplementedError
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """Replace (not merge) the projected property values of a record, and set
+        ``controls`` beside them, only while ``conditions`` hold, in one statement.
+
+        ``values`` maps property name to its stored value. The values the record
+        held before and that are not in ``values`` (``previous_names``) are
+        removed, so a property the record lost does not linger.
+
+        Returns:
+            True iff the write applied.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def create_node_if_absent(
         self,
@@ -2468,6 +2702,10 @@ class IGraphDBProvider(ABC):
         Returns:
             list[str]: The ids actually updated. Ids absent from the result held some
                        other status and were left alone - a normal outcome, not an error.
+
+        Raises:
+            Exception: whatever the database raised. A failed write is never answered
+                       as an empty list, which means "no id held `expected`".
         """
         pass
 
@@ -2480,6 +2718,10 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
         """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        """The ``orgId`` named by any stage state of this virtual record, or None."""
 
     @abstractmethod
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
@@ -4700,6 +4942,13 @@ class IGraphDBProvider(ABC):
         return AccessibleContainers(
             fallback_reason="provider does not implement container filtering"
         )
+
+    def permission_hierarchy_view(self) -> "HierarchyView":
+        """The organisation's record groups and scopes, for `app.services.permissions.ViewerScopeResolver`.
+
+        Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
+        "no scopes"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
     @abstractmethod
     async def get_entity_access_context(
@@ -7254,6 +7503,62 @@ class IGraphDBProvider(ABC):
             ),
         )
 
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        """Rows ``{docId, recordId, kind, origin, connectorName, connectorId}`` naming any of ``doc_ids``.
+
+        ``kind`` is ``externalRecordId`` (a record) or ``files.path`` (a file whose path is ``storage://<id>``).
+        Any org, live or trashed: "linked" is global; only readability is org-scoped. The cap is per document
+        (``REF_LINKS_PER_DOC`` rows, platform upload links first), never over the whole call: a document that many
+        other documents' links crowd out would otherwise look unlinked, and its uploader would pass on the initiator check.
+        """
+        raise NotImplementedError
+
+    async def _ref_access_hint(self, user_key: str, org_id: str, connector_ids: set[str]) -> dict[str, Any] | None:
+        """``access`` for ``check_access`` when the linking records sit in one connector (a probe instead of resolving
+        every grant of the user); None means "let ``check_access`` resolve it"."""
+        return None
+
+    async def get_ref_access(self, user_id: str, org_id: str, doc_ids: Iterable[str]) -> RefAccess:
+        """Which storage documents ``user_id`` may inline into a pushed record.
+
+        A document is *linked* when any record or file names it. It is *readable* when the caller can read a record
+        that the platform itself linked to it: a record with ``origin = UPLOAD`` in the knowledge-base connector whose
+        ``externalRecordId`` is the document id. Links a connector or a client reported (``files.path``, a connector's
+        ``externalRecordId``) make a document linked, never readable through them. One ``check_access`` call decides all
+        of them. Raises ``PermissionVerificationUnavailableError`` when the graph cannot answer (never a denial).
+        """
+        ids = sorted(set(doc_ids))
+        if not ids:
+            return RefAccess()
+        try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+            user_key = (user or {}).get("id") or (user or {}).get("_key") or ""
+            rows = await self._ref_link_rows(ids)
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        linked = {r["docId"] for r in rows if r.get("docId")}
+        by_doc: dict[str, list[dict[str, Any]]] = {}
+        for r in sorted(rows, key=lambda r: str(r.get("recordId"))):
+            if (r.get("kind") == "externalRecordId" and r.get("origin") == OriginTypes.UPLOAD.value
+                    and r.get("connectorName") == Connectors.KNOWLEDGE_BASE.value and r.get("recordId")):
+                by_doc.setdefault(r["docId"], []).append(r)
+        chosen: list[dict[str, Any]] = []
+        for doc in ids:
+            chosen.extend(by_doc.get(doc, [])[:REF_LINKS_PER_DOC])
+        chosen = chosen[:REF_LINKS_PER_CALL]
+        if not chosen or not user_key:
+            return RefAccess(frozenset(linked), frozenset())
+        connectors = {r.get("connectorId") for r in chosen if r.get("connectorId")}
+        try:
+            access = await self._ref_access_hint(user_key, org_id, connectors) if len(connectors) == 1 else None
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        check = await self.check_access(user_key, org_id, node_ids=[r["recordId"] for r in chosen], access=access)
+        allowed = check.node_ids - check.placeholder_ids
+        return RefAccess(frozenset(linked), frozenset(r["docId"] for r in chosen if r["recordId"] in allowed))
+
     async def _kh_v3_child_ids(
         self, parent_ids: list[str], org_id: str, skip: int, limit: int, transaction: str | None,
     ) -> dict[str, list[str]]:
@@ -8132,8 +8437,9 @@ class IGraphDBProvider(ABC):
         when none does, users whose full name, a word of it, or email local
         part starts with it (only for 3+ characters). Every user sharing the
         email of a match is returned too, so one person's several nodes come
-        back together. No permission check: org members' names and emails are
-        visible to members.
+        back together. No permission check, so a caller must not show a user
+        until a record linking them is readable
+        (``entity_permissions.readable_person_offsets``).
 
         Returns:
             ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``

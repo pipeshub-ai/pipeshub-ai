@@ -92,3 +92,47 @@ def test_plain_and_compressed_records_decode_alike():
     packed = base64.b64encode(zstandard.ZstdCompressor().compress(msgspec.msgpack.encode(record))).decode()
     compressed = json.dumps({"isCompressed": True, "record": packed}).encode()
     assert decode_stored_record(plain) == decode_stored_record(compressed) == record
+
+
+# A KB file as the graph stores it, read back through the converter the
+# connector-consistency check reads every record with.
+_STORED_FILE = {
+    "_key": "r1", "id": "r1", "orgId": "org-1", "recordName": "shared.md", "recordType": "FILE",
+    "externalRecordId": "ext-1", "version": 0, "origin": "UPLOAD", "connectorName": "KB",
+    "connectorId": "kb-1", "mimeType": "text/markdown", "virtualRecordId": "vr-1",
+    "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+}
+
+
+def test_a_stored_file_keeps_its_virtual_record_id():
+    """Without it the consistency check has nothing to compare and passes whatever is stored."""
+    from app.models.entities import FileRecord
+
+    record = FileRecord.from_arango_record(
+        {"_key": "r1", "name": "shared.md", "isFile": True, "extension": "md"}, _STORED_FILE,
+    )
+
+    assert record.virtual_record_id == "vr-1"
+
+
+async def test_the_consistency_check_expects_a_path_for_every_indexed_record(monkeypatch):
+    from app.models.entities import FileRecord
+    from app.utils import storage_path
+    from helper.storage_layout import expected_paths_for_connector
+
+    record = FileRecord.from_arango_record(
+        {"_key": "r1", "name": "shared.md", "isFile": True, "extension": "md"}, _STORED_FILE,
+    )
+
+    class Graph:
+        async def get_records_by_status(self, org_id, connector_id, statuses, limit, offset):
+            return [record] if offset == 0 else []
+
+    async def path_of(rec, _graph, **_kw):
+        return f"records/{rec.connector_id}/{rec.record_name}"
+
+    monkeypatch.setattr(storage_path, "build_hierarchical_storage_path", path_of)
+
+    paths = await expected_paths_for_connector(Graph(), "org-1", "kb-1")
+
+    assert paths == {"r1": ("vr-1", "records/kb-1/shared.md")}
