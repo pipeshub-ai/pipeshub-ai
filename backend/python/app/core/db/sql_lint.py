@@ -63,14 +63,20 @@ class Finding:
 
 
 def _starts_sql(text: str) -> bool:
-    """Whether the text, after any leading ``--`` and ``/* */`` comments, starts with an SQL keyword. A loop, not a regex: no backtracking."""
-    text = text.lstrip()
-    while text.startswith(("--", "/*")):
-        end = text.find("\n" if text.startswith("--") else "*/", 2)
-        if end < 0:
+    """Whether the text, after any leading ``--`` and ``/* */`` comments, starts with an SQL keyword. A loop over an index, not a regex: linear."""
+    pos, n = 0, len(text)
+    while True:
+        while pos < n and text[pos].isspace():
+            pos += 1
+        if text.startswith("--", pos):
+            pos = text.find("\n", pos + 2)
+        elif text.startswith("/*", pos):
+            pos = text.find("*/", pos + 2)
+            pos = pos + 2 if pos >= 0 else pos
+        else:
+            return _KEYWORD_START.match(text, pos) is not None
+        if pos < 0:
             return False                 # an unterminated comment
-        text = text[end + 1:].lstrip() if text.startswith("--") else text[end + 2:].lstrip()
-    return _KEYWORD_START.match(text) is not None
 
 
 def sql_rules(sql: str) -> list[str]:

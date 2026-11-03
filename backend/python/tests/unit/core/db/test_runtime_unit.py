@@ -400,13 +400,18 @@ def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
         assert NOT_RESOLVABLE in rules(unmodelled), unmodelled
 
 
-def test_the_sql_start_check_is_fast_on_hostile_comments() -> None:
+def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
     import time
 
-    start = time.perf_counter()
-    for text in ("-- " * 50_000 + "x", "/* " * 50_000, "--" * 50_000, "/**/ " * 50_000 + "x"):
+    def seconds(unit: str, n: int) -> float:
+        text = unit * n + "x"
+        start = time.perf_counter()
         assert not sql_lint._starts_sql(text)
-    assert time.perf_counter() - start < 2
+        return time.perf_counter() - start
+
+    for unit in ("-- ", "/* ", "--", "/**/ ", "/**/\n"):
+        assert seconds(unit, 200_000) < 5                                       # quadratic copying would take minutes
+        assert seconds(unit, 200_000) < 12 * max(seconds(unit, 50_000), 0.002)  # 4x the input, far less than 16x the time
     assert sql_lint._starts_sql("-- a\n/* b */ -- c\n  SET x = 1") and not sql_lint._starts_sql("/* open SET x")
 
 
