@@ -84,7 +84,8 @@ _CAPABILITIES = VectorDBCapabilities(
     stamps_in_catalog=True,
     spaces_per_org=True,
 )
-_MAX_LEG = 1000       # rows one leg of a search returns at most
+MAX_SEARCH_LIMIT = 1000   # results one request asks for at most; a leg is twice that many rows, as the prefetch of the other providers
+_MAX_LEG = 2 * MAX_SEARCH_LIMIT
 MAX_SCROLL_LIMIT = 10_000   # rows one scroll page returns at most: the ceiling the other backends have (OpenSearch caps a page at 10,000)
 UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points that do not name theirs
 
@@ -455,15 +456,22 @@ class PgVectorService(IVectorDBService):
             async with gate:
                 return await self._search_one(coll, req)
 
-        return list(await asyncio.gather(*(one(r) for r in requests)))
+        tasks = [org_context.spawn_in_request(one(r), name="pgvector-search") for r in requests]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            for t in tasks:               # one request failed (or the call was cancelled): the others stop instead of finishing in the background
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def _search_one(self, coll: CollectionRow, req: HybridSearchRequest) -> list[SearchResult]:
         db, catalog = self._assert_connected()
         if req.filter is None:
             raise OrgRequired("a search needs a filter that names the organisation")
         org = _filter_org(req.filter)
-        if req.limit < 1:
-            raise ValueError("a search limit must be at least 1")
+        if not 1 <= req.limit <= MAX_SEARCH_LIMIT:
+            raise ValueError(f"a search limit must be between 1 and {MAX_SEARCH_LIMIT}")
         if req.sparse_query is not None and req.sparse_query.indices and coll.sparse_enabled:
             raise _pending("the lexical leg of a hybrid search")
         if req.dense_query is None:
@@ -496,7 +504,7 @@ class PgVectorService(IVectorDBService):
         """Work after a dense leg: offer the recall sample and, the first time this process serves an org's space from the vector
         index, make sure the space has a current quantisation verdict (stored; a scan only when none is due)."""
         key = (q.org, space_id)
-        if (found.plan.tier in (dense.Tier.H, dense.Tier.H_DEEP, dense.Tier.E0X) and self._cfg.search.validate_quantization
+        if (found.plan.tier in (dense.Tier.H, dense.Tier.H_DEEP) and self._cfg.search.validate_quantization
                 and time.monotonic() - self._bq_at.get(key, float("-inf")) > self._cfg.search.verdict_ttl_s):
             # The first time, and then every verdict_ttl_s: read the stored verdict (another process may have stored one, or the last one
             # may be due again) and check when none is current. The index serves until a verdict says otherwise.
@@ -536,6 +544,10 @@ class PgVectorService(IVectorDBService):
             logger.warning("bit HNSW + rerank finds %.3f of the exact neighbours in this embedding space (floor %.2f): "
                            "searches above the exact-scan size are served by a bounded path and flagged", mean, t.validate_floor)
 
+    async def _count_points(self, org: str, collection_id: int, space_id: int) -> int:
+        """The org's live points of the collection and space (how many samples the check can afford)."""
+        return int(await self._assert_connected()[0].run(lambda tx: reads.count(tx, org, collection_id, space_id), custom_plan=True) or 0)
+
     async def validate_space(self, collection_name: str, org_id: str) -> float | None:
         """Runs the quantisation check for the org's active space now (None: no points), stores the verdict and applies it: below
         the floor the space is served by the bounded path, above it by the index."""
@@ -546,9 +558,10 @@ class PgVectorService(IVectorDBService):
             space = await catalog.active_space(org)
             if space is None:
                 return None
-            mean = await validate.bit_recall(db, t, org, coll.collection_id, space.space_id, space.dim, space.metric)
+            samples = validate.samples_for(t, max(await self._count_points(org, coll.collection_id, space.space_id), 1))
+            mean = await validate.bit_recall(db, t, org, coll.collection_id, space.space_id, space.dim, space.metric, samples=samples)
             if mean is not None:
-                await validate.save(db, org, space.space_id, mean, t.validate_sample)
+                await validate.save(db, org, space.space_id, mean, samples)
                 self._bq[(org, space.space_id)] = mean >= t.validate_floor
         return mean
 

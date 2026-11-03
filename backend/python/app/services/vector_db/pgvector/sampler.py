@@ -3,7 +3,7 @@
 About ``sampler_rate`` of the dense legs are re-run exactly over the same filtered candidates (the same :class:`dense.Query`, so
 the same ``visibility`` fragment and the same space) after the response is on its way, and compared with what the leg returned.
 Recall is ``|live and exact| / min(leg, |exact|)``, published by tier, size band, share band and leg band. The query vector never
-leaves the process. The sample runs in this process on a bounded queue (dropped when full), takes an ``e0`` admission slot or is
+leaves the process. The sample runs in this process on a bounded queue (dropped when full), takes a background (``bg``) admission slot or is
 skipped, and is rate-limited; its own database time is throttled to a share of the instance so it cannot become the load it watches.
 """
 

@@ -597,3 +597,86 @@ async def test_a_degraded_leg_is_flagged_on_every_hit_and_the_space_check_starts
         assert [h.degraded for h in hits] == ["timeout"]
     assert degraded_notice.count() == before + 2                                                         # noted for the request, hits or not
     assert started == ["pgvector-bit-recall-check"]                                                      # the verdict is read once per ttl, not per search
+
+
+@pytest.mark.asyncio
+async def test_a_leg_that_failed_twice_is_an_empty_answer_flagged_for_the_request(searcher, monkeypatch) -> None:
+    from app.modules.retrieval import degraded_notice
+    from app.services.vector_db.pgvector import dense
+
+    svc, _ = searcher
+
+    async def overloaded(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        return dense.Leg([], SimpleNamespace(tier=dense.Tier.E0, share_band="all"), "overload"), SimpleNamespace(leaf_rows=3, n_hat=3)
+
+    monkeypatch.setattr(dense, "search", overloaded)
+    degraded_notice.track()
+    before = degraded_notice.count()
+    assert await svc.query_nearest_points("records", [request()]) == [[]]                      # no hits to carry the flag
+    assert degraded_notice.count() == before + 1                                               # the request is told, as the provider contract says
+
+
+@pytest.mark.asyncio
+async def test_an_exact_scan_does_not_start_the_quantisation_check_and_the_limit_is_bounded(searcher, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import dense
+    from app.services.vector_db.pgvector.pgvector import MAX_SEARCH_LIMIT
+
+    svc, _ = searcher
+    started = []
+    monkeypatch.setattr(org_context, "spawn_detached", lambda coro, name=None: (coro.close(), started.append(name), asyncio.get_running_loop().create_future())[2])
+
+    async def exact_extended(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        return dense.Leg([], SimpleNamespace(tier=dense.Tier.E0X, share_band="all"), None), SimpleNamespace(leaf_rows=9, n_hat=9)
+
+    monkeypatch.setattr(dense, "search", exact_extended)
+    await svc.query_nearest_points("records", [request()])
+    assert started == []                                                                       # an exact scan never touches the bit index
+    await svc.query_nearest_points("records", [request(limit=MAX_SEARCH_LIMIT)])
+    with pytest.raises(ValueError, match="limit"):
+        await svc.query_nearest_points("records", [request(limit=MAX_SEARCH_LIMIT + 1)])
+
+
+@pytest.mark.asyncio
+async def test_when_one_request_fails_the_others_are_cancelled(searcher, monkeypatch) -> None:
+    from app.services.vector_db.models import HybridSearchRequest
+    from app.services.vector_db.pgvector import dense
+
+    svc, _ = searcher
+    cancelled = asyncio.Event()
+
+    async def slow(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("not reached")
+
+    monkeypatch.setattr(dense, "search", slow)
+    with pytest.raises(OrgRequired):
+        await svc.query_nearest_points("records", [request(), HybridSearchRequest(dense_query=[1.0] * 4, filter=None)])
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_validating_a_space_takes_only_the_samples_the_leaf_can_afford(searcher, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import reads, validate
+
+    svc, _ = searcher
+    got = {}
+
+    async def bit_recall(db, t, org, coll, space, dim, metric, *, samples=None, seed=None) -> float:
+        got["samples"] = samples
+        return 0.99
+
+    async def save(db, org, space, mean, samples) -> None:
+        got["saved"] = samples
+
+    async def count(tx, org, coll, space) -> int:
+        return 40_000_000
+
+    monkeypatch.setattr(validate, "bit_recall", bit_recall)
+    monkeypatch.setattr(validate, "save", save)
+    monkeypatch.setattr(reads, "count", count)
+    assert await svc.validate_space("records", ORG) == 0.99
+    assert got["samples"] == got["saved"] == validate.samples_for(svc._cfg.search, 40_000_000) == 5      # a big leaf: the least, not the default 50

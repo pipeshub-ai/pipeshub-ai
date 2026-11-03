@@ -22,6 +22,6 @@ and the `VECTOR_DB_TYPE=pgvector` factory entry arrive in later changes, so unti
 | `probe.py` | flags from the PostgreSQL major and the pgvector version (below 0.7.0 refused; `PGVECTOR_STRICT` refuses below 0.8.2) |
 | `errors.py` | typed errors; messages keep the tokens `CollectionRegistry` matches on |
 
-Every write names its org (a point's `metadata.orgId`, a filter's `metadata.orgId`, or `org_id=`); the ambient org is only cross-checked. A search names its org in its filter; an empty accessible list finds nothing. The lexical leg and the hybrid fusion are a separate change.
+Every write names its org (a point's `metadata.orgId`, a filter's `metadata.orgId`, or `org_id=`); the ambient org is only cross-checked. A search names its org in its filter; an empty list inside a hand-built condition finds nothing (`filter_collection` drops empty lists on every provider, so callers short-circuit an empty accessible set before searching). The lexical leg and the hybrid fusion are a separate change.
 
 Tests: `tests/unit/services/vector_db/test_pgvector_*.py`; `tests/integration/vector_db/test_pgvector_*.py` against a migrated database through PgBouncer.

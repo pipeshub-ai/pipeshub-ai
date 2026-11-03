@@ -6,7 +6,8 @@ import dataclasses
 
 import pytest
 
-from app.services.vector_db.pgvector import dense, fusion
+from app.services.vector_db.pgvector import dense, fusion, validate
+from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
 from app.services.vector_db.pgvector.visibility import Scope
 
@@ -288,3 +289,156 @@ async def test_queries_of_one_filter_that_miss_together_share_one_measurement() 
     assert got[0] == dense.Sizing(12_345, False, True, 5_000_000, 0)
     assert dense.choose(got[0], q.leg, T) == dense.choose(await sizer.of(q), q.leg, T)
     assert _Db.runs == 1 and not sizer._inflight                    # and the later query is a cache hit
+
+
+# ---- the organisation in every statement, and the statements that are built --------------------------------------------------------------
+ORG = "a" * 24
+
+
+def query(scope: Scope | None = None, metric: str = "cosine") -> dense.Query:
+    return dense.Query(ORG, 1, 1, 8, metric, "[1]", scope or Scope(["c"], ["g"], [], ["r"], ["m"]), 10)
+
+
+def test_every_statement_of_the_dense_path_pins_the_org_the_collection_and_the_space() -> None:
+    points = {
+        "exact": dense.exact_sql(query()),
+        "exact, whole org": dense.exact_sql(query(Scope())),
+        "index": dense.index_sql(query()),
+        "bounded, narrow": dense.bounded_sql(query(), narrow=True),
+        "bounded, by probe": dense.bounded_sql(query(), narrow=False),
+        "count": dense.count_sql(query()),
+    }
+    for name, sql in points.items():
+        assert "p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3" in sql, name
+        assert "t.org_id = $1" in sql or "count(*)" in sql, name                       # the tombstone test is the org's own
+    for sql in (dense._TOMBSTONES, dense._CONNECTORS, dense._UNCONNECTED, dense._LEAF, validate._BOUNDS, validate._NEXT):
+        assert "org_id = $1" in sql, sql[:60]
+    assert "m.org_id = $1" in dense.exact_sql(query()) and "m.collection_id = $2" in dense.exact_sql(query())     # the membership probe too
+    for sql in (validate._LOAD, validate._SAVE, validate._FAIL):
+        assert "org_id" in sql and "$1" in sql
+
+
+def test_the_admission_statement_uses_the_registered_lock_class_and_an_unknown_metric_is_refused() -> None:
+    assert f"pg_try_advisory_xact_lock({dense.ADMISSION_CLASS}," in dense._ADMIT
+    with pytest.raises(PgVectorError, match="metric"):
+        dense.exact_sql(query(metric="euclid"))
+
+
+def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None:
+    """Every statement text of the search path that is built from parts, by file and function. A statement built anywhere else in these
+    modules fails here (the shared SQL guard sees only a statement built where it is passed to ``fetch``)."""
+    import ast
+    import re
+    from pathlib import Path
+
+    keywords = re.compile(r"\bselect\b|\binsert\s+into\b|\bupdate\s+\S+\s+set\b|\bdelete\s+from\b", re.I)
+    root = Path(dense.__file__).parent
+    found: dict[tuple[str, str], int] = {}
+    for path in sorted(root.glob("*.py")):
+        if path.name in ("writes.py", "reads.py"):          # their built statements are pinned by test_pgvector_writes.py
+            continue
+        tree = ast.parse(path.read_text())
+        owner: dict[ast.AST, str] = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                for n in ast.walk(fn):
+                    owner[n] = fn.name
+        for n in ast.walk(tree):
+            built = ((isinstance(n, ast.JoinedStr) and any(isinstance(v, ast.FormattedValue) for v in n.values))
+                     or (isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod) and isinstance(n.left, ast.Constant)))
+            text = ""
+            if isinstance(n, ast.JoinedStr):
+                text = "".join(v.value for v in n.values if isinstance(v, ast.Constant))
+            elif isinstance(n, ast.BinOp) and isinstance(n.left, ast.Constant) and isinstance(n.left.value, str):
+                text = n.left.value
+            if built and keywords.search(text):
+                key = (path.name, owner.get(n, "<module>"))
+                found[key] = found.get(key, 0) + 1
+    # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
+    # conditions: fixed text, every value a ``$n``)
+    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
+                     ("sql_filters.py", "_match"): 1, ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+
+
+@pytest.mark.asyncio
+async def test_exact_leaves_the_statement_budget_to_the_unit_of_work() -> None:
+    """The sampler and the check run under ``timeout_ms`` of the unit of work, which never exceeds the org's own limit; setting
+    ``statement_timeout`` again inside could raise it."""
+    seen: list[str] = []
+
+    class Tx:
+        async def fetchval(self, sql: str, *args: object) -> int:
+            seen.append(sql)
+            return 1
+
+        async def fetch(self, sql: str, *args: object) -> list:
+            seen.append(sql)
+            return []
+
+    class Db:
+        async def run(self, fn, **opts: object) -> object:
+            seen.append(f"timeout_ms={opts['timeout_ms']}")
+            return await fn(Tx())
+
+    assert await dense.exact(Db(), query(), timeout_ms=5000, t=T) == []
+    assert not any("statement_timeout" in s for s in seen) and "timeout_ms=5000" in seen
+
+
+@pytest.mark.asyncio
+async def test_a_check_stops_taking_samples_after_its_deadline_and_never_sets_the_statement_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    rows = iter(range(1000))
+
+    class Tx:
+        async def fetchval(self, sql: str, *args: object) -> int:
+            seen.append(sql)
+            return 1
+
+        async def fetchrow(self, sql: str, *args: object) -> object:
+            seen.append(sql)
+            return (1, 100) if "min(" in sql else {"point_sk": next(rows), "v": "[1]"}
+
+        async def fetch(self, sql: str, *args: object) -> list:
+            return []
+
+    class Db:
+        async def run(self, fn, **opts: object) -> object:
+            assert opts["timeout_ms"] == 60_000                      # per statement, and never above the org's limit
+            return await fn(Tx())
+
+    assert await validate.bit_recall(Db(), T, ORG, 1, 1, 8, "cosine", samples=5) is None          # no exact neighbours: no verdict, 5 samples read
+    assert sum("check_next" in s for s in seen) == 5 and not any("statement_timeout" in s for s in seen)
+    seen.clear()
+    monkeypatch.setattr(validate, "CHECK_DEADLINE_S", -1)
+    await validate.bit_recall(Db(), T, ORG, 1, 1, 8, "cosine", samples=50)
+    assert not any("check_next" in s for s in seen)                                                   # the deadline had passed: no sample started
+
+
+@pytest.mark.asyncio
+async def test_connector_checks_that_miss_together_share_one_read() -> None:
+    import asyncio
+
+    from app.core import org_context
+
+    reads_made: list[int] = []
+
+    class Db:
+        async def run(self, fn, **opts: object) -> object:
+            reads_made.append(1)
+            await asyncio.sleep(0.05)
+
+            class Tx:
+                async def fetch(self, sql: str, *a: object) -> list:
+                    return [{"member_id": "c1"}]
+
+                async def fetchval(self, sql: str, *a: object) -> bool:
+                    return False
+
+            return await fn(Tx())
+
+    sizer = dense.Sizer(Db(), T)
+    with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+        got = await asyncio.gather(*[sizer.connectors(ORG, 1) for _ in range(8)])
+        assert all(g == frozenset({"c1"}) for g in got) and len(reads_made) == 1
+        await sizer.connectors(ORG, 1)
+        assert len(reads_made) == 1                                                   # and the answer is reused for its ttl

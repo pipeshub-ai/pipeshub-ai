@@ -165,7 +165,9 @@ class Rejected(PgVectorError):
 # ---- SQL ---------------------------------------------------------------------------------------------------------------------
 
 def _dist(q: Query, alias: str) -> str:
-    return f"{alias}.embedding {_OPERATORS.get(q.metric, _OPERATORS['cosine'])} $4::ext.halfvec"
+    if q.metric not in _OPERATORS:
+        raise PgVectorError(f"unknown distance metric {q.metric!r}")
+    return f"{alias}.embedding {_OPERATORS[q.metric]} $4::ext.halfvec"
 
 
 def exact_sql(q: Query) -> str:
@@ -179,7 +181,7 @@ def exact_sql(q: Query) -> str:
 
 def index_sql(q: Query) -> str:
     """Bit HNSW over the candidates the filter admits, then an exact rerank of the best ``$11`` by halfvec distance."""
-    d = q.dim
+    d = int(q.dim)
     return f"""/* pipeshub:pgvector.dense_index */
         WITH {_SCOPE_TYPES}
         SELECT x.point_sk, x.point_id FROM (
@@ -215,9 +217,9 @@ _LEAF = """/* pipeshub:pgvector.dense_leaf */
         SELECT c.relname, c.reltuples::bigint FROM retrieval.points p JOIN pg_class c ON c.oid = p.tableoid
          WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 LIMIT 1"""
 # one statement, no round trip per slot: the first slot (from a random start) that the instance grants, none = all taken
-_ADMIT = f"""/* pipeshub:pgvector.admit */
+_ADMIT = """/* pipeshub:pgvector.admit */
         SELECT s FROM (SELECT (($2::int + g) % $1::int) AS s FROM generate_series(0, $1::int - 1) g) x
-         WHERE pg_try_advisory_xact_lock({ADMISSION_CLASS}, $3::int + s) LIMIT 1"""
+         WHERE pg_try_advisory_xact_lock(7370, $3::int + s) LIMIT 1"""      # 7370 is ADMISSION_CLASS (a test keeps the two equal)
 _MAX_CONNECTORS = 1_000
 # loose index scan: the next distinct member after the last one, so the cost is the number of connectors, not of memberships
 _CONNECTORS = """/* pipeshub:pgvector.connectors */
@@ -287,6 +289,7 @@ class Sizer:
         self._leaves: dict[tuple, tuple[float, bool, int]] = {}
         self._connectors: dict[tuple, tuple[float, frozenset[str] | None]] = {}
         self._inflight: dict[tuple, asyncio.Future] = {}
+        self._connectors_inflight: dict[tuple, asyncio.Future] = {}
 
     async def of(self, q: Query) -> Sizing:
         """The sizing of ``q``. When the database cannot answer (timeout, no pooled connection) the last answer is used, however old;
@@ -347,26 +350,34 @@ class Sizer:
         key = (org, collection_id)
         hit = self._connectors.get(key)
         if hit is None or hit[0] < time.monotonic():
-            async def read(tx: Tx) -> frozenset[str] | None:
-                found = [r["member_id"] for r in await tx.fetch(_CONNECTORS, org, collection_id, _MAX_CONNECTORS + 1)]
-                if not found or len(found) > _MAX_CONNECTORS:
-                    return None
-                if await tx.fetchval(_UNCONNECTED, org, collection_id):
-                    return None
-                return frozenset(found)
-
-            ttl = self._t.connector_ttl_s
-            try:
-                value = await self._db.run(read, custom_plan=True, timeout_ms=self._t.connector_check_ms)
-            except DbError:
-                # Too big to check inside the budget (or the database is busy): keep the arms applied and do not look again soon, so a
-                # large org never pays for a scan of its points every connector_ttl_s.
-                value, ttl = None, self._t.connector_fail_ttl_s
-            hit = self._connectors[key] = (time.monotonic() + ttl, value)
+            task = self._connectors_inflight.get(key)
+            if task is None:          # one check for the callers that miss together; it can scan every point of the org
+                task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id), name="pgvector-connectors")
+                task.add_done_callback(lambda t: (self._connectors_inflight.pop(key, None), t.cancelled() or t.exception()))
+            return await asyncio.shield(task)
         return hit[1]
 
+    async def _check_connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
+        async def read(tx: Tx) -> frozenset[str] | None:
+            found = [r["member_id"] for r in await tx.fetch(_CONNECTORS, org, collection_id, _MAX_CONNECTORS + 1)]
+            if not found or len(found) > _MAX_CONNECTORS:
+                return None
+            if await tx.fetchval(_UNCONNECTED, org, collection_id):
+                return None
+            return frozenset(found)
+
+        ttl = self._t.connector_ttl_s
+        try:
+            value = await self._db.run(read, custom_plan=True, timeout_ms=self._t.connector_check_ms)
+        except DbError:
+            # Too big to check inside the budget (or the database is busy): keep the arms applied and do not look again soon, so a
+            # large org never pays for a scan of its points every connector_ttl_s.
+            value, ttl = None, self._t.connector_fail_ttl_s
+        self._connectors[(org, collection_id)] = (time.monotonic() + ttl, value)
+        return value
+
     def forget(self, org: str) -> None:
-        for d in (self._counts, self._leaves, self._connectors, self._inflight):
+        for d in (self._counts, self._leaves, self._connectors, self._inflight, self._connectors_inflight):
             for k in [k for k in d if k[0] == org]:
                 del d[k]
 
@@ -424,8 +435,9 @@ async def exact(db: KernelDB, q: Query, *, timeout_ms: int, t: Tuning, slot: str
     async def run(tx: Tx) -> list[tuple[int, str]]:
         if slot:
             await admit(tx, slot, _slots(t, slot), t.admission_wait_ms)
-        await tx.fetchval("/* pipeshub:pgvector.exact_settings */ SELECT set_config('max_parallel_workers_per_gather', '2', true), set_config('work_mem', $1, true), "
-                          "set_config('statement_timeout', $2, true)", f"{t.scan_work_mem_mb}MB", f"{timeout_ms}ms")
+        # the statement budget is the unit of work's (``timeout_ms`` below, and never above the org's own limit): not set again here
+        await tx.fetchval("/* pipeshub:pgvector.exact_settings */ SELECT set_config('max_parallel_workers_per_gather', '2', true), "
+                          "set_config('work_mem', $1, true)", f"{t.scan_work_mem_mb}MB")
         return [(r["point_sk"], str(r["point_id"])) for r in await tx.fetch(exact_sql(q), *q.args(q.leg))]
 
     return await db.run(run, timeout_ms=timeout_ms, custom_plan=True)

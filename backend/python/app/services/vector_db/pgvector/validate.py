@@ -1,7 +1,6 @@
 """Does bit HNSW plus a halfvec rerank find the exact neighbours in this embedding space?
 
-Binary quantisation keeps the sign of each dimension; how much ranking survives depends on the model (E3 measured it for one
-family of models). A space that has data is checked: sampled stored vectors are used as queries (each one's own point left out of
+Binary quantisation keeps the sign of each dimension; how much ranking survives depends on the model. A space that has data is checked: sampled stored vectors are used as queries (each one's own point left out of
 both answers, so the query does not find itself), and the vector-index tier (the real statement, at the real rerank depth and
 settings) is compared with an exact scan of the same org. The verdict is stored per org and space (``space_checks``), so a restart
 or another process does not repeat the scan; it is repeated after ``check_recheck_s``, and a check that could not finish (no
@@ -12,6 +11,7 @@ slot in the background pool, a timeout) waits ``check_backoff_s`` times the fail
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,11 +23,11 @@ if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
     from app.services.vector_db.pgvector.tuning import Tuning
 
-SCAN_BUDGET_ROWS = 30_000_000     # rows the check may scan in total (about half a minute of exact scans)
+CHECK_DEADLINE_S = 90     # wall-clock budget of one check: no further sample is started after it (each statement has its own, shorter, timeout)
 LEG = 20          # the check asks for ten results the way a search does: a leg of twice the limit
 SCAN_BUDGET_ROWS = 30_000_000     # rows the check may scan in total (about half a minute of exact scans)
-_BOUNDS = "SELECT min(p.point_sk), max(p.point_sk) FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3"
-_NEXT = ("SELECT p.point_sk, p.embedding::text AS v FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 "
+_BOUNDS = "/* pipeshub:pgvector.check_bounds */ SELECT min(p.point_sk), max(p.point_sk) FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3"
+_NEXT = ("/* pipeshub:pgvector.check_next */ SELECT p.point_sk, p.embedding::text AS v FROM retrieval.points p WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 "
          "AND p.point_sk >= $4 ORDER BY p.point_sk LIMIT 1")
 _LOAD = ("/* pipeshub:pgvector.space_check_load */ SELECT recall, checked_at, next_try_at, attempts, now() AS now "
          "FROM retrieval.space_checks WHERE org_id = $1 AND space_id = $2")
@@ -92,10 +92,12 @@ async def bit_recall(db: KernelDB, t: Tuning, org: str, collection_id: int, spac
         lo, hi = await tx.fetchrow(_BOUNDS, org, collection_id, space_id) or (None, None)
         if lo is None:
             return None
-        await tx.fetchval("/* pipeshub:pgvector.check_settings */ SELECT set_config('statement_timeout', '60000ms', true)")
         await dense.vector_index_settings(tx, t, depth)
         seen: list[float] = []
+        deadline = time.monotonic() + CHECK_DEADLINE_S
         for _ in range(samples or t.validate_sample):
+            if time.monotonic() >= deadline:
+                break                  # the mean of the samples taken so far is the verdict
             row = await tx.fetchrow(_NEXT, org, collection_id, space_id, rng.randint(lo, hi))
             if row is None:
                 continue
@@ -107,7 +109,7 @@ async def bit_recall(db: KernelDB, t: Tuning, org: str, collection_id: int, spac
                 seen.append(len(set(want) & got) / len(want))
         return sum(seen) / len(seen) if seen else None
 
-    mean = await db.run(run, timeout_ms=120_000, custom_plan=True)
+    mean = await db.run(run, timeout_ms=60_000, custom_plan=True)       # per statement, and never above the org's own limit
     if mean is not None:
         telemetry.QUANTIZATION_RECALL.observe("ok" if mean >= t.validate_floor else "below_floor", value=mean)
     return mean
