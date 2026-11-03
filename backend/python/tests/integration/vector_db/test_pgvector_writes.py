@@ -257,6 +257,17 @@ async def test_an_upsert_that_carries_some_membership_arrays_leaves_the_others_a
     assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c2"), (2, "g1"), (3, "root1")]      # the other two kinds are not erased
 
 
+async def test_points_of_one_group_in_one_upsert_each_contribute_the_membership_arrays_they_carry(store) -> None:
+    first = point(A, "p1", conn=["c1"])
+    second = dataclasses.replace(point(A, "p2"), payload={**point(A, "p2").payload, "recordGroupIds": ["g1"]})
+    await store.upsert_points("records", [first, second])                                                     # one record, two points, different arrays
+    members = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1' ORDER BY 1, 2"
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c1"), (2, "g1")]
+    later = point(A, "p3", conn=["c9"])
+    await store.upsert_points("records", [first, later], computed_at=datetime.now(UTC) + timedelta(seconds=5))   # the same key twice: the later point wins it
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c9"), (2, "g1")]
+
+
 async def test_a_writer_that_carries_no_membership_still_holds_its_groups_rows_until_it_commits(store) -> None:
     """The maintenance job that collects the membership of groups without points takes its candidates ``FOR UPDATE SKIP LOCKED``. A writer
     that adds points to a group without carrying membership must hold that group's row too, or the job removes the membership under it."""
