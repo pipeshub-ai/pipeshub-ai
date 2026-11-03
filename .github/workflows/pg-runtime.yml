@@ -143,8 +143,8 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        # exactly the graph suite's cases ran (404), none failed: a suite that registered nothing is not a pass
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=404'
+        # exactly the graph suite's cases ran (409), none failed: a suite that registered nothing is not a pass
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=409'
 
   node:
     runs-on: ubuntu-latest
