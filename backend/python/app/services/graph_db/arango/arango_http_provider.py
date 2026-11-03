@@ -25035,6 +25035,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return ArangoHierarchyView(lambda: self.http_client)
 
     @override
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        # one statement; a concurrent writer of the same document is a write-write conflict, which the caller retries
+        rows = await self.http_client.execute_aql(
+            f"""
+            LET d = DOCUMENT(@@collection, @key)
+            FILTER d != null
+            UPDATE d WITH {{ {field}: (d.{field} || 0) + 1 }} IN @@collection
+            RETURN NEW.{field}
+            """,
+            {"@collection": collection, "key": key},
+            txn_id=transaction,
+        )
+        return int(rows[0]) if rows else None
+
+    @override
     async def get_structure_of_nodes(
         self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
     ) -> dict[str, frozenset]:

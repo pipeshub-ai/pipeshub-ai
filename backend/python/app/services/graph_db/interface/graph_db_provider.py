@@ -4944,6 +4944,19 @@ class IGraphDBProvider(ABC):
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        """Add one to a numeric field of a node in one statement, under the node's write lock, and return the new value (None when the
+        node does not exist). Never read-then-write: two transactions that both increment get two different values. The default is a
+        read and a write; the graph providers override it."""
+        node = await self.get_document(key, collection, transaction=transaction, raise_on_error=True)
+        if node is None:
+            return None
+        value = int(node.get(field) or 0) + 1
+        await self.update_node(key, collection, {field: value}, transaction)
+        return value
+
     async def get_structure_of_nodes(
         self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
     ) -> dict[str, frozenset]:
