@@ -66,8 +66,10 @@ def test_the_grantees_of_a_permission_are_the_principal_collections_only() -> No
 
 
 def test_the_service_account_predicate_reads_kind_and_the_reserved_address_and_keeps_people_without_either() -> None:
-    from app.services.graph_db.postgres.identity import _SERVICE_SUFFIX, _not_service
-    sql = _not_service("mu")
-    assert "mu.doc->>'kind'" in sql and "<> 'service'" in sql and sql.count(_SERVICE_SUFFIX) == 1
-    assert f"right(lower(coalesce(mu.doc->>'email', '')), {len(_SERVICE_SUFFIX)})" in sql      # a missing address gives '' and is kept
+    import inspect
+
+    from app.services.graph_db.postgres import identity
+    from app.services.graph_db.postgres.identity import _SERVICE_SUFFIX
+    sql = inspect.getsource(identity.IdentityMixin.get_organization_users)       # the predicate is part of the statement, the address suffix a bound parameter
+    assert "u.doc->>'kind', '') <> 'service'" in sql and "right(lower(coalesce(u.doc->>'email', '')), length($4::text)) <> $4::text" in sql and "_SERVICE_SUFFIX" in sql
     assert _SERVICE_SUFFIX == "@service.pipeshub.internal"
