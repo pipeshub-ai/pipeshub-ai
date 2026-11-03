@@ -60,3 +60,11 @@ async def test_the_defaults_leave_the_existing_search_unchanged() -> None:
     for call in find.await_args_list:
         assert call.kwargs["max_results"] == pm._MAX_RECORDS_PER_CONNECTOR
         assert call.kwargs["readable_only"] is False
+
+
+async def test_an_empty_command_list_is_an_error_not_a_silent_fallback_to_the_model() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        await pm.run_pattern_match_with_llm_grep(
+            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER,
+            graph_provider=MagicMock(), filters={}, logger_instance=MagicMock(), commands=[],
+        )

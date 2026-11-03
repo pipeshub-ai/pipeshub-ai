@@ -2,7 +2,12 @@
 import pytest
 import regex
 
-from app.utils.grep_lines import ere_prefilter, find_matches, literal_prefilter
+from app.utils.grep_lines import (
+    MAX_SCAN_CHARS,
+    ere_prefilter,
+    find_matches,
+    literal_prefilter,
+)
 
 
 def _rx(p: str) -> "regex.Pattern[str]":
@@ -171,3 +176,11 @@ def test_code_blocks_keep_their_source_in_data_text_and_the_file_summary_is_not_
     lines = record_lines(blocks)
     assert lines.numbers[lines.texts.index("def compute_total(x):")] == 4
     assert not any("invoice (python)" in t for t in lines.texts)
+
+
+def test_a_very_long_line_is_scanned_up_to_a_cap_and_the_answer_says_it_is_incomplete() -> None:
+    long_line = "x" * (MAX_SCAN_CHARS + 10) + "needle"
+    matches, total, _, complete = find_matches([{"data": long_line}], _rx("needle"), context_lines=0, max_matches=5)
+    assert (matches, total, complete) == ([], 0, False)
+    matches, total, _, complete = find_matches([{"data": "needle " + long_line}], _rx("needle"), context_lines=0, max_matches=5)
+    assert total == 1 and complete is False  # a match inside the cap is still found
