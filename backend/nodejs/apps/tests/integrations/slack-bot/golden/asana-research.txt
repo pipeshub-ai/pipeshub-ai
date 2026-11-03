@@ -15,7 +15,7 @@
       ✗ record 8dc0d3d5 → No download link for records from an external connector
   ● Loaded tools  ⌄
       ✓ Tracker → Loaded 3 tools
-  ✗ Create ticket  ⌄
+  ✗ Created ticket  ⌄
       Tracker
       ✗ "Asana Q3 follow-up password=[redacted]" → Needs approval in the PipesHub app
 

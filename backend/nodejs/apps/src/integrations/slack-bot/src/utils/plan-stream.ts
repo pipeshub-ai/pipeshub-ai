@@ -20,6 +20,11 @@ export const MAX_TASK_DETAILS_CHARS = 256;
 export const MAX_TASK_OUTPUT_CHARS = 2500;
 const MAX_REASONING_CHARS = 2500;
 const MAX_TASK_SOURCES = 10;
+/** Links a call adds to its row's sources, and a row's most: enough to follow up, never a wall. */
+const SOURCES_PER_CALL = 3;
+const SOURCES_PER_ROW = 6;
+/** Names a line shows after its outcome. */
+const NAMES_PER_CALL = 3;
 const APPROVAL_OUTPUT = 'Waiting for your approval';
 /** The row that says the agent is still working between steps. */
 export const THINKING_TITLE = 'Thinking…';
@@ -296,6 +301,10 @@ interface ToolCall {
   result?: string;
   progress?: string;
   sources: SlackUrlSource[];
+  /** What the result names (issue keys, record names), shown after its outcome. */
+  names?: string[];
+  /** The result names more than `names` holds. */
+  moreNames?: boolean;
 }
 
 function clip(text: string, limit = MAX_TASK_DETAILS_CHARS): string {
@@ -329,6 +338,34 @@ function realLink(value: unknown): URL | null {
   } catch {
     return null;
   }
+}
+
+/** A result view of records: its columns, rows (cells and maybe a link) and total. */
+function recordsView(view: unknown): {
+  columns: string[];
+  rows: { cells: string[]; url?: string }[];
+  total?: number;
+} | null {
+  if (!view || typeof view !== 'object' || Array.isArray(view)) return null;
+  const raw = view as {
+    kind?: unknown;
+    columns?: unknown;
+    rows?: unknown;
+    total?: unknown;
+  };
+  if (raw.kind !== 'records' || !Array.isArray(raw.rows)) return null;
+  return {
+    columns: Array.isArray(raw.columns) ? raw.columns.map(String) : [],
+    rows: (raw.rows as { cells?: unknown; url?: unknown }[]).map((row) => ({
+      cells: Array.isArray(row.cells)
+        ? row.cells.map((c) => (typeof c === 'string' ? c : ''))
+        : [],
+      ...(typeof row.url === 'string' && row.url !== ''
+        ? { url: row.url }
+        : {}),
+    })),
+    ...(typeof raw.total === 'number' ? { total: raw.total } : {}),
+  };
 }
 
 /** The pages a tool's result view links to (a web search's results, the page read). */
@@ -392,13 +429,18 @@ interface ToolGroup {
 /** Lines a row's output shows before it sums up the rest. */
 const MAX_OUTPUT_LINES = 6;
 const MAX_ARGUMENT_CHARS = 80;
-const MAX_OUTCOME_CHARS = 90;
+const MAX_OUTCOME_CHARS = 120;
 const UUID =
   /\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const LONG_ID = /\b([A-Za-z0-9]{8})[A-Za-z0-9_-]{16,}\b/g;
 
 function shortIds(text: string): string {
-  return text.replace(UUID, '$1').replace(LONG_ID, '$1');
+  // A long token is an id only with a digit in it: "pipeshub-connector-test-bucket" is a name.
+  return text
+    .replace(UUID, '$1')
+    .replace(LONG_ID, (id: string, head: string) =>
+      /\d/.test(id) ? head : id,
+    );
 }
 
 /**
@@ -406,25 +448,36 @@ function shortIds(text: string): string {
  * quoted, else the summary without the tool's name ("Get Record Download Url
  * — record_id: 8dc0…" gives "record 8dc0d3d5"). Ids are cut to 8 characters.
  */
+/** Keys whose value is an id (cloudId, record_id, entityId): never shown as the argument. */
+const ID_KEY = /(?:^id|Id|_id|ID|Ids|_ids)$/;
+/** Keys whose value is the query a call ran. */
+const QUERY_KEY = /^(?:jql|sql|cql|query|q|search|text)$/i;
+
 /** `key: "value"` or a bare `"value"` in a call's summary. */
 const QUOTED_ARGUMENT = /(?:([A-Za-z][\w.-]*)\s*[:=]\s*)?"([^"\n]*)"/g;
 
 function mainArgument(summary: string, label: string): string {
   // Redact first: a quoted value cut from its key can no longer be recognised as a secret.
   // Each quoted value is masked on its own, so a secret in it can't take its closing quote; a secret key's value is never shown.
+  // The query a call ran is its argument (jql, not the cloudId beside it); ids are never it.
   let quoted: string | undefined;
+  let preferred = false;
   for (const match of summary.matchAll(QUOTED_ARGUMENT)) {
     const key = match[1];
     const value = redactSecrets(match[2] ?? '').trim();
     if (
-      (key !== undefined && isSecretKey(key)) ||
+      (key !== undefined && (isSecretKey(key) || ID_KEY.test(key))) ||
       value === '' ||
       value === REDACTED
     ) {
       continue;
     }
-    quoted = value;
-    break;
+    const isQuery = key !== undefined && QUERY_KEY.test(key);
+    if (quoted === undefined || (isQuery && !preferred)) {
+      quoted = value;
+      preferred = isQuery;
+    }
+    if (preferred) break;
   }
   const safe = redactSecrets(summary);
   let text = quoted ?? safe;
@@ -437,6 +490,11 @@ function mainArgument(summary: string, label: string): string {
     // The server's generic summary is "<tool name> — <args>": the row's title already names the tool.
     text = text.replace(/^[^—\n]*?\s—\s/, '');
     text = text.replace(/\b([a-z]+)_id:\s*/gi, '$1 ');
+    // A cloudId or entityId beside the real arguments says nothing to a reader.
+    text = text.replace(
+      /\b[a-z][A-Za-z0-9]*Id\s*[:=]\s*(?:"[^"]*"|[^,\s]+)\s*(?:,\s*)?/g,
+      '',
+    );
   }
   const shortened = shortIds(text).trim();
   if (!shortened) return '';
@@ -497,14 +555,61 @@ export function rowLabel(
   const at = label.indexOf(' · ');
   if (at > 0) {
     const action = label.slice(at + 3).trim();
+    const app = label.slice(0, at).trim();
     return {
-      title: /^[\w.-]+$/.test(action) ? sentenceCase(action) : action,
-      app: label.slice(0, at).trim(),
+      title: /^[\w.-]+$/.test(action) ? pastAction(action, app) : action,
+      app,
     };
   }
   return /^[\w.-]+$/.test(label) || label === humanizeToolName(toolName)
-    ? { title: sentenceCase(label) }
+    ? { title: pastAction(label) }
     : { title: label };
+}
+
+const PAST_TENSE: Record<string, string> = {
+  add: 'Added',
+  create: 'Created',
+  delete: 'Deleted',
+  fetch: 'Fetched',
+  find: 'Found',
+  get: 'Got',
+  list: 'Listed',
+  load: 'Loaded',
+  read: 'Read',
+  remove: 'Removed',
+  run: 'Ran',
+  search: 'Searched',
+  send: 'Sent',
+  update: 'Updated',
+  upload: 'Uploaded',
+  write: 'Wrote',
+};
+
+/**
+ * A tool's name as what it did: "searchJiraIssuesUsingJql" gives "Searched
+ * Jira issues", "create_ticket" "Created ticket", and a bare "search" in
+ * "Atlassian Rovo" "Searched Atlassian".
+ */
+function pastAction(name: string, app?: string): string {
+  const words = sentenceCase(name).split(' ');
+  const verb = PAST_TENSE[(words[0] ?? '').toLowerCase()];
+  if (verb === undefined) return words.join(' ');
+  // "…using JQL", "…by id": how it was done says nothing a reader needs.
+  const cut = words.findIndex(
+    (w, i) => i > 0 && /^(?:using|by|with|via)$/i.test(w),
+  );
+  const object = (cut > 0 ? words.slice(1, cut) : words.slice(1))
+    // Product names keep their capital.
+    .map((w) =>
+      /^(?:jira|confluence|slack|notion|github|gitlab|google|atlassian)$/i.test(
+        w,
+      )
+        ? capitalize(w)
+        : w,
+    );
+  const what =
+    object.length > 0 ? object.join(' ') : (app?.split(' ')[0] ?? '');
+  return [verb, what].filter(Boolean).join(' ');
 }
 
 /** The first sentence (or line) of a result. */
@@ -782,9 +887,44 @@ export class SlackTaskPlan {
     call.label = label;
     call.status = asCallStatus(status);
     call.progress = undefined;
-    const summary = result.summary?.trim();
-    if (summary) call.result = summary;
-    call.sources = viewSources(result.view);
+    const summary = result.summary?.trim() ?? '';
+    // A summary that is cut-off JSON ("{") says nothing: the result view says what was found.
+    const usable = summary.length >= 3 && !/^[{[]/.test(summary);
+    const view = recordsView(result.view);
+    if (usable) {
+      call.result = summary;
+    } else if (view) {
+      const count = view.total ?? view.rows.length;
+      const noun = view.columns.some((c) => /^key$/i.test(c))
+        ? 'issue'
+        : 'result';
+      call.result = `Found ${String(count)} ${noun}${count === 1 ? '' : 's'}`;
+    }
+    call.sources = viewSources(result.view).slice(0, SOURCES_PER_CALL);
+    // Records with no link are named on the line: issue keys, or the record names a summary lists.
+    const listed = usable
+      ? summary
+          .split('\n')
+          .slice(1)
+          .map((line) => /^\s*[-*•]\s+(.+)$/.exec(line)?.[1]?.trim() ?? '')
+          .filter((name) => name !== '' && !/^…|^and \d+ more/i.test(name))
+      : [];
+    const unlinked = view
+      ? view.rows
+          .filter((row) => row.url === undefined)
+          .map((row) => row.cells[0] ?? '')
+      : [];
+    const names = (listed.length > 0 ? listed : unlinked).filter(Boolean);
+    call.names = names
+      .slice(0, NAMES_PER_CALL)
+      .map((name) => clip(redactSecrets(name), 40));
+    call.moreNames =
+      names.length > NAMES_PER_CALL ||
+      /\band \d+ more\b/i.test(summary) ||
+      (listed.length === 0 &&
+        view !== null &&
+        (view.total ?? 0) > names.length &&
+        names.length > 0);
     return this.render(this.groupOf.get(callId) ?? '');
   }
 
@@ -934,12 +1074,17 @@ export class SlackTaskPlan {
     const chip = call.approvalAnswer
       ? APPROVAL_CHIPS[call.approvalAnswer]
       : undefined;
+    const names = call.names ?? [];
+    const named =
+      call.status === 'completed' && names.length > 0 && !outcome.includes(':')
+        ? `${outcome}: ${names.join(', ')}${call.moreNames === true ? ' …' : ''}`
+        : outcome;
     // With nothing else to say, a line names its call rather than showing a bare mark.
     const what =
       [ownLabel, argument].filter(Boolean).join(': ') ||
       (outcome !== '' ? '' : rowLabel(call.toolName, call.label).title);
-    const shown = outcome
-      ? `${what ? ' → ' : ''}${clip(shortIds(redactSecrets(outcome)), MAX_OUTCOME_CHARS)}`
+    const shown = named
+      ? `${what ? ' → ' : ''}${clip(shortIds(redactSecrets(named)), MAX_OUTCOME_CHARS)}`
       : '';
     return `${mark} ${what}${shown}${chip ? ` · ${chip}` : ''}`;
   }
@@ -1019,7 +1164,10 @@ export class SlackTaskPlan {
         : lines;
     const sources = calls
       .flatMap((call) => call.sources)
-      .slice(0, MAX_TASK_SOURCES);
+      .filter(
+        (source, i, all) => all.findIndex((o) => o.url === source.url) === i,
+      )
+      .slice(0, SOURCES_PER_ROW);
 
     return [
       this.put({
