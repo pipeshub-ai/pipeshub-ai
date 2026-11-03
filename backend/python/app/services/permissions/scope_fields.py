@@ -15,8 +15,9 @@ Stamps:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable  # noqa: TC003
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 #: Bumped when the meaning of a field changes; the backfill rewrites every point stamped with an older version.
@@ -24,12 +25,23 @@ SCOPE_FIELDS_VERSION = 5
 
 PATH_IDS_FIELD = "pathIds"
 ACL_SCOPE_FIELD = "aclScope"
-GRANT_TOKENS_FIELD = "grantTokens"
 SCOPE_STAMP_FIELD = "scopeStamp"
 SCOPE_VERSION_FIELD = "scopeFieldsVersion"
-SCOPE_KEYS = (SCOPE_STAMP_FIELD, PATH_IDS_FIELD, ACL_SCOPE_FIELD, GRANT_TOKENS_FIELD, SCOPE_VERSION_FIELD)
-#: The id lists, in the order a store maps them to `group_members` kinds 4, 5 and 6.
-SCOPE_LIST_KEYS = (PATH_IDS_FIELD, ACL_SCOPE_FIELD, GRANT_TOKENS_FIELD)
+SCOPE_GENERATION_FIELD = "scopeGeneration"
+SCOPE_KEYS = (SCOPE_STAMP_FIELD, PATH_IDS_FIELD, ACL_SCOPE_FIELD, SCOPE_VERSION_FIELD, SCOPE_GENERATION_FIELD)
+SCOPE_LIST_KEYS = (PATH_IDS_FIELD, ACL_SCOPE_FIELD)
+ENV_SCOPE_GENERATION = "ACL_SCOPE_GENERATION"
+
+
+def current_scope_generation(env: dict[str, str] | None = None) -> int:
+    """The scope generation of this deployment: an integer the operator raises every time the scope fields are switched on again.
+
+    While the fields are off, membership writes leave the scope keys of a point as they were, so a point can carry a stamp that
+    a later permission change made wrong. A stamp carries the generation it was written in; one from an older generation was
+    written before the latest enable, so it is stale: the back-fill redoes it and a reader must treat it as legacy (never exact).
+    An unset or unreadable value is 0."""
+    raw = (env if env is not None else os.environ).get(ENV_SCOPE_GENERATION, "").strip()
+    return int(raw) if raw.isdigit() else 0
 
 
 def plain_id(value: object) -> bool:
@@ -53,12 +65,12 @@ class ScopeFields:
     stamp: Stamp
     path_ids: tuple[str, ...] = ()
     acl_scope: tuple[str, ...] = ()
-    grant_tokens: tuple[str, ...] = ()
     version: int = SCOPE_FIELDS_VERSION
+    generation: int = field(default_factory=current_scope_generation)
 
     def __post_init__(self) -> None:
         # canonical: sorted and without repeats, so equal fields compare equal whatever order a store gives them back
-        for name in ("path_ids", "acl_scope", "grant_tokens"):
+        for name in ("path_ids", "acl_scope"):
             object.__setattr__(self, name, tuple(sorted(set(getattr(self, name)))))
 
     @classmethod
@@ -73,17 +85,29 @@ class ScopeFields:
     def exact(self) -> bool:
         return self.stamp is not Stamp.LEGACY
 
+    @property
+    def trusted(self) -> bool:
+        """What a reader may rely on: an exact stamp of the current meaning, written in the current generation (see
+        `current_scope_generation`). Anything else is read through the legacy filter."""
+        return self.exact and self.version == SCOPE_FIELDS_VERSION and self.generation == current_scope_generation()
+
+    @classmethod
+    def stale(cls) -> ScopeFields:
+        """No exact stamp, and one for the back-fill to redo (version 0)."""
+        return cls(Stamp.LEGACY, version=0, generation=0)
+
     def to_payload(self) -> dict[str, object]:
         """Every key, empty lists included, so a rewrite from an exception stamp to container clears the old ids."""
         return {SCOPE_STAMP_FIELD: self.stamp.value, PATH_IDS_FIELD: list(self.path_ids), ACL_SCOPE_FIELD: list(self.acl_scope),
-                GRANT_TOKENS_FIELD: list(self.grant_tokens), SCOPE_VERSION_FIELD: self.version}
+                SCOPE_VERSION_FIELD: self.version, SCOPE_GENERATION_FIELD: self.generation}
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> ScopeFields | None:
-        """None when the point carries no (or an unreadable) stamp."""
+        """None when the point carries no (or an unreadable) stamp. A stamp written before generations existed has generation -1."""
         try:
             stamp = Stamp(str(payload[SCOPE_STAMP_FIELD]))
             version = int(str(payload[SCOPE_VERSION_FIELD]))
+            generation = int(str(payload.get(SCOPE_GENERATION_FIELD, -1)))
         except (KeyError, ValueError):
             return None
 
@@ -91,7 +115,7 @@ class ScopeFields:
             raw = payload.get(key)
             return tuple(sorted(str(x) for x in raw)) if isinstance(raw, (list, tuple)) else ()
 
-        return cls(stamp, ids(PATH_IDS_FIELD), ids(ACL_SCOPE_FIELD), ids(GRANT_TOKENS_FIELD), version)
+        return cls(stamp, ids(PATH_IDS_FIELD), ids(ACL_SCOPE_FIELD), version, generation)
 
 
 def combine(fields: Iterable[ScopeFields]) -> ScopeFields:
@@ -112,6 +136,5 @@ def combine(fields: Iterable[ScopeFields]) -> ScopeFields:
         return first
     if stamps == {Stamp.OVERRIDE}:
         return ScopeFields(first.stamp, tuple(sorted({i for f in items for i in f.path_ids})),
-                           tuple(sorted({i for f in items for i in f.acl_scope})),
-                           tuple(sorted({i for f in items for i in f.grant_tokens})), first.version)
+                           tuple(sorted({i for f in items for i in f.acl_scope})), first.version, first.generation)
     return ScopeFields.legacy()

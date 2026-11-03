@@ -58,6 +58,7 @@ from opensearchpy.exceptions import NotFoundError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.scope_fields import SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -203,23 +204,33 @@ class OpenSearchService(IVectorDBService):
         if collection_name in mapped or not set(keys) & set(SCOPE_KEYS):
             return True
         await self._assert_connected()
-        got = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
-        props = next(iter(got.values()), {}).get("mappings", {}).get("properties", {})
-        missing = {}
-        for field, _ in SCOPE_KEYWORD_INDEXES:
-            kind = (props.get(field) or {}).get("type")
-            if kind is None:
-                missing[field] = {"type": "keyword"}
-            elif kind != "keyword":
-                blocked.add(collection_name)
-                logger.error(
-                    "index '%s' maps '%s' as %s, not keyword: scope fields are not written to it and it must not be switched to "
-                    "the scope filter (re-create the index, or reindex it with the keyword mapping)", collection_name, field, kind)
-                return False
-        if missing:
-            await self.client.indices.put_mapping(index=collection_name, body={"properties": missing})  # type: ignore
+        try:
+            got = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        except NotFoundError:
+            return True  # no index to guard: the write itself reports a missing index as it always did; nothing is remembered
+        # A name may be an alias over several indices: every one behind it must map the fields as keyword.
+        for index, body in got.items():
+            props = body.get("mappings", {}).get("properties", {})
+            missing = {}
+            for field, _ in SCOPE_KEYWORD_INDEXES:
+                kind = (props.get(field) or {}).get("type")
+                if kind is None:
+                    missing[field] = {"type": "keyword"}
+                elif kind != "keyword":
+                    blocked.add(collection_name)
+                    logger.error(
+                        "index '%s' maps '%s' as %s, not keyword: scope fields are not written to it and it must not be switched to "
+                        "the scope filter (re-create the index, or reindex it with the keyword mapping)", index, field, kind)
+                    return False
+            if missing:
+                await self.client.indices.put_mapping(index=index, body={"properties": missing})  # type: ignore
         mapped.add(collection_name)
         return True
+
+    def _forget_scope_mapping(self, collection_name: str) -> None:
+        """An index that is created or deleted is a different one next time: what was learned about its mapping no longer holds."""
+        self.__dict__.setdefault("_scope_mapped", set()).discard(collection_name)
+        self.__dict__.setdefault("scope_blocked", set()).discard(collection_name)
 
     @staticmethod
     def _without_scope(payload: dict) -> dict:
@@ -428,6 +439,7 @@ class OpenSearchService(IVectorDBService):
         config: Optional[CollectionConfig] = None,
     ) -> None:
         await self._assert_connected()
+        self._forget_scope_mapping(collection_name)
         if config is None:
             config = CollectionConfig()
 
@@ -529,7 +541,7 @@ class OpenSearchService(IVectorDBService):
                         "recordGroupIds": {"type": "keyword"},
                         "rootRecordGroupIds": {"type": "keyword"},
                         # scope fields (permission model): keyword mappings up front, so a dynamic mapping never types them as text
-                        **{field: {"type": "keyword"} for field, _ in SCOPE_KEYWORD_INDEXES},
+                        **({field: {"type": "keyword"} for field, _ in SCOPE_KEYWORD_INDEXES} if scope_fields_enabled() else {}),
                         # Keep explicit keyword declarations for the two most-used
                         # filter fields so the mapping is readable without introspection.
                         "metadata": {
@@ -740,6 +752,7 @@ class OpenSearchService(IVectorDBService):
 
     async def delete_collection(self, collection_name: str) -> None:
         await self._assert_connected()
+        self._forget_scope_mapping(collection_name)
         if await self.client.indices.exists(index=collection_name):  # type: ignore
             await self.client.indices.delete(index=collection_name)  # type: ignore
             logger.info(f"Deleted OpenSearch index '{collection_name}'")

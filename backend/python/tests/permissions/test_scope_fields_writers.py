@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Never
 
 import pytest
@@ -13,7 +14,9 @@ from app.services.permissions.mode import (
     ENV_SCOPE_FIELDS,
     scope_fields_enabled,
 )
+from app.services.permissions.projector import ScopeProjector
 from app.services.permissions.scope_fields import (
+    ENV_SCOPE_GENERATION,
     SCOPE_FIELDS_VERSION,
     SCOPE_KEYS,
     SCOPE_VERSION_FIELD,
@@ -29,12 +32,13 @@ from app.services.vector_db.membership import (
     vector_point_payload,
     write_membership_batch_locked,
 )
+from app.services.vector_db.models import VectorPoint
 from tests.support.in_memory_vector_db import (
     InMemoryVectorDBService as InMemoryVectorDB,
 )
 
 from .stamp_world import ORG
-from .store_harness import load, read_stamps
+from .store_harness import Loaded, load, read_stamps
 from .test_scope_projector import CASES
 
 if TYPE_CHECKING:
@@ -155,7 +159,6 @@ async def test_the_write_touches_only_the_points_of_the_bound_org(flag_on) -> No
     v = next(iter(loaded.records))
     other = {**(await vdb.retrieve_points(COLL, loaded.points[v][:1]))[0].payload}
     other["metadata"] = {**other["metadata"], "orgId": "cd" * 12}
-    from app.services.vector_db.models import VectorPoint
     await vdb.upsert_points(COLL, [VectorPoint(id="other-org-point", dense_vector=[0.0] * 8, payload=other)])
     await sync_all(loaded, vdb)
     assert not set(SCOPE_KEYS) & set(vdb.collections[COLL]["other-org-point"].payload)
@@ -182,3 +185,101 @@ async def test_with_the_flag_off_a_purge_and_new_points_carry_no_scope_key_and_t
         assert not set(SCOPE_KEYS) & set(vector_point_payload({}, ""))
     finally:
         reset_membership_context(tokens)
+
+
+async def _stamp_state(vdb: InMemoryVectorDB, loaded: Loaded, v: str) -> ScopeFields | None:
+    return ScopeFields.from_payload((await vdb.retrieve_points(COLL, loaded.points[v][:1]))[0].payload)
+
+
+async def test_a_stamp_from_before_the_latest_enable_is_never_trusted(monkeypatch) -> None:
+    """enable, stamp, disable, the membership changes, enable again: the old stamp is stale (older generation), not trusted."""
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+    v = next(iter(loaded.records))
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    monkeypatch.setenv(ENV_SCOPE_GENERATION, "1")
+    with oc.for_org(ORG, job="scope-fields-test"):
+        await sync_all(loaded, vdb)
+    first = await _stamp_state(vdb, loaded, v)
+    assert first.trusted and first.generation == 1
+    monkeypatch.delenv(ENV_SCOPE_FIELDS)  # off: a membership write leaves the scope keys alone, however the graph changed
+    for rid in loaded.records[v]:
+        n = loaded.graph.stamps.node_map[rid]
+        loaded.graph.stamps.node_map = {**loaded.graph.stamps.node_map, rid: replace(n, rule="RESTRICTED", granted=True)}
+    await sync_all(loaded, vdb)
+    assert await _stamp_state(vdb, loaded, v) == first
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    monkeypatch.setenv(ENV_SCOPE_GENERATION, "2")  # the operator raises the generation when switching on again
+    assert not (await _stamp_state(vdb, loaded, v)).trusted
+    with oc.for_org(ORG, job="scope-fields-test"):
+        await sync_all(loaded, vdb)
+    again = await _stamp_state(vdb, loaded, v)
+    assert again.generation == 2 and again != first
+
+
+def test_a_stamp_without_a_generation_or_of_another_version_is_not_trusted() -> None:
+    payload = ScopeFields.container().to_payload()
+    assert ScopeFields.from_payload(payload).trusted
+    assert not ScopeFields.from_payload({k: x for k, x in payload.items() if k != "scopeGeneration"}).trusted
+    assert not ScopeFields.from_payload({**payload, "scopeFieldsVersion": SCOPE_FIELDS_VERSION - 1}).trusted
+    assert not STALE_SCOPE.trusted and not ScopeFields.legacy().trusted
+
+
+async def test_one_projector_reads_an_apps_facts_once_however_many_points_it_projects() -> None:
+    from .stamp_world import stamp_graph
+
+    world = CASES["derived:SCOPES-ADV-01"]
+    graph = stamp_graph(world)
+    app = next(n.id for n in world.nodes if n.kind == "app")
+    recs = [n.id for n in world.nodes if n.kind == "record" and n.connector == app]
+    projector = ScopeProjector(graph)
+    for r in recs:
+        await projector.project(ORG, app, [r])
+    assert len(recs) > 3 and graph.app_reads == 1
+
+
+async def test_a_point_whose_records_are_all_skipped_gets_the_stale_marker_not_a_current_legacy_stamp() -> None:
+    from .stamp_world import stamp_graph
+
+    world = CASES["stamped:SLK-C-01"]
+    graph = stamp_graph(world)
+    node_map = {i: replace(n, deleted=True) if n.kind == "record" else n for i, n in graph.node_map.items()}
+    graph.node_map = node_map
+    recs = {i: n.connector_id for i, n in node_map.items() if n.kind == "record"}
+    fields, _ = await ScopeProjector(graph).project_virtual_record(ORG, recs)
+    assert fields == STALE_SCOPE and fields.version == 0
+
+
+async def test_with_the_flag_on_a_point_without_an_org_still_gets_its_membership_refreshed(flag_on) -> None:
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+    for p in vdb.collections[COLL].values():
+        p.payload["metadata"].pop("orgId")
+        p.payload["connectorIds"] = ["old"]
+        p.payload["recordGroupIds"] = ["old"]
+    await sync_all(loaded, vdb)
+    assert all(p.payload["connectorIds"] != ["old"] and p.payload["recordGroupIds"] != ["old"] for p in vdb.collections[COLL].values())
+    assert not any(set(SCOPE_KEYS) & set(p.payload) for p in vdb.collections[COLL].values())  # no org: no stamp, so the legacy filter
+
+
+async def test_a_sync_that_writes_nothing_leaves_the_stale_marker_when_the_flag_is_on(flag_on) -> None:
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+    await sync_all(loaded, vdb)
+    v = next(iter(loaded.records))
+    assert (await _stamp_state(vdb, loaded, v)).trusted
+    loaded.graph.stamps.node_map = {i: replace(n, deleted=True) if n.kind == "record" else n for i, n in loaded.graph.stamps.node_map.items()}
+    await sync_all(loaded, vdb)  # no record resolves: nothing to write, and the old stamp must not stay
+    assert await _stamp_state(vdb, loaded, v) == STALE_SCOPE
+
+
+async def test_the_purge_marker_matches_only_the_points_of_the_bound_org(flag_on) -> None:
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+    v = next(iter(loaded.records))
+    mine = (await vdb.retrieve_points(COLL, loaded.points[v][:1]))[0].payload
+    other = {**mine, "metadata": {**mine["metadata"], "orgId": "cd" * 12}}
+    await vdb.upsert_points(COLL, [VectorPoint(id="other-org-point", dense_vector=[0.0] * 8, payload=other)])
+    await write_membership_batch_locked(vdb, COLL, [v], ["gone"], None, log)
+    assert not set(SCOPE_KEYS) & set(vdb.collections[COLL]["other-org-point"].payload)
+    assert ScopeFields.from_payload(vdb.collections[COLL][loaded.points[v][0]].payload) == STALE_SCOPE

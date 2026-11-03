@@ -77,6 +77,7 @@ class ScopeProjector:
     def __init__(self, graph: StampGraph, *, max_depth: int = MAX_DEPTH) -> None:
         self._graph = graph
         self._max_depth = max_depth
+        self._apps: dict[tuple[str, str], StampApp] = {}  # one read of an app's facts per projector (a batch)
 
     async def _closure(self, org_id: str, seeds: Iterable[str]) -> dict[str, StampNode]:
         """The seeds, every hierarchy ancestor, and the record-group chains, level by level (one read per level)."""
@@ -95,7 +96,9 @@ class ScopeProjector:
 
     async def project(self, org_id: str, app_id: str, record_ids: Iterable[str]) -> dict[str, Projection]:
         ids = list(dict.fromkeys(record_ids))
-        app = await self._graph.app(org_id, app_id)
+        if (org_id, app_id) not in self._apps:
+            self._apps[(org_id, app_id)] = await self._graph.app(org_id, app_id)
+        app = self._apps[(org_id, app_id)]
         nodes = await self._closure(org_id, ids)
         return {rid: self._one(app, app_id, nodes, rid) for rid in ids}
 
@@ -114,7 +117,7 @@ class ScopeProjector:
         for vrid, records in vrids.items():
             ps = [outcome[(app_id, rid)] for rid, app_id in records.items()]
             live = [p for p in ps if not p.skipped]
-            out[vrid] = (combine(p.fields for p in live) if live else ScopeFields.legacy(), ps)
+            out[vrid] = (combine(p.fields for p in live) if live else ScopeFields.stale(), ps)
         return out
 
     async def project_virtual_record(self, org_id: str, records: Mapping[str, str]) -> tuple[ScopeFields, list[Projection]]:
@@ -139,7 +142,7 @@ class ScopeProjector:
                 assert_may_stamp(Rule.CONTAINER, app.connector_type, equals_record_group=True)
                 return Projection(rid, ScopeFields.container())
             fields = self._exception(app, app_id, nodes, node, rule, path)
-            if not all(plain_id(i) for i in (*fields.path_ids, *fields.acl_scope, *fields.grant_tokens)):
+            if not all(plain_id(i) for i in (*fields.path_ids, *fields.acl_scope)):
                 raise RuleNotAllowed(f"{app.connector_type!r}: an id on the path has a comma or whitespace, which a store may not hold exactly")
             return Projection(rid, fields)
         except RuleNotAllowed as exc:

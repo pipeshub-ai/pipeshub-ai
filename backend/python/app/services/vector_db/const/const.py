@@ -2,7 +2,6 @@ import os
 
 from app.services.permissions.scope_fields import (
     ACL_SCOPE_FIELD,
-    GRANT_TOKENS_FIELD,
     PATH_IDS_FIELD,
     SCOPE_STAMP_FIELD,
 )
@@ -30,7 +29,6 @@ PAYLOAD_KEYWORD_INDEXES = (
 SCOPE_KEYWORD_INDEXES = (
     (PATH_IDS_FIELD, {"type": "keyword"}),
     (ACL_SCOPE_FIELD, {"type": "keyword"}),
-    (GRANT_TOKENS_FIELD, {"type": "keyword"}),
     (SCOPE_STAMP_FIELD, {"type": "keyword"}),
 )
 

@@ -405,3 +405,31 @@ async def test_a_record_below_a_readable_seed_is_admitted_whatever_restricts_the
     assert "A-c0" in scopes.readable_scopes and "A-s0" in scopes.unreadable_restricted
     assert fields_filter(world, scopes, "A-c1", fields) is True
     assert OracleLayer().explain(world, "u3", ["A-c1"])["A-c1"].admitted
+
+
+async def test_a_record_moved_into_a_group_level_group_under_a_seed_the_walk_cannot_reach_is_not_stamped_with_the_group() -> None:
+    """`A-c5` is read by `u4` by a direct grant, and the walk from it to the app goes through the group-level group `A-c1`, which it
+    skips: a seed. `u4` reads `A-c6` (a group-level group below that seed) but not the records filed in it, which a declared group
+    makes readable only for people who reach the group from the app or by a grant. After `A-c9` is moved into `A-c6` its stamp must
+    admit exactly the people the oracle admits."""
+    from . import mutations
+    from .model import Mutation
+
+    world = mutations.apply(retyped(gen.generate("adversarial", 2091, 1)[0], "SHAREPOINT"), Mutation("moved", "A-c9", "A-c6", "A-c6"))
+    projected = await project(world)
+    stamped = as_stamped(world, projected)
+    layer, oracle = OracleScopeLayer(), OracleLayer()
+    nodes = [n.id for n in world.nodes]
+    checked = 0
+    for viewer in world.users():
+        scopes = await layer.viewer_scopes(stamped, viewer)
+        truth = oracle.explain(stamped, viewer, nodes)
+        for rid, p in projected.items():
+            if p.skipped or p.refused or world.node(rid).connector in scopes.legacy_apps:
+                continue
+            got = reference_filter(stamped, scopes, rid)
+            if got is None:
+                continue
+            checked += 1
+            assert not (got and not truth[rid].admitted), f"{viewer} is admitted to {rid} ({p.fields.stamp.value}) by the stamp; the oracle refuses it"
+    assert checked
