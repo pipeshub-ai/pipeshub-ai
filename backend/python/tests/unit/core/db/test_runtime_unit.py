@@ -415,6 +415,28 @@ def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
     assert sql_lint._starts_sql("-- a\n/* b */ -- c\n  SET x = 1") and not sql_lint._starts_sql("/* open SET x")
 
 
+@pytest.mark.parametrize(("body", "rule"), [
+    ('q = "SELECT * FROM t"\n    q += " WHERE a = $1"\n    await tx.fetch(q + f" AND b = {x}")', BUILT),
+    ('q = "SELECT * FROM t"\n    if x:\n        q = "SELECT * FROM u"\n    await tx.fetch(q + f" WHERE a = {x}")', BUILT),
+    ('q = "SELECT * FROM t"\n    await tx.fetch(f"{q} WHERE a = {x}")', BUILT),
+    ('q = "SELECT * FROM t WHERE a = {}"\n    q += " "\n    await tx.fetch(q.format(x))', BUILT),
+    ('q = "SELECT * FROM t"\n    q = q + f" WHERE a = {x}"\n    await tx.fetch(q)', BUILT),
+    ('a = "/* pipeshub:m.a */ SET ROLE r"\n    a += " "\n    await tx.execute(a if x else "/* pipeshub:m.b */ SELECT 2")', "session SET / RESET"),
+    ('q = "/* pipeshub:m.a */ SELECT 1"\n    for q in x:\n        pass\n    await tx.fetch(q + f" WHERE a = {x}")', NOT_RESOLVABLE),
+    ('q = helper()\n    await tx.fetch(q + f" WHERE a = {x}")', NOT_RESOLVABLE),
+], ids=["+= base plus f-string", "branch base plus f-string", "base inside an f-string", ".format on a += base", "q = q + f-string",
+        "+= name in a conditional", "loop-bound base plus f-string", "call base plus f-string"])
+def test_a_local_name_inside_the_expression_is_resolved_like_one_passed_on_its_own(body, rule) -> None:
+    assert rule in [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")]
+
+
+def test_a_name_inside_the_expression_does_not_flag_clean_code() -> None:
+    for body in ('q = "/* pipeshub:m.f */ SELECT * FROM t WHERE a = $1"\n    q = q + " AND b = $2"\n    await tx.fetch(q, 1, 2)',
+                 'q = "/* pipeshub:m.f */ SELECT * FROM t WHERE a = $1"\n    q += " AND b = $2"\n    await tx.fetch(q + " LIMIT 5", 1, 2)',
+                 'msg = fmt(x)\n    await client.execute(f"hello {msg}")'):
+        assert sql_lint.scan_source(f"async def f(tx, client, x):\n    {body}\n") == [], body
+
+
 def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
     src = ('async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    def inner(x):\n        q = f"SELECT {x}"\n        return q\n'
            '    await tx.fetch(q)\n')

@@ -8,10 +8,11 @@
 The runtime module itself is exempt: it is the only place allowed to set a role or a setting.
 
 String building is followed where it is visible in one function: an f-string, ``%``, ``.format``, ``+`` with a non-constant operand,
-``q += <non-constant>``, a conditional expression with a built branch, the argument or a ``query=`` / ``sql=`` keyword. Joining pure
-constants (``"SELECT ..." + "WHERE a = $1"``, ``q += " AND b = $2"``) is not building. Known limits (not seen): statements built with
-``str.join``, through an alias (``r = q``), in a module-level f-string constant, in another function that returns the text, or by a wrapper
-helper such as ``_q(tx, f"...")``; names that arrive as arguments. The pin tests of the modules that build statements cover those.
+``q += <non-constant>``, a conditional expression with a built branch, the argument or a ``query=`` / ``sql=`` keyword. A local name met
+inside the expression (``q + f"..."``, ``f"{q} WHERE ..."``, ``q if x else ...``, ``r = q``) is resolved like one passed on its own. Joining
+pure constants (``"SELECT ..." + "WHERE a = $1"``, ``q += " AND b = $2"``) is not building. Known limits (not seen): statements built with
+``str.join``, in a module-level f-string constant, in another function that returns the text, or by a wrapper helper such as
+``_q(tx, f"...")``; names that arrive as arguments. The pin tests of the modules that build statements cover those.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 _CALLS = {"fetch", "fetchrow", "fetchval", "execute", "executemany"}
 _KEYWORD_START = re.compile(r"(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
@@ -122,25 +123,49 @@ def _pure(node: ast.expr, env: _Env, seen: tuple[str, ...] = ()) -> str | None:
     return None
 
 
-def _sql_text(node: ast.expr, env: _Env | None = None) -> tuple[str | None, bool]:
-    """(constant text or None, is_string_built). Joining pure constants (``"a" + "b"``, ``PREFIX + "..."``) is not building."""
+if TYPE_CHECKING:
+    _NameText = Callable[[str], tuple[str | None, bool]]
+
+
+def _piece(v: ast.expr, env: _Env, name: _NameText | None) -> list[str]:
+    """The alternatives one part of an f-string contributes: its text, or a local name's statement text (``f"{q} WHERE ..."``)."""
+    if isinstance(v, ast.Constant) and isinstance(v.value, str):
+        return [v.value]
+    if name and isinstance(v, ast.FormattedValue) and isinstance(v.value, ast.Name) and v.format_spec is None:
+        try:
+            text, _ = name(v.value.id)
+        except _Unresolvable:
+            return [""]                  # an interpolated value (a number, a column list) need not resolve
+        return (text or "").split(_ALT)
+    return [""]
+
+
+def _sql_text(node: ast.expr, env: _Env | None = None, name: _NameText | None = None) -> tuple[str | None, bool]:
+    """(constant text or None, is_string_built). Joining pure constants (``"a" + "b"``, ``PREFIX + "..."``) is not building. ``name``
+    resolves a name met inside the expression (``q + f"..."``) the way a name passed on its own is resolved."""
     env = env or {}
     pure = _pure(node, env)
     if pure is not None:
         return pure, False
+    if isinstance(node, ast.Name) and name is not None:
+        return name(node.id)
     if isinstance(node, ast.JoinedStr):
-        return "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str)), True
+        texts = [""]
+        for v in node.values:
+            texts = _bounded(t + p for t in texts for p in _piece(v, env, name))
+        return _ALT.join(texts), True
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Mod):
-        left, _ = _sql_text(node.left, env)
-        right, _ = _sql_text(node.right, env) if isinstance(node.op, ast.Add) else (None, False)
+        left, left_built = _sql_text(node.left, env, name)
+        right, right_built = _sql_text(node.right, env, name) if isinstance(node.op, ast.Add) else (None, True)
         both = _bounded(a + b for a in (left or "").split(_ALT) for b in (right or "").split(_ALT))      # every pairing of the alternatives
-        return (_ALT.join(both) or None), True
+        # a name that holds constants joined with ``+=`` is not building; an operand with no known text is
+        return (_ALT.join(both) or None), left_built or right_built or left is None or right is None
     if isinstance(node, ast.IfExp):
-        (a, a_built), (b, b_built) = _sql_text(node.body, env), _sql_text(node.orelse, env)
+        (a, a_built), (b, b_built) = _sql_text(node.body, env, name), _sql_text(node.orelse, env, name)
         both = [t for t in (a, b) if t is not None]
         return (_ALT.join(both) or None), a_built or b_built        # every branch is checked: a clean branch must not hide the other
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-        text, _ = _sql_text(node.func.value, env)
+        text, _ = _sql_text(node.func.value, env, name)
         return text, True
     return None, False
 
@@ -213,25 +238,32 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
     """(constant text or None, is_string_built) of the statement a call is given: the argument itself, or what the local name it passes
     was assigned (built when any assignment builds it; ``q += x`` builds unless ``x`` is a pure constant)."""
     env, local, odd = _local_assignments(call, parents)
-    if isinstance(arg, ast.Name):
-        if arg.id in odd:
+    env = {k: v for k, v in env.items() if k not in odd}    # a name bound in an unmodelled way is never a pure constant
+
+    def name(name_id: str, seen: tuple[str, ...] = ()) -> tuple[str | None, bool]:
+        if name_id in odd or name_id in seen:
             raise _Unresolvable
-        if arg.id not in local:
-            return None, False           # a module constant or an argument: not followed
-    text, built = _sql_text(arg, env)
-    if text is not None or not isinstance(arg, ast.Name):
-        return text, built
-    built, cands = False, []
-    for value, augmented in env.get(arg.id, []):
-        value_text, value_built = _sql_text(value, env)
-        built = built or value_built or (augmented and _pure(value, env) is None)
-        if augmented:                      # a ``+=`` extends every candidate assigned before it, for every alternative it has
-            cands = _bounded(c + t for c in cands or [""] for t in (value_text or "").split(_ALT))
-        elif value_text is not None:
-            cands = _bounded([*cands, *value_text.split(_ALT)])     # a plain assignment adds candidates
-        elif not isinstance(value, ast.Constant):
-            raise _Unresolvable          # an alias, call, join or anything else not modelled
-    return (_ALT.join(cands) or None), built
+        if name_id not in local:
+            return _pure(ast.Name(id=name_id, ctx=ast.Load()), env), False     # a module constant, or an argument (None)
+        built, cands = False, []
+        for assigned, by_augment in env.get(name_id, []):
+            value, augmented = assigned, by_augment
+            if not augmented and isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add) \
+                    and isinstance(value.left, ast.Name) and value.left.id == name_id:
+                value, augmented = value.right, True      # ``q = q + x`` is ``q += x``
+            value_text, value_built = _sql_text(value, env, lambda n: name(n, (*seen, name_id)))
+            built = built or value_built or (augmented and _pure(value, env) is None)
+            if augmented:                      # a ``+=`` extends every candidate assigned before it, for every alternative it has
+                cands = _bounded(c + t for c in cands or [""] for t in (value_text or "").split(_ALT))
+            elif value_text is not None:
+                cands = _bounded([*cands, *value_text.split(_ALT)])     # a plain assignment adds candidates
+            elif not isinstance(value, ast.Constant):
+                raise _Unresolvable          # a call, join or anything else not modelled
+        return (_ALT.join(cands) or None), built
+
+    if isinstance(arg, ast.Name) and arg.id not in local and arg.id not in odd:
+        return None, False               # a module constant or an argument, passed on its own: not followed
+    return _sql_text(arg, env, name)
 
 
 def _statement_argument(node: ast.Call) -> ast.expr | None:
