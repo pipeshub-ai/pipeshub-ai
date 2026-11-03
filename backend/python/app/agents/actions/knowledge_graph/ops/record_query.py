@@ -95,6 +95,7 @@ RECALL_DID_NOT_RUN = (
     "Recall check did not run (search failed or timed out): records the graph could not link are not listed."
 )
 RECALL_SKIPPED = "Recall check skipped: no condition here is something search can look for."
+RECALL_ON_FIRST_PAGE = "Recall check: ran on the first page of this query; its possible matches are listed there."
 POSSIBLE_RULE = (
     "Never add them to the exact total: say how many are possible, or read one with fetch to decide it."
 )
@@ -180,7 +181,7 @@ async def execute_find_records(
             query.where.append(FieldCondition.model_validate({"field": "container", "in": list(sources)}))
         qid = uuid.uuid4().hex[:12]
         # Beside the engine, so it adds no wait of its own; a pure describe has nothing to recall.
-        recall_task = None if _describe_only(query) else start_search(query, _names(state, people), _search(state))
+        recall_task = None if _no_recall(query) else start_search(query, _names(state, people), _search(state))
         try:
             result = await run_record_query(state["graph_provider"], context, query, apps=apps or None,
                                             correlation_id=qid)
@@ -193,7 +194,7 @@ async def execute_find_records(
     except EntityAccessError:
         logger.warning("find_records failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
-    recall = None if _describe_only(query) else await finish_recall(
+    recall = None if _no_recall(query) else await finish_recall(
         state["graph_provider"], context, result, recall_task, correlation_id=qid,
     )
     if result.not_classified and state.get("config_service") is not None:
@@ -222,8 +223,13 @@ async def execute_find_records(
                         scope_note=limited_scope_note(context), people=people, recall=recall, possible=possible)
 
 
-def _describe_only(query: RecordQuery) -> bool:
-    return bool(query.describe) and query.limit == 0 and query.aggregate.op == "count" and query.group_by is None
+def _no_recall(query: RecordQuery) -> bool:
+    """A pure describe has nothing to recall, and a cursor page continues a
+    query whose first page already ran the check: searching again would
+    cost a call and list the same possible matches again."""
+    describe_only = (bool(query.describe) and query.limit == 0 and query.aggregate.op == "count"
+                     and query.group_by is None)
+    return describe_only or bool(query.cursor)
 
 
 def _names(state: ChatState, people: Mapping[str, str]) -> dict[str, str]:
@@ -392,6 +398,8 @@ def render(
         lines.append(f'More records: call again with the same arguments and cursor="{result.next_cursor}".')
     if recall is not None:
         lines += _recall_lines(recall, possible or [], cite_refs, shortener)
+    elif query.cursor:
+        lines.append(RECALL_ON_FIRST_PAGE)
     return "\n".join(lines)
 
 

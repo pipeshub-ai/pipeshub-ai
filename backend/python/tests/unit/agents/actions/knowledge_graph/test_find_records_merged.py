@@ -262,3 +262,20 @@ async def test_a_search_that_answers_with_an_error_status_is_a_failed_check(engi
     retrieval.search_with_filters = AsyncMock(return_value={"status_code": 503, "message": "down"})
     with pytest.raises(RuntimeError):
         await op._search(_state(retrieval_service=retrieval))("x", None)
+
+
+async def test_a_cursor_page_runs_no_new_search_and_says_the_check_ran_on_the_first_page(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.retrieval.record_query.paging import encode_cursor
+
+    start = MagicMock(return_value=None)
+    finish = AsyncMock()
+    monkeypatch.setattr(op, "start_search", start)
+    monkeypatch.setattr(op, "finish_recall", finish)
+    ok, text = await op.execute_find_records(
+        _state(), where=[{"field": "status", "in": ["OPEN"]}], cursor=encode_cursor("newest", (-5, "r9")),
+    )
+    assert ok and op.RECALL_ON_FIRST_PAGE in text.splitlines()
+    start.assert_not_called()
+    finish.assert_not_awaited()

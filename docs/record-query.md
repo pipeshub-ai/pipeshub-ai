@@ -253,8 +253,10 @@ same seeded graph.
 ## Recall check
 
 Graph extraction is imperfect, and a record must never be silently lost.
-Every `find_records` call but a pure `describe` (`limit` 0, no aggregate or
-grouping) runs a bounded hybrid search beside the engine
+Every `find_records` query runs it once, on its first page: not for a pure
+`describe` (`limit` 0, no aggregate or grouping), and not on a cursor page,
+which continues the same query and says the check ran on the first page.
+It is a bounded hybrid search beside the engine
 (`record_query/recall.py`):
 
 - **Terms** are the query's own: people's names (resolved, or as search
@@ -300,7 +302,8 @@ them. In the full arm with named entities the knowledge-graph tools offered
 drop from 8 to 6 (timeline aside), and `find_records`' definition is no
 larger than the three it replaces together (`test_find_records_surface`).
 
-The old names stay callable for one release, for saved agents and cached
+The old names stay hidden and callable for one release after this merges,
+then are removed. They exist for saved agents and cached
 plans: `retired_tools_for_request` serves each under its old schema, the
 loader registers it with `ToolRegistry.register_hidden_tool` (callable by
 exact name, in no schema list, toolset or search), and an agent saved with
