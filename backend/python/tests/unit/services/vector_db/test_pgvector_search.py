@@ -311,6 +311,10 @@ def test_every_statement_of_the_dense_path_pins_the_org_the_collection_and_the_s
     for name, sql in points.items():
         assert "p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3" in sql, name
         assert "t.org_id = $1" in sql or "count(*)" in sql, name                       # the tombstone test is the org's own
+    from app.services.vector_db.pgvector import lexical
+
+    assert "p.org_id = $1 AND p.point_sk = s.point_sk" in lexical.lexical_sql("")                 # the function takes the org from the unit of work; the join pins it again
+    assert "p.org_id = $1" in lexical.lexical_sql(" AND (p.ent_type = ANY($12::text[]))")
     for sql in (dense._TOMBSTONES, dense._CONNECTORS, dense._UNCONNECTED, dense._LEAF, validate._BOUNDS, validate._NEXT):
         assert "org_id = $1" in sql, sql[:60]
     assert "m.org_id = $1" in dense.exact_sql(query()) and "m.collection_id = $2" in dense.exact_sql(query())     # the membership probe too
@@ -357,7 +361,7 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions: fixed text, every value a ``$n``)
     assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
-                     ("sql_filters.py", "_match"): 1, ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("lexical.py", "lexical_sql"): 1, ("sql_filters.py", "_match"): 1, ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio
@@ -442,3 +446,25 @@ async def test_connector_checks_that_miss_together_share_one_read() -> None:
         assert all(g == frozenset({"c1"}) for g in got) and len(reads_made) == 1
         await sizer.connectors(ORG, 1)
         assert len(reads_made) == 1                                                   # and the answer is reused for its ttl
+
+
+# ---- the lexical leg -------------------------------------------------------------------------------------------------------------------
+def test_lexical_terms_are_distinct_unsigned_32_bit_ids_with_finite_weights() -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    assert lexical.terms_of(SparseVector([3, 3, 4294967295], [1.0, 2.0, 0.5])) == ([3, 4294967295], [2.0, 0.5])     # a repeated id keeps its last weight
+    for bad in (SparseVector([], []), SparseVector([-1], [1.0]), SparseVector([2**32], [1.0]), SparseVector([1], [float("nan")]),
+                SparseVector(list(range(lexical.MAX_TERMS + 1)), [1.0] * (lexical.MAX_TERMS + 1))):
+        with pytest.raises(ValueError):
+            lexical.terms_of(bad)
+
+
+def test_a_lexical_leg_asks_for_more_rows_only_when_the_extra_conditions_filter_them_afterwards() -> None:
+    from app.services.vector_db.models import FieldCondition, FilterExpression
+    from app.services.vector_db.pgvector import lexical
+
+    assert lexical.rows_asked(40, Scope(), T) == 40
+    extra = Scope(extra=FilterExpression(must=[FieldCondition(key="metadata.entityType", value="x")]))
+    assert lexical.rows_asked(40, extra, T) == 40 * T.lexical_overfetch
+    assert lexical.rows_asked(900, extra, T) == lexical.MAX_LEG

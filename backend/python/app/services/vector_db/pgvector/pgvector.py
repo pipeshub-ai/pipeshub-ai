@@ -2,8 +2,7 @@
 
 Every statement runs in a unit of work of the shared database runtime (``app.core.db``): the org is set per transaction and row-level
 security does the rest. Carried so far: the lifecycle (connect, health, capabilities), the collection catalog, the per-org space
-questions, the writes (upsert, delete, payload and membership), the reads (scroll, retrieve) and the dense leg of a search. A request with a
-lexical query follows, and until then raises ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
+questions, the writes (upsert, delete, payload and membership), the reads (scroll, retrieve) and the dense and lexical legs of a search, fused by reciprocal rank.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ from app.services.vector_db.models import (
     VectorDBHealth,
     VectorPoint,
 )
-from app.services.vector_db.pgvector import dense, fusion, reads, validate, writes
+from app.services.vector_db.pgvector import dense, fusion, lexical, reads, validate, writes
 from app.services.vector_db.pgvector.catalog import Catalog, CollectionRow, OrgSpace
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
@@ -66,7 +65,7 @@ from app.services.vector_db.pgvector.scope import (
     require_org,
 )
 from app.services.vector_db.pgvector.sql_filters import compile_filter, single_org
-from app.services.vector_db.pgvector.visibility import scope_of
+from app.services.vector_db.pgvector.visibility import Scope, scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -89,9 +88,6 @@ _MAX_LEG = 2 * MAX_SEARCH_LIMIT
 MAX_SCROLL_LIMIT = 10_000   # rows one scroll page returns at most: the ceiling the other backends have (OpenSearch caps a page at 10,000)
 UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points that do not name theirs
 
-
-def _pending(method: str) -> NotImplementedError:
-    return NotImplementedError(f"pgvector: {method} is not implemented yet")
 
 
 def _ids(point_ids: list[str]) -> list[uuid.UUID]:
@@ -444,11 +440,12 @@ class PgVectorService(IVectorDBService):
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest]
     ) -> list[list[SearchResult]]:
-        """The dense leg of each request, ranked as the other providers rank a one-leg answer (reciprocal-rank score ``1 / (2 + index)``,
-        ties by id, ``limit`` results). Every request names its org in its filter and only that org's points in its embedding space are
+        """The dense and lexical legs of each request, fused as the other providers fuse them (reciprocal-rank score, summed over the legs a
+        point is in, ``1 / (2 + index)`` for a one-leg answer; ties by id; ``limit`` results). Every request names its org in its filter and only that org's points in its embedding space are
         searched; an empty accessible list in the filter finds nothing. The requests of a call run a few at a time. A leg that cannot run
         in its tier is answered by the bounded exact path, counted, logged and flagged on every result (``SearchResult.degraded``).
-        A request with a lexical (sparse) query is not served yet and raises ``NotImplementedError``."""
+        A leg is ``min(2 * limit, 2000)`` rows (the lexical leg at most 1,000). A lexical leg that runs out of time or fails answers nothing and
+        flags the result. The legs run as separate statements, one unit of work each."""
         coll = await self._assert_connected()[1].require_collection(collection_name)
         gate = asyncio.Semaphore(self._cfg.search.request_concurrency)
 
@@ -472,10 +469,11 @@ class PgVectorService(IVectorDBService):
         org = _filter_org(req.filter)
         if not 1 <= req.limit <= MAX_SEARCH_LIMIT:
             raise ValueError(f"a search limit must be between 1 and {MAX_SEARCH_LIMIT}")
-        if req.sparse_query is not None and req.sparse_query.indices and coll.sparse_enabled:
-            raise _pending("the lexical leg of a hybrid search")
-        if req.dense_query is None:
+        sparse = req.sparse_query if req.sparse_query is not None and req.sparse_query.indices and coll.sparse_enabled else None
+        if req.dense_query is None and sparse is None:
             return []
+        if sparse is not None:
+            lexical.terms_of(sparse)           # a malformed lexical query is refused before either leg runs
         scope = scope_of(req.filter)
         cfg = self._cfg.search
         with org_scope(org):
@@ -484,21 +482,44 @@ class PgVectorService(IVectorDBService):
             space = await catalog.active_space(org)
             if space is None:
                 return []
-            if len(req.dense_query) != space.dim:
+            if req.dense_query is not None and len(req.dense_query) != space.dim:
                 raise SpaceMismatch(f"the query has {len(req.dense_query)} dimensions; the organisation's embedding space has {space.dim}")
-            q = dense.Query(org, coll.collection_id, space.space_id, space.dim, space.metric, writes.halfvec_text(req.dense_query), scope,
-                            min(max(2 * req.limit, 1), _MAX_LEG))
-            bq_ok = self._bq.get((org, space.space_id), True) and self.pg_capabilities.bit_hnsw
-            found, sizing = await dense.search(db, self._sizer, q, cfg, bq_ok=bq_ok)
-            self._after_dense(q, found, sizing, space.space_id)
-            if found.degraded:
-                degraded_notice.note(found.degraded)          # the provider contract: an empty answer is flagged too
-            ranked = fusion.rrf([[pid for _, pid in found.rows]], req.limit)
+            leg = min(max(2 * req.limit, 1), _MAX_LEG)
+            legs = [org_context.spawn_in_request(self._dense(coll, req, org, space, scope, leg), name="pgvector-dense-leg")]
+            if sparse is not None:
+                legs.append(org_context.spawn_in_request(
+                    lexical.search(db, org, coll.collection_id, sparse, scope, min(leg, lexical.MAX_LEG), cfg), name="pgvector-lexical-leg"))
+            try:
+                answers = list(await asyncio.gather(*legs))
+            except BaseException:
+                for t in legs:               # a leg failed (or the request was cancelled): the other stops instead of finishing in the background
+                    t.cancel()
+                await asyncio.gather(*legs, return_exceptions=True)
+                raise
+            dense_rows, degraded = answers[0]
+            rows = [[pid for _, pid in dense_rows]]
+            if sparse is not None:
+                rows.append([pid for _, pid in answers[1][0]])
+                degraded = degraded or answers[1][1]
+            if degraded:
+                degraded_notice.note(degraded)          # the provider contract: an empty answer is flagged too
+            ranked = fusion.rrf(rows, req.limit)
             if not req.with_payload:
-                return [SearchResult(id=pid, score=score, degraded=found.degraded) for pid, score in ranked]
+                return [SearchResult(id=pid, score=score, degraded=degraded) for pid, score in ranked]
             points = {p.id: p for p in await db.run(
                 lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, _ids([pid for pid, _ in ranked])), custom_plan=True)}
-            return [SearchResult(id=pid, score=score, payload=points[pid].payload, degraded=found.degraded) for pid, score in ranked if pid in points]
+            return [SearchResult(id=pid, score=score, payload=points[pid].payload, degraded=degraded) for pid, score in ranked if pid in points]
+
+    async def _dense(self, coll: CollectionRow, req: HybridSearchRequest, org: str, space: OrgSpace, scope: Scope, leg: int) -> tuple[list[tuple[int, str]], str | None]:
+        """The dense leg (none when the request has no dense query): ``(rows, degraded)``."""
+        if req.dense_query is None:
+            return [], None
+        cfg = self._cfg.search
+        q = dense.Query(org, coll.collection_id, space.space_id, space.dim, space.metric, writes.halfvec_text(req.dense_query), scope, leg)
+        bq_ok = self._bq.get((org, space.space_id), True) and self.pg_capabilities.bit_hnsw
+        found, sizing = await dense.search(self._assert_connected()[0], self._sizer, q, cfg, bq_ok=bq_ok)
+        self._after_dense(q, found, sizing, space.space_id)
+        return found.rows, found.degraded
 
     def _after_dense(self, q: dense.Query, found: dense.Leg, sizing: dense.Sizing, space_id: int) -> None:
         """Work after a dense leg: offer the recall sample and, the first time this process serves an org's space from the vector
