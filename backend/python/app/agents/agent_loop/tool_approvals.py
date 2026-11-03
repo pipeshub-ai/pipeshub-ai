@@ -809,6 +809,12 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":
+            if verdict.reason == "unattended":
+                # Names why no card was shown: the client the run came from can't answer one.
+                logger.info(
+                    "Tool approval: %s on %s not run: nobody can approve it from client %r (streaming=%s, service account=%s)",
+                    target.tool_name, target.owner, context.client_name, bool(context.chat_streaming), bool(context.is_service_account),
+                )
             ctx.deny(_blocked_message(verdict.reason, target))
         elif verdict.rule == "ask" and not await _allowed_for_conversation(context, target):
             await _ask(context, ctx, target)
