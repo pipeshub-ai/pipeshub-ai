@@ -355,6 +355,10 @@ class VectorDBCapabilities:
     supports_multi_collection: bool = True
     max_recommended_collections: int | None = None
     score_semantics: ScoreSemantics = ScoreSemantics.RANK_FUSED
+    # The collection stamp is kept by the provider itself (get/set_collection_stamp), not as a point.
+    stamps_in_catalog: bool = False
+    # The embedding model and dimension belong to each org's space, not to the collection.
+    spaces_per_org: bool = False
 
 
 @dataclass
