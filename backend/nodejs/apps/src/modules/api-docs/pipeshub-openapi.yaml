@@ -49196,7 +49196,7 @@ paths:
         '404':
           description: |
             No matching rows (`HTTP_NOT_FOUND`, "Search history not found"). Returned when the
-            caller has no owned or shared, unarchived searches that satisfy the filters.
+            caller has no owned, unarchived searches that satisfy the filters.
           content:
             application/json:
               schema:
