@@ -121,6 +121,33 @@ class _VectorDBContractTests:
         finally:
             await vector_service.delete_collection(col)
 
+    async def test_a_scroll_can_exclude_orgs_to_find_the_next_owner(self, vector_service) -> None:
+        """The orphan sweep names the owners of a record from its points: a read that excludes the orgs found."""
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_owners")
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            a_pts, b_pts = sample_points("org-a"), sample_points("org-b")
+            for pt in b_pts:
+                pt.id = point_id("b-" + str(pt.id))
+            await vector_service.upsert_points(col, a_pts + b_pts)
+
+            async def owner_after(excluded: list[str]) -> list[str]:
+                flt = await vector_service.filter_collection(
+                    must={"virtualRecordId": "r1"}, **({"must_not": {"orgId": excluded}} if excluded else {}),
+                )
+                page = await vector_service.scroll(col, flt, limit=5, with_payload=["metadata.orgId"])
+                return sorted({p.payload["metadata"]["orgId"] for p in page.points})
+
+            async def both_seen() -> bool:
+                return await owner_after([]) == ["org-a", "org-b"]
+
+            await wait_for(both_seen, timeout=VISIBILITY_TIMEOUT)
+            assert await owner_after(["org-a"]) == ["org-b"]
+            assert await owner_after(["org-a", "org-b"]) == []
+        finally:
+            await vector_service.delete_collection(col)
+
     async def test_delete_removes_points_rewritten_just_before(self, vector_service) -> None:
         """A point rewritten right before its delete must still go on every backend."""
         provider = vector_service.get_service_name()
