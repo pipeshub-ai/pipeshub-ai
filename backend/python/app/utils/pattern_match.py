@@ -20,6 +20,7 @@ from app.agents.actions.storage_search.storage_search import (
     _GREP_SHORT_VALUE_LETTERS,
     _SHORT_VALUE_LETTERS,
     _MAX_FIND_RECORDS,
+    _listing_command_error,
     StoragePatternMatch,
     _validate_command,
     is_local_storage,
@@ -593,6 +594,10 @@ def _explicit_command_error(command: str, *, readable_only: bool) -> str | None:
         return "the command must list files (-l, --files-with-matches) or count matches (-c, --count)"
     ok, err = _validate_command(command)
     if not ok:
+        return err
+    # find_records refuses these too; refusing here keeps the index from answering them.
+    err = _listing_command_error(command)
+    if err:
         return err
     if readable_only:
         ok, err = validate_pattern_match_command(command)

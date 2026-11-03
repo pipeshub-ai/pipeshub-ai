@@ -251,6 +251,16 @@ async def test_a_command_the_storage_validator_refuses_raises_before_anything_ru
     index.assert_not_called()
 
 
+async def test_a_command_find_records_would_refuse_raises_before_the_index_can_answer_it() -> None:
+    index = AsyncMock()
+    with patch.object(pm, "_index_searcher", index), pytest.raises(ValueError, match="not allowed in find_records"):
+        await pm.run_pattern_match_with_llm_grep(
+            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER, graph_provider=MagicMock(),
+            filters={}, logger_instance=MagicMock(), commands=["grep -Rl -e invoice ."],
+        )
+    index.assert_not_called()
+
+
 @pytest.mark.parametrize("cap", [0, -1])
 async def test_a_record_cap_below_one_is_an_error(cap) -> None:
     with pytest.raises(ValueError, match="at least 1"):
