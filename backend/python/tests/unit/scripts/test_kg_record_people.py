@@ -12,7 +12,12 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import MailRecord, RecordType
-from app.scripts.kg_record_people import EXIT_PARTIAL, LINKED_TYPES, backfill, build_parser
+from app.scripts.kg_record_people import (
+    EXIT_PARTIAL,
+    LINKED_TYPES,
+    backfill,
+    build_parser,
+)
 
 BASE = {
     "org_id": "org-1", "record_name": "m", "origin": OriginTypes.CONNECTOR.value,

@@ -2238,7 +2238,7 @@ class TestGetGroupsWithPermissionToNode:
 
 class TestUserAndOrganizationLookups:
     @pytest.mark.asyncio
-    async def test_get_user_by_email_in_an_org_reads_only_that_orgs_users(self, neo4j_provider: Neo4jProvider):
+    async def test_get_user_by_email_in_an_org_reads_only_that_orgs_users(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_user_by_email("a@x.com", org_id="org-1")
         query = neo4j_provider.client.execute_query.await_args.args[0]

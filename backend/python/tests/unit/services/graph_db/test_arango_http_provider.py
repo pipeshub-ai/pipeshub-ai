@@ -6041,7 +6041,7 @@ class TestGetFileRecordById:
 
 class TestGetUserByEmail:
     @pytest.mark.asyncio
-    async def test_an_org_scopes_the_lookup(self, connected_provider):
+    async def test_an_org_scopes_the_lookup(self, connected_provider) -> None:
         connected_provider.http_client.execute_aql.return_value = []
         await connected_provider.get_user_by_email("a@x.com", org_id="org-1")
         query, kwargs = connected_provider.http_client.execute_aql.await_args.args[0], connected_provider.http_client.execute_aql.await_args.kwargs
@@ -6049,7 +6049,7 @@ class TestGetUserByEmail:
         assert kwargs["bind_vars"] == {"email": "a@x.com", "org_id": "org-1"}
 
     @pytest.mark.asyncio
-    async def test_without_an_org_the_lookup_is_unchanged(self, connected_provider):
+    async def test_without_an_org_the_lookup_is_unchanged(self, connected_provider) -> None:
         connected_provider.http_client.execute_aql.return_value = []
         await connected_provider.get_user_by_email("a@x.com")
         assert "orgId" not in connected_provider.http_client.execute_aql.await_args.args[0]

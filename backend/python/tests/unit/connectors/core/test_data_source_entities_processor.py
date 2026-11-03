@@ -317,7 +317,7 @@ class TestAPlaceholderWritesNoContentEdges:
     links, people or mentions."""
 
     @staticmethod
-    def _stub(record_class, record_type, **fields):
+    def _stub(record_class: type[Record], record_type: RecordType, **fields: object) -> Record:
         return record_class(
             id="rec-1", org_id="org-1", external_record_id="ext-1", record_name="r",
             origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
