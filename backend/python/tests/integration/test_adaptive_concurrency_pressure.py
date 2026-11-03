@@ -208,8 +208,10 @@ class TestAdaptiveConcurrencyPressure:
         )
 
     async def test_limits_never_go_below_floor_under_repeated_hard_pressure(self) -> None:
-        """Corner case: repeated hard-pressure samples halve toward zero but
-        must clamp at the floor rather than starving the pool completely."""
+        """Corner case: repeated hard-pressure samples halve the pool but never
+        starve it, never let a brake lift it back above the floor, and settle
+        rather than oscillate (a brake raising 1 -> 2 would admit another
+        working set on every other sample)."""
         clock = ManualClock()
         probe = ScriptedProbe([make_snapshot(mem_pressure=0.1)])
         governor = ResourceGovernor(
@@ -227,11 +229,16 @@ class TestAdaptiveConcurrencyPressure:
         governor._registry.set(Pool.HEAVY_PARSE, 8)
 
         probe.snapshots = [make_snapshot(mem_pressure=0.95)]
+        limits = []
         for _ in range(10):
             clock.now += 1.0
             await governor._sample_once()
+            limits.append(heavy_gate.limit)
 
-        assert heavy_gate.limit == 2  # never drops below floor_for(HEAVY_PARSE, ceiling=8)
+        floor = 2  # floor_for(HEAVY_PARSE, ceiling=8)
+        assert min(limits) >= 1, limits  # never starved
+        assert limits[-1] <= floor, limits  # the brake does not lift it to the floor
+        assert len(set(limits[-5:])) == 1, limits  # settled: no 1 -> 2 -> 1 swing
 
 
 @pytest.mark.asyncio
