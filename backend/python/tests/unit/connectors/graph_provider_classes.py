@@ -85,7 +85,7 @@ HARMLESS = frozenset("""
     name_knowledge_hub_parents normalize_folder_mime_types organization_exists page_entity_index_source
     page_records_for_vector_membership_backfill permission_hierarchy_view permission_stamp_graph
     reap_stale_external_app_relations record_purge_failure records_accept_indexed_copy reindex_record_group_records
-    reindex_single_record remove_authenticated_as remove_kb_permission remove_sync_point remove_user_access_to_connector
+    reindex_single_record remove_authenticated_as remove_kb_permission remove_sync_point
     replace_named_entity_values reset_indexing_status_for_connector retag_push_record rollback_transaction
     schedule_named_entity_persist_retry schedule_named_entity_reextract schedule_named_entity_reproject set_record_properties
     stage_state_compare_and_set stage_state_create stage_state_get stage_states_delete_for_virtual_records
@@ -105,7 +105,7 @@ STRUCTURAL = frozenset("""
     delete_nodes_and_edges delete_parent_child_edge_to_record delete_record delete_record_by_external_id
     delete_records_and_relations delete_records_recursive delete_single_record drop_redundant_group_edges link_record_to_group
     migrate_legacy_kb_to_app migrate_legacy_relation_edge purge_trash_kept_record_groups purge_trashed_records
-    remove_user_access_to_record replace_edges_to replace_record_permissions restore_records
+    remove_user_access_to_connector remove_user_access_to_record replace_edges_to replace_record_permissions restore_records
     soft_delete_records split_link_edges take_back_kept_record_group unlink_nodes_missed_by_full_sync update_edge
     upsert_record_under_parent
     execute_query

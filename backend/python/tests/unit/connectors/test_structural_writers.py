@@ -17,6 +17,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.graph_data_store import (
+    _CONNECTOR_WRITERS,
     _HARMLESS_WRITERS,
     _STRUCTURAL_WRITERS,
     GraphDataStore,
@@ -51,7 +52,7 @@ def _provider_writes(method) -> set[str]:
 def unclassified(cls: type) -> set[str]:
     out = set()
     for name, fn in inspect.getmembers(cls, inspect.iscoroutinefunction):
-        if name.startswith("_") or name in _STRUCTURAL_WRITERS or name in HARMLESS:
+        if name.startswith("_") or name in _STRUCTURAL_WRITERS or name in _CONNECTOR_WRITERS or name in HARMLESS:
             continue
         if _provider_writes(fn):
             out.add(name)
@@ -379,7 +380,7 @@ def test_the_store_and_the_classes_agree() -> None:
     assert listed <= (classes.STRUCTURAL | classes.PATCH), f"the store treats these as structural, the classes do not: {sorted(listed - classes.STRUCTURAL - classes.PATCH)}"
     assert (classes.STRUCTURAL | classes.PATCH) & set(_HARMLESS_WRITERS) <= {
         "batch_update_nodes", "batch_upsert_nodes", "batch_upsert_records", "batch_upsert_record_groups", "delete_records_recursive",
-        "soft_delete_records", "restore_records", "delete_record_by_external_id", "remove_user_access_to_record", "take_back_kept_record_group",
+        "soft_delete_records", "restore_records", "delete_record_by_external_id", "take_back_kept_record_group",
         "remove_nodes_by_field",
     }, "a writer the store calls harmless is structural or a patch in the classes (these have wrappers of their own)"
 
@@ -428,6 +429,19 @@ def test_no_method_the_scan_thinks_writes_edges_is_classified_a_read_or_harmless
 
 
 
+
+
+async def test_a_user_losing_access_to_a_connector_moves_that_connector() -> None:
+    """Every grant the user held on the connector goes; any of them may have been the last on its record or group."""
+    store, provider = _store()
+    provider.remove_user_access_to_connector = AsyncMock(return_value=3)
+    assert await store.remove_user_access_to_connector("c9", "u1") == 3
+    assert store.structural_connectors == {"c9"}
+
+
+def test_the_connector_writers_are_structural_in_the_classes() -> None:
+    assert set(_CONNECTOR_WRITERS) <= classes.STRUCTURAL
+    assert "remove_user_access_to_connector" in classes.STRUCTURAL and "remove_user_access_to_connector" not in classes.HARMLESS
 
 
 def test_the_classes_hold_the_writers_that_were_missed() -> None:
