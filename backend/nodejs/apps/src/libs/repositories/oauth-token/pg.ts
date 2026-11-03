@@ -152,11 +152,12 @@ interface AgentRow {
   claimed_user_id: string | null;
   claimed_org_id: string | null;
   approved_scopes: string[] | null;
+  version: number;
   created_at: Date;
   updated_at: Date;
 }
 const AGENT = `id, claim_email, claim_token_hash, attempt_token_hash, user_code_hash, attempt_expires_at, expires_at, purge_at, status, failed_attempts,
-  last_polled_at, claimed_user_id, claimed_org_id, approved_scopes, created_at, updated_at`;
+  last_polled_at, claimed_user_id, claimed_org_id, approved_scopes, version, created_at, updated_at`;
 const agentDto = (r: AgentRow): AgentRegistrationDto => {
   const o: Record<string, unknown> = {
     _id: r.id,
@@ -171,6 +172,8 @@ const agentDto = (r: AgentRow): AgentRegistrationDto => {
     failedAttempts: r.failed_attempts,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    // Mongo keeps Mongoose's __v; shadow reads compare it with this column
+    __v: r.version,
   };
   optional(o, r, [
     ['last_polled_at', 'lastPolledAt'],

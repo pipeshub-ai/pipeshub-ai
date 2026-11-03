@@ -26,6 +26,15 @@ describe('agent sign-ins', () => {
     expect(screen.queryByText('Agent sign-ins')).toBeNull();
   });
 
+  it('says the list could not be loaded and loads it again on retry', async () => {
+    installBrowserShims();
+    list.mockRejectedValueOnce(new Error('down')).mockResolvedValue([reg]);
+    renderInTheme(<AgentSignIns />);
+    expect(await screen.findByText('Could not load your agent sign-ins')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(reg.id)).toBeTruthy();
+  });
+
   it('lists an approved agent and revokes it', async () => {
     installBrowserShims();
     list.mockResolvedValueOnce([reg]).mockResolvedValue([]);

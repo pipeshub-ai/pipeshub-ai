@@ -4315,7 +4315,8 @@
       "revoke": "Revocar",
       "revokeAria": "Revocar el inicio de sesión de agente {{id}}",
       "revokedTitle": "Inicio de sesión de agente revocado",
-      "errorTitle": "No se pudo revocar el inicio de sesión de agente"
+      "errorTitle": "No se pudo revocar el inicio de sesión de agente",
+      "loadError": "No se pudieron cargar los inicios de sesión de agentes"
     },
     "common": {
       "loadingUsers": "Cargando usuarios...",

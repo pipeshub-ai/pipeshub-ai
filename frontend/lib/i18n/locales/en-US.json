@@ -2152,7 +2152,8 @@
       "revoke": "Revoke",
       "revokeAria": "Revoke agent sign-in {{id}}",
       "revokedTitle": "Agent sign-in revoked",
-      "errorTitle": "Could not revoke the agent sign-in"
+      "errorTitle": "Could not revoke the agent sign-in",
+      "loadError": "Could not load your agent sign-ins"
     },
     "aiModels": {
       "title": "AI models",

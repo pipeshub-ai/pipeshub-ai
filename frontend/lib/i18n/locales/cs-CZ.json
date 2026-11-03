@@ -2244,7 +2244,8 @@
       "revoke": "Zrušit",
       "revokeAria": "Zrušit přihlášení agenta {{id}}",
       "revokedTitle": "Přihlášení agenta bylo zrušeno",
-      "errorTitle": "Přihlášení agenta se nepodařilo zrušit"
+      "errorTitle": "Přihlášení agenta se nepodařilo zrušit",
+      "loadError": "Přihlášení agentů se nepodařilo načíst"
     },
     "aiModels": {
       "title": "Modely AI",

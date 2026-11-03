@@ -6,17 +6,19 @@ import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
 import { AgentSignInApi, type AgentSignIn } from '../api';
 
-/** The agents the user approved, each revocable. Renders nothing when there are none (or the list cannot be read). */
+/** The agents the user approved, each revocable. Renders nothing when there are none; a failed load offers a retry. */
 export function AgentSignIns() {
   const { t, i18n } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const [items, setItems] = useState<AgentSignIn[]>([]);
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setItems(await AgentSignInApi.list());
+      setFailed(false);
     } catch {
-      setItems([]);
+      setFailed(true);
     }
   }, []);
 
@@ -34,6 +36,18 @@ export function AgentSignIns() {
     }
   };
 
+  if (failed) {
+    return (
+      <Flex align="center" gap="3" style={{ paddingBottom: 'var(--space-5)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
+          {t('workspace.agentSignIns.loadError')}
+        </Text>
+        <Button type="button" variant="soft" size="1" onClick={() => void load()} style={{ cursor: 'pointer' }}>
+          {t('action.tryAgain')}
+        </Button>
+      </Flex>
+    );
+  }
   if (items.length === 0) return null;
 
   return (

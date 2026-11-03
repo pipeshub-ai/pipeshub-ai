@@ -2135,7 +2135,8 @@
       "revoke": "撤銷",
       "revokeAria": "撤銷代理登入 {{id}}",
       "revokedTitle": "代理登入已撤銷",
-      "errorTitle": "無法撤銷代理登入"
+      "errorTitle": "無法撤銷代理登入",
+      "loadError": "無法載入代理登入"
     },
     "aiModels": {
       "title": "AI 模型",

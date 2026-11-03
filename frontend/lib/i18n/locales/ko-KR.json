@@ -2135,7 +2135,8 @@
       "revoke": "취소",
       "revokeAria": "에이전트 로그인 {{id}} 취소",
       "revokedTitle": "에이전트 로그인이 취소되었습니다",
-      "errorTitle": "에이전트 로그인을 취소하지 못했습니다"
+      "errorTitle": "에이전트 로그인을 취소하지 못했습니다",
+      "loadError": "에이전트 로그인을 불러오지 못했습니다"
     },
     "aiModels": {
       "title": "AI 모델",
