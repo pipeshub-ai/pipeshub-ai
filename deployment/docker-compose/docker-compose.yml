@@ -21,6 +21,7 @@
 #   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
 #   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml, see ./postgres/README.md)
 #   postgres-migrate — the schema migration job (needs the `postgres` profile too)
+#   docstore-migrate — one-shot MongoDB -> PostgreSQL copy, run by scripts/migrate-to-postgres.sh (needs both postgres profiles)
 #   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
 #                    Workspace → Web search)
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
@@ -709,6 +710,34 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+    networks:
+      - pipeshub
+
+  # One-shot MongoDB -> PostgreSQL document-store migrator (never started by `up`), driven by scripts/migrate-to-postgres.sh and
+  # scripts/rollback-to-mongo.sh: `docker compose run --rm docstore-migrate <command>`. It reads MongoDB as root and writes PostgreSQL
+  # as the import login (NOLOGIN except while a script runs). Same image as the application (the CLI is dist/scripts/docstore-migrate.js).
+  docstore-migrate:
+    profiles: ["docstore-migrate"]
+    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    entrypoint: ["node", "/app/backend/dist/scripts/docstore-migrate.js"]
+    command: ["preflight"]
+    init: true
+    environment:
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-es}
+      - PG_IMPORT_URL=postgresql://pipeshub_import:${PG_IMPORT_PASSWORD:-}@postgres:5432/pipeshub
+      - PG_POOLER=none
+      - PG_NODE_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD:-}@pgbouncer:6432/pipeshub
+      - PG_MIGRATE_URL=postgresql://pipeshub_migrate:${PG_MIGRATE_PASSWORD:-}@postgres:5432/pipeshub
+      - MIGRATE_SCHEMA_COMMAND=none   # the schema is brought to head by pipeshub-migrate
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      pipeshub-migrate:
+        condition: service_completed_successfully
     restart: "no"
     networks:
       - pipeshub
