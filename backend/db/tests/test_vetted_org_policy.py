@@ -19,6 +19,7 @@ from .test_vetted_pins import (  # noqa: F401  (pdb is the module fixture)
 )
 
 KT_PINNED = ("grants", "fences", "keys", "prefs", "changes")
+KG_TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state")
 
 
 def policy_violations(c) -> list[tuple[str, str]]:
@@ -41,7 +42,7 @@ def test_the_catalog_is_clean_with_the_policy_on_every_pinned_table(pdb):
         assert [tuple(r) for r in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
         assert vetted.problems(c, FNS) == []
         flagged = {r[0] for r in c.execute("SELECT rel::text FROM kernel.rls_registry WHERE vetted_org_policy")}
-        assert flagged == {f"kt.{t}" for t in KT_PINNED}
+        assert flagged == {f"kt.{t}" for t in KT_PINNED} | {f"kg.{t}" for t in KG_TABLES}
         pinned = {r[0] for r in c.execute("SELECT DISTINCT rel::text FROM kernel.vetted_write_pins")}
         assert pinned <= flagged
 
