@@ -403,12 +403,27 @@ function shortIds(text: string): string {
  * quoted, else the summary without the tool's name ("Get Record Download Url
  * — record_id: 8dc0…" gives "record 8dc0d3d5"). Ids are cut to 8 characters.
  */
+/** `key: "value"` or a bare `"value"` in a call's summary. */
+const QUOTED_ARGUMENT = /(?:([A-Za-z][\w.-]*)\s*[:=]\s*)?"([^"\n]*)"/g;
+
 function mainArgument(summary: string, label: string): string {
   // Redact first: a quoted value cut from its key can no longer be recognised as a secret.
+  // Each quoted value is masked on its own, so a secret in it can't take its closing quote; a secret key's value is never shown.
+  let quoted: string | undefined;
+  for (const match of summary.matchAll(QUOTED_ARGUMENT)) {
+    const key = match[1];
+    const value = redactSecrets(match[2] ?? '').trim();
+    if (
+      (key !== undefined && isSecretKey(key)) ||
+      value === '' ||
+      value === REDACTED
+    ) {
+      continue;
+    }
+    quoted = value;
+    break;
+  }
   const safe = redactSecrets(summary);
-  const quoted = [...safe.matchAll(/"([^"]+)"/g)]
-    .map((match) => match[1] ?? '')
-    .find((value) => value !== '' && !value.includes(REDACTED));
   let text = quoted ?? safe;
   if (quoted === undefined) {
     const lower = text.toLowerCase();
@@ -427,6 +442,9 @@ function mainArgument(summary: string, label: string): string {
 }
 
 const BLOCKED_OUTPUT = 'Needs approval in the PipesHub app';
+/** The backend's reason for a call held for someone's approval, not run. */
+const APPROVAL_HOLD =
+  /\bneeds? (?:someone to )?approv|\brequires? approval|\bwas(?:n't| not) run\b/i;
 /** The tools that load an app's tools, by the app's id. */
 const TOOL_LOADERS = new Set(['fetch_tools']);
 /** Titles for the tools that find and load other tools: their names say nothing to a reader. */
@@ -794,14 +812,19 @@ export class SlackTaskPlan {
     if (TOOL_LOADERS.has(call.toolName) && /^"[\w.-]+"$/.test(argument)) {
       argument = appName(argument.slice(1, -1));
     }
-    const reason = firstSentence(call.result ?? '').replace(/^Failed:\s*/i, '');
+    const reason = firstSentence(call.result ?? '')
+      .replace(/^Failed:\s*/i, '')
+      // A tool's raw name ("Create_ticket") reads as words.
+      .replace(/\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b/g, (name) =>
+        name.replace(/_/g, ' '),
+      );
     const outcome = capitalize(
       call.status === 'awaiting_approval'
         ? APPROVAL_OUTPUT
         : call.status === 'blocked'
-          ? reason !== ''
-            ? reason
-            : BLOCKED_OUTPUT
+          ? reason === '' || APPROVAL_HOLD.test(reason)
+            ? BLOCKED_OUTPUT
+            : reason
           : call.status === 'running'
             ? (call.progress ?? '')
             : failed && !reason

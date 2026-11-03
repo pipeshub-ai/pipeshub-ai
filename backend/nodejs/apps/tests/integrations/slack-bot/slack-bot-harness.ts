@@ -495,8 +495,11 @@ export function describeAnswerWiring(
           'Get Record Download Url — record_id: 8dc0d3d5-4b1e-4c2a-9f3d-2a6b7c8d9e0f', 'failed',
           'Failed: No download link for records from an external connector. Ask an admin to enable downloads.'),
         ...call('c7', 'fetch_tools', 'Fetch Tools', 'Loading tools for "mcp_tracker"', 'completed', 'Loaded 3 tools'),
-        ...call('c8', 'mcp_tracker_create_ticket', 'Tracker · create_ticket',
-          'Create Ticket — title: "Asana Q3 follow-up", password: "hunter2"', 'blocked'),
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c8', toolCallName: 'mcp_tracker_create_ticket', displayName: 'Tracker · create_ticket' },
+        { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: 'c8', delta: '{}', argsSummary: 'Create Ticket — title: "Asana Q3 follow-up password=hunter2"' },
+        // A blocked call's reason comes as its content.
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c8', status: 'blocked',
+          content: "Create_ticket on Tracker needs someone to approve it in the PipesHub app, so it wasn't run." },
         { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: cites }] },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
         ...tokens(answer, 5),
@@ -524,7 +527,7 @@ export function describeAnswerWiring(
       ]);
       // Apps and actions in plain words; a call blocked for approval says where to answer.
       expect(tools[3]!.output).to.equal('✓ Tracker → Loaded 3 tools');
-      expect(tools[4]!.output).to.equal('✗ "Asana Q3 follow-up" → Needs approval in the PipesHub app');
+      expect(tools[4]!.output).to.equal('✗ "Asana Q3 follow-up password=[redacted]" → Needs approval in the PipesHub app');
       expect(rendered).to.not.match(/hunter2|mcp_tracker|create_ticket|\bMCP\b/);
       expect(tools[1]!.output.split('\n')).to.deep.equal([
         '✓ "Asana Q3 fiscal year 2026 third quarter revenue earnings results" → 4 results',
