@@ -1950,7 +1950,7 @@ class TestCreateKbPermissions:
 
         assert result == failure
         assert service.graph_provider.create_kb_permissions.await_args.kwargs["user_ids"] == ["gk_u2"]
-        notified.assert_awaited_once_with("kb1")
+        notified.assert_awaited_once_with("kb1", scope_org=None)  # no org bound in this test: the global bump
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("role", ["ORGANIZER", "COMMENTER", "FILEORGANIZER"])

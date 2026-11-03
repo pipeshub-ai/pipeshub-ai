@@ -173,6 +173,7 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoHTTPClient,
     ArangoQueryError,
 )
+from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -2968,11 +2969,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return updated_keys
         except Exception as e:
+            # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
+            # drops the write for good (the final-attempt FAILED marking left the record in its old status).
             self.logger.error(
                 "❌ Failed compare-and-set (%s -> %s): %s",
                 expected, new_status, str(e),
             )
-            return []
+            raise
 
     # ==================== Pipeline stage states ====================
 
@@ -25024,6 +25027,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # a wrong one, so it must never fail the query.
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
+
+    def permission_hierarchy_view(self) -> ArangoHierarchyView:
+        return ArangoHierarchyView(lambda: self.http_client)
 
     async def get_accessible_containers(
         self,

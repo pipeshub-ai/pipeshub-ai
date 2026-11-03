@@ -1,5 +1,6 @@
 """Unit tests for ``ops/entity_records.py`` (``find_records_by_entity`` and
 record-group scoping for ``search(entity_ids)``)."""
+import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -151,6 +152,31 @@ class TestFindRecordsByEntity:
         assert ok and 'Pinecrest (organization): knowledgegraph__find_records_by_entity(entity_id="short-1"' in first
         assert "add them to a count" in first
         assert ok_next and "learned alias" not in later
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_alias_lookup_is_left_out_and_the_listing_still_returns(
+        self, patched, monkeypatch,
+    ) -> None:
+        """The alias note is optional: a graph read inside it that never answers must not
+        hold the listing, and the reply must read as one with no alias."""
+        async def stall(*_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "alias_family", stall)
+        monkeypatch.setattr(entity_records, "ALIAS_NOTE_SECONDS", 0.05, raising=False)
+        patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+
+        ok, listed = await asyncio.wait_for(
+            execute_find_records_by_entity(_state(), "e1", entity_type="named_entity"), timeout=2,
+        )
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor=None)
+        ok_empty, empty = await asyncio.wait_for(
+            execute_find_records_by_entity(_state(), "e1", entity_type="named_entity"), timeout=2,
+        )
+
+        assert ok and "record_id=r1" in listed and "learned alias" not in listed
+        assert (ok_empty, empty) == (True, NO_ACCESSIBLE_RECORDS_MSG)
 
     @pytest.mark.asyncio
     async def test_no_alias_note_for_other_entity_types_or_when_turned_off(self, patched, monkeypatch) -> None:
@@ -344,19 +370,37 @@ class TestStrictAndExcludedScope:
 
 class TestEmptyWindow:
     @pytest.mark.asyncio
-    async def test_empty_window_with_more_candidates_gives_the_continuation_cursor(
-        self, patched
+    async def test_an_empty_window_with_nothing_readable_further_reads_as_an_unknown_entity(
+        self, patched, monkeypatch,
     ) -> None:
-        """The scan budget ran out before anything visible turned up; saying
-        "no accessible records" would hide records further down."""
+        """A continuation would say the entity exists and has records the user cannot read."""
+        probe = AsyncMock(return_value={})
+        monkeypatch.setattr(entity_records, "first_readable_offsets", probe)
         patched[1].return_value = EntityRecordPage(records=[], next_cursor="1000")
+        _, dry = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor=None)
+        _, unknown = await execute_find_records_by_entity(_state(), "nope", entity_type="topic")
 
+        assert dry == unknown
+        assert "cursor=" not in dry and "t1" not in dry
+        assert probe.await_args.kwargs["offset"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_an_empty_window_lists_from_the_next_readable_record_further_down(
+        self, patched, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            entity_records, "first_readable_offsets", AsyncMock(return_value={("topic", "t1"): 1400}),
+        )
+        patched[1].side_effect = [
+            EntityRecordPage(records=[], next_cursor="1000"),
+            EntityRecordPage(records=[_row("r9")], next_cursor="1401"),
+        ]
         ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
 
-        assert ok is True
-        assert text not in (NO_ACCESSIBLE_RECORDS_MSG, NO_FURTHER_RECORDS_MSG)
-        assert 'cursor="1000"' in text
-        assert 'entity_id="t1"' in text
+        assert ok and "doc r9" in text
+        assert patched[1].await_args.kwargs["cursor"] == "1400"
+        assert 'More records may exist: knowledgegraph__find_records_by_entity(entity_id="t1", ' in text
 
 
 def test_candidate_rows_carry_the_hide_url_flag() -> None:
