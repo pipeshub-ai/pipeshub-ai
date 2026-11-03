@@ -205,3 +205,13 @@ async def test_the_rebuilt_record_reaches_the_reprojection_with_its_content_id()
     assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
     (ctx,), _ = sink.reproject_named_entities.await_args
     assert ctx.record.virtual_record_id == "v1"
+
+
+async def test_a_retry_with_no_org_is_dropped_so_it_does_not_fill_the_page() -> None:
+    """Skipped and left, a page of them would take every later pass's place; nothing can run for them without an organisation."""
+    graph = _graph([{"recordId": "r1", "orgId": None, "attempts": 1, "dueAt": 100}, _row()])
+    one = AsyncMock(return_value="written")
+    with patch.object(retry, "_retry_one", one):
+        assert await _drain(graph, MagicMock()) == 1
+    assert one.await_count == 1                                                # only the row that names an organisation ran
+    assert [c.args for c in graph.clear_named_entity_persist_retry.await_args_list] == [("r1", 100), ("r1", 100)]      # the dropped one, then the written one

@@ -130,3 +130,20 @@ async def test_the_lane_upkeep_reads_only_the_connectors_of_each_organisation(gr
     orgs, connectors, _ = await _two_orgs(graph)
     found = await lane_upkeep._read_apps(graph, logger, [orgs[0]])
     assert found is not None and connectors[0] in found and connectors[1] not in found
+
+
+async def test_a_mapping_without_an_organisation_is_marked_not_resolved(graph: IGraphDBProvider) -> None:
+    import app.indexing_main as m
+
+    key = f"v-bare-{uuid.uuid4().hex[:10]}"
+    mapping = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+    await graph.batch_upsert_nodes([{"_key": key, "id": key, "virtualRecordId": key}], mapping)
+    m._unscoped_mapping_cursor = 0
+    try:
+        for _ in range(200):       # the slice is bounded; walk it until the pass has been over this row
+            await m._mark_mappings_without_org(graph_provider=graph, logger=logger, page_size=500)
+            if (await graph.get_document(key, mapping)).get("orgNotResolved"):
+                break
+    finally:
+        m._unscoped_mapping_cursor = 0
+    assert (await graph.get_document(key, mapping))["orgNotResolved"] is True

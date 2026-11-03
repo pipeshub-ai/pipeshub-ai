@@ -35,6 +35,7 @@ from uuid import uuid4
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org, system
 from app.services.graph_db.common.record_visibility import is_live_record
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -69,7 +70,15 @@ async def retry_pending_named_entity_persists(
         if not record_id or due is None:
             continue
         if not org_id:
-            logger.warning("named_entity_persist_retry: record %s has no organisation and is skipped", record_id)
+            # Nothing can run for it, and left pending it would take a place in every page: drop the retry (the entities are written
+            # again when the record is next indexed, as when the retries are given up) and count it.
+            logger.warning("named_entity_persist_retry: record %s has no organisation; its retry is dropped", record_id)
+            record_recovery_org_pass("named_entity_persist_retry", "no_org_row")
+            with system("named_entity_persist_retry"):
+                try:
+                    await graph_provider.clear_named_entity_persist_retry(record_id, due)
+                except Exception:
+                    logger.warning("named_entity_persist_retry: could not drop the retry of %s", record_id, exc_info=True)
             continue
         with for_org(str(org_id), job="named_entity_persist_retry"):
             attempts = int(row.get("attempts") or 0)

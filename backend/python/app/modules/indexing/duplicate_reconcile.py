@@ -20,6 +20,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -182,10 +183,20 @@ async def retry_pending_duplicate_reconciles(
         if not record_id:
             continue
         org_id = row.get("orgId")
-        if not org_id:
-            logger.warning("duplicate_reconcile: record %s has no organisation and is skipped", record_id)
-            continue
         due = row.get(DUPLICATE_RECONCILE_DUE_AT_FIELD)
+        if not org_id:
+            # Nothing can run for it, and left pending it would take a place in every page: clear the flag and count it.
+            logger.warning("duplicate_reconcile: record %s has no organisation; its pending reconcile is dropped", record_id)
+            record_recovery_org_pass("duplicate_reconcile", "no_org_row")
+            with system("duplicate_reconcile"):
+                try:
+                    await graph_provider.update_node_fields_if_match(
+                        record_id, _RECORDS, _cleared(0),
+                        {DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_DUE_AT_FIELD: due},
+                    )
+                except Exception:
+                    logger.warning("duplicate_reconcile: could not drop the pending reconcile of %s", record_id, exc_info=True)
+            continue
         with for_org(str(org_id), job="duplicate_reconcile"):
             try:
                 if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):

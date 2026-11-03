@@ -290,6 +290,24 @@ class TestRetrySweep:
         await _sweep(graph, reconciler)
         assert (seen["p1"], seen["p2"], "p3" in seen) == (graph.docs["p1"]["orgId"], "org-2", False)      # p3 has no organisation: nothing ran for it
 
+    async def test_rows_with_no_org_are_dropped_and_do_not_fill_the_page(self) -> None:
+        """Skipped and left pending, a page of them would take every later pass's place and the rows behind them would never be read."""
+        graph = FakeGraph()
+        _pending(graph)
+        for key in ("a1", "a2"):
+            graph.docs[key] = {**graph.docs["p1"], "_key": key, "orgId": None}
+        reconciler, _ = _reconciler(graph)
+
+        async def sweep() -> int:
+            return await retry_pending_duplicate_reconciles(
+                graph_provider=graph, reconciler=reconciler, logger=LOGGER, page_size=2, now_ms=lambda: NOW,
+            )
+
+        assert await sweep() == 0                                      # the page held the two rows with no org
+        assert graph.docs["a1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False and graph.docs["a2"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
+        assert await sweep() == 1                                      # the row behind them is read now
+        assert graph.docs["p1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
+
     async def test_not_yet_due_is_left_alone(self) -> None:
         graph = FakeGraph()
         _pending(graph, due=NOW + 1000)

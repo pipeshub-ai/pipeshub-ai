@@ -3706,6 +3706,12 @@ class TestRecoveryAsksTheRecordConsumerForItsBacklog:
         container.kafka_consumers[0][2].send_event.assert_not_awaited()
 
 
+def _graph_with_orgs(*orgs: str) -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": o} for o in orgs])
+    return graph
+
+
 class TestLaneUpkeepInTheRecoveryPass:
     async def test_the_backlog_is_read_once_and_shared(self) -> None:
         from app.indexing_main import _read_once
@@ -3734,7 +3740,7 @@ class TestLaneUpkeepInTheRecoveryPass:
         with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
              patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(), org_ids=["org-1"],
+                graph_provider=_graph_with_orgs("org-1"), read_backlog=read, logger=MagicMock(),
             )
 
         upkeep.assert_not_awaited()
@@ -3752,14 +3758,14 @@ class TestLaneUpkeepInTheRecoveryPass:
                  side_effect=RuntimeError("redis gone"),
              ) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(),
+                graph_provider=_graph_with_orgs("org-2"),
                 read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
                 logger=logger,
-                org_ids=["org-1"],
             )
 
         assert upkeep.await_args.kwargs["backlog"] is None
         assert upkeep.await_args.kwargs["assignments"] is assignments
+        assert upkeep.await_args.kwargs["org_ids"] == ["org-2"]      # the organisations are listed when the upkeep runs, not before the stale scan
         logger.warning.assert_called_once()
 
 
@@ -4155,3 +4161,58 @@ class TestSweepsRunUnderEachOrganisation:
         found = await lane_upkeep._read_apps(graph, MagicMock(), ["o1", "o2"])
         assert set(found) == {"c1", "c2"}
         assert await lane_upkeep._read_apps(graph, MagicMock(), []) is None      # no organisation to read under: nothing is freed
+
+
+class TestOnePassFailingForAnOrganisationDoesNotStopTheOthers:
+    @pytest.mark.asyncio
+    async def test_a_sweep_that_raises_for_one_org_still_runs_for_the_later_ones(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        graph = _graph_with_orgs("org-a", "org-b")
+        graph.get_documents_paginated = AsyncMock(return_value=[])
+        seen: list[str] = []
+
+        async def sweep(*, org_id: str, **_: object) -> int:
+            seen.append(org_id)
+            if org_id == "org-a":
+                raise RuntimeError("a provider bug")
+            return 0
+
+        with patch("app.indexing_main._sweep_queued_records_for_inactive_connectors", side_effect=sweep), _stranded_env():
+            await recover_in_progress_records(container, graph)
+
+        assert seen == ["org-a", "org-b"]
+
+
+class TestMappingsThatNameNoOrganisation:
+    @staticmethod
+    def _graph(pages: list[list[dict]], *, in_use: set[str] | None = None) -> AsyncMock:
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=pages)
+        graph.get_virtual_record_ids_in_use = AsyncMock(return_value=in_use or set())
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_an_unreferenced_one_is_marked_once_and_the_scoped_and_marked_ones_are_left(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        page = [{"_key": "bare"}, {"_key": "scoped", "orgId": "o1"}, {"_key": "marked", "orgNotResolved": True}, {"_key": "used"}]
+        graph = self._graph([page], in_use={"used"})
+        await m._mark_mappings_without_org(graph_provider=graph, logger=MagicMock(), page_size=10)
+        assert [c.args[0] for c in graph.update_node.await_args_list] == ["bare"]
+        assert graph.update_node.await_args.args[2] == {"orgNotResolved": True}
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_keeps_every_row_under_an_org_has_none_to_look_for(self) -> None:
+        import app.indexing_main as m
+        from app.core.org_context import SystemContextNotAllowed
+
+        m._unscoped_mapping_cursor = 0
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=SystemContextNotAllowed("x"))
+        logger = MagicMock()
+        await m._mark_mappings_without_org(graph_provider=graph, logger=logger, page_size=10)
+        graph.update_node.assert_not_awaited()
+        logger.warning.assert_not_called()

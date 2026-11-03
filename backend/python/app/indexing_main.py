@@ -3,7 +3,7 @@ import inspect
 import logging
 import os
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -24,7 +24,12 @@ from app.config.constants.arangodb import (
 )
 from app.containers.indexing import initialize_container
 from app.core.envelope import configure_from_config as configure_envelope
-from app.core.org_context import for_org, spawn_detached, system
+from app.core.org_context import (
+    SystemContextNotAllowed,
+    for_org,
+    spawn_detached,
+    system,
+)
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
@@ -97,6 +102,7 @@ from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
@@ -652,36 +658,41 @@ async def recover_in_progress_records(
         # duplicate work, because a message for them may still be in the broker.
         queued_swept = 0
         for org_id in org_ids:
-            with for_org(org_id, job="queued_sweep"):
-                queued_swept += await _sweep_queued_records_for_inactive_connectors(
-                    graph_provider=graph_provider,
-                    logger=logger,
-                    page_size=page_size,
-                    org_id=org_id,
-                )
+            try:
+                with for_org(org_id, job="queued_sweep"):
+                    queued_swept += await _sweep_queued_records_for_inactive_connectors(
+                        graph_provider=graph_provider,
+                        logger=logger,
+                        page_size=page_size,
+                        org_id=org_id,
+                    )
+            except Exception as exc:       # one organisation's failure does not stop the later ones
+                _org_pass_failed(logger, "queued_sweep", org_id, exc)
         total_records += queued_swept
 
         # The counterpart for *live* connectors: a row whose event was lost or
         # never published is invisible to both the scan above and the sweep.
         # STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0 disables it.
         for org_id in org_ids:
-            with for_org(org_id, job="stranded_republish"):
-                total_records += await _republish_stranded_records(
-                    graph_provider=graph_provider,
-                    logger=logger,
-                    producer=retry_producer,
-                    run_coordination=run_coordination,
-                    concurrency_manager=concurrency_manager,
-                    page_size=page_size,
-                    read_backlog=read_backlog,
-                    org_id=org_id,
-                )
+            try:
+                with for_org(org_id, job="stranded_republish"):
+                    total_records += await _republish_stranded_records(
+                        graph_provider=graph_provider,
+                        logger=logger,
+                        producer=retry_producer,
+                        run_coordination=run_coordination,
+                        concurrency_manager=concurrency_manager,
+                        page_size=page_size,
+                        read_backlog=read_backlog,
+                        org_id=org_id,
+                    )
+            except Exception as exc:
+                _org_pass_failed(logger, "stranded_republish", org_id, exc)
 
         await _upkeep_lanes(
             graph_provider=graph_provider,
             read_backlog=read_backlog,
             logger=logger,
-            org_ids=org_ids,
         )
 
         # Vectors whose last referencing record was repointed elsewhere are
@@ -697,14 +708,18 @@ async def recover_in_progress_records(
             logger.warning(f"Indexing pipeline unavailable for orphan sweep: {exc}")
         if pipeline is not None:
             for org_id in org_ids:
-                with for_org(org_id, job="orphan_mapping_sweep"):
-                    total_records += await _sweep_orphaned_virtual_record_mappings(
-                        graph_provider=graph_provider,
-                        pipeline=pipeline,
-                        logger=logger,
-                        page_size=page_size,
-                        org_id=org_id,
-                    )
+                try:
+                    with for_org(org_id, job="orphan_mapping_sweep"):
+                        total_records += await _sweep_orphaned_virtual_record_mappings(
+                            graph_provider=graph_provider,
+                            pipeline=pipeline,
+                            logger=logger,
+                            page_size=page_size,
+                            org_id=org_id,
+                        )
+                except Exception as exc:
+                    _org_pass_failed(logger, "orphan_mapping_sweep", org_id, exc)
+            await _mark_mappings_without_org(graph_provider=graph_provider, logger=logger, page_size=page_size)
 
         # A primary whose handler could not copy its taxonomy to promoted
         # duplicates keeps duplicateReconcilePending; a redelivery finds
@@ -791,6 +806,12 @@ async def recover_in_progress_records(
                 )
 
 
+def _org_pass_failed(logger: logging.Logger, job: str, org_id: str, exc: Exception) -> None:
+    """One organisation's part of a pass failed: say so with its id, and let the later organisations run."""
+    record_recovery_org_pass(job, "failed")
+    logger.warning("Recovery pass %s failed for organisation %s; the later organisations still run: %s: %s", job, org_id, type(exc).__name__, exc)
+
+
 async def _all_org_ids(graph_provider: IGraphDBProvider) -> list[str]:
     """Every organisation, active or not, internal or external, read under a system context."""
     found: set[str] = set()
@@ -826,7 +847,6 @@ async def _upkeep_lanes(
     graph_provider: IGraphDBProvider,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
     logger: logging.Logger,
-    org_ids: Sequence[str],
 ) -> None:
     """Keep the Redis Streams lane map in step, when producers place by it.
 
@@ -835,6 +855,12 @@ async def _upkeep_lanes(
     """
     assignments = lane_assignments_in_use(Topic.RECORD_EVENTS.value)
     if assignments is None:
+        return
+    # Read now, not at the start of the pass: the stale scan before this takes long, and an organisation created meanwhile has connectors with lanes.
+    try:
+        org_ids = await _all_org_ids(graph_provider)
+    except Exception as e:
+        logger.warning("Queue lane upkeep skipped this pass, the organisations could not be listed: %s: %s", type(e).__name__, e)
         return
     backlog: LaneBacklog | None = None
     if read_backlog is not None:
@@ -1189,6 +1215,49 @@ async def _sweep_orphaned_virtual_record_mappings(
             swept,
         )
     return swept
+
+
+
+_unscoped_mapping_cursor = 0
+
+
+async def _mark_mappings_without_org(*, graph_provider: IGraphDBProvider, logger: logging.Logger, page_size: int) -> None:
+    """Mark the orphan mappings that name no organisation, so the warning comes once and not every pass.
+
+    The per-organisation scan filters on ``orgId``, so a mapping an older bare upsert wrote without one is never listed under any
+    organisation and its vectors are not cleaned up (storage only; nothing is read or deleted across organisations). It is found
+    here, by a bounded unscoped slice, and marked ``orgNotResolved`` as the vector org-resolution sweep marks it. A store that keeps
+    every row under an organisation refuses an unscoped read: it has no such rows.
+    """
+    global _unscoped_mapping_cursor  # noqa: PLW0603 - per process, like the per-organisation cursors
+    mapping = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+    offset = _unscoped_mapping_cursor
+    try:
+        with system("orphan_mapping_unscoped"):
+            for _ in range(ORPHAN_SCAN_MAX_PAGES_PER_TICK):
+                page = await graph_provider.get_documents_paginated(mapping, skip=offset, limit=page_size, sort_field="_key", raise_on_error=True)
+                if not page:
+                    offset = 0
+                    break
+                bare = [
+                    str(d.get("_key") or d.get("id")) for d in page
+                    if (d.get("_key") or d.get("id")) and not d.get("orgId") and not d.get("orgNotResolved")
+                ]
+                in_use = await graph_provider.get_virtual_record_ids_in_use(bare) if bare else set()
+                for vrid in bare:
+                    if vrid in in_use:
+                        continue
+                    logger.warning("Orphan sweep cannot clean virtual record %s: its mapping names no org", vrid)
+                    await graph_provider.update_node(vrid, mapping, {"orgNotResolved": True})
+                if len(page) < page_size:
+                    offset = 0
+                    break
+                offset += len(page)
+    except SystemContextNotAllowed:
+        return      # the store keeps every row under an organisation: there is nothing without one
+    except Exception as exc:
+        logger.warning("Could not look for mappings without an organisation this pass: %s: %s", type(exc).__name__, exc)
+    _unscoped_mapping_cursor = offset
 
 
 async def _sweep_queued_records_for_inactive_connectors(

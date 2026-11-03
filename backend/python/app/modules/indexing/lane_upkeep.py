@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import for_org
+from app.core.org_context import for_org, system
 from app.services.messaging.config import messaging_env
 from app.services.messaging.lanes.assignment_policy import is_large_class
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
@@ -116,7 +116,7 @@ async def run_lane_upkeep(
     released = corrected = 0
     if apps is not None:
         released, corrected = await _reconcile_with_graph(
-            assignments, graph_provider, entries, apps, logger, org_ids
+            assignments, graph_provider, entries, apps, logger
         )
 
     if settled.fenced or settled.cleared or released or corrected:
@@ -204,7 +204,6 @@ async def _reconcile_with_graph(
     entries: Mapping[str, LaneEntry],
     apps: Mapping[str, _App],
     logger: Logger,
-    org_ids: Sequence[str],
 ) -> tuple[int, int]:
     released = corrected = 0
     for connector_id, entry in entries.items():
@@ -216,12 +215,10 @@ async def _reconcile_with_graph(
                 # The paged scan can miss a live connector when one before it
                 # is removed mid-scan, so a lane is freed only when a direct
                 # read says the connector is gone. A failed read frees nothing.
-                gone = True
-                for org_id in org_ids:       # one organisation's read cannot see another's connector
-                    with for_org(org_id, job="lane_upkeep"):
-                        if await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True):
-                            gone = False
-                            break
+                # One system-scope existence check, not a read per organisation: it sees a connector of an organisation created since the
+                # list was read, and one whose row names no organisation, which an organisation's own read cannot see.
+                with system("lane_upkeep"):
+                    gone = not await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
                 if gone:
                     released += await assignments.release(connector_id)
             elif app.connector_class != entry.connector_class:
