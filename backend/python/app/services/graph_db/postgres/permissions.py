@@ -4,13 +4,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import current_org_id
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase
 
 if TYPE_CHECKING:
     from app.core.db import Tx
 
-_ORG_SHARE = ["ORG", "ORGANIZATION"]      # the permission types an organization's edge needs to count as a grant
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
 
 
@@ -49,7 +49,7 @@ class PermissionsMixin(PgBase):
             gated = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.access_gate */ SELECT a.id FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'apps'
                 AND a.doc->>'orgId' = $1 AND a.id = ANY($2::text[])""", org, sorted(app_ids))]
             by_conn: dict[str, list[str]] = {a: [] for a in gated}
-            for cid, ids in (await access_sql.granted_targets(tx, org, grantees, _ORG_SHARE)).items():
+            for cid, ids in (await access_sql.granted_targets(tx, org, grantees, list(ORG_SHARE_PERMISSION_TYPES))).items():
                 if cid in by_conn:
                     by_conn[cid].extend(ids)
             for lk in links:  # a source account the user authenticated as adds its own grants, and its badges', inside that connector

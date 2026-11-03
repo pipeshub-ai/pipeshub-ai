@@ -243,3 +243,17 @@ async def test_an_access_with_a_grant_probe_is_refused_rather_than_answered_with
     await w.child(("apps", APP), ("records", "r"))
     with pytest.raises(NotImplementedInPostgres):
         await w.p.check_access("u", w.org, node_ids=["r"], access={"grantee_ids": ["u"], "gated_app_ids": [APP], "by_connector": {}, "probe": {"connector_id": APP, "grantees": ["u"]}})
+
+
+async def test_a_null_in_a_document_is_a_missing_field_for_the_rule_and_the_flags(w: World, pg_db) -> None:
+    """A stored JSON null reads as absent (the SQL arms coalesce, Neo4j has no null property): a granted record with a null rule is an OPEN seed."""
+    await w.nodes("records", rec("nullRule"), rec("nullDeleted"), rec("nullOrigin"))
+    for k in ("nullRule", "nullDeleted", "nullOrigin"):
+        await w.edge("permission", ("users", "u"), ("records", k), type="USER", role="READER")
+
+    async def set_null(tx, key: str, field: str) -> None:
+        await tx.execute("UPDATE graph.nodes SET doc = jsonb_set(doc, ARRAY[$3::text], 'null'::jsonb) WHERE org_id = $1 AND coll = 'records' AND id = $2", w.org, key, field)
+    await pg_db.run(lambda tx: set_null(tx, "nullRule", "accessRule"), write=True)
+    await pg_db.run(lambda tx: set_null(tx, "nullDeleted", "isDeleted"), write=True)
+    await pg_db.run(lambda tx: set_null(tx, "nullOrigin", "origin"), write=True)
+    assert await w.allowed("u", "nullRule", "nullDeleted", "nullOrigin") == {"nullRule", "nullDeleted", "nullOrigin"}
