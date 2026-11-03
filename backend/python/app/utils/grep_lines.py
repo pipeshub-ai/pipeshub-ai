@@ -163,6 +163,8 @@ def find_matches(
     total = 0
     timeouts = 0
     complete = True
+    # A lookahead reads past the match end, so on a cut line any hit may lean on the cut.
+    peeks = "(?=" in pattern.pattern or "(?!" in pattern.pattern
     for at, text in enumerate(lines.texts):
         budget = LINE_MATCH_TIMEOUT_SECS
         if deadline is not None:
@@ -187,9 +189,9 @@ def find_matches(
                 found = pattern.search(scanned, timeout=budget, concurrent=True)
             if not found:
                 continue
-            # A match touching the cut may exist only because the line was cut
-            # (`foo$`); the full line is not scanned, so the hit is dropped.
-            if scanned is not text and found.end() >= len(scanned):
+            # A match touching the cut, or a lookahead, may exist only because the
+            # line was cut (`foo$`, `foo(?=x$)`); the full line is not scanned.
+            if scanned is not text and (peeks or found.end() >= len(scanned)):
                 continue
         except TimeoutError:
             complete = False
