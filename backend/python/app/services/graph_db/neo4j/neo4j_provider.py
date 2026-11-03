@@ -145,7 +145,10 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
-from app.services.graph_db.common.team_grant_role import cypher_team_grant_role
+from app.services.graph_db.common.team_grant_role import (
+    TEAM_GRANT_ROLES,
+    cypher_team_grant_role,
+)
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -333,6 +336,9 @@ _RETIRED_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES))
 
 # What a member gets from a team's grant; the matches name the edges team_grant and team_member.
 _TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
+
+# The roles a knowledge base grant can carry; any other direct role is no access.
+_KB_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in TEAM_GRANT_ROLES) + "]"
 
 # The dates a time range bounds, read beside each record of a shared timeline
 # walk (``dated_scope``): as columns, as fields of a collected pair, and back
@@ -13850,10 +13856,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User {id: $user_id})
             MATCH (kb:App {id: $kb_id, type: "KB"})
             OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
-            WITH u, kb, d.role AS direct_role
+            WITH u, kb, CASE WHEN d.role IN __RETIRED_ROLES__ THEN 'READER' ELSE d.role END AS direct_role
             OPTIONAL MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb)
             WITH direct_role, collect(DISTINCT __TEAM_GRANT_ROLE__) AS team_roles
-            WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
+            WITH CASE WHEN direct_role IN __KB_ROLES__ THEN [direct_role] ELSE [] END +
                  [x IN team_roles WHERE x IS NOT NULL] AS candidates
             UNWIND candidates AS cand
             WITH DISTINCT cand AS role
@@ -13869,7 +13875,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ORDER BY priority DESC
             LIMIT 1
             RETURN role AS role
-            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER).replace(
+                "__RETIRED_ROLES__", _RETIRED_ROLES_CYPHER).replace("__KB_ROLES__", _KB_ROLES_CYPHER)
 
             results = await self.client.execute_query(
                 query,
@@ -13877,8 +13884,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            if results:
-                role = read_role(results[0].get("role"))
+            role = read_role(results[0].get("role")) if results else None
+            if role in TEAM_GRANT_ROLES:
                 self.logger.debug(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
 
@@ -13990,6 +13997,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User {{id: $user_id}})
             CALL (u) {{
                 MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
+                WHERE CASE WHEN r.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE r.role END IN {_KB_ROLES_CYPHER}
                 RETURN kb, r.role AS stored_role, true AS is_direct
                 UNION
                 MATCH (u)-[team_member:PERMISSION {{type: "USER"}}]->(:Teams)-[team_grant:PERMISSION {{type: "TEAM"}}]->(kb:App)

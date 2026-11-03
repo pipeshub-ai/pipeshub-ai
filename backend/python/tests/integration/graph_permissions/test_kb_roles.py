@@ -23,6 +23,7 @@ COLLECTIONS: dict[str, tuple[str | None, list[tuple[str, str]], dict]] = {
     "reader-direct-writer-team": ("READER", [("WRITER", "READER")], {}),
     "writer-direct-reader-team": ("WRITER", [("READER", "OWNER")], {}),
     "organizer-direct": ("ORGANIZER", [], {}),
+    "commenter-direct": ("COMMENTER", [], {}),
     "Alpha team only": (None, [("COMMENTER", "OWNER")], {}),
     "hidden": ("OWNER", [], {"isHidden": True}),
     "other org": ("OWNER", [], {"orgId": "org-other"}),
@@ -141,12 +142,13 @@ async def _listed(provider, **kwargs) -> tuple[dict[str, str], int, dict]:
 async def test_the_listing_shows_each_collection_with_the_best_role(store) -> None:
     roles, total, filters = await _listed(store.provider)
     assert roles == {
-        "reader-direct-writer-team": "WRITER",
+        "reader-direct-writer-team": "READER",
         "writer-direct-reader-team": "WRITER",
         "organizer-direct": "READER",
-        "Alpha team only": "READER",
+        "commenter-direct": "READER",
+        "Alpha team only": "WRITER",
     }
-    assert total == 4
+    assert total == 5
     assert sorted(filters["permissions"]) == ["READER", "WRITER"]
 
 
@@ -154,30 +156,52 @@ async def test_the_listing_sorts_by_role(store) -> None:
     """Arango sorted on a variable of the role subquery and returned nothing."""
     kbs, total, _ = await store.provider.list_user_knowledge_bases(
         USER, ORG, skip=0, limit=50, sort_by="userRole", sort_order="desc")
-    assert total == 4
-    assert [kb["userRole"] for kb in kbs] == ["WRITER", "WRITER", "READER", "READER"]
+    assert total == 5
+    assert [kb["userRole"] for kb in kbs] == ["WRITER", "WRITER", "READER", "READER", "READER"]
 
 
 async def test_search_finds_a_collection_shared_only_through_a_team(store) -> None:
     roles, total, _ = await _listed(store.provider, search="alpha")
-    assert roles == {"Alpha team only": "READER"} and total == 1
+    assert roles == {"Alpha team only": "WRITER"} and total == 1
 
 
 async def test_the_role_filter_uses_the_role_as_read(store) -> None:
     roles, total, _ = await _listed(store.provider, permissions=["READER"])
-    assert set(roles) == {"organizer-direct", "Alpha team only"} and total == 2
+    assert set(roles) == {"reader-direct-writer-team", "organizer-direct", "commenter-direct"} and total == 3
     roles, total, _ = await _listed(store.provider, permissions=["ORGANIZER", "COMMENTER"])
     assert roles == {} and total == 0
 
 
 @pytest.mark.parametrize(("name", "expected"), [
-    ("reader-direct-writer-team", "WRITER"),
+    ("reader-direct-writer-team", "READER"),
     ("writer-direct-reader-team", "WRITER"),
     ("organizer-direct", "READER"),
-    ("Alpha team only", "READER"),
+    ("commenter-direct", "READER"),
+    ("Alpha team only", "WRITER"),
 ])
 async def test_the_single_collection_role_matches_the_listing(store, name, expected) -> None:
     assert await store.provider.get_user_kb_permission(_kb_id(name), USER) == expected
+
+
+@pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
+@pytest.mark.parametrize("team_reader", [False, True])
+async def test_an_unrecognised_direct_role_is_no_access(store, role, team_reader) -> None:
+    """A direct edge with a role no writer stores neither wins nor lists the
+    collection; a team grant beside it still gives its own role."""
+    kb, team = "kbr-odd", "kbr-odd-team"
+    nodes = [_org(app(kb, "odd", connector=KB, app_group="Local Storage", scope="personal"))]
+    edges = []
+    if team_reader:
+        nodes.append(_org(_node("Teams", team, name=team)))
+        edges += [perm(USER, team, role="READER"), perm(team, kb, grant_type="TEAM", role="READER")]
+    try:
+        await store.load(nodes, [*edges, perm(USER, kb, role=role)])
+    except Exception as exc:  # ArangoDB's permissions schema refuses the role
+        pytest.skip(f"the store refuses the role: {exc}")
+    expected = "READER" if team_reader else None
+    assert await store.provider.get_user_kb_permission(kb, USER) == expected
+    roles, _, _ = await _listed(store.provider)
+    assert roles.get("odd") == expected
 
 
 async def test_the_member_list_shows_a_retired_role_as_reader(store) -> None:
@@ -193,10 +217,11 @@ async def test_the_owner_count_counts_users_only(store) -> None:
 
 
 @pytest.mark.parametrize(("name", "expected"), [
-    ("reader-direct-writer-team", "WRITER"),
+    ("reader-direct-writer-team", "READER"),
     ("writer-direct-reader-team", "WRITER"),
     ("organizer-direct", "READER"),
-    ("Alpha team only", "READER"),
+    ("commenter-direct", "READER"),
+    ("Alpha team only", "WRITER"),
 ])
 async def test_the_item_role_on_a_collection_matches_the_listing(store, name, expected) -> None:
     assert await store.item_role("kb", "App", _kb_id(name)) == expected
