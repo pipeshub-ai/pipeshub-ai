@@ -171,7 +171,8 @@ class TestMetadataReplacesMissingDocument:
         bs._update_metadata_buffer.assert_awaited_once()
         sleep.assert_not_awaited()
         bs._create_metadata_document.assert_awaited_once()
-        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.batch_upsert_nodes.assert_not_awaited()
+        gp.batch_update_nodes.assert_awaited_once()
 
 
 class TestReadOfMissingDocument:
@@ -240,11 +241,11 @@ class TestSupersededDocumentCleanup:
         bs._delete_replaced_document.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_metadata_replaced_after_retry_is_deleted_after_upsert(self) -> None:
+    async def test_metadata_replaced_after_retry_is_deleted_after_the_mapping_names_it(self) -> None:
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-old"})
         order: list[str] = []
-        gp.batch_upsert_nodes = AsyncMock(side_effect=lambda *a: order.append("map") or True)
+        gp.batch_update_nodes = AsyncMock(side_effect=lambda *a: order.append("map") or True)
         bs = _make_bs(graph_provider=gp)
         bs._update_metadata_buffer = AsyncMock(side_effect=aiohttp.ClientError("503"))
         bs._create_metadata_document = AsyncMock(return_value="meta-new")

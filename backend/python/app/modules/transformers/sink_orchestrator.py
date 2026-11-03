@@ -315,8 +315,11 @@ class SinkOrchestrator(Transformer):
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
-                await self._update_indexing_status(ctx)
-            # await self.graphdb.apply(ctx)
+                if not await self._update_indexing_status(ctx):
+                    # Deleted while its vectors were written: nothing more is saved for it,
+                    # and the event ends as an expected outcome, without enrichment.
+                    await self._leave_orphan_sweep_marker(record)
+                    raise RecordDeletedError(record_id)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
             with stage("entities.identity"):
@@ -717,6 +720,28 @@ class SinkOrchestrator(Transformer):
         except Exception as exc:
             self.logger.warning(
                 "Revision pointer of %s not moved to %s: %s", vrid, rev, type(exc).__name__,
+            )
+
+    async def _leave_orphan_sweep_marker(self, record: Record) -> None:
+        """Keep a mapping for the content of a record deleted while it was indexed.
+
+        The delete may have cleaned the record's vectors before this run's landed, and
+        the mapping is the only way the orphan sweep finds them. It names the org, which
+        the sweep's stored-content cleanup needs; an existing mapping is left as it is.
+        """
+        vrid = record.virtual_record_id
+        if not vrid or not record.org_id:
+            return
+        try:
+            await self.graph_provider.create_node_if_absent(
+                vrid,
+                CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+                {"id": vrid, "orgId": record.org_id, "virtualRecordId": vrid},
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Record %s was deleted while it was indexed, and its content mapping could "
+                "not be kept for the orphan sweep (%s)", record.id, type(exc).__name__,
             )
 
     async def _update_indexing_status(self, ctx: TransformContext) -> bool:

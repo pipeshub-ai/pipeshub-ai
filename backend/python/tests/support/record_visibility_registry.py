@@ -194,6 +194,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.WRITE,
         "deletes the pipeline stage states of virtual records no record references any more",
     ),
+    "stage_state_org_for_virtual_record": (
+        Rule.ALL,
+        "reads pipeline stage states, not records: the org of content whose mapping lost it",
+    ),
     "delete_parent_child_edge_to_record": (Rule.WRITE, ""),
     "batch_upsert_records": (Rule.WRITE, ""),
     "create_record_relation": (Rule.WRITE, ""),

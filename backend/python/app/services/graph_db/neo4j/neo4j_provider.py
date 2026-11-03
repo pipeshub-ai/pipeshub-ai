@@ -16158,6 +16158,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [dict(row["doc"]) for row in rows]
 
     @override
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(
+            f"MATCH (n:{label}) WHERE n.virtualRecordId = $vrid AND n.orgId IS NOT NULL "
+            "RETURN n.orgId AS org LIMIT 1",
+            {"vrid": virtual_record_id},
+        )
+        return rows[0]["org"] if rows else None
+
+    @override
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         label = collection_to_label(CollectionNames.STAGE_STATES.value)
         # MERGE on the unique id constraint is atomic: exactly one concurrent caller creates.

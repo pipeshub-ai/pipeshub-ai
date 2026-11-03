@@ -171,17 +171,47 @@ class TestApply:
         )
 
     @pytest.mark.asyncio
-    async def test_failed_completed_status_write_is_non_fatal(self):
+    async def test_a_record_deleted_while_indexed_saves_nothing_more(self) -> None:
+        """The COMPLETED write finds the record gone: no reconciliation save (it would
+        bring the content mapping back without its org), and the event ends as
+        deleted. The mapping the orphan sweep needs for this run's vectors is kept,
+        naming the org."""
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=True,
         )
         orch.graph_provider.batch_update_nodes.return_value = False
+        ctx = _make_ctx()
+        ctx.record.virtual_record_id = "vr-1"
+        ctx.record.org_id = "org-1"
+        ctx.reconciliation_context = MagicMock(new_metadata={"hashes": {}})
 
-        await orch.index(_make_ctx())
+        with pytest.raises(RecordDeletedError):
+            await orch.index(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graph_provider.batch_update_nodes.assert_awaited()
+        orch.blob_storage.save_reconciliation_metadata.assert_not_awaited()
+        orch.graph_provider.create_node_if_absent.assert_awaited_once_with(
+            "vr-1", "virtualRecordToDocIdMapping",
+            {"id": "vr-1", "orgId": "org-1", "virtualRecordId": "vr-1"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_record_deleted_while_indexed_still_ends_when_the_marker_fails(self) -> None:
+        orch = _make_orchestrator(
+            graph_doc={"indexingStatus": "IN_PROGRESS"},
+            vector_result=True,
+        )
+        orch.graph_provider.batch_update_nodes.return_value = False
+        orch.graph_provider.create_node_if_absent.side_effect = RuntimeError("graph down")
+        ctx = _make_ctx()
+        ctx.record.virtual_record_id = "vr-1"
+        ctx.record.org_id = "org-1"
+
+        with pytest.raises(RecordDeletedError):
+            await orch.index(ctx)
+
+        orch.logger.warning.assert_called()
 
 
 class TestSkipBlob:

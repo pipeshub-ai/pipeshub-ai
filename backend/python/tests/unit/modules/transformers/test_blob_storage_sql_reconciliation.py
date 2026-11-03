@@ -229,7 +229,12 @@ class TestSaveReconciliationMetadata:
 
         assert result == "meta-new"
         bs._create_metadata_document.assert_awaited_once()
-        graph_provider.batch_upsert_nodes.assert_awaited_once()
+        # A first mapping is created with its org, never upserted bare.
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
+        key, collection, node = graph_provider.create_node_if_absent.await_args.args
+        assert (key, collection) == ("vr", "virtualRecordToDocIdMapping")
+        assert node["orgId"] == "org"
+        assert (node["id"], node["virtualRecordId"], node["record_metadata_doc_id"]) == ("vr", "vr", "meta-new")
 
     @pytest.mark.asyncio
     async def test_existing_mapping_uploads_next_version(self):
@@ -277,8 +282,13 @@ class TestSaveReconciliationMetadata:
         assert result == "meta-left-behind"
         bs._find_unmapped_record_document.assert_awaited_once_with("org", "vr", kind="metadata")
         bs._create_metadata_document.assert_not_awaited()
-        upserted = graph_provider.batch_upsert_nodes.call_args.args[0][0]
-        assert upserted["record_metadata_doc_id"] == "meta-left-behind"
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
+        updated = graph_provider.batch_update_nodes.call_args.args[0][0]
+        assert updated["record_metadata_doc_id"] == "meta-left-behind"
+        # The existing row named no org; it is named only while still missing.
+        graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "vr", "virtualRecordToDocIdMapping", {"orgId": "org"}, {"orgId": None},
+        )
 
     @pytest.mark.asyncio
     async def test_failure_in_create_propagates(self):
@@ -309,7 +319,8 @@ class TestSaveReconciliationMetadata:
 
         assert result == "meta-new"
         bs._create_metadata_document.assert_awaited_once()
-        graph_provider.batch_upsert_nodes.assert_awaited_once()
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
+        graph_provider.batch_update_nodes.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

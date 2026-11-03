@@ -2548,6 +2548,10 @@ class IGraphDBProvider(ABC):
         """Every stage-state document of one content revision."""
 
     @abstractmethod
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        """The ``orgId`` named by any stage state of this virtual record, or None."""
+
+    @abstractmethod
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         """Insert a stage state on its unique key (``document["id"]``); False when the key exists.
 

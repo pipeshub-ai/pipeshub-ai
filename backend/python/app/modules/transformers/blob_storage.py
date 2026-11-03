@@ -3407,7 +3407,7 @@ class BlobStorage(Transformer):
                 )
 
             if metadata_document_id and self.graph_provider:
-                await self._map_reconciliation_document(virtual_record_id, metadata_document_id)
+                await self._map_reconciliation_document(org_id, virtual_record_id, metadata_document_id)
                 self.logger.debug(
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
@@ -3423,7 +3423,9 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
 
-    async def _map_reconciliation_document(self, virtual_record_id: str, metadata_document_id: str) -> None:
+    async def _map_reconciliation_document(
+        self, org_id: str, virtual_record_id: str, metadata_document_id: str
+    ) -> None:
         """Name the metadata document on the mapping.
 
         When the mapping already names a stored document, this is a compare-and-set on
@@ -3432,8 +3434,13 @@ class BlobStorage(Transformer):
         consistent with its last switch, so it is not mistaken for an older writer's
         fingerprint. After a conflict it re-reads once; then it falls back to writing just
         the metadata id, which leaves a false fingerprint at worst (safe).
+
+        A mapping this creates carries ``orgId``, as ``_switch_mapping``'s does: the orphan
+        sweep and the stored-content cleanup take the org from the mapping, and one without
+        it leaves the content it names with no owner to purge it for.
         """
         collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        node: dict[str, Any] | None = None
         for _ in (1, 2):
             node = await self._mapping_node(virtual_record_id)
             document_id = (node or {}).get("documentId")
@@ -3451,14 +3458,23 @@ class BlobStorage(Transformer):
                 {"documentId": document_id, "switchSeq": node.get("switchSeq")},
             ):
                 return
-        await self.graph_provider.batch_upsert_nodes(
-            [{
-                "_key": virtual_record_id,
-                "record_metadata_doc_id": metadata_document_id,
-                "updatedAt": get_epoch_timestamp_in_ms(),
-            }],
-            collection,
+        fields: dict[str, Any] = {
+            "record_metadata_doc_id": metadata_document_id,
+            "updatedAt": get_epoch_timestamp_in_ms(),
+        }
+        if node is None and await self.graph_provider.create_node_if_absent(
+            virtual_record_id, collection,
+            {"id": virtual_record_id, "orgId": org_id, "virtualRecordId": virtual_record_id, **fields},
+        ):
+            return
+        await self.graph_provider.batch_update_nodes(
+            [{"_key": virtual_record_id, **fields}], collection,
         )
+        if node is not None and "orgId" not in node:
+            # An older reconciliation write left the org out; name it while it is still missing.
+            await self.graph_provider.update_node_fields_if_match(
+                virtual_record_id, collection, {"orgId": org_id}, {"orgId": None},
+            )
 
     async def _update_metadata_buffer(
         self,
