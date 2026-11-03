@@ -229,6 +229,35 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: false });
     });
 
+    it('rollback --online starts no job when it refuses, and finishes the one it started when the freeze fails', async () => {
+      expect((await run(['migrate', '--offline'])).code).to.equal(0);
+      const running = (): Promise<any[]> => sql("SELECT id FROM platform.jobs WHERE status = 'running'");
+      expect(await running()).to.deep.equal([]);
+      await sql("UPDATE platform.store_epoch SET backend = 'mongo'");
+      expect((await rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 1000 })).stage).to.equal('fence');
+      expect(await running(), 'a refusal leaves no running job').to.deep.equal([]);
+      await sql("UPDATE platform.store_epoch SET backend = 'postgres'");
+      process.env.MIGRATE_TEST_HOOKS = '1';
+      try {
+        const f = await rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 1000, failAt: 'freeze' });
+        expect(f.stage).to.equal('freeze');
+      } finally {
+        delete process.env.MIGRATE_TEST_HOOKS;
+      }
+      expect(await running(), 'the job this call started is finished').to.deep.equal([]);
+      expect((await sql("SELECT status FROM platform.jobs ORDER BY id DESC LIMIT 1"))[0].status).to.equal('failed');
+    });
+
+    it('a failed online rollback says PostgreSQL is read-only again when it was read-only before', async () => {
+      expect((await run(['migrate', '--online'], ONLINE)).code).to.equal(0);
+      expect((await cut()).out.ok).to.equal(true);
+      await sql('UPDATE platform.store_epoch SET readonly = true');
+      const r = await rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 0 });
+      expect(r.stage).to.equal('budget');
+      expect(r.message).to.contain('read-only again').and.not.to.contain('writable');
+      expect(await storeEpoch()).to.include({ readonly: true });
+    });
+
     it('an offline rollback holds PostgreSQL read-only while it compares and copies, and hands it over closed', async () => {
       expect((await run(['migrate', '--offline'])).code).to.equal(0);
       const probes: Array<Promise<any[]>> = [];

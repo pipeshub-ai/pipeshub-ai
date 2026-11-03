@@ -306,11 +306,16 @@ export async function rollbackOnline(
   rt: MigrationRuntime,
   o: { log: Log; sample?: number; maxFreezeMs: number; failAt?: string },
 ): Promise<OnlineRollbackReport> {
-  const js = await JobState.attach(rt);
   const t0 = Date.now();
   let previous = false;
   const unfreezePg = (): Promise<string> =>
     releasePostgres(rt, previous, o.failAt);
+  // what is true of PostgreSQL after the release: the value the freeze found is back, not always "writable"
+  const restored = (note: string): string =>
+    note ||
+    (previous
+      ? 'PostgreSQL is read-only again, as it was before, and remains the store.'
+      : 'PostgreSQL is writable again and remains the store.');
   const notStore = await notPostgresStore(rt);
   if (notStore) return { ok: false, stage: 'fence', message: notStore };
   const fenceBefore = await readMongoFence(rt);
@@ -320,9 +325,15 @@ export async function rollbackOnline(
       stage: 'fence',
       message: `the MongoDB fence is '${fenceBefore.mode}': it was not retired by a move to PostgreSQL`,
     };
+  // a refusal above starts no job; a job this call started is finished if the freeze fails, so the next run starts fresh
+  const started = !(await JobState.current(rt));
+  const js = await JobState.attach(rt);
   try {
+    if (o.failAt === 'freeze' && process.env.MIGRATE_TEST_HOOKS === '1')
+      throw new Error('injected failure of the freeze');
     previous = await freezePostgres(rt);
   } catch (e) {
+    if (started) await js.finish('failed').catch(() => undefined);
     return {
       ok: false,
       stage: 'freeze',
@@ -360,7 +371,7 @@ export async function rollbackOnline(
       return {
         ok: false,
         stage: 'budget',
-        message: `the freeze budget was used up; PostgreSQL is writable again and remains the store.${note}`,
+        message: `the freeze budget was used up; ${restored(note)}`,
       };
     }
     const v = await verifyAll(rt, {
@@ -375,7 +386,7 @@ export async function rollbackOnline(
         stage: 'verify',
         verify: v,
         applied: r.applied,
-        message: `the reverse copy does not verify; PostgreSQL is writable again and remains the store.${note}`,
+        message: `the reverse copy does not verify; ${restored(note)}`,
       };
     }
     await setMongoFence(rt, 'active', fenceBefore.epoch + 1);
@@ -425,7 +436,7 @@ export async function rollbackOnline(
     return {
       ok: false,
       stage: 'error',
-      message: `the rollback failed (${why}); PostgreSQL is writable again and remains the store.${note}`,
+      message: `the rollback failed (${why}); ${restored(note)}`,
     };
   }
 }
