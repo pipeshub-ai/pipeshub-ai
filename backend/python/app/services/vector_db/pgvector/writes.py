@@ -119,7 +119,7 @@ def prepare(points: list[VectorPoint]) -> Prepared:
         out.payloads.append(json.dumps(stored, separators=(",", ":")))
         out.contents.append(payload.get("page_content"))
         if any(k in payload for k in MEMBERSHIP_KEYS):
-            out.groups[out.group_keys[-1]] = {k: _ids(payload.get(k)) for k in MEMBERSHIP_KEYS}
+            out.groups[out.group_keys[-1]] = membership_of(payload)       # only the arrays the payload carries: the others are left as they are
     if org is None:
         raise OrgRequired("no points to write")
     out.org = org
