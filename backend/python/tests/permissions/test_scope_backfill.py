@@ -263,7 +263,7 @@ async def test_the_stale_marker_write_is_tried_again_and_a_marker_that_never_lan
     loaded.graph.stamps.nodes = flaky  # type: ignore[method-assign]
     real, failures = vdb.set_payload, {"left": 1}
 
-    async def once(*a, **k) -> None:  # noqa: ANN002, ANN003
+    async def once(*a, **k) -> None:
         if failures["left"]:
             failures["left"] -= 1
             raise RuntimeError("store down")
@@ -273,7 +273,7 @@ async def test_the_stale_marker_write_is_tried_again_and_a_marker_that_never_lan
     p = await job.run_connector(ORG, app)
     assert p.stale > 0 and sum(f == STALE_SCOPE for f in (await read_stamps(vdb, loaded)).values()) == p.stale  # the first failure was retried
 
-    async def never(*a, **k) -> None:  # noqa: ANN002, ANN003
+    async def never(*a, **k) -> None:
         raise RuntimeError("store down")
 
     vdb.set_payload = never  # type: ignore[method-assign]
@@ -288,7 +288,7 @@ async def test_a_point_that_keeps_its_own_fields_because_the_marker_cannot_be_wr
     vdb, loaded, job, app = await setup()
     real_write, state = vdb.set_payload, {"stamped": False}
 
-    async def broken(name: str, payload: dict, flt) -> None:  # noqa: ANN001
+    async def broken(name: str, payload: dict, flt) -> None:
         if payload.get("scopeStamp") == "legacy" and payload.get("scopeFieldsVersion") == 0:
             raise RuntimeError("marker store down")
         await real_write(name, payload, flt)
@@ -332,5 +332,5 @@ async def test_a_page_written_again_after_a_failure_is_not_counted_twice() -> No
     assert failed.state == FAILED and loaded.graph.app_docs[app]["scopeBackfillStale"] == 0
     n["c"] = 0
     done = await job.run_connector(ORG, app)
-    first_page_vrids = len({v for v in loaded.records})
+    first_page_vrids = len(loaded.records)
     assert done.state == DONE and 0 < done.stale <= first_page_vrids

@@ -35,7 +35,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, ScopeFields, current_scope_generation
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    ScopeFields,
+    current_scope_generation,
+)
 from app.services.vector_db.membership import (
     STALE_SCOPE,
     resolve_virtual_record_state,
@@ -45,11 +49,10 @@ from app.services.vector_db.membership import (
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Collection
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
-    from collections.abc import Collection
-
     from app.services.vector_db.membership import CollectionLocator
 
 PAGE_SIZE = 100
