@@ -493,3 +493,94 @@ def test_a_lexical_leg_asks_for_more_rows_only_when_the_extra_conditions_filter_
     extra = Scope(extra=FilterExpression(must=[FieldCondition(key="metadata.entityType", value="x")]))
     assert lexical.rows_asked(40, extra, T) == 40 * T.lexical_overfetch
     assert lexical.rows_asked(900, extra, T) == lexical.MAX_LEG
+
+
+class _LexTx:
+    """A fake transaction behind ``lexical._run``: the function's raw rows (``total`` of them, best first), ``ok`` for the ones the extra
+    conditions admit; records the arguments of every statement."""
+
+    def __init__(self, total: int, ok) -> None:  # noqa: ANN001
+        self.total, self.ok, self.calls = total, ok, []
+
+    async def fetch(self, sql: str, *args: object) -> list[dict]:
+        self.calls.append((sql, args))
+        asked = args[9]                                                     # $10
+        return [{"point_sk": i, "point_id": f"id{i}", "ok": self.ok(i)} for i in range(min(asked, self.total))]
+
+
+class _LexDb:
+    def __init__(self, tx: _LexTx | None = None, raises: Exception | None = None) -> None:
+        self.tx, self.raises, self.opts = tx, raises, []
+
+    async def run(self, fn, **opts):  # noqa: ANN001, ANN201
+        self.opts.append(opts)
+        if self.raises:
+            raise self.raises
+        return await fn(self.tx)
+
+
+def _extra() -> Scope:
+    from app.services.vector_db.models import FieldCondition, FilterExpression
+
+    return Scope(extra=FilterExpression(must=[FieldCondition(key="metadata.entityType", value="x")]))
+
+
+async def test_the_lexical_statement_gets_the_org_the_collection_the_terms_and_the_overfetched_row_count() -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    tx = _LexTx(1000, lambda i: True)
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, SparseVector([4, 5], [1.0, 2.0]), _extra(), 20, T)
+    (sql, args), = tx.calls
+    assert args[:4] == (ORG, 7, [4, 5], [1.0, 2.0]) and args[9] == 20 * T.lexical_overfetch      # the org, not only the SQL text; the overfetch, not ``leg``
+    assert len(rows) == 20 and degraded is None
+    tx = _LexTx(1000, lambda i: True)
+    await lexical.search(_LexDb(tx), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert tx.calls[0][1][9] == 20                                          # no extra conditions: no overfetch
+
+
+async def test_a_selective_condition_pages_further_into_the_function_rows_and_says_so_when_the_bound_is_reached() -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    sparse = SparseVector([4], [1.0])
+    tx = _LexTx(5000, lambda i: i in (300, 301, 302))                          # the matches are far down the function's order
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, sparse, _extra(), 3, T)
+    assert [r[0] for r in rows] == [300, 301, 302] and degraded is None
+    assert [c[1][9] for c in tx.calls] == [12, 48, 192, 768]                  # four times as many each time, until 3 are kept
+    tx = _LexTx(5000, lambda i: i in (300, 301, 302))
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, sparse, _extra(), 10, T)
+    assert [r[0] for r in rows] == [300, 301, 302] and degraded == "partial"  # fewer than wanted, and the function had more past the bound
+    tx = _LexTx(5000, lambda i: i in (3000, 3001))                             # beyond the bound
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, sparse, _extra(), 10, T)
+    assert rows == [] and degraded == "partial" and tx.calls[-1][1][9] == lexical.MAX_LEG
+    tx = _LexTx(50, lambda i: i == 7)                                          # the function has nothing more: complete, not partial
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, sparse, _extra(), 10, T)
+    assert [r[0] for r in rows] == [7] and degraded is None
+    tx = _LexTx(5000, lambda i: True)                                          # enough kept in the first statement: one statement
+    rows, degraded = await lexical.search(_LexDb(tx), ORG, 7, sparse, _extra(), 10, T)
+    assert len(rows) == 10 and len(tx.calls) == 1
+
+
+@pytest.mark.parametrize(("error", "reason"), [("DbTimeout", "timeout"), ("PoolTimeout", "timeout"), ("ConnectionLost", "error"), ("DbError", "error")])
+async def test_a_lexical_leg_that_fails_answers_nothing_and_says_why(error: str, reason: str, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from app.core.db import errors
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    exc = errors.ConnectionLost("down", retry_safe=True) if error == "ConnectionLost" else getattr(errors, error)("down")
+    caplog.set_level(logging.WARNING)
+    rows, degraded = await lexical.search(_LexDb(raises=exc), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert rows == [] and degraded == reason
+    assert any(r.levelno >= (logging.ERROR if reason == "error" else logging.WARNING) for r in caplog.records)
+
+
+def test_a_weight_that_does_not_fit_a_32_bit_float_is_refused() -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    with pytest.raises(ValueError, match="32-bit"):
+        lexical.terms_of(SparseVector([1], [1e39]))
+    assert lexical.terms_of(SparseVector([1], [3.0e38]))[1] == [3.0e38]

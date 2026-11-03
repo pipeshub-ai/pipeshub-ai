@@ -177,3 +177,13 @@ async def test_a_hybrid_search_fuses_the_legs_and_a_condition_on_a_point_column_
     block = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.blockId", value="b5")])
     [only] = await store.query_nearest_points("records", [HybridSearchRequest(dense_query=None, sparse_query=SparseVector([7, 8], [1.0, 1.0]), filter=block, limit=10)])
     assert [h.id for h in only] == [pid(A, 5)]                                                         # the extra condition is applied to the lexical rows
+
+
+async def test_a_selective_condition_finds_its_matches_behind_many_better_scored_rows_and_flags_a_cut_off(store) -> None:
+    await store.upsert_points("records", [lexical(A, n, (7, 8)) for n in range(10, 40)] + [lexical(A, 99, (7,))])      # 30 better scored points the filter drops
+    block = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.blockId", value="b99")])
+    [hits] = await store.query_nearest_points("records", [HybridSearchRequest(dense_query=None, sparse_query=SparseVector([7, 8], [1.0, 1.0]), filter=block, limit=1)])
+    assert [h.id for h in hits] == [pid(A, 99)] and hits[0].degraded is None          # the first fetch (4 rows) is full and has none: it asks again, wider
+    none = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.blockId", value="nope")])
+    [hits] = await store.query_nearest_points("records", [HybridSearchRequest(dense_query=None, sparse_query=SparseVector([7, 8], [1.0, 1.0]), filter=none, limit=1)])
+    assert hits == []                                                                  # the function ran out of rows: nothing matches, and nothing is flagged

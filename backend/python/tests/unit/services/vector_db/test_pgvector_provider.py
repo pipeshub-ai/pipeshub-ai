@@ -569,6 +569,36 @@ async def test_the_legs_are_fused_by_reciprocal_rank_and_a_lexical_only_request_
 
 
 @pytest.mark.asyncio
+async def test_a_failing_leg_cancels_the_other_instead_of_leaving_it_running(searcher, monkeypatch) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import dense, lexical
+    from app.services.vector_db.pgvector.errors import PgVectorError
+
+    svc, _ = searcher
+    parked, seen = asyncio.Event(), SimpleNamespace(cancelled=False, finished=False)
+
+    async def lexical_leg(*a, **k) -> tuple[list, None]:
+        parked.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            seen.cancelled = True
+            raise
+        seen.finished = True
+        return [], None
+
+    async def broken_dense(*a, **k) -> None:
+        await parked.wait()                                          # the lexical leg is parked when the dense leg fails
+        raise PgVectorError("the dense leg failed")
+
+    monkeypatch.setattr(lexical, "search", lexical_leg)
+    monkeypatch.setattr(dense, "search", broken_dense)
+    with pytest.raises(PgVectorError, match="dense leg failed"):
+        await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert seen.cancelled and not seen.finished                      # it saw the cancellation before the call returned
+
+
+@pytest.mark.asyncio
 async def test_a_lexical_leg_that_failed_leaves_the_dense_answer_flagged(searcher, lexical_rows) -> None:
     from app.services.vector_db.models import SparseVector
 
