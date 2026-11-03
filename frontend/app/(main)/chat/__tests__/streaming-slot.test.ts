@@ -669,6 +669,35 @@ describe('Stop, when the stream then closes without a terminal frame', () => {
   });
 
 
+  it('does not put the note on an earlier answer when a new turn is stopped before it produced a reply', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = degradedSlot();
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    const stoppedTurn = {
+      ...finishedConversation('x'),
+      messages: [
+        ...finishedConversation('x').messages,
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: 'And Q4?' }),
+      ],
+    };
+    const close = openBody();
+    const run = streamMessageForSlot(slotId, 'And Q4?', request({ query: 'And Q4?', conversationId: 'conv-1' }));
+    await vi.waitFor(() => expect(slot(slotId).isStreaming).toBe(true));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close(frame('RUN_FINISHED', { result: { conversation: stoppedTurn, meta: { searchDegraded: true } } }));
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(degradedRows(slotId)).toEqual([]);
+  });
+
   it('keeps the partial answer as a stopped reply when the Stop comes back as an abort RUN_ERROR', async () => {
     fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
     const slotId = newSlot('conv-1');

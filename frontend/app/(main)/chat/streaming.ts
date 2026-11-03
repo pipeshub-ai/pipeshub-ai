@@ -224,6 +224,12 @@ function followRemoteRun(slotId: string, convId: string): void {
   useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
 }
 
+/** The assistant row a finished turn ends on, or null when the turn kept no reply (the history ends on the question). */
+function turnReply(messages: ThreadMessageLike[]): ThreadMessageLike | null {
+  const last = messages[messages.length - 1];
+  return last?.role === 'assistant' ? last : null;
+}
+
 type AnswerCustom = { messageId?: string; searchDegraded?: boolean };
 const answerCustom = (m: ThreadMessageLike) => m.metadata?.custom as AnswerCustom | undefined;
 
@@ -1534,8 +1540,12 @@ export async function streamMessageForSlot(
             pendingCollections: [],
             artifacts: [],
             messages: withSearchDegraded(finalMessages, slotBeforeComplete?.messages ?? [], {
+              // This turn's own reply is the row the history ends on. A turn stopped before any text has none (history drops the
+              // empty reply and ends on the question), and then the note belongs to no row: an earlier answer must not get it.
               mark: data.meta?.searchDegraded === true
-                ? (reuseExistingAssistant ? (cardRow ?? lastAsst) : lastAsst)
+                ? (reuseExistingAssistant
+                    ? (cardRow ?? turnReply(finalMessages))
+                    : turnReply(finalMessages))
                 : null,
             }),
             hasLoaded: true,

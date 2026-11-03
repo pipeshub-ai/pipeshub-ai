@@ -324,6 +324,7 @@ async def _heartbeat(queue: "asyncio.Queue[Any]", interval: float = 15.0) -> Non
         pass
 
 
+@degraded_notice.scoped
 async def run_agent_loop_stream(
     query_info: dict[str, Any],
     user_info: dict[str, Any],
@@ -356,7 +357,6 @@ async def run_agent_loop_stream(
     (which formats `Agent.run()`'s own final answer rather than making a
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
-    degraded_notice.track()
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.connector_instances import fetch_user_connector_instances

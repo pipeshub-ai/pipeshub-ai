@@ -5,8 +5,14 @@ so an empty answer can be flagged), or sets ``SearchResult.degraded`` on the hit
 the former. The chat stream reads ``was_degraded`` when the run completes. A ContextVar holding a mutable list is shared by the tasks the
 request spawns, so a search made by a tool in another task is seen too; outside a tracked request ``note`` does nothing.
 """
+import contextlib
+import functools
+from collections.abc import AsyncGenerator, Callable
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 _seen: ContextVar[list[str] | None] = ContextVar("search_degraded", default=None)
 
@@ -15,6 +21,26 @@ def track() -> None:
     """Start tracking for this request (a no-op when it already is)."""
     if _seen.get() is None:
         _seen.set([])
+
+
+def scoped(stream: Callable[_P, AsyncGenerator[_T, None]]) -> Callable[_P, AsyncGenerator[_T, None]]:
+    """Give each run of an async-generator entry point (a chat stream) its own scope, ended when the stream ends.
+
+    ``track`` would reuse the list of an earlier run in the same task, so a partial search in one answer would mark the next one. The list
+    stays shared within the run, so tasks it spawns can still report.
+    """
+    @functools.wraps(stream)
+    async def run(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[_T, None]:
+        token = _seen.set([])
+        try:
+            async for item in stream(*args, **kwargs):
+                yield item
+        finally:
+            # ValueError: finalised from another context (an abandoned stream), which ends with it
+            with contextlib.suppress(ValueError):
+                _seen.reset(token)
+
+    return run
 
 
 def note(reason: str = "partial") -> None:

@@ -351,6 +351,7 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
+@degraded_notice.scoped
 @per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
 async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],
@@ -384,7 +385,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
     are not granted (see ``factory._initial_entity_tool_grant``).
     """
-    degraded_notice.track()
     from app.modules.agents.qna.chat_state import build_initial_state, remember_shown_results
     from app.modules.code_graph.connectors import connector_instances_have_code
     from app.modules.transformers.blob_storage import BlobStorage
