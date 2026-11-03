@@ -145,3 +145,16 @@ class TestVectorDBFactoryLegacyHelpers:
         result = await VectorDBFactory.create_qdrant_service_async(config)
         assert result is mock_service
         mock_create.assert_awaited_once_with(config)
+
+
+class TestPgVectorEntry:
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.pgvector.pgvector.PgVectorService.create", new_callable=AsyncMock)
+    async def test_pgvector_entry(self, mock_create):
+        mock_create.return_value = MagicMock()
+        config = MagicMock()
+
+        result = await VectorDBFactory.create_vector_db_service("pgvector", config)
+
+        assert result is mock_create.return_value
+        mock_create.assert_awaited_once_with(config)

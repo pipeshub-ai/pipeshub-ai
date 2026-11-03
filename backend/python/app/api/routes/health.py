@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.config.constants.service import config_node_constants
 from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
@@ -835,6 +836,32 @@ def normalize_embedding_model_name(name: str | None) -> str | None:
     return normalized
 
 
+def _identity_of(config: dict | None) -> str | None:
+    """``provider:model`` of an embedding config, the way the entity store names what it embeds with (the first of a comma list)."""
+    if not config or not config.get("provider"):
+        return None
+    models = str((config.get("configuration") or {}).get("model") or "")
+    return f"{config['provider']}:{next((m.strip() for m in models.split(',') if m.strip()), '')}"
+
+
+async def _current_identity(retrieval_service: Any) -> str | None:  # noqa: ANN401
+    try:
+        ai_models = await retrieval_service.config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=False)
+        configs = (ai_models or {}).get("embedding") or []
+        chosen = next((c for c in configs if c.get("isDefault", False)), configs[0] if configs else None)
+        return _identity_of(chosen)
+    except Exception:
+        return None
+
+
+EMBEDDING_CHANGE_UNSUPPORTED_CODE = "embedding_change_unsupported"      # the API gateway shows this refusal's own text
+
+
+def _spaces_per_org(retrieval_service: Any) -> bool:  # noqa: ANN401
+    caps = retrieval_service.vector_db_service.get_capabilities()
+    return getattr(caps, "spaces_per_org", False) is True
+
+
 async def handle_model_change(
     retrieval_service,
     current_model_name: str,
@@ -842,7 +869,9 @@ async def handle_model_change(
     existing_vector_size: int,
     points_count: int,
     embedding_size: int,
-    logger
+    logger,
+    current_identity: str | None = None,
+    new_identity: str | None = None,
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
     current_model_name = normalize_embedding_model_name(current_model_name)
@@ -857,7 +886,16 @@ async def handle_model_change(
         existing_vector_size != 0 and existing_vector_size != embedding_size
     )
 
-    if not model_name_changed and not dimension_mismatch:
+    # With one vector space per org, what the entity store stamps on its points is the full ``provider:model`` (and the dimension
+    # is compared above), so a provider switch for the "same" model is a change as well.
+    identity_changed = (
+        _spaces_per_org(retrieval_service)
+        and current_identity is not None
+        and new_identity is not None
+        and current_identity != new_identity
+    )
+
+    if not model_name_changed and not dimension_mismatch and not identity_changed:
         return
 
     if model_name_changed:
@@ -868,6 +906,38 @@ async def handle_model_change(
         logger.warning(
             f"Detected vector dimension mismatch: collection has {existing_vector_size}, "
             f"new model produces {embedding_size}"
+        )
+
+    if _spaces_per_org(retrieval_service) and existing_vector_size != 0:
+        # The org's embedding space is tied to the model that first wrote to it. While the org holds no point at all (a model picked
+        # after the default one pinned an empty space) the change is allowed: the indexing service replaces the space on the first
+        # write that carries the new model, and the database refuses if a point exists by then. This is a read only.
+        if not await retrieval_service.vector_db_service.org_holds_points():
+            logger.info("The org's vector space holds no point: the embedding change is allowed")
+            return
+        # Going (back) to the model and dimension the space already takes changes nothing: an admin can always return to it.
+        identity = f"{new_identity}:{embedding_size}" if new_identity else None
+        current = f"{current_identity}:{existing_vector_size}" if current_identity else None
+        if await retrieval_service.vector_db_service.org_space_accepts(identity, embedding_size, current):
+            logger.info("The embedding model fits the org's vector space: allowed")
+            return
+        logger.error(
+            "Rejected embedding change: the org's vector space is pinned to the previous model and there is no space flip yet."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "not healthy",
+                "code": EMBEDDING_CHANGE_UNSUPPORTED_CODE,
+                "error": (
+                    "The embedding model cannot be changed yet: this installation keeps "
+                    "vectors in PostgreSQL (pgvector), where each organisation's vector "
+                    "space is tied to the model that first indexed it, and existing "
+                    "data cannot be re-embedded in place. Keep the current embedding "
+                    "model, or set up a new installation to use another one."
+                ),
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
         )
 
     if points_count > 0:
@@ -1007,7 +1077,8 @@ async def check_collection_info(
     retrieval_service,
     dense_embeddings,
     embedding_size,
-    logger
+    logger,
+    new_config: dict | None = None,
 ) -> None:
     """Check and validate collection information using provider-neutral get_collection_info()."""
     try:
@@ -1029,7 +1100,9 @@ async def check_collection_info(
             existing_vector_size,
             points_count,
             embedding_size,
-            logger
+            logger,
+            current_identity=await _current_identity(retrieval_service),
+            new_identity=_identity_of(new_config),
         )
 
     except HTTPException:
@@ -1073,7 +1146,10 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         embedding_size = await verify_embedding_health(dense_embeddings, logger)
 
         # Check collection info and handle model changes
-        await check_collection_info(retrieval_service, dense_embeddings, embedding_size, logger)
+        await check_collection_info(
+            retrieval_service, dense_embeddings, embedding_size, logger,
+            new_config=_chosen_embedding_config(embedding_configs),
+        )
 
         # Initialize vector store as None
         retrieval_service.vector_store = None
@@ -1608,6 +1684,7 @@ async def _probe_image_embedding(
 
 async def _check_collection_compatibility(
     request: Request, dense_embeddings: Embeddings, embedding_dimension: int, logger: Logger,
+    new_config: dict | None = None,
 ) -> JSONResponse | None:
     """Run the bulk route's collection guard for a single-model check.
 
@@ -1624,6 +1701,7 @@ async def _check_collection_compatibility(
     try:
         await check_collection_info(
             retrieval_service, dense_embeddings, embedding_dimension, logger,
+            new_config=new_config,
         )
     except HTTPException as he:
         detail = he.detail if isinstance(he.detail, dict) else {"message": str(he.detail)}
@@ -1769,7 +1847,7 @@ async def perform_embedding_health_check(
         # Only the model that will embed once saved may resize the collection.
         if embedding_config.get("becomesActive", True):
             collection_error = await _check_collection_compatibility(
-                request, active_model, active_dimension, logger,
+                request, active_model, active_dimension, logger, new_config=embedding_config,
             )
             if collection_error is not None:
                 return collection_error
