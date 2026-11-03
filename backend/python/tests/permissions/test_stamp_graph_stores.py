@@ -50,3 +50,29 @@ async def test_projections_over_the_real_graphs_equal_those_over_the_in_memory_g
                         compared += 1
             await layer.release(chunk)
         assert compared > 300, (layer.name, compared, skipped)
+
+
+async def test_the_page_lists_the_records_of_an_app_in_key_order_and_a_failed_read_raises(graph_layers: list[GraphCheckLayer]) -> None:
+    from app.services.permissions.errors import ViewerScopesUnavailable
+    from app.services.vector_db.scope_backfill import AppDocCheckpoints, Progress
+
+    world = next(s.final_world() for s in load_all() if len([n for n in s.final_world().nodes if n.kind == "record"]) >= 4)
+    app = next(n.id for n in world.nodes if n.kind == "app")
+    want = sorted(n.id for n in world.nodes if n.kind == "record" and n.connector == app and n.org is None)
+    for layer in graph_layers:
+        await layer.preload([world])
+        ns = await layer._ns(world)
+        view = layer._provider.permission_stamp_graph()
+        first = await view.record_page(ns.org, ns.id(app), None, 2)
+        rest = await view.record_page(ns.org, ns.id(app), first[-1], 100)
+        assert [ns.local(i) for i in (*first, *rest)] == want and len(first) == min(2, len(want)), layer.name
+        assert await view.record_page("no-such-org", ns.id(app), None, 10) == []
+        store = AppDocCheckpoints(layer._provider)
+        assert await store.load(ns.id(app)) is None
+        await store.save(ns.id(app), Progress("running", first[-1], 5, 2, 1, None))
+        assert await store.load(ns.id(app)) == Progress("running", first[-1], 5, 2, 1, None), layer.name
+        await layer.release([world])
+    broken = graph_layers[0]._provider.permission_stamp_graph()
+    broken._get_client = lambda: None  # type: ignore[attr-defined]
+    with pytest.raises(ViewerScopesUnavailable):
+        await broken.record_page("o", "a", None, 1)

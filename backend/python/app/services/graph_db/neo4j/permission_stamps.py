@@ -38,6 +38,11 @@ RETURN n.id AS id, CASE WHEN n:Record THEN 'record' WHEN n:RecordGroup THEN 'gro
        EXISTS {{ (n)-[:BELONGS_TO]->(:App) }} AS belongsApp
 """
 
+PAGE = """
+MATCH (r:Record) WHERE r.connectorId = $app AND r.orgId = $org AND ($after IS NULL OR r.id > $after)
+RETURN r.id AS id ORDER BY r.id LIMIT $limit
+"""
+
 
 def _ids(value: object) -> tuple[str, ...]:
     return tuple(sorted({str(x) for x in value if x})) if isinstance(value, list) else ()
@@ -73,6 +78,9 @@ class Neo4jStampGraph:
     async def nodes(self, org_id: str, ids: frozenset[str]) -> dict[str, StampNode]:
         rows = await self._rows(NODES, ids=sorted(ids), org=org_id) if ids else []
         return {n.id: n for n in map(to_node, rows)}
+
+    async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
+        return [str(r["id"]) for r in await self._rows(PAGE, app=app_id, org=org_id, after=after, limit=limit)]
 
 
 instrument_org_methods(Neo4jStampGraph)

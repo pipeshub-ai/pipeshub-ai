@@ -210,6 +210,13 @@ app_schema = {
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
+            "scopeBackfillState": {"type": ["string", "null"]},
+            "scopeBackfillAfter": {"type": ["string", "null"]},
+            "scopeBackfillVersion": {"type": ["integer", "null"]},
+            "scopeBackfillRecords": {"type": ["integer", "null"]},
+            "scopeBackfillStale": {"type": ["integer", "null"]},
+            "scopeBackfillError": {"type": ["string", "null"]},
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},
