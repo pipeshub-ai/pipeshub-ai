@@ -12,13 +12,17 @@ export function AgentSignIns() {
   const addToast = useToastStore((s) => s.addToast);
   const [items, setItems] = useState<AgentSignIn[]>([]);
   const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       setItems(await AgentSignInApi.list());
       setFailed(false);
     } catch {
       setFailed(true);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -42,7 +46,14 @@ export function AgentSignIns() {
         <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {t('workspace.agentSignIns.loadError')}
         </Text>
-        <Button type="button" variant="soft" size="1" onClick={() => void load()} style={{ cursor: 'pointer' }}>
+        <Button
+          type="button"
+          variant="soft"
+          size="2"
+          disabled={loading}
+          onClick={() => void load()}
+          style={{ cursor: 'pointer', minHeight: 44, minWidth: 44 }}
+        >
           {t('action.tryAgain')}
         </Button>
       </Flex>
@@ -87,7 +98,7 @@ export function AgentSignIns() {
               size="2"
               aria-label={t('workspace.agentSignIns.revokeAria', { id: item.id })}
               onClick={() => void revoke(item.id)}
-              style={{ cursor: 'pointer', flexShrink: 0 }}
+              style={{ cursor: 'pointer', flexShrink: 0, minHeight: 44, minWidth: 44 }}
             >
               {t('workspace.agentSignIns.revoke')}
             </Button>

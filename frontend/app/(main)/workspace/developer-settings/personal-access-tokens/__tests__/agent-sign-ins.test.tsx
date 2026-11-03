@@ -35,6 +35,20 @@ describe('agent sign-ins', () => {
     expect(await screen.findByText(reg.id)).toBeTruthy();
   });
 
+  it('does not start a second load while one is in flight', async () => {
+    installBrowserShims();
+    let finish: (v: unknown[]) => void = () => {};
+    list.mockRejectedValueOnce(new Error('down')).mockImplementationOnce(() => new Promise((r) => { finish = r; }));
+    renderInTheme(<AgentSignIns />);
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    fireEvent.click(retry);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    fireEvent.click(retry);
+    expect(list).toHaveBeenCalledTimes(2);
+    finish([reg]);
+    expect(await screen.findByText(reg.id)).toBeTruthy();
+  });
+
   it('lists an approved agent and revokes it', async () => {
     installBrowserShims();
     list.mockResolvedValueOnce([reg]).mockResolvedValue([]);
