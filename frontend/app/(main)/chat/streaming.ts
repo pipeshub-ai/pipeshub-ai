@@ -1774,6 +1774,8 @@ export async function streamRegenerateForSlot(
   const abortController = new AbortController();
   const runId = generateRunId();
   const streamRunId = runId ?? null;
+  // The old answer stays on screen if the run fails, and so must its note.
+  const previousSearchDegraded = slot.searchDegraded;
 
   store.updateSlot(slotId, {
     // An answered card is not this run's: left in the slot it would be opened again when the run ends,
@@ -2063,6 +2065,7 @@ export async function streamRegenerateForSlot(
           abortController: null,
           runId: null,
           stopping: false,
+          searchDegraded: previousSearchDegraded,
         });
         debugLog.flush('regenerate-reload-error', { slotId });
       }
@@ -2094,6 +2097,7 @@ export async function streamRegenerateForSlot(
         abortController: null,
         runId: null,
         stopping: false,
+        ...(dropped ? {} : { searchDegraded: previousSearchDegraded }),
       });
       if (dropped) followRemoteRun(slotId, editConvId);
       debugLog.flush('regenerate-error', { slotId });

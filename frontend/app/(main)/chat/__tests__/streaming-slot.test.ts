@@ -1356,6 +1356,39 @@ describe('regenerating an answer', () => {
     expect(slot(slotId).searchDegraded).toBe(true);
   });
 
+  it('keeps the degraded-search note of the old answer when the regenerate request fails', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      searchDegraded: true,
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith(jsonResponse(500, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(slot(slotId).searchDegraded).toBe(true);
+  });
+
+  it('keeps the degraded-search note of the old answer when reloading the regenerated one fails', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      searchDegraded: true,
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: { meta: {} } })]);
+    vi.spyOn(apiClient, 'get').mockRejectedValueOnce(new Error('reload failed'));
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(slot(slotId).searchDegraded).toBe(true);
+  });
+
   it('leaves the previous answer in place when the regenerate request fails', async () => {
     const slotId = newSlot('conv-1');
     useChatStore.getState().updateSlot(slotId, {
