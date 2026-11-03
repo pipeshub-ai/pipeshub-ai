@@ -1,0 +1,50 @@
+# One Union-rule (shared drive) folder holding every kind of restriction at once.
+- id: SCOPES-ADV-09
+  title: Under one shared-drive folder - a RESTRICTED file, a deleted subfolder, a non-inheriting file, a limited folder with a directly granted seed and its OPEN and STRICT children
+  source: review of the viewer scopes (Union row with rule-restricted, deleted and non-inheriting scopes)
+  rule: union
+  world:
+    principals:
+      - {id: staff}
+      - {id: legal}
+      - {id: owner}
+      - {id: outsider}
+      - {id: g:all, kind: group}
+      - {id: g:legal, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: DRIVE WORKSPACE}
+      - {id: sd, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
+      - {id: F, kind: record, connector: app, rule: OPEN, parents: [sd], inherits: [sd], belongs: [sd]}
+      - {id: r, kind: record, connector: app, rule: RESTRICTED, parents: [F], inherits: [F], belongs: [sd]}
+      - {id: rk, kind: record, connector: app, rule: OPEN, parents: [{id: r, rel: ATTACHMENT}], inherits: [r], belongs: [sd]}
+      - {id: gone, kind: record, connector: app, rule: OPEN, parents: [F], inherits: [F], belongs: [sd], deleted: true}
+      - {id: gk, kind: record, connector: app, rule: OPEN, parents: [gone], inherits: [gone], belongs: [sd]}
+      - {id: mine, kind: record, connector: app, rule: OPEN, parents: [F], belongs: [sd]}
+      - {id: mk, kind: record, connector: app, rule: OPEN, parents: [{id: mine, rel: ATTACHMENT}], inherits: [mine], belongs: [sd]}
+      - {id: lim, kind: record, connector: app, rule: OPEN, parents: [F], belongs: [sd]}
+      - {id: s, kind: record, connector: app, rule: OPEN, parents: [lim], belongs: [sd]}
+      - {id: sk1, kind: record, connector: app, rule: OPEN, parents: [s], inherits: [s], belongs: [sd]}
+      - {id: sk2, kind: record, connector: app, rule: STRICT, parents: [s], inherits: [s], belongs: [sd]}
+    grants:
+      - [g:all, sd]
+      - [g:legal, r]
+      - [g:legal, lim]
+      - [owner, mine]
+      - [staff, s]
+    memberships:
+      - [staff, g:all]
+      - [legal, g:all]
+      - [legal, g:legal]
+      - [owner, g:all]
+    gates:
+      - [staff, app]
+      - [legal, app]
+      - [owner, app]
+      - [outsider, app]
+  expect:
+    verdicts:
+      staff: {F: admit, r: deny, rk: deny, gk: deny, mine: deny, mk: deny, lim: deny, s: admit, sk1: admit, sk2: deny}
+      legal: {r: admit, rk: admit, lim: admit, s: deny, sk1: deny}
+      owner: {mine: admit, mk: admit, r: deny}
+      outsider: {F: deny, mine: deny}
+  tags: [regression, scopes, union]
