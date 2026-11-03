@@ -211,14 +211,28 @@ _UPDATE_OLD = f"""/* pipeshub:pgvector.upsert_existing */
           SELECT $1, $2, $3, n.term, n.point_sk, n.w FROM newp n ORDER BY n.term, n.point_sk
           ON CONFLICT (org_id, collection_id, space_id, term, point_sk) DO UPDATE SET w = EXCLUDED.w WHERE q.w IS DISTINCT FROM EXCLUDED.w
           RETURNING 1),
-        cnt AS (          -- a point that gains or loses all its terms enters or leaves the count
+        cnt AS (          -- a point that gains or loses all its terms enters or leaves the count; a tombstoned one is counted by the revive below
           INSERT INTO retrieval.lexical_df_delta (org_id, collection_id, space_id, term, d)
           SELECT $1, $2, $3, {COUNT_TERM}, z.d FROM (
             SELECT (count(*) FILTER (WHERE i.te > i.ts) - count(*) FILTER (WHERE o.lex_terms IS NOT NULL)) AS d
-              FROM upd JOIN incoming i ON i.point_id = upd.point_id JOIN old o ON o.point_sk = upd.point_sk) z
+              FROM upd JOIN incoming i ON i.point_id = upd.point_id JOIN old o ON o.point_sk = upd.point_sk
+             WHERE NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = upd.point_sk)) z
           WHERE z.d <> 0
           RETURNING 1)
         SELECT point_id FROM old"""
+
+
+# A point deleted while HNSW safe mode was on (a tombstone) and written again is alive again, and counted again. This statement owns the count
+# of such a point (the update above leaves a tombstoned point out of its own count adjustment, whichever way its terms changed): it
+# enters the count when it has terms now. Always run, not only in safe mode: the tombstone outlives a switch of the mode, and without
+# tombstones this is an index probe that finds nothing.
+_REVIVE = f"""/* pipeshub:pgvector.revive */
+        WITH r AS (
+          DELETE FROM retrieval.point_tombstones t USING retrieval.points p
+          WHERE t.org_id = $1 AND p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_id = ANY($4::uuid[])
+            AND t.point_sk = p.point_sk
+          RETURNING t.point_sk, p.lex_terms)
+        {_COUNT % '(SELECT 1 FROM r WHERE r.lex_terms IS NOT NULL) x'}"""
 
 
 async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime, *, safe_mode: bool) -> None:
@@ -242,57 +256,58 @@ async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, compute
         raise PgVectorError("the points kept changing under the write; retry")
     # A point deleted while HNSW safe mode was on (a tombstone) and written again is alive again, and counted again. Always run, not
     # only in safe mode: the tombstone outlives a switch of the mode, and without tombstones this is an index probe that finds nothing.
-    await tx.execute(
-        f"""/* pipeshub:pgvector.revive */
-        WITH r AS (
-          DELETE FROM retrieval.point_tombstones t USING retrieval.points p
-          WHERE t.org_id = $1 AND p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND p.point_id = ANY($4::uuid[])
-            AND t.point_sk = p.point_sk
-          RETURNING t.point_sk, p.lex_terms)
-        {_COUNT % '(SELECT 1 FROM r WHERE r.lex_terms IS NOT NULL) x'}""",
-        b.org, collection_id, space_id, b.point_ids,
-    )
+    await tx.execute(_REVIVE, b.org, collection_id, space_id, b.point_ids)
     if b.groups:
         await write_groups(tx, b.org, collection_id, b.groups, computed_at, allow_empty=False)
+
+
+_GROUP_ROWS = """/* pipeshub:pgvector.write_groups */
+        WITH g AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS g(k text, c text[], r text[], x text[]))
+        INSERT INTO retrieval.point_groups AS pg (org_id, collection_id, group_key, connector_ids, record_group_ids,
+                                                  root_record_group_ids, computed_at)
+        SELECT $1, $2, g.k, coalesce(g.c, '{}'), coalesce(g.r, '{}'), coalesce(g.x, '{}'), $4::timestamptz FROM g
+        ORDER BY g.k         -- one order for every writer, so two writers of overlapping groups cannot deadlock
+        ON CONFLICT (org_id, collection_id, group_key) DO UPDATE
+          SET connector_ids = coalesce((SELECT g.c FROM g WHERE g.k = EXCLUDED.group_key), pg.connector_ids),
+              record_group_ids = coalesce((SELECT g.r FROM g WHERE g.k = EXCLUDED.group_key), pg.record_group_ids),
+              root_record_group_ids = coalesce((SELECT g.x FROM g WHERE g.k = EXCLUDED.group_key), pg.root_record_group_ids),
+              computed_at = EXCLUDED.computed_at
+          WHERE pg.computed_at < EXCLUDED.computed_at
+            AND ($5::boolean OR cardinality(EXCLUDED.connector_ids) + cardinality(EXCLUDED.record_group_ids)
+                                + cardinality(EXCLUDED.root_record_group_ids) > 0)
+        RETURNING pg.group_key, pg.connector_ids, pg.record_group_ids, pg.root_record_group_ids"""
+
+# A separate statement, so it has a snapshot of its own: the group rows above are locked by this transaction, a writer that waited for
+# them has seen the members the earlier writer committed, and the diff below is against those, not against the state at its start.
+_GROUP_MEMBERS = """/* pipeshub:pgvector.write_group_members */
+        WITH w AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS w(k text, kind smallint, members text[])),
+        want AS (SELECT w.k AS group_key, w.kind, u.member_id FROM w CROSS JOIN LATERAL unnest(w.members) AS u(member_id)),
+        del AS (
+          DELETE FROM retrieval.group_members m USING w
+          WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = w.k AND m.kind = w.kind
+            AND NOT EXISTS (SELECT 1 FROM want x WHERE x.group_key = m.group_key AND x.kind = m.kind AND x.member_id = m.member_id)
+          RETURNING 1)
+        INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id)
+        SELECT $1, $2, group_key, kind, member_id FROM want ON CONFLICT DO NOTHING"""
+_KIND_OF = {CONNECTOR_IDS_FIELD: (1, "connector_ids"), RECORD_GROUP_IDS_FIELD: (2, "record_group_ids"),
+            ROOT_RECORD_GROUP_IDS_FIELD: (3, "root_record_group_ids")}
 
 
 async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, dict[str, list[str]]], computed_at: datetime,
                        *, allow_empty: bool) -> int:
     """Membership of groups, behind the compare-and-set fence: a row is replaced only by a writer with a later ``computed_at``,
     so of two concurrent writers the one that read the graph later wins whatever the order they commit in. A group row that
-    does not exist yet is created. ``allow_empty=False`` (indexing) never replaces arrays with empty ones: an upsert that
-    carries no membership must not erase what the membership sync wrote."""
-    rows = [{"k": k, "c": v.get(CONNECTOR_IDS_FIELD, []), "r": v.get(RECORD_GROUP_IDS_FIELD, []),
-             "x": v.get(ROOT_RECORD_GROUP_IDS_FIELD, [])} for k, v in groups.items()]
-    return await tx.fetchval(
-        """/* pipeshub:pgvector.write_groups */
-        WITH g AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS g(k text, c text[], r text[], x text[])),
-        upd AS (
-          INSERT INTO retrieval.point_groups AS pg (org_id, collection_id, group_key, connector_ids, record_group_ids,
-                                                    root_record_group_ids, computed_at)
-          SELECT $1, $2, g.k, coalesce(g.c, '{}'), coalesce(g.r, '{}'), coalesce(g.x, '{}'), $4::timestamptz FROM g
-          ON CONFLICT (org_id, collection_id, group_key) DO UPDATE
-            SET connector_ids = EXCLUDED.connector_ids, record_group_ids = EXCLUDED.record_group_ids,
-                root_record_group_ids = EXCLUDED.root_record_group_ids, computed_at = EXCLUDED.computed_at
-            WHERE pg.computed_at < EXCLUDED.computed_at
-              AND ($5::boolean OR cardinality(EXCLUDED.connector_ids) + cardinality(EXCLUDED.record_group_ids)
-                                  + cardinality(EXCLUDED.root_record_group_ids) > 0)
-          RETURNING pg.group_key, pg.connector_ids, pg.record_group_ids, pg.root_record_group_ids),
-        want AS (
-          SELECT group_key, 1::smallint AS kind, unnest(connector_ids) AS member_id FROM upd
-          UNION ALL SELECT group_key, 2::smallint, unnest(record_group_ids) FROM upd
-          UNION ALL SELECT group_key, 3::smallint, unnest(root_record_group_ids) FROM upd),
-        del AS (
-          DELETE FROM retrieval.group_members m USING upd
-          WHERE m.org_id = $1 AND m.collection_id = $2 AND m.group_key = upd.group_key
-            AND NOT EXISTS (SELECT 1 FROM want w WHERE w.group_key = m.group_key AND w.kind = m.kind AND w.member_id = m.member_id)
-          RETURNING 1),
-        ins AS (
-          INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id)
-          SELECT $1, $2, group_key, kind, member_id FROM want ON CONFLICT DO NOTHING RETURNING 1)
-        SELECT (SELECT count(*) FROM upd)""",
-        org, collection_id, json.dumps(rows), computed_at, allow_empty,
-    )
+    does not exist yet is created. Only the arrays a group carries are replaced (a caller that supplies ``connectorIds`` alone leaves
+    the other two as they are, as a payload merge does on the other providers). ``allow_empty=False`` (indexing) never replaces arrays
+    with empty ones: an upsert that carries no membership must not erase what the membership sync wrote."""
+    rows = [{"k": k, **{col: v[key] if key in v else None for key, col in (
+        (CONNECTOR_IDS_FIELD, "c"), (RECORD_GROUP_IDS_FIELD, "r"), (ROOT_RECORD_GROUP_IDS_FIELD, "x"))}} for k, v in groups.items()]
+    won = await tx.fetch(_GROUP_ROWS, org, collection_id, json.dumps(rows), computed_at, allow_empty)
+    members = [{"k": r["group_key"], "kind": kind, "members": list(r[column])}
+               for r in won for key, (kind, column) in _KIND_OF.items() if key in groups[r["group_key"]]]
+    if members:
+        await tx.execute(_GROUP_MEMBERS, org, collection_id, json.dumps(members))
+    return len(won)
 
 
 def _from(c: Compiled, *, text: bool = True) -> str:
@@ -303,6 +318,33 @@ def _from(c: Compiled, *, text: bool = True) -> str:
     if c.needs_text and text:
         sql += " JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk"
     return sql
+
+
+_VICTIMS = """SELECT p.point_sk, p.space_id, p.lex_terms FROM retrieval.points p
+                 WHERE p.org_id = $1 AND p.collection_id = $2 AND p.point_sk = ANY($3::bigint[])
+                   AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)"""
+_POSTINGS_OF = f"""SELECT g.point_sk, g.space_id, {wrap('t.term')} AS term FROM %s g CROSS JOIN LATERAL unnest(g.lex_terms) AS t(term)"""
+_DROP_POSTINGS = ("DELETE FROM retrieval.postings q USING (%s) s WHERE q.org_id = $1 AND q.collection_id = $2 AND q.space_id = s.space_id "
+                  "AND q.term = s.term AND q.point_sk = s.point_sk")
+_DROP_COUNT = ("INSERT INTO retrieval.lexical_df_delta (org_id, collection_id, space_id, term, d) "
+               f"SELECT $1, $2, g.space_id, {COUNT_TERM}, -count(*) FROM %s g WHERE g.lex_terms IS NOT NULL GROUP BY g.space_id")
+# HNSW safe mode: the vector indexes are not touched; the postings go at once, so a search never reads them; the nightly job deletes for real.
+_DELETE_TOMBSTONE = f"""/* pipeshub:pgvector.delete_tombstone */
+            WITH victims AS ({_VICTIMS}),
+            ins AS (INSERT INTO retrieval.point_tombstones (org_id, point_sk) SELECT $1, point_sk FROM victims
+                    ON CONFLICT DO NOTHING RETURNING point_sk),
+            tombed AS (SELECT v.point_sk, v.space_id, v.lex_terms FROM victims v JOIN ins ON ins.point_sk = v.point_sk),
+            dp AS ({_DROP_POSTINGS % (_POSTINGS_OF % 'tombed')} RETURNING 1),
+            dn AS ({_DROP_COUNT % 'tombed'} RETURNING 1)
+            SELECT count(*) FROM ins"""
+_DELETE_BATCH = f"""/* pipeshub:pgvector.delete_batch */
+            WITH victims AS ({_VICTIMS}),
+            gone AS (DELETE FROM retrieval.points d USING victims v WHERE d.org_id = $1 AND d.point_sk = v.point_sk
+                     RETURNING d.point_sk, d.space_id, d.lex_terms),
+            txt AS (DELETE FROM retrieval.point_text x USING victims v WHERE x.org_id = $1 AND x.point_sk = v.point_sk RETURNING 1),
+            dp AS ({_DROP_POSTINGS % (_POSTINGS_OF % 'gone')} RETURNING 1),
+            dn AS ({_DROP_COUNT % 'gone'} RETURNING 1)
+            SELECT count(*) FROM gone"""
 
 
 async def delete_batch(tx: Tx, org: str, collection_id: int, c: Compiled, *, safe_mode: bool) -> int:
@@ -322,32 +364,7 @@ async def delete_batch(tx: Tx, org: str, collection_id: int, c: Compiled, *, saf
     if not locked:
         return 0
     sks = [r["point_sk"] for r in locked]
-    victims = """SELECT p.point_sk, p.space_id, p.lex_terms FROM retrieval.points p
-                 WHERE p.org_id = $1 AND p.collection_id = $2 AND p.point_sk = ANY($3::bigint[])
-                   AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)"""
-    postings_of = f"""SELECT g.point_sk, g.space_id, {wrap('t.term')} AS term FROM %s g CROSS JOIN LATERAL unnest(g.lex_terms) AS t(term)"""
-    drop = ("DELETE FROM retrieval.postings q USING (%s) s WHERE q.org_id = $1 AND q.collection_id = $2 AND q.space_id = s.space_id "
-            "AND q.term = s.term AND q.point_sk = s.point_sk")
-    count = ("INSERT INTO retrieval.lexical_df_delta (org_id, collection_id, space_id, term, d) "
-             f"SELECT $1, $2, g.space_id, {COUNT_TERM}, -count(*) FROM %s g WHERE g.lex_terms IS NOT NULL GROUP BY g.space_id")
-    if safe_mode:
-        sql = f"""/* pipeshub:pgvector.delete_tombstone */
-            WITH victims AS ({victims}),
-            ins AS (INSERT INTO retrieval.point_tombstones (org_id, point_sk) SELECT $1, point_sk FROM victims
-                    ON CONFLICT DO NOTHING RETURNING point_sk),
-            tombed AS (SELECT v.point_sk, v.space_id, v.lex_terms FROM victims v JOIN ins ON ins.point_sk = v.point_sk),
-            dp AS ({drop % (postings_of % 'tombed')} RETURNING 1),
-            dn AS ({count % 'tombed'} RETURNING 1)
-            SELECT count(*) FROM ins"""
-    else:
-        sql = f"""/* pipeshub:pgvector.delete_batch */
-            WITH victims AS ({victims}),
-            gone AS (DELETE FROM retrieval.points d USING victims v WHERE d.org_id = $1 AND d.point_sk = v.point_sk
-                     RETURNING d.point_sk, d.space_id, d.lex_terms),
-            txt AS (DELETE FROM retrieval.point_text x USING victims v WHERE x.org_id = $1 AND x.point_sk = v.point_sk RETURNING 1),
-            dp AS ({drop % (postings_of % 'gone')} RETURNING 1),
-            dn AS ({count % 'gone'} RETURNING 1)
-            SELECT count(*) FROM gone"""
+    sql = _DELETE_TOMBSTONE if safe_mode else _DELETE_BATCH
     await tx.fetchval(sql, org, collection_id, sks)
     return len(sks)
 
@@ -374,7 +391,7 @@ def _merge_args(payload: dict[str, Any]) -> tuple[str, str | None]:
 async def merge_payload(tx: Tx, org: str, collection_id: int, payload: dict[str, Any], c: Compiled | None, ids: list[uuid.UUID] | None,
                         *, replace: bool = False) -> int:
     """Shallow-merge ``payload`` into the stored payload of the points named by ``ids`` or matching ``c`` (compiled with
-    ``first_param=5``). ``replace``: replace it instead, keeping page_content. Membership arrays are not stored there; they go
+    ``first_param=5``). ``replace``: replace it instead, page_content included (the text goes unless the payload carries it). Membership arrays are not stored there; they go
     through :func:`write_groups`."""
     doc, content = _merge_args(payload)
     if not json.loads(doc) and content is None and not replace:
@@ -383,9 +400,10 @@ async def merge_payload(tx: Tx, org: str, collection_id: int, payload: dict[str,
     where = "p.point_id = ANY($5::uuid[])" if ids is not None else f"({c.where})"
     params = [org, collection_id, doc, content, ids] if ids is not None else [org, collection_id, doc, content, *c.params]
     set_payload = "$3::jsonb" if replace else "pt.payload || $3::jsonb"
+    content = "$4::text" if replace else "coalesce($4::text, pt.page_content)"      # an overwrite drops the text it does not carry, as on Qdrant
     status = await tx.execute(
         f"""/* pipeshub:pgvector.merge_payload */
-        UPDATE retrieval.point_text pt SET payload = {set_payload}, page_content = coalesce($4::text, pt.page_content)
+        UPDATE retrieval.point_text pt SET payload = {set_payload}, page_content = {content}
         FROM retrieval.points p{_from(c, text=False) if ids is None else ""}
         WHERE pt.org_id = $1 AND pt.point_sk = p.point_sk AND p.org_id = $1 AND p.collection_id = $2 AND {where}""",
         *params,
