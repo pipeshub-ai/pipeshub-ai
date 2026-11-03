@@ -167,7 +167,7 @@ class LookupsMixin(PgBase):
                   AND ($7::text[] IS NULL OR NOT coalesce(r.doc->>'indexingStatus', '') = ANY($7::text[]))
                   AND ($8::text IS NULL OR r.id > $8)
                 ORDER BY r.id OFFSET $9 LIMIT $10""", org, org_id, connector_id, status_filters, record_group_id, is_placeholder,
-                                    exclude_statuses, after_key, offset if limit else 0, limit or None, attr, _vis_code(visibility), transaction=transaction)
+                                    exclude_statuses, after_key, offset if limit is not None else 0, limit, attr, _vis_code(visibility), transaction=transaction)
         except Exception as e:
             self.logger.error(f"❌ Get records by status failed: {e}")
             raise GraphQueryError(f"Could not list records for connector {connector_id}: {e}") from e
@@ -364,8 +364,8 @@ class LookupsMixin(PgBase):
 
     async def get_linked_records(self, record_id: str, org_id: str, user_key: str, relation_types: list[str], limit: int = 10,
                                  transaction: str | None = None) -> list[dict[str, Any]]:
-        """Cross-reference neighbours of a record the user may access: listed first, then filtered by the access check, so the limit
-        applies to what the user can see."""
+        """Cross-reference neighbours of a record the user may access: the first 500 are listed (by id), then filtered by the access check, then cut to
+        ``limit``, as the Neo4j provider does (a record with more than 500 cross-references is read in part)."""
         org = current_org_id()
         try:
             rows = await self._lrows("""/* pipeshub:graph.get_linked_records */ SELECT v.id, v.doc, x.rt,
@@ -589,19 +589,23 @@ class LookupsMixin(PgBase):
         """Replace the document (as ``SET n = $node``) only while ``match_field`` still equals ``match_value``: one statement, so no overwrite
         slips between the check and the write."""
         org = current_org_id()
+        if match_value is None:      # a node without the field is not 'null': as Neo4j's ``n[f] = null``, never a match
+            return False
         doc = _node(node, collection)
         doc["id"] = key
         r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
-            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND coalesce(n.doc->$4::text, 'null'::jsonb) = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
+            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
                                                  org, collection, key, match_field, _j(doc), _j(match_value)), transaction, write=True)
         return bool(r)
 
     async def remove_nodes_by_field(self, collection: str, field_name: str, *, field_value: str | int | bool | None, transaction: str | None = None) -> int:
         org = current_org_id()
+        if field_value is None:      # as Neo4j's ``n.f = null``: never true, so nothing (a node lacking the field is not removed)
+            return 0
 
         async def go(tx: Tx) -> int:
             ids = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.remove_nodes_by_field */ SELECT id FROM graph.nodes
-                WHERE org_id = $1 AND coll = $2 AND coalesce(doc->$3::text, 'null'::jsonb) = $4::jsonb""", org, collection, field_name, _j(field_value))]
+                WHERE org_id = $1 AND coll = $2 AND doc->$3::text = $4::jsonb""", org, collection, field_name, _j(field_value))]
             if ids:
                 await _sweep_edges(tx, org, _EDGE_COLLS, [f"{collection}/{i}" for i in ids])
                 await tx.execute("/* pipeshub:graph.remove_nodes_by_field_delete */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])", org, collection, ids)
