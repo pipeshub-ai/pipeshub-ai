@@ -1,0 +1,16 @@
+▾ Thinking
+  ● Searched the web  ⌄
+      ✓ "Asana Q3 2026 revenue" → 6 results
+  ● The web results are thin, so I will check Confluence and Jira.
+  ✗ Searched Confluence  ⌄
+      Confluence
+      ✗ "Q3 revenue" → Confluence is not connected
+  ● Searched Jira  ⌄
+      Jira
+      ✓ "revenue report" → No results
+      ✓ "Q3 finance" → 2 results
+
+Revenue grew 12% [[1]](https://x.test/q3).
+
+Sources:
+[1] Q3 report <https://x.test/q3>
