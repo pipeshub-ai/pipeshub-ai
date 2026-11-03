@@ -8,6 +8,8 @@ Opt-in: nothing starts unless `postgres` is in `COMPOSE_PROFILES`, and nothing i
 - `pg-entrypoint.sh`: refuses to start (exit 78) when a required password is empty, before anything is written to the data volume; server defaults (`shared_preload_libraries`, `max_connections`, `shared_buffers`); a refusal to start on a volume whose cluster is not where `PGDATA` points; then the role setup above.
 - `scram-verifier.pl`: computes the SCRAM-SHA-256 verifier of a password (read from the environment, printable ASCII only).
 
+Password rule, enforced by `pg-entrypoint.sh` before anything is initialised: every `PG_*_PASSWORD` is non-empty and contains only letters, digits and `. _ ~ -` (the passwords go into connection URLs, and the SCRAM verifier needs printable ASCII). Anything else exits 78 with a message naming the variable.
+
 Secrets: the passwords come from the container environment. They are not in the image, the build context, or the logs. The server never receives a clear-text password: `pg-roles.sh` computes the SCRAM verifiers itself and sends only those (so `pg_stat_statements`, the statement log and `pg_stat_tmp` hold verifiers, not passwords), and turns off statement tracking and logging for its session. The passwords stay in the container's environment (`docker inspect`, `/proc/<pid>/environ` inside), and the verifiers in the database and in the volume's backups; a verifier can be attacked offline, so use long random passwords. A password you set later with `ALTER ROLE ... PASSWORD '<clear text>'` is visible to the server the same way unless you send a verifier.
 
 ## Data volume

@@ -35,9 +35,12 @@ run "cluster at data/ refused under PGDATA=data/pgdata"         78 ROOT/data/pgd
 for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_BACKUP_PASSWORD PG_KV_PASSWORD; do
   EXTRA_ENV="$v=" run "empty $v refused before anything is started" 78 ROOT/data
 done
-# a password outside printable ASCII is refused there too (the role script's SCRAM verifier needs it), and punctuation is fine
+# one rule for every password: letters, digits and . _ ~ - only (they go into URLs); everything else is refused before initdb
 for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_KV_PASSWORD; do
   EXTRA_ENV="$v=pässword" run "non-ASCII $v refused before anything is started" 78 ROOT/data
 done
-EXTRA_ENV='PG_NODE_PASSWORD=Ab1!@#%^&*()_+-=[]{}|:;<>,.?/~' run "punctuation in a password starts" 0 ROOT/data
+for bad in 'a@b' 'a:b' 'a/b' 'a?b' 'a#b' 'a%b' 'a!b' 'a=b'; do
+  EXTRA_ENV="PG_JOBS_PASSWORD=$bad" run "password '$bad' refused" 78 ROOT/data
+done
+EXTRA_ENV='PG_NODE_PASSWORD=Ab1._~-' run "the allowed punctuation starts" 0 ROOT/data
 exit $fail

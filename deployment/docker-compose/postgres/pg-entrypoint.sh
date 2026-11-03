@@ -16,10 +16,11 @@ if [ "$1" = postgres ]; then
       exit 78
     fi
   done
-  # Printable ASCII only (the role script's SCRAM verifier relies on it); refused here, before anything is initialised.
-  check_printable() {
+  # One rule for every password, checked before anything is initialised: letters, digits and . _ ~ - only. They go into connection
+  # URLs (where @ : / ? # % would break the parse) and the role setup's SCRAM verifier needs printable ASCII.
+  check_password() {
     case "$2" in
-      *[!\ -~]*) echo "pg-entrypoint: $1 has a character outside printable ASCII; use letters, digits and punctuation. Not starting." >&2; exit 78 ;;
+      *[!A-Za-z0-9._~-]*) echo "pg-entrypoint: $1 may contain only letters, digits and . _ ~ - . Not starting." >&2; exit 78 ;;
     esac
   }
   # Every password is checked before the stock entrypoint runs: a cluster initialised with one missing would be left without
@@ -32,7 +33,7 @@ if [ "$1" = postgres ]; then
       echo "pg-entrypoint: $name is empty; set it in .env. Not starting." >&2
       exit 78
     fi
-    check_printable "$name" "$val"
+    check_password "$name" "$val"
   done
   # Create what is missing of the roles on every start, once the server answers on TCP (the initialisation server listens on the
   # socket only), so a volume that was left half-set-up repairs itself and PgBouncer's verifier file is rewritten. A failure is
