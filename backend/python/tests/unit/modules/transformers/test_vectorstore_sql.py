@@ -1,6 +1,7 @@
 """Tests for VectorStore.index_documents SQL + reconciliation branches
 that are not exercised by the existing test suite."""
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from tests.support.bound_org import bind_test_org
 from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
 )
@@ -22,8 +24,13 @@ from tests.support.vector_db import (
 _LANGCHAIN_DOCUMENT_IS_CLASS = isinstance(_vs_mod.Document, type)
 
 
-
 pytestmark = pytest.mark.usefixtures("bound_org")
+
+
+@pytest.fixture
+def bound_org() -> Iterator[str]:
+    """These tests index for org "org"; the delete they trigger must run for it."""
+    yield from bind_test_org("org")
 
 
 def _make_vectorstore():

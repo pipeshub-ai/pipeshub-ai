@@ -386,27 +386,33 @@ async def test_bulk_delete_with_an_org_other_than_the_bound_one_raises(db) -> No
     assert len(_ids(db)) == 4
 
 
-# the orphan sweep marks a row it cannot attribute, once
-async def test_the_orphan_sweep_marks_a_row_with_no_org_and_stays_quiet_after() -> None:
-    from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
-
+# the orphan sweep finds the owners of a row that names none from the points themselves
+def _sweep_graph(rows: list[dict]) -> AsyncMock:
     graph = AsyncMock()
-    rows = [{"_key": "v-none"}]
     graph.get_documents_paginated = AsyncMock(side_effect=lambda *a, **k: list(rows))
     graph.get_virtual_record_ids_in_use = AsyncMock(return_value=set())
-    pipeline = MagicMock()
-    pipeline.rewrite_or_delete_vector_membership = AsyncMock()
-    log = MagicMock()
-    await sweep(graph_provider=graph, pipeline=pipeline, logger=log, page_size=10)
-    graph.update_node.assert_awaited_once()
-    assert graph.update_node.await_args.args[2] == {"orgNotResolved": True}
-    pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
-    rows[0]["orgNotResolved"] = True  # the next lap sees the mark
-    log.warning.reset_mock()
-    graph.update_node.reset_mock()
-    await sweep(graph_provider=graph, pipeline=pipeline, logger=log, page_size=10)
-    graph.update_node.assert_not_awaited()
-    log.warning.assert_not_called()
+    return graph
+
+
+async def test_the_orphan_sweep_cleans_a_row_with_no_org_org_by_org_then_drops_the_row(db) -> None:
+    from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
+
+    pipeline = _pipeline(db)
+    swept = await sweep(graph_provider=_sweep_graph([{"_key": VRID}]), pipeline=pipeline, logger=MagicMock(), page_size=10)
+
+    assert _ids(db) == set()                       # A's and B's points both went, each under its own org
+    assert pipeline._forget_virtual_record_mappings.await_count == 1  # and the row only after the last org's
+    assert swept == 1
+
+
+async def test_the_orphan_sweep_drops_a_row_with_no_org_and_no_points(db) -> None:
+    from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
+
+    pipeline = _pipeline(db)
+    await sweep(graph_provider=_sweep_graph([{"_key": "vr-nothing-left"}]), pipeline=pipeline, logger=MagicMock(), page_size=10)
+
+    pipeline._forget_virtual_record_mappings.assert_awaited_once_with(["vr-nothing-left"])
+    assert len(_ids(db)) == 4
 
 
 # a legacy shared VRID: the one mapping row outlives the first org's cleanup
@@ -430,3 +436,25 @@ async def test_the_mapping_row_is_kept_while_another_org_still_has_points(db) ->
         )
     assert released == [[VRID]]
 
+
+
+# an event that carries its org only explicitly (no envelope) still rewrites the membership of a VRID the org keeps
+async def test_bulk_delete_rewrites_membership_for_an_explicit_org_with_none_bound(db) -> None:
+    pipeline = _pipeline(db)
+    pipeline.graph_provider = _shared_graph({"ra": A})
+    result = await pipeline.bulk_delete_embeddings([VRID], A)
+    assert result["virtual_record_ids_rewritten"] == 1
+    assert _payload(db, A)["connectorIds"] == ["c9"]
+    assert _payload(db, B)["connectorIds"] == ["c1"]
+
+
+# the vector store deletes for the org its caller holds, not for whichever one is bound
+async def test_vector_store_deletes_take_the_explicit_org_and_refuse_a_different_bound_one(db) -> None:
+    from app.services.vector_db.errors import OrgMismatch
+
+    store = _vector_store(db)
+    await store.delete_embeddings(VRID, COLL, org_id=A)           # none bound: the explicit org is used
+    assert _ids(db) == {"b-b1", "b-b2"}
+    with _as(A), pytest.raises(OrgMismatch):
+        await store.delete_blocks_by_ids({"b1"}, VRID, COLL, org_id=B)
+    assert _ids(db) == {"b-b1", "b-b2"}
