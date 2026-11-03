@@ -8,6 +8,7 @@ import bisect
 import logging
 import math
 import re
+import time
 from dataclasses import replace
 from datetime import date
 from typing import TYPE_CHECKING, Any
@@ -50,6 +51,7 @@ from app.modules.retrieval.entity_filters import (
     entity_query_from,
 )
 from app.modules.retrieval.entity_permissions import (
+    LISTING_DEADLINE_SECONDS,
     EntityAccessContext,
     EntityAccessError,
     admitted_node_ids,
@@ -78,7 +80,9 @@ _MAX_READ_HINT_IDS = 8
 _VALUES_PER_RECORD = 10
 # Hits checked per permission query; a page stops at the first readable hit past it.
 _CHECK_BATCH = 1000
-# Hits one page may check before it hands back a cursor to continue from.
+# Hits one page may check past its first readable one before it hands back a
+# cursor to continue from. Before that the walk goes on to the deadline: a cursor
+# handed back over unreadable hits alone would say the value is mentioned.
 _MAX_SCAN = 5 * _CHECK_BATCH
 # Matches listed to check for permission when the first lookup is too broad.
 # Only a filter matching more falls back to counting within everything the user
@@ -223,11 +227,13 @@ async def execute_find_records_by_value(
         match = await resolver.match(org_id, raw)
         if not match.error and not match.constrained:
             return False, NOTHING_TO_MATCH_MSG
+        sources = context.app_ids & set(wanted_sources) if wanted_sources else context.app_ids
         if match.error == TOO_BROAD_MESSAGE:
             # Too broad across the org says nothing yet about what this user may
             # read. List more matches; each page checks only its own window.
-            if not context.app_ids:
-                return True, NO_MATCH_MSG
+            if not sources:
+                # As a value nobody mentions answers below.
+                return True, NO_SOURCE_MSG if wanted_sources else NO_MATCH_MSG
             match = await resolver.match(org_id, raw, limit=_SCAN_LIMIT)
             if match.error == TOO_BROAD_MESSAGE:
                 # Too many matches to list: count within the user's readable records,
@@ -248,7 +254,6 @@ async def execute_find_records_by_value(
             return False, match.error + hint
         # Every page matches the filter again: the cursor is a place in the
         # ordering, not a stored result set, so nothing is held between calls.
-        sources = context.app_ids & set(wanted_sources) if wanted_sources else context.app_ids
         if not sources:
             return True, NO_SOURCE_MSG if wanted_sources else NO_MATCH_MSG
         hits = _ordered(match.hits, sources, wanted_types)
@@ -269,12 +274,8 @@ async def execute_find_records_by_value(
     unconverted = UNCONVERTED_NOTE if "amount" in raw and not currency else ""
 
     if not records:
-        if next_cursor is not None:
-            return True, " ".join(filter(None, (
-                "No readable records in this part of the matches yet; more remain unchecked. "
-                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}",
-                unconverted,
-            )))
+        # One reply whatever stopped the walk: any other would say the value is
+        # mentioned in records this user cannot read.
         if cursor:
             return True, " ".join(filter(None, (NO_FURTHER_RECORDS_MSG, unconverted)))
         return True, " ".join(filter(None, (
@@ -356,9 +357,8 @@ async def _link_name(
         if linking.timed_out:
             caveats += " Access checks were cut short, so other entities by this name may be missing; retry."
         return [candidate.entity_id for candidate in result.accepted], None, caveats
-    if linking.timed_out:
-        # Access checks were cut short, so "no such entity" is not known.
-        return [], NAME_TOO_SLOW_MSG, ""
+    # Access checks cut short answer as an unknown name does: only a name with
+    # candidates is checked, so "too slow" would say it is mentioned somewhere.
     # The ones it may be, with the ids to pass; each passed the permission check to be offered.
     options = [*result.namesakes, *result.unchecked]
     ids = "; ".join(f'{linking.names.get(c.entity_id, c.name)}: "{c.entity_id}"' for c in options)
@@ -532,9 +532,23 @@ async def _readable_page(
     stopped at ``_MAX_SCAN`` checked hits rather than at a readable one. Only the
     window walked is checked, so a later page never re-checks earlier ones.
     ``filter_accessible_record_ids`` also drops placeholders and internal records,
-    which the entity gate alone would not."""
+    which the entity gate alone would not.
+
+    Until a readable hit is found the walk is bounded by the deadline, not by
+    ``_MAX_SCAN``, and stopping there returns an empty page with no cursor, as
+    a value with no readable hit gets."""
     page: list[EntityFilterHit] = []
+    deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
+    counted_from = start
     for offset in range(start, len(hits), _CHECK_BATCH):
+        if not page:
+            if offset > start and time.monotonic() >= deadline:
+                logger.info(
+                    "find_records_by_value: walk stopped at its deadline with no readable hit org=%s checked=%d",
+                    org_id, offset - start,
+                )
+                return [], None, False
+            counted_from = offset
         batch = hits[offset:offset + _CHECK_BATCH]
         readable = set(await graph.filter_accessible_record_ids(
             [hit.record_id for hit in batch], user_id, org_id,
@@ -547,8 +561,8 @@ async def _readable_page(
             if len(page) == limit:
                 return page, _cursor_of(page[-1]), False
             page.append(hit)
-        checked = offset + len(batch) - start
-        if checked >= _MAX_SCAN and offset + len(batch) < len(hits):
+        checked = offset + len(batch) - counted_from
+        if page and checked >= _MAX_SCAN and offset + len(batch) < len(hits):
             return page, _cursor_of(batch[-1]), True
     return page, None, False
 
