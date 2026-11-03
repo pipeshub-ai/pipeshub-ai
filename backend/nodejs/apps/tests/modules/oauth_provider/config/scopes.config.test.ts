@@ -52,6 +52,14 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(getAllowedScopeNamesForRole(false)).to.include.members(['kb:write', 'kb:upload'])
   })
 
+  it('the agent preset can add a web source: create a connector and start its sync, not delete it', () => {
+    const webSource = ['connector:write', 'connector:sync']
+    expect(AgentMcpScopes).to.include.members(webSource)
+    expect(AgentMcpScopes).to.not.include('connector:delete')
+    expect(McpToolScopes).to.include.members(webSource)
+    expect(getAllowedScopeNamesForRole(false)).to.include.members(webSource)
+  })
+
   // The first-run script mints the agent token with its own copy of the
   // preset; when the preset grew, that copy was missed twice.
   it('the first-run bootstrap mints exactly the agent preset', () => {
