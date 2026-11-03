@@ -9,6 +9,14 @@ spec:
   podSelector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+    {{- if .Values.postgres.enabled }}
+    # The PostgreSQL pod has a policy of its own; this one (which allows the whole namespace in) must not also select it.
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values:
+          - postgres
+    {{- end }}
   policyTypes:
     - Ingress
     - Egress

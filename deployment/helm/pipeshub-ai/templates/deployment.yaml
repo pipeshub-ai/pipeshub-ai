@@ -2,6 +2,7 @@
 {{- include "pipeshub-ai.validateRequiredSecrets" . }}
 {{- include "pipeshub-ai.validateSandbox" . }}
 {{- include "pipeshub-ai.validateStores" . }}
+{{- include "pipeshub-ai.validatePostgres" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,6 +26,9 @@ spec:
       {{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
       {{- if include "pipeshub-ai.createSecrets" . }}
       {{- $_ := set $podAnnotations "checksum/qdrant-api-key" (include "pipeshub-ai.qdrantApiKeyChecksum" .) }}
+      {{- end }}
+      {{- if and .Values.postgres.enabled (not .Values.postgres.auth.existingSecret) }}
+      {{- $_ := set $podAnnotations "checksum/postgres-secret" (include (print $.Template.BasePath "/postgres-secret.yaml") . | sha256sum) }}
       {{- end }}
       {{- with $podAnnotations }}
       annotations:
@@ -55,6 +59,40 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.postgres.enabled }}
+      initContainers:
+        # Brings the schema to the head of this build before the pod serves: python -m db.migrate straight against the server (it needs a
+        # session and an advisory lock, so not through the pooler). Idempotent: at head it changes nothing, several replicas serialise on
+        # the lock, and a failed run changes nothing on an installed database. Exit 4 (catalog or security-surface check) keeps the pod
+        # from starting. The DDL login is in this container only, never in the application's.
+        - name: pg-migrate
+          image: {{ include "pipeshub-ai.postgres.migrateImage" . | quote }}
+          imagePullPolicy: {{ .Values.postgres.migrateImage.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until python -c "import socket,sys; socket.create_connection((sys.argv[1], 5432), timeout=3).close()" {{ include "pipeshub-ai.postgres.name" . }}; do
+                echo "waiting for PostgreSQL"; sleep 3
+              done
+              exec python -m db.migrate
+          env:
+            {{- include "pipeshub-ai.postgres.secretEnv" (dict "name" "PG_MIGRATE_URL" "key" "migrate-url" "ctx" .) | nindent 12 }}
+            - name: PG_MIGRATE_LOCK_TIMEOUT_S
+              value: {{ .Values.postgres.migrate.lockTimeoutSeconds | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.postgres.migrate.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -409,6 +447,14 @@ spec:
             # REPLICA_SET_AVAILABLE=true and crash the API at first transaction.
             - name: REPLICA_SET_AVAILABLE
               value: {{ ternary "true" "false" $isReplicaSet | quote }}
+            {{- if .Values.postgres.enabled }}
+
+            # PostgreSQL document store (postgres.enabled): the node and jobs logins, through the pooler. Each URL is one Secret key.
+            - name: DOC_STORE
+              value: postgres
+            {{- include "pipeshub-ai.postgres.secretEnv" (dict "name" "PG_NODE_URL" "key" "node-url" "ctx" .) | nindent 12 }}
+            {{- include "pipeshub-ai.postgres.secretEnv" (dict "name" "PG_JOBS_URL" "key" "jobs-url" "ctx" .) | nindent 12 }}
+            {{- end }}
             
             # Qdrant config
             - name: QDRANT_API_KEY

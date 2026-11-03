@@ -990,3 +990,67 @@ neo4j:
     NEO4J_dbms_memory_heap_initial__size: 512m
     NEO4J_dbms_memory_heap_max__size: 2g
     NEO4J_dbms_memory_pagecache_size: 1g
+
+# ---------------------------------------------------------------------------
+# PostgreSQL as the document store of a NEW install (opt-in). Off by default: nothing below renders and the chart is unchanged.
+# MongoDB and the other stores keep running; this chart does not move existing MongoDB data. When enabled it deploys one PostgreSQL
+# server with a PgBouncer pooler beside it, and each application pod runs `python -m db.migrate` in an init container before it serves.
+# Neither image is published yet: build them (deployment/docker-compose/postgres/Dockerfile and backend/db/Dockerfile) and set
+# postgres.image / postgres.migrateImage, or push them under the default names.
+# ---------------------------------------------------------------------------
+postgres:
+  enabled: false
+  major: 18  # 17 or 18; fixed for the life of the volume (there is no in-place major upgrade)
+  image:
+    repository: pipeshubai/postgres
+    tag: ""  # default: <major>-1
+    pullPolicy: IfNotPresent
+  migrateImage:
+    repository: pipeshubai/pipeshub-migrate
+    tag: ""  # default: image.tag
+    pullPolicy: IfNotPresent
+  migrate:
+    lockTimeoutSeconds: 600
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  auth:
+    # Your own Secret instead of the chart's. Keys: admin-password, node-password, connectors-password, indexing-password,
+    # query-password, kv-password, jobs-password, migrate-password, backup-password (letters, digits and . _ ~ - only), and the URLs
+    # node-url (postgresql://pipeshub_node_login:<pw>@<release>-postgres:6432/pipeshub), jobs-url (pipeshub_jobs, same host and port)
+    # and migrate-url (postgresql+psycopg://pipeshub_migrate:<pw>@<release>-postgres:5432/pipeshub). Required with external secrets.
+    existingSecret: ""
+    # Required (no defaults) unless existingSecret is set: --set postgres.auth.passwords.<name>=<password>
+    passwords:
+      admin: ""
+      node: ""
+      connectors: ""
+      indexing: ""
+      query: ""
+      kv: ""
+      jobs: ""
+      migrate: ""
+      backup: ""
+  persistence:
+    size: 20Gi
+    storageClass: ""  # default: global.storageClass
+  sharedBuffers: 1GB  # about 25% of the memory limit
+  maxConnections: 200
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  pgbouncer:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+  nodeSelector: {}
+  tolerations: []

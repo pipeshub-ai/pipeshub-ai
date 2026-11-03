@@ -152,4 +152,11 @@ proxy (python -m app.docker_proxy_main) rather than exposed raw.
 {{- end }}
 {{- end }}
 
+{{- if .Values.postgres.enabled }}
+
+PostgreSQL document store: the application uses DOC_STORE=postgres through the pooler of {{ include "pipeshub-ai.postgres.name" . }}.
+  Each application pod runs `python -m db.migrate` in an init container before it serves (it is idempotent); if it fails, read
+  its log: kubectl logs <pod> -c pg-migrate. Passwords are in the Secret {{ include "pipeshub-ai.postgres.secretName" . }} and are not shown here.
+{{- end }}
+
 For more information, visit: https://pipeshub.com
