@@ -66,8 +66,12 @@ def _graph() -> tuple[list, list]:
     # Collections: one holding only a trashed, a placeholder and another organisation's record, one with a live record.
     nodes += [
         app("vc-kb-dead", "Dead", connector="KB", app_group="KB"), app("vc-kb-live", "Live", connector="KB", app_group="KB"),
-        rec("vc-kb-d1", "d1", isDeleted=True), rec("vc-kb-d2", "d2", isPlaceholder=True),
-        rec("vc-kb-d3", "d3", orgId="org-2"), rec("vc-kb-l1", "l1", connector_id="vc-kb-live"),      # a record is read by the rules of the App it is filed in
+        rec("vc-kb-d1", "d1", connector_id="vc-kb-dead", isDeleted=True),
+        rec("vc-kb-d2", "d2", connector_id="vc-kb-dead", isPlaceholder=True),
+        rec("vc-kb-d3", "d3", connector_id="vc-kb-dead", orgId="org-2"),
+        # A record is read by the rules of the App it is filed in; the dead ones above are filed in theirs, so only
+        # their own deleted, placeholder and organization tests can leave them out.
+        rec("vc-kb-l1", "l1", connector_id="vc-kb-live"),
     ]
     edges += [bt(k, "vc-kb-dead") for k in ("vc-kb-d1", "vc-kb-d2", "vc-kb-d3")] + [bt("vc-kb-l1", "vc-kb-live")]
     return nodes, edges

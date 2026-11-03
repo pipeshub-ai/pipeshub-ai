@@ -11,29 +11,56 @@ from typing import TYPE_CHECKING
 import pytest
 
 from . import gen
-from .gen.shrink import regression, shrink, write_regression
-from .runner import ConformanceRunner, Finding, OracleLayer
+from .gen.shrink import cite_regression, regression, shrink, write_regression
+from .runner import ConformanceRunner, Finding, OracleLayer, vrids
 from .scenario import SCENARIOS_ROOT
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .layers import GraphCheckLayer
     from .model import World
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by PERM_GEN_WORLDS; the CI job has its own limit
 
 
-async def _file(layer: GraphCheckLayer, world: World, finding: Finding, tag: str) -> str:
+async def _file(
+    layer: GraphCheckLayer, world: World, finding: Finding, tag: str, directory: Path = SCENARIOS_ROOT / "regressions",
+) -> str:
+    """Shrink the world around the first finding and file it as a scenario that reproduces it. A citation finding names a
+    virtual record id (not a node), so it is shrunk on the citation check and filed as a citation expectation."""
+    reference = OracleLayer(layer.shape)
+    note = f"{finding.layer} {finding.kind} on {finding.viewer} -> {finding.node}"
+    if finding.kind == "cite":
+        indexed_only = "indexed_only=True" in finding.reason
+        keep = {finding.viewer} | {n.id for n in world.nodes if (n.vrid or f"v-{n.id}") == finding.node}
+
+        async def cite_fails(w: World) -> bool:
+            if finding.viewer not in {p.id for p in w.principals} or finding.node not in vrids(w):
+                return False
+            try:
+                want = await reference.cited(w, finding.viewer, [finding.node], indexed_only)
+                got = await layer.cited(w, finding.viewer, [finding.node], indexed_only)
+            finally:
+                await layer.release([w])
+            return got != want
+
+        small = await shrink(world, keep, cite_fails)
+        scenario = cite_regression(f"GEN-{tag}", small, finding.viewer, finding.node, indexed_only, note, layer.shape)
+        return str(write_regression(directory, scenario))
 
     async def fails(w: World) -> bool:
         if not {finding.viewer, finding.node} <= {p.id for p in w.principals} | {n.id for n in w.nodes}:
             return False
-        want = OracleLayer(layer.shape).explain(w, finding.viewer, [finding.node])[finding.node].admitted
-        return (finding.node in await layer.admitted(w, finding.viewer, [finding.node])) != want
+        try:
+            want = reference.explain(w, finding.viewer, [finding.node])[finding.node].admitted
+            return (finding.node in await layer.admitted(w, finding.viewer, [finding.node])) != want
+        finally:
+            await layer.release([w])
 
     small = await shrink(world, {finding.viewer, finding.node}, fails)
-    scenario = regression(f"GEN-{tag}", small, finding.viewer, finding.node,
-                          f"{finding.layer} {finding.kind} on {finding.viewer} -> {finding.node}", layer.shape)
-    return str(write_regression(SCENARIOS_ROOT / "regressions", scenario))
+    scenario = regression(f"GEN-{tag}", small, finding.viewer, finding.node, note, layer.shape)
+    return str(write_regression(directory, scenario))
 
 
 CHUNK = 25  # worlds resident in a store at once
