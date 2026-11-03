@@ -1,6 +1,7 @@
 import { DocStoreNotReady, mongoFallbacks } from './store-select';
 import { Logger } from '../services/logger.service';
 import { getActivityRepository } from './activity';
+import { getAgentCallRepository } from './agent-call-event';
 import { getConnectorsConfigRepository } from './connectors-config';
 import { getConversationRepository } from './conversation';
 import { getCredentialRepository } from './credential';
@@ -27,6 +28,7 @@ import { getUserRepository } from './user';
 /** Every repository, by directory. A test keeps this list equal to the directories. */
 export const REPOSITORIES: Record<string, () => unknown> = {
   activity: getActivityRepository,
+  'agent-call-event': getAgentCallRepository,
   'connectors-config': getConnectorsConfigRepository,
   conversation: getConversationRepository,
   credential: getCredentialRepository,
