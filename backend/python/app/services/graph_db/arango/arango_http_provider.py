@@ -22330,6 +22330,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER edge._to IN [{targets}] AND STARTS_WITH(edge._from, "{records}/")
                     LET rec = DOCUMENT(edge._from)
                     FILTER rec != null""", True
+        if seed.key == "records":
+            bind_vars["seed_ids"] = list(seed.entry)
+            return f"FOR rec IN {records} FILTER rec._key IN @seed_ids", False
         if seed.key == "links":
             bind_vars["seed_ids"] = list(pushed["links"][0]["ids"])
             return f"""FOR seed IN {records}
@@ -22427,6 +22430,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             AND lo.orgId == @org_id
                             AND (@links_{i}_relation == null OR lk.relationshipType == @links_{i}_relation)
                         LIMIT 1 RETURN 1) > 0""")
+        for i, record_ids in enumerate(pushed.get("records", [])):
+            bind_vars[f"records_{i}"] = list(record_ids)
+            where.append(f"rec._key IN @records_{i}")
         for i, entity in enumerate(pushed.get("entities", [])):
             bind_vars[f"entities_{i}"] = str(entity.get("id") or "")
             entity_type = str(entity.get("type") or "")

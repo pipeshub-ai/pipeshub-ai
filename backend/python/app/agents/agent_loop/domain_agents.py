@@ -420,6 +420,8 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "knowledgegraph__list_files",
             "knowledgegraph__fetch_record",
             "knowledgegraph__find_records_by_person",
+            # In place of find_records_by_person when record query is on; only one is registered.
+            "knowledgegraph__find_records",
         }),
         instructions_factory=_internal_exploration_instructions,
         max_turns=_EXPLORATION_MAX_TURNS,

@@ -53,6 +53,7 @@ from .models import NavigationView
 from .navigator import GraphNavigator, ListingFailedError
 from .ops.results import result_text, search_result_summary
 from .ops.record_query import field_guide as _record_field_guide
+from .ops.record_query import MENTIONS_CONDITION_TEXT as _MENTIONS_CONDITION_TEXT
 from .ops.record_query import roles_guide as _record_roles_guide
 from .ops.scope import (
     NODE_NOT_FOUND_MESSAGE,
@@ -1183,13 +1184,15 @@ class KnowledgeGraph:
             "with the total, then a page of matching records to cite.\n\n"
             "where: conditions that must all hold. Each is one of {\"field\": name, \"in\": [values]}, "
             "{\"field\": name, \"from\": ..., \"to\": ...} (dates as YYYY-MM-DD, inclusive), "
-            "{\"person\": {\"role\": role, \"ids\": [...]}}, {\"organization\": {\"ids\": [...]}}, "
+            "{\"person\": {\"role\": role, \"name\": full name, email or \"me\"}}, "
+            "{\"organization\": {\"ids\": [...]}}, "
             "{\"linked_to\": {\"ids\": [record ids]}}, {\"entity\": {\"type\": ..., \"id\": ...}}, "
-            "or {\"any_of\": [...]}, {\"all_of\": [...]}, {\"not\": {...}}.\n"
+            + _MENTIONS_CONDITION_TEXT
+            + "or {\"any_of\": [...]}, {\"all_of\": [...]}, {\"not\": {...}}.\n"
             f"Fields: {_record_field_guide()}.\nRoles: {_record_roles_guide()}.\n"
             "Values are not listed here: pass describe=[field] to get a field's values among the matches. "
-            "Get person, organization and entity ids from search_entities; the person id \"me\" is the user "
-            "asking.\n\n"
+            "A person name matching several people lists them to pick by email. "
+            "Get organization and entity ids from search_entities.\n\n"
             "Examples: highest-priority tickets opened in March: where=[{\"field\": \"priority\", \"in\": "
             "[\"HIGHEST\"]}, {\"field\": \"created\", \"from\": \"2026-03-01\", \"to\": \"2026-03-31\"}]. "
             "Won deal value by month: where=[{\"field\": \"deal_outcome\", \"in\": [\"WON\"]}], "
@@ -1557,6 +1560,24 @@ class KnowledgeGraph:
         """Entity-linked search — calls ops/entity_search.py."""
         from .ops.entity_search import execute_search_by_entities
         return await execute_search_by_entities(self.state, mentions=mentions, match=match, query=query)
+
+    def retired_tools_for_request(self, tools: list[Tool]) -> list[tuple[Tool, str]]:
+        """Tools merged into find_records this request, callable by their old
+        names and never offered (``entity_search_surface.retired_tools``)."""
+        from .entity_search_surface import retired_tools
+        return retired_tools(self, tools, knowledge_graph_policy_in(self.state))
+
+    async def _merged_find_records_by_entity(self, **args: Any) -> tuple[bool, str]:  # noqa: ANN401
+        from .ops.merged_listings import find_records_for_entity
+        return await find_records_for_entity(self.state, **args)
+
+    async def _merged_find_records_by_person(self, **args: Any) -> tuple[bool, str]:  # noqa: ANN401
+        from .ops.merged_listings import find_records_for_person
+        return await find_records_for_person(self.state, **args)
+
+    async def _merged_find_records_by_value(self, **args: Any) -> tuple[bool, str]:  # noqa: ANN401
+        from .ops.merged_listings import find_records_for_value
+        return await find_records_for_value(self.state, **args)
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: the entity tools as the request's

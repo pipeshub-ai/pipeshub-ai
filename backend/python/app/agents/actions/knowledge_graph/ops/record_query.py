@@ -16,6 +16,9 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    NAMED_ENTITIES_DISABLED_MSG,
+)
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     limited_scope_note,
     load_entity_access_context,
@@ -26,15 +29,26 @@ from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
-from app.modules.retrieval.record_fields import FIELDS, ROLE_EDGES, FieldKind, Store
-from app.modules.retrieval.record_query.engine import run_record_query
+from app.modules.retrieval.record_fields import (
+    FIELDS,
+    PERSON_EDGES,
+    ROLE_EDGES,
+    FieldKind,
+    Store,
+)
+from app.modules.retrieval.record_query.engine import (
+    QueryNotRunnable,
+    run_record_query,
+)
 from app.modules.retrieval.record_query.evaluate import (
     CLASSIFICATION_FAILED,
     NOT_CLASSIFIED,
 )
 from app.modules.retrieval.record_query.model import (
     EntityCondition,
+    FieldCondition,
     LinkCondition,
+    MentionCondition,
     OrganizationCondition,
     PersonCondition,
     RecordQuery,
@@ -47,6 +61,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from app.modules.agents.qna.chat_state import ChatState
+    from app.modules.retrieval.entity_permissions import EntityAccessContext
     from app.modules.retrieval.record_query.model import RecordQueryResult
 
 logger = logging.getLogger(__name__)
@@ -57,6 +72,17 @@ PEOPLE_NOT_ALLOWED_MSG = (
     "People and organisation conditions are not available in this workspace; filter by the other fields."
 )
 _TOP_ROWS_SHOWN_AS_IDS = 50
+# The where shape of a mentions condition, in the tool description; left out
+# where named entities are off.
+MENTIONS_CONDITION_TEXT = (
+    '{"mentions": {"kind", "name", "amount": {"from", "to", "currency"}, "quantity": {"from", "to", '
+    '"dimension"}, "date": {"from", "to"}, "percent": {"from", "to"}}} (a value written in the text however '
+    'it is phrased, "deals over $50k"; percent as a fraction; a mention, never a field to total or group), '
+)
+MENTIONS_NOTE = (
+    "mentions matched values written in the records' text (as extracted), not record fields: "
+    "count these records, never total or group the mentioned values."
+)
 # Share of matched plus unclassified records above which the answer is said to be mostly unknown.
 _UNKNOWN_DOMINATES = 0.5
 # Row facts a citation quotes (row_view names), in this order.
@@ -79,7 +105,7 @@ def _resolve_ids(query: RecordQuery, state: ChatState) -> None:
     if shortener is None:
         return
     for cond in walk_conditions(query.where):
-        if isinstance(cond, PersonCondition):
+        if isinstance(cond, PersonCondition) and cond.person.ids:
             cond.person.ids = [shortener.resolve(i) for i in cond.person.ids]
         elif isinstance(cond, OrganizationCondition):
             cond.organization.ids = [shortener.resolve(i) for i in cond.organization.ids]
@@ -98,7 +124,12 @@ def _errors(exc: ValidationError) -> str:
     return "Invalid query: " + "; ".join(seen[:5])
 
 
-async def execute_find_records(state: ChatState, **args: Any) -> tuple[bool, str]:  # noqa: ANN401
+async def execute_find_records(
+    state: ChatState, *, sources: list[str] | None = None, **args: Any,  # noqa: ANN401
+) -> tuple[bool, str]:
+    """``sources`` (not a tool parameter) are app or knowledge-base ids, as
+    find_records_by_value took them: apps narrow the connectors read, and
+    without an app among them they are containers."""
     policy = knowledge_graph_policy_in(state)
     if not policy.record_query:
         return False, NOT_ENABLED_MSG
@@ -117,10 +148,20 @@ async def execute_find_records(state: ChatState, **args: Any) -> tuple[bool, str
     for cond in conditions:
         if isinstance(cond, EntityCondition) and not policy.allows(cond.entity.type):
             return False, f"Entity type {cond.entity.type!r} is not available in this workspace."
+    if any(isinstance(c, MentionCondition) for c in conditions) and not policy.named_entities:
+        return False, NAMED_ENTITIES_DISABLED_MSG
     _resolve_ids(query, state)
     try:
         context = await load_entity_access_context(state)
-        result = await run_record_query(state["graph_provider"], context, query)
+        refused, people = await resolve_person_names(state, context, query)
+        if refused:
+            return True, refused
+        apps = [s for s in sources or () if s in context.app_ids]
+        if sources and not apps:
+            query.where.append(FieldCondition.model_validate({"field": "container", "in": list(sources)}))
+        result = await run_record_query(state["graph_provider"], context, query, apps=apps or None)
+    except QueryNotRunnable as exc:
+        return False, str(exc)
     except EntityAccessError:
         logger.warning("find_records failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
@@ -142,7 +183,52 @@ async def execute_find_records(state: ChatState, **args: Any) -> tuple[bool, str
         {r["record_id"]: row_facts(r) for r in result.rows if r.get("record_id")},
     )
     return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state), cite_refs=cite_refs,
-                        scope_note=limited_scope_note(context))
+                        scope_note=limited_scope_note(context), people=people)
+
+
+_AGAIN = 'Call knowledgegraph__find_records again with that person\'s email as person.name.'
+
+
+async def resolve_person_names(
+    state: ChatState, context: EntityAccessContext, query: RecordQuery,
+) -> tuple[str | None, dict[str, str]]:
+    """Each person condition given by name gets the ids of the one person it
+    names, resolved as find_records_by_person resolves one (``match_people``):
+    ``me``, an email, or a full name. Returns a reply instead of running when
+    a name names several people who link to readable records (they are
+    listed to choose from, never guessed) or none: a name no one has and one
+    whose people the user shares no readable record with get the same
+    find_records_by_person no-match reply, so neither is run nor told
+    apart. Also returns the label of each person named back, by the name
+    asked."""
+    from app.agents.actions.knowledge_graph.ops import people as people_op
+
+    graph, labels = state["graph_provider"], {}
+    for cond in walk_conditions(query.where):
+        if not isinstance(cond, PersonCondition) or cond.person.ids or cond.person.name is None:
+            continue
+        asked, role = cond.person.name, cond.person.role
+        if asked.casefold() in people_op.SELF_NAMES:
+            cond.person.ids = ["me"]
+            continue
+        edges = list(ROLE_EDGES[role]) if role else list(PERSON_EDGES)
+        try:
+            shown = await people_op.match_people(state, graph, context, asked, edge_types=edges)
+        except ValueError as exc:
+            return str(exc), {}
+        except EntityAccessError:
+            raise
+        except Exception as exc:
+            raise EntityAccessError("person lookup failed") from exc
+        if len(shown) > 1:
+            return people_op._ambiguous(asked, [group for group, _ in shown], again=_AGAIN), {}
+        if not shown:
+            return people_op._no_match(state, asked, context), {}
+        group = shown[0][0]
+        labels[asked] = people_op._label(group)
+        cond.person.ids = [u["id"] for u in group]
+    logger.debug("find_records people by name resolved=%d", len(labels))
+    return None, labels
 
 
 def _applied(query: RecordQuery) -> str:
@@ -161,7 +247,7 @@ def row_facts(row: dict[str, Any]) -> str:
 
 def render(
     query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None,  # noqa: ANN401
-    cite_refs: Mapping[str, str] | None = None, scope_note: str = "",
+    cite_refs: Mapping[str, str] | None = None, scope_note: str = "", people: Mapping[str, str] | None = None,
 ) -> str:
     """Totals first, then what was computed, then a page of rows to cite."""
     cite_refs = cite_refs or {}
@@ -175,6 +261,10 @@ def render(
         lines.append(scope_note)
     if query.where:
         lines.append(f"Conditions as applied: {_applied(query)}")
+    for asked, label in (people or {}).items():
+        lines.append(f'Person "{asked}" is {label}.')
+    if any(isinstance(c, MentionCondition) for c in query.where):
+        lines.append(MENTIONS_NOTE)
     # A stopped scan saw only part of the matches: every figure from it is partial, not just the total.
     kind = "approximate" if result.approximate else "exact"
     if query.aggregate.op != "count" and result.value is not None:
@@ -234,4 +324,4 @@ def value_fields() -> list[str]:
     return [f.name for f in FIELDS.values() if f.kind in (FieldKind.VALUE, FieldKind.TEXT)]
 
 
-__all__ = ["execute_find_records", "field_guide", "render", "roles_guide", "value_fields"]
+__all__ = ["MENTIONS_CONDITION_TEXT", "execute_find_records", "field_guide", "render", "roles_guide", "value_fields"]

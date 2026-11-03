@@ -238,3 +238,16 @@ async def test_a_bare_kind_and_a_text_limit_are_read(listing: AsyncMock) -> None
 async def test_an_invalid_kind_error_lists_contact_kinds_too(listing: AsyncMock) -> None:
     ok, body = await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME], kinds=["people"])
     assert not ok and "email" in body.split("Pass kinds from:")[1]
+
+
+async def test_with_record_query_on_the_next_step_names_find_records(
+    listing: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """find_records_by_entity is withdrawn there, so the hint must not send the model to it."""
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        co_mentions, "knowledge_graph_policy_in", lambda _state: replace(full_arm(named_entities=True), record_query=True),
+    )
+    ok, body = await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME])
+    assert ok and "knowledgegraph__find_records(where=" in body and "find_records_by_entity" not in body

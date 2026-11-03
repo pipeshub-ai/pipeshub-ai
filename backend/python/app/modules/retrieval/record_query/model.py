@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from app.modules.retrieval.record_fields import FIELDS, FieldKind, canonical_role, field
 from app.modules.retrieval.record_query.paging import NEWEST, OLDEST, decode_cursor
@@ -75,18 +75,128 @@ class FieldCondition(_Strict):
 
 class _People(_Strict):
     role: str | None = None
-    ids: list[str] = Field(min_length=1)
+    ids: list[str] | None = Field(default=None, min_length=1)
+    # A full name, an email or "me"; the tool resolves it to ids before the engine runs.
+    name: str | None = None
 
     @field_validator("role")
     @classmethod
     def _known_role(cls, role: str | None) -> str | None:
         return None if role is None else canonical_role(role)
 
+    @field_validator("name")
+    @classmethod
+    def _named(cls, name: str | None) -> str | None:
+        if name is None:
+            return None
+        name = " ".join(name.split())
+        if not name:
+            raise ValueError("person name must not be blank")
+        return name
+
+    @model_validator(mode="after")
+    def _who(self) -> _People:
+        if not self.ids and self.name is None:
+            raise ValueError('person takes "name" (a full name, an email or "me") or "ids"')
+        return self
+
 
 class PersonCondition(_Strict):
-    """A person (an id ``search_entities`` returned) in a role; no role means any."""
+    """A person, by name, email, ``me`` or ids ``search_entities`` returned, in a role; no role means any."""
 
     person: _People
+
+
+class _Range(_Strict):
+    from_: float | None = Field(default=None, alias="from")
+    to: float | None = None
+
+
+class _Amount(_Range):
+    currency: str | None = None
+
+
+class _Quantity(_Range):
+    dimension: str | None = None
+
+
+class _Dates(_Strict):
+    """Whole UTC days, both inclusive, as YYYY-MM-DD; or epoch ms, where a UTC
+    midnight ``to`` covers that whole day."""
+
+    from_: str | int | None = Field(default=None, alias="from")
+    to: str | int | None = None
+
+
+class _Mention(_Strict):
+    kind: str | list[str] | None = None  # several kinds: any of them
+    name: str | None = None
+    amount: _Amount | None = None
+    quantity: _Quantity | None = None
+    date: _Dates | None = None
+    percent: _Range | None = None
+
+
+def _date_ms(value: str | int) -> int:
+    return value if isinstance(value, int) else day_start_ms(value)
+
+
+def _exclusive_end_ms(value: str | int) -> int:
+    """The graph's exclusive end for an inclusive ``to``: the next day for a
+    date or a UTC midnight, else the next millisecond."""
+    end = _date_ms(value)
+    return end + (_DAY_MS if isinstance(value, str) or end % _DAY_MS == 0 else 1)
+
+
+class MentionCondition(_Strict):
+    """Records whose text mentions a value named-entity extraction found: a
+    kind, a name, an amount (with currency), a quantity, a date, a percent.
+    A text mention, not a field of the record: it filters, never totals or
+    groups. The engine resolves it to record ids before the scan."""
+
+    mentions: _Mention
+    _record_ids: frozenset[str] | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _valid(self) -> MentionCondition:
+        from app.modules.retrieval.entity_filters import entity_query_from
+
+        if not any(v is not None for v in self.mentions.model_dump().values()):
+            raise ValueError("mentions takes kind, name, amount, quantity, date or percent")
+        date = self.mentions.date
+        for bound in (date.from_, date.to) if date else ():
+            if isinstance(bound, str):
+                day_start_ms(bound)
+        entity_query_from(self.entity_filter())
+        return self
+
+    def entity_filter(self) -> dict[str, Any]:
+        """The condition as ``EntityFilterResolver`` reads it (the date end exclusive)."""
+        m, raw = self.mentions, {}
+        if m.kind:
+            raw["kinds"] = [m.kind] if isinstance(m.kind, str) else list(m.kind)
+        if m.name:
+            raw["name"] = m.name
+        if m.date and (m.date.from_ is not None or m.date.to is not None):
+            raw["mentionedDate"] = {
+                "from": None if m.date.from_ is None else _date_ms(m.date.from_),
+                "to": None if m.date.to is None else _exclusive_end_ms(m.date.to),
+            }
+        if m.amount:
+            raw["amount"] = {"min": m.amount.from_, "max": m.amount.to, "currency": m.amount.currency or ""}
+        if m.quantity:
+            raw["quantity"] = {"min": m.quantity.from_, "max": m.quantity.to, "dimension": m.quantity.dimension or ""}
+        if m.percent:
+            raw["percent"] = {"min": m.percent.from_, "max": m.percent.to}
+        return raw
+
+    @property
+    def record_ids(self) -> frozenset[str] | None:
+        """The records the mention resolved to; None before the engine resolves it."""
+        return self._record_ids
+
+    def resolve(self, record_ids: frozenset[str]) -> None:
+        self._record_ids = record_ids
 
 
 class _Ids(_Strict):
@@ -130,7 +240,8 @@ class Not(_Strict):
 
 
 Condition = Union[  # noqa: UP007 - pydantic resolves the recursive union by name
-    FieldCondition, PersonCondition, OrganizationCondition, LinkCondition, EntityCondition, AllOf, AnyOf, Not,
+    FieldCondition, PersonCondition, OrganizationCondition, LinkCondition, EntityCondition, MentionCondition,
+    AllOf, AnyOf, Not,
 ]
 
 
@@ -194,6 +305,11 @@ def _is_container(cond: object) -> bool:
     return isinstance(cond, FieldCondition) and cond.field == "container"
 
 
+def _top_level_only(cond: object) -> bool:
+    """Conditions the provider applies to the scan and the evaluator cannot decide nested."""
+    return isinstance(cond, (EntityCondition, MentionCondition)) or _is_container(cond)
+
+
 class RecordQuery(_Strict):
     where: list[Condition] = Field(default_factory=list)
     aggregate: Aggregate = Field(default_factory=Aggregate)
@@ -221,15 +337,16 @@ class RecordQuery(_Strict):
     @model_validator(mode="after")
     def _entities_on_top(self) -> RecordQuery:
         def nested(cond: Condition) -> bool:
-            if isinstance(cond, EntityCondition) or _is_container(cond):
+            if _top_level_only(cond):
                 return True
             if isinstance(cond, (AllOf, AnyOf)):
                 return any(nested(c) for c in (cond.all_of if isinstance(cond, AllOf) else cond.any_of))
             return isinstance(cond, Not) and nested(cond.not_)
 
-        if any(nested(c) for c in self.where if not (isinstance(c, EntityCondition) or _is_container(c))):
+        if any(nested(c) for c in self.where if not _top_level_only(c)):
             raise ValueError(
-                "an entity or container condition goes in the top-level where list, not inside all_of, any_of or not"
+                "an entity, container or mentions condition goes in the top-level where list, "
+                "not inside all_of, any_of or not"
             )
         return self
 
@@ -290,6 +407,7 @@ __all__ = [
     "Group",
     "GroupBy",
     "LinkCondition",
+    "MentionCondition",
     "Not",
     "OrganizationCondition",
     "PersonCondition",

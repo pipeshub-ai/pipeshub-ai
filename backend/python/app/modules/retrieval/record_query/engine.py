@@ -16,6 +16,11 @@ import uuid
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.entity_filters import (
+    TOO_BROAD_MESSAGE,
+    EntityFilterResolver,
+    EntityFilterUnavailableError,
+)
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
     EntityAccessError,
@@ -34,6 +39,7 @@ from app.modules.retrieval.record_query.evaluate import (
 from app.modules.retrieval.record_query.model import (
     MAX_DESCRIBED_VALUES,
     Group,
+    MentionCondition,
     PersonCondition,
     RecordQuery,
     RecordQueryResult,
@@ -44,6 +50,8 @@ from app.modules.retrieval.record_query.pushdown import pushdown
 from app.services.graph_db.common.record_query_rows import classification_pending
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from app.modules.retrieval.entity_permissions import EntityAccessContext
     from app.modules.retrieval.record_query.evaluate import Row
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -81,13 +89,19 @@ async def run_record_query(
     window: int = WINDOW,
     deadline_seconds: float = DEADLINE_SECONDS,
     correlation_id: str | None = None,
+    apps: Iterable[str] | None = None,
 ) -> RecordQueryResult:
+    """``apps``, when given, narrows the connectors read to those of them in scope."""
     qid = correlation_id or uuid.uuid4().hex[:12]
     connector_ids = _connector_ids(context, query)
+    if apps is not None:
+        wanted = set(apps)
+        connector_ids = [c for c in connector_ids if c in wanted]
     if not connector_ids:
         logger.debug("record query %s: no connector in scope", qid)
         return RecordQueryResult(total=0)
     query = await resolve_people(graph_provider, context, query, query_id=qid)
+    query = await resolve_mentions(graph_provider, context, query, connector_ids, scan_cap=scan_cap, query_id=qid)
     pushed = pushdown(query)
     started = time.monotonic()
     deadline = started + deadline_seconds
@@ -134,6 +148,43 @@ async def run_record_query(
     return result
 
 
+class QueryNotRunnable(ValueError):
+    """The query cannot run as asked (a mention too broad to list); the message says what to change."""
+
+
+TOO_BROAD_MENTION_MSG = (
+    "The mentions condition matches too many records to list; narrow it with a tighter range or a name, "
+    "or add another condition."
+)
+
+
+async def resolve_mentions(
+    graph_provider: IGraphDBProvider, context: EntityAccessContext, query: RecordQuery,
+    connector_ids: list[str], *, scan_cap: int = SCAN_CAP, query_id: str = "",
+) -> RecordQuery:
+    """``query`` with each mentions condition resolved to the records of
+    ``connector_ids`` whose text mentions the value (the named-entity graph),
+    at most ``scan_cap`` of them; the provider then scans only those."""
+    mentions = [c for c in query.where if isinstance(c, MentionCondition)]
+    if not mentions:
+        return query
+    resolved = query.model_copy(deep=True)
+    resolver, in_scope = EntityFilterResolver(graph_provider), set(connector_ids)
+    for cond in (c for c in resolved.where if isinstance(c, MentionCondition)):
+        try:
+            match = await resolver.match(context.org_id, cond.entity_filter(), limit=scan_cap)
+        except EntityFilterUnavailableError as exc:
+            raise EntityAccessError("Record query failed") from exc
+        if match.error == TOO_BROAD_MESSAGE:
+            raise QueryNotRunnable(TOO_BROAD_MENTION_MSG)
+        if match.error:
+            raise QueryNotRunnable(match.error)
+        cond.resolve(frozenset(h.record_id for h in match.hits if h.connector_id in in_scope))
+        logger.debug("record query id=%s mention resolved: hits=%d in_scope=%d", query_id, len(match.hits),
+                     len(cond.record_ids or ()))
+    return resolved
+
+
 async def resolve_people(
     graph_provider: IGraphDBProvider, context: EntityAccessContext, query: RecordQuery, *, query_id: str = "",
 ) -> RecordQuery:
@@ -145,6 +196,9 @@ async def resolve_people(
         return query
     resolved = query.model_copy(deep=True)
     conditions = [c for c in walk_conditions(resolved.where) if isinstance(c, PersonCondition)]
+    if any(not c.person.ids for c in conditions):
+        # The tool resolves names first: the engine never guesses who a name is.
+        raise QueryNotRunnable("a person condition reached the engine without ids")
 
     def named(ids: list[str]) -> list[str]:
         return [context.user_key if i.strip().casefold() == SELF_ID else i for i in ids]
@@ -220,6 +274,6 @@ def row_view(row: Row) -> dict[str, Any]:
 
 
 __all__ = [
-    "DEADLINE_SECONDS", "MAX_TO_CLASSIFY", "SCAN_CAP", "SELF_ID", "WINDOW", "resolve_people", "row_view",
-    "run_record_query",
+    "DEADLINE_SECONDS", "MAX_TO_CLASSIFY", "SCAN_CAP", "SELF_ID", "TOO_BROAD_MENTION_MSG", "WINDOW",
+    "QueryNotRunnable", "resolve_mentions", "resolve_people", "row_view", "run_record_query",
 ]

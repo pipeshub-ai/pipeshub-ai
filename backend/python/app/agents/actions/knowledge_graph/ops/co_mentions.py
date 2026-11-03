@@ -222,8 +222,14 @@ async def _render(
     lines.extend(record_line(by_key[r], context, shortener, frontend_url) for r in examples)  # type: ignore[arg-type]
     lines.append("")
     lines.append(f"Note: {COUNT_NOTE} {COVERAGE_NOTE}")
-    hint = "Next: knowledgegraph__find_records_by_entity(entity_id=...) lists every record of one of them"
-    if knowledge_graph_policy_in(state).search_by_entities:
+    policy = knowledge_graph_policy_in(state)
+    hint = (
+        'Next: knowledgegraph__find_records(where=[{"entity": {"type": "named_entity", "id": ...}}]) '
+        "lists and counts every record of one of them"
+        if policy.record_query
+        else "Next: knowledgegraph__find_records_by_entity(entity_id=...) lists every record of one of them"
+    )
+    if policy.search_by_entities:
         hint += '; knowledgegraph__search_by_entities(mentions=[...], match="all") lists the records naming both'
     lines.append(hint + ".")
     # So a follow-up find_records_by_entity or search(entity_ids=...) knows these ids.

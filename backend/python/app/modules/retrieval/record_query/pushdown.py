@@ -2,7 +2,7 @@
 
 Only top-level conditions on indexed facts go down: source, record type,
 container, created or updated window, a person in a role, an organisation, a
-link, an entity. They narrow the scan; the evaluator then decides every
+link, an entity, and the records a text mention resolved to. They narrow the scan; the evaluator then decides every
 condition again on the returned rows, so pushing one down never changes an
 answer, only how many candidates are read. Field conditions such as status
 or amount stay in the evaluator, where unknown values are counted.
@@ -17,6 +17,7 @@ from app.modules.retrieval.record_query.model import (
     EntityCondition,
     FieldCondition,
     LinkCondition,
+    MentionCondition,
     OrganizationCondition,
     PersonCondition,
 )
@@ -48,6 +49,8 @@ class Pushdown(TypedDict, total=False):
       a record not classified yet also passes (classification writes MENTIONS).
     - ``links``: each entry needs a record link to one of ``ids`` (of
       ``relation`` when given), in either direction.
+    - ``records``: each entry is a list of record ids, any of which (the
+      records a text mention resolved to, ``MentionCondition``).
     - ``entities``: each ``{"type", "id"}`` must be connected as for
       ``get_entity_candidate_records``; for a type only classification links
       (``CLASSIFIED_ENTITY_TYPES``), a record not classified yet also passes.
@@ -61,6 +64,7 @@ class Pushdown(TypedDict, total=False):
     people: list[PushedPeople]
     organizations: list[list[str]]
     links: list[PushedLinks]
+    records: list[list[str]]
     entities: list[dict[str, str]]
 
 
@@ -86,7 +90,7 @@ def pushdown(query: RecordQuery) -> Pushdown:
             out[cond.field] = [start, end]
         elif isinstance(cond, PersonCondition):
             out.setdefault("people", []).append(
-                PushedPeople(edges=list(role_edges(cond.person.role)), ids=list(cond.person.ids)),
+                PushedPeople(edges=list(role_edges(cond.person.role)), ids=list(cond.person.ids or ())),
             )
         elif isinstance(cond, OrganizationCondition):
             out.setdefault("organizations", []).append(list(cond.organization.ids))
@@ -94,13 +98,15 @@ def pushdown(query: RecordQuery) -> Pushdown:
             out.setdefault("links", []).append(PushedLinks(ids=list(cond.linked_to.ids), relation=cond.linked_to.relation))
         elif isinstance(cond, EntityCondition):
             out.setdefault("entities", []).append({"type": cond.entity.type, "id": cond.entity.id})
+        elif isinstance(cond, MentionCondition) and cond.record_ids is not None:
+            out.setdefault("records", []).append(sorted(cond.record_ids))
     return Pushdown(**out)
 
 
 def is_selective(pushed: Pushdown) -> bool:
     """Whether the scan is narrowed by something indexed beyond source and type."""
     return any(pushed.get(k) for k in ("containers", "created", "updated", "people", "organizations", "links",
-                                        "entities"))
+                                        "records", "entities"))
 
 
 __all__ = ["PushedLinks", "PushedPeople", "Pushdown", "is_selective", "pushdown"]

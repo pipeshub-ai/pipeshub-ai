@@ -200,3 +200,66 @@ class TestOnlyPickedToolsLoad:
         registry, _ = await _load([{"name": "calculator", "tools": [{"name": "add"}]}])
 
         assert sorted(registry.tools_in_toolset("calculator")) == ["calculator__add", "calculator__multiply"]
+
+
+class _Merging:
+    """A toolset that merged ``list_old`` into ``list_new`` for this request:
+    ``list_old`` is not offered but stays callable by name."""
+
+    def __init__(self, client: dict) -> None:
+        self.client = client
+
+    @tool(path="/tools/merging/list_new", short_description="List", description="List items")
+    async def list_new(self) -> tuple[bool, str]:
+        return True, "new"
+
+    @tool(path="/tools/merging/list_old", short_description="List (old)", description="List items, old")
+    async def list_old(self) -> tuple[bool, str]:
+        return True, "old"
+
+    @tool(path="/tools/merging/other", short_description="Other", description="Something else")
+    async def other(self) -> tuple[bool, str]:
+        return True, "other"
+
+    def tools_for_request(self, tools: list) -> list:
+        return [t for t in tools if t.name != "merging__list_old"]
+
+    def retired_tools_for_request(self, tools: list) -> list:
+        return [(t, "list_new") for t in tools if t.name == "merging__list_old"]
+
+
+class TestMergedTools:
+    @pytest.fixture(autouse=True)
+    def _merging(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(ClientFactoryRegistry._factories, "merging", _Factory())
+
+    async def _load(self, picked: tuple[str, ...] | None) -> "ToolRegistry":
+        entry: dict[str, Any] = {"name": "merging", "instanceId": "m-1"}
+        if picked is not None:
+            entry["tools"] = _picked(*picked)
+        context = _context([entry])
+        context.toolset_configs["m-1"] = {"auth": {"token": "t"}}
+        fake = MagicMock()
+        fake.get_all_toolsets.return_value = {
+            "merging": {"class": _Merging, "isInternal": False, "description": "Merging"},
+        }
+        with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=fake):
+            return await PipesHubToolLoader().load(context)
+
+    async def test_an_agent_saved_with_the_old_tool_gets_its_successor_and_the_old_name_callable(self) -> None:
+        registry = await self._load(("list_old",))
+        assert registry.tools_in_toolset("merging") == ["merging__list_new"]
+        assert not registry.has("merging__list_old")
+        assert registry.resolve_by_name("merging__list_old").path == "/tools/merging/list_old"
+
+    async def test_an_agent_that_did_not_pick_the_old_tool_cannot_call_it(self) -> None:
+        registry = await self._load(("other",))
+        assert registry.tools_in_toolset("merging") == ["merging__other"]
+        with pytest.raises(Exception, match="list_old"):
+            registry.resolve_by_name("merging__list_old")
+
+    async def test_with_no_picks_the_old_name_is_callable_and_never_listed(self) -> None:
+        registry = await self._load(None)
+        assert sorted(registry.tools_in_toolset("merging")) == ["merging__list_new", "merging__other"]
+        assert "merging__list_old" not in {s.name for s in registry.schemas()}
+        assert registry.resolve_by_name("merging__list_old").name == "merging__list_old"

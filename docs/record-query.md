@@ -23,8 +23,10 @@ graph providers, or the `find_records` agent tool.
 3. **Provider candidates** (`IGraphDBProvider.get_record_query_candidates`):
    one window of candidate records matching the query's conditions, in a
    stable order, with the fields the engine needs. Not an access decision.
-4. **Agent tool** (`knowledgegraph__find_records`): `find_records_by_entity`
-   grown to take the query's conditions and aggregates; totals first.
+4. **Agent tool** (`knowledgegraph__find_records`): with the record-query
+   flag on, the one listing tool. It takes the conditions of the three it
+   replaces (`find_records_by_entity`, `find_records_by_person`,
+   `find_records_by_value`) and the query's aggregates; totals first.
 
 ## Field registry
 
@@ -120,15 +122,43 @@ where:      Condition                     # optional; AND of the top-level list
   Condition = all_of[Condition] | any_of[Condition] | not(Condition)
             | field in [values]           # value fields; case-insensitive
             | field between from..to      # dates (inclusive days) and numbers
-            | person(role?, ids)          # person entity ids
+            | person(role?, name | ids)   # a full name, an email or "me"; or person entity ids
             | organization(ids)
             | linked_to(record ids, relation?)
             | entity(type, id)            # any entity find_records_by_entity takes
+            | mentions(kind?, name?, amount?, quantity?, date?, percent?)  # a value in the text
 aggregate:  count | sum(field) | min(field) | max(field) | avg(field)
 group_by:   field | person(role?) | organization | month(date field)  # top N groups
 sort:       newest (default) | oldest | "<date or number field> asc|desc"  # one key
 limit:      rows per page (default 20, max 50); cursor
 ```
+
+**A person by name** is resolved by the tool before the engine runs, as
+`find_records_by_person` resolves one (`people.match_people`): `me` is the
+user asking, an email or a full name goes through the provider's
+`find_users`, nodes sharing an email are one person, and the first five
+people found are probed with a one-record person listing in the condition's
+role. One person with a readable record: the condition takes all their
+nodes and the result says who they are. Several: the reply lists them to
+pick by email, never a guess; the query does not run. None: the reply says
+so and points at search. A person is named back only through a record the
+user can read.
+
+**Mentions** are values named-entity extraction found in a record's text
+(`app/modules/named_entities`): `kind` (one or a list, any of them), `name`
+(a prefix), `amount` `{from, to, currency}`, `quantity` `{from, to,
+dimension}`, `date` `{from, to}`, `percent` `{from, to}` as a fraction. The
+date range is inclusive by day: `YYYY-MM-DD`, or epoch ms where a UTC
+midnight `to` covers that whole day (as `find_records_by_value`'s
+`date_to`); the graph's exclusive end is computed from it. Only in the
+top-level `where` list. The engine resolves each to the matching records of
+the connectors in scope (`EntityFilterResolver`, at most the scan cap; too
+many asks for a narrower one) and pushes them down as `records`, which the
+scan seeds from. A mention is a text mention, never a field: it filters,
+the result says so, and nothing totals or groups the mentioned values. A
+record the mention did not find is unknown for it, not a miss
+(`unknown["mentions"]`), which the scan never meets: it reads only the mentioned records. Mentions
+need named entities on (`KnowledgeGraphPolicy.named_entities`).
 
 ## Result
 
@@ -210,10 +240,35 @@ A cursor the tool did not print for this sort is refused before any database
 work. A cursor is only a place in the order: every row on every page has
 passed the access check, so a forged cursor exposes nothing.
 
+A pushdown's `records` key (ids a mention resolved to, each entry any of
+its ids) is applied as an id filter and, when present, seeds the scan by id.
+
 Neo4j and ArangoDB implement both calls;
 `tests/integration/graph_db/test_record_query_real_backends.py` runs one
 contract suite on both and compares each with a Python reference over the
 same seeded graph.
+
+## One listing tool
+
+With `KnowledgeGraphPolicy.record_query` on, the model is offered
+`find_records` and none of `find_records_by_entity`,
+`find_records_by_person` and `find_records_by_value`
+(`entity_search_surface.MERGED_INTO_FIND_RECORDS`): not at the top level,
+not by the progressive grant (which grants `find_records`), and not to the
+exploration child, which takes `find_records` in place of
+`find_records_by_person`. Other tools' text names `find_records` instead of
+them. In the full arm with named entities the knowledge-graph tools offered
+drop from 8 to 6 (timeline aside), and `find_records`' definition is no
+larger than the three it replaces together (`test_find_records_surface`).
+
+The old names stay callable for one release, for saved agents and cached
+plans: `retired_tools_for_request` serves each under its old schema, the
+loader registers it with `ToolRegistry.register_hidden_tool` (callable by
+exact name, in no schema list, toolset or search), and an agent saved with
+one picked gets `find_records` too. Each routes to the equivalent query
+(`ops/merged_listings.py`) and says the tool was merged and what to call
+instead; an old integer cursor cannot continue there and says so. With
+record query off, every tool is as before.
 
 ## Lazy exposure
 

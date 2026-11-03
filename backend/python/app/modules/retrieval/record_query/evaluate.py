@@ -28,6 +28,7 @@ from app.modules.retrieval.record_query.model import (
     FieldCondition,
     Group,
     LinkCondition,
+    MentionCondition,
     Not,
     OrganizationCondition,
     PersonCondition,
@@ -51,6 +52,9 @@ _DAY_MS = 86_400_000
 NOT_CLASSIFIED = "classification"
 # ... and when its classification failed: not known either, and not retried on use.
 CLASSIFICATION_FAILED = "classification_failed"
+# The unknown reason of a row a mentions condition did not find: extraction
+# misses values, so no extracted mention is not "does not mention".
+MENTIONS = "mentions"
 
 
 def field_value(row: Row, name: str) -> Any:  # noqa: ANN401 - a field is a value, a number or a date
@@ -125,8 +129,12 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
         return _field(cond, row)
     if isinstance(cond, PersonCondition):
         edges = set(ROLE_EDGES[cond.person.role]) if cond.person.role else set(ROLE_OF_EDGE)
-        people = row.get("people") or []
-        return Verdict(any(p["role"] in edges and p["id"] in cond.person.ids for p in people))
+        people, ids = row.get("people") or [], set(cond.person.ids or ())
+        return Verdict(any(p["role"] in edges and p["id"] in ids for p in people))
+    if isinstance(cond, MentionCondition):
+        if cond.record_ids is not None and row.get("_key") in cond.record_ids:
+            return Verdict(True)
+        return Verdict(None, frozenset({MENTIONS}))
     if isinstance(cond, OrganizationCondition):
         if any(o["id"] in cond.organization.ids for o in row.get("organizations") or []):
             return Verdict(True)
@@ -279,5 +287,5 @@ def unassigned(query: RecordQuery, rows: list[Row]) -> list[Group]:
     return out
 
 
-__all__ = ["CLASSIFICATION_FAILED", "NOT_CLASSIFIED", "NO_ORGANIZATION", "UNASSIGNED_LABELS", "unassigned", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
+__all__ = ["CLASSIFICATION_FAILED", "MENTIONS", "NOT_CLASSIFIED", "NO_ORGANIZATION", "UNASSIGNED_LABELS", "unassigned", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
            "field_value", "groups", "tally"]

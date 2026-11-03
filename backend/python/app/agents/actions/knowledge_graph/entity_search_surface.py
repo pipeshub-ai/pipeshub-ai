@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, ToolParameter
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
+from app.agents.actions.knowledge_graph.ops.record_query import MENTIONS_CONDITION_TEXT, roles_guide
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop.knowledge_graph_policy import SEARCH_BY_ENTITIES_TOOL_NAME
 
@@ -208,9 +209,11 @@ _TAXONOMY_VARIANTS: dict[str, _Variant] = {
     ),
     FIND_RECORDS_TOOL_NAME: _Variant(
         description=(
-            _Edit('{"person": {"role": role, "ids": [...]}}, {"organization": {"ids": [...]}}, ', ""),
-            _Edit("\nRoles: assignee, reporter, author, owner, reviewer, editor, recipient, participant.", ""),
-            _Edit("Get person, organization and entity ids from search_entities.", "Get entity ids from search_entities."),
+            _Edit('{"person": {"role": role, "name": full name, email or "me"}}, {"organization": {"ids": [...]}}, ',
+                  ""),
+            _Edit(f"\nRoles: {roles_guide()}.", ""),
+            _Edit("A person name matching several people lists them to pick by email. Get organization and entity "
+                  "ids from search_entities.", "Get entity ids from search_entities."),
         ),
         parameters=(("group_by", (_Edit(', {"person_role": role}, {"by_person": true}, {"organization": true}', ""),)),),
     ),
@@ -233,7 +236,32 @@ _OFF_VARIANTS: dict[str, _Variant] = {
 
 _NO_NAMED_ENTITY_VARIANTS: dict[str, _Variant] = {
     SEARCH_ENTITIES_TOOL_NAME: _Variant(removed=("named_entity_kinds",)),
+    FIND_RECORDS_TOOL_NAME: _Variant(description=(_Edit(MENTIONS_CONDITION_TEXT, ""),)),
 }
+
+
+# Listing tools find_records replaces when record query is on. Their names stay
+# callable (``retired_tools``) for agents and plans written against them.
+MERGED_INTO_FIND_RECORDS: frozenset[str] = frozenset({
+    FIND_RECORDS_BY_ENTITY_TOOL_NAME, FIND_RECORDS_BY_PERSON_TOOL_NAME, FIND_RECORDS_BY_VALUE_TOOL_NAME,
+})
+
+
+def retired_tools(instance: Any, tools: list[Tool], policy: KnowledgeGraphPolicy) -> list[tuple[Tool, str]]:  # noqa: ANN401
+    """With record query on, each merged tool under its old name and schema,
+    served by a route to the equivalent find_records query, with the short
+    name of the tool it was merged into; nothing otherwise."""
+    if not policy.record_query:
+        return []
+    # Only what the request would have offered without record query stays callable.
+    offered = MERGED_INTO_FIND_RECORDS - _withdrawn(replace(policy, record_query=False))
+    out: list[tuple[Tool, str]] = []
+    for tool in tools:
+        meta = _declared_meta(instance, tool)
+        if tool.name in offered and meta is not None:
+            route = getattr(instance, f"_merged_{_method_name(tool)}")
+            out.append((BoundMethodTool(route, meta), FIND_RECORDS_TOOL_NAME.split("__", 1)[-1]))
+    return out
 
 
 def tools_for_request(instance: Any, tools: list[Tool], policy: KnowledgeGraphPolicy) -> list[Tool]:  # noqa: ANN401
@@ -247,8 +275,8 @@ def _withdrawn(policy: KnowledgeGraphPolicy) -> frozenset[str]:
     if not policy.entity_tools:
         return ENTITY_TOOL_NAMES
     withdrawn = set() if policy.search_by_entities else {SEARCH_BY_ENTITIES_TOOL_NAME}
-    # One listing tool per request: find_records replaces find_records_by_entity.
-    withdrawn.add(FIND_RECORDS_BY_ENTITY_TOOL_NAME if policy.record_query else FIND_RECORDS_TOOL_NAME)
+    # One listing tool per request: find_records takes the conditions of the three it replaces.
+    withdrawn |= MERGED_INTO_FIND_RECORDS if policy.record_query else {FIND_RECORDS_TOOL_NAME}
     if not policy.named_entities:
         withdrawn |= _NAMED_ENTITY_ONLY_TOOLS
     if not policy.people_and_companies:
@@ -271,7 +299,38 @@ def _served(instance: Any, tool: Tool, policy: KnowledgeGraphPolicy) -> Tool:  #
     ):
         if applies and tool.name in variants:
             meta = _edited_meta(tool.name, meta, variants[tool.name])
+    if policy.record_query:
+        meta = _pointed_at_find_records(meta)
     return tool if meta is declared else BoundMethodTool(getattr(instance, method), meta)
+
+
+# With record query on, other tools' text names find_records instead of the
+# tools it replaced, which are no longer offered.
+_TO_FIND_RECORDS = (
+    ("knowledgegraph__find_records_by_entity(entity_id=...) lists the records connected to one entity, "
+     "newest first, with paging.",
+     'knowledgegraph__find_records(where=[{"entity": {"type": entityType, "id": entityId}}]) lists and '
+     "counts the records connected to one entity."),
+    ("list every record of one with find_records_by_entity.",
+     'list and count every record of one with knowledgegraph__find_records(where=[{"entity": '
+     '{"type": "named_entity", "id": entity_id}}]).'),
+    ("knowledgegraph__find_records_by_person", "knowledgegraph__find_records"),
+    ("knowledgegraph__find_records_by_value", "knowledgegraph__find_records (mentions)"),
+    ("find_records_by_value", "knowledgegraph__find_records (mentions)"),
+)
+
+
+def _pointed_at_find_records(meta: ToolMeta) -> ToolMeta:
+    def pointed(text: str) -> str:
+        for old, new in _TO_FIND_RECORDS:
+            text = text.replace(old, new)
+        return text
+
+    if not any(old in text for old, _ in _TO_FIND_RECORDS
+               for text in (meta.description, *(p.description for p in meta.parameters))):
+        return meta
+    return replace(meta, description=pointed(meta.description),
+                   parameters=[replace(p, description=pointed(p.description)) for p in meta.parameters])
 
 
 def _declared_meta(instance: Any, tool: Tool) -> ToolMeta | None:  # noqa: ANN401
@@ -322,4 +381,4 @@ def _edited(text: str, edits: tuple[_Edit, ...], where: str) -> str:
     return text
 
 
-__all__ = ["ENTITY_TOOL_NAMES", "tools_for_request", "variant_meta"]
+__all__ = ["ENTITY_TOOL_NAMES", "MERGED_INTO_FIND_RECORDS", "retired_tools", "tools_for_request", "variant_meta"]

@@ -440,6 +440,8 @@ def _holds(g: Graph, name: str, pushed: Pushdown, within: list[dict[str, list[st
     for link in pushed.get("links", []):
         if not any(lk["id"] in link["ids"] and link["relation"] in (None, lk["relation"]) for lk in row["links"]):
             return False
+    if not all(row["_key"] in ids for ids in pushed.get("records", [])):
+        return False
     if not all(_entity_holds(g, name, e) or (waiting and e["type"] in CLASSIFIED_ENTITY_TYPES)
                for e in pushed.get("entities", [])):
         return False
@@ -547,6 +549,13 @@ def _cases(g: Graph) -> dict[str, Pushdown]:
             entities=[{"type": "topic", "id": g.topic}, {"type": "person", "id": ann}],
             links=[PushedLinks(ids=[g.rid("t3")], relation="BLOCKS")],
         ),
+        "records": Pushdown(records=[[g.rid("t1"), g.rid("t4"), g.rid("d1")]]),
+        "records_two_mentions": Pushdown(records=[[g.rid("t1"), g.rid("t4")], [g.rid("t4"), g.rid("d1")]]),
+        "records_and_people": Pushdown(
+            records=[[g.rid("t1"), g.rid("t2"), g.rid("t4")]],
+            people=[PushedPeople(edges=list(PERSON_EDGES), ids=[ann, bob])],
+        ),
+        "records_foreign": Pushdown(records=[["no-such-record"]]),
         "nothing_matches": Pushdown(sources=["ZENDESK"], record_types=["DEAL"]),
         "empty_choice": Pushdown(sources=[]),
     }
@@ -559,7 +568,8 @@ CASE_NAMES = list(_cases(Graph(None, "o", "x")).keys())  # type: ignore[arg-type
 async def test_each_pushdown_equals_the_reference(seeded: Graph, case: str) -> None:
     pushed = _cases(seeded)[case]
     expected = _reference(seeded, pushed)
-    if case not in ("nothing_matches", "empty_choice", "people_foreign_member", "organizations_foreign"):
+    if case not in ("nothing_matches", "empty_choice", "people_foreign_member", "organizations_foreign",
+                    "records_foreign"):
         assert expected, f"case {case} selects nothing; it would not test the key"
     await _assert_matches(seeded, pushed)
 

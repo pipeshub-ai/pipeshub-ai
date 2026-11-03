@@ -89,6 +89,9 @@ def record_query_seed(pushed: Pushdown) -> Seed:
     tenant's; every condition is still checked on each candidate. A condition
     classification satisfies must also read every record not classified yet,
     so a container, which needs no such addition, is preferred to it."""
+    if pushed.get("records"):
+        # Ids a text mention resolved to: an id seek, the narrowest start there is.
+        return Seed("records", pushed["records"][0])
     exact = [e for e in pushed.get("entities", []) if e.get("type") not in CLASSIFIED_ENTITY_TYPES]
     if exact:
         return Seed("entities", exact[0])
@@ -108,6 +111,8 @@ def matches_nothing(pushed: Pushdown) -> bool:
     """Whether a key holds an empty choice, which no record meets: two
     conditions on one field that share no value, or a condition naming no one."""
     if any(k in pushed and not pushed[k] for k in ("sources", "record_types", "containers")):
+        return True
+    if any(not ids for ids in pushed.get("records", [])):
         return True
     return (
         any(not p["ids"] or not p["edges"] for p in pushed.get("people", []))

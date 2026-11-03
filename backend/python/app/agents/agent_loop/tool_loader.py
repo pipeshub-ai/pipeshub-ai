@@ -398,7 +398,16 @@ class PipesHubToolLoader:
                                 "No UI client, withholding %s (conversation=%s)",
                                 ui_only, context.conversation_id,
                             )
+                # Tools merged into another this request: still callable by
+                # their old name, never offered (``retired_tools_for_request``).
+                retired = (
+                    instance.retired_tools_for_request(toolset.tools)
+                    if callable(getattr(ts_class, "retired_tools_for_request", None)) else []
+                )
                 selected = None if is_internal else self._selected_tool_names(ts_name, context.agent_toolsets)
+                if selected is not None and retired:
+                    # An agent saved with a merged tool picked gets what it was merged into.
+                    selected = selected | {successor for t, successor in retired if _short_name(t) in selected}
                 if selected is not None:
                     # Same name the agent builder lists and saves: the last segment of the @tool path.
                     tools = [t for t in tools if t.path.rsplit("/", 1)[-1] in selected]
@@ -423,6 +432,19 @@ class PipesHubToolLoader:
                         continue
                     if gated:
                         _record_for_approvals(context, t, approval_instance, fallback_owner=group_name, personal=personal)
+
+                for t, _ in retired:
+                    if selected is not None and _short_name(t) not in selected:
+                        continue
+                    try:
+                        registry.register_hidden_tool(t)
+                    except (DuplicateToolPathError, DuplicateToolNameError):
+                        continue
+                if retired and state_logger:
+                    state_logger.debug(
+                        "Retired tool names kept callable for %s: %d (conversation=%s)",
+                        ts_name, len(retired), context.conversation_id,
+                    )
 
                 registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
                 if registered_names:
@@ -510,6 +532,11 @@ class PipesHubToolLoader:
                 return None
             selected |= picked
         return selected or None
+
+
+def _short_name(tool: "Tool") -> str:
+    """The name the agent builder lists and saves: the last segment of the @tool path."""
+    return tool.path.rsplit("/", 1)[-1]
 
 
 __all__ = ["PipesHubToolLoader"]

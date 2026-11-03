@@ -91,15 +91,12 @@ async def execute_find_records_by_person(
         # Before anyone is looked up, so a bad cursor reads the same whoever is named.
         parse_cursor(cursor)
         context = await load_entity_access_context(state)
-        if is_self:
-            group, start = await _caller(state, graph, context), None
-        else:
-            shown = await _shown_people(graph, context, asked, edge_types, wanted_types)
-            if len(shown) > 1:
-                return True, _ambiguous(asked, [g for g, _ in shown])
-            if not shown:
-                return True, _no_match(state, asked, context)
-            group, start = shown[0]
+        shown = await match_people(state, graph, context, asked, edge_types=edge_types, record_types=wanted_types)
+        if len(shown) > 1:
+            return True, _ambiguous(asked, [g for g, _ in shown])
+        if not shown:
+            return True, _no_match(state, asked, context)
+        group, start = shown[0]
         page = await list_accessible_person_records(
             graph, context, user_ids=[u["id"] for u in group], edge_types=edge_types,
             record_types=wanted_types, limit=bounded_limit,
@@ -172,12 +169,20 @@ async def _caller(state: "ChatState", graph: Any, context: EntityAccessContext) 
     return mine
 
 
-async def _shown_people(
-    graph: Any, context: EntityAccessContext, asked: str,  # noqa: ANN401
-    edge_types: list[str], record_types: list[str] | None,
-) -> list[tuple[list[dict[str, Any]], int]]:
-    """The people ``asked`` names that link to a record the user can read, each
-    with the candidate offset of the newest one; nobody else may be shown."""
+async def match_people(
+    state: "ChatState", graph: Any, context: EntityAccessContext, asked: str,  # noqa: ANN401
+    *, edge_types: list[str], record_types: list[str] | None = None,
+) -> list[tuple[list[dict[str, Any]], int | None]]:
+    """The people ``asked`` names (``me``, a full name or an email, as
+    ``find_users`` matches it) that the user may be shown, each with the
+    candidate offset of their newest record by ``edge_types`` the user can
+    read (None for the caller, who is always shown). Every match up to
+    ``_USER_MATCH_LIMIT`` is decided in one batched probe; a match with no
+    readable record, or one the probe ran out of time on, is left out and
+    must not be named, counted or hinted at. ``find_records`` resolves a
+    person by name through this too."""
+    if asked.casefold() in SELF_NAMES:
+        return [(await _caller(state, graph, context), None)]
     people = _people(await graph.find_users(context.org_id, asked, limit=_USER_MATCH_LIMIT))
     if not people:
         return []
@@ -207,10 +212,13 @@ def _label(group: list[dict[str, Any]]) -> str:
     return _trunc(name or email or "this person")
 
 
-def _ambiguous(asked: str, groups: list[list[dict[str, Any]]]) -> str:
+_AGAIN = "Call knowledgegraph__find_records_by_person again with the person's email."
+
+
+def _ambiguous(asked: str, groups: list[list[dict[str, Any]]], *, again: str = _AGAIN) -> str:
     lines = [f'Several people match "{_trunc(asked)}":']
     lines.extend(f"- {_label(group)}" for group in groups)
-    lines.append("Call knowledgegraph__find_records_by_person again with the person's email.")
+    lines.append(again)
     return "\n".join(lines)
 
 
@@ -245,4 +253,4 @@ def _continue_call(
     return f"knowledgegraph__find_records_by_person({', '.join(args)})"
 
 
-__all__ = ["ROLE_EDGES", "SELF_NAMES", "execute_find_records_by_person"]
+__all__ = ["ROLE_EDGES", "SELF_NAMES", "execute_find_records_by_person", "match_people"]

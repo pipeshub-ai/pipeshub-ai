@@ -23483,6 +23483,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"AND lo.orgId = $org_id AND ($links_{i}_relation IS NULL "
                 f"OR lk.relationshipType = $links_{i}_relation) }}"
             )
+        for i, record_ids in enumerate(pushed.get("records", [])):
+            params[f"records_{i}"] = list(record_ids)
+            where.append(f"rec.id IN $records_{i}")
         for i, entity in enumerate(pushed.get("entities", [])):
             params[f"entities_{i}"] = str(entity.get("id") or "")
             entity_type = str(entity.get("type") or "")
@@ -23506,6 +23509,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
                 scan = f"""{self._with_pending(linked) if seed.with_pending else linked}
             WITH DISTINCT {carry} WHERE"""
+        elif seed.key == "records":
+            params["seed_ids"] = list(seed.entry)
+            scan = "MATCH (rec:Record) WHERE rec.id IN $seed_ids AND"
         elif seed.key == "links":
             params["seed_ids"] = list(pushed["links"][0]["ids"])
             scan = f"""MATCH (seed:Record) WHERE seed.id IN $seed_ids AND seed.orgId = $org_id
