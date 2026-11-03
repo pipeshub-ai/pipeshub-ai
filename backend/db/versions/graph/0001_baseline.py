@@ -14,7 +14,7 @@ older_code_compatible = "creates a schema of its own (tables and partitions the 
 # and by (status, age). Entity reads: named entities by (kind, normKey prefix), value mentions by record, taxonomy nodes by normalized name,
 # records by (connector, id) for the keyset pages of the entity index and the vector membership scans. The purge walk reads the org's trash
 # oldest first. The cross-organisation reads (the vetted graph.system_*) list organisations by (org, id), connector instances by (id, org)
-# and look one up by id. Partial per collection, so the other collections pay nothing.
+# and look one up by id; the user groups and roles a connector synced are read by (connector, external id). Partial per collection, so the other collections pay nothing.
 INDEXES = [
     ("nodes_block_record", "org_id, (doc->>'recordId')", "coll = 'blocks'"),
     ("nodes_block_name", "org_id, (doc->>'connectorId'), (doc->>'nameFolded')", "coll = 'blocks'"),
@@ -27,6 +27,8 @@ INDEXES = [
     ("nodes_record_connector_id", "org_id, (doc->>'connectorId'), id", "coll = 'records'"),
     ("nodes_org_by_id", "org_id, id", "coll = 'organizations'"),
     ("nodes_app_by_id", "id, org_id", "coll = 'apps'"),
+    ("nodes_group_by_external", "org_id, (doc->>'connectorId'), (doc->>'externalGroupId')", "coll = 'groups'"),
+    ("nodes_role_by_external", "org_id, (doc->>'connectorId'), (doc->>'externalRoleId')", "coll = 'roles'"),
     ("nodes_record_trash", "org_id, ((doc->>'deletedAtTimestamp')::bigint), id", "coll = 'records' AND (doc->>'isDeleted') = 'true'"),
 ]
 
