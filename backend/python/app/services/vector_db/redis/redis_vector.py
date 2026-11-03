@@ -1249,10 +1249,8 @@ class RedisVectorService(IVectorDBService):
                 )
         except Exception as e:
             if cursor:
-                try:
+                with contextlib.suppress(Exception):  # best effort; the cursor expires on its own
                     await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
-                except Exception:  # noqa: S110 - best effort; the cursor expires on its own
-                    pass
             # A partial key list would silently update only some of a VRID's
             # chunks while reporting success.
             raise RuntimeError(

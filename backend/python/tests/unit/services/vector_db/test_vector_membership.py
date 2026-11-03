@@ -4,8 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.vector_db.models import ScrollResult
-
 from app.config.constants.arangodb import CollectionNames
 from app.services.vector_db.collection_locator import StaticCollectionLocator
 from app.services.vector_db.const.const import (
@@ -23,6 +21,7 @@ from app.services.vector_db.membership import (
     sync_vector_membership,
     vector_point_payload,
 )
+from app.services.vector_db.models import ScrollResult
 from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
 )

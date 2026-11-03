@@ -997,7 +997,7 @@ def _agg(total: int, keys: list, cursor: int = 0) -> list:
 
 class TestKeysMatchingFilter:
     @staticmethod
-    def _filter():
+    def _filter() -> FilterExpression:
         from app.services.vector_db.models import FieldCondition, FilterExpression
         return FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
 

@@ -519,7 +519,7 @@ async def test_rewound_pass_does_not_inherit_the_previous_vrid_count():
 
 
 @pytest.mark.asyncio
-async def test_a_vrid_whose_records_name_no_org_is_skipped_and_does_not_block_the_connector():
+async def test_a_vrid_whose_records_name_no_org_is_skipped_and_does_not_block_the_connector() -> None:
     """Retrying cannot name an org; counting it as a failure would hold the connector's backfill open for ever."""
     graph = AsyncMock()
     graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1"})
