@@ -42,13 +42,16 @@ import {
   stripArtifactMarkers,
 } from "./utils/parse-artifact-markers";
 import {
-  rewriteCitationsForSlack,
   stripFragmentDirective,
   CitationMarkers,
   splitOpenLinkTail,
   withoutPlaceholderRefs,
   buildNumberedSlackSources,
   stripNumberedCitationLinkTargets,
+  citationRows,
+  numberedSourcesBlocks,
+  type SlackSourceRow,
+  type SlackCitationLike,
 } from "./utils/citations";
 
 import {
@@ -266,17 +269,6 @@ function getCitationWebUrl(webUrl?: string): string {
     return webUrl;
   }
   return `${getFrontendBaseUrl()}${webUrl}`;
-}
-
-function rewriteInlineRecordCitationsForSlack(
-  answerBody: string,
-  citations?: CitationData[],
-): string {
-  return rewriteCitationsForSlack(
-    answerBody,
-    citations,
-    getFrontendBaseUrl(),
-  );
 }
 
 function buildCitationSources(citations?: CitationData[]): any[]  {
@@ -705,15 +697,18 @@ async function processSlackMessage(
     };
 
     let pendingStreamText = "";
+    // The current model call's citations as the backend refreshes them: they give [n] its link.
+    let liveCitationRows: ReadonlyMap<number, SlackSourceRow> = new Map();
     let textSendQueued = false;
     const pendingPlanRows = new Map<string, SlackTaskChunk>();
     let planSendQueued = false;
     const pushPlan = (
       chunks: (SlackTaskChunk | SlackTaskChunk[] | null)[],
     ): void => {
-      const ready = chunks
-        .flat()
-        .filter((chunk): chunk is SlackTaskChunk => chunk !== null);
+      // Rows sealed since the last send carry their details and output, once.
+      const ready = [...answerPlan.takeSealed(), ...chunks.flat()].filter(
+        (chunk): chunk is SlackTaskChunk => chunk !== null,
+      );
       if (!answerStream || askUserShown || ready.length === 0) {
         return;
       }
@@ -954,6 +949,20 @@ async function processSlackMessage(
     function settleAnswerPreamble(): void {
       if (pushedAnswerLength > 0) {
         flushPendingAppend(true);
+        // Its citations are known only while this call lasts: link them now.
+        const [ready] = citationMarkers.resolve(
+          pendingStreamText,
+          liveCitationRows,
+          true,
+        );
+        pendingStreamText = "";
+        if (ready !== "") {
+          queuedStreamAppend = queuedStreamAppend
+            .then(async () => pushTextToSlackStream(ready))
+            .catch((error: unknown) => {
+              console.error("Error appending Slack stream text:", error);
+            });
+        }
       }
       resetAnswerStream();
     }
@@ -970,6 +979,7 @@ async function processSlackMessage(
       answerTextStreamed = streamedBeforeSegment;
       // The discarded call's numbers are free again, so [n] keeps matching the Sources list.
       citationMarkers.rollback();
+      pendingStreamText = "";
       if (!shown) {
         return;
       }
@@ -1043,6 +1053,33 @@ async function processSlackMessage(
       onConversationCreated: (conversationId) => {
         conversationPersistPromise = persistConversationId(conversationId);
       },
+      onCitations: (citations) => {
+        liveCitationRows = citationRows(
+          citations as SlackCitationLike[],
+          getFrontendBaseUrl(),
+        );
+        if (pendingStreamText === "" || textSendQueued) {
+          return;
+        }
+        // A citation came in: text that waited for it can go now.
+        textSendQueued = true;
+        queuedStreamAppend = queuedStreamAppend
+          .then(async () => {
+            textSendQueued = false;
+            const [ready, waiting] = citationMarkers.resolve(
+              pendingStreamText,
+              liveCitationRows,
+              false,
+            );
+            pendingStreamText = waiting;
+            if (ready !== "") {
+              await pushTextToSlackStream(ready);
+            }
+          })
+          .catch((error: unknown) => {
+            console.error("Error appending Slack stream text:", error);
+          });
+      },
       onComplete: (conv) => {
         completionConversation = conv as ConversationData["conversation"];
       },
@@ -1083,8 +1120,8 @@ async function processSlackMessage(
         return;
       }
 
-      pushPlan([answerPlan.flushReasoning()]);
       answerPlan.endGroup();
+      pushPlan([answerPlan.flushReasoning()]);
       pushedAnswerLength += textToAppend.length;
       answerTextStreamed = true;
       // Numbered now, in order: a reset may come before this is sent.
@@ -1097,9 +1134,16 @@ async function processSlackMessage(
       queuedStreamAppend = queuedStreamAppend
         .then(async () => {
           textSendQueued = false;
-          const text = pendingStreamText;
-          pendingStreamText = "";
-          await pushTextToSlackStream(text);
+          // Text from a citation whose link isn't known yet waits for the next refresh.
+          const [ready, waiting] = citationMarkers.resolve(
+            pendingStreamText,
+            liveCitationRows,
+            false,
+          );
+          pendingStreamText = waiting;
+          if (ready !== "") {
+            await pushTextToSlackStream(ready);
+          }
         })
         .catch((error) => {
           console.error("Error appending Slack stream text:", error);
@@ -1248,14 +1292,24 @@ async function processSlackMessage(
       botResponse.content || "",
     );
     // `plainMarkers`: keep [N] as streamed, so the tail matches the numbered sources.
+    const finalRows = citationRows(botResponse.citations, getFrontendBaseUrl());
     const toSlackBlocks = async (
       markdown: string,
       plainMarkers = false,
     ): ReturnType<typeof buildFinalSlackChunks> => {
       const text = parseArtifactMarkers(markdown).text;
+      // Citations as clickable [n] to absolute links, numbered like the Sources list.
       let body = plainMarkers
-        ? citationMarkers.mark(text)
-        : rewriteInlineRecordCitationsForSlack(text, botResponse.citations);
+        ? citationMarkers.resolve(
+            citationMarkers.mark(text),
+            finalRows,
+            true,
+          )[0]
+        : stripNumberedCitationLinkTargets(
+            text,
+            botResponse.citations,
+            getFrontendBaseUrl(),
+          );
       body = removeContinuousDuplicateMarkdownLinks(body);
       body = addSpaceBetweenMarkdownLinks(body);
       return buildFinalSlackChunks(body);
@@ -1265,12 +1319,26 @@ async function processSlackMessage(
     pushPlan([answerPlan.flushReasoning()]);
     await queuedStreamAppend;
 
+    // Text still waiting for a citation goes out with the finished answer's citations.
+    if (pendingStreamText !== "") {
+      const [ready] = citationMarkers.resolve(
+        pendingStreamText,
+        finalRows,
+        true,
+      );
+      pendingStreamText = "";
+      if (ready !== "") {
+        await pushTextToSlackStream(ready);
+      }
+    }
+
     if (answerStream && pushedAnswerLength === 0 && !tableStreamingDisabled && botResponse.content) {
       // An answer that came only with the run's end still gets its tables as blocks.
       // The finished answer's citations are links already; as [n] they match the Sources list.
       const finalText = stripNumberedCitationLinkTargets(
         botResponse.content,
         botResponse.citations,
+        getFrontendBaseUrl(),
       );
       const [beforeTable, fromTable] = splitBeforeFirstTable(finalText);
       if (fromTable !== "") {
@@ -1288,10 +1356,14 @@ async function processSlackMessage(
       const unstreamed = tableStreamingDisabled
         ? (lastAnswerText || botResponse.content || "").slice(pushedAnswerLength)
         : "";
-      const numberedSources = buildNumberedSlackSources(
-        botResponse.citations,
-        getFrontendBaseUrl(),
-      );
+      // The markers actually shown, numbered as they were; else the finished answer's.
+      const numberedSources =
+        citationMarkers.sources().size > 0
+          ? numberedSourcesBlocks(citationMarkers.sources())
+          : buildNumberedSlackSources(
+              botResponse.citations,
+              getFrontendBaseUrl(),
+            );
       const tailChunks = [
         ...(unstreamed.trim() ? await toSlackBlocks(unstreamed, true) : []),
         ...(numberedSources.length > 0
@@ -1320,7 +1392,16 @@ async function processSlackMessage(
         await sendOrUpdateNonStreamMessage(FAILED_RESPONSE_GENERATION_MESSAGE);
         return;
       }
-      for (const chunk of [...finalChunks, ...citationBlockChunks]) {
+      const fallbackSources = buildNumberedSlackSources(
+        botResponse.citations,
+        getFrontendBaseUrl(),
+      );
+      for (const chunk of [
+        ...finalChunks,
+        ...(fallbackSources.length > 0
+          ? splitSlackBlocksByLimit(fallbackSources)
+          : citationBlockChunks),
+      ]) {
         await postThreadChunkMessage(chunk);
       }
       if (waitingMessageTs) {

@@ -225,26 +225,45 @@ const PLACEHOLDER_REF_TARGET =
 const CITATION_TOKEN =
   /\[([^\]\n]*)\]\(([^()\n]*)\)|\bhttps?:\/\/(ref\d+)\.xyz\/?|\[(ref\d+)\](?!\()/gi;
 
+/** A marker waiting for its link: reply number, place among the call's refs, call. */
+const MARKER_TOKEN = /(\d+):(\d+):(\d+)/g;
+
 /**
  * Streamed answer text with each citation placeholder (`refN`,
- * `https://refN.xyz`) as a plain `[n]` marker. Numbers go to distinct refs by
- * first appearance, the way the backend numbers the finished answer, so they
- * match the numbered Sources list. A link with its own words keeps them
- * before the marker; other links stay as written. One instance per reply, so
- * a number never stands for two refs: `checkpoint()` when a model call's text
- * starts, and `rollback()` when the backend discards that call, so the
- * numbers it took are free again for the retry.
+ * `https://refN.xyz`) as a clickable `[n]`.
+ *
+ * - Numbers go to distinct refs by first appearance, one counter per reply,
+ *   so a number never stands for two refs.
+ * - The backend numbers each model call's citations the same way (by first
+ *   appearance within that call) and refreshes them while the call streams,
+ *   so a marker's link is the live citation at its place within the call.
+ * - `mark()` leaves a token per marker; `resolve()` turns tokens into links
+ *   once their citation is known, and holds the text from the first unknown
+ *   one, so no broken or placeholder link is sent.
+ * - `checkpoint()` when a model call's text starts and `rollback()` when the
+ *   backend discards that call free the numbers it took.
+ * - `sources()` lists the markers actually shown, so the numbers match.
  */
 export class CitationMarkers {
   private numbers = new Map<string, number>();
   private saved = new Map<string, number>();
+  private shown = new Map<number, SlackSourceRow>();
+  private savedShown = new Map<number, SlackSourceRow>();
+  private callRefs: string[] = [];
+  private call = 0;
 
   checkpoint(): void {
     this.saved = new Map(this.numbers);
+    this.savedShown = new Map(this.shown);
+    this.callRefs = [];
+    this.call += 1;
   }
 
   rollback(): void {
     this.numbers = new Map(this.saved);
+    this.shown = new Map(this.savedShown);
+    this.callRefs = [];
+    this.call += 1;
   }
 
   mark(text: string): string {
@@ -257,15 +276,65 @@ export class CitationMarkers {
         bare?: string,
         bracketed?: string,
       ) => {
-        const ref =
+        const found =
           bare ?? bracketed ?? PLACEHOLDER_REF_TARGET.exec(target ?? '')?.[1];
-        if (ref === undefined) return match;
-        const marker = `[${String(this.numberFor(ref.toLowerCase()))}]`;
+        if (found === undefined) return match;
+        const ref = found.toLowerCase();
+        if (!this.callRefs.includes(ref)) this.callRefs.push(ref);
+        const token = `${String(this.numberFor(ref))}:${String(
+          this.callRefs.indexOf(ref) + 1,
+        )}:${String(this.call)}`;
         return label !== undefined && !CITATION_ONLY_LABEL.test(label)
-          ? `${label} ${marker}`
-          : marker;
+          ? `${label} ${token}`
+          : token;
       },
     );
+  }
+
+  /**
+   * Marked text with each known citation as a clickable `[n]`. `rows` are the
+   * current call's citations by number. Returns what can go out and what
+   * waits for a citation; with `final`, an unknown one shows as a plain `[n]`.
+   */
+  resolve(
+    text: string,
+    rows: ReadonlyMap<number, SlackSourceRow>,
+    final: boolean,
+  ): [string, string] {
+    let out = '';
+    let from = 0;
+    MARKER_TOKEN.lastIndex = 0;
+    for (
+      let match = MARKER_TOKEN.exec(text);
+      match;
+      match = MARKER_TOKEN.exec(text)
+    ) {
+      const n = Number(match[1]);
+      const place = Number(match[2]);
+      const call = Number(match[3]);
+      const row =
+        this.shown.get(n) ?? (call === this.call ? rows.get(place) : undefined);
+      if (!row && !final && call === this.call) {
+        return [
+          spaceAdjacentMarkers(out + text.slice(from, match.index)),
+          text.slice(match.index),
+        ];
+      }
+      out += text.slice(from, match.index);
+      if (row) {
+        this.shown.set(n, row);
+        out += linkedCitationMarker(n, row.url);
+      } else {
+        out += `[${String(n)}]`;
+      }
+      from = match.index + match[0].length;
+    }
+    return [spaceAdjacentMarkers(out + text.slice(from)), ''];
+  }
+
+  /** The Sources of the markers shown, numbered to match. */
+  sources(): ReadonlyMap<number, SlackSourceRow> {
+    return this.shown;
   }
 
   private numberFor(ref: string): number {
@@ -280,13 +349,16 @@ export class CitationMarkers {
 
 /**
  * The finished answer's citation links (`[N](/record/…)`, as the backend
- * numbers them) as plain `[N]` markers that match the numbered Sources list.
- * Only numbers a citation carries change; other numbered links stay links.
+ * numbers them) as clickable `[N]` markers to each source's absolute link,
+ * matching the numbered Sources list. Only numbers a citation carries change;
+ * other numbered links stay as written.
  */
 export function stripNumberedCitationLinkTargets(
   text: string,
   citations: SlackCitationLike[] | undefined,
+  frontendBaseUrl: string,
 ): string {
+  const rows = citationRows(citations, frontendBaseUrl);
   const numbers = new Set(
     (citations ?? []).flatMap((citation) => {
       const n = parseCitationNumber(citation.citationData.chunkIndex);
@@ -294,44 +366,64 @@ export function stripNumberedCitationLinkTargets(
     }),
   );
   if (numbers.size === 0) return text;
-  return text.replace(
-    NUMBERED_MARKDOWN_LINK_PATTERN,
-    (match, citationNumber: string) =>
-      numbers.has(Number.parseInt(citationNumber, 10))
-        ? `[${citationNumber}]`
-        : match,
+  return spaceAdjacentMarkers(
+    text.replace(
+      NUMBERED_MARKDOWN_LINK_PATTERN,
+      (match, citationNumber: string) => {
+        const n = Number.parseInt(citationNumber, 10);
+        if (!numbers.has(n)) return match;
+        const row = rows.get(n);
+        return row ? linkedCitationMarker(n, row.url) : `[${citationNumber}]`;
+      },
+    ),
   );
+}
+
+/** "[5][6]" reads as one blob: adjacent markers get a space between them. */
+function spaceAdjacentMarkers(text: string): string {
+  return text.replace(/(\[\[\d+\]\]\([^)\s]*\)|\[\d+\])(?=\[\[?\d+\])/g, '$1 ');
 }
 
 const SOURCES_PER_BLOCK = 10;
 
-/**
- * The sources of a streamed answer, listed by citation number so its `[N]`
- * markers point at them. Empty when no citation carries a number.
- */
-export function buildNumberedSlackSources(
+/** A cited source: where `[n]` links and what the Sources list calls it. */
+export interface SlackSourceRow {
+  name: string;
+  url: string;
+}
+
+/** Each citation number's absolute link and name; record citations go to the PipesHub record page. */
+export function citationRows(
   citations: SlackCitationLike[] | undefined,
   frontendBaseUrl: string,
-): Record<string, unknown>[] {
-  const rows = new Map<number, { name: string; url: string }>();
+): Map<number, SlackSourceRow> {
+  const rows = new Map<number, SlackSourceRow>();
   for (const citation of citations ?? []) {
     const citationNumber = parseCitationNumber(
       citation.citationData.chunkIndex,
     );
-    if (citationNumber === null || rows.has(citationNumber)) {
-      continue;
-    }
+    if (citationNumber === null || rows.has(citationNumber)) continue;
     const url = stripFragmentDirective(
       resolveCitationWebUrl(citation, frontendBaseUrl),
     );
-    if (url === '') {
-      continue;
-    }
+    if (!/^https?:\/\//i.test(url)) continue;
     rows.set(citationNumber, {
       name: citation.citationData.metadata.recordName?.trim() || 'Source',
       url,
     });
   }
+  return rows;
+}
+
+/** A clickable `[n]`: markdown link text "[n]" to the source. */
+export function linkedCitationMarker(n: number, url: string): string {
+  return `[[${String(n)}]](${url.replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
+}
+
+/** The numbered Sources list for the given rows. */
+export function numberedSourcesBlocks(
+  rows: ReadonlyMap<number, SlackSourceRow>,
+): Record<string, unknown>[] {
   const ordered = [...rows.entries()].sort(([a], [b]) => a - b);
   if (ordered.length === 0) {
     return [];
@@ -353,4 +445,15 @@ export function buildNumberedSlackSources(
     });
   }
   return blocks;
+}
+
+/**
+ * The sources of a streamed answer, listed by citation number so its `[N]`
+ * markers point at them. Empty when no citation carries a number.
+ */
+export function buildNumberedSlackSources(
+  citations: SlackCitationLike[] | undefined,
+  frontendBaseUrl: string,
+): Record<string, unknown>[] {
+  return numberedSourcesBlocks(citationRows(citations, frontendBaseUrl));
 }

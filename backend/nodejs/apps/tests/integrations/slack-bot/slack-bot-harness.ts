@@ -1,6 +1,7 @@
 import { expect } from 'chai';
 import sinon from 'sinon';
 import axios from 'axios';
+import { writeFileSync } from 'fs';
 import { Readable } from 'stream';
 import { SlackPlanStream } from '../../../src/integrations/slack-bot/src/utils/plan-stream';
 
@@ -38,7 +39,7 @@ export const ANSWER = 'Revenue grew 12% [source](ref1).';
 /** The same answer as the backend finishes it. */
 export const NORMALIZED_ANSWER = 'Revenue grew 12% [1](/record/rec-1).';
 /** What Slack shows: the placeholder as a plain marker that matches the Sources list. */
-export const SHOWN_ANSWER = 'Revenue grew 12% [1].';
+export const SHOWN_ANSWER = 'Revenue grew 12% [[1]](https://x.test/q3).';
 
 export const finished = (content: string, citations: unknown[] = []) => ({
   type: 'RUN_FINISHED',
@@ -234,6 +235,92 @@ export function visibleText(client: ReturnType<typeof slackClient>): string {
     .join('');
 }
 
+/** A row as Slack would show it after replaying every update. */
+export interface ReplayedRow {
+  id: string;
+  title: string;
+  status: string;
+  details: string;
+  output: string;
+  sources: AnyArgs[];
+  /** How many updates carried details, output or sources (Slack adds each to what it shows). */
+  detailSends: number;
+}
+
+/**
+ * Replays the reply the way Slack applies it: a row's title and status
+ * replace, while its details, output and sources are added to what it
+ * already shows. Deleted messages drop out.
+ */
+export function replayRows(
+  client: { apiCall: sinon.SinonStub },
+  tsFor: (opened: number) => string = (n) => (n === 1 ? STREAM_TS : `300.${String(n)}`),
+  /** Calls Slack refused (by index among all calls): nothing of them shows. */
+  refused: ReadonlySet<number> = new Set(),
+): ReplayedRow[] {
+  const deleted = new Set(
+    client.apiCall.getCalls()
+      .filter((c) => c.args[0] === 'chat.delete')
+      .map((c) => (c.args[1] as AnyArgs).ts as string),
+  );
+  const byTs = new Map<string, Map<string, ReplayedRow>>();
+  let opened = 0;
+  for (const [index, call] of client.apiCall.getCalls().entries()) {
+    if (refused.has(index)) continue;
+    const [method, args] = call.args as [string, AnyArgs];
+    let ts: string | undefined;
+    if (method === 'chat.startStream') {
+      opened += 1;
+      ts = tsFor(opened);
+    } else if (method === 'chat.appendStream' || method === 'chat.stopStream') {
+      ts = args.ts as string;
+    }
+    if (!ts) continue;
+    const rows = byTs.get(ts) ?? new Map<string, ReplayedRow>();
+    byTs.set(ts, rows);
+    for (const chunk of (args.chunks ?? []) as AnyArgs[]) {
+      if (chunk.type !== 'task_update') continue;
+      const row = rows.get(chunk.id) ?? {
+        id: chunk.id, title: '', status: '', details: '', output: '', sources: [] as AnyArgs[], detailSends: 0,
+      };
+      row.title = chunk.title ?? row.title;
+      row.status = chunk.status ?? row.status;
+      if (chunk.details !== undefined || chunk.output !== undefined || chunk.sources !== undefined) {
+        row.detailSends += 1;
+      }
+      row.details += String(chunk.details ?? '');
+      row.output += String(chunk.output ?? '');
+      row.sources.push(...((chunk.sources ?? []) as AnyArgs[]));
+      rows.set(chunk.id, row);
+    }
+  }
+  return [...byTs.entries()].filter(([ts]) => !deleted.has(ts)).flatMap(([, rows]) => [...rows.values()]);
+}
+
+/** The reply as text, as Slack would draw it: the plan, its rows, the answer, the Sources. */
+export function renderReplay(client: ReturnType<typeof slackClient>): string {
+  const lines: string[] = ['▾ Thinking'];
+  for (const row of replayRows(client)) {
+    const mark = row.status === 'complete' ? '●' : row.status === 'error' ? '✗' : '◐';
+    lines.push(`  ${mark} ${row.title}${row.output || row.details ? '  ⌄' : ''}`);
+    if (row.details) lines.push(`      ${row.details}`);
+    for (const line of row.output.split('\n').filter(Boolean)) lines.push(`      ${line}`);
+  }
+  lines.push('', visibleText(client));
+  const [stop] = apiCalls(client, 'chat.stopStream').slice(-1);
+  const blocks = (stop?.blocks ?? []) as AnyArgs[];
+  for (const block of blocks) {
+    if (block.type === 'section') lines.push('', String(block.text?.text ?? '').replace(/\*/g, ''));
+    if (block.type === 'rich_text') {
+      const text = ((block.elements?.[0]?.elements ?? []) as AnyArgs[])
+        .map((e) => (e.type === 'link' ? `${String(e.text)} <${String(e.url)}>` : String(e.text)))
+        .join('');
+      lines.push(...text.split('\n').filter(Boolean));
+    }
+  }
+  return lines.join('\n');
+}
+
 /** Text and steps in the order they went to the stream. */
 export const streamOrder = (client: ReturnType<typeof slackClient>): string[] =>
   streamedChunks(client).map((c) =>
@@ -372,6 +459,78 @@ export function describeAnswerWiring(
       return client;
     }
 
+    it('reads like the dashboard in a realistic run: one detail send per row, no counts, clickable [n]', async () => {
+      const call = (id: string, name: string, label: string, args: string, status: string, summary?: string) => [
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: id, toolCallName: name, displayName: label },
+        { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: id, delta: '{}', argsSummary: args },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: id, status, ...(summary ? { resultSummary: summary } : {}) },
+      ];
+      const kb = (id: string, query: string, status = 'completed', summary = '4 results\nAsana SOC 3 report.pdf') =>
+        call(id, 'knowledgegraph__search', 'Searched the knowledge base', `Searched for "${query}"`, status, summary);
+      const cites = [
+        { citationData: { chunkIndex: 1, metadata: { recordId: 'rec-1', recordName: 'Asana SOC 3 report', webUrl: 'https://trust.asana.com/soc3' } } },
+        { citationData: { chunkIndex: 2, metadata: { recordId: 'rec-2', recordName: 'Asana Q3 FY2026 results', webUrl: 'https://investors.asana.com/q3' } } },
+      ];
+      const answer = [
+        '## Asana overview',
+        '',
+        'Asana is a work-management platform [source](ref1).',
+        '',
+        '## Third-quarter revenue',
+        '',
+        'Revenue grew to $201M in Q3 FY2026 [source](ref2), and the SOC 3 report says controls were fairly stated in all material respects [source](ref1).',
+      ].join('\n');
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens("I'll check our internal documents for Asana background, its third-quarter revenue, and the SOC 3 report."),
+        ...kb('c1', 'Asana company overview and third quarter revenue financial results'),
+        ...kb('c2', 'SOC 3 report Asana'),
+        ...kb('c3', 'Asana trust center SOC 3'),
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens("I found Asana's SOC 3 report and a historical Q3 result. I'm checking for a newer third-quarter release."),
+        ...kb('c4', 'Asana Q3 fiscal year 2026 third quarter revenue earnings results'),
+        ...kb('c5', 'Asana Q3 fiscal 2025 third quarter revenue earnings results', 'failed', 'Failed: The search took too long'),
+        ...call('c6', 'artifacts__get_record_download_url', 'Got record download links',
+          'Get Record Download Url — record_id: 8dc0d3d5-4b1e-4c2a-9f3d-2a6b7c8d9e0f', 'failed',
+          'Failed: No download link for records from an external connector. Ask an admin to enable downloads.'),
+        { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: cites }] },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 5),
+        finished('normalized', cites),
+      ]);
+
+      const rendered = renderReplay(client);
+      if (process.env.SLACK_REPLAY_OUT) writeFileSync(process.env.SLACK_REPLAY_OUT, `${rendered}\n`);
+      const rows = replayRows(client);
+      // No counts anywhere, and no text shown twice.
+      expect(rendered).to.not.match(/\b\d+ (calls?|tools|searches|running|failed)\b/);
+      expect(rendered).to.not.match(/Ran \d|Explored \d|\(continued\)|Arguments:|Result:/);
+      expect(rows.every((row) => row.detailSends <= 1)).to.equal(true);
+      // Narration reads as a sentence; every tool row has its lines.
+      const notes = rows.filter((row) => row.id.startsWith('note-'));
+      const tools = rows.filter((row) => row.id.startsWith('tools-'));
+      expect(notes.every((row) => row.details === '' && row.output === '' && row.status === 'complete')).to.equal(true);
+      expect(tools.every((row) => row.output !== '')).to.equal(true);
+      expect(tools.map((row) => [row.title, row.details, row.status])).to.deep.equal([
+        ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
+        ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
+        ['Got record download links', 'Artifacts', 'error'],
+      ]);
+      expect(tools[1]!.output.split('\n')).to.deep.equal([
+        '✓ "Asana Q3 fiscal year 2026 third quarter revenue earnings results" → 4 results',
+        '✗ "Asana Q3 fiscal 2025 third quarter revenue earnings results" → The search took too long',
+      ]);
+      expect(tools[2]!.output).to.equal('✗ record 8dc0d3d5 → No download link for records from an external connector');
+      // Citations are clickable [n] to absolute links, numbered like the Sources list.
+      const text = visibleText(client);
+      expect(text).to.include('platform [[1]](https://trust.asana.com/soc3).');
+      expect(text).to.include('Q3 FY2026 [[2]](https://investors.asana.com/q3)');
+      expect(text).to.not.match(/\]\(\/record\//);
+      expect(rendered).to.include('[1] Asana SOC 3 report <https://trust.asana.com/soc3>');
+      expect(rendered).to.include('[2] Asana Q3 FY2026 results <https://investors.asana.com/q3>');
+    });
+
     it('streams the step and then the answer in one message, ending with the sources', async () => {
       expectStreamedAnswer(await ask(answerFrames('completed')), 'complete');
     });
@@ -429,7 +588,7 @@ export function describeAnswerWiring(
       ]);
 
       expect(visibleText(client)).to.equal(
-        'Revenue grew [1]. The Asana Trust Center [2] lists the report [1].',
+        'Revenue grew [[1]](https://x.test/q3). The Asana Trust Center [[2]](https://asana.com/trust) lists the report [[1]](https://x.test/q3).',
       );
       const [stop] = apiCalls(client, 'chat.stopStream');
       const listed = JSON.stringify(stop.blocks);
@@ -521,7 +680,7 @@ export function describeAnswerWiring(
 
       const text = visibleText(client);
       expect(text).to.include('The older filing [1] covers this.');
-      expect(text.endsWith('Revenue grew 12% [2].')).to.equal(true);
+      expect(text.endsWith('Revenue grew 12% [[2]](https://x.test/q3).')).to.equal(true);
     });
 
     it('keeps line breaks, headings and ordinary links of a multi-paragraph answer streamed in small deltas', async () => {
@@ -544,70 +703,47 @@ export function describeAnswerWiring(
       expect(visibleText(client)).to.equal(answer);
     });
 
-    it('groups tool calls with no text between them into one step, listing every call, like the dashboard', async () => {
-      const call = (id: string, name: string, args: string, status = 'completed', summary?: string) => [
-        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: id, toolCallName: name },
+    it('puts each run of the same tool in one row, titled by what it did, and a different tool in its own row', async () => {
+      const call = (id: string, name: string, args: string, status = 'completed', summary?: string, label?: string) => [
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: id, toolCallName: name, ...(label ? { displayName: label } : {}) },
         { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: id, delta: '{}', argsSummary: args },
         { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: id, status, ...(summary ? { resultSummary: summary } : {}) },
       ];
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
-        ...call('c1', 'knowledgegraph__search', 'Searched for "Asana SOC 3"', 'completed', '3 results\nDoc A'),
-        ...call('c2', 'knowledgegraph__search', 'Searched for "Asana revenue"', 'failed', 'no results'),
-        ...call('c3', 'knowledgegraph__semantic_search', 'Searched for "Q3"'),
-        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        ...tokens('The first lookup was inconclusive.'),
-        ...call('c4', 'fetch_url', 'Fetched asana.com'),
+        ...call('c1', 'knowledgegraph__search', 'Searched for "Asana SOC 3"', 'completed', '3 results\nDoc A', 'Searched the knowledge base'),
+        ...call('c2', 'knowledgegraph__search', 'Searched for "Asana revenue"', 'failed', 'Failed: no results', 'Searched the knowledge base'),
+        ...call('c3', 'fetch_url', 'Reading https://asana.com/trust', 'completed', 'Read “Trust” (asana.com)', 'Read a web page'),
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
         ...tokens(ANSWER),
         finished(NORMALIZED_ANSWER, CITATIONS),
       ]);
 
-      const steps = [...finalSteps(client).values()];
-      expect(steps.map((t) => t.title)).to.deep.equal([
-        'Knowledgegraph: Explored 3 searches',
-        'The first lookup was inconclusive.',
-        'Fetch Url',
+      const rows = replayRows(client);
+      expect(rows.map((r) => [r.title, r.status, r.details])).to.deep.equal([
+        ['Searched the knowledge base', 'complete', 'Knowledgegraph'],
+        ['Read a web page', 'complete', ''],
       ]);
-      expect(steps[0]).to.deep.include({
-        status: 'error',
-        details: '3 calls · 1 failed',
-        output: [
-          '✓ Search',
-          'Arguments: Searched for "Asana SOC 3"',
-          'Result: 3 results',
-          'Doc A',
-          '',
-          '✗ Search',
-          'Arguments: Searched for "Asana revenue"',
-          'Result: Failed: no results',
-          '',
-          '✓ Semantic Search',
-          'Arguments: Searched for "Q3"',
-        ].join('\n'),
-      });
-      expect(steps[1]).to.deep.equal({ type: 'task_update', id: steps[1].id, title: 'The first lookup was inconclusive.', status: 'complete' });
-      expect(steps[2]).to.deep.include({ status: 'complete', output: 'Arguments: Fetched asana.com' });
-      expect(steps[2]).to.not.have.property('details');
-      expect(streamedText(client)).to.equal(SHOWN_ANSWER);
+      expect(rows[0]!.output).to.equal('✓ "Asana SOC 3" → 3 results\n✗ "Asana revenue" → no results');
+      expect(rows[1]!.output).to.equal('✓ Reading https://asana.com/trust → Read “Trust” (asana.com)');
+      expect(rows.every((r) => r.detailSends === 1)).to.equal(true);
     });
 
-    it('lists every call of a long group', async () => {
-      const frames = Array.from({ length: 6 }, (_, i) => [
-        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: `c${String(i)}`, toolCallName: 'web_search' },
+    it('shows six calls of a row and sums up the rest', async () => {
+      const frames = Array.from({ length: 8 }, (_, i) => [
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: `c${String(i)}`, toolCallName: 'web_search', displayName: 'Searched the web' },
         { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: `c${String(i)}`, delta: '{}', argsSummary: `Searched for "query ${String(i)}"` },
         { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: `c${String(i)}`, status: 'completed', resultSummary: `${String(i)} results` },
       ]).flat();
       const client = await ask([{ type: 'RUN_STARTED', runId: 'r1' }, ...frames, finished('')]);
 
-      const [group] = [...finalSteps(client).values()];
-      expect(group.title).to.equal('Explored 6 searches');
-      expect(group.details).to.equal('6 calls');
-      expect((group.output as string).split('\n\n')).to.deep.equal(
-        Array.from({ length: 6 }, (_, i) =>
-          ['✓ Web Search', `Arguments: Searched for "query ${String(i)}"`, `Result: ${String(i)} results`].join('\n'),
-        ),
-      );
+      const [row] = replayRows(client);
+      expect(row!.title).to.equal('Searched the web');
+      expect(row!.output.split('\n')).to.deep.equal([
+        ...Array.from({ length: 6 }, (_, i) => `✓ "query ${String(i)}" → ${String(i)} results`),
+        '+2 more',
+      ]);
+      expect(row!.detailSends).to.equal(1);
     });
 
     it('keeps the plan and every step in the message after the answer is done', async () => {
@@ -815,7 +951,7 @@ export function describeAnswerWiring(
         finished(answer, CITATIONS),
       ]);
 
-      expect(visibleText(client)).to.equal('Revenue grew 12% [1]. See item [7](https://example.com/list).');
+      expect(visibleText(client)).to.equal('Revenue grew 12% [[1]](https://x.test/q3). See item [7](https://example.com/list).');
       const [stop] = apiCalls(client, 'chat.stopStream');
       expect(JSON.stringify(stop.blocks)).to.include('"[1] "').and.include('https://x.test/q3');
     });
@@ -906,37 +1042,23 @@ export function describeAnswerWiring(
       expect(posted.join('\n')).to.include('The model timed out');
     });
 
-    it('does not show a tool waiting for approval as failed', async () => {
+    it('does not show a tool waiting for approval as failed, and sends its line once', async () => {
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
-        {
-          type: 'TOOL_CALL_START',
-          runId: 'r1',
-          toolCallId: 'c1',
-          toolCallName: 'jira_create',
-        },
-        {
-          type: 'TOOL_CALL_RESULT',
-          runId: 'r1',
-          toolCallId: 'c1',
-          status: 'awaiting_approval',
-        },
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'jira__create_issue', displayName: 'Created a Jira issue' },
+        { type: 'TOOL_CALL_ARGS', runId: 'r1', toolCallId: 'c1', delta: '{}', argsSummary: 'Creating "OPS: rotate keys"' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'awaiting_approval' },
         finished(''),
       ]);
 
-      const states = streamedChunks(client)
-        .concat(
-          apiCalls(client, 'chat.stopStream').flatMap(
-            (stop) => (stop.chunks ?? []) as AnyArgs[],
-          ),
-        )
-        .filter((c) => c.type === 'task_update');
-      // Waiting is not failing: it stays in progress, saying why, even after the reply stops.
+      const [row] = replayRows(client);
       // At the end of the reply no spinner is left: the row says what it waits for.
-      expect(states.pop()).to.deep.include({
+      expect(row).to.deep.include({
+        title: 'Waiting for your approval: Created a Jira issue',
         status: 'complete',
-        title: 'Waiting for your approval: Jira Create',
-        details: 'Waiting for your approval',
+        details: 'Jira',
+        output: '• "OPS: rotate keys" → Waiting for your approval',
+        detailSends: 1,
       });
     });
 

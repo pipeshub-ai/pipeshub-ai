@@ -4,12 +4,7 @@ import {
   type SlackBlock,
   type TypedSlackClient,
 } from '../helpers';
-import {
-  extractToolsetLabel,
-  groupToolsetLabel,
-  isWebTool,
-  toolGroupLabel,
-} from './tool-display';
+import { groupToolsetLabel } from './tool-display';
 
 /** Title of the plan block that holds the steps. */
 export const SLACK_PLAN_TITLE = 'Thinking';
@@ -378,6 +373,57 @@ interface ToolGroup {
   calls: ToolCall[];
   /** Set for a sub-agent's row: its calls are listed under it. */
   agent?: { role: string; status: 'running' | 'completed' | 'failed' };
+  /** No call joins it any more: text came after it, or its sub-agent ended. */
+  closed?: boolean;
+  /** Its details, output and sources went out: Slack adds a resent value to the shown one. */
+  sealed?: boolean;
+}
+
+/** Lines a row's output shows before it sums up the rest. */
+const MAX_OUTPUT_LINES = 6;
+const MAX_ARGUMENT_CHARS = 80;
+const MAX_OUTCOME_CHARS = 90;
+const UUID =
+  /\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const LONG_ID = /\b([A-Za-z0-9]{8})[A-Za-z0-9_-]{16,}\b/g;
+
+function shortIds(text: string): string {
+  return text.replace(UUID, '$1').replace(LONG_ID, '$1');
+}
+
+/**
+ * A call's main argument from the server's summary: a quoted query as
+ * quoted, else the summary without the tool's name ("Get Record Download Url
+ * — record_id: 8dc0…" gives "record 8dc0d3d5"). Ids are cut to 8 characters.
+ */
+function mainArgument(summary: string, label: string): string {
+  const quoted = /"([^"]+)"/.exec(summary)?.[1];
+  let text = quoted ?? summary;
+  if (quoted === undefined) {
+    const lower = text.toLowerCase();
+    const name = label.toLowerCase();
+    if (lower.startsWith(name)) {
+      text = text.slice(label.length).replace(/^\s*(?:—|-|:)\s*/, '');
+    }
+    // The server's generic summary is "<tool name> — <args>": the row's title already names the tool.
+    text = text.replace(/^[^—\n]*?\s—\s/, '');
+    text = text.replace(/\b([a-z]+)_id:\s*/gi, '$1 ');
+  }
+  const shortened = shortIds(redactSecrets(text)).trim();
+  if (!shortened) return '';
+  const clipped = clip(shortened, MAX_ARGUMENT_CHARS);
+  return quoted === undefined ? clipped : `"${clipped}"`;
+}
+
+/** The first sentence (or line) of a result. */
+function firstSentence(text: string): string {
+  const line =
+    text
+      .split('\n')
+      .find((l) => l.trim() !== '')
+      ?.trim() ?? '';
+  const end = line.search(/[.!?](\s|$)/);
+  return end > 0 ? line.slice(0, end) : line;
 }
 
 /**
@@ -397,13 +443,25 @@ export class SlackTaskPlan {
   /** Rows that wait on someone (an approval): never failed when the reply stops. */
   private readonly waiting = new Set<string>();
   private openGroup: string | null = null;
+  private sealedRows: SlackTaskChunk[] = [];
   private reasoning = '';
   private finishedReasoning = '';
   private seq = 0;
 
   /** Text came between steps: the next tool call starts a new row. */
   endGroup(): void {
+    if (this.openGroup === null) return;
+    const group = this.groups.get(this.openGroup);
+    if (group) group.closed = true;
+    this.sealedRows.push(...this.render(this.openGroup));
     this.openGroup = null;
+  }
+
+  /** Rows sealed since the last call, to send now: a closed row's details and output. */
+  takeSealed(): SlackTaskChunk[] {
+    const rows = this.sealedRows;
+    this.sealedRows = [];
+    return rows;
   }
 
   /** What the agent wrote before a step, as its own rows in the plan, in full. */
@@ -460,12 +518,30 @@ export class SlackTaskPlan {
   ): SlackTaskChunk[] {
     const key = `tool:${toolName}`;
     const id = toolCallId ?? `${key}-${String(++this.seq)}`;
+    // A call that starts again (its approval answered) goes on in its own row.
+    const again = this.groupOf.get(id);
+    const known =
+      again === undefined
+        ? undefined
+        : this.groups.get(again)?.calls.find((c) => c.id === id);
+    if (again !== undefined && known) {
+      known.status = 'running';
+      if (meta.approvalAnswer) known.approvalAnswer = meta.approvalAnswer;
+      this.openIdsByKey.set(key, [...(this.openIdsByKey.get(key) ?? []), id]);
+      return this.render(again);
+    }
     this.openIdsByKey.set(key, [...(this.openIdsByKey.get(key) ?? []), id]);
     const agentGroup = meta.agent
       ? this.agentGroups.get(meta.agent)
       : undefined;
     let group = agentGroup;
     if (group === undefined) {
+      // A row holds one kind of call: a different tool starts a row of its own.
+      const open =
+        this.openGroup === null ? undefined : this.groups.get(this.openGroup);
+      if (open?.calls.some((call) => call.toolName !== toolName)) {
+        this.endGroup();
+      }
       if (this.openGroup === null) {
         this.openGroup = `tools-${String(++this.seq)}`;
         this.groups.set(this.openGroup, { calls: [] });
@@ -559,44 +635,52 @@ export class SlackTaskPlan {
       this.groups.set(group, { calls: [], agent: { role, status: 'running' } });
     }
     const entry = this.groups.get(group);
-    if (entry?.agent && phase !== 'started') entry.agent.status = phase;
+    if (entry?.agent && phase !== 'started') {
+      entry.agent.status = phase;
+      entry.closed = true;
+    }
     const rows = this.render(group);
     if (phase !== 'started') this.agentGroups.delete(role);
     return rows;
   }
 
-  /** Running rows among `ids` when the reply stops: Slack would leave them spinning. A wait for approval ends as said, not failed. */
+  /**
+   * The rows among `ids` as the reply stops: every row is sealed with its
+   * details and output, and none keeps spinning. A wait for approval ends as
+   * said, not failed.
+   */
   failRunning(ids: ReadonlySet<string>): SlackTaskChunk[] {
-    const failed: SlackTaskChunk[] = [];
-    for (const task of this.tasks.values()) {
-      if (task.status !== 'in_progress' || !ids.has(task.id)) continue;
-      if (this.waiting.has(task.id)) {
-        // Nothing more happens in this reply: no spinner left behind, and it says what it waits for.
-        failed.push(
-          this.put({
-            ...task,
-            status: 'complete',
-            title: clip(
-              `${APPROVAL_OUTPUT}: ${task.title}`,
-              MAX_TASK_TITLE_CHARS,
-            ),
-          }),
-        );
-      } else {
-        failed.push(this.put({ ...task, status: 'error' }));
+    const rows: SlackTaskChunk[] = [];
+    for (const [id, group] of this.groups) {
+      if (!ids.has(id)) continue;
+      group.closed = true;
+      if (!group.sealed || this.tasks.get(id)?.status === 'in_progress') {
+        rows.push(...this.render(id, true));
       }
     }
-    return failed;
+    for (const task of this.tasks.values()) {
+      if (
+        task.status !== 'in_progress' ||
+        !ids.has(task.id) ||
+        this.groups.has(task.id)
+      ) {
+        continue;
+      }
+      rows.push(
+        this.put({
+          type: 'task_update',
+          id: task.id,
+          title: task.title,
+          status: 'error',
+        }),
+      );
+    }
+    return rows;
   }
 
   /** A row's latest state, to show it again in a replaced message. */
   current(id: string): SlackTaskChunk | undefined {
     return this.tasks.get(id);
-  }
-
-  /** A row the stream made itself (the overflow of one Slack found too big). */
-  remember(task: SlackTaskChunk): void {
-    this.put(task);
   }
 
   private findCall(
@@ -611,151 +695,127 @@ export class SlackTaskPlan {
       : undefined;
   }
 
-  /** One call's lines, the way the dashboard's expanded call shows them. */
-  private callLines(call: ToolCall, heading: string | null): string[] {
-    const lines: string[] = [];
+  /**
+   * One call as one line: mark, its main argument and how it ended, without
+   * repeating the tool's name, which the row's title already says.
+   */
+  private callLine(call: ToolCall, ownLabel: string | undefined): string {
     const failed = call.status === 'failed' || call.status === 'blocked';
-    if (heading !== null) {
-      const mark =
-        call.status === 'running' || call.status === 'awaiting_approval'
-          ? '•'
-          : failed
-            ? '✗'
-            : '✓';
-      const chip = call.approvalAnswer
-        ? APPROVAL_CHIPS[call.approvalAnswer]
-        : call.status === 'awaiting_approval'
-          ? 'Needs approval'
-          : undefined;
-      lines.push(`${mark} ${heading}${chip ? ` · ${chip}` : ''}`);
-    }
-    const args = call.args ?? (call.raw ? compactArgs(call.raw) : '');
-    if (args) lines.push(`Arguments: ${redactSecrets(args)}`);
-    const query = sqlQuery(call.toolName, call.raw);
-    if (query) lines.push(`Query: ${redactSecrets(query)}`);
-    if (call.status === 'running') {
-      if (call.progress)
-        lines.push(`Progress: ${redactSecrets(call.progress)}`);
-    } else if (call.status === 'awaiting_approval') {
-      // A lone call already says it in its summary line.
-      if (heading !== null) lines.push(`Result: ${APPROVAL_OUTPUT}`);
-    } else if (call.status === 'blocked') {
-      lines.push(
-        call.result
-          ? `Result: Blocked: ${redactSecrets(call.result)}`
-          : 'Result: Blocked',
-      );
-    } else if (call.status === 'failed') {
-      const reason = call.result?.replace(/^Failed:\s*/i, '');
-      lines.push(
-        reason ? `Result: Failed: ${redactSecrets(reason)}` : 'Result: Failed',
-      );
-    } else if (call.result) {
-      lines.push(`Result: ${redactSecrets(call.result)}`);
-    }
-    // A line per field, no leading spaces: Slack could show indented lines as code.
-    return lines;
+    const mark =
+      call.status === 'running' || call.status === 'awaiting_approval'
+        ? '•'
+        : failed
+          ? '✗'
+          : '✓';
+    const argument = mainArgument(
+      call.args ?? (call.raw ? compactArgs(call.raw) : ''),
+      call.label,
+    );
+    const reason = firstSentence(call.result ?? '').replace(/^Failed:\s*/i, '');
+    const outcome =
+      call.status === 'awaiting_approval'
+        ? APPROVAL_OUTPUT
+        : call.status === 'blocked'
+          ? `blocked${reason ? `: ${reason}` : ''}`
+          : call.status === 'running'
+            ? (call.progress ?? '')
+            : failed && !reason
+              ? 'failed'
+              : reason;
+    const chip = call.approvalAnswer
+      ? APPROVAL_CHIPS[call.approvalAnswer]
+      : undefined;
+    // With nothing else to say, a line names its call rather than showing a bare mark.
+    const what =
+      [ownLabel, argument].filter(Boolean).join(': ') ||
+      (outcome ? '' : call.label);
+    const shown = outcome
+      ? `${what ? ' → ' : ''}${clip(shortIds(redactSecrets(outcome)), MAX_OUTCOME_CHARS)}`
+      : '';
+    return `${mark} ${what}${shown}${chip ? ` · ${chip}` : ''}`;
   }
 
-  /** One row for a group of calls (or a sub-agent), titled and listed like the dashboard's. */
-  private render(group: string): SlackTaskChunk[] {
+  /**
+   * One row for a group of calls (or a sub-agent). Its title (the
+   * dashboard's group label) and status may change at any time. Its details,
+   * output and sources go out once, when the row is sealed: Slack adds a
+   * resent value to what it shows, so a value sent twice would show twice.
+   */
+  private render(group: string, force = false): SlackTaskChunk[] {
     const entry = this.groups.get(group);
     if (!entry) return [];
     const { calls, agent } = entry;
     const tag = agent
       ? undefined
       : groupToolsetLabel(calls.map((call) => call.toolName));
-    const single = !agent && calls.length === 1 ? calls[0] : undefined;
-    const label = agent
-      ? agent.role
-      : single
-        ? single.label
-        : toolGroupLabel(calls.map((call) => call.toolName));
+    // What was done, in the tool's own words: one kind of call per row.
+    const title = clip(
+      agent ? agent.role : (calls[calls.length - 1]?.label ?? ''),
+      MAX_TASK_TITLE_CHARS,
+    );
 
     const running = calls.filter((call) => call.status === 'running').length;
     const failedCount = calls.filter(
       (call) => call.status === 'failed' || call.status === 'blocked',
     ).length;
     const awaiting = calls.some((call) => call.status === 'awaiting_approval');
-    const status: SlackTaskStatus =
+    // An error row only when nothing in it worked; a partial failure shows on its line.
+    let status: SlackTaskStatus =
       agent?.status === 'running' || (!agent && running > 0) || awaiting
         ? 'in_progress'
-        : agent?.status === 'failed' || failedCount > 0
+        : agent?.status === 'failed' ||
+            (calls.length > 0 && failedCount === calls.length)
           ? 'error'
           : 'complete';
+    let shownTitle = title;
+    if (force && status === 'in_progress') {
+      // The reply ends here: a wait for approval says so; anything else stopped short.
+      if (awaiting && running === 0) {
+        status = 'complete';
+        shownTitle = clip(`${APPROVAL_OUTPUT}: ${title}`, MAX_TASK_TITLE_CHARS);
+      } else {
+        status = 'error';
+      }
+    }
     if (awaiting && running === 0) this.waiting.add(group);
     else this.waiting.delete(group);
 
-    // One summary line; progress counts only while something runs.
-    const summary = [
-      calls.length > 1 || agent
-        ? `${String(calls.length)} ${calls.length === 1 ? 'call' : 'calls'}`
-        : '',
-      running > 0 && (calls.length > 1 || agent)
-        ? `${String(running)} running`
-        : '',
-      failedCount > 0 ? `${String(failedCount)} failed` : '',
-      awaiting ? APPROVAL_OUTPUT : '',
-    ]
-      .filter(Boolean)
-      .join(' · ');
-
-    // Every call is listed, however many; a call never splits across rows.
-    const blocks = single
-      ? [this.callLines(single, null).join('\n')]
-      : calls.map((call) => {
-          // A call's own app, unless the row's title already names it.
-          const own = extractToolsetLabel(call.toolName);
-          const callTag = own === tag ? undefined : own;
-          const fetched =
-            isWebTool(call.toolName) &&
-            !/search/i.test(call.toolName) &&
-            call.sources[0]
-              ? ` (${new URL(call.sources[0].url).hostname})`
-              : '';
-          return this.callLines(
-            call,
-            `${callTag ? `${callTag}: ` : ''}${call.label}${fetched}`,
-          ).join('\n');
-        });
-    const pages: string[] = [];
-    for (const block of blocks.filter((b) => b !== '')) {
-      const last = pages.length - 1;
-      const page = pages[last];
-      if (
-        page !== undefined &&
-        page.length + 2 + block.length <= MAX_TASK_OUTPUT_CHARS
-      ) {
-        pages[last] = `${page}\n\n${block}`;
-      } else {
-        pages.push(clip(block, MAX_TASK_OUTPUT_CHARS));
-      }
+    const seal =
+      !entry.sealed &&
+      (force || (entry.closed === true && running === 0 && !awaiting));
+    if (!seal) {
+      return [
+        this.put({ type: 'task_update', id: group, title: shownTitle, status }),
+      ];
     }
+    entry.sealed = true;
+
+    // A sub-agent's calls can be of several kinds, so each line names its tool.
+    const lines = calls.map((call) =>
+      this.callLine(call, agent ? call.label : undefined),
+    );
+    const shownLines =
+      lines.length > MAX_OUTPUT_LINES
+        ? [
+            ...lines.slice(0, MAX_OUTPUT_LINES),
+            `+${String(lines.length - MAX_OUTPUT_LINES)} more`,
+          ]
+        : lines;
     const sources = calls
       .flatMap((call) => call.sources)
       .slice(0, MAX_TASK_SOURCES);
-    const title = tag ? `${tag}: ${label}` : label;
 
     return [
       this.put({
         type: 'task_update',
         id: group,
-        title,
+        title: shownTitle,
         status,
-        ...(summary ? { details: clip(summary, MAX_TASK_DETAILS_CHARS) } : {}),
-        ...(pages[0] ? { output: pages[0] } : {}),
+        ...(tag ? { details: clip(tag, MAX_TASK_DETAILS_CHARS) } : {}),
+        ...(shownLines.length > 0
+          ? { output: clip(shownLines.join('\n'), MAX_TASK_OUTPUT_CHARS) }
+          : {}),
         ...(sources.length > 0 ? { sources } : {}),
-      }),
-      ...pages.slice(1).map((output, index) => {
-        const id = `${group}-more-${String(index + 1)}`;
-        if (status === 'in_progress' && awaiting) this.waiting.add(id);
-        return this.put({
-          type: 'task_update',
-          id,
-          title: `${title} (continued)`,
-          status,
-          output,
-        });
       }),
     ];
   }
@@ -790,8 +850,8 @@ export class SlackPlanStream {
   private everOpened = false;
   private earlier: string[] = [];
   private taskIds = new Set<string>();
-  /** Overflow rows made when Slack found a row too big, by the row they continue. */
-  private readonly overflowOf = new Map<string, string>();
+  /** Rows of this message whose details, output and sources were sent: Slack adds a resent value to the shown one. */
+  private detailed = new Set<string>();
   /** Each message's text and steps in order (steps by id), to show them again if part is taken back. */
   private logs: ({ text: string } | { task: string })[][] = [];
   private afterTask = false;
@@ -806,7 +866,10 @@ export class SlackPlanStream {
     readonly plan: SlackTaskPlan,
   ) {}
 
-  async tasks(chunks: SlackTaskChunk[]): Promise<void> {
+  async tasks(all: SlackTaskChunk[]): Promise<void> {
+    // A row shown in an earlier message stays there: sent here it would show again.
+    const earlier = this.rowsOfEarlierMessages();
+    const chunks = all.filter((chunk) => !earlier.has(chunk.id));
     if (this.unavailable || this.stopped || chunks.length === 0) return;
     if (!this.ts) {
       await this.openWith(chunks);
@@ -832,43 +895,37 @@ export class SlackPlanStream {
   }
 
   /**
-   * Slack found the rows too big: each row's output moves half into a
-   * "(continued)" row, then, if that still fails, the rows go without their
-   * output. A row is never lost.
+   * Slack found the rows too big: each row's output shrinks to its first
+   * lines, then, if that still fails, the rows go without their output. No
+   * row is added and none is lost.
    */
   private async retrySmaller(chunks: SlackTaskChunk[]): Promise<void> {
-    const halves = chunks.flatMap((chunk): SlackTaskChunk[] => {
-      const output = chunk.output ?? '';
-      if (output.length < 2) return [chunk];
-      const middle = output.lastIndexOf('\n\n', Math.floor(output.length / 2));
-      const cut = middle > 0 ? middle : Math.floor(output.length / 2);
-      return [
-        { ...chunk, output: output.slice(0, cut).trim() },
-        {
-          type: 'task_update',
-          id: `${chunk.id}-overflow`,
-          title: `${chunk.title} (continued)`,
-          status: chunk.status,
-          output: output.slice(cut).trim(),
-        },
-      ];
+    const shorter = chunks.map((chunk): SlackTaskChunk => {
+      const lines = (chunk.output ?? '').split('\n');
+      if (lines.length < 2) {
+        return chunk.output
+          ? {
+              ...chunk,
+              output: clip(chunk.output, Math.floor(chunk.output.length / 2)),
+            }
+          : chunk;
+      }
+      const keep = Math.max(1, Math.floor(lines.length / 2));
+      return {
+        ...chunk,
+        output: [
+          ...lines.slice(0, keep),
+          `+${String(lines.length - keep)} more`,
+        ].join('\n'),
+      };
     });
     for (const attempt of [
-      halves,
+      shorter,
       chunks.map(({ output: _output, ...row }) => row),
     ]) {
       try {
         await this.append(attempt);
         this.track(attempt);
-        for (const row of attempt) {
-          const parent = row.id.endsWith('-overflow')
-            ? row.id.slice(0, -'-overflow'.length)
-            : undefined;
-          if (parent !== undefined) {
-            this.plan.remember(row);
-            this.overflowOf.set(row.id, parent);
-          }
-        }
         return;
       } catch (error) {
         const code = slackErrorCode(error);
@@ -949,25 +1006,7 @@ export class SlackPlanStream {
   ): Promise<boolean> {
     const nothingToDeliver = !options.markdown && !options.blocks?.length;
     if (!this.ts || this.stopped || this.unavailable) return nothingToDeliver;
-    const settled = this.plan.failRunning(
-      new Set([...this.taskIds].filter((id) => !this.overflowOf.has(id))),
-    );
-    // An overflow row ends as its row does, so none keeps spinning.
-    for (const [overflow, parent] of this.overflowOf) {
-      const row = this.plan.current(overflow);
-      const status = this.plan.current(parent)?.status;
-      if (
-        row &&
-        status &&
-        row.status !== status &&
-        this.taskIds.has(overflow) &&
-        !settled.some((chunk) => chunk.id === overflow)
-      ) {
-        const updated = { ...row, status };
-        this.plan.remember(updated);
-        settled.push(updated);
-      }
-    }
+    const settled = this.prepare(this.plan.failRunning(this.taskIds));
     const chunks: SlackStreamChunk[] = [...settled];
     if (options.markdown) {
       chunks.push({ type: 'markdown_text', text: options.markdown });
@@ -1133,8 +1172,18 @@ export class SlackPlanStream {
     this.text = '';
     this.logs[this.earlier.length] = [];
     this.taskIds = new Set();
+    this.detailed = new Set();
     this.track(opening);
     return true;
+  }
+
+  private rowsOfEarlierMessages(): Set<string> {
+    return new Set(
+      this.logs
+        .slice(0, this.earlier.length)
+        .flat()
+        .flatMap((entry) => ('task' in entry ? [entry.task] : [])),
+    );
   }
 
   private currentLog(): ({ text: string } | { task: string })[] {
@@ -1147,6 +1196,13 @@ export class SlackPlanStream {
     for (const chunk of chunks) {
       if (chunk.type === 'plan_update') continue;
       if (chunk.type === 'task_update') {
+        if (
+          chunk.details !== undefined ||
+          chunk.output !== undefined ||
+          chunk.sources !== undefined
+        ) {
+          this.detailed.add(chunk.id);
+        }
         if (!this.taskIds.has(chunk.id))
           this.currentLog().push({ task: chunk.id });
         this.taskIds.add(chunk.id);
@@ -1171,7 +1227,18 @@ export class SlackPlanStream {
     await this.client.apiCall('chat.appendStream', {
       channel: this.channel,
       ts: this.ts,
-      chunks,
+      chunks: this.prepare(chunks),
+    });
+  }
+
+  /** A row's details, output and sources reach a message once: later sends carry only its title and status. */
+  private prepare<T extends SlackStreamChunk>(chunks: T[]): T[] {
+    return chunks.map((chunk) => {
+      if (chunk.type !== 'task_update' || !this.detailed.has(chunk.id)) {
+        return chunk;
+      }
+      const { details: _d, output: _o, sources: _s, ...row } = chunk;
+      return row as T;
     });
   }
 

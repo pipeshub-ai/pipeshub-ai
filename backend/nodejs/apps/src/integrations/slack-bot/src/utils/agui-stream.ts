@@ -105,6 +105,8 @@ export interface SlackAGUICallbacks {
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
   onComplete?: (conversation: SlackConversationComplete) => void;
+  /** The current model call's citations, as the backend refreshes them while it streams. */
+  onCitations?: (citations: unknown[]) => void;
   onError?: (message: string) => void;
 }
 
@@ -453,6 +455,9 @@ export function createSlackAGUIEventHandler(
         }
         if (textOps.length > 0) {
           state = applyStatePatch(state, textOps);
+          if (textOps.some((op) => op.path === "/citations")) {
+            callbacks.onCitations?.(state.citations);
+          }
         }
         break;
       }
