@@ -1,0 +1,28 @@
+name: Sweep Router Tests
+
+# The bug sweep's router is the only part of that workflow that writes to
+# GitHub, so a change to it runs its tests here. Kept apart from the sweep
+# itself because a pull_request workflow may not hold secrets without an
+# approval gate, and the sweep needs them.
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/route_sweep_findings.py'
+      - '.github/scripts/tests/test_route_sweep_findings.py'
+      - '.github/workflows/sweep-router-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-router:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pytest
+      - run: python -m pytest .github/scripts/tests/test_route_sweep_findings.py -v

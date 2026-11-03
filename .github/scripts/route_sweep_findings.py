@@ -346,8 +346,9 @@ def issue_body(finding: Finding) -> str:
         "---\n"
         f"_Filed by the scheduled bug sweep. It reviews recently changed code "
         f"and one rotating area each week; findings are capped so each one has "
-        f"been worth a look. If this is wrong, close it with a note — the sweep "
-        f"does not re-file an open or recently closed report for the same file._"
+        f"been worth a look. If this is wrong, comment and leave it open: the sweep "
+        f"skips a file that has an open `automated-sweep` report and may file a "
+        f"closed one again._"
     )
 
 

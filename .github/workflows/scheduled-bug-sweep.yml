@@ -32,11 +32,6 @@ name: Scheduled Bug Sweep
 on:
   schedule:
     - cron: '17 3 * * 1'   # Mondays, 03:17 UTC — off the hour to avoid the queue spike
-  pull_request:
-    paths:
-      - '.github/scripts/route_sweep_findings.py'
-      - '.github/scripts/tests/test_route_sweep_findings.py'
-      - '.github/workflows/scheduled-bug-sweep.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -52,23 +47,7 @@ permissions:
   contents: read
 
 jobs:
-  # The router is the only part of this workflow that writes to GitHub, so a
-  # change to it runs its tests on the pull request rather than waiting for
-  # the next scheduled sweep to find out.
-  test-router:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-      - run: pip install --quiet pytest
-      - run: python -m pytest .github/scripts/tests/test_route_sweep_findings.py -v
-
   sweep:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
