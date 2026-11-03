@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DOCKER="${DOCKER:-docker}"
 work="$(mktemp -d)"; proj=""; major=""
-dc() { $DOCKER compose --env-file "$work/env$major" -p "$proj" -f docker-compose.yml ${EXTRA_COMPOSE_FILE:+-f "$EXTRA_COMPOSE_FILE"} "$@"; }
+dc() { ${DC_PREFIX:-} $DOCKER compose --env-file "$work/env$major" -p "$proj" -f docker-compose.yml ${EXTRA_COMPOSE_FILE:+-f "$EXTRA_COMPOSE_FILE"} "$@"; }
 cleanup() { [ -n "$proj" ] && dc -f "$work/fail.yml" down -v >/dev/null 2>&1 || true; rm -rf "$work"; }
 trap cleanup EXIT
 pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -55,7 +55,8 @@ YML
   dc restart pgbouncer >/dev/null 2>&1 || true
   sleep 15
   check "$major: and the pooler is not healthy either" "$([ "$(health pgbouncer)" = healthy ] && echo healthy || echo not-healthy)" not-healthy
-  dc -f "$work/fail.yml" up -d --no-build app-stub > "$work/app.log" 2>&1 && started=yes || started=no
+  # bounded: if the server were still 'starting' rather than unhealthy, compose would wait on the dependency forever
+  DC_PREFIX="timeout 120" dc -f "$work/fail.yml" up -d --no-build app-stub > "$work/app.log" 2>&1 && started=yes || started=no
   check "$major: a service that waits for a healthy server does not start" "$started" no
   check "$major: its container never ran" "$([ "$($DOCKER inspect -f '{{.State.Running}}' "$proj-app-stub-1" 2>/dev/null || echo false)" = true ] && echo running || echo not-running)" not-running
 
