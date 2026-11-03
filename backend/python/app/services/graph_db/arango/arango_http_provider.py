@@ -5075,7 +5075,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node.
@@ -5103,6 +5105,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_edges_from_node_with_target_name(
@@ -25029,6 +25033,46 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def permission_hierarchy_view(self) -> ArangoHierarchyView:
         return ArangoHierarchyView(lambda: self.http_client)
+
+    @override
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        if not node_ids:
+            return {}
+        try:
+            rows = await self.http_client.execute_aql(
+                f"""
+                FOR id IN @ids
+                  LET d = DOCUMENT(@coll, id)
+                  FILTER d != null
+                  RETURN {{id: id,
+                          belongs: (FOR b IN {CollectionNames.BELONGS_TO.value} FILTER b._from == d._id RETURN PARSE_IDENTIFIER(b._to).key),
+                          inherits: (FOR i IN {CollectionNames.INHERIT_PERMISSIONS.value} FILTER i._from == d._id
+                                     RETURN PARSE_IDENTIFIER(i._to).key),
+                          parents: (FOR h IN {CollectionNames.NODE_RELATIONS.value}
+                                    FILTER h._to == d._id AND h.relationshipType IN @hierarchy
+                                    RETURN [PARSE_IDENTIFIER(h._from).key, h.relationshipType]),
+                          granted: LENGTH(FOR g IN {CollectionNames.PERMISSION.value} FILTER g._to == d._id LIMIT 1 RETURN 1) > 0}}
+                """,
+                {"ids": list(node_ids), "coll": collection, "hierarchy": ["PARENT_CHILD", "ATTACHMENT"]},
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get structure of nodes failed: {e}")
+            if raise_on_error:
+                raise
+            return {}
+        out: dict[str, frozenset] = {}
+        for r in rows or []:
+            me = r["id"]
+            edges = {(CollectionNames.BELONGS_TO.value, me, g) for g in r["belongs"] or []}
+            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q) for q in r["inherits"] or []}
+            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t) for p, t in r["parents"] or []}
+            if r.get("granted"):
+                edges.add(("granted", me))
+            out[me] = frozenset(edges)
+        return out
 
     def permission_stamp_graph(self) -> ArangoStampGraph:
         return ArangoStampGraph(lambda: self.http_client)
