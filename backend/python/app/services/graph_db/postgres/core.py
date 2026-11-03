@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 from app.services.graph_db.postgres.base import (
-    NotImplementedInPostgres,
     PgBase,
     _arango,
     _doc,
@@ -165,8 +164,8 @@ class CoreMixin(PgBase):
         if not keys:
             return True
         if collection == "records":
-            # A record goes with its type documents and blocks; that cascade belongs to the records module, so a plain delete would leave them behind.
-            raise NotImplementedInPostgres("deleting records needs the records module of the PostgreSQL graph provider")
+            # A record goes with its type documents and every edge of them (``RecordsMixin``), as ``_delete_records_with_their_types`` on Neo4j.
+            return await self._delete_records_with_their_types(keys, transaction) == len(set(keys))
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
