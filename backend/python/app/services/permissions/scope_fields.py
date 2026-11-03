@@ -33,15 +33,30 @@ SCOPE_LIST_KEYS = (PATH_IDS_FIELD, ACL_SCOPE_FIELD)
 ENV_SCOPE_GENERATION = "ACL_SCOPE_GENERATION"
 
 
-def current_scope_generation(env: dict[str, str] | None = None) -> int:
-    """The scope generation of this deployment: an integer the operator raises every time the scope fields are switched on again.
+#: Set by `generation.init_scope_generation` once a service has read the shared state: the generation every stamp of this process carries
+#: and is judged by. None until then (tests, and a service that never turned the fields on): the optional env value, else 0.
+_resolved: dict[str, int | None] = {"generation": None}
+UNAVAILABLE_GENERATION = -2  # the shared state could not be read: this process's stamps are never trusted
 
-    While the fields are off, membership writes leave the scope keys of a point as they were, so a point can carry a stamp that
-    a later permission change made wrong. A stamp carries the generation it was written in; one from an older generation was
-    written before the latest enable, so it is stale: the back-fill redoes it and a reader must treat it as legacy (never exact).
-    An unset or unreadable value is 0."""
+
+def set_resolved_generation(value: int | None) -> None:
+    _resolved["generation"] = value
+
+
+def env_scope_generation(env: dict[str, str] | None = None) -> int:
     raw = (env if env is not None else os.environ).get(ENV_SCOPE_GENERATION, "").strip()
     return int(raw) if raw.isdigit() else 0
+
+
+def current_scope_generation() -> int:
+    """The scope generation stamps are written in and trusted by.
+
+    While the fields are off, membership writes leave a point's scope keys as they were, so a point can carry a stamp that a later
+    permission change made wrong. Every switch from off to on therefore moves the generation, by itself and exactly once however many
+    processes start (`generation.init_scope_generation`), and a stamp of an older generation is stale: the back-fill redoes it and a
+    reader must treat it as legacy. `ACL_SCOPE_GENERATION` is an optional floor that forces a bump."""
+    resolved = _resolved["generation"]
+    return resolved if resolved is not None else env_scope_generation()
 
 
 def plain_id(value: object) -> bool:
@@ -89,7 +104,7 @@ class ScopeFields:
     def trusted(self) -> bool:
         """What a reader may rely on: an exact stamp of the current meaning, written in the current generation (see
         `current_scope_generation`). Anything else is read through the legacy filter."""
-        return self.exact and self.version == SCOPE_FIELDS_VERSION and self.generation == current_scope_generation()
+        return self.exact and self.version == SCOPE_FIELDS_VERSION and self.generation >= 0 and self.generation == current_scope_generation()
 
     @classmethod
     def stale(cls) -> ScopeFields:
