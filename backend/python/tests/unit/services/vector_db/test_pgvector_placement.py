@@ -124,7 +124,7 @@ async def test_a_policy_shared_by_two_event_loops_gives_each_loop_a_task_of_its_
     def run_other() -> None:
         try:
             asyncio.run(other_loop())
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errors.append(exc)
         finally:
             release.set()
