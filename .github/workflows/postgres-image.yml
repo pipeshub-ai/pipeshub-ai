@@ -36,6 +36,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Role script refuses an empty or failed verifier
+        run: bash deployment/docker-compose/tests/pg_roles_script_test.sh
+
       - name: Entrypoint volume-layout guard
         run: bash deployment/docker-compose/tests/pg_entrypoint_layout_test.sh
 
@@ -68,3 +71,6 @@ jobs:
 
       - name: Server and pooler under the Helm chart's pod restrictions
         run: bash deployment/docker-compose/tests/postgres_nonroot_test.sh
+
+      - name: A failed role setup leaves the server and pooler unhealthy
+        run: bash deployment/docker-compose/tests/postgres_role_failure_test.sh

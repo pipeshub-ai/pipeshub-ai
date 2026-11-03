@@ -8,11 +8,19 @@
 # environment, not argv) and sent in their place, and this session turns off statement tracking and statement logging.
 set -euo pipefail
 user="${POSTGRES_USER:-postgres}"; db="${POSTGRES_DB:-pipeshub}"
+auth_dir="${PG_AUTH_DIR:-/pgbouncer-auth}"
 verifier() { perl "${PG_SCRAM_VERIFIER:-/usr/local/bin/scram-verifier.pl}" "$1"; }
 
-args=(-v db="$db" -v node="$(verifier PG_NODE_PASSWORD)" -v conn="$(verifier PG_CONNECTORS_PASSWORD)"
-      -v idx="$(verifier PG_INDEXING_PASSWORD)" -v qry="$(verifier PG_QUERY_PASSWORD)" -v jobs="$(verifier PG_JOBS_PASSWORD)"
-      -v mig="$(verifier PG_MIGRATE_PASSWORD)" -v bak="$(verifier PG_BACKUP_PASSWORD)" -v kv="$(verifier PG_KV_PASSWORD)")
+# Each verifier is computed on its own and checked, before anything is sent to the server: one that fails or comes out empty stops the
+# whole script, so no role is ever created with an empty password.
+args=(-v db="$db")
+for entry in node:PG_NODE_PASSWORD conn:PG_CONNECTORS_PASSWORD idx:PG_INDEXING_PASSWORD qry:PG_QUERY_PASSWORD jobs:PG_JOBS_PASSWORD \
+             mig:PG_MIGRATE_PASSWORD bak:PG_BACKUP_PASSWORD kv:PG_KV_PASSWORD; do
+  name="${entry%%:*}"; var="${entry#*:}"
+  value="$(verifier "$var")" || { echo "pg-roles: could not compute the verifier of $var; no role was created or changed" >&2; exit 1; }
+  [ -n "$value" ] || { echo "pg-roles: the verifier of $var is empty; no role was created or changed" >&2; exit 1; }
+  args+=(-v "$name=$value")
+done
 psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" "${args[@]}" <<'SQL'
 SET log_statement = 'none';
 SET log_min_error_statement = 'panic';
@@ -67,11 +75,12 @@ DO $$ DECLARE f regprocedure; BEGIN
   END LOOP; END $$;
 SQL
 
-# Verifier file for PgBouncer: the poolable logins only (migrate and backup connect to postgres directly). Rewritten on every run,
-# so a lost or recreated pgbouncer_auth volume is repaired by the next start.
+# Verifier file for PgBouncer: the poolable logins only (migrate and backup connect to postgres directly). Rewritten on every run, so a
+# lost or recreated pgbouncer_auth volume is repaired by the next start. It is written last and only when everything above succeeded,
+# so it doubles as the success marker the healthchecks of the server and the pooler require (pg-entrypoint.sh removes the old one at start).
 umask 077
 psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" -At -c \
   "SELECT format('\"%s\" \"%s\"', rolname, rolpassword) FROM pg_authid
    WHERE rolname IN ('pipeshub_node_login','pipeshub_connectors_login','pipeshub_indexing_login',
-                     'pipeshub_query_login','pipeshub_kv_login','pipeshub_jobs') ORDER BY 1" > /pgbouncer-auth/userlist.txt.new
-mv /pgbouncer-auth/userlist.txt.new /pgbouncer-auth/userlist.txt
+                     'pipeshub_query_login','pipeshub_kv_login','pipeshub_jobs') ORDER BY 1" > "$auth_dir/userlist.txt.new"
+mv "$auth_dir/userlist.txt.new" "$auth_dir/userlist.txt"

@@ -654,7 +654,8 @@ services:
       - pipeshub
     healthcheck:
       # TCP, not the socket: during first init the temporary server listens on the socket only
-      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "pipeshub"]
+      # Ready means answering AND role setup done: the verifier file is written last, only when it succeeded.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d pipeshub && test -s /pgbouncer-auth/userlist.txt"]
       interval: 5s
       timeout: 3s
       retries: 10

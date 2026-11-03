@@ -37,8 +37,12 @@ if [ "$1" = postgres ]; then
   done
   # Create what is missing of the roles on every start, once the server answers on TCP (the initialisation server listens on the
   # socket only), so a volume that was left half-set-up repairs itself and PgBouncer's verifier file is rewritten. A failure is
-  # logged and leaves PgBouncer unhealthy.
+  # logged and leaves the server and PgBouncer unhealthy (no verifier file).
   roles="${PG_ROLES_SCRIPT:-/usr/local/bin/pg-roles.sh}"
+  # The verifier file is the sign that role setup succeeded (the healthchecks of the server and the pooler require it): a file left by
+  # an earlier start must not vouch for this one.
+  auth_dir="${PG_AUTH_DIR:-/pgbouncer-auth}"
+  rm -f "$auth_dir/userlist.txt" "$auth_dir/userlist.txt.new" 2>/dev/null || true
   if [ -x "$roles" ]; then
     (
       for _ in $(seq 1 300); do pg_isready -q -h 127.0.0.1 -U postgres && break; sleep 1; done

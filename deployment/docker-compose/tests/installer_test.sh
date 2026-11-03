@@ -49,6 +49,12 @@ check() { # check "desc" actual expected_substring
     fail "$1"; printf "         expected to contain: %s\n         got: %s\n" "$3" "$2"; fi
 }
 
+# Exact comparison: `check` matches a substring, which cannot show that something was NOT added to a value.
+check_exact() { # check_exact "desc" actual expected
+  if [[ "$2" == "$3" ]]; then pass "$1"; else
+    fail "$1"; printf "         expected exactly: %s\n         got: %s\n" "$3" "$2"; fi
+}
+
 # Extract a top-level function definition (closing brace in column 0) from a
 # script so the real implementation can be exercised in isolation.
 extract_fn() { awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{"{g=1} g{print} g&&/^\}/{exit}' "$2"; }
@@ -499,8 +505,11 @@ echo "== In-tree installer: persist_env_var replaces in place =="
 
 echo "== In-tree installer: the opt-in postgres profiles =="
 check "keeps postgres in COMPOSE_PROFILES" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
-check "does not invent postgres" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
-check "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "does not invent postgres" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "keeps exactly the two opt-in profiles and nothing else" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+# the exact check does fail on a wrongly appended profile (the substring check did not)
+[[ "graph-neo4j,sandbox,postgres" != "graph-neo4j,sandbox" ]] && pass "an appended postgres is caught by the exact comparison" || fail "an appended postgres is caught by the exact comparison"
 check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate"'
 check "uninstall asks before deleting the PostgreSQL volume" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" "Also delete the PostgreSQL data volume?"
 # The .env the wizard writes carries one random password per login; an existing value is kept across --reconfigure.
@@ -556,17 +565,25 @@ esac
 exit 0
 STUB
   chmod +x "$work/bin/docker"
-  run_uninstall() { : >"$work/docker.log"; (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --uninstall "$@" </dev/null >"$work/out.txt" 2>&1); }
-  run_uninstall --yes
+  # run_uninstall <stdin text> <args...>: the text answers the prompts in order (printf %b, so \n separates answers)
+  run_uninstall() { local input="$1"; shift; : >"$work/docker.log"; (cd "$work" && printf '%b' "$input" | PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --uninstall "$@" >"$work/out.txt" 2>&1); }
+  run_uninstall "" --yes
   log="$(cat "$work/docker.log")"
   check "--uninstall --yes does not run down -v" "$([[ "$log" != *"down -v"* ]] && echo no-down-v)" "no-down-v"
   check "--uninstall --yes removes the other volumes" "$log" "volume rm testproj_neo4j_data"
   check "--uninstall --yes keeps the PostgreSQL volume" "$([[ "$log" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
   check "--uninstall --yes says how to delete it" "$(cat "$work/out.txt")" "--delete-postgres"
-  run_uninstall --yes --delete-postgres
+  run_uninstall "" --yes --delete-postgres
   check "--uninstall --yes --delete-postgres removes everything with down -v" "$(cat "$work/docker.log")" "down -v --remove-orphans"
-  run_uninstall --delete-postgres </dev/null
-  check "--uninstall --delete-postgres alone does not ask about PostgreSQL" "$([[ "$(cat "$work/out.txt")" != *"Also delete the PostgreSQL"* ]] && echo no-prompt)" "no-prompt"
+  # interactive: the first answer confirms the uninstall, the second answers the PostgreSQL question (asked unless --delete-postgres)
+  run_uninstall "y\nn\n"
+  check "an interactive uninstall asks about the PostgreSQL volume" "$(cat "$work/out.txt")" "Also delete the PostgreSQL data volume?"
+  check "and keeps it when the answer is no" "$([[ "$(cat "$work/docker.log")" != *"down -v"* && "$(cat "$work/docker.log")" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
+  run_uninstall "y\ny\n"
+  check "and deletes it with down -v when the answer is yes" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  run_uninstall "y\n" --delete-postgres
+  check "--delete-postgres skips the PostgreSQL question" "$([[ "$(cat "$work/out.txt")" != *"Also delete the PostgreSQL"* ]] && echo no-prompt)" "no-prompt"
+  check "--delete-postgres deletes it without being asked" "$(cat "$work/docker.log")" "down -v --remove-orphans"
 )
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="
