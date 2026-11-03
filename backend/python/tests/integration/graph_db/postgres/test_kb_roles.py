@@ -109,3 +109,11 @@ async def test_a_collection_reads_with_the_users_role_status_and_folders_and_is_
 async def test_no_org_is_an_error(pg_provider, call: str) -> None:
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, call)("kb1", "me")
+
+
+async def test_updating_a_collection_removes_top_level_nulls_only(w: World) -> None:
+    await kb(w, status="ACTIVE")
+    await w.p.update_knowledge_base("kb1", {"settings": {"a": None, "b": 1}})
+    await w.p.update_knowledge_base("kb1", {"description": None})
+    got = await w.p.update_knowledge_base("kb1", {"note": "n"})
+    assert got["settings"] == {"a": None, "b": 1} and "description" not in got and got["note"] == "n"
