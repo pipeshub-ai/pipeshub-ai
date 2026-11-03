@@ -12,9 +12,9 @@ import {
   type ToolApprovalDetails,
 } from '../../../src/integrations/slack-bot/src/utils/approval-card';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 type Handler = (args: any) => Promise<void>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 type AnyBlock = any;
 
 const OWNER = 'owner@example.com';

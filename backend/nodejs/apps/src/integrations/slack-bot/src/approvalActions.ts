@@ -113,7 +113,8 @@ function cardDetails(blocks: KnownBlock[]): KnownBlock[] {
   return blocks.filter((block) =>
     block.type === 'actions'
       ? false
-      : block.type !== 'context' || KEPT_CONTEXT_BLOCKS.has(block.block_id ?? ''),
+      : block.type !== 'context' ||
+        KEPT_CONTEXT_BLOCKS.has(block.block_id ?? ''),
   );
 }
 

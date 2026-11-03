@@ -114,7 +114,11 @@ export function parseApprovalButtonValue(
 /** Block ids the card's answer replaces; the rest of the card stays as the record. */
 export const APPROVAL_STATUS_BLOCK = 'approval_status';
 export const APPROVAL_ACTIONS_BLOCK = 'approval_actions';
-export const KEPT_CONTEXT_BLOCKS: ReadonlySet<string> = new Set(['approval_source', 'approval_meta', 'approval_details']);
+export const KEPT_CONTEXT_BLOCKS: ReadonlySet<string> = new Set([
+  'approval_source',
+  'approval_meta',
+  'approval_details',
+]);
 
 const BODY_MAX_CHARS = 1500;
 const LINE_MAX_CHARS = 1000;
@@ -147,43 +151,72 @@ function documentBlocks(approval: ToolApprovalDetails): KnownBlock[] {
     const preview = approval.argumentsPreview ?? '';
     if (preview === '') return [];
     const shown = plain(preview, SECTION_MAX_CHARS - MORE_LINE_RESERVE);
-    const text = shown.length < plain(preview).length ? `${shown}\n_${SEE_EVERYTHING}_` : shown;
-    return [{ type: 'section', block_id: 'approval_document', text: { type: 'mrkdwn', text } }];
+    const text =
+      shown.length < plain(preview).length
+        ? `${shown}\n_${SEE_EVERYTHING}_`
+        : shown;
+    return [
+      {
+        type: 'section',
+        block_id: 'approval_document',
+        text: { type: 'mrkdwn', text },
+      },
+    ];
   }
   const layout = approvalLayout(approval.arguments, approval.inputSchema);
-  let cut = false;
+  // Set from inside `show`, so an object: a cut anywhere adds the note.
+  const cut = { any: false };
   const show = (value: unknown, max: number, name = ''): string => {
     const seconds = epochSeconds(name, value);
-    if (seconds !== null) return `<!date^${String(seconds)}^{date_short_pretty} {time}|${new Date(seconds * 1000).toUTCString()}>`;
+    if (seconds !== null)
+      return `<!date^${String(seconds)}^{date_short_pretty} {time}|${new Date(seconds * 1000).toUTCString()}>`;
     const text = valueText(value);
     const shown = plain(text, max);
-    if (shown.length < plain(text).length) cut = true;
+    if (shown.length < plain(text).length) cut.any = true;
     return shown;
   };
-  const pair = (f: ApprovalField, max = ARGUMENT_VALUE_MAX_CHARS) =>
+  const pair = (f: ApprovalField, max = ARGUMENT_VALUE_MAX_CHARS): string =>
     `${plain(f.label, ARGUMENT_KEY_MAX_CHARS)}: ${show(f.value, max, f.name)}`;
   const lines = [
     ...layout.recipients.map((f) => pair(f, LINE_MAX_CHARS)),
-    ...(layout.headline ? [`*${show(layout.headline.value, LINE_MAX_CHARS).replace(/\*/g, '')}*`] : []),
+    ...(layout.headline
+      ? [`*${show(layout.headline.value, LINE_MAX_CHARS).replace(/\*/g, '')}*`]
+      : []),
     // A label only tells several bodies apart.
     ...layout.body.map((f) =>
-      layout.body.length > 1 ? `_${plain(f.label, ARGUMENT_KEY_MAX_CHARS)}_\n${show(f.value, BODY_MAX_CHARS / 2)}` : show(f.value, BODY_MAX_CHARS),
+      layout.body.length > 1
+        ? `_${plain(f.label, ARGUMENT_KEY_MAX_CHARS)}_\n${show(f.value, BODY_MAX_CHARS / 2)}`
+        : show(f.value, BODY_MAX_CHARS),
     ),
   ];
   const blocks: KnownBlock[] = [];
   if (lines.length > 0) {
-    blocks.push({ type: 'section', block_id: 'approval_document', text: { type: 'mrkdwn', text: lines.join('\n') } });
+    blocks.push({
+      type: 'section',
+      block_id: 'approval_document',
+      text: { type: 'mrkdwn', text: lines.join('\n') },
+    });
   }
   if (layout.meta.length > 0) {
-    blocks.push(context('approval_meta', truncate(layout.meta.map((f) => pair(f)).join(' · '), SECTION_MAX_CHARS)));
+    blocks.push(
+      context(
+        'approval_meta',
+        truncate(
+          layout.meta.map((f) => pair(f)).join(' · '),
+          SECTION_MAX_CHARS,
+        ),
+      ),
+    );
   }
   const details = layout.details.map((f) => pair(f)).join(' · ');
-  if (details !== '' || cut) {
+  if (details !== '' || cut.any) {
     blocks.push(
       context(
         'approval_details',
-        ...(details !== '' ? ['*Details*', truncate(details, SECTION_MAX_CHARS)] : []),
-        ...(cut ? [`_${SEE_EVERYTHING}_`] : []),
+        ...(details !== ''
+          ? ['*Details*', truncate(details, SECTION_MAX_CHARS)]
+          : []),
+        ...(cut.any ? [`_${SEE_EVERYTHING}_`] : []),
       ),
     );
   }
@@ -198,7 +231,9 @@ export function buildApprovalCard(
   // The tool's own title, as the web card shows it; displayName is past tense.
   const tool = toolLabel(approval.toolName, approval.toolTitle);
   const product = approvalProduct(approval.toolName, approval.serverName);
-  const title = tool.toLowerCase().includes(product.toLowerCase()) ? tool : `${tool} in ${product}`;
+  const title = tool.toLowerCase().includes(product.toLowerCase())
+    ? tool
+    : `${tool} in ${product}`;
   const expiresAtSeconds = Math.floor(approval.expiresAt / 1000);
   const status = [
     `Waiting on <@${requesterSlackId}> to answer`,
@@ -245,7 +280,14 @@ export function buildApprovalCard(
         type: 'header',
         text: { type: 'plain_text', text: truncate(title, HEADER_MAX_CHARS) },
       },
-      ...(product !== approval.serverName ? [context('approval_source', plain(approval.serverName, ARGUMENT_KEY_MAX_CHARS))] : []),
+      ...(product !== approval.serverName
+        ? [
+            context(
+              'approval_source',
+              plain(approval.serverName, ARGUMENT_KEY_MAX_CHARS),
+            ),
+          ]
+        : []),
       ...documentBlocks(approval),
       context(APPROVAL_STATUS_BLOCK, status.join(' · ')),
       actions,
