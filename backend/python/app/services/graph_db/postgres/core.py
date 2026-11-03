@@ -356,7 +356,7 @@ class CoreMixin(PgBase):
             self.logger.warning("Could not parse collection from node_key: %s", node_key)
             return 0
         org = current_org_id()
-        colls, kind = _edge_scope(collection)
+        colls, kind = _edge_scope(collection, pair=True)      # as Neo4j's relationship type of the collection: nodeRelations is the hierarchy, recordLinks the links
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_all_edges_for_node */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
             AND e.coll = ANY($2::text[]) AND ((e.from_coll = $3 AND e.from_id = $4) OR (e.to_coll = $3 AND e.to_id = $4)) AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
             RETURNING 1) SELECT count(*) FROM d""", org, colls, coll, key, kind), transaction, write=True)

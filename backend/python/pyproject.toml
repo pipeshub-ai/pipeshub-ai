@@ -158,6 +158,7 @@ ignore = [
 # functions; ruff versions differ on whether they flag either, so it is ignored for these files, not noqa'd.
 "app/services/graph_db/postgres/base.py" = ["FBT001", "FBT002"]
 "app/services/graph_db/postgres/access.py" = ["FBT001", "FBT002"]
+"app/services/graph_db/postgres/lookups.py" = ["FBT001", "FBT002"]
 # Inlined third-party library (formerly vendored at lib/agent_loop, see
 # app/agent_loop_lib/README.md) — written to its own upstream conventions,
 # not PipesHub's. Relax stylistic rules only; real bug-catchers (F401, F811,
