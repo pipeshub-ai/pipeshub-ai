@@ -1365,7 +1365,10 @@ async def _run_pattern_match_with_llm_grep(
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
     if commands:
-        return _cap_per_connector(list(found.values()), max_records_per_connector, coverage)
+        return await _cap_per_connector(
+            list(found.values()), max_records_per_connector, coverage,
+            graph_provider=graph_provider, org_id=org_id, logger_instance=logger_instance,
+        )
     # Without the index, any hit means the LLM commands matched. With it, the
     # keyword grep still runs when its lookup asked for a scan (a small store,
     # or a miss), even if that lookup found records itself.
@@ -1388,19 +1391,40 @@ async def _run_pattern_match_with_llm_grep(
     return list(found.values())
 
 
-def _cap_per_connector(
+async def _cap_per_connector(
     records: list[dict[str, Any]], cap: int, coverage: PatternMatchCoverage | None,
+    *, graph_provider: IGraphDBProvider, org_id: str, logger_instance: logging.Logger,
 ) -> list[dict[str, Any]]:
     """The best *cap* records per connector across every command's hits.
 
-    Scanned hits carry their connector; index hits do not, so they share one
-    group. A cut is recorded in *coverage*.
+    Scanned hits carry their connector. An index hit has none, so when the cap
+    could cut, it goes to the smallest connector among its holders (content is
+    deduplicated, so several can hold it); with no holder, or if the lookup
+    fails, it stays in one shared group, which never returns more than *cap*.
+    A cut is recorded in *coverage*.
     """
-    by_connector: dict[str, list[dict[str, Any]]] = {}
-    for rec in sorted(records, key=_record_rank, reverse=True):
-        by_connector.setdefault(rec.get("connector_id", ""), []).append(rec)
+    ranked = sorted(records, key=_record_rank, reverse=True)
+
+    def group(connectors: Mapping[str, str]) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {}
+        for rec in ranked:
+            cid = rec.get("connector_id") or connectors.get(rec.get("virtual_record_id", ""), "")
+            out.setdefault(cid, []).append(rec)
+        return out
+
+    groups = group({})
+    unattributed = [r["virtual_record_id"] for r in groups.get("", []) if r.get("virtual_record_id")]
+    if unattributed and any(len(recs) > cap for recs in groups.values()):
+        try:
+            holders = await graph_provider.get_virtual_record_holders(unattributed, org_id)
+            groups = group({
+                vrid: min(h["connectorId"] for h in hs if h.get("connectorId"))
+                for vrid, hs in holders.items() if any(h.get("connectorId") for h in hs)
+            })
+        except Exception:
+            logger_instance.warning("pattern_match: record holder lookup failed, capping index hits as one group", exc_info=True)
     kept: list[dict[str, Any]] = []
-    for cid, recs in by_connector.items():
+    for cid, recs in groups.items():
         kept.extend(recs[:cap])
         if len(recs) > cap and coverage is not None:
             if cid:

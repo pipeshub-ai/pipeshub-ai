@@ -124,7 +124,9 @@ def _rec(vrid: str, connector: str | None = None, count: int = 1) -> dict:
     return {**rec, "connector_id": connector} if connector else rec
 
 
-async def _merged(coverage: pm.PatternMatchCoverage, cap: int, *, index_hits=(), scans=()) -> list[dict]:
+async def _merged(
+    coverage: pm.PatternMatchCoverage, cap: int, *, index_hits=(), scans=(), graph=None,
+) -> list[dict]:
     async def through_index(cmds, searcher, *, found, **_kw) -> list[str]:
         pm._merge_command_hits(found, list(index_hits))
         return []
@@ -140,7 +142,7 @@ async def _merged(coverage: pm.PatternMatchCoverage, cap: int, *, index_hits=(),
          patch.object(pm, "_match_through_index", through_index), \
          patch.object(pm, "execute_pattern_match_pipeline", pipeline):
         return await pm.run_pattern_match_with_llm_grep(
-            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER, graph_provider=MagicMock(),
+            query="x", config_service=MagicMock(), org_id=ORG, user_id=USER, graph_provider=graph or AsyncMock(),
             filters={}, logger_instance=MagicMock(), commands=['grep -rl -e "a" .'] * max(len(scans), 1),
             coverage=coverage, max_records_per_connector=cap,
         )
@@ -200,3 +202,38 @@ async def test_without_the_readable_view_the_scoped_grep_still_scopes_by_path() 
     call = find.await_args
     assert call.kwargs["readable_only"] is False and call.kwargs["allowed_vrids"] is None
     assert '"./g"' in call.kwargs["command"]
+
+
+def _holders(mapping: dict[str, list[str]]) -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_virtual_record_holders.return_value = {
+        v: [{"connectorId": c} for c in cs] for v, cs in mapping.items()
+    }
+    return graph
+
+
+async def test_index_hits_are_capped_per_connector_through_their_smallest_holder() -> None:
+    graph = _holders({"i1": ["c2", "c1"], "i2": ["c1"], "i3": ["c2"]})  # i4 has no holder
+    cov = pm.PatternMatchCoverage()
+    hits = [_rec("i1", count=9), _rec("i2", count=8), _rec("i3", count=7), _rec("i4", count=6)]
+    out = await _merged(cov, 1, index_hits=hits, graph=graph)
+    # i1 and i2 -> c1 (i1 wins), i3 -> c2, i4 -> no connector
+    assert sorted(r["virtual_record_id"] for r in out) == ["i1", "i3", "i4"]
+    assert cov.capped == {"c1"} and not cov.records_truncated
+    graph.get_virtual_record_holders.assert_awaited_once()
+
+
+async def test_a_failed_holder_lookup_caps_the_index_hits_as_one_group() -> None:
+    graph = AsyncMock()
+    graph.get_virtual_record_holders.side_effect = RuntimeError("down")
+    cov = pm.PatternMatchCoverage()
+    out = await _merged(cov, 1, index_hits=[_rec("i1", count=2), _rec("i2")], graph=graph)
+    assert [r["virtual_record_id"] for r in out] == ["i1"] and cov.records_truncated
+
+
+async def test_no_holder_lookup_when_nothing_would_be_cut() -> None:
+    graph = _holders({})
+    cov = pm.PatternMatchCoverage()
+    out = await _merged(cov, 5, index_hits=[_rec("i1"), _rec("i2")], graph=graph)
+    assert len(out) == 2 and cov.complete
+    graph.get_virtual_record_holders.assert_not_called()
