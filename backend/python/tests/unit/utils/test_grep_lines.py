@@ -184,3 +184,11 @@ def test_a_very_long_line_is_scanned_up_to_a_cap_and_the_answer_says_it_is_incom
     assert (matches, total, complete) == ([], 0, False)
     matches, total, _, complete = find_matches([{"data": "needle " + long_line}], _rx("needle"), context_lines=0, max_matches=5)
     assert total == 1 and complete is False  # a match inside the cap is still found
+
+
+def test_a_block_that_is_not_a_dict_has_no_code_metadata_and_is_skipped_by_the_symbol_lookup() -> None:
+    from app.utils.grep_lines import _code_meta, _symbol_at
+
+    assert _code_meta(None) == {} and _code_meta("text") == {}
+    blocks = [None, "text", _code(1, 9, "x", kind="function", qualified_name="f")]
+    assert _symbol_at(blocks, 3)["name"] == "f"

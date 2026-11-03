@@ -69,8 +69,8 @@ def _block_text(block: dict[str, Any]) -> str:
     return ""
 
 
-def _code_meta(block: dict[str, Any]) -> dict[str, Any]:
-    meta = block.get("code_metadata")
+def _code_meta(block: Any) -> dict[str, Any]:  # noqa: ANN401 - stored blocks are not guaranteed dicts
+    meta = block.get("code_metadata") if isinstance(block, dict) else None
     return meta if isinstance(meta, dict) else {}
 
 

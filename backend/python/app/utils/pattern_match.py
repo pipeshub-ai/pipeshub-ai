@@ -576,6 +576,27 @@ def validate_pattern_match_command(cmd: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _explicit_command_error(command: str, *, readable_only: bool) -> str | None:
+    """Why an explicit grep command cannot be run as given, or None.
+
+    ``find_records`` parses only file lists and counts, so a command that prints
+    matching lines would match and still return nothing. With *readable_only*
+    the records are stored under their ids, so a path argument matches nothing.
+    """
+    stages = _split_pipe_outside_quotes(command.strip())
+    parsed = _grep_stage_flags(stages[-1]) if stages else None
+    if parsed is None:
+        return "the command must end in a grep stage"
+    _, short, long_flags = parsed
+    if not (short & {"l", "c"} or long_flags & {"--files-with-matches", "--count"}):
+        return "the command must list files (-l, --files-with-matches) or count matches (-c, --count)"
+    if readable_only:
+        ok, err = validate_pattern_match_command(command)
+        if not ok:
+            return f"{err} (records are stored under their ids, so scope with filters, not paths)"
+    return None
+
+
 def _report_llm_usage(
     response: Any,  # noqa: ANN401 - the include_raw structured-output dict
     on_llm_usage: Callable[[BaseMessage], None] | None,
@@ -1216,6 +1237,12 @@ async def run_pattern_match_with_llm_grep(
     """
     if commands is not None and not commands:
         raise ValueError("commands must not be empty: pass None to let the search choose its own")
+    for cmd in commands or []:
+        if not cmd or not cmd.strip():
+            raise ValueError("commands must not hold a blank command")
+        error = _explicit_command_error(cmd, readable_only=readable_only)
+        if error:
+            raise ValueError(f"command {cmd[:100]!r} rejected: {error}")
     if found is None:
         found = {}
     try:
@@ -1338,7 +1365,10 @@ async def _run_pattern_match_with_llm_grep(
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
     if commands:
-        return list(found.values())
+        return await _cap_per_connector(
+            list(found.values()), max_records_per_connector, coverage,
+            graph_provider=graph_provider, org_id=org_id, logger_instance=logger_instance,
+        )
     # Without the index, any hit means the LLM commands matched. With it, the
     # keyword grep still runs when its lookup asked for a scan (a small store,
     # or a miss), even if that lookup found records itself.
@@ -1359,6 +1389,49 @@ async def _run_pattern_match_with_llm_grep(
         return list(found.values())
     _merge_command_hits(found, scanned)
     return list(found.values())
+
+
+async def _cap_per_connector(
+    records: list[dict[str, Any]], cap: int, coverage: PatternMatchCoverage | None,
+    *, graph_provider: IGraphDBProvider, org_id: str, logger_instance: logging.Logger,
+) -> list[dict[str, Any]]:
+    """The best *cap* records per connector across every command's hits.
+
+    Scanned hits carry their connector. An index hit has none, so when the cap
+    could cut, it goes to the smallest connector among its holders (content is
+    deduplicated, so several can hold it); with no holder, or if the lookup
+    fails, it stays in one shared group, which never returns more than *cap*.
+    A cut is recorded in *coverage*.
+    """
+    ranked = sorted(records, key=_record_rank, reverse=True)
+
+    def group(connectors: Mapping[str, str]) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {}
+        for rec in ranked:
+            cid = rec.get("connector_id") or connectors.get(rec.get("virtual_record_id", ""), "")
+            out.setdefault(cid, []).append(rec)
+        return out
+
+    groups = group({})
+    unattributed = [r["virtual_record_id"] for r in groups.get("", []) if r.get("virtual_record_id")]
+    if unattributed and any(len(recs) > cap for recs in groups.values()):
+        try:
+            holders = await graph_provider.get_virtual_record_holders(unattributed, org_id)
+            groups = group({
+                vrid: min(h["connectorId"] for h in hs if h.get("connectorId"))
+                for vrid, hs in holders.items() if any(h.get("connectorId") for h in hs)
+            })
+        except Exception:
+            logger_instance.warning("pattern_match: record holder lookup failed, capping index hits as one group", exc_info=True)
+    kept: list[dict[str, Any]] = []
+    for cid, recs in groups.items():
+        kept.extend(recs[:cap])
+        if len(recs) > cap and coverage is not None:
+            if cid:
+                coverage.capped.add(cid)
+            else:
+                coverage.records_truncated = True
+    return kept
 
 
 def _index_enabled() -> bool:
@@ -1649,7 +1722,9 @@ async def run_pattern_match(
     # Per connector, the outcome of its last grep; read once into *coverage*.
     outcomes: dict[str, str] = {}
 
-    async def _run_grep(connector_id: str, cmd: str, *, whole: bool = False) -> list[dict] | None:
+    async def _run_grep(
+        connector_id: str, cmd: str, *, allowed_vrids: frozenset[str] | None = None,
+    ) -> list[dict] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
         try:
@@ -1657,7 +1732,8 @@ async def run_pattern_match(
                 connector_id=connector_id,
                 command=cmd,
                 max_results=max_records_per_connector,
-                readable_only=readable_only and whole,
+                readable_only=readable_only,
+                allowed_vrids=allowed_vrids,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
             )
@@ -1689,7 +1765,7 @@ async def run_pattern_match(
         records = parsed.get("records", [])
         capped = bool(parsed.get("output_truncated")) or _int_field(parsed, "total_found") > len(records)
         outcomes[connector_id] = "capped" if capped else "ok"
-        return records
+        return [{**rec, "connector_id": connector_id} for rec in records]
 
     async def _search_connector(connector_id: str) -> list[dict]:
         # APP_LEVEL: full grep, all records accessible
@@ -1698,7 +1774,7 @@ async def run_pattern_match(
                 "pattern_match _search_connector: cid=%s APP_LEVEL, full grep",
                 connector_id,
             )
-            records = await _run_grep(connector_id, command, whole=True) or []
+            records = await _run_grep(connector_id, command) or []
             logger_instance.info(
                 "pattern_match _search_connector: cid=%s records=%d",
                 connector_id, len(records),
@@ -1724,8 +1800,27 @@ async def run_pattern_match(
             rg_ids = {rg["id"] for rg in accessible_rgs if "id" in rg}
             all_rgs_trusted = bool(rg_ids) and rg_ids <= rg_ids_trusted
 
+            if readable_only and all_rgs_trusted and not has_direct_grants and len(rg_ids) <= _MAX_SCOPED_SEARCH_PATHS:
+                # The readable view is flat (by record id), so a group cannot be a
+                # path in it; the view is limited to the group's records instead.
+                try:
+                    per_group = await asyncio.gather(
+                        *(graph_provider.get_record_group_virtual_record_ids(rg_id) for rg_id in rg_ids),
+                    )
+                    scoped_records = await _run_grep(
+                        connector_id, command,
+                        allowed_vrids=frozenset(v for group in per_group for v in group),
+                    )
+                    if scoped_records is not None:
+                        return scoped_records
+                except Exception:
+                    logger_instance.warning(
+                        "pattern_match: scoping the readable view failed for cid=%s, "
+                        "falling back to full grep", connector_id, exc_info=True,
+                    )
+
             search_paths: list[str] | None = None
-            if all_rgs_trusted and not has_direct_grants:
+            if not readable_only and all_rgs_trusted and not has_direct_grants:
                 try:
                     connector_dir, _ = await storage_tool._resolve_connector_path(connector_id)
                     if connector_dir:
@@ -1770,7 +1865,7 @@ async def run_pattern_match(
             "pattern_match _search_connector: cid=%s RECORD_LEVEL, full grep",
             connector_id,
         )
-        records = await _run_grep(connector_id, command, whole=True) or []
+        records = await _run_grep(connector_id, command) or []
         logger_instance.info(
             "pattern_match _search_connector: cid=%s records=%d",
             connector_id, len(records),
