@@ -1243,6 +1243,13 @@ class RedisVectorService(IVectorDBService):
                 reply = await self.client.execute_command(  # type: ignore
                     "FT.CURSOR", "READ", idx, cursor, "COUNT", "1000",
                 )
+        except asyncio.CancelledError:
+            # Not an Exception: a cancelled scan would leave its cursor open until the server expires it,
+            # and cursors are limited per shard. The delete itself is shielded from the cancellation.
+            if cursor:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
+            raise
         except Exception as e:
             if cursor:
                 with contextlib.suppress(Exception):  # best effort; the cursor expires on its own
