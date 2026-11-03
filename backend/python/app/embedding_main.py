@@ -578,8 +578,11 @@ class ModelManager:
             # on the event loop, and counting on the encoders' tokenizer would
             # bring the truncation race back. Start the shared build instead
             # and report 0 until it is done (the next listing has the number).
-            with contextlib.suppress(RuntimeError):  # no running loop: nothing to start
-                self._start_counter_build(model_name, model)
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:  # no running loop: nothing to start
+                return 0
+            self._start_counter_build(model_name, model)
             return 0
         return counter.prompt_tokens
 

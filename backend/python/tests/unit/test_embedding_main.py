@@ -2,9 +2,11 @@
 
 import asyncio
 import base64
+import gc
 import struct
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1833,5 +1835,9 @@ class TestTokenizerRace:
         model, spy = self._prompted_model()
         manager = ModelManager()
         manager._models = {"m": model}
-        assert manager.prompt_tokens("m") == 0
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert manager.prompt_tokens("m") == 0
+            gc.collect()
         assert spy.copies == 0
+        assert not [w for w in caught if "never awaited" in str(w.message)]
