@@ -210,7 +210,7 @@ describe('slack-bot/approvalActions', () => {
       resumeApproval.resolves('expired');
       const client = fakeClient({ U1: OWNER });
       await press('approval_deny', 'U1', client);
-      expect(lastText(client.chat.update)).to.equal('Expired');
+      expect(lastText(client.chat.update)).to.equal("Expired, so it didn't run");
     });
 
     it('says an approved call that a Block stopped did not run', async () => {
@@ -261,7 +261,7 @@ describe('slack-bot/approvalActions', () => {
         card: buildApprovalCard(approval({ expiresAt: Date.now() - 1 }), 'U1', 'T1'),
       });
       expect(resumeApproval.called).to.equal(false);
-      expect(lastText(client.chat.update)).to.equal('Expired');
+      expect(lastText(client.chat.update)).to.equal("Expired, so it didn't run");
     });
   });
 
@@ -309,7 +309,7 @@ describe('slack-bot/approvalActions', () => {
         feedback: 'Use OPS-2',
       });
       expect(client.chat.update.firstCall.args[0].ts).to.equal('100.2');
-      expect(lastText(client.chat.update)).to.equal('Declined by <@U1>: Use OPS-2');
+      expect(lastText(client.chat.update)).to.equal('Denied by <@U1>: Use OPS-2');
     });
 
     it('runs nothing for a submission by someone else', async () => {
