@@ -15,10 +15,10 @@ INDEXES = [
 
 
 def upgrade():
-    # shortcut: as in graph_0001, a leaf that holds rows is indexed CONCURRENTLY, which an upgrade run as one transaction refuses;
-    # index a populated graph with db.maintain before upgrading.
+    # An upgrade that is checked runs as one transaction, which refuses CREATE INDEX CONCURRENTLY: each leaf is indexed in it, so a
+    # graph that already holds rows has its writers wait for the build of that leaf (the store is opt-in, and the build reads one leaf).
     for name, cols, where in INDEXES:
-        ensure_partitioned_index(op.get_bind(), "graph.nodes", name, cols, where=where)
+        ensure_partitioned_index(op.get_bind(), "graph.nodes", name, cols, where=where, blocking=True)
 
 
 def downgrade():
