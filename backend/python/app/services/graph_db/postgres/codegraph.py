@@ -13,12 +13,15 @@ from app.core.org_context import current_org_id
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 from app.services.graph_db.postgres.base import (
+    _LINK_COLLS,
     PgBase,
     _arango,
     _doc,
+    _edge_scope,
     _ekey,
     _field,
     _j,
+    _kind_sql,
     _match,
 )
 
@@ -30,11 +33,6 @@ _POINTERS = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 _UNHELD = """NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev)"""
 _LINK_ENDS = ("records", _BLOCKS)  # a code link ends on a record (whole file) or a block (symbol)
 _REL = "coalesce(e.doc->>'relationshipType', nullif(e.ekey, ''))"      # the key also carries a constraint name, so the type is read from the document first
-
-
-def _links(edge_collection: str) -> str:
-    """Links live with the hierarchy in ``nodeRelations`` (their type is the ``ekey``); callers also name them ``recordLinks``, as ArangoDB stores them."""
-    return _LINKS if edge_collection == CollectionNames.RECORD_LINKS.value else edge_collection
 
 
 def _like(s: str) -> str:
@@ -55,12 +53,6 @@ def _neighbour(r: Any, key: str, coll: str) -> dict[str, Any]:  # noqa: ANN401
 
 
 class CodeGraphMixin(PgBase):
-    async def get_edges_from_node(self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
-        return await super().get_edges_from_node(node_id, _links(edge_collection), transaction, raise_on_error=raise_on_error)
-
-    async def get_edges_to_node(self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
-        return await super().get_edges_to_node(node_id, _links(edge_collection), transaction, raise_on_error=raise_on_error)
-
     async def get_nodes_by_field_prefix(self, collection: str, field_name: str, prefix: str, filters: dict[str, Any] | None = None, limit: int = 400,
                                         transaction: str | None = None, *, raise_on_error: bool = False, return_fields: list[str] | None = None) -> list[dict]:
         org = current_org_id()
@@ -195,8 +187,8 @@ class CodeGraphMixin(PgBase):
         a, b = ("from", "to") if out else ("to", "from")
         try:
             rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_neighbors_by_relationship_types */ SELECT e.{b}_coll AS coll, e.{b}_id AS key,
-                {_REL} AS rel, e.doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = $2 AND e.{a}_coll = $3 AND e.{a}_id = $4
-                AND {_REL} = ANY($5::text[]) LIMIT $6""", org, _LINKS, node_collection, node_key, relationship_types, limit), transaction)
+                {_REL} AS rel, e.doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.{a}_coll = $3 AND e.{a}_id = $4
+                AND {_REL} = ANY($5::text[]) LIMIT $6""", org, _LINK_COLLS, node_collection, node_key, relationship_types, limit), transaction)
         except Exception:
             self.logger.exception("get_neighbors_by_relationship_types failed")
             return []
@@ -212,16 +204,16 @@ class CodeGraphMixin(PgBase):
         legs = []
         if direction in ("outbound", "any"):
             legs.append("""SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = $2 AND e.from_coll = $3 AND e.from_id = ANY($4::text[])""")
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])""")
         if direction in ("inbound", "any"):  # a self-loop is one neighbour, outbound
             legs.append(f"""SELECT e.to_id AS anchor, e.from_coll AS coll, e.from_id AS key, 'inbound' AS dir, e.ekey, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = $2 AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
                 {"AND NOT (e.from_coll = e.to_coll AND e.from_id = e.to_id)" if direction == "any" else ""}""")
         try:
             rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
                 coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc FROM ({" UNION ALL ".join(legs)}) e
                 WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[]) LIMIT $6""",
-                                                      org, _LINKS, node_collection, node_keys, relationship_types, limit), transaction)
+                                                      org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit), transaction)
         except Exception:
             if raise_on_error:
                 raise
@@ -236,13 +228,14 @@ class CodeGraphMixin(PgBase):
             return []
         if return_field not in ("_from", "_to"):
             raise ValueError("return_field must be '_from' or '_to'")
-        colls, ids = _ends(target_keys)
+        ends, ids = _ends(target_keys)
         extra, args = _match(filters, None, 5, "e")
+        pcolls, kind = _edge_scope(edge_collection)
         c = "from" if return_field == "_from" else "to"
         try:
             rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_edges_by_target_keys */ SELECT DISTINCT e.{c}_coll AS coll, e.{c}_id AS key
-                FROM unnest($3::text[], $4::text[]) t(c, i) JOIN graph.edges e ON e.org_id = $1 AND e.coll = $2 AND e.to_id = t.i
-                AND (t.c = '' OR e.to_coll = t.c) WHERE true {extra}""", org, _links(edge_collection), colls, ids, *args), transaction)
+                FROM unnest($3::text[], $4::text[]) t(c, i) JOIN graph.edges e ON e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_id = t.i
+                AND (t.c = '' OR e.to_coll = t.c) AND {_kind_sql(5 + len(args))} WHERE true {extra}""", org, pcolls, ends, ids, *args, kind), transaction)
         except Exception:
             if raise_on_error:
                 raise
@@ -255,22 +248,25 @@ class CodeGraphMixin(PgBase):
         org = current_org_id()
         if not source_keys:
             return 0
-        colls, ids = _ends(source_keys)
+        ends, ids = _ends(source_keys)
         extra, args = _match(filters, None, 5, "e")
         if exclude:  # a missing property keeps the edge
             extra += f""" AND NOT EXISTS (SELECT 1 FROM unnest(${5 + len(args)}::text[], ${6 + len(args)}::text[]) x(k, v) WHERE e.doc->x.k = x.v::jsonb)"""
             args += [list(exclude), [_j(v) for v in exclude.values()]]
+        pcolls, kind = _edge_scope(edge_collection)
         return int(await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_edges_by_source_keys */ WITH d AS (DELETE FROM graph.edges e
-            USING unnest($3::text[], $4::text[]) s(c, i) WHERE e.org_id = $1 AND e.coll = $2 AND e.from_id = s.i AND (s.c = '' OR e.from_coll = s.c) {extra}
-            RETURNING 1) SELECT count(*) FROM d""", org, _links(edge_collection), colls, ids, *args), transaction, write=True) or 0)
+            USING unnest($3::text[], $4::text[]) s(c, i) WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_id = s.i AND (s.c = '' OR e.from_coll = s.c)
+            AND {_kind_sql(5 + len(args))} {extra}
+            RETURNING 1) SELECT count(*) FROM d""", org, pcolls, ends, ids, *args, kind), transaction, write=True) or 0)
 
     async def delete_edges_touching_nodes(self, node_keys: list[str], node_collection: str, edge_collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
         if not node_keys:
             return 0
-        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_touching_nodes */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1
-            AND coll = $2 AND ((from_coll = $3 AND from_id = ANY($4::text[])) OR (to_coll = $3 AND to_id = ANY($4::text[]))) RETURNING 1)
-            SELECT count(*) FROM d""", org, _links(edge_collection), node_collection, node_keys), transaction, write=True) or 0)
+        pcolls, kind = _edge_scope(edge_collection)
+        return int(await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_edges_touching_nodes */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND ((e.from_coll = $3 AND e.from_id = ANY($4::text[])) OR (e.to_coll = $3 AND e.to_id = ANY($4::text[])))
+            AND {_kind_sql(5)} RETURNING 1) SELECT count(*) FROM d""", org, pcolls, node_collection, node_keys, kind), transaction, write=True) or 0)
 
     async def get_edge_rollup_by_file_prefix(self, org_id: str, file_path_prefix: str, relationship_types: list[str], direction: str, connector_id: str,
                                              limit: int = 100000, transaction: str | None = None) -> list[dict]:
@@ -279,9 +275,9 @@ class CodeGraphMixin(PgBase):
             raise ValueError("direction must be 'outbound', 'inbound', or 'any'")
         legs = []
         if direction in ("outbound", "any"):
-            legs.append("SELECT b.rid, e.to_coll AS oc, e.to_id AS oi, 'outbound' AS dir, e.ekey, e.doc FROM b JOIN graph.edges e ON e.org_id = $1 AND e.coll = $2 AND e.from_coll = 'blocks' AND e.from_id = b.id")
+            legs.append("SELECT b.rid, e.to_coll AS oc, e.to_id AS oi, 'outbound' AS dir, e.ekey, e.doc FROM b JOIN graph.edges e ON e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = 'blocks' AND e.from_id = b.id")
         if direction in ("inbound", "any"):
-            legs.append("SELECT b.rid, e.from_coll AS oc, e.from_id AS oi, 'inbound' AS dir, e.ekey, e.doc FROM b JOIN graph.edges e ON e.org_id = $1 AND e.coll = $2 AND e.to_coll = 'blocks' AND e.to_id = b.id"
+            legs.append("SELECT b.rid, e.from_coll AS oc, e.from_id AS oi, 'inbound' AS dir, e.ekey, e.doc FROM b JOIN graph.edges e ON e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = 'blocks' AND e.to_id = b.id"
                         + (" AND NOT (e.from_coll = e.to_coll AND e.from_id = e.to_id)" if direction == "any" else ""))
         try:
             rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_edge_rollup_by_file_prefix */ WITH scoped AS (
@@ -294,7 +290,7 @@ class CodeGraphMixin(PgBase):
                      coalesce(t.doc->>'recordId', l.oi) AS "dstRecord", count(*) AS n
               FROM ({" UNION ALL ".join(legs)}) l LEFT JOIN graph.nodes t ON t.org_id = $1 AND t.coll = l.oc AND t.id = l.oi
               WHERE coalesce(l.doc->>'relationshipType', nullif(l.ekey, '')) = ANY($6::text[])
-              GROUP BY 1, 2, 3, 4 LIMIT $7""", org, _LINKS, org_id, _like(file_path_prefix), connector_id, relationship_types, limit), transaction)
+              GROUP BY 1, 2, 3, 4 LIMIT $7""", org, _LINK_COLLS, org_id, _like(file_path_prefix), connector_id, relationship_types, limit), transaction)
         except Exception:
             self.logger.exception("get_edge_rollup_by_file_prefix failed")
             return []

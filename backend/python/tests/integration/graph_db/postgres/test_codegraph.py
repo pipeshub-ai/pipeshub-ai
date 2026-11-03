@@ -81,7 +81,7 @@ CALLS = [
     ("stage_state_compare_and_set", ("s", "A", "B", {})), ("get_stage_states_with_records", ("o", "c", "entities", "PENDING")),
     ("get_record_content_revs", (["r1"],)), ("stage_states_stale", (["PENDING"], 1, 10)), ("stage_states_delete_for_virtual_records", (["v"],)),
     ("get_switch_pointers", (None, 10)), ("get_revision_pointers", (None, 10)), ("stage_states_unheld_revisions", (["v"],)),
-    ("stage_states_delete_unheld_revisions", ([("v", "1")],)), ("get_edges_from_node", ("blocks/b1", "recordLinks")), ("get_edges_to_node", ("blocks/b1", "recordLinks")),
+    ("stage_states_delete_unheld_revisions", ([("v", "1")],)),
 ]
 KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_revs": {"status_field": "s", "statuses": ["A"]},
           "stage_states_unheld_revisions": {"updated_before_ms": 1}, "stage_states_delete_unheld_revisions": {"updated_before_ms": 1}}

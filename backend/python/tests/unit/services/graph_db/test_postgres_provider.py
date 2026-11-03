@@ -121,9 +121,7 @@ def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
     """A name defined twice is silently decided by the MRO."""
     names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin)}
     mixins = list(names)
-    # the code graph widens the core's edge readers (it maps the link collection name, then asks the core): the one intended override
-    intended = {"get_edges_from_node", "get_edges_to_node"}
-    assert not [n for i, a in enumerate(mixins) for b in mixins[i + 1:] for n in names[a] & names[b] - intended], "defined by two mixins"
+    assert not [n for i, a in enumerate(mixins) for b in mixins[i + 1:] for n in names[a] & names[b]], "defined by two mixins"
     assert not [n for ns in names.values() for n in ns if n in vars(PgBase)]
 
 
