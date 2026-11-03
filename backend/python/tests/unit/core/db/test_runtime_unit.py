@@ -352,6 +352,26 @@ def test_joining_pure_constants_is_not_building(body) -> None:
     assert sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n") == []
 
 
+def test_every_branch_and_every_assignment_that_reaches_the_call_is_checked() -> None:
+    def rules(body: str) -> list[str]:
+        return [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")]
+
+    both = 'await tx.execute("/* pipeshub:m.a */ SELECT 1" if x else "/* pipeshub:m.b */ SET ROLE r")'
+    assert any("session SET" in r for r in rules(both))
+    reassigned = 'q = "not SQL"\n    q = f"SELECT * FROM t WHERE a = {x}"\n    await tx.fetch(q)'
+    assert BUILT in rules(reassigned)
+    swapped = 'q = "/* pipeshub:m.a */ SELECT 1"\n    q = "/* pipeshub:m.b */ SET ROLE r"\n    await tx.execute(q)'
+    assert any("session SET" in r for r in rules(swapped))
+
+
+def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
+    src = ('async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    def inner(x):\n        q = f"SELECT {x}"\n        return q\n'
+           '    await tx.fetch(q)\n')
+    assert sql_lint.scan_source(src) == []
+    outer = 'async def f(tx, x):\n    q = f"SELECT {x}"\n    async def inner():\n        await tx.fetch(q)\n'
+    assert BUILT in [f.rule for f in sql_lint.scan_source(outer)]
+
+
 def test_only_simple_local_assignments_are_followed() -> None:
     clean = [
         'Q = f"SELECT {A} FROM t"\nasync def f(tx):\n    await tx.fetch(Q)\n',            # a module constant, composed when the module loads

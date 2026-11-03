@@ -106,7 +106,8 @@ def _sql_text(node: ast.expr, env: _Env | None = None) -> tuple[str | None, bool
         return (left or "") + (right or "") or None, True
     if isinstance(node, ast.IfExp):
         (a, a_built), (b, b_built) = _sql_text(node.body, env), _sql_text(node.orelse, env)
-        return (a if a is not None else b), a_built or b_built
+        both = [t for t in (a, b) if t is not None]
+        return ("; ".join(both) or None), a_built or b_built        # every branch is checked: a clean branch must not hide the other
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
         text, _ = _sql_text(node.func.value, env)
         return text, True
@@ -119,8 +120,17 @@ def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple
     aliases, joins or wrapper helpers (see the module docstring)."""
     out: _Env = {}
 
+    def own(scope: ast.AST) -> Iterable[ast.AST]:
+        """The nodes of a function body, without those of the functions nested in it (they have their own names)."""
+        todo = list(ast.iter_child_nodes(scope))
+        while todo:
+            n = todo.pop()
+            yield n
+            if not isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                todo.extend(ast.iter_child_nodes(n))
+
     def collect(scope: ast.AST, *, walk: bool) -> None:
-        for n in (ast.walk(scope) if walk else getattr(scope, "body", [])):
+        for n in (sorted(own(scope), key=lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0))) if walk else getattr(scope, "body", [])):
             if isinstance(n, ast.Assign):
                 for t in n.targets:
                     if isinstance(t, ast.Name):
@@ -154,15 +164,15 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
     text, built = _sql_text(arg, env)
     if text is not None or not isinstance(arg, ast.Name):
         return text, built
-    built = False
+    built, bases, tail = False, [], ""
     for value, augmented in env.get(arg.id, []):
         value_text, value_built = _sql_text(value, env)
         built = built or value_built or (augmented and _pure(value, env) is None)
         if augmented:
-            text = (text or "") + (value_text or "") or None
-        elif not text:
-            text = value_text
-    return text, built
+            tail += value_text or ""
+        elif value_text is not None:
+            bases.append(value_text)       # each plain assignment may be the one that reaches the call
+    return ("; ".join(b + tail for b in bases) or tail or None), built
 
 
 def _statement_argument(node: ast.Call) -> ast.expr | None:
@@ -182,7 +192,7 @@ def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -
         if arg is None:
             continue
         text, built = _statement(arg, node, parents)
-        if text is None or not (_SQL_START.match(text) or (built and _KEYWORDS.search(text))):
+        if text is None or not (any(_SQL_START.match(p) for p in (text, *text.split(";"))) or (built and _KEYWORDS.search(text))):
             continue  # not SQL (an HTTP client's execute, a Redis call, ...)
         if built:
             found.append(Finding(path, node.lineno, "string-built SQL (use bound parameters)"))
