@@ -107,7 +107,7 @@ def _break_seeds_exact(monkeypatch: pytest.MonkeyPatch, was: str, now: str) -> N
     src = inspect.getsource(classes.Compiler.seeds_exact)
     assert was in src
     ns: dict = {}
-    exec(textwrap.dedent(src).replace(was, now), vars(classes), ns)   # noqa: S102 - the control rewrites one condition of the real rule
+    exec(textwrap.dedent(src).replace(was, now), vars(classes), ns)   # the control rewrites one condition of the real rule
     monkeypatch.setattr(classes.Compiler, "seeds_exact", ns["seeds_exact"])
 
 
