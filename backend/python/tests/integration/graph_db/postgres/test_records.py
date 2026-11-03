@@ -12,8 +12,13 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.core import org_context
-from app.core.org_context import MissingOrgContext, SystemContextNotAllowed
-from app.models.entities import CodeFileRecord, Record, RecordType
+from app.core.org_context import (
+    MissingOrgContext,
+    OrgContext,
+    SystemContextNotAllowed,
+    bind,
+)
+from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.postgres.records import RecordsMixin
 
@@ -213,3 +218,44 @@ async def test_a_sync_point_is_created_once_merged_cleared_and_removed(pg_db) ->
     await p.remove_sync_point("k", "syncPoints")
     assert await p.get_sync_point("k", "syncPoints") is None
     await p.remove_sync_point("k", "syncPoints")
+
+
+def filerec(org: str, rid: str, **kw: object) -> FileRecord:
+    base = {**COMMON, "id": rid, "org_id": org, "record_type": RecordType.FILE, "external_record_id": f"ext-{rid}", "is_file": True, "extension": "txt"}
+    return FileRecord(**{**base, **kw})
+
+
+async def test_only_top_level_nulls_are_removed_a_nested_null_is_kept(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_records([code(p.org, "r1")])
+    with bind(OrgContext(p.org, None, "job", "job:test", "t")):
+        await pg_db.run(lambda tx: tx.execute("""UPDATE graph.nodes SET doc = doc || '{"meta": {"a": null, "b": 1}}'::jsonb WHERE org_id = $1 AND coll = 'records' AND id = 'r1'""", p.org), write=True)
+    await p.batch_upsert_records([code(p.org, "r1", record_name="again")])
+    assert (await p.get_document("r1", "records"))["meta"] == {"a": None, "b": 1}                      # the upsert did not touch the nested value
+    await p.upsert_sync_point("k", {"cursor": {"a": None, "b": 2}, "gone": None}, "syncPoints")
+    await p.upsert_sync_point("k", {"n": 1}, "syncPoints")
+    got = await p.get_sync_point("k", "syncPoints")
+    assert got["cursor"] == {"a": None, "b": 2} and "gone" not in got and got["n"] == 1
+
+
+async def test_a_failed_status_claim_claims_nothing_as_on_neo4j(pg_db, monkeypatch) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_records([code(p.org, "s1", indexing_status=ProgressStatus.COMPLETED.value)])
+
+    async def boom(self, fn, transaction, *, write=False):  # noqa: ANN202
+        raise RuntimeError("down")
+    with monkeypatch.context() as m:
+        m.setattr(type(p._p), "_q", boom)
+        assert await p.compare_and_set_indexing_status(["s1"], ProgressStatus.COMPLETED.value, ProgressStatus.QUEUED.value) == []
+    assert (await p.get_document("s1", "records"))["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+
+async def test_batches_of_mixed_types_in_opposite_orders_do_not_deadlock(pg_db) -> None:
+    p = bound(pg_db)
+    batches = []
+    for i in range(12):
+        items = [code(p.org, f"m{j}") if j % 2 else filerec(p.org, f"m{j}") for j in range(8)]
+        batches.append(items if i % 2 else list(reversed(items)))
+    await asyncio.gather(*(p.batch_upsert_records(b) for b in batches))
+    assert await p.get_existing_record_keys([f"m{j}" for j in range(8)]) == {f"m{j}" for j in range(8)}
+    assert len(await p.get_edges_from_node("records/m1", "isOfType")) >= 1

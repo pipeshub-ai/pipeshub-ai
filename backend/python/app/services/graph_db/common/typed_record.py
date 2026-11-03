@@ -1,6 +1,6 @@
 """Build the typed ``Record`` (FileRecord, TicketRecord, ...) from a record document and its type document.
 
-Shared by every graph provider, so none needs another's driver to read a record.
+Used by the PostgreSQL graph provider, which needs no other provider's driver to read a record; the Neo4j provider keeps its own factory (``_create_typed_record_from_neo4j``) until it is switched over.
 """
 from __future__ import annotations
 

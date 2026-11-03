@@ -24,6 +24,12 @@ on:
       - 'backend/python/app/services/graph_db/interface/**'
       - 'backend/python/app/services/graph_db/graph_db_provider_factory.py'
       - 'backend/python/tests/integration/graph_db/postgres/**'
+      - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
+      - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
+      - 'backend/python/tests/integration/real_graph.py'
+      - 'backend/python/app/services/graph_db/common/**'
+      - 'backend/python/app/services/graph_db/*.py'
+      - 'backend/python/app/modules/code_graph/**'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
       - 'backend/python/pyproject.toml'
@@ -135,8 +141,8 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        # exactly the graph suite's cases ran (264), none failed: a suite that registered nothing is not a pass
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=264'
+        # exactly the graph suite's cases ran (267), none failed: a suite that registered nothing is not a pass
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=267'
 
   node:
     runs-on: ubuntu-latest
