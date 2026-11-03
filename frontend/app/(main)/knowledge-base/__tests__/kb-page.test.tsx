@@ -1482,6 +1482,9 @@ describe('Knowledge base page — uploading', () => {
 
     useToastStore.setState({ toasts: [] });
     act(() => clearSessionCache());
+    // Installed on the reset store, before the cancelled upload's code resumes.
+    const finalizeSession = vi.fn();
+    useUploadStore.setState({ finalizeSession });
 
     await waitFor(() => expect(signals[0].aborted).toBe(true));
     // The second folder's batch would have been sent by now had the loop kept going.
@@ -1489,8 +1492,10 @@ describe('Knowledge base page — uploading', () => {
       for (let i = 0; i < 10; i += 1) await Promise.resolve();
     });
     expect(api.kb.streamUpload).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).not.toHaveBeenCalled();
     expect(useUploadStore.getState().items).toEqual([]);
     expect(useToastStore.getState().toasts.filter((t) => t.variant === 'error')).toEqual([]);
+    useUploadStore.setState(useUploadStore.getInitialState(), true);
   });
 });
 

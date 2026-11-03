@@ -7,7 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import { isProcessedError } from '@/lib/api';
-import { onSessionEnd } from '@/lib/api/session-cache';
+import { failOnSessionEnd } from '@/lib/api/session-cache';
 import { integrationHandoffLink } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import {
@@ -89,25 +89,15 @@ export function ToolsetOAuthCallbackClient() {
           throw new Error(t('agentBuilder.toolsetOAuthNoState'));
         }
 
-        // A sign-out (e.g. in another tab) drops the answer, so say so here rather than spin forever.
-        const stopWatching = onSessionEnd(() => {
-          stopWatching();
-          const detail = t('agentBuilder.toolsetOAuthErrorRetryHint');
-          setStatus('error');
-          setError(detail);
-          postToolsetOAuthErrorToOpener(toolsetSlug, detail);
-        });
-        let data: Awaited<ReturnType<typeof ToolsetsApi.completeToolsetOAuthCallback>>;
-        try {
-          data = await ToolsetsApi.completeToolsetOAuthCallback({
+        // A sign-out (e.g. in another tab) drops the answer: fail into the error state rather than spin forever.
+        const data = await failOnSessionEnd(
+          ToolsetsApi.completeToolsetOAuthCallback({
             code,
             state,
             oauthError,
             baseUrl: window.location.origin,
-          });
-        } finally {
-          stopWatching();
-        }
+          }),
+        );
 
         if (data?.success === false) {
           const friendlyMessage = data.errorMessage;

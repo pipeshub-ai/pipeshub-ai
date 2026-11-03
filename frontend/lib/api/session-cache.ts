@@ -24,6 +24,30 @@ export function captureSession(): () => boolean {
   return () => captured === generation;
 }
 
+/**
+ * Settles like `work`, or fails at once if the session ends first: an apiClient answer
+ * that arrives after that never settles, so a screen still on show (e.g. an OAuth popup)
+ * would otherwise wait for good. The error has no message, so callers show their fallback.
+ */
+export function failOnSessionEnd<T>(work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const stop = onSessionEnd(() => {
+      stop();
+      reject(new Error());
+    });
+    work.then(
+      (value) => {
+        stop();
+        resolve(value);
+      },
+      (error: unknown) => {
+        stop();
+        reject(error);
+      },
+    );
+  });
+}
+
 interface ResettableStore<T> {
   getInitialState(): T;
   setState(state: T, replace: true): unknown;

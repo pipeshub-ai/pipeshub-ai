@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { createJSONStorage, devtools, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
-import { captureSession, clearSessionCache, onSessionEnd, resetStoreOnSessionEnd } from '../session-cache';
+import { captureSession, clearSessionCache, failOnSessionEnd, onSessionEnd, resetStoreOnSessionEnd } from '../session-cache';
 import { revalidateSwrNamespace, SWR_NS } from '../swr-cache';
 
 async function settle(ms = 20) {
@@ -161,6 +161,19 @@ describe('clearSessionCache', () => {
     expect(after).toHaveBeenCalledTimes(1);
     stopBroken();
     stopAfter();
+  });
+});
+
+describe('failOnSessionEnd', () => {
+  it('settles like the work it wraps', async () => {
+    await expect(failOnSessionEnd(Promise.resolve('done'))).resolves.toBe('done');
+    await expect(failOnSessionEnd(Promise.reject(new Error('refused')))).rejects.toThrow('refused');
+  });
+
+  it('fails with an empty message once the session ends first', async () => {
+    const waiting = failOnSessionEnd(new Promise(() => {}));
+    clearSessionCache();
+    await expect(waiting).rejects.toThrow(/^$/);
   });
 });
 
