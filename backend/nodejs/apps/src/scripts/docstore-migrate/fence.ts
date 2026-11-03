@@ -107,7 +107,8 @@ async function enforceDrainDwell(
     throw new Error(
       `the fence must be 'draining' before '${to}' (it is '${mode}')`,
     );
-  const wait = (testMs() ?? FENCE_VISIBLE_MS) + fenceSendMs(fenceTuning.clientOptions(rt));
+  const wait =
+    (testMs() ?? FENCE_VISIBLE_MS) + fenceSendMs(fenceTuning.clientOptions(rt));
   if (!Number.isFinite(wait))
     throw new Error(
       'the MongoDB client has an unbounded wait queue (waitQueueTimeoutMS 0): no time bounds a write that passed the fence; the cutover is refused',
