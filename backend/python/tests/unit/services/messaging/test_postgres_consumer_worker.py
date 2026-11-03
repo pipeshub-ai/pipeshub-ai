@@ -105,3 +105,62 @@ async def test_the_handler_logs_under_the_message_request_id_and_org() -> None:
     assert ok
     assert seen == [("req-1", "org-1")]
     assert get_context() is None
+
+
+async def _process_raising(exc: Exception) -> tuple:
+    import json
+    from unittest.mock import MagicMock
+
+    from app.services.messaging.postgres.queue import Delivery
+
+    async def handler(_msg) -> bool:
+        raise exc
+
+    logger = MagicMock()
+    consumer = PgMessagingConsumer(logger, CFG)
+    consumer.message_handler = handler
+    value = json.dumps({"eventType": "e", "payload": {}, "requestId": "req-1", "orgId": "org-1"})
+    result = await consumer._process(
+        Delivery(topic="t", message_id=1, attempts=1, value=value, key=None), final=False
+    )
+    return result, logger
+
+
+async def test_a_record_deleted_while_indexed_is_not_logged_as_an_error() -> None:
+    from app.exceptions.indexing_exceptions import RecordDeletedError
+
+    (ok, terminal, _, _), logger = await _process_raising(RecordDeletedError("rec-1"))
+
+    assert (ok, terminal) == (False, True)
+    logger.error.assert_not_called()
+    logger.info.assert_called()
+
+
+async def test_a_record_deleted_while_indexed_is_dead_lettered_without_a_warning() -> None:
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.exceptions.indexing_exceptions import RecordDeletedError
+    from app.services.messaging.postgres.queue import Delivery
+
+    async def handler(_msg) -> bool:
+        raise RecordDeletedError("rec-1")
+
+    logger = MagicMock()
+    consumer = PgMessagingConsumer(logger, CFG)
+    consumer.message_handler = handler
+    consumer.queue = MagicMock(dead=AsyncMock(), ack=AsyncMock(), nack=AsyncMock())
+    value = json.dumps({"eventType": "e", "payload": {}, "requestId": "req-1", "orgId": "org-1"})
+
+    await consumer._settle(Delivery(topic="t", message_id=1, attempts=1, value=value, key=None))
+
+    consumer.queue.dead.assert_awaited_once()
+    logger.warning.assert_not_called()
+    logger.error.assert_not_called()
+
+
+async def test_an_unexpected_failure_is_still_logged_as_an_error() -> None:
+    (ok, _, _, _), logger = await _process_raising(RuntimeError("boom"))
+
+    assert not ok
+    logger.error.assert_called_once()
