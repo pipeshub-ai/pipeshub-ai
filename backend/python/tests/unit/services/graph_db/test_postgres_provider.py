@@ -70,6 +70,14 @@ async def test_a_stubbed_method_raises_not_implemented_instead_of_returning_noth
         await p.execute_query("RETURN 1")
 
 
+@pytest.mark.parametrize("name", sorted(unimplemented()))
+def test_a_stub_keeps_the_signature_of_the_interface_method(name: str) -> None:
+    """Callers and the cross-provider tests read the parameters (``raise_on_error``, ``transaction``) off the class."""
+    stub = getattr(PostgresGraphProvider, name)
+    assert inspect.signature(stub) == inspect.signature(getattr(IGraphDBProvider, name))
+    assert not getattr(stub, "__isabstractmethod__", False)
+
+
 def _mismatches(name: str) -> list[str]:
     want = inspect.signature(inspect.unwrap(getattr(IGraphDBProvider, name))).parameters
     have = inspect.signature(inspect.unwrap(getattr(PostgresGraphProvider, name))).parameters

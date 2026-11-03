@@ -9,6 +9,7 @@ mixin defines raises ``NotImplementedInPostgres``; ``unimplemented()`` lists the
 from __future__ import annotations
 
 import abc
+import functools
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import instrument_org_methods
@@ -39,9 +40,10 @@ def unimplemented() -> list[str]:
 
 
 def _stub(name: str) -> Callable:
+    @functools.wraps(getattr(IGraphDBProvider, name))      # the interface's signature and docs: callers read parameters off the class
     async def stub(self: Any, *a: Any, **k: Any) -> Any:  # noqa: ANN401
         raise NotImplementedInPostgres(f"PostgresGraphProvider.{name} is not implemented")
-    stub.__name__ = name
+    stub.__isabstractmethod__ = False                       # wraps copied the abstract marker
     return stub
 
 
