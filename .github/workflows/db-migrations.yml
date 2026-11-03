@@ -55,6 +55,7 @@ jobs:
           python -m db.lint
           python -m db.lib.vetted check db/versions/kernel/vetted/manifest.yaml
           python -m db.lib.vetted check db/versions/platform/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/graph/vetted/manifest.yaml
 
       - name: Empty database to heads, then the org isolation catalog check
         # python -m db.migrate exits 4 when kernel.rls_violations returns any row.

@@ -159,6 +159,18 @@ column conversation.semantic_searches.share_link type=text notnull=false identit
 column conversation.semantic_searches.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column conversation.semantic_searches.user_id type=conversation.oid24 notnull=true identity= generated= default=-
 column conversation.semantic_searches.version type=integer notnull=true identity= generated= default=0
+column graph.edges.coll type=text notnull=true identity= generated= default=-
+column graph.edges.doc type=jsonb notnull=true identity= generated= default='{}'::jsonb
+column graph.edges.ekey type=text notnull=true identity= generated= default=''::text
+column graph.edges.from_coll type=text notnull=true identity= generated= default=-
+column graph.edges.from_id type=text notnull=true identity= generated= default=-
+column graph.edges.org_id type=text notnull=true identity= generated= default=-
+column graph.edges.to_coll type=text notnull=true identity= generated= default=-
+column graph.edges.to_id type=text notnull=true identity= generated= default=-
+column graph.nodes.coll type=text notnull=true identity= generated= default=-
+column graph.nodes.doc type=jsonb notnull=true identity= generated= default=-
+column graph.nodes.id type=text notnull=true identity= generated= default=-
+column graph.nodes.org_id type=text notnull=true identity= generated= default=-
 column identity.org_auth_config.auth_steps type=jsonb notnull=true identity= generated= default=-
 column identity.org_auth_config.created_at type=timestamp with time zone notnull=true identity= generated= default=-
 column identity.org_auth_config.domain type=text notnull=false identity= generated= default=-
@@ -650,6 +662,12 @@ constraint conversation.semantic_search_members semantic_search_members_pkey p d
 constraint conversation.semantic_searches org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint conversation.semantic_searches org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint conversation.semantic_searches semantic_searches_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint graph.edges edges_pkey p def=859711abbf4a7dbd555944bec952e2a2
+constraint graph.edges org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.edges org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.nodes nodes_pkey p def=50f154e59db48322060e26dda7c3ea73
+constraint graph.nodes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.nodes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint identity.org_auth_config org_auth_config_auth_steps_check c def=3d1ca2c84e37a363e9764721b059dd6e
 constraint identity.org_auth_config org_auth_config_pkey p def=23790d7e3b152b2426b0cd980c7b2821
 constraint identity.org_auth_config org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
@@ -809,6 +827,9 @@ databaseacl pipeshub_owner CREATE grantable=false
 extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
+func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
+func graph.system_apps(boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=3c71850f7a99d119fe792c82fd086731 ext=-
+func graph.system_orgs(boolean,boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=2b87961baa35e054036be22941fd2d84 ext=-
 func identity.oldest_org() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=7b7fd3d718eb548a5a207136e23c8290 ext=-
 func identity.org_count(boolean) owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=892c38309b38ba7ac2fb88a0d1f3aaea ext=-
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
@@ -843,6 +864,13 @@ func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+funcacl graph.system_app(text) pipeshub_connectors EXECUTE
+funcacl graph.system_app(text) pipeshub_indexing EXECUTE
+funcacl graph.system_apps(boolean,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.system_apps(boolean,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.system_orgs(boolean,boolean,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.system_orgs(boolean,boolean,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.system_orgs(boolean,boolean,text,integer) pipeshub_query EXECUTE
 funcacl identity.oldest_org() pipeshub_node EXECUTE
 funcacl identity.org_count(boolean) pipeshub_node EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
@@ -902,6 +930,25 @@ index conversation.semantic_search_members_by_user on conversation.semantic_sear
 index conversation.semantic_search_members_pkey on conversation.semantic_search_members unique=true exclusion=false valid=true def=47fc089f0ad23e20b90919c90e7671f4
 index conversation.semantic_searches_by_user on conversation.semantic_searches unique=false exclusion=false valid=true def=9a480d28e67f5fb38dde0e7f96244463
 index conversation.semantic_searches_pkey on conversation.semantic_searches unique=true exclusion=false valid=true def=5afcff0ea8f2d669186c57738eb82fd3
+index graph.edges_by_target on graph.edges unique=false exclusion=false valid=true def=f87b2d07ea6c1bb8dcebe54000a174c1
+index graph.edges_pkey on graph.edges unique=true exclusion=false valid=true def=cb40875fb7aeea0903e6713524de17e3
+index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=true def=49619dfd1628d521678017dab7b7b6fa
+index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
+index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
+index graph.nodes_group_external on graph.nodes unique=false exclusion=false valid=true def=82c18bdfd57b6cb002b36f3cedcdaca2
+index graph.nodes_ne_kind_key on graph.nodes unique=false exclusion=false valid=true def=47fc150762c94fa2fa36620a7a676ad7
+index graph.nodes_pkey on graph.nodes unique=true exclusion=false valid=true def=de1eb284c514a58aa3faf661f3ec3508
+index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=false valid=true def=e9822c643d639761d85db36c3c97c7b7
+index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
+index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
+index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6
+index graph.nodes_record_vrid on graph.nodes unique=false exclusion=false valid=true def=c8f1528dde8fa54a9cf01bc2dfd49d53
+index graph.nodes_stage_revision on graph.nodes unique=false exclusion=false valid=true def=f470ce92e9ebd24b110106584a1c4de4
+index graph.nodes_stage_status on graph.nodes unique=false exclusion=false valid=true def=fc471448d0d184fc42b726fc4f117562
+index graph.nodes_taxonomy_norm on graph.nodes unique=false exclusion=false valid=true def=359f3c603a370bb08133047e8b2fbffa
+index graph.nodes_user_email on graph.nodes unique=false exclusion=false valid=true def=d2dbf808e4ef54b5fb330ecfa91e8660
+index graph.nodes_user_userid on graph.nodes unique=false exclusion=false valid=true def=5f7dd84e6df3e7ea4d7b716b6ac3255e
+index graph.nodes_value_record on graph.nodes unique=false exclusion=false valid=true def=266d1a456d7c40531fc42a030e3c5fcc
 index identity.org_auth_config_pkey on identity.org_auth_config unique=true exclusion=false valid=true def=e69b8d3e8cc5a807296a9f0ad4388780
 index identity.org_logos_pkey on identity.org_logos unique=true exclusion=false valid=true def=12e487b6867b2ce725f022f849f4ae7f
 index identity.orgs_pkey on identity.orgs unique=true exclusion=false valid=true def=c5b9d956eb272cd5dc1422305510520a
@@ -1022,6 +1069,7 @@ member pipeshub_kv_login -> pipeshub_kv inherit=false set=true admin=false
 member pipeshub_migrate -> pipeshub_owner inherit=true set=true admin=false
 member pipeshub_node -> pipeshub_app inherit=true set=false admin=false
 member pipeshub_node_login -> pipeshub_node inherit=false set=true admin=false
+member pipeshub_owner -> pipeshub_vetted_graph inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_identity inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_kernel inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_platform inherit=false set=false admin=true
@@ -1080,6 +1128,15 @@ policy conversation.semantic_searches import_all cmd=* permissive=true roles=pip
 policy conversation.semantic_searches jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.semantic_searches org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.semantic_searches restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.edges backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.edges jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy graph.edges org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.edges restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.nodes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.nodes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy graph.nodes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.nodes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.nodes vetted_read cmd=r permissive=true roles=pipeshub_vetted_graph using=true check=-
 policy identity.org_auth_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.org_auth_config import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.org_auth_config jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
@@ -1209,6 +1266,8 @@ rel conversation.chat_sessions kind=r owner=pipeshub_owner rls=true force=true o
 rel conversation.citations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel conversation.semantic_search_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel conversation.semantic_searches kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel graph.edges kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel graph.nodes kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.org_auth_config kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.org_logos kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.org_slug_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -1383,6 +1442,37 @@ relacl conversation.semantic_searches pipeshub_node INSERT grantable=false
 relacl conversation.semantic_searches pipeshub_node SELECT grantable=false
 relacl conversation.semantic_searches pipeshub_node UPDATE grantable=false
 relacl conversation.semantic_searches pipeshub_restore INSERT grantable=false
+relacl graph.edges pipeshub_backup SELECT grantable=false
+relacl graph.edges pipeshub_connectors DELETE grantable=false
+relacl graph.edges pipeshub_connectors INSERT grantable=false
+relacl graph.edges pipeshub_connectors SELECT grantable=false
+relacl graph.edges pipeshub_connectors UPDATE grantable=false
+relacl graph.edges pipeshub_indexing DELETE grantable=false
+relacl graph.edges pipeshub_indexing INSERT grantable=false
+relacl graph.edges pipeshub_indexing SELECT grantable=false
+relacl graph.edges pipeshub_indexing UPDATE grantable=false
+relacl graph.edges pipeshub_jobs SELECT grantable=false
+relacl graph.edges pipeshub_query DELETE grantable=false
+relacl graph.edges pipeshub_query INSERT grantable=false
+relacl graph.edges pipeshub_query SELECT grantable=false
+relacl graph.edges pipeshub_query UPDATE grantable=false
+relacl graph.edges pipeshub_restore INSERT grantable=false
+relacl graph.nodes pipeshub_backup SELECT grantable=false
+relacl graph.nodes pipeshub_connectors DELETE grantable=false
+relacl graph.nodes pipeshub_connectors INSERT grantable=false
+relacl graph.nodes pipeshub_connectors SELECT grantable=false
+relacl graph.nodes pipeshub_connectors UPDATE grantable=false
+relacl graph.nodes pipeshub_indexing DELETE grantable=false
+relacl graph.nodes pipeshub_indexing INSERT grantable=false
+relacl graph.nodes pipeshub_indexing SELECT grantable=false
+relacl graph.nodes pipeshub_indexing UPDATE grantable=false
+relacl graph.nodes pipeshub_jobs SELECT grantable=false
+relacl graph.nodes pipeshub_query DELETE grantable=false
+relacl graph.nodes pipeshub_query INSERT grantable=false
+relacl graph.nodes pipeshub_query SELECT grantable=false
+relacl graph.nodes pipeshub_query UPDATE grantable=false
+relacl graph.nodes pipeshub_restore INSERT grantable=false
+relacl graph.nodes pipeshub_vetted_graph SELECT grantable=false
 relacl identity.org_auth_config pipeshub_backup SELECT grantable=false
 relacl identity.org_auth_config pipeshub_import DELETE grantable=false
 relacl identity.org_auth_config pipeshub_import INSERT grantable=false
@@ -1793,12 +1883,14 @@ role pipeshub_query login=false super=false inherit=true createrole=false create
 role pipeshub_query_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_restore login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_ro login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_vetted_graph login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_identity login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_kernel login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_platform login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 schema content owner=pipeshub_owner
 schema conversation owner=pipeshub_owner
 schema ext owner=pipeshub_owner
+schema graph owner=pipeshub_owner
 schema identity owner=pipeshub_owner
 schema integrations owner=pipeshub_owner
 schema kernel owner=pipeshub_owner
@@ -1815,6 +1907,13 @@ schemaacl conversation pipeshub_jobs USAGE grantable=false
 schemaacl conversation pipeshub_node USAGE grantable=false
 schemaacl conversation pipeshub_restore USAGE grantable=false
 schemaacl ext pipeshub_app USAGE grantable=false
+schemaacl graph pipeshub_backup USAGE grantable=false
+schemaacl graph pipeshub_connectors USAGE grantable=false
+schemaacl graph pipeshub_indexing USAGE grantable=false
+schemaacl graph pipeshub_jobs USAGE grantable=false
+schemaacl graph pipeshub_query USAGE grantable=false
+schemaacl graph pipeshub_restore USAGE grantable=false
+schemaacl graph pipeshub_vetted_graph USAGE grantable=false
 schemaacl identity pipeshub_backup USAGE grantable=false
 schemaacl identity pipeshub_import USAGE grantable=false
 schemaacl identity pipeshub_jobs USAGE grantable=false

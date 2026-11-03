@@ -30,6 +30,9 @@ It runs in its own image (`backend/db/Dockerfile`, `pipeshubai/pipeshub-migrate`
 - Extra module directories: `EXTRA_MIGRATION_LOCATIONS` in `backend/python/app/edition.py` (paths relative to
   `backend/`). Empty here.
 
+## Graph (`versions/graph/`)
+The `graph` schema (the PostgreSQL graph store, `DATA_STORE=postgres`) is created whole by its baseline revision `graph_0001`: tables, partitions, indexes, row policies and the vetted organisation and connector reads; there is no chain of revisions before the first release. Until then a change to it edits the baseline in place. After the first release a change is a normal step revision.
+
 ## Running
 `PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:...@host:5432/db python -m db.migrate` (from `backend/`).
 Direct PostgreSQL address only: the runner takes a session advisory lock, then checks in pg_locks that the
