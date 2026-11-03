@@ -142,6 +142,7 @@ export const FLAGS: Record<string, string[]> = {
     'allow-writers',
     'sample',
     'max-freeze',
+    'fail-at',
   ],
 };
 
@@ -184,6 +185,15 @@ export function checkFlags(a: Args): void {
     throw new UsageError(
       'use `migrate --offline` or `migrate --online`, not both',
     );
+  if (a.cmd === 'rollback') {
+    if (a.flags.has('online') && a.flags.has('reverse'))
+      throw new UsageError(
+        '`rollback --online` follows the change log back: --reverse is the full copy of the offline rollback',
+      );
+    for (const k of ['sample', 'max-freeze'])
+      if (a.flags.has(k) && !a.flags.has('online'))
+        throw new UsageError(`--${k} is a flag of \`rollback --online\``);
+  }
   if (a.cmd === 'verify' && a.flags.has('incremental') && a.flags.has('only'))
     throw new UsageError(
       'an incremental verify has no collection scope: --only does not apply',
@@ -253,7 +263,7 @@ export async function runCli(
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
   const a = parse(argv);
-  if (a.cmd === 'help' || a.flags.has('help')) {
+  if (a.cmd === 'help' || a.cmd === '--help' || a.flags.has('help')) {
     process.stdout.write(`${HELP}\n`);
     return 0;
   }
@@ -480,6 +490,9 @@ export async function runCli(
           const r = await rollbackOnline(rt, {
             log,
             maxFreezeMs: (p.secs['max-freeze'] ?? 900) * 1000,
+            ...(p.failAt !== undefined && env.MIGRATE_TEST_HOOKS === '1'
+              ? { failAt: p.failAt }
+              : {}),
             ...(p.sample !== undefined ? { sample: p.sample } : {}),
           });
           out(r);

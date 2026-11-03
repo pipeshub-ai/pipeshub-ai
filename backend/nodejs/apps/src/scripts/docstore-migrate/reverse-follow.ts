@@ -27,6 +27,7 @@ import { SPECIAL, reverseSpecial } from './reverse-special';
 import type { MigrationRuntime } from './runtime';
 import { JobState } from './state';
 import { readMongoFence, setMongoFence } from './fence';
+import { freezePostgres, unfreezePostgres } from './reverse';
 import { VerifyReport, verifyAll } from './verify';
 
 const ROOT = new Map<string, CollectionMapping>();
@@ -154,125 +155,136 @@ export async function reverseFollow(
     }
     for (const { m, ids } of byColl.values()) await reverseIds(rt, m, [...ids]);
   };
+  // The rows of these collections are trimmed from the log as soon as they are read, so what was queued must be written before this returns,
+  // whichever way it ends (idle, aborted, or an error): the next run could not know it was owed.
+  const flushDue = async (): Promise<void> => {
+    for (const name of [...due]) {
+      await reverseSpecial(rt, name);
+      res.sweeps += 1;
+      due.delete(name);
+    }
+  };
   await relaxSlugIndexes(rt, o.log);
-  while (!o.stop?.aborted) {
-    // The cursor is a transaction id, not a log id: log ids are handed out when a row is inserted but become visible when its
-    // transaction commits, so a transaction that inserted id 100 and commits after one that inserted id 101 would be skipped by an
-    // id cursor for good. Every transaction below the snapshot's xmin has finished, so everything it wrote is visible now and
-    // nothing with a lower transaction id can appear later. (The document is rebuilt from its rows, so the order does not matter.)
-    const PAGE = 2000;
-    const readLog = (
-      where: string,
-      args: string[],
-      limit: number,
-    ): Promise<LogRow[]> =>
-      rt.jobs(
-        async (_t, k) =>
-          (
-            await k.query<LogRow>(
-              `/* pipeshub:reverse.log_read */ SELECT id::text, rel, pk, txid::text, (extract(epoch FROM clock_timestamp() - at) * 1000)::bigint::text AS age FROM platform.docstore_changes WHERE ${where} ORDER BY txid, id LIMIT ${String(limit)}`,
-              args,
-            )
-          ).rows,
-        { write: false },
+  try {
+    while (!o.stop?.aborted) {
+      // The cursor is a transaction id, not a log id: log ids are handed out when a row is inserted but become visible when its
+      // transaction commits, so a transaction that inserted id 100 and commits after one that inserted id 101 would be skipped by an
+      // id cursor for good. Every transaction below the snapshot's xmin has finished, so everything it wrote is visible now and
+      // nothing with a lower transaction id can appear later. (The document is rebuilt from its rows, so the order does not matter.)
+      const PAGE = 2000;
+      const readLog = (
+        where: string,
+        args: string[],
+        limit: number,
+      ): Promise<LogRow[]> =>
+        rt.jobs(
+          async (_t, k) =>
+            (
+              await k.query<LogRow>(
+                `/* pipeshub:reverse.log_read */ SELECT id::text, rel, pk, txid::text, (extract(epoch FROM clock_timestamp() - at) * 1000)::bigint::text AS age FROM platform.docstore_changes WHERE ${where} ORDER BY txid, id LIMIT ${String(limit)}`,
+                args,
+              )
+            ).rows,
+          { write: false },
+        );
+      let rows = await readLog(
+        'txid > $1::bigint AND txid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint',
+        [prog.cursor],
+        PAGE,
       );
-    let rows = await readLog(
-      'txid > $1::bigint AND txid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint',
-      [prog.cursor],
-      PAGE,
-    );
-    const full = rows.length === PAGE;
-    if (full) {
-      // a page ends between transactions: the last one is read again whole on the next page (or alone, if it fills a page itself)
-      const lastTx = (rows[rows.length - 1] as LogRow).txid;
-      const whole = rows.filter((r) => r.txid !== lastTx);
-      if (whole.length) rows = whole;
-      else {
-        // one transaction fills a page by itself: write it back page by page, trimming only what was written, and move the cursor
-        // past it once its last row is done (a crash in between reads the rest again; nothing is dropped unread)
-        let afterId = '0';
-        let n = 0;
-        let age = '0';
-        for (;;) {
-          const page = await readLog(
-            'txid = $1::bigint AND id > $2::bigint',
-            [lastTx, afterId],
-            PAGE,
-          );
-          if (page.length === 0) break;
-          await applyRows(page);
-          afterId = (page[page.length - 1] as LogRow).id;
-          n += page.length;
-          age = (page[page.length - 1] as LogRow).age;
+      const full = rows.length === PAGE;
+      if (full) {
+        // a page ends between transactions: the last one is read again whole on the next page (or alone, if it fills a page itself)
+        const lastTx = (rows[rows.length - 1] as LogRow).txid;
+        const whole = rows.filter((r) => r.txid !== lastTx);
+        if (whole.length) rows = whole;
+        else {
+          // one transaction fills a page by itself: write it back page by page, trimming only what was written, and move the cursor
+          // past it once its last row is done (a crash in between reads the rest again; nothing is dropped unread)
+          let afterId = '0';
+          let n = 0;
+          let age = '0';
+          for (;;) {
+            const page = await readLog(
+              'txid = $1::bigint AND id > $2::bigint',
+              [lastTx, afterId],
+              PAGE,
+            );
+            if (page.length === 0) break;
+            await applyRows(page);
+            afterId = (page[page.length - 1] as LogRow).id;
+            n += page.length;
+            age = (page[page.length - 1] as LogRow).age;
+            await rt.jobs(
+              (_t, k) =>
+                k.query(
+                  '/* pipeshub:reverse.log_trim_tx */ DELETE FROM platform.docstore_changes WHERE txid = $1::bigint AND id <= $2::bigint',
+                  [lastTx, afterId],
+                ),
+              { write: true },
+            );
+            if (page.length < PAGE) break;
+          }
           await rt.jobs(
             (_t, k) =>
               k.query(
-                '/* pipeshub:reverse.log_trim_tx */ DELETE FROM platform.docstore_changes WHERE txid = $1::bigint AND id <= $2::bigint',
-                [lastTx, afterId],
+                '/* pipeshub:reverse.log_trim */ DELETE FROM platform.docstore_changes WHERE txid <= $1::bigint',
+                [lastTx],
               ),
             { write: true },
           );
-          if (page.length < PAGE) break;
+          prog.cursor = lastTx;
+          prog.applied += n;
+          res.applied += n;
+          res.cursor = Number(lastTx);
+          noteLag(Number(age));
+          await js.checkpoint();
+          idleSince = Date.now();
+          continue;
         }
+      }
+      const taken = rows;
+      if (taken.length > 0) {
+        await applyRows(taken);
+        const last = taken[taken.length - 1] as (typeof taken)[number];
         await rt.jobs(
           (_t, k) =>
             k.query(
               '/* pipeshub:reverse.log_trim */ DELETE FROM platform.docstore_changes WHERE txid <= $1::bigint',
-              [lastTx],
+              [last.txid],
             ),
           { write: true },
         );
-        prog.cursor = lastTx;
-        prog.applied += n;
-        res.applied += n;
-        res.cursor = Number(lastTx);
-        noteLag(Number(age));
+        prog.cursor = last.txid;
+        prog.applied += taken.length;
+        res.applied += taken.length;
+        res.cursor = Number(last.txid);
+        noteLag(Number(last.age));
         await js.checkpoint();
+        o.log('reverse_applied', { rows: taken.length, lagMs: res.lagMs });
         idleSince = Date.now();
-        continue;
+        if (full) continue; // a full page: more is waiting
+      } else {
+        res.lagMs = 0;
+        prog.lagMs = 0;
+        delete prog.alarm;
+      }
+      if (Date.now() - lastSweep >= sweepMs) {
+        lastSweep = Date.now();
+        due.add('userCredentials');
+        await flushDue();
+        await sweepOrgs(rt);
+      }
+      if (taken.length === 0) {
+        if (o.untilIdleMs > 0 && Date.now() - idleSince >= o.untilIdleMs) break;
+        await new Promise((r) => setTimeout(r, 200));
       }
     }
-    const taken = rows;
-    if (taken.length > 0) {
-      await applyRows(taken);
-      const last = taken[taken.length - 1] as (typeof taken)[number];
-      await rt.jobs(
-        (_t, k) =>
-          k.query(
-            '/* pipeshub:reverse.log_trim */ DELETE FROM platform.docstore_changes WHERE txid <= $1::bigint',
-            [last.txid],
-          ),
-        { write: true },
-      );
-      prog.cursor = last.txid;
-      prog.applied += taken.length;
-      res.applied += taken.length;
-      res.cursor = Number(last.txid);
-      noteLag(Number(last.age));
-      await js.checkpoint();
-      o.log('reverse_applied', { rows: taken.length, lagMs: res.lagMs });
-      idleSince = Date.now();
-      if (full) continue; // a full page: more is waiting
-    } else {
-      res.lagMs = 0;
-      prog.lagMs = 0;
-      delete prog.alarm;
-    }
-    if (Date.now() - lastSweep >= sweepMs) {
-      lastSweep = Date.now();
-      due.add('userCredentials');
-      for (const name of due) {
-        await reverseSpecial(rt, name);
-        res.sweeps += 1;
-      }
-      due.clear();
-      await sweepOrgs(rt);
-    }
-    if (taken.length === 0) {
-      if (o.untilIdleMs > 0 && Date.now() - idleSince >= o.untilIdleMs) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+  } catch (e) {
+    await flushDue().catch(() => undefined); // the error is the one to see
+    throw e;
   }
+  await flushDue();
   return res;
 }
 
@@ -292,17 +304,11 @@ export interface OnlineRollbackReport {
  */
 export async function rollbackOnline(
   rt: MigrationRuntime,
-  o: { log: Log; sample?: number; maxFreezeMs: number },
+  o: { log: Log; sample?: number; maxFreezeMs: number; failAt?: string },
 ): Promise<OnlineRollbackReport> {
   const js = await JobState.attach(rt);
   const t0 = Date.now();
-  const unfreezePg = async (): Promise<void> => {
-    await rt.migratePool
-      .query(
-        'UPDATE platform.store_epoch SET readonly = false, updated_at = now()',
-      )
-      .catch(() => undefined);
-  };
+  const unfreezePg = (): Promise<void> => unfreezePostgres(rt);
   const fenceBefore = await readMongoFence(rt);
   if (fenceBefore.mode !== 'retired')
     return {
@@ -310,31 +316,26 @@ export async function rollbackOnline(
       stage: 'fence',
       message: `the MongoDB fence is '${fenceBefore.mode}': it was not retired by a move to PostgreSQL`,
     };
-  const c = await rt.migratePool.connect();
   try {
-    await c.query('BEGIN');
-    await c.query("SET LOCAL lock_timeout = '20s'");
-    await c.query('SELECT pg_advisory_xact_lock(7340, 1)'); // waits for every writer in flight; later writers are refused (25006)
-    await c.query(
-      'UPDATE platform.store_epoch SET readonly = true, updated_at = now()',
-    );
-    await c.query('COMMIT');
+    await freezePostgres(rt);
   } catch (e) {
-    await c.query('ROLLBACK').catch(() => undefined);
     return {
       ok: false,
       stage: 'freeze',
       message: `PostgreSQL could not be frozen: ${e instanceof Error ? e.message : String(e)}. Nothing was changed`,
     };
-  } finally {
-    c.release();
   }
+  // how far the hand-over got decides what a failure may do: once MongoDB is writable again PostgreSQL stays read-only and is never unfrozen
+  let stage: 'before' | 'mongo_live' | 'epoch_done' = 'before';
   try {
     const r = await reverseFollow(rt, js, {
       log: o.log,
       untilIdleMs: 1500,
       sweepMs: 0,
     });
+    // what is swept rather than followed row by row is written once more inside the freeze, then the outbox
+    for (const name of new Set(Object.values(SWEPT)))
+      await reverseSpecial(rt, name);
     await reverseSpecial(rt, 'outbox_events');
     // short-lived documents whose MongoDB form differs from the row until written back (codes come back as their hashes)
     for (const name of WRITE_WHOLE) {
@@ -376,9 +377,19 @@ export async function rollbackOnline(
       };
     }
     await setMongoFence(rt, 'active', fenceBefore.epoch + 1);
-    await rt.migratePool.query(
+    stage = 'mongo_live';
+    if (o.failAt === 'finalize-epoch')
+      throw new Error('injected failure before the store row');
+    const up = await rt.migratePool.query(
       "UPDATE platform.store_epoch SET backend = 'mongo', epoch = epoch + 1, readonly = true, updated_at = now()",
     );
+    if (up.rowCount !== 1)
+      throw new Error(
+        `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
+      );
+    stage = 'epoch_done';
+    if (o.failAt === 'finalize-checkpoint')
+      throw new Error('injected failure after the store row');
     // the move is over: end the job (the import login's exemption closes with it) and leave no markers behind
     js.progress.phase = 'rolled_back';
     await js.checkpoint();
@@ -394,11 +405,25 @@ export async function rollbackOnline(
         'MongoDB is the store again at a new epoch and PostgreSQL is closed: roll the application back to DOC_STORE=mongo now',
     };
   } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    if (stage === 'mongo_live')
+      return {
+        ok: false,
+        stage: 'finalize',
+        message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${why}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo`,
+      };
+    if (stage === 'epoch_done')
+      return {
+        ok: true,
+        stage: 'done',
+        freezeMs: Date.now() - t0,
+        message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${why}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now`,
+      };
     await unfreezePg();
     return {
       ok: false,
       stage: 'error',
-      message: `the rollback failed (${e instanceof Error ? e.message : String(e)}); PostgreSQL is writable again and remains the store`,
+      message: `the rollback failed (${why}); PostgreSQL is writable again and remains the store`,
     };
   }
 }

@@ -216,6 +216,33 @@ export async function reverseCopy(
   }
   return { reversed, notReversed };
 }
+/** PostgreSQL read-only: the barrier lock (waits for every writer in flight, later ones are refused) and `readonly` in one transaction. */
+export async function freezePostgres(rt: MigrationRuntime): Promise<void> {
+  const c = await rt.migratePool.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query("SET LOCAL lock_timeout = '20s'");
+    await c.query('SELECT pg_advisory_xact_lock(7340, 1)');
+    await c.query(
+      'UPDATE platform.store_epoch SET readonly = true, updated_at = now()',
+    );
+    await c.query('COMMIT');
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+export const unfreezePostgres = async (rt: MigrationRuntime): Promise<void> => {
+  await rt.migratePool
+    .query(
+      'UPDATE platform.store_epoch SET readonly = false, updated_at = now()',
+    )
+    .catch(() => undefined);
+};
+
 export async function rollback(
   rt: MigrationRuntime,
   o: { reverse: boolean; allowWriters: boolean; log: Log },
@@ -230,57 +257,86 @@ export async function rollback(
       };
   }
   const fence = await readMongoFence(rt);
-  const v = await verifyAll(rt, { log: o.log });
-  if (v.ok) {
-    await setMongoFence(rt, 'active', fence.epoch + 1);
-    const cur = await JobState.latest(rt);
-    await rt.migratePool
-      .query(
-        'UPDATE platform.store_epoch SET readonly = true, updated_at = now()',
-      )
-      .catch(() => undefined);
-    return {
-      ok: true,
-      mode: 'no_pg_writes',
-      verify: v,
-      message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application`,
-    };
-  }
-  if (!o.reverse) {
+  // an application on PostgreSQL could still write while the copy is compared and copied back, and those writes would be lost: PostgreSQL
+  // is read-only from here until MongoDB is made the store (or the rollback ends without it)
+  try {
+    await freezePostgres(rt);
+  } catch (e) {
     return {
       ok: false,
       mode: 'refused',
-      verify: v,
-      message:
-        'PostgreSQL differs from MongoDB (the application has written to it, or the copy is wrong): MongoDB is NOT made live. Run `rollback --reverse` to copy PostgreSQL back first',
+      message: `PostgreSQL could not be frozen: ${e instanceof Error ? e.message : String(e)}. Nothing was changed`,
     };
   }
-  const r = await reverseCopy(rt, o.log);
-  const after = await verifyAll(rt, { log: o.log, afterReverse: true });
-  const manual = r.notReversed.length;
-  if (!after.ok || manual > 0) {
+  const state = { handed: false };
+  // MongoDB live first, then the store row: a failure between them leaves MongoDB writable and PostgreSQL read-only, never both writable
+  const handOver = async (): Promise<void> => {
+    await setMongoFence(rt, 'active', fence.epoch + 1);
+    state.handed = true;
+    const up = await rt.migratePool.query(
+      "UPDATE platform.store_epoch SET backend = 'mongo', epoch = epoch + 1, readonly = true, updated_at = now()",
+    );
+    if (up.rowCount !== 1)
+      throw new Error(
+        `platform.store_epoch has ${String(up.rowCount)} rows, not one`,
+      );
+  };
+  try {
+    const v = await verifyAll(rt, { log: o.log });
+    if (v.ok) {
+      await handOver();
+      const cur = await JobState.latest(rt);
+      return {
+        ok: true,
+        mode: 'no_pg_writes',
+        verify: v,
+        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application`,
+      };
+    }
+    if (!o.reverse) {
+      await unfreezePostgres(rt);
+      return {
+        ok: false,
+        mode: 'refused',
+        verify: v,
+        message:
+          'PostgreSQL differs from MongoDB (the application has written to it, or the copy is wrong): MongoDB is NOT made live. Run `rollback --reverse` to copy PostgreSQL back first',
+      };
+    }
+    const r = await reverseCopy(rt, o.log);
+    const after = await verifyAll(rt, { log: o.log, afterReverse: true });
+    const manual = r.notReversed.length;
+    if (!after.ok || manual > 0) {
+      await unfreezePostgres(rt);
+      return {
+        ok: false,
+        mode: 'reverse',
+        verify: after,
+        ...r,
+        message: manual
+          ? 'some collections need their own reverse step (see notReversed); MongoDB is not made live'
+          : 'the reverse copy does not verify; MongoDB is not made live',
+      };
+    }
+    await handOver();
     return {
-      ok: false,
+      ok: true,
       mode: 'reverse',
       verify: after,
       ...r,
-      message: manual
-        ? 'some collections need their own reverse step (see notReversed); MongoDB is not made live'
-        : 'the reverse copy does not verify; MongoDB is not made live',
+      message:
+        'PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application',
     };
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    if (state.handed)
+      // MongoDB is the store; the row that says so could not be written. PostgreSQL stays read-only and is not unfrozen.
+      return {
+        ok: false,
+        mode: 'reverse',
+        message: `MongoDB is the live store again, but platform.store_epoch was not updated (${why}). PostgreSQL is still read-only. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then set DOC_STORE=mongo and start the application`,
+      };
+    await unfreezePostgres(rt);
+    throw e;
   }
-  await setMongoFence(rt, 'active', fence.epoch + 1);
-  await rt.migratePool
-    .query(
-      'UPDATE platform.store_epoch SET readonly = true, updated_at = now()',
-    )
-    .catch(() => undefined);
-  return {
-    ok: true,
-    mode: 'reverse',
-    verify: after,
-    ...r,
-    message:
-      'PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application',
-  };
 }
