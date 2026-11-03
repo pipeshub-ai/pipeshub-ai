@@ -69,7 +69,9 @@ def _ekey(coll: str, props: dict) -> str:
     if coll == CollectionNames.AUTHENTICATED_AS.value:
         return str(props.get("connectorId") or "")
     rt = props.get("relationshipType")
-    return rt if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER) else ""
+    if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER):
+        return f"{rt}\x1f{props['constraintName']}" if props.get("constraintName") else rt     # two foreign keys of one type between one pair are two edges
+    return ""
 
 
 class TransactionClosed(RuntimeError):

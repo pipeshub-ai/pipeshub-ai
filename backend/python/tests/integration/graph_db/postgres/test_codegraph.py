@@ -249,3 +249,16 @@ async def test_pointers_are_paged_by_key(pg_db) -> None:
     assert [(x["virtualRecordId"], x["orgId"], x["documentId"]) for x in sw] == [("v0", p.org, "d0"), ("v1", p.org, "d1")]
     assert sw[0]["retired"] == [] and sw[1]["retired"] == ["x"]                                                # a stored value that is not a list reads as none
     assert [x["virtualRecordId"] for x in await p.get_revision_pointers("v1", 5)] == ["v2"] and await p.get_revision_pointers(None, 0) == []
+
+
+async def test_two_foreign_keys_of_one_type_between_a_pair_are_two_links(pg_db) -> None:
+    """As Neo4j's MERGE, which keys a link by its type and its constraint name."""
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "t1"}, {"_key": "t2"}], "records")
+    await p.batch_upsert_node_relations([edge("t1", "t2", "FOREIGN_KEY", "records", "records", constraintName="fk_a"),
+                                         edge("t1", "t2", "FOREIGN_KEY", "records", "records", constraintName="fk_b"),
+                                         edge("t1", "t2", "FOREIGN_KEY", "records", "records", constraintName="fk_a", note="again")])
+    got = await p.get_neighbors_by_relationship_types("t1", "records", ["FOREIGN_KEY"], "outbound")
+    assert len(got) == 2 and {n["relationshipType"] for n in got} == {"FOREIGN_KEY"}
+    edges = await p.get_edges_from_node("records/t1", "recordLinks")
+    assert sorted(e["constraintName"] for e in edges) == ["fk_a", "fk_b"] and next(e for e in edges if e["constraintName"] == "fk_a")["note"] == "again"

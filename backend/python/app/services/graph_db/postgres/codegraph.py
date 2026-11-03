@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.config.constants.arangodb import HIERARCHY_RELATION_TYPES, CollectionNames
+from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import current_org_id
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
@@ -16,6 +16,7 @@ from app.services.graph_db.postgres.base import (
     PgBase,
     _arango,
     _doc,
+    _ekey,
     _field,
     _j,
     _match,
@@ -28,7 +29,7 @@ _POINTERS = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 # No record, in the trash or not, holds the revision ``g.rev`` of virtual record ``g.v``.
 _UNHELD = """NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev)"""
 _LINK_ENDS = ("records", _BLOCKS)  # a code link ends on a record (whole file) or a block (symbol)
-_REL = "coalesce(nullif(e.ekey, ''), e.doc->>'relationshipType')"
+_REL = "coalesce(e.doc->>'relationshipType', nullif(e.ekey, ''))"      # the key also carries a constraint name, so the type is read from the document first
 
 
 def _links(edge_collection: str) -> str:
@@ -168,10 +169,9 @@ class CodeGraphMixin(PgBase):
             tk = e.get("to_id") or e.get("_to", "").split("/")[-1]
             fc = e.get("from_collection") or (e["_from"].split("/")[0] if "/" in e.get("_from", "") else "")
             tc = e.get("to_collection") or (e["_to"].split("/")[0] if "/" in e.get("_to", "") else "")
-            rt = e.get("relationshipType", "")
             props = {k: v for k, v in e.items() if k not in ("from_id", "to_id", "from_collection", "to_collection", "_from", "_to")}
-            # shortcut: constraintName is not part of the key (Neo4j's MERGE has it); two FKs of one type between one pair collapse; add it to ekey if that matters
-            rows[(fk, tk, rt)] = {"fc": fc, "fi": fk, "tc": tc, "ti": tk, "k": "" if rt in HIERARCHY_RELATION_TYPES else rt, "doc": props}
+            key = _ekey(_LINKS, props)       # the type, and the constraint name where there is one: two foreign keys of one type between one pair are two edges
+            rows[(fc, fk, tc, tk, key)] = {"fc": fc, "fi": fk, "tc": tc, "ti": tk, "k": key, "doc": props}
         # An edge whose end does not exist is skipped, as the MATCH of the Neo4j form does; an end without a collection is a record or a block.
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_upsert_node_relations */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, $2, f.coll, x.fi, t.coll, x.ti, x.k, jsonb_strip_nulls(x.doc)
@@ -219,8 +219,8 @@ class CodeGraphMixin(PgBase):
                 {"AND NOT (e.from_coll = e.to_coll AND e.from_id = e.to_id)" if direction == "any" else ""}""")
         try:
             rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
-                coalesce(nullif(e.ekey, ''), e.doc->>'relationshipType') AS rel, e.doc FROM ({" UNION ALL ".join(legs)}) e
-                WHERE coalesce(nullif(e.ekey, ''), e.doc->>'relationshipType') = ANY($5::text[]) LIMIT $6""",
+                coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc FROM ({" UNION ALL ".join(legs)}) e
+                WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[]) LIMIT $6""",
                                                       org, _LINKS, node_collection, node_keys, relationship_types, limit), transaction)
         except Exception:
             if raise_on_error:
@@ -290,10 +290,10 @@ class CodeGraphMixin(PgBase):
                   AND r.doc->>'connectorId' = $5),
               b AS (SELECT n.id, n.doc->>'recordId' AS rid FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'blocks'
                   AND n.doc->>'recordId' IN (SELECT id FROM scoped))
-              SELECT l.rid AS "srcRecord", coalesce(nullif(l.ekey, ''), l.doc->>'relationshipType') AS rel, l.dir AS dir,
+              SELECT l.rid AS "srcRecord", coalesce(l.doc->>'relationshipType', nullif(l.ekey, '')) AS rel, l.dir AS dir,
                      coalesce(t.doc->>'recordId', l.oi) AS "dstRecord", count(*) AS n
               FROM ({" UNION ALL ".join(legs)}) l LEFT JOIN graph.nodes t ON t.org_id = $1 AND t.coll = l.oc AND t.id = l.oi
-              WHERE coalesce(nullif(l.ekey, ''), l.doc->>'relationshipType') = ANY($6::text[])
+              WHERE coalesce(l.doc->>'relationshipType', nullif(l.ekey, '')) = ANY($6::text[])
               GROUP BY 1, 2, 3, 4 LIMIT $7""", org, _LINKS, org_id, _like(file_path_prefix), connector_id, relationship_types, limit), transaction)
         except Exception:
             self.logger.exception("get_edge_rollup_by_file_prefix failed")
