@@ -121,6 +121,8 @@ rtn_all AS (  -- every SQL or PL/pgSQL routine outside the system schemas and ex
   SELECT p.oid, p.oid::regprocedure::text AS name, p.proname, p.proowner, p.prosqlbody IS NOT NULL AS atomic_body, kernel.src_text(p.prosrc) AS src, kernel.src_text(p.prosrc, true) AS srck
   FROM pg_proc p JOIN nsp n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang AND l.lanname IN ('sql', 'plpgsql')
   WHERE NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')),
+calls AS (  -- every name followed by an opening parenthesis in a routine's text, once: schema-qualified or not, any spacing (comments and strings are gone from src)
+  SELECT r.oid AS caller, lower(m[1]) AS callee FROM rtn_all r, LATERAL regexp_matches(r.src, '(?:^|[^a-z0-9_$])([a-z_][a-z0-9_$]*) *\(', 'gi') m),
 pinned_rowtypes AS (SELECT t.oid FROM pg_type t WHERE t.typrelid IN (SELECT oid FROM pinrel)),
 catalog_runs AS (  -- routines the server runs by itself for a statement on a pinned table or over a value: no name stands in any function text. Read only while a pin exists.
   SELECT tg.tgfoid::oid AS oid FROM pg_trigger tg WHERE tg.tgrelid IN (SELECT oid FROM pinrel) AND NOT tg.tgisinternal          -- a trigger on a pinned table or a partition
@@ -131,6 +133,9 @@ catalog_runs AS (  -- routines the server runs by itself for a statement on a pi
   UNION SELECT d.refobjid FROM pg_index i JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = i.indexrelid AND d.refclassid = 'pg_proc'::regclass
     WHERE i.indrelid IN (SELECT oid FROM pinrel)                                                                           -- an index expression
   UNION SELECT p.oid FROM pg_proc p WHERE p.proargtypes::oid[] && (SELECT COALESCE(array_agg(oid), '{}') FROM pinned_rowtypes)  -- a function of a pinned table's row type: (t).f
+  UNION SELECT ap.amproc::oid FROM pg_index i CROSS JOIN LATERAL unnest(i.indclass::oid[]) oc(oid) JOIN pg_opclass o ON o.oid = oc.oid JOIN pg_amproc ap ON ap.amprocfamily = o.opcfamily
+    WHERE i.indrelid IN (SELECT oid FROM pinrel)                                                                           -- a support function of an operator class an index of a pinned table uses
+  UNION SELECT ap.amproc::oid FROM pg_opclass o JOIN pg_amproc ap ON ap.amprocfamily = o.opcfamily WHERE EXISTS (SELECT 1 FROM pins) AND o.opcnamespace IN (SELECT oid FROM nsp)  -- or of any operator class of the install
   UNION SELECT o.oprcode::oid FROM pg_operator o WHERE EXISTS (SELECT 1 FROM pins) AND o.oprnamespace IN (SELECT oid FROM nsp)       -- an operator of the install
   UNION SELECT c.castfunc FROM pg_cast c WHERE EXISTS (SELECT 1 FROM pins) AND c.castfunc <> 0                                    -- a cast
   UNION SELECT d.refobjid FROM pg_constraint k JOIN pg_depend d ON d.classid = 'pg_constraint'::regclass AND d.objid = k.oid AND d.refclassid = 'pg_proc'::regclass
@@ -138,8 +143,23 @@ catalog_runs AS (  -- routines the server runs by itself for a statement on a pi
 scoped(oid) AS (  -- what a vetted role can run: the routines it owns, the routines the server runs for a pinned table, and every routine called by name from those, however deep. A helper nothing vetted reaches is not read
   SELECT r.oid FROM rtn_all r WHERE r.proowner IN (SELECT oid FROM vroles) OR r.oid IN (SELECT oid FROM catalog_runs)
   UNION
-  SELECT a.oid FROM scoped sc JOIN rtn_all c ON c.oid = sc.oid JOIN rtn_all a ON a.oid <> c.oid AND c.src ~* ('\m' || regexp_replace(a.proname, '(\W)', '\\\1', 'g') || ' *\(')),
-rtn AS (SELECT r.* FROM rtn_all r WHERE r.oid IN (SELECT oid FROM scoped)),
+  SELECT x.oid FROM scoped sc JOIN calls k ON k.caller = sc.oid, LATERAL (
+    SELECT a.oid FROM rtn_all a WHERE lower(a.proname) = k.callee AND a.oid <> k.caller
+    UNION  -- an aggregate named in the text runs its transition, final, combine, serial and moving-aggregate functions
+    SELECT a.oid FROM pg_proc ag JOIN pg_aggregate pa ON pa.aggfnoid = ag.oid
+      JOIN rtn_all a ON a.oid IN (pa.aggtransfn::oid, pa.aggfinalfn::oid, pa.aggcombinefn::oid, pa.aggserialfn::oid, pa.aggdeserialfn::oid,
+                                   pa.aggmtransfn::oid, pa.aggminvtransfn::oid, pa.aggmfinalfn::oid)
+      WHERE lower(ag.proname) = k.callee AND ag.pronamespace IN (SELECT oid FROM nsp)) x),
+rtn AS (SELECT r.* FROM scoped sc JOIN rtn_all r ON r.oid = sc.oid),
+named AS MATERIALIZED (  -- every routine, in any language, that a routine in reach names, and the functions of the aggregates it names
+  SELECT p.oid FROM calls k JOIN scoped sc ON sc.oid = k.caller JOIN pg_proc p ON lower(p.proname) = k.callee JOIN nsp n ON n.oid = p.pronamespace
+  UNION
+  SELECT s.fn FROM calls k JOIN scoped sc ON sc.oid = k.caller JOIN pg_proc ag ON lower(ag.proname) = k.callee AND ag.prokind = 'a' JOIN pg_aggregate pa ON pa.aggfnoid = ag.oid,
+    LATERAL unnest(ARRAY[pa.aggtransfn::oid, pa.aggfinalfn::oid, pa.aggcombinefn::oid, pa.aggserialfn::oid, pa.aggdeserialfn::oid, pa.aggmtransfn::oid, pa.aggminvtransfn::oid, pa.aggmfinalfn::oid]) s(fn)),
+other_lang AS (  -- routines the text rules cannot read (C, an untrusted language), outside the system schemas and extensions, that a vetted role can reach
+  SELECT p.oid, p.oid::regprocedure::text AS name, p.proname, p.proowner
+  FROM pg_proc p JOIN nsp n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang AND l.lanname NOT IN ('sql', 'plpgsql', 'internal')
+  WHERE NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')),
 defs AS (  -- every SECURITY DEFINER function, text and all
   SELECT p.oid, p.oid::regprocedure::text AS name, p.proname, n.nspname, p.prosrc, p.prosqlbody IS NOT NULL AS atomic_body, kernel.src_text(p.prosrc) AS src,
          p.oid IN (SELECT fn FROM pins) AS is_pinned, p.oid IN (SELECT oid FROM scoped) AS in_scope
@@ -339,13 +359,17 @@ SELECT '123 foreign key that cascades from or into a pinned relation', k.conreli
     AND (k.confdeltype IN ('c', 'n', 'd') OR k.confupdtype IN ('c', 'n', 'd'))
 UNION ALL -- 132 a pinned function calls pinned functions and vetted kernel routines only: any other routine would run its statements outside the shapes
 SELECT '132 pinned function calls ' || x.oid::regprocedure::text || ', which is neither a pinned function nor a vetted kernel routine', f.name
-  FROM fn f JOIN pg_proc x ON x.oid <> f.oid AND f.src ~* ('\m' || regexp_replace(x.proname, '(\W)', '\\\1', 'g') || ' *\(') JOIN nsp xn ON xn.oid = x.pronamespace, s
+  FROM fn f JOIN LATERAL (SELECT DISTINCT lower(m[1]) AS callee FROM regexp_matches(f.src, '(?:^|[^a-z0-9_$])([a-z_][a-z0-9_$]*) *\(', 'gi') m) k ON true
+  JOIN pg_proc x ON lower(x.proname) = k.callee AND x.oid <> f.oid JOIN nsp xn ON xn.oid = x.pronamespace, s
   WHERE x.oid NOT IN (SELECT fn FROM pins)
     AND NOT (xn.nspname = 'kernel' AND x.proowner = to_regrole(s.vetted_prefix || 'kernel')::oid)
     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = x.oid AND d.deptype = 'e')
 UNION ALL -- 133 no routine carries an app.* setting of its own: SET app.org_id = ... on a function the pinned function calls would change the org its statements run for
-SELECT '133 routine a vetted role can run carries an app.* setting in its configuration', p.oid::regprocedure::text FROM pg_proc p
-  WHERE p.oid IN (SELECT oid FROM scoped) AND EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c ~* '^app\.')
+SELECT '133 routine a vetted role can run carries an app.* setting in its configuration', p.oid::regprocedure::text FROM scoped sc JOIN pg_proc p ON p.oid = sc.oid
+  WHERE EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c ~* '^app\.')
+UNION ALL -- 135 a routine a vetted role can reach is written in a language whose text no rule reads: refused rather than trusted
+SELECT '135 routine a vetted role can reach is in a language the checks do not read', o.name FROM other_lang o
+  WHERE o.proowner IN (SELECT oid FROM vroles) OR o.oid IN (SELECT oid FROM catalog_runs) OR o.oid IN (SELECT oid FROM named)
 UNION ALL -- 134 no routine a vetted role can run builds SQL dynamically (rule 56's list, applied to invoker helpers too): query_to_xml('SELECT set_' || 'config(...)') would change the org
 SELECT '134 routine a vetted role can run builds SQL dynamically (EXECUTE, format(), query_to_xml and the like)', r.name FROM rtn r
   WHERE r.src ~* '\mexecute\M|\mformat\s*\(|\m(query|cursor|table|schema|database)_to_xml\w*'

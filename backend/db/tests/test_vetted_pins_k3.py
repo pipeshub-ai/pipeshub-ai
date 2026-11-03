@@ -106,6 +106,25 @@ PLANTS = [
     ("an index expression of a pinned table that calls a function that sets the org",
      OWNER + f"CREATE FUNCTION kt.ixf(v bigint) RETURNS bigint LANGUAGE plpgsql IMMUTABLE AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN v; END$$; "
      "CREATE INDEX fences_ix ON kt.fences (kt.ixf(id)); " + hand("t07", DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    # ---- aggregates, operator classes and other languages: routines the server runs without a name in any text
+    ("an aggregate's transition function sets the org, the aggregate is used by an unpinned writer",
+     f"CREATE FUNCTION public.sf(a bigint, b bigint) RETURNS bigint LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN a; END$$; "
+     "CREATE AGGREGATE public.ag(bigint) (SFUNC = public.sf, STYPE = bigint); " + hand("a01", "  PERFORM (SELECT public.ag(id) FROM kt.fences);\n  RETURN 1;", writer="pipeshub_query"), "131"),
+    ("an aggregate's final function sets the org",
+     f"CREATE FUNCTION public.sf2(a bigint, b bigint) RETURNS bigint LANGUAGE sql AS 'SELECT a + b'; "
+     f"CREATE FUNCTION public.ff(a bigint) RETURNS bigint LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN a; END$$; "
+     "CREATE AGGREGATE public.ag2(bigint) (SFUNC = public.sf2, STYPE = bigint, FINALFUNC = public.ff); " + hand("a02", "  PERFORM (SELECT public.ag2(id) FROM kt.fences);\n  RETURN 1;", writer="pipeshub_query"), "131"),
+    ("a support function of an operator class an index of a pinned table uses",
+     f"CREATE FUNCTION public.cmp8(a bigint, b bigint) RETURNS int LANGUAGE plpgsql AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN CASE WHEN a < b THEN -1 WHEN a > b THEN 1 ELSE 0 END; END$$; "
+     "CREATE OPERATOR CLASS public.oc8 FOR TYPE bigint USING btree AS OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >, FUNCTION 1 public.cmp8(bigint, bigint); "
+     "CREATE INDEX fences_oc ON kt.fences (id public.oc8); " + hand("o01", DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "131"),
+    ("a routine in a language the checks do not read, called by an unpinned writer",
+     "CREATE LANGUAGE plx HANDLER plpgsql_call_handler; "
+     f"CREATE FUNCTION public.ux() RETURNS void LANGUAGE plx AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); END$$; " + hand("l01", "  PERFORM public.ux();\n  RETURN 1;", writer="pipeshub_query"), "135"),
+    ("a routine in a language the checks do not read, as a trigger of a pinned table",
+     "CREATE LANGUAGE plx HANDLER plpgsql_call_handler; "
+     f"CREATE FUNCTION public.uxt() RETURNS trigger LANGUAGE plx AS $$BEGIN PERFORM set_config('app.org_id', '{ORG_B}', true); RETURN OLD; END$$; "
+     "CREATE TRIGGER tr_ux BEFORE DELETE ON kt.fences FOR EACH ROW EXECUTE FUNCTION public.uxt(); " + hand("l02", DEL_FENCE + "  RETURN 1;", pins=(PIN_FENCE,)), "135"),
     # ---- dynamic SQL in a routine a vetted role can run: rule 56's list, invoker helpers included
     ("query_to_xml builds set_config in an invoker helper an unpinned writer calls",
      f"CREATE FUNCTION public.h6x() RETURNS void LANGUAGE plpgsql AS $$BEGIN PERFORM query_to_xml('SELECT set_' || 'config(''app.org_id'', ''{ORG_B}'', true)', true, true, ''); END$$; "
@@ -185,3 +204,8 @@ def test_a_routine_nothing_vetted_reaches_may_carry_an_app_setting(pdb):
 def test_a_function_name_with_regex_characters_does_not_break_the_checks(pdb):
     got = planted(pdb, 'CREATE FUNCTION public."odd(name+"() RETURNS int LANGUAGE sql AS \'SELECT 1\'; ' + hand("e01", "  PERFORM 1;\n  RETURN 1;", writer="pipeshub_query"))
     assert isinstance(got, list)
+
+
+def test_a_routine_in_another_language_that_nothing_vetted_reaches_is_not_named(pdb):
+    got = planted(pdb, "CREATE LANGUAGE plx HANDLER plpgsql_call_handler; CREATE FUNCTION public.ux2() RETURNS void LANGUAGE plx AS $$BEGIN NULL; END$$; ")
+    assert not [r for r, _ in got if r.startswith("135")], got
