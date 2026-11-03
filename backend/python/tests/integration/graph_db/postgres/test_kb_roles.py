@@ -76,6 +76,16 @@ async def test_no_role_without_the_user_the_collection_a_user_edge_and_the_org(w
     assert await p.get_user_kb_permission("kb1", "ghost") is None and await p.get_user_kb_permission("nope", "me") is None
 
 
+async def test_a_grant_on_another_kind_of_node_with_the_collections_id_is_not_a_grant_on_it(w: World) -> None:
+    await kb(w)
+    await w.nodes("records", {"_key": "kb1"}, {"_key": "r9"})
+    await w.nodes("teams", {"_key": "tm"})
+    await w.edge("permission", ("users", "me"), ("records", "kb1"), type="USER", role="OWNER")
+    await w.edge("permission", ("users", "me"), ("teams", "tm"), type="USER", role="OWNER")
+    await w.edge("permission", ("teams", "tm"), ("records", "kb1"), type="TEAM", role="WRITER")
+    assert await w.p.get_user_kb_permission("kb1", "me") is None
+
+
 async def test_a_collection_reads_with_the_users_role_status_and_folders_and_is_updated_in_place(w: World) -> None:
     await kb(w, status="ACTIVE")
     await w.edge("permission", ("users", "me"), ("apps", "kb1"), type="USER", role="WRITER")
