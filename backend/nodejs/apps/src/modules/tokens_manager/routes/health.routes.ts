@@ -3,6 +3,7 @@ import { Container } from 'inversify';
 import { readStoreEpoch } from '../../../libs/db/boot';
 import { pgRuntime } from '../../../libs/db/uow';
 import { MongoService } from '../../../libs/services/mongo.service';
+import { usesInProcessCache } from '../../../libs/services/redis.service';
 import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
@@ -113,7 +114,12 @@ export function createHealthRouter(
         vectorDb: 'unknown',
       };
 
-      const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
+      const brokerName =
+        deployment.messageBrokerType === 'redis'
+          ? 'Redis Streams'
+          : deployment.messageBrokerType === 'postgres'
+            ? 'PostgreSQL queue'
+            : 'Kafka';
       const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
       const vectorDbNames: Record<string, string> = {
         qdrant: 'Qdrant',
@@ -124,7 +130,8 @@ export function createHealthRouter(
 
       const redisMode = process.env.REDIS_MODE || 'standalone';
       const redisDisplayName =
-        redisMode === 'cluster' ? 'Redis (Cluster)'
+        usesInProcessCache() ? 'In-process cache'
+        : redisMode === 'cluster' ? 'Redis (Cluster)'
         : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
         : 'Redis';
 

@@ -269,6 +269,21 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment.redisMode).to.equal('cluster')
     })
 
+    it('names the PostgreSQL queue and the in-process cache when no Redis or Kafka is used', async () => {
+      process.env.REDIS_MODE = 'postgres'
+      mockAppConfig.deployment.messageBrokerType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const names = res.json.firstCall.args[0].serviceNames
+      expect(names.messageBroker).to.equal('PostgreSQL queue')
+      expect(names.redis).to.equal('In-process cache')
+    })
+
     it('should show Redis (MemoryDB) in serviceNames when REDIS_MODE is memorydb', async () => {
       process.env.REDIS_MODE = 'memorydb'
       router = createHealthRouter(container, cmContainer)
