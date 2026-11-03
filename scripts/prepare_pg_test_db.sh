@@ -18,7 +18,7 @@ with psycopg.connect(sys.argv[1], autocommit=True) as c:
     c.execute(f'DROP DATABASE IF EXISTS "{sys.argv[2]}" WITH (FORCE)')
     c.execute(f'CREATE DATABASE "{sys.argv[2]}"')
 PY
-export PG_ADMIN_URL="$base/$db" PG_BOOTSTRAP_EXTENSIONS=pg_trgm
+export PG_ADMIN_URL="$base/$db" PG_BOOTSTRAP_EXTENSIONS=vector,pg_trgm
 for r in NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do export "PG_${r}_PASSWORD=$pw"; done
 cd "$root/backend"
 "$py" -m db.bootstrap_roles >&2

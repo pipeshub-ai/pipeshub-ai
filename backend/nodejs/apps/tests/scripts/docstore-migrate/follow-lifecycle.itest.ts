@@ -275,7 +275,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         execFileSync(python, ['-m', 'db.bootstrap_roles'], {
           cwd: backend,
           stdio: 'pipe',
-          env: { ...process.env, PYTHONPATH: backend, PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${clean}`, PG_BOOTSTRAP_EXTENSIONS: 'pg_trgm' },
+          env: { ...process.env, PYTHONPATH: backend, PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${clean}`, PG_BOOTSTRAP_EXTENSIONS: 'vector,pg_trgm' },
         });
         const saved = { cwd: process.env.MIGRATE_SCHEMA_CWD, py: process.env.PYTHONPATH };
         process.env.MIGRATE_SCHEMA_CWD = backend;
