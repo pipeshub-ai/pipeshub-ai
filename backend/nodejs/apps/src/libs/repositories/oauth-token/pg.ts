@@ -1187,10 +1187,7 @@ export class PgOAuthTokenRepository
     );
   }
 
-  async revokeAgentRegistration(
-    id: string,
-    userId?: string,
-  ): Promise<boolean> {
+  async revokeAgentRegistration(id: string, userId?: string): Promise<boolean> {
     const uid = userId === undefined ? null : id24(userId);
     if (userId !== undefined && !uid) return false;
     return this.updateAgent(

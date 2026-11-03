@@ -704,7 +704,12 @@ const oauthAgentRegistrations: CollectionMapping = {
     { col: 'expires_at', path: 'expiresAt', type: 'date' },
     { col: 'purge_at', path: 'purgeAt', type: 'date' },
     { col: 'status', path: 'status', type: 'text', readAbsentAs: 'pending' },
-    { col: 'failed_attempts', path: 'failedAttempts', type: 'int', readAbsentAs: 0 },
+    {
+      col: 'failed_attempts',
+      path: 'failedAttempts',
+      type: 'int',
+      readAbsentAs: 0,
+    },
     { col: 'last_polled_at', path: 'lastPolledAt', type: 'date' },
     { col: 'claimed_user_id', path: 'claimedUserId', type: 'oid' },
     { col: 'claimed_org_id', path: 'claimedOrgId', type: 'oid' },

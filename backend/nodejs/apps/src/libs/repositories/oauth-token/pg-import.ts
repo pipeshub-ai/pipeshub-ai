@@ -245,7 +245,9 @@ async function importAgentDocs(
         last_polled_at: d.lastPolledAt ?? null,
         claimed_user_id: idText(d.claimedUserId),
         claimed_org_id: idText(d.claimedOrgId),
-        approved_scopes: Array.isArray(d.approvedScopes) ? d.approvedScopes : null,
+        approved_scopes: Array.isArray(d.approvedScopes)
+          ? d.approvedScopes
+          : null,
         version: version(d),
         created_at: d.createdAt ?? d.expiresAt,
         updated_at: d.updatedAt ?? d.createdAt ?? d.expiresAt,

@@ -631,10 +631,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
     return rows.map((r) => toPlain<AgentRegistrationDto>(r));
   }
 
-  async revokeAgentRegistration(
-    id: string,
-    userId?: string,
-  ): Promise<boolean> {
+  async revokeAgentRegistration(id: string, userId?: string): Promise<boolean> {
     if (!Types.ObjectId.isValid(id)) return false;
     if (userId !== undefined && !Types.ObjectId.isValid(userId)) return false;
     const r = await OAuthAgentRegistration.updateOne(

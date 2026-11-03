@@ -371,7 +371,9 @@ export interface OAuthTokenRepository {
     purgeAt: Date,
   ): Promise<AgentRegistrationDto | null>;
   /** The claimed and consumed registrations one person approved, newest first. */
-  listAgentRegistrationsForUser(userId: string): Promise<AgentRegistrationDto[]>;
+  listAgentRegistrationsForUser(
+    userId: string,
+  ): Promise<AgentRegistrationDto[]>;
   /** Revokes one claimed or consumed registration; with `userId`, only if that person approved it. False when nothing matched. */
   revokeAgentRegistration(id: string, userId?: string): Promise<boolean>;
   /** Revokes the claimed and consumed registrations of one user. */
