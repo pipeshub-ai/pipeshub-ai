@@ -75,24 +75,27 @@ class CoreMixin(PgBase):
 
 
     async def _system_apps_page(self, skip: int, limit: int, filters: dict[str, Any] | None, after_key: str | None, return_fields: list[str] | None) -> list[dict]:
-        """The connector instances across orgs (vetted ``graph.system_apps``): in id order, optionally only the active ones. Nothing else is filterable."""
+        """The connector instances across orgs (vetted ``graph.system_apps``): in (id, org) order, optionally only the active ones. Nothing else is filterable.
+        ``after_key`` continues after that id, whichever orgs hold it."""
         extra = set(filters or {}) - {"isActive"}
         if extra or (filters and filters.get("isActive") is not True):
             raise ValueError(f"a cross-org read of connector instances filters on isActive=true only, not on {sorted(extra) or 'isActive=false'}")
         docs: list[dict] = []
-        after, to_skip = after_key or "", skip
+        after, after_org, to_skip = after_key or "", "", skip
         while len(docs) < limit:
             want = min(1000, to_skip + (limit - len(docs)))
-            rows = await self._system_read(lambda tx, a=after, w=want: tx.fetch(
-                "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3)", bool(filters), a, w))
+            rows = await self._system_read(lambda tx, a=after, o=after_org, w=want: tx.fetch(
+                "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3, $4)", bool(filters), a, o, w))
             for r in rows:
+                if after_key and r["app_id"] == after_key:
+                    continue
                 if to_skip:
                     to_skip -= 1
                     continue
                 docs.append(_arango(_doc(json.loads(r["node_json"])), "apps"))
             if len(rows) < want:
                 break
-            after = rows[-1]["app_id"]
+            after, after_org = rows[-1]["app_id"], rows[-1]["org_id"]
         docs = docs[:limit]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
