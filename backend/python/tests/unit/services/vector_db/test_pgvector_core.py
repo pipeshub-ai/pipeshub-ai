@@ -107,14 +107,28 @@ def test_a_placement_wait_of_zero_is_refused_and_a_zero_cache_time_is_allowed() 
     assert PgVectorConfig.from_dict({"dsn": "postgresql://h/db", "catalog_ttl": 0}).catalog_ttl == 0
 
 
-def test_a_misspelt_search_switch_is_refused_and_a_fractional_whole_number_falls_back(monkeypatch) -> None:
+def test_a_misspelt_search_switch_is_refused_and_a_valid_setting_is_read() -> None:
     from app.services.vector_db.pgvector.tuning import Tuning
 
     with pytest.raises(ValueError, match="PGVECTOR_FUSED_SEARCH"):
         Tuning.from_dict({"fused_search": "flase"})
     assert Tuning.from_dict({"fused_search": "off"}).fused_search is False
-    assert Tuning.from_dict({"sampler_max_per_s": 12.9}).sampler_max_per_s == Tuning().sampler_max_per_s
     assert Tuning.from_dict({"sampler_max_per_s": "12"}).sampler_max_per_s == 12
+    assert Tuning.from_dict({"sampler_max_per_s": 12.0}).sampler_max_per_s == 12
+    assert Tuning.from_dict({"sampler_max_per_s": 10_000}).sampler_max_per_s == Tuning().sampler_max_per_s      # out of range: warned, default
+
+
+@pytest.mark.parametrize("bad", [12.9, "12.9", "twelve", "1e1x", "nan", "inf", [3]])
+def test_a_whole_number_setting_that_is_not_one_is_a_startup_error_naming_the_variable(monkeypatch, bad) -> None:
+    from app.services.vector_db.pgvector.tuning import Tuning
+
+    with pytest.raises(ValueError, match="PGVECTOR_SAMPLER_MAX_PER_S"):
+        Tuning.from_dict({"sampler_max_per_s": bad})
+    monkeypatch.setenv("PGVECTOR_SAMPLER_MAX_PER_S", str(bad))
+    with pytest.raises(ValueError, match="PGVECTOR_SAMPLER_MAX_PER_S"):
+        Tuning.from_dict(None)
+    with pytest.raises(ValueError, match="PGVECTOR_SAMPLER_RATE"):                 # a decimal setting must be a number too
+        Tuning.from_dict({"sampler_rate": "often"})
 
 
 def test_an_unknown_placement_policy_is_refused() -> None:
