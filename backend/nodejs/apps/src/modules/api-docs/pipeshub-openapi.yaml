@@ -25997,6 +25997,12 @@ paths:
           $ref: '#/components/responses/XssRejected'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '200':
           description: The guide
           content:
@@ -26032,6 +26038,12 @@ paths:
           $ref: '#/components/responses/XssRejected'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '200':
           description: The guide
           content:
