@@ -701,6 +701,8 @@ export class OAuthAppService {
     if (!app) {
       throw new NotFoundError('OAuth app not found');
     }
+    // Token checks do not read the app's status, so its tokens would otherwise work until they expire.
+    await this.oauthTokenService.revokeAllTokensForApp(app.clientId);
 
     this.logger.info('OAuth app deleted', {
       appId: app._id,
@@ -767,6 +769,8 @@ export class OAuthAppService {
     if (!updated) {
       throw new NotFoundError('OAuth app not found');
     }
+    // Token checks do not read the app's status, so its tokens would otherwise work until they expire.
+    await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
 
     this.logger.info('OAuth app suspended', {
       appId: updated._id,

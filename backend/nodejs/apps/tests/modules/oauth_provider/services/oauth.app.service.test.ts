@@ -23,6 +23,7 @@ describe('OAuthAppService', () => {
   let mockLogger: any
   let mockEncryptionService: any
   let mockScopeValidatorService: any
+  let mockOAuthTokenService: any
 
   const fakeOrgId = new Types.ObjectId().toString()
   const fakeUserId = new Types.ObjectId().toString()
@@ -43,10 +44,12 @@ describe('OAuthAppService', () => {
       validateRequestedScopes: sinon.stub(),
       getAllowedScopeNamesForRole: sinon.stub().returns(['org:read', 'user:read']),
     }
+    mockOAuthTokenService = { revokeAllTokensForApp: sinon.stub().resolves() }
     service = new OAuthAppService(
       mockLogger,
       mockEncryptionService,
       mockScopeValidatorService,
+      mockOAuthTokenService,
     )
   })
 
@@ -872,6 +875,7 @@ describe('OAuthAppService', () => {
     it('should soft-delete the app', async () => {
       const mockApp = {
         _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
         isDeleted: false,
         status: OAuthAppStatus.ACTIVE,
         save: sinon.stub().resolves(),
@@ -879,6 +883,7 @@ describe('OAuthAppService', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
       await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
       expect(mockApp.isDeleted).to.be.true
       expect(mockApp.deletedBy).to.deep.equal(new Types.ObjectId(fakeUserId))
       expect(mockApp.status).to.equal(OAuthAppStatus.REVOKED)
@@ -956,6 +961,8 @@ describe('OAuthAppService', () => {
 
       await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId)
       expect(mockApp.status).to.equal(OAuthAppStatus.SUSPENDED)
+      // Suspending stops the tokens it already issued, not only new sign-ins.
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
     })
 
     it('should throw BadRequestError when already suspended', async () => {
