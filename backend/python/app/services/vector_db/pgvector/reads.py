@@ -40,7 +40,10 @@ def decode_offset(org: str, offset: str) -> int:
         raise ValueError(f"malformed scroll offset {offset!r}")
     if raw[:8] != hashlib.sha256(org.encode()).digest()[:8]:
         raise OrgMismatch("the scroll offset belongs to another organisation")
-    return int.from_bytes(raw[8:], "big")
+    point_sk = int.from_bytes(raw[8:], "big")
+    if point_sk >= 2**63:                # a forged cursor: point_sk is a bigint
+        raise ValueError(f"malformed scroll offset {offset!r}")
+    return point_sk
 
 
 def _set_path(target: dict[str, Any], path: str, value: Any) -> None:  # noqa: ANN401

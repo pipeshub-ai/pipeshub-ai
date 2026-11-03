@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import uuid
 from types import SimpleNamespace
@@ -40,6 +42,9 @@ def test_a_scroll_offset_belongs_to_its_org() -> None:
     for bad in ("", "AAAA", "!!!", "x" * 40):
         with pytest.raises(ValueError, match="offset"):
             reads.decode_offset(A, bad)
+    forged = base64.urlsafe_b64encode(hashlib.sha256(A.encode()).digest()[:8] + (2**64 - 1).to_bytes(8, "big")).decode()
+    with pytest.raises(ValueError, match="offset"):                                    # the right organisation, a number no bigint holds
+        reads.decode_offset(A, forged)
 
 
 def row(**kw: object) -> dict:
@@ -99,6 +104,25 @@ def test_what_a_search_cannot_express_is_refused_not_dropped(expr: FilterExpress
         scope_of(expr)
 
 
+@pytest.mark.asyncio
+async def test_what_filter_collection_does_with_an_empty_list_and_what_the_scope_does_with_an_explicit_one() -> None:
+    """The shared filter builder drops an empty list on every provider (Qdrant too), so a filter built from an empty accessible list
+    carries no arm and its scope is the whole organisation: callers short-circuit an empty accessible set before they search, and
+    graph-check every hit. A condition that is built by hand with an empty list is the explicit form, and a scope fails closed on it."""
+    svc = PgVectorService(PgVectorConfig(dsn="postgresql://h/db"))
+    built = await svc.filter_collection(must={"orgId": A}, should={"connectorIds": [], "recordGroupIds": []})
+    assert built.should == [] and scope_of(built).whole_org                      # dropped by the builder, as on the other providers
+    explicit = FilterExpression(must=[cond("metadata.orgId", A)], should=[cond("connectorIds", values=[])])
+    assert not scope_of(explicit).whole_org and scope_of(explicit).apps == []     # and not widened when stated
+
+
+def test_a_scope_key_is_a_stable_digest_of_the_scope() -> None:
+    a = Scope(["c1"], [], None, None, ["r"])
+    assert a.key() == Scope(["c1"], [], None, None, ["r"]).key() and len(a.key()) == 64
+    assert a.key() != Scope(["c1"], [], None, None, ["s"]).key() != Scope(["c2"], [], None, None, ["r"]).key()
+    assert Scope().key() != Scope([]).key() != Scope(None, []).key()               # nothing, an empty arm, another empty arm
+
+
 def test_the_filter_fragments_come_from_one_scope() -> None:
     whole = Scope()
     assert whole.candidates() == whole.probe() == "" and Scope(must_vrids=["r"]).probe() == " AND p.group_key = ANY($9::text[])"
@@ -141,8 +165,9 @@ async def test_scroll_needs_a_pinned_org_a_positive_limit_and_a_collection(svc) 
                 FilterExpression(must=[cond("metadata.orgId", A), cond("metadata.orgId", B)])):
         with pytest.raises(OrgRequired):
             await svc.scroll("records", bad, 10)
-    with pytest.raises(ValueError, match="limit"):
-        await svc.scroll("records", pinned(), 0)
+    for bad_limit in (0, -1, 10_001):
+        with pytest.raises(ValueError, match="limit"):
+            await svc.scroll("records", pinned(), bad_limit)
     svc._catalog.require_collection = AsyncMock(side_effect=CollectionNotFoundError("nope"))
     with pytest.raises(CollectionNotFoundError):
         await svc.scroll("nope", pinned(), 10)
@@ -159,6 +184,7 @@ async def test_an_org_without_a_space_has_no_points_and_a_page_is_what_the_read_
     svc._db.run = AsyncMock(return_value=(["p"], "next"))
     page = await svc.scroll("records", pinned(connectorIds=[]), 10, "off", ["metadata.x"])
     assert (page.points, page.next_offset) == (["p"], "next")
+    await svc.scroll("records", pinned(), 10_000, None, [])                      # the largest page; an empty path list means the whole payload, as on Qdrant
 
 
 @pytest.mark.asyncio
@@ -176,3 +202,26 @@ async def test_retrieve_uses_the_requests_org_keeps_the_order_asked_and_skips_wh
         svc._db.run.assert_not_awaited()
         svc._catalog.active_space = AsyncMock(return_value=None)
         assert await svc.retrieve_points("records", ids) == []
+
+
+# ---- the statements of a read pin the org ---------------------------------------------------------------------------------------------
+class RecordingTx:
+    def __init__(self) -> None:
+        self.sql: list[str] = []
+
+    async def fetch(self, sql: str, *args: object) -> list:
+        self.sql.append(sql)
+        return []
+
+
+@pytest.mark.asyncio
+async def test_scroll_and_retrieve_pin_the_org_the_collection_the_space_and_the_tombstones() -> None:
+    from app.services.vector_db.pgvector.sql_filters import Compiled
+
+    tx = RecordingTx()
+    await reads.scroll(tx, A, 1, 1, Compiled("p.vrid = ANY($5::text[])", [["r"]]), 10, None, None)
+    await reads.retrieve(tx, A, 1, 1, [uuid.UUID(int=1)])
+    for statement in tx.sql:
+        assert "p.org_id = $1" in statement and "p.collection_id = $2" in statement and "p.space_id = $3" in statement
+        assert "point_tombstones t WHERE t.org_id = $1" in statement
+    assert len(tx.sql) == 2

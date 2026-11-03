@@ -4,7 +4,9 @@ Run: KERNEL_TEST_PG_BINS=<pg bin> KERNEL_TEST_PGBOUNCER=<pgbouncer> pytest tests
 """
 from __future__ import annotations
 
+import base64
 import dataclasses
+import hashlib
 import uuid
 from typing import TYPE_CHECKING
 
@@ -89,6 +91,13 @@ async def test_a_page_that_ends_exactly_has_no_next_offset_and_an_offset_belongs
         await store.scroll("records", flt(B), 2, page.next_offset)
     with pytest.raises(ValueError, match="offset"):
         await store.scroll("records", flt(A), 2, "garbage")
+    forged = base64.urlsafe_b64encode(hashlib.sha256(A.encode()).digest()[:8] + (2**64 - 1).to_bytes(8, "big")).decode()
+    with pytest.raises(ValueError, match="offset"):                                            # the right organisation, a number no bigint holds
+        await store.scroll("records", flt(A), 2, forged)
+    with pytest.raises(ValueError, match="limit"):
+        await store.scroll("records", flt(A), 10**9)
+    full = await store.scroll("records", flt(A), 1, None, [])                                  # an empty list of paths is the whole payload, as on Qdrant
+    assert full.points[0].payload["page_content"].startswith("text") and full.points[0].payload["metadata"]["orgId"] == A
 
 
 async def test_filters_select_by_column_by_membership_and_an_empty_list_selects_nothing(store) -> None:
@@ -100,6 +109,13 @@ async def test_filters_select_by_column_by_membership_and_an_empty_list_selects_
     assert await scroll_all(store, nobody) == []                                                         # an empty accessible list fails closed
     nobody_id = flt(A, virtualRecordId="no-such-record")
     assert await scroll_all(store, nobody_id) == []
+
+
+async def test_empty_lists_given_to_filter_collection_are_dropped_as_on_every_provider(store) -> None:
+    """The shared builder drops an empty list: callers short-circuit an empty accessible set before they search (and graph-check every hit)."""
+    await store.upsert_points("records", [point(A, "p1", "r1", conn=["c1"]), point(A, "p2", "r2", conn=["c2"])])
+    built = await store.filter_collection(must={"orgId": A}, should={"connectorIds": [], "recordGroupIds": []})
+    assert {p.payload["metadata"]["blockId"] for p in await scroll_all(store, built)} == {"p1", "p2"}      # no arm left: the whole organisation
 
 
 async def test_deleted_points_are_invisible_and_an_org_without_points_or_a_collection_is_handled(store) -> None:

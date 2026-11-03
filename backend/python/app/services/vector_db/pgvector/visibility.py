@@ -15,6 +15,8 @@ more rows and keeps those that satisfy them (``sparse.leg``).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -54,9 +56,11 @@ class Scope:
         """The values of ``$5`` to ``$9``."""
         return self.apps, self.groups, self.roots, self.direct, self.must_vrids
 
-    def key(self) -> int:
-        """A cache key: scopes are equal when their lists and extra conditions are."""
-        return hash((*(None if a is None else tuple(a) for a in self.args()), repr(self.extra)))
+    def key(self) -> str:
+        """A cache key: a digest of a canonical encoding, equal for equal scopes (lists and extra conditions) and, unlike ``hash()``, the
+        same in every process and without collisions to speak of."""
+        canon = json.dumps([self.args(), repr(self.extra)], separators=(",", ":"), default=list)
+        return hashlib.sha256(canon.encode()).hexdigest()
 
     def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
         """``(" AND (...)", parameters from first_param)`` for the extra conditions, or ``("", [])``."""
@@ -67,8 +71,9 @@ class Scope:
 
     def narrowed_to(self, org_connectors: frozenset[str] | None) -> Scope:
         """The arms are dropped when ``apps`` lists every connector of the org: the arms are alternatives, so the connector arm alone
-        already admits every record that has a connector (the graph check after the search still decides each hit). The caller of
-        an all-apps user would otherwise pay a membership probe per row for nothing."""
+        admits every record that has a connector membership row. The result is a superset of what the arms admit (a record whose
+        membership is not written yet is outside the arms and inside the whole org); the graph check after the search removes the points
+        the user may not see. The caller of an all-apps user would otherwise pay a membership probe per row for nothing."""
         if not self.apps or not org_connectors or not org_connectors <= set(self.apps):      # no connector, or none the user reads: keep the arms
             return self
         return replace(self, apps=None, groups=None, roots=None, direct=None)
