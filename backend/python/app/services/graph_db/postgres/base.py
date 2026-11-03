@@ -63,9 +63,11 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
 
 def _ekey(coll: str, props: dict) -> str:
     """What tells parallel edges of one pair apart: a link's relation type, a grant's type (a user's own grant and the organization's grant to
-    the same record are two edges); empty for the rest, one edge per pair."""
+    the same record are two edges), an authenticated-as link's connector (one link per connector, as on the other stores); empty for the rest, one edge per pair."""
     if coll == "permission":
         return str(props.get("type") or "")
+    if coll == CollectionNames.AUTHENTICATED_AS.value:
+        return str(props.get("connectorId") or "")
     rt = props.get("relationshipType")
     return rt if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER) else ""
 
@@ -224,6 +226,10 @@ class PgBase:
 
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return self.is_write_conflict(error)
+
+    async def _one(self, sql: str, *args: Any, transaction: str | None = None) -> dict | None:  # noqa: ANN401
+        r = await self._q(lambda tx: tx.fetchrow(sql, *args), transaction)
+        return _doc(r["doc"]) if r else None
 
     @staticmethod
     def _shape(doc: dict, collection: str, fields: list[str] | None) -> dict:
