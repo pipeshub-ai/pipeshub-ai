@@ -19,11 +19,11 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
 )
 from app.services.graph_db.postgres.base import (
-    _LINK_COLLS,
     PgBase,
     _arango,
     _doc,
     _edge,
+    _edge_scope,
     _ekey,
     _j,
 )
@@ -47,7 +47,15 @@ async def _remove_records(tx: Tx, org: str, ids: list[str]) -> int:
         WHERE org_id = $1 AND coll = 'blocks' AND doc->>'recordId' = ANY($2::text[])""", org, ids)]
     linked = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.records_remove_types */ SELECT e.to_id FROM graph.edges e
         WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id = ANY($2::text[]) AND e.to_coll = ANY($3::text[])""", org, ids, _TYPE_COLLS)]
-    everything = list({*ids, *extra, *linked})
+    everything = sorted({*ids, *extra, *linked})
+    # Every row the deletes touch is locked first, nodes then edges, each in key order, so two overlapping deletes wait for each other
+    # instead of deadlocking (a delete statement takes its row locks in plan order).
+    await tx.execute("""/* pipeshub:graph.records_remove_lock_nodes */ SELECT 1 FROM graph.nodes WHERE org_id = $1
+        AND ((coll = 'records' AND id = ANY($2::text[])) OR (coll = ANY($3::text[]) AND id = ANY($4::text[])) OR (coll = 'blocks' AND id = ANY($5::text[])))
+        ORDER BY coll, id FOR UPDATE""", org, ids, _TYPE_COLLS, everything, extra)
+    await tx.execute("""/* pipeshub:graph.records_remove_lock_edges */ SELECT 1 FROM graph.edges WHERE org_id = $1 AND coll = ANY($2::text[])
+        AND ((from_id = ANY($3::text[]) AND from_coll = ANY($4::text[])) OR (to_id = ANY($3::text[]) AND to_coll = ANY($4::text[])))
+        ORDER BY coll, from_coll, from_id, to_coll, to_id, ekey FOR UPDATE""", org, _EDGE_COLLS, everything, _NODE_COLLS)
     await tx.execute("""/* pipeshub:graph.records_remove_edges_from */ DELETE FROM graph.edges
         WHERE org_id = $1 AND coll = ANY($2::text[]) AND from_id = ANY($3::text[]) AND from_coll = ANY($4::text[])""", org, _EDGE_COLLS, everything, _NODE_COLLS)
     await tx.execute("""/* pipeshub:graph.records_remove_edges_to */ DELETE FROM graph.edges
@@ -69,7 +77,8 @@ class HierarchyMixin(PgBase):
         rows: dict[tuple, dict] = {}
         for e in edges:
             fc, fi, tc, ti, props = _edge(e)
-            rows[(fc, fi, tc, ti, _ekey(collection, props))] = {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": _ekey(collection, props), "doc": props}
+            key = _ekey(collection, props)
+            rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
             FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
@@ -81,12 +90,15 @@ class HierarchyMixin(PgBase):
         """Copy a record's taxonomy edges (departments, categories, languages, topics) to another record; an edge the target has stays."""
         org = current_org_id()
         try:
+            if not await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.copy_document_relationships_target */ SELECT EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = $2)", org, target_key), transaction):
+                return False        # as the Neo4j provider, which matches both ends: a missing target gets nothing
             colls = [c for c in RECORD_ENRICHMENT_EDGE_COLLECTIONS if c != CollectionNames.MENTIONS_ENTITY.value]
             await self._q(lambda tx: tx.execute("""/* pipeshub:graph.copy_document_relationships */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 SELECT s.org_id, s.coll, 'records', $3, s.to_coll, s.to_id, s.ekey,
                        jsonb_strip_nulls(jsonb_build_object('createdAtTimestamp', coalesce(s.doc->'createdAtTimestamp', to_jsonb($4::bigint)),
                                                             'extractedName', s.doc->'extractedName', 'extractedNames', s.doc->'extractedNames'))
                 FROM graph.edges s WHERE s.org_id = $1 AND s.coll = ANY($2::text[]) AND s.from_coll = 'records' AND s.from_id = $5
+                  AND EXISTS (SELECT 1 FROM graph.nodes d WHERE d.org_id = $1 AND d.coll = 'records' AND d.id = $3)
                   AND NOT EXISTS (SELECT 1 FROM graph.edges t WHERE t.org_id = s.org_id AND t.coll = s.coll AND t.from_id = $3 AND t.to_id = s.to_id)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, colls, target_key, get_epoch_timestamp_in_ms(), source_key),
                            transaction, write=True)
@@ -97,19 +109,22 @@ class HierarchyMixin(PgBase):
 
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
                                                transaction: str | None = None) -> int:
+        """``nodeRelations`` is the hierarchy edge, ``recordLinks`` the links (stored in either collection), as the relationship types of the Neo4j provider."""
         org = current_org_id()
-        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_between_collections */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
-            AND from_coll = $3 AND from_id = $4 AND to_coll = $5 RETURNING 1) SELECT count(*) FROM d""",
-                                                  org, edge_collection, from_collection, from_id, to_collection), transaction, write=True)
+        colls, kind = _edge_scope(edge_collection, pair=True)
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_between_collections */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND ($6::int = 0 OR ($6::int = 1 AND e.ekey = '') OR ($6::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
+                                                  org, colls, from_collection, from_id, to_collection, kind), transaction, write=True)
 
     async def delete_edges_by_relationship_types(self, from_id: str, from_collection: str, collection: str, relationship_types: list[str],
                                                  transaction: str | None = None) -> int:
-        colls = _LINK_COLLS if collection == CollectionNames.NODE_RELATIONS.value else [collection]
+        """``nodeRelations`` is the hierarchy and the links, ``recordLinks`` the links only (Neo4j's ``NODE_RELATION|RECORD_LINK`` and ``RECORD_LINK``)."""
         org = current_org_id()
+        colls, kind = _edge_scope(collection)
         try:
-            return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_by_relationship_types */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1
-                AND coll = ANY($2::text[]) AND from_coll = $3 AND from_id = $4 AND doc->>'relationshipType' = ANY($5::text[]) RETURNING 1) SELECT count(*) FROM d""",
-                                                      org, colls, from_collection, from_id, relationship_types), transaction, write=True)
+            return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_by_relationship_types */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+                AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND e.doc->>'relationshipType' = ANY($5::text[]) AND ($6::int = 0 OR ($6::int = 1 AND e.ekey = '') OR ($6::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1)
+                SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
             return 0
@@ -412,11 +427,12 @@ class HierarchyMixin(PgBase):
             roots, recs = await self._inventory(record_ids, connector_id, ["PARENT_CHILD", "ATTACHMENT"] if cascade_children else ["ATTACHMENT"],
                                                 within_folder_id, include_trashed=include_trashed_roots, live_only=True, transaction=txn)
             keys = [r["id"] for r, _ in recs]
-            failed = [{"record_id": rid, "reason": "Validation failed"} for rid in record_ids if rid not in set(roots)]
+            roots_set = set(roots)
+            failed = [{"record_id": rid, "reason": "Validation failed"} for rid in record_ids if rid not in roots_set]
             reparented: list[dict] = []
             peids: list[str] = []
             if not cascade_children and roots:
-                peids = list(dict.fromkeys(r.get("externalRecordId") for r, _ in recs if r["id"] in set(roots) and r.get("externalRecordId")))
+                peids = list(dict.fromkeys(r.get("externalRecordId") for r, _ in recs if r["id"] in roots_set and r.get("externalRecordId")))
             if peids:
                 rows = await self._rows("""/* pipeshub:graph.records_delete_survivors */ SELECT s.id AS record_id, s.doc->>'externalParentId' AS peid,
                       (SELECT g.id FROM graph.edges b JOIN graph.nodes g ON g.org_id = b.org_id AND g.coll = 'recordGroups' AND g.id = b.to_id

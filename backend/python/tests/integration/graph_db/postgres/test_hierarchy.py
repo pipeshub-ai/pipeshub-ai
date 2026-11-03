@@ -4,6 +4,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -198,3 +199,64 @@ async def test_a_delete_inside_a_caller_transaction_rolls_back_with_the_caller(p
     assert out["success"]
     await p.rollback_transaction(t)
     assert await p.get_existing_record_keys(["b", "c"]) == {"b", "c"}
+
+
+async def test_overlapping_concurrent_deletes_do_not_deadlock(pg_db) -> None:
+    p = bound(pg_db)
+    for _ in range(12):
+        await tree(p)
+        outs = await asyncio.gather(*(p.delete_records_recursive([r], "c1") for r in ("a", "b", "c", "m")))
+        assert all(o["success"] for o in outs), [o for o in outs if not o["success"]]
+        assert await p.get_existing_record_keys(["a", "b", "c", "m"]) == set()
+
+
+async def test_deleting_a_cycle_and_a_self_loop_ends_and_reports_each_record_once(pg_db) -> None:
+    p = bound(pg_db)
+    await tree(p)
+    await p.batch_create_edges([link("c", "a"), link("z", "z")], "nodeRelations")
+    out = await asyncio.wait_for(p.delete_records_recursive(["a", "a", "z"], "c1"), 20)           # a -> b -> c -> a; z -> z; "a" named twice
+    assert out["success"] and sorted(r["record_id"] for r in out["deleted_records"]) == ["a", "b", "c", "m", "z"]
+    assert out["failed_records"] == [] and len(out["eventData"]["payloads"]) == 5
+
+
+async def test_stored_nulls_and_a_repeated_constraint_name_do_not_break_a_delete_or_a_walk(pg_db) -> None:
+    p = bound(pg_db)
+    await tree(p)
+    with org_context.bind(org_context.OrgContext(p.org, None, "job", "job:test", "t")):
+        await pg_db.run(lambda tx: tx.execute("""UPDATE graph.nodes SET doc = doc || '{"isDeleted": null, "externalParentId": null, "version": null}'::jsonb
+            WHERE org_id = $1 AND coll = 'records' AND id IN ('b', 'c')""", p.org), write=True)
+    await p.batch_create_edges([{**link("a", "z", "FOREIGN_KEY"), "constraintName": "fk"}, {**link("a", "z", "FOREIGN_KEY"), "constraintName": "fk"}], "nodeRelations")
+    assert await p.get_node_depths_batch("a", ["b", "c"], 3) == {"b": 1, "c": 2}
+    assert await p.get_record_parent_info("b") == {"id": "a", "type": "record"}
+    out = await p.delete_records_recursive(["a"], "c1")
+    assert out["success"] and sorted(r["record_id"] for r in out["deleted_records"]) == ["a", "b", "c", "m"]
+
+
+async def test_recordlinks_deletes_remove_links_and_noderelations_deletes_follow_the_neo4j_scope(pg_db) -> None:
+    p = bound(pg_db)
+    await tree(p)
+    await p.batch_create_edges([link("b", "z", "BOOKMARK"), link("b", "m", "REFERENCE")], "nodeRelations")
+    assert await p.delete_edges_by_relationship_types("b", "records", "recordLinks", ["BOOKMARK"]) == 1          # a link stored in nodeRelations
+    assert await p.delete_edges_by_relationship_types("b", "records", "recordLinks", ["PARENT_CHILD"]) == 0     # never a hierarchy edge
+    assert await p.delete_edges_between_collections("b", "records", "nodeRelations", "records") == 1             # the hierarchy edge b -> c only
+    assert [e["relationshipType"] for e in await p.get_edges_from_node("records/b", "recordLinks")] == ["REFERENCE"]
+    assert await p.delete_edges_between_collections("b", "records", "recordLinks", "records") == 1
+
+
+async def test_copying_relationships_to_a_missing_record_creates_nothing(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "s"), {"_key": "d1"}], "records")
+    await p.batch_upsert_nodes([{"_key": "d1"}], "departments")
+    await p.batch_create_edges([{"from_id": "s", "from_collection": "records", "to_id": "d1", "to_collection": "departments"}], "belongsToDepartment")
+    assert await p.copy_document_relationships("s", "ghost") is False
+    assert await p.get_edges_from_node("records/ghost", "belongsToDepartment") == []
+    assert await p.copy_document_relationships("ghost", "s") is True                                           # nothing to copy is not an error
+
+
+async def test_the_first_of_two_duplicate_edges_in_a_batch_wins(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "a"), rec(p.org, "b")], "records")
+    await p.create_edges_if_absent([{**link("a", "b", "BOOKMARK"), "note": "first"}, {**link("a", "b", "BOOKMARK"), "note": "second"},
+                                    link("a", "b", "PARENT_CHILD"), link("a", "b", "ATTACHMENT")], "nodeRelations")
+    edges = {e["relationshipType"]: e for e in await p.get_edges_from_node("records/a", "nodeRelations")}
+    assert edges["BOOKMARK"]["note"] == "first" and edges["PARENT_CHILD"]["to_id"] == "b" and "ATTACHMENT" not in edges      # one hierarchy edge per pair: the first
