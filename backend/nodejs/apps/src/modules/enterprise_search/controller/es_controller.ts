@@ -9,6 +9,7 @@ import {
   initializeSSEResponse,
   sendSSEErrorEvent,
   sendSSECompleteEvent,
+  searchDegradedMeta,
   handleRegenerationStreamData,
   handleRegenerationSuccess,
   updateUserQueryContent,
@@ -1225,6 +1226,7 @@ export const streamChat =
                 requestId,
                 timestamp: new Date().toISOString(),
                 duration: Date.now() - startTime,
+                ...searchDegradedMeta(completeData),
               },
             };
 
@@ -2016,6 +2018,7 @@ export const addMessageStream =
                   timestamp: new Date().toISOString(),
                   duration: Date.now() - startTime,
                   recordsUsed: savedCitations.length,
+                  ...searchDegradedMeta(completeData),
                 },
               };
 
@@ -4002,6 +4005,7 @@ async function regenerateAnswersInternal(
             requestId || '',
             startTime,
             protocol,
+            searchDegradedMeta(completeData),
           );
 
           logger.debug(
@@ -6961,6 +6965,7 @@ export const streamAgentConversation =
                 requestId,
                 timestamp: new Date().toISOString(),
                 duration: Date.now() - startTime,
+                ...searchDegradedMeta(completeData),
               },
             };
 
@@ -7733,6 +7738,7 @@ export const addMessageStreamToAgentConversation =
                   timestamp: new Date().toISOString(),
                   duration: Date.now() - startTime,
                   recordsUsed: savedCitations.length,
+                  ...searchDegradedMeta(completeData),
                 },
               };
 
