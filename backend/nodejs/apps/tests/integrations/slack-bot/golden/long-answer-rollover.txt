@@ -14,5 +14,5 @@ Costs fell as hosting moved to reserved capacity. Costs fell as hosting moved to
 
 In short: growth held and margins improved.
 
-Sources:
-[1] Q3 report <https://x.test/q3>
+  Sources
+  • <https://x.test/q3|Q3 report>  [1]

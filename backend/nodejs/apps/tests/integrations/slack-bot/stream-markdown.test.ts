@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import {
   buildNumberedSlackSources,
+  groupSources,
+  numberedSourcesBlocks,
   citationRows,
   CitationMarkers,
   linkedCitationMarker,
@@ -13,6 +15,9 @@ import {
   parseArtifactMarkers,
   stripArtifactMarkers,
 } from '../../../src/integrations/slack-bot/src/utils/parse-artifact-markers';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyArgs = any;
 
 const cite = (n: number, name: string, webUrl: string) => ({
   citationData: { chunkIndex: n, metadata: { recordId: `r${String(n)}`, recordName: name, webUrl } },
@@ -144,9 +149,64 @@ describe('slack-bot streamed markdown', () => {
         'https://app.test',
       );
 
-      expect(blocks[0]).to.deep.equal({ type: 'section', text: { type: 'mrkdwn', text: '*Sources:*' } });
-      const elements = (blocks[1] as { elements: { elements: { text: string }[] }[] }).elements[0]!.elements;
-      expect(elements.map((e) => e.text).join('')).to.equal('[1] Q3 report\n[3] Notes\n');
+      expect(blocks).to.deep.equal([{
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '*Sources*\n• <https://x.test/q3|Q3 report>  [1]\n• <https://x.test/n|Notes>  [3]' }],
+      }]);
+    });
+  });
+
+  describe('the Sources list', () => {
+    const doc = (n: number, recordId: string | undefined, name: string, url: string) => ({
+      citationData: { chunkIndex: n, metadata: { ...(recordId ? { recordId } : {}), recordName: name, webUrl: url } },
+    });
+
+    it('puts one document on one line with every citation number that points into it', () => {
+      const soc3 = 'https://trust.example.com/soc3.pdf';
+      const q3 = 'https://ir.example.com/q3.pdf';
+      // The live case: eleven numbered citations, two documents, chunk-level links.
+      const citations = [1, 2, 3, 8, 9, 10, 11].map((n) => doc(n, 'rec-soc3', 'Asana - SOC 3 Report 01-31-24.pdf', `${soc3}#page=${String(n)}`))
+        .concat([4, 5, 6, 7].map((n) => doc(n, 'rec-q3', 'Asana Announces Record Third Quarter Fiscal 2023 Revenues.pdf', `${q3}#page=${String(n)}`)));
+      const blocks = buildNumberedSlackSources(citations, 'https://app.test');
+      expect(blocks).to.deep.equal([{
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: [
+            '*Sources*',
+            `• <${soc3}|Asana - SOC 3 Report 01-31-24.pdf>  [1] [2] [3] [8] [9] [10] [11]`,
+            `• <${q3}|Asana Announces Record Third Quarter Fiscal 2023 Revenues.pdf>  [4] [5] [6] [7]`,
+          ].join('\n'),
+        }],
+      }]);
+    });
+
+    it('groups links that differ only in their fragment, and orders documents by their first number', () => {
+      const groups = groupSources(new Map([
+        [1, { name: 'B', url: 'https://x.test/b#p1' }],
+        [2, { name: 'A', url: 'https://x.test/a' }],
+        [3, { name: 'B', url: 'https://x.test/b#p9' }],
+      ]));
+      expect(groups).to.deep.equal([
+        { name: 'B', url: 'https://x.test/b', numbers: [1, 3] },
+        { name: 'A', url: 'https://x.test/a', numbers: [2] },
+      ]);
+    });
+
+    it('shows the first three documents in small text and puts the rest in a section Slack can fold', () => {
+      const rows = new Map([1, 2, 3, 4, 5].map((n) => [n, { name: `Doc ${String(n)}`, url: `https://x.test/${String(n)}` }]));
+      const blocks = numberedSourcesBlocks(rows) as AnyArgs[];
+      expect(blocks.map((b) => b.type)).to.deep.equal(['context', 'section']);
+      expect(blocks[0].elements[0].text.split('\n')).to.have.length(4);
+      expect(blocks[1]).to.deep.include({ expand: false });
+      expect(blocks[1].text.text).to.equal('• <https://x.test/4|Doc 4>  [4]\n• <https://x.test/5|Doc 5>  [5]');
+    });
+
+    it('keeps a name from breaking its link, and posts nothing when nothing was cited', () => {
+      const [block] = numberedSourcesBlocks(new Map([[1, { name: 'Q3 <draft> | v2 & final', url: 'https://x.test/a' }]])) as AnyArgs[];
+      expect(block.elements[0].text).to.include('<https://x.test/a|Q3 &lt;draft&gt; ¦ v2 &amp; final>  [1]');
+      expect(numberedSourcesBlocks(new Map())).to.deep.equal([]);
+      expect(buildNumberedSlackSources([], 'https://app.test')).to.deep.equal([]);
     });
   });
 });

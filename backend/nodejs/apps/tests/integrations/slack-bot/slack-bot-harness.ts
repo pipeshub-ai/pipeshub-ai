@@ -251,6 +251,8 @@ export function asanaResearchFrames(): Record<string, unknown>[] {
   const cites = [
     { citationData: { chunkIndex: 1, metadata: { recordId: 'rec-1', recordName: 'Asana SOC 3 report', webUrl: 'https://trust.asana.com/soc3' } } },
     { citationData: { chunkIndex: 2, metadata: { recordId: 'rec-2', recordName: 'Asana Q3 FY2026 results', webUrl: 'https://investors.asana.com/q3' } } },
+    // Another passage of the SOC 3 report: its own [n] link, the same line in Sources.
+    { citationData: { chunkIndex: 3, metadata: { recordId: 'rec-1', recordName: 'Asana SOC 3 report', webUrl: 'https://trust.asana.com/soc3#page=4' } } },
   ];
   const answer = [
     '## Asana overview',
@@ -259,7 +261,7 @@ export function asanaResearchFrames(): Record<string, unknown>[] {
     '',
     '## Third-quarter revenue',
     '',
-    'Revenue grew to $201M in Q3 FY2026 [source](ref2), and the SOC 3 report says controls were fairly stated in all material respects [source](ref1).',
+    'Revenue grew to $201M in Q3 FY2026 [source](ref2), and the SOC 3 report says controls were fairly stated in all material respects [source](ref3).',
   ].join('\n');
   return [
   { type: 'RUN_STARTED', runId: 'r1' },
@@ -530,6 +532,12 @@ export function renderReplay(client: ReturnType<typeof slackClient>): string {
   lines.push('', visibleText(client));
   for (const block of replyBlocks(client)) {
     if (block.type === 'section') lines.push('', String(block.text?.text ?? '').replace(/\*/g, ''));
+    // Small grey text in Slack (the Sources list).
+    if (block.type === 'context') {
+      for (const element of (block.elements ?? []) as AnyArgs[]) {
+        lines.push('', ...String(element.text ?? '').replace(/\*/g, '').split('\n').map((line) => `  ${line}`));
+      }
+    }
     if (block.type === 'table') {
       const cell = (c: AnyArgs): string =>
         c.type === 'raw_text'
@@ -595,10 +603,8 @@ export function expectStreamedAnswer(
   expect(stop.ts).to.equal(STREAM_TS);
   const sources = JSON.stringify(stop.blocks);
   expect(sources)
-    .to.include('Sources')
-    .and.include('[1] ')
-    .and.include('Q3 report')
-    .and.include('https://x.test/q3');
+    .to.include('*Sources*')
+    .and.include('<https://x.test/q3|Q3 report>  [1]');
 
   expect(client.chat.update.called, 'no chat.update on the answer').to.equal(
     false,
@@ -722,8 +728,8 @@ export function describeAnswerWiring(
       expect(text).to.include('platform [[1]](https://trust.asana.com/soc3).');
       expect(text).to.include('Q3 FY2026 [[2]](https://investors.asana.com/q3)');
       expect(text).to.not.match(/\]\(\/record\//);
-      expect(rendered).to.include('[1] Asana SOC 3 report <https://trust.asana.com/soc3>');
-      expect(rendered).to.include('[2] Asana Q3 FY2026 results <https://investors.asana.com/q3>');
+      expect(rendered).to.include('• <https://trust.asana.com/soc3|Asana SOC 3 report>  [1] [3]');
+      expect(rendered).to.include('• <https://investors.asana.com/q3|Asana Q3 FY2026 results>  [2]');
     });
 
     it('shows reasoning that came after the last step as a row, though no text followed it', async () => {
@@ -804,10 +810,8 @@ export function describeAnswerWiring(
       const [stop] = apiCalls(client, 'chat.stopStream');
       const listed = JSON.stringify(stop.blocks);
       expect(listed)
-        .to.include('"[1] "')
-        .and.include('https://x.test/q3')
-        .and.include('"[2] "')
-        .and.include('https://asana.com/trust');
+        .to.include('<https://x.test/q3|Q3 report>  [1]')
+        .and.include('<https://asana.com/trust|Trust at Asana>  [2]');
       const everything = JSON.stringify(
         client.apiCall.getCalls().map((c) => c.args),
       );
@@ -1350,7 +1354,7 @@ export function describeAnswerWiring(
 
       expect(visibleText(client)).to.equal('Revenue grew 12% [[1]](https://x.test/q3). See item [7](https://example.com/list).');
       const [stop] = apiCalls(client, 'chat.stopStream');
-      expect(JSON.stringify(stop.blocks)).to.include('"[1] "').and.include('https://x.test/q3');
+      expect(JSON.stringify(stop.blocks)).to.include('<https://x.test/q3|Q3 report>  [1]');
     });
 
     it('numbers a final-only answer\'s citations like the markers shown before it, matching the Sources list', async () => {
@@ -1374,8 +1378,8 @@ export function describeAnswerWiring(
       const text = visibleText(client);
       expect(text).to.include('B explains it [[1]](https://x.test/b).');
       expect(text).to.include('A says so [[2]](https://x.test/a). B agrees [[1]](https://x.test/b). See item [7](https://example.com/list).');
-      const sources = String(renderReplay(client).split('Sources:')[1]).trim();
-      expect(sources).to.equal('[1] B <https://x.test/b>\n[2] A <https://x.test/a>');
+      const sources = String(renderReplay(client).split('Sources')[1]).trim();
+      expect(sources).to.equal('• <https://x.test/b|B>  [1]\n  • <https://x.test/a|A>  [2]');
     });
 
     describe('golden transcripts: what users see, for whole runs', () => {
@@ -1493,6 +1497,30 @@ export function describeAnswerWiring(
         expect(titles).to.include.members(['Searched the web · 10s', 'Searched the web · 15s', 'Searched the web · 20s']);
         expect(expectSettled(client)[0]).to.deep.include({ title: 'Searched the web', output: '✓ 4 results' });
       });
+    });
+
+    it('lists unnumbered citations the same way: small, one line per document, no numbers', async () => {
+      const unnumbered = [1, 2].map(() => ({ citationData: { metadata: { recordId: 'r1', recordName: 'Handbook', webUrl: 'https://x.test/h' } } }));
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('See the handbook.'),
+        finished('See the handbook.', unnumbered),
+      ]);
+      const [stop] = apiCalls(client, 'chat.stopStream');
+      expect(stop.blocks).to.deep.equal([
+        { type: 'context', elements: [{ type: 'mrkdwn', text: '*Sources*\n• <https://x.test/h|Handbook>' }] },
+      ]);
+    });
+
+    it('posts no Sources when nothing was cited', async () => {
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens('Hello.'),
+        finished('Hello.'),
+      ]);
+      expect(JSON.stringify(replyBlocks(client))).to.not.include('Sources');
     });
 
     it('shows no steps for a run with none', async () => {

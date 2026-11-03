@@ -50,6 +50,7 @@ import {
   stripNumberedCitationLinkTargets,
   citationRows,
   numberedSourcesBlocks,
+  sourcesBlocks,
   type SlackSourceRow,
   type SlackCitationLike,
 } from "./utils/citations";
@@ -296,60 +297,8 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     uniqueRecords.push({ name: recordName, url: recordUrl });
   }
 
-  let blocks: any[] = [];
-  let elements: any[] = [];
-
-  for (const record of uniqueRecords) {
-    elements.push({
-      "type": "link",
-      "url": record.url,
-      "text": ` ${record.name}`,
-    });
-    elements.push({
-      "type": "text",
-      "text": `\n`,
-    });
-
-    if (elements.length === 20) {
-      blocks.push({
-        "type": "rich_text",
-        "elements": [
-          {
-            "type": "rich_text_section",
-            "elements": [
-              ...elements,
-            ]
-          }
-        ]
-      });
-      elements = [];
-    }
-  }
-
-  if (elements.length > 0) {
-    blocks.push({
-      "type": "rich_text",
-      "elements": [
-        {
-          "type": "rich_text_section",
-          "elements": [
-            ...elements,
-          ]
-        }
-      ]
-    });
-  }
-
-  if (blocks.length > 0) {
-    blocks = [ {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Sources:*",
-      },
-    }, ...blocks];
-  }
-  return blocks;
+  // Unnumbered, but shown like the numbered list: small, one line per document.
+  return sourcesBlocks(uniqueRecords.map((record) => ({ ...record, numbers: [] })));
 }
 
 // Middleware setup
