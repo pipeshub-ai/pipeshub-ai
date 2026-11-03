@@ -321,6 +321,15 @@ access token (never `client_credentials` through DCR).
 | `PIPESHUB_ENABLE_DCR` | off (only `true` enables it) | `POST /api/v1/oauth2/register` |
 | `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
 | `PIPESHUB_ENABLE_CIMD` | on (`false` disables it) | An https URL that serves an OAuth Client ID Metadata Document is accepted as `client_id` |
+| `MCP_ALLOWED_ORIGINS` | none | Extra browser origins (comma-separated) allowed to call `/mcp`, e.g. a browser-based MCP inspector |
+
+`/mcp` refuses a request whose `Origin` header is not this instance's own
+origin, one in `ALLOWED_ORIGINS`, or one in `MCP_ALLOWED_ORIGINS` (403). Desktop,
+CLI and hosted AI clients send no `Origin` and are not affected. Each account
+may make `MAX_REQUESTS_PER_MINUTE` requests a minute to `/mcp`; the API calls a
+tool makes on its behalf are not counted again. An address is limited only on
+requests with an invalid or expired token, so many users behind one address
+(an office, or a hosted AI client) do not share a limit.
 
 Discovery: `GET {origin}/.well-known/openid-configuration` lists
 `device_authorization_endpoint` and the device grant type only while the

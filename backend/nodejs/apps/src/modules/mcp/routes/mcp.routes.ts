@@ -12,7 +12,13 @@ import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../config';
 import { BaseError } from '../../../libs/errors/base.error';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { Logger } from '../../../libs/services/logger.service';
 import { handleMCPRequest } from '../controller/mcp.controller';
+import {
+  mcpOriginGuard,
+  mcpRateLimiters,
+  sendMcpError,
+} from '../middlewares/mcp-guard.middleware';
 
 /**
  * Create and configure the MCP router.
@@ -24,16 +30,22 @@ export function createMCPRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
+  const limits = mcpRateLimiters(
+    container.get<Logger>('Logger'),
+    appConfig.maxRequestsPerMinute,
+  );
+  const guard = [
+    mcpOriginGuard([appConfig.oauthIssuer, appConfig.frontendUrl]),
+    limits.rejectedTokens,
+    authMiddleware.authenticate,
+    limits.perAccount,
+  ];
 
   /**
    * POST /
    * Handles all MCP JSON-RPC requests (initialize, tool calls, etc.)
    */
-  router.post(
-    '/',
-    authMiddleware.authenticate,
-    handleMCPRequest(appConfig),
-  );
+  router.post('/', ...guard, handleMCPRequest(appConfig));
 
   /**
    * GET /
@@ -41,20 +53,10 @@ export function createMCPRouter(container: Container): Router {
    * gone once it answers, so a GET stream would never carry a message: refuse it
    * with 405, which the MCP spec lets a client take as "no SSE stream here".
    */
-  router.get(
-    '/',
-    authMiddleware.authenticate,
-    (_req: Request, res: Response) => {
-      res
-        .status(405)
-        .set('Allow', 'POST')
-        .json({
-          jsonrpc: '2.0',
-          error: { code: -32000, message: 'Method not allowed.' },
-          id: null,
-        });
-    },
-  );
+  router.get('/', ...guard, (_req: Request, res: Response) => {
+    res.set('Allow', 'POST');
+    sendMcpError(res, 405, 'Method not allowed.');
+  });
 
   // An MCP client learns where to authorize from this header on a 401 (MCP
   // authorization spec, RFC 9728 section 5.1); without it, one with no token,
