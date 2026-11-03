@@ -2792,6 +2792,13 @@ class TestTokenBudgetBatches:
         assert not vs._batches_by_tokens()
 
     @pytest.mark.asyncio
+    async def test_openai_regional_host_packs_by_tokens(self) -> None:
+        batches = await self._batches(
+            "openAI", self._sentence_docs(550), "https://us.api.openai.com/v1"
+        )
+        assert len(batches) == 1
+
+    @pytest.mark.asyncio
     async def test_openai_named_explicitly_still_packs_by_tokens(self) -> None:
         batches = await self._batches(
             "openAI", self._sentence_docs(550), "https://api.openai.com/v1"
