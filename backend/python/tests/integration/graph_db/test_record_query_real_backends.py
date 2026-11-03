@@ -802,9 +802,9 @@ async def test_an_outsider_is_a_person_entity_as_a_member_is(seeded: Graph) -> N
 
     ref = {"id": pete, "type": "person", "connectorIds": g.connector_ids}
     candidates = await g.graph.get_entity_candidate_records([ref], g.org)
-    # The listing reads each person edge in its stored direction; d2's INVOLVED_IN
-    # is seeded record -> person, the other way from how Slack stores it.
-    assert [r["_key"] for r in candidates[("person", pete)]] == [g.rid("t1")]
+    # The listing matches a role whichever way it is stored, as record query does:
+    # d2's INVOLVED_IN is seeded record -> person, the other way from how Slack stores it.
+    assert sorted(r["_key"] for r in candidates[("person", pete)]) == sorted([g.rid("t1"), g.rid("d2")])
     permitted = await g.graph.get_permitted_entity_records(
         [ref], g.org, g.nid("ann"), app_level_connector_ids=[],
     )
