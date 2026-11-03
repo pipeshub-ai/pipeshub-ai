@@ -2290,9 +2290,10 @@ class RetrievalService:
         batches: list[list] = [[] for _ in queries]
         capped = [False] * len(queries)
         failed_collections = searched_collections = 0
+        degraded: list[bool] = []
         if requests:
             per_collection, failed_collections = await self._lexical_fan_out(
-                await self._resolve_search_collections(org_id, user_id), requests, limit,
+                await self._resolve_search_collections(org_id, user_id), requests, limit, degraded=degraded,
             )
             searched_collections = len(per_collection) + failed_collections
             for j, i in enumerate(sent):
@@ -2361,10 +2362,12 @@ class RetrievalService:
             empty_query=[sparse is None and text is None for sparse, text in requests_legs],
             failed_collections=failed_collections,
             searched_collections=searched_collections,
+            degraded=bool(degraded),
         )
 
     async def _lexical_fan_out(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+        *, degraded: list[bool] | None = None,
     ) -> tuple[list[tuple[str, list[list]]], int]:
         """Each collection's own per-request results, and how many collections
         could not be searched. Raises when none could."""
@@ -2372,8 +2375,9 @@ class RetrievalService:
 
         async def _one(name: str) -> list[list]:
             async with semaphore:
-                return await self._fan_out_searches([name], requests, limit)
+                return await self._fan_out_searches([name], requests, limit, degraded=degraded)
 
+        degraded_notice.track()
         outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
         answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
         failures = [out for out in outcomes if isinstance(out, BaseException)]
@@ -2706,10 +2710,8 @@ class RetrievalService:
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
-        if degraded:
-            degraded_notice.note()
-            if plan is not None:
-                plan.degraded = True
+        if degraded and plan is not None:
+            plan.degraded = True
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2766,13 +2768,15 @@ class RetrievalService:
         A collection that fails degrades the result set instead of failing the
         search — a search over three collections should not error because one
         is briefly unreachable. Each one it could not search is appended to
-        ``failed``, so the caller can say the results are incomplete. A hit a store
-        marked as coming from a partial search appends to ``degraded`` before the merge
-        trims it, so a degraded collection whose hits rank below the cut still counts.
+        ``failed``, so the caller can say the results are incomplete. A store that
+        answered from a partial search (``degraded_notice``, by a note or by a marked hit)
+        appends to ``degraded``.
         """
         if not collections:
             return [[] for _ in requests]
 
+        degraded_notice.track()
+        noted_before = degraded_notice.count()
         semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
 
         async def _search(collection_name: str) -> list[list]:
@@ -2802,15 +2806,20 @@ class RetrievalService:
                     outcome,
                 )
                 continue
-            if degraded is not None and any(
-                isinstance(getattr(hit, "degraded", None), str) for batch in outcome for hit in batch
-            ):
-                degraded.append(True)
+            for batch in outcome:
+                for hit in batch:
+                    if isinstance(reason := getattr(hit, "degraded", None), str):
+                        degraded_notice.note(reason)
+                        break
             for i, batch in enumerate(outcome):
                 if i < len(per_query):
                     per_query[i].append(
                         CollectionResults(collection_name=collection_name, results=batch)
                     )
+
+        # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
+        if degraded is not None and degraded_notice.count() > noted_before:
+            degraded.append(True)
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is

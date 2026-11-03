@@ -1,12 +1,14 @@
-"""Whether a search of this request was answered with less than the full search (``SearchResult.degraded``).
+"""Whether a search of this request was answered from a partial search.
 
-The retrieval service notes it; the chat stream reads it when the run completes. A ContextVar holding a mutable list is shared by the
-tasks the request spawns, so a search made by a tool in another task is seen too.
+Provider contract: a vector store that answers a query from less than its full search calls ``note(reason)`` (it needs no hits to do so,
+so an empty answer can be flagged), or sets ``SearchResult.degraded`` on the hits it returns; the retrieval service turns the latter into
+the former. The chat stream reads ``was_degraded`` when the run completes. A ContextVar holding a mutable list is shared by the tasks the
+request spawns, so a search made by a tool in another task is seen too; outside a tracked request ``note`` does nothing.
 """
 from contextvars import ContextVar
 from typing import Any
 
-_seen: ContextVar[list[bool] | None] = ContextVar("search_degraded", default=None)
+_seen: ContextVar[list[str] | None] = ContextVar("search_degraded", default=None)
 
 
 def track() -> None:
@@ -15,9 +17,14 @@ def track() -> None:
         _seen.set([])
 
 
-def note() -> None:
+def note(reason: str = "partial") -> None:
     if (seen := _seen.get()) is not None:
-        seen.append(True)
+        seen.append(reason)
+
+
+def count() -> int:
+    """How many times this request has been noted, so a caller can tell whether its own search was."""
+    return len(_seen.get() or ())
 
 
 def was_degraded() -> bool:
