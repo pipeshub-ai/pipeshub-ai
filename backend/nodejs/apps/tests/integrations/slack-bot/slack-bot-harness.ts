@@ -219,24 +219,24 @@ export const streamedChunks = (
     ...apiCalls(client, 'chat.appendStream'),
   ].flatMap((call) => call.chunks as AnyArgs[]);
 
-/** The Jira answer from a live run: an intro, a ten-row table, then a closing sentence. */
+/** A Jira answer shaped like a live run's (fictional data): an intro, a ten-row table, then a closing sentence. */
 export const JIRA_TABLE_ANSWER = [
   'Here are your 10 most recently updated unresolved Jira tickets, ordered newest first:',
   '',
   '| Ticket | Summary | Status | Priority | Last updated |',
   '|---|---|---|---|---|',
-  '| PP-497 | Update documentation on docs.pipehsub | PR review | Medium | Tue, Nov 3, 11:35 AM IST |',
-  '| PP-485 | Fix connector sync retries | Testing | High | Tue, Nov 3, 10:02 AM IST |',
-  '| PP-447 | Slack bot thinking trail | Testing | High | Mon, Nov 2, 6:40 PM IST |',
-  '| PP-481 | Jira OAuth scopes | Testing | Medium | Mon, Nov 2, 4:15 PM IST |',
-  '| PP-476 | Indexing backoff | In progress | Medium | Mon, Nov 2, 1:05 PM IST |',
-  '| PP-470 | Docs: Slack setup | To do | Low | Sun, Nov 1, 9:30 PM IST |',
-  '| PP-466 | Search ranking tweak | In progress | Medium | Sun, Nov 1, 3:12 PM IST |',
-  '| PP-459 | Confluence attachments | To do | Medium | Sat, Oct 31, 8:44 PM IST |',
-  '| PP-452 | Rate-limit dashboard | In progress | Low | Sat, Oct 31, 11:20 AM IST |',
-  '| PP-449 | MCP server timeouts | To do | High | Fri, Oct 30, 7:58 PM IST |',
+  '| DEMO-101 | Update the setup guide | In review | Medium | Tue, Nov 3, 11:35 AM |',
+  '| DEMO-102 | Add retries to the sync job | Testing | High | Tue, Nov 3, 10:02 AM |',
+  '| DEMO-103 | Show progress while the agent works | Testing | High | Mon, Nov 2, 6:40 PM |',
+  '| DEMO-104 | Tidy the sign-in scopes | Testing | Medium | Mon, Nov 2, 4:15 PM |',
+  '| DEMO-105 | Back off when indexing is busy | In progress | Medium | Mon, Nov 2, 1:05 PM |',
+  '| DEMO-106 | Write the chat app setup page | To do | Low | Sun, Nov 1, 9:30 PM |',
+  '| DEMO-107 | Tune search ranking | In progress | Medium | Sun, Nov 1, 3:12 PM |',
+  '| DEMO-108 | Index page attachments | To do | Medium | Sat, Oct 31, 8:44 PM |',
+  '| DEMO-109 | Add a rate-limit chart | In progress | Low | Sat, Oct 31, 11:20 AM |',
+  '| DEMO-110 | Time out slow tool servers | To do | High | Fri, Oct 30, 7:58 PM |',
   '',
-  'The most immediate follow-ups by status appear to be PP-497 (PR review) and PP-485, PP-447, PP-481 (Testing).',
+  'The most immediate follow-ups by status are DEMO-101 (In review) and DEMO-102, DEMO-103, DEMO-104 (Testing).',
 ].join('\n');
 
 /** The Asana research run: narration, knowledge-base searches (one failing), failing and blocked calls, a cited answer. */
@@ -319,7 +319,9 @@ export function conversationFrames(file: string): Record<string, unknown>[] {
         { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: part.toolCallId, status: part.status,
           content: part.resultPreview,
           ...(part.resultSummary !== undefined ? { resultSummary: part.resultSummary } : {}),
-          ...(part.resultView ? { resultView: part.resultView } : {}) },
+          ...(part.resultView ? { resultView: part.resultView } : {}),
+          // The saved conversation records the file; the live AG-UI result does not forward it yet.
+          ...(part.artifactId ? { artifactId: part.artifactId } : {}) },
       );
     }
   }
@@ -360,6 +362,7 @@ export const GOLDEN_RUNS: { name: string; clock?: boolean; frames: () => Record<
     ],
   },
   {
+    // Its "Something went wrong" ending predates this view: the run ends with no answer while it waits.
     name: 'approval-waiting',
     frames: () => [
       { type: 'RUN_STARTED', runId: 'r1' },
@@ -378,7 +381,7 @@ export const GOLDEN_RUNS: { name: string; clock?: boolean; frames: () => Record<
       const answer = [
         '## Findings',
         '',
-        'Revenue grew in every quarter, led by enterprise seats [source](ref1). '.repeat(90),
+        'Revenue grew in every quarter, led by new seats [source](ref1). '.repeat(90),
         '',
         '## Detail',
         '',
@@ -701,9 +704,9 @@ export function describeAnswerWiring(
       expect(tools.map((row) => [row.title, row.details, row.status])).to.deep.equal([
         ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
         ['Searched the knowledge base', 'Knowledgegraph', 'complete'],
-        ['Got record download links', 'Artifacts', 'error'],
+        ['Get record download links', 'Artifacts', 'error'],
         ['Loaded tools', '', 'complete'],
-        ['Created ticket', 'Tracker', 'error'],
+        ['Create ticket', 'Tracker', 'error'],
       ]);
       // Apps and actions in plain words; a call blocked for approval says where to answer.
       expect(tools[3]!.output).to.equal('✓ Tracker → Loaded 3 tools');
@@ -1193,7 +1196,7 @@ export function describeAnswerWiring(
       }
 
       it('when one chunk carries the intro and the first rows', async () => {
-        const cut = JIRA_TABLE_ANSWER.indexOf('| PP-485');
+        const cut = JIRA_TABLE_ANSWER.indexOf('| DEMO-102');
         expectTable(await ask([
           { type: 'RUN_STARTED', runId: 'r1' },
           { type: 'TEXT_MESSAGE_START', runId: 'r1' },

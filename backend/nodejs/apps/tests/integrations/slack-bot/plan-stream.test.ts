@@ -92,7 +92,7 @@ describe('slack-bot/utils/plan-stream', () => {
       plan.endGroup();
       const [row] = plan.takeSealed();
       expect(row).to.deep.include({
-        title: 'Got record download links',
+        title: 'Get record download links',
         status: 'error',
         details: 'Artifacts',
         output: '✗ record 8dc0d3d5 → No download link for records from an external connector',
@@ -268,15 +268,15 @@ describe('slack-bot/utils/plan-stream', () => {
     it('says what a cut-off summary could not, from the result view, never raw JSON', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('mcp_x_jql', 'Atlassian Rovo · searchJiraIssuesUsingJql', 'c1');
-      plan.toolArgs('mcp_x_jql', { summary: 'cloudId: "c7f37664-a798-44ef-a525-ecacfeb1087d", jql: "assignee = currentUser()", maxResults: 10, …' }, 'c1');
+      plan.toolArgs('mcp_x_jql', { summary: 'cloudId: "00000000-1111-4222-8333-444444444444", jql: "assignee = currentUser()", maxResults: 10, …' }, 'c1');
       plan.toolFinished('mcp_x_jql', 'Atlassian Rovo · searchJiraIssuesUsingJql', 'completed', 'c1', {
         summary: '{',
-        view: records([{ cells: ['PP-497', 'Docs'] }, { cells: ['PP-36', 'Tests'] }, { cells: ['PP-38', 'CSP'] }, { cells: ['PP-498', 'MCP'] }], ['Key', 'Summary'], 10),
+        view: records([{ cells: ['DEMO-101', 'Docs'] }, { cells: ['DEMO-102', 'Tests'] }, { cells: ['DEMO-103', 'CSP'] }, { cells: ['DEMO-104', 'MCP'] }], ['Key', 'Summary'], 10),
       });
       expect(sealed(plan)).to.deep.include({
         title: 'Searched Jira issues',
         details: 'Atlassian Rovo',
-        output: '✓ "assignee = currentUser()" → Found 10 issues: PP-497, PP-36, PP-38 …',
+        output: '✓ "assignee = currentUser()" → Found 10 issues: DEMO-101, DEMO-102, DEMO-103 …',
       });
     });
 
@@ -289,12 +289,12 @@ describe('slack-bot/utils/plan-stream', () => {
     it('names what a summary lists, up to three, and keeps a summary that names them already', () => {
       const plan = new SlackTaskPlan();
       run(plan, 'knowledgegraph__search', 'Searched the knowledge base', 'c1', 'Searched for "q"', 'completed',
-        'Retrieved 10 blocks from 5 records\n- Release Blocker.xlsx\n- Contract.pdf\n- Readme.md\n- Notes.md\n- … and 1 more');
+        'Retrieved 10 blocks from 5 records\n- Launch plan.xlsx\n- Contract.pdf\n- Readme.md\n- Notes.md\n- … and 1 more');
       run(plan, 'knowledgegraph__search', 'Searched the knowledge base', 'c2', 'Searched for "r"', 'completed',
-        'Found 3 entities: sample-test-ipsh, pipeshub-connector-test-bucket, test-s3-ipsh');
+        'Found 3 entities: demo-docs, demo-connector-sample-bucket, demo-archive');
       expect(sealed(plan).output!.split('\n')).to.deep.equal([
-        '✓ "q" → Retrieved 10 blocks from 5 records: Release Blocker.xlsx, Contract.pdf, Readme.md …',
-        '✓ "r" → Found 3 entities: sample-test-ipsh, pipeshub-connector-test-bucket, test-s3-ipsh',
+        '✓ "q" → Retrieved 10 blocks from 5 records: Launch plan.xlsx, Contract.pdf, Readme.md …',
+        '✓ "r" → Found 3 entities: demo-docs, demo-connector-sample-bucket, demo-archive',
       ]);
     });
 
@@ -312,8 +312,8 @@ describe('slack-bot/utils/plan-stream', () => {
 
     it('takes the query as the argument, never an id beside it', () => {
       const plan = new SlackTaskPlan();
-      run(plan, 'mcp_x_jql', 'X · searchIssues', 'c1', 'cloudId: "c7f37664-a798-44ef-a525-ecacfeb1087d", maxResults: 5', 'completed', 'Found 2 issues');
-      expect(sealed(plan).output).to.not.include('c7f37664');
+      run(plan, 'mcp_x_jql', 'X · searchIssues', 'c1', 'cloudId: "00000000-1111-4222-8333-444444444444", maxResults: 5', 'completed', 'Found 2 issues');
+      expect(sealed(plan).output).to.not.include('00000000');
     });
 
     it('puts a tool\'s name in words as what it did', () => {
@@ -322,6 +322,33 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(rowLabel('search_tools', 'Search Tools')).to.deep.equal({ title: 'Searched for tools' });
       expect(rowLabel('mcp_t_create_ticket', 'Tracker · create_ticket')).to.deep.equal({ title: 'Created ticket', app: 'Tracker' });
       expect(rowLabel('knowledgegraph__search_entities', 'Searched knowledge graph entities')).to.deep.equal({ title: 'Searched knowledge graph entities' });
+    });
+
+    it('titles a row by what it did, or, when every call failed or was blocked, by what it tried', () => {
+      const failed = new SlackTaskPlan();
+      run(failed, 'confluence__search', 'Searched Confluence', 'c1', 'Searched for "a"', 'failed', 'Failed: Not connected');
+      run(failed, 'confluence__search', 'Searched Confluence', 'c2', 'Searched for "b"', 'blocked', 'Declined by the user.');
+      expect(sealed(failed)).to.deep.include({ title: 'Search Confluence', status: 'error' });
+
+      const blocked = new SlackTaskPlan();
+      run(blocked, 'mcp_t_create_ticket', 'Tracker · create_ticket', 'c1', 'title: "T"', 'blocked');
+      expect(sealed(blocked)).to.deep.include({ title: 'Create ticket', status: 'error' });
+
+      const partly = new SlackTaskPlan();
+      run(partly, 'confluence__search', 'Searched Confluence', 'c1', 'Searched for "a"', 'failed', 'Failed: Not connected');
+      run(partly, 'confluence__search', 'Searched Confluence', 'c2', 'Searched for "b"', 'completed', '2 results');
+      expect(sealed(partly)).to.deep.include({ title: 'Searched Confluence', status: 'complete' });
+    });
+
+    it('says a result kept only as a file was saved, rather than nothing', () => {
+      const plan = new SlackTaskPlan();
+      plan.toolStarted('mcp_a_jql', 'Atlassian Rovo · searchJiraIssuesUsingJql', 'c1');
+      plan.toolArgs('mcp_a_jql', { summary: 'jql: "assignee = currentUser()", maxResults: 50' }, 'c1');
+      plan.toolFinished('mcp_a_jql', 'Atlassian Rovo · searchJiraIssuesUsingJql', 'completed', 'c1', {
+        summary: '{',
+        artifactId: '33333333-4444-4555-8666-777777777777',
+      });
+      expect(sealed(plan).output).to.equal('✓ "assignee = currentUser()" → Saved the full result as a file');
     });
 
     it('makes no row of an empty text part', () => {
@@ -744,7 +771,7 @@ describe('slack-bot/utils/plan-stream', () => {
         await s.stop();
 
         expect(shown(c)).to.deep.equal([{
-          id: 'tools-1', title: 'Got record download links', status: 'error', details: 'Artifacts',
+          id: 'tools-1', title: 'Get record download links', status: 'error', details: 'Artifacts',
           output: '✗ record 8dc0d3d5 → No download link', sources: [], detailSends: 1,
         }]);
       });
@@ -937,7 +964,7 @@ describe('slack-bot/utils/plan-stream', () => {
         expect(rows).to.deep.equal([
           { title: 'Loaded tools', status: 'complete', details: '', output: '✓ Tracker → Loaded 3 tools' },
           {
-            title: 'Created ticket', status: 'error', details: 'Tracker',
+            title: 'Create ticket', status: 'error', details: 'Tracker',
             output: [
               '✗ "Think" → Needs approval in the PipesHub app',
               '✗ Declined by the user',

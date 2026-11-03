@@ -285,6 +285,8 @@ export function sqlQuery(
 export interface SlackToolResult {
   summary?: string;
   view?: unknown;
+  /** Set when the full result was saved as a file for the agent to read. */
+  artifactId?: string;
 }
 
 type CallStatus =
@@ -501,6 +503,8 @@ function mainArgument(summary: string, label: string): string {
 }
 
 const BLOCKED_OUTPUT = 'Needs approval in the PipesHub app';
+/** A result kept only as a file the agent reads from: nothing short to show. */
+const SAVED_FILE_OUTPUT = 'Saved the full result as a file';
 /** The backend's reason for a call held for someone's approval, not run. */
 const APPROVAL_HOLD =
   /\bneeds? (?:someone to )?approv|\brequires? approval|\bwas(?:n't| not) run\b/i;
@@ -562,6 +566,15 @@ export function rowLabel(
   return /^[\w.-]+$/.test(label) || label === humanizeToolName(toolName)
     ? { title: pastAction(label) }
     : { title: label };
+}
+
+/** "Searched Confluence" as what was tried: "Search Confluence". */
+function imperative(title: string): string {
+  const [first = '', ...rest] = title.split(' ');
+  const base = Object.entries(PAST_TENSE).find(
+    ([, past]) => past === first,
+  )?.[0];
+  return base === undefined ? title : [capitalize(base), ...rest].join(' ');
 }
 
 const PAST_TENSE: Record<string, string> = {
@@ -891,6 +904,8 @@ export class SlackTaskPlan {
     const view = recordsView(result.view);
     if (usable) {
       call.result = summary;
+    } else if (!view && result.artifactId !== undefined) {
+      call.result = SAVED_FILE_OUTPUT;
     } else if (view) {
       const count = view.total ?? view.rows.length;
       const noun = view.columns.some((c) => /^key$/i.test(c))
@@ -1123,7 +1138,11 @@ export class SlackTaskPlan {
             (calls.length > 0 && failedCount === calls.length)
           ? 'error'
           : 'complete';
-    let shownTitle = title;
+    // A row where nothing worked says what was tried ("Create ticket"), not what was done.
+    let shownTitle =
+      !agent && calls.length > 0 && failedCount === calls.length
+        ? imperative(title)
+        : title;
     if (force && status === 'in_progress') {
       // The reply ends here: a wait for approval says so; anything else stopped short.
       if (awaiting && running === 0) {

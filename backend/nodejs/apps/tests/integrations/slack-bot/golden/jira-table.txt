@@ -8,6 +8,6 @@ Here are your 10 most recently updated unresolved Jira tickets, ordered newest f
 
 
 
-[table: Ticket | Summary | Status | Priority | Last updated; 10 rows; first: PP-497 | Update documentation on docs.pipehsub | PR review | Medium | Tue, Nov 3, 11:35 AM IST]
+[table: Ticket | Summary | Status | Priority | Last updated; 10 rows; first: DEMO-101 | Update the setup guide | In review | Medium | Tue, Nov 3, 11:35 AM]
 
-The most immediate follow-ups by status appear to be PP-497 (PR review) and PP-485, PP-447, PP-481 (Testing).
+The most immediate follow-ups by status are DEMO-101 (In review) and DEMO-102, DEMO-103, DEMO-104 (Testing).
