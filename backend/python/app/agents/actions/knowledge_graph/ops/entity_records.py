@@ -41,6 +41,8 @@ from app.modules.retrieval.entity_permissions import (
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
+    EntityRecordPage,
+    first_readable_offsets,
     list_accessible_entity_records,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
@@ -70,10 +72,6 @@ LOOKUP_FAILED_MSG = "Lookup failed — try again."
 _NARROW_HINT = (
     "Narrow with record_types=[...], or search inside it with "
     "knowledgegraph__search(query=..., entity_ids=[...])."
-)
-CAPPED_EMPTY_MSG = (
-    "No accessible records among the records checked for this entity, but it has "
-    "more records than one listing can scan, so this is not conclusive. " + _NARROW_HINT
 )
 _CAPPED_NOTE = (
     "This entity has more records than one listing can scan; these are the newest "
@@ -116,14 +114,8 @@ async def execute_find_records_by_entity(
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
     try:
         context = await load_entity_access_context(state)
-        page = await list_accessible_entity_records(
-            state["graph_provider"],
-            context,
-            entity_id=resolved_id,
-            entity_type=resolved_type,
-            record_types=wanted_types,
-            limit=bounded_limit,
-            cursor=cursor,
+        page = await _first_readable_page(
+            state, context, resolved_id, resolved_type, wanted_types, bounded_limit, cursor,
         )
     except ValueError as exc:
         return False, str(exc)
@@ -132,14 +124,10 @@ async def execute_find_records_by_entity(
         return False, LOOKUP_FAILED_MSG
 
     if not page.records:
-        if page.capped and page.next_cursor is None:
-            return True, CAPPED_EMPTY_MSG
-        if page.next_cursor is not None:
-            # The scan budget ran out before anything visible turned up; later
-            # candidates may still be accessible.
-            return True, _empty_window_message(raw_id, resolved_type, page.next_cursor)
+        # One reply whatever the entity holds: an unknown id, one whose records are all
+        # unreadable and one too large to scan to the end must not be told apart.
         # After a page of results, "none found" reads as "this entity is empty"
-        # and contradicts what the caller was just shown.
+        # and contradicts what the caller was just shown; it depends only on the call.
         if cursor:
             return True, NO_FURTHER_RECORDS_MSG
         empty = " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
@@ -206,10 +194,34 @@ def _continue_call(entity_ref: str, entity_type: str, cursor: str) -> str:
     )
 
 
-def _empty_window_message(entity_ref: str, entity_type: str, cursor: str) -> str:
-    return (
-        "No accessible records in this window of candidates, but more remain unchecked. "
-        f"Continue with {_continue_call(entity_ref, entity_type, cursor)}"
+async def _first_readable_page(
+    state: "ChatState",
+    context: EntityAccessContext,
+    entity_id: str,
+    entity_type: str,
+    record_types: list[str] | None,
+    limit: int,
+    cursor: str | None,
+) -> EntityRecordPage:
+    """The listing's page; when its scan ran out before a readable record, the page
+    from the next readable one the probe finds, else that empty page."""
+    graph = state["graph_provider"]
+    page = await list_accessible_entity_records(
+        graph, context, entity_id=entity_id, entity_type=entity_type,
+        record_types=record_types, limit=limit, cursor=cursor,
+    )
+    if page.records or page.next_cursor is None:
+        return page
+    found = await first_readable_offsets(
+        graph, context, [{"id": entity_id, "type": entity_type}],
+        record_types=record_types, offset=int(page.next_cursor),
+    )
+    start = found.get((entity_type, entity_id))
+    if start is None:
+        return EntityRecordPage(records=[], next_cursor=None)
+    return await list_accessible_entity_records(
+        graph, context, entity_id=entity_id, entity_type=entity_type,
+        record_types=record_types, limit=limit, cursor=str(start),
     )
 
 
@@ -345,7 +357,6 @@ async def resolve_entity_virtual_ids(
 
 
 __all__ = [
-    "CAPPED_EMPTY_MSG",
     "LOOKUP_FAILED_MSG",
     "NO_ACCESSIBLE_RECORDS_MSG",
     "NO_FURTHER_RECORDS_MSG",
