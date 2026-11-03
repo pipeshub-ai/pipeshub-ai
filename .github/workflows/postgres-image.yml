@@ -16,6 +16,7 @@ on:
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
+      - 'deployment/docker-compose/tests/pg_roles_script_test.sh'
       - '.github/workflows/postgres-image.yml'
   workflow_dispatch:
 

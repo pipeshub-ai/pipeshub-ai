@@ -659,6 +659,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+      # first init, crash recovery of a large volume and the role setup can take longer than the retries allow
+      start_period: 300s
 
   # Same image, other command. Transaction pooling with the session reset in postgres/pgbouncer.ini.
   pgbouncer:
