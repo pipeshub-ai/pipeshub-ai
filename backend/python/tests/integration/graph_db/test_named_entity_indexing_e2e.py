@@ -37,6 +37,7 @@ from tests.integration.graph_db.test_named_entity_graph_contract import (  # noq
     _records,
     graph,
 )
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
     ScriptedTransport,
@@ -128,7 +129,7 @@ async def test_indexed_values_are_queryable_and_only_for_readable_in_scope_recor
     user_graph = _UserGraph(provider, {readable, other_app})
     state = {"graph_provider": user_graph, "org_id": org_id, "user_id": "u"}
     with (
-        patch.object(values, "_named_entities_enabled", AsyncMock(return_value=True)),
+        patch.object(values, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True)),
         patch.object(values, "load_entity_access_context", AsyncMock(return_value=_agent_scope(f"{org_id}-conn", org_id=org_id))),
         patch.object(values, "resolve_frontend_url", AsyncMock(return_value=None)),
     ):
