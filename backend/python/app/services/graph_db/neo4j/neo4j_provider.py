@@ -22422,18 +22422,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _entity_candidate_match(self, entity_type: str) -> str:
         """Clauses binding ``rec`` to each record linked to ``ref``, ready for
         a ``WHERE`` on ``rec``. A person's relations run both ways, and only
-        their User end is the person (a RecordGroup is also MENTIONED_IN)."""
+        their User end is the person (a RecordGroup is also MENTIONED_IN). The
+        person is gated on the org too: this org's record may name a user of
+        another org."""
         if entity_type == PERSON_ENTITY_TYPE:
             relation = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
             return f"""CALL {{
                 WITH ref
                 MATCH (rec:Record)-[r:{relation}]->(p:User)
-                WHERE p.id IN ref.userIds AND r.edgeType IN ref.outTypes
+                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.outTypes
                 RETURN rec
                 UNION
                 WITH ref
                 MATCH (p:User)-[r:{relation}]->(rec:Record)
-                WHERE p.id IN ref.userIds AND r.edgeType IN ref.inTypes
+                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.inTypes
                 RETURN rec
               }}
               WITH *"""

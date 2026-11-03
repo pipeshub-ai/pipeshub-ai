@@ -21423,7 +21423,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # group is also MENTIONED_IN a record. Distinct ids first, so a
             # record linked twice (reporter and creator) is one candidate.
             relations = CollectionNames.ENTITY_RELATIONS.value
-            scope = f'LET people = (FOR uid IN ref.userIds RETURN CONCAT("{CollectionNames.USERS.value}/", uid))'
+            # Gated on the org too: this org's record may name a user of another org.
+            scope = f"""LET people = (
+                    FOR uid IN ref.userIds
+                        LET person_node = DOCUMENT(CONCAT("{CollectionNames.USERS.value}/", uid))
+                        FILTER person_node != null AND person_node.orgId == @org_id
+                        RETURN person_node._id
+                )"""
             return scope, f"""(
                     FOR rec_id IN UNION_DISTINCT(
                         (FOR edge IN {relations}
@@ -21447,16 +21453,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         {record_filter}
                 )"""
         scope = f"LET targets = [{targets}]"
-        if entity_type == EntityType.PERSON.value:
-            return "", f"""(
-                    {self._person_records_loop("ref.id")}
-                        FILTER rec.orgId == @org_id AND rec.isDeleted != true
-                        FILTER rec.indexingStatus == @completed
-                        FILTER rec.connectorId IN ref.connectorIds
-                        {record_type_filter}
-                        LIMIT @scan_cap
-                        RETURN rec
-                )"""
         if entity_type == EntityType.RECORD_GROUP.value:
             scope = (
                 f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))\n                '
