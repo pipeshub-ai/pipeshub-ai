@@ -133,6 +133,29 @@ describe('projects/utils/projects-feature', () => {
       expect(lookups).to.equal(1);
     });
 
+    it('holds at most 10,000 answers, dropping the oldest first', async () => {
+      let key = '';
+      setProjectsSettingsSource(() => ({
+        cacheKey: key,
+        store: async () => {
+          lookups += 1;
+          return workspaceStores.on as any;
+        },
+      }));
+      for (let i = 0; i <= 10_000; i += 1) {
+        key = `workspace-${i}`;
+        await ProjectsFeature.isEnabled();
+      }
+      lookups = 0;
+
+      key = 'workspace-10000';
+      await ProjectsFeature.isEnabled();
+      expect(lookups).to.equal(0);
+      key = 'workspace-0';
+      await ProjectsFeature.isEnabled();
+      expect(lookups).to.equal(1);
+    });
+
     it('leaves Projects on, without reading, while the source has no store', async () => {
       setProjectsSettingsSource(() => null);
 

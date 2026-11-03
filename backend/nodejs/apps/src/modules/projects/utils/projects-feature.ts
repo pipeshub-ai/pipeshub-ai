@@ -13,7 +13,26 @@ export const PROJECTS_DISABLED_MESSAGE =
 /** Long enough to spare a settings read per request, short enough that a Labs toggle applies almost at once. */
 const CACHE_TTL_MS = 5_000;
 
+/** Enough for every workspace one process serves; past it the oldest answer goes first. */
+const CACHE_MAX_KEYS = 10_000;
+
 const cached = new Map<string, { value: boolean; at: number }>();
+
+function remember(cacheKey: string, value: boolean): void {
+  // Deleting first moves the key to the newest end of the Map's insertion order.
+  cached.delete(cacheKey);
+  if (cached.size >= CACHE_MAX_KEYS) {
+    const now = Date.now();
+    for (const [key, entry] of cached) {
+      if (now - entry.at >= CACHE_TTL_MS) cached.delete(key);
+    }
+    if (cached.size >= CACHE_MAX_KEYS) {
+      const oldest = cached.keys().next().value;
+      if (oldest !== undefined) cached.delete(oldest);
+    }
+  }
+  cached.set(cacheKey, { value, at: Date.now() });
+}
 
 /**
  * The cache slot this request's answer goes in, and the store to read it
@@ -71,7 +90,7 @@ export const ProjectsFeature = {
         await source.store(),
       );
       const value = featureFlags.ENABLE_PROJECTS === true;
-      cached.set(source.cacheKey, { value, at: Date.now() });
+      remember(source.cacheKey, value);
       return value;
     } catch (error) {
       logger.warn('Could not read the Projects flag; leaving Projects on', {
