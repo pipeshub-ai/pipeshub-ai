@@ -258,7 +258,8 @@ _LINK_COLLS = ["nodeRelations", "recordLinks"]  # a link is a nodeRelations row 
 def _edge_scope(collection: str, *, pair: bool = False) -> tuple[list[str], int]:
     """The physical collections and the kind of row a logical edge collection stands for, one rule for every reader and deleter (as ``Neo4jProvider``'s
     relationship types): ``recordLinks`` is the links, whichever collection holds them (kind 2); ``nodeRelations`` is the hierarchy edge for one pair
-    (kind 1) and the hierarchy and the links for a whole node (kind 0); any other collection is itself (kind 0)."""
+    (kind 1, also for ``delete_all_edges_for_node``) and the hierarchy and the links for the node-wide reads and ``delete_edges_from`` / ``_to`` (kind 0);
+    any other collection is itself (kind 0)."""
     if collection == "recordLinks":
         return _LINK_COLLS, 2
     if collection == "nodeRelations":
