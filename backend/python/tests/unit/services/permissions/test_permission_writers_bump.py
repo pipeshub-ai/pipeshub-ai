@@ -280,7 +280,7 @@ def test_the_share_and_knowledge_base_create_writers_are_flagged_and_bump() -> N
 def test_a_handler_bumps_before_the_cleanup_that_follows_its_write() -> None:
     """A disabled app or deleted user must not be served from a scope read before the change while cleanup runs."""
     tree = _tree("services/messaging/kafka/handlers/entity.py")
-    for name, cleanup in (("_handle_user_deleted", "_remove_mcp_data"), ("_handle_app_disabled", "request_stop_by_prefix")):
+    for name, cleanup in (("_handle_org_deleted", "_remove_mcp_data"), ("_handle_user_deleted", "_remove_mcp_data"), ("_handle_app_disabled", "request_stop_by_prefix")):
         calls = sorted((n.lineno, n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", ""))
                        for n in ast.walk(_function(tree, name)) if isinstance(n, ast.Call))
         order = [c for _, c in calls]

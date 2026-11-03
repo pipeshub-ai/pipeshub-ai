@@ -909,6 +909,7 @@ export interface SSECompleteEvent {
     requestId: string;
     timestamp: string;
     duration: number;
+    searchDegraded?: boolean;
   };
 }
 
@@ -1200,6 +1201,7 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
 
@@ -1312,5 +1314,7 @@ export interface SearchResponse {
   searchId: string;
   searchResponse: {
     searchResults: SearchResultItem[];
+    /** The search store answered with less than its full search (e.g. it was busy). */
+    searchDegraded?: boolean;
   };
 }
