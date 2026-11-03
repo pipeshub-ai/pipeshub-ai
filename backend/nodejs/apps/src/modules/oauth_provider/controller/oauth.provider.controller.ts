@@ -422,6 +422,8 @@ export class OAuthProviderController {
             );
 
           case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
+          case AGENT_CLAIM_GRANT: // answered above
+          case JWT_BEARER_GRANT: // answered above
           default:
             throw new UnsupportedGrantTypeError(
               `Unsupported grant_type: ${tokenRequest.grant_type}`,
