@@ -52,13 +52,28 @@ def unbound_tables(sql: str) -> list[str]:
     return sorted(bad)
 
 
+def _text(node: ast.expr) -> str | None:
+    """The literal text of a string or of an f-string (its formatted parts left out), else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    return None
+
+
 def statements(path: Path) -> list[tuple[int, str]]:
+    """The SQL passed to a call: a literal at the call site, or a module constant passed by name."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    consts = {t.id: n.value for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
     out = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in CALLS and node.args:
             arg = node.args[0]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "graph." in arg.value:
-                out.append((node.lineno, arg.value))
+            if isinstance(arg, ast.Name) and arg.id in consts:
+                arg = consts[arg.id]
+            text = _text(arg)
+            if text is not None and "graph." in text:
+                out.append((node.lineno, text))
     return out
 
 
@@ -84,9 +99,13 @@ def test_the_scan_catches_a_statement_that_forgot_the_org() -> None:
 def test_no_statement_of_the_provider_is_built_by_formatting(module: str) -> None:
     """The runtime SQL guard sees only calls named fetch/execute; the provider's own helpers pass their SQL on, so they are read here."""
     built = []
-    for node in ast.walk(ast.parse((PROVIDER / module).read_text(encoding="utf-8"))):
+    tree = ast.parse((PROVIDER / module).read_text(encoding="utf-8"))
+    consts = {t.id: n.value for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in CALLS and node.args:
             arg = node.args[0]
+            if isinstance(arg, ast.Name) and arg.id in consts:
+                arg = consts[arg.id]
             text = "".join(v.value for v in getattr(arg, "values", []) if isinstance(v, ast.Constant) and isinstance(v.value, str))
             if (isinstance(arg, ast.JoinedStr) and any(isinstance(v, ast.FormattedValue) for v in arg.values) and "graph." in text) or isinstance(arg, ast.BinOp):
                 built.append(node.lineno)
