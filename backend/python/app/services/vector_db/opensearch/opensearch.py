@@ -984,15 +984,21 @@ class OpenSearchService(IVectorDBService):
             for p in points
         ]
 
-        await os_helpers.async_bulk(
-            self.client,
-            actions,
-            chunk_size=batch_size,
-            raise_on_error=True,
-            refresh=refresh,
-        )
+        started = time.monotonic()
+        try:
+            await os_helpers.async_bulk(
+                self.client,
+                actions,
+                chunk_size=batch_size,
+                raise_on_error=True,
+                refresh=refresh,
+            )
+        except BaseException:
+            # Earlier chunks may be indexed and unrefreshed; a later delete must still see them.
+            self._note_unrefreshed(collection_name, points)
+            raise
         if refresh:
-            self._unrefreshed.pop(collection_name, None)
+            self._forget_refreshed(collection_name, started)
         else:
             self._note_unrefreshed(collection_name, points)
 
@@ -1001,6 +1007,17 @@ class OpenSearchService(IVectorDBService):
             f"Upsert complete: {len(points)} points in {elapsed:.2f}s "
             f"({len(points)/elapsed:.0f} pts/s)"
         )
+
+    def _forget_refreshed(self, collection_name: str, refreshed_at: float) -> None:
+        """Drop the pending writes a refresh that began at ``refreshed_at`` covered; a write noted after it
+        (by a concurrent caller) may not be in that refresh and stays."""
+        pending = self._unrefreshed.get(collection_name)
+        if pending is None:
+            return
+        for key in [k for k, t in pending.items() if t <= refreshed_at]:
+            pending.pop(key, None)
+        if not pending:
+            self._unrefreshed.pop(collection_name, None)
 
     def _note_unrefreshed(self, collection_name: str, points: list[VectorPoint]) -> None:
         now = time.monotonic()
@@ -1051,7 +1068,11 @@ class OpenSearchService(IVectorDBService):
         pinned: set = set()
         for cond in filter.must:
             if cond.key == "metadata.virtualRecordId":
-                pinned.update(cond.values if cond.values is not None else [cond.value])
+                # Only real ids pin: a length-bound condition (values_count_lte) carries none.
+                if cond.values is not None:
+                    pinned.update(cond.values)
+                elif cond.value is not None:
+                    pinned.add(cond.value)
         # A filter that names no virtual record (entities, a connector) could match any pending point.
         return not pinned or _ANY in live or bool(pinned & live)
 
@@ -1083,8 +1104,9 @@ class OpenSearchService(IVectorDBService):
         # would skip: a conflict refreshes and goes again, and one that does not clear raises, never
         # a silent partial delete.
         if await self._needs_refresh_before_delete(collection_name, filter):
+            refreshed_at = time.monotonic()
             await self.client.indices.refresh(index=collection_name)  # type: ignore
-            self._unrefreshed.pop(collection_name, None)
+            self._forget_refreshed(collection_name, refreshed_at)
         for attempt in range(_DELETE_CONFLICT_RETRIES + 1):
             response = await self.client.delete_by_query(  # type: ignore
                 index=collection_name,

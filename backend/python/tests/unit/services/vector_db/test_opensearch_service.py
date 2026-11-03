@@ -817,6 +817,85 @@ class TestDeletePoints:
         client.indices.refresh.assert_awaited_once()  # now every delete refreshes
 
     @pytest.mark.asyncio
+    async def test_a_length_bound_on_virtual_records_does_not_pin_anything(self, connected_service) -> None:
+        """A count-only condition carries no id; treating it as one skipped the refresh for a pending point."""
+        import time
+
+        client = connected_service.client
+        client.indices.refresh = AsyncMock()
+        connected_service._unrefreshed = {"my-idx": {"vr-9": time.monotonic()}}
+        flt = FilterExpression(must=[
+            GenericFieldCondition(key="metadata.connectorIds", value="c1"),
+            GenericFieldCondition(key="metadata.virtualRecordId", values_count_lte=1),
+        ])
+
+        await connected_service.delete_points("my-idx", flt)
+
+        client.indices.refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_write_noted_while_the_refresh_ran_stays_pending(self, connected_service) -> None:
+        """The refresh covers what was noted before it began; a concurrent upsert noted during it may not be
+        in it, and a later delete must still refresh for it."""
+        import asyncio
+        import time
+
+        from app.services.vector_db.models import VectorPoint
+
+        client = connected_service.client
+        connected_service._unrefreshed = {"my-idx": {"vr-1": time.monotonic()}}
+
+        async def refresh_while_another_upsert_lands(**_kw: object) -> None:
+            await asyncio.sleep(0.01)
+            connected_service._note_unrefreshed(
+                "my-idx", [VectorPoint(id="n", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-new"}})],
+            )
+
+        client.indices.refresh = AsyncMock(side_effect=refresh_while_another_upsert_lands)
+
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-1"))
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-new"}
+
+    @pytest.mark.asyncio
+    async def test_an_upsert_with_refresh_clears_only_what_it_covered(self, connected_service) -> None:
+        import time
+
+        from app.services.vector_db.models import VectorPoint
+
+        before = time.monotonic() - 1
+        connected_service._unrefreshed = {"my-idx": {"old": before}}
+
+        async def bulk_while_another_upsert_lands(*_a: object, **_kw: object) -> tuple:
+            connected_service._note_unrefreshed(
+                "my-idx", [VectorPoint(id="n", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-new"}})],
+            )
+            return (1, [])
+
+        pts = [VectorPoint(id="a", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-1"}})]
+        with patch(
+            "app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk",
+            new=AsyncMock(side_effect=bulk_while_another_upsert_lands),
+        ):
+            await connected_service.upsert_points("my-idx", pts, refresh=True)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-new"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refresh", [False, True])
+    async def test_points_of_a_bulk_that_fails_part_way_are_still_noted(self, connected_service, refresh) -> None:
+        from app.services.vector_db.models import VectorPoint
+
+        pts = [VectorPoint(id="a", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-1"}})]
+        with patch(
+            "app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk",
+            new=AsyncMock(side_effect=RuntimeError("chunk 2 failed")),
+        ), pytest.raises(RuntimeError, match="chunk 2"):
+            await connected_service.upsert_points("my-idx", pts, refresh=refresh)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-1"}
+
+    @pytest.mark.asyncio
     async def test_upserts_are_noted_as_unrefreshed(self, connected_service) -> None:
         from app.services.vector_db.models import VectorPoint
 
