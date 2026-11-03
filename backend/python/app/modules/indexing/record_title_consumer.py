@@ -153,7 +153,8 @@ class RecordTitleWriter:
         """Stop the timer and write what is buffered, once."""
         task, self._idle_task = self._idle_task, None
         if task is not None:
-            task.cancel()
+            async with self._lock:  # an in-flight flush holds the lock: let it finish, it owns a popped batch
+                task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         while self._pending:
