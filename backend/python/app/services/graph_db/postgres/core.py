@@ -20,7 +20,6 @@ from app.services.graph_db.postgres.base import (
     _field,
     _hot_values,
     _j,
-    _kind_sql,
     _node,
 )
 
@@ -272,9 +271,9 @@ class CoreMixin(PgBase):
         """One edge between the pair. In ``nodeRelations`` that is the hierarchy edge (a link is a separate edge, as on Neo4j); ``recordLinks`` the links."""
         org = current_org_id()
         colls, kind = _edge_scope(collection, pair=True)
-        r = await self._q(lambda tx: tx.fetchrow(f"""/* pipeshub:graph.get_edge */ SELECT doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
+        r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_edge */ SELECT doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
             AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND e.to_id = $6
-            AND {_kind_sql(7)} ORDER BY e.ekey LIMIT 1""",
+            AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) ORDER BY e.ekey LIMIT 1""",
                                                   org, colls, from_collection, from_id, to_collection, to_id, kind), transaction)
         if not r:
             return None
@@ -286,11 +285,11 @@ class CoreMixin(PgBase):
         coll, key = node_id.split("/", 1) if "/" in node_id else ("records", node_id)
         colls, kind = _edge_scope(edge_collection)
         if incoming:
-            rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_edges_to_node */ SELECT e.from_coll AS fc, e.from_id AS fi, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND {_kind_sql(5)}""", org, colls, coll, key, kind), transaction)
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_edges_to_node */ SELECT e.from_coll AS fc, e.from_id AS fi, e.doc FROM graph.edges e
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))""", org, colls, coll, key, kind), transaction)
         else:
-            rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_edges_from_node */ SELECT e.to_coll AS fc, e.to_id AS fi, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND {_kind_sql(5)}""", org, colls, coll, key, kind), transaction)
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_edges_from_node */ SELECT e.to_coll AS fc, e.to_id AS fi, e.doc FROM graph.edges e
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))""", org, colls, coll, key, kind), transaction)
         out = []
         for r in rows:
             far_ref = f"{r['fc']}/{r['fi']}"
@@ -334,9 +333,9 @@ class CoreMixin(PgBase):
         if not pairs:
             return 0
         colls, kind = _edge_scope(collection, pair=True)
-        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.batch_delete_edges */ WITH d AS (DELETE FROM graph.edges e USING
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.batch_delete_edges */ WITH d AS (DELETE FROM graph.edges e USING
             jsonb_to_recordset($3::jsonb) x(fc text, fi text, tc text, ti text) WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = x.fc
-            AND e.from_id = x.fi AND e.to_coll = x.tc AND e.to_id = x.ti AND {_kind_sql(4)}
+            AND e.from_id = x.fi AND e.to_coll = x.tc AND e.to_id = x.ti AND ($4::int = 0 OR ($4::int = 1 AND e.ekey = '') OR ($4::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
             RETURNING 1) SELECT count(*) FROM d""", current_org_id(), colls, _j(pairs), kind), transaction, write=True)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> bool:
@@ -346,14 +345,14 @@ class CoreMixin(PgBase):
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
         colls, kind = _edge_scope(collection)
-        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
-            AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND {_kind_sql(5)} RETURNING 1) SELECT count(*) FROM d""",
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
                                                      org, colls, from_collection, from_id, kind), transaction, write=True)
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
         colls, kind = _edge_scope(collection)
-        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
-            AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND {_kind_sql(5)} RETURNING 1) SELECT count(*) FROM d""",
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
                                                      org, colls, to_collection, to_id, kind), transaction, write=True)
 
