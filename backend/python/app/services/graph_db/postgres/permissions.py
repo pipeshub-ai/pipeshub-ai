@@ -4,7 +4,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import current_org_id
-from app.models.permission import ORG_SHARE_PERMISSION_TYPES
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES
+from app.services.graph_db.common.team_grant_role import (
+    TEAM_GRANT_ROLE_CAP,
+    TEAM_GRANT_ROLES,
+)
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase
 
@@ -14,7 +18,32 @@ if TYPE_CHECKING:
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
 
 
+_ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
+
+
 class PermissionsMixin(PgBase):
+    async def get_user_kb_permission(self, kb_id: str, user_id: str, transaction: str | None = None) -> str | None:
+        """The user's effective role on a collection: the highest of the direct grant and what each team the collection is shared with gives its members.
+        A team's grant gives the role on its own edge, else the member's role in the team, and never more than ``TEAM_GRANT_ROLE_CAP``: a team owner
+        does not own what the team is shared with. A retired role reads as READER; a role that is none of the grant roles gives nothing, the direct grant's too."""
+        org = current_org_id()
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_kb_permission */
+            WITH me AS (SELECT 1 FROM graph.nodes u WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2),
+            kb AS (SELECT k.id FROM graph.nodes k WHERE k.org_id = $1 AND k.coll = 'apps' AND k.id = $3 AND k.doc->>'type' = 'KB')
+            SELECT CASE WHEN d.doc->>'role' = ANY($5::text[]) THEN 'READER' WHEN d.doc->>'role' = ANY($6::text[]) THEN d.doc->>'role' END AS role FROM me, kb JOIN graph.edges d ON d.org_id = $1 AND d.coll = 'permission' AND d.from_coll = 'users' AND d.from_id = $2
+              AND d.to_coll = 'apps' AND d.to_id = kb.id AND d.doc->>'type' = 'USER'
+            UNION ALL
+            SELECT CASE WHEN b.role = 'OWNER' THEN $4::text WHEN b.role = ANY($5::text[]) THEN 'READER' WHEN b.role = ANY($6::text[]) THEN b.role END
+            FROM me, kb JOIN graph.edges ut ON ut.org_id = $1 AND ut.coll = 'permission' AND ut.from_coll = 'users' AND ut.from_id = $2 AND ut.to_coll = 'teams' AND ut.doc->>'type' = 'USER'
+              JOIN graph.nodes t ON t.org_id = $1 AND t.coll = 'teams' AND t.id = ut.to_id
+              JOIN graph.edges tg ON tg.org_id = $1 AND tg.coll = 'permission' AND tg.from_coll = 'teams' AND tg.from_id = t.id AND tg.to_coll = 'apps' AND tg.to_id = kb.id AND tg.doc->>'type' = 'TEAM',
+              LATERAL (SELECT CASE WHEN tg.doc->>'role' IS NOT NULL AND tg.doc->>'role' <> '' THEN tg.doc->>'role' ELSE ut.doc->>'role' END AS role) b""",
+                                                  org, user_id, kb_id, TEAM_GRANT_ROLE_CAP, sorted(RETIRED_ROLES), list(TEAM_GRANT_ROLES)), transaction)
+        # Fail closed: only a grant role (a retired one already read as READER in the statement) counts; any other stored role gives nothing, so it
+        # can neither be ranked nor handed back as a role.
+        roles = [r["role"] for r in rows if r["role"] in _ROLE_RANK]
+        return max(roles, key=_ROLE_RANK.__getitem__) if roles else None
+
     async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, Any]:
         """Who this user is (the user, the groups, roles and teams they hold a USER permission on, their organization), the apps they pass the
         connector gate for, and the records and groups granted to them, per connector. An org other than the ambient one is nobody's."""
@@ -42,9 +71,16 @@ class PermissionsMixin(PgBase):
                 WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'users'""", org, user_key)
             live = await exist("users", [r["to_id"] for r in links])
             links = [r for r in links if r["to_id"] in live]          # the source account must exist
-            app_ids = {r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_gate_edges */ SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1
-                AND e.coll IN ('permission', 'userAppRelation') AND e.from_coll = ANY($3::text[]) AND e.to_coll = 'apps' AND e.from_id = ANY($2::text[])""",
-                                                  org, grantees, access_sql.PRINCIPALS)}
+            # A grant on a collection (an app of type KB) counts only with a role it recognises, as ``get_user_kb_permission`` reads it: a retired role is
+            # READER, a role of OWNER, WRITER or READER is itself, a team's grant without a role takes the member's role in the team; any other role, or none,
+            # is no grant. A connector's grant has no role to read.
+            app_ids = {r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_gate_edges */ SELECT e.to_id FROM graph.edges e
+                JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'apps' AND a.id = e.to_id
+                WHERE e.org_id = $1 AND e.coll IN ('permission', 'userAppRelation') AND e.from_coll = ANY($3::text[]) AND e.to_coll = 'apps' AND e.from_id = ANY($2::text[])
+                  AND (e.coll <> 'permission' OR coalesce(a.doc->>'type', '') <> 'KB' OR coalesce(nullif(e.doc->>'role', ''), CASE WHEN e.from_coll = 'teams' THEN (
+                        SELECT ut.doc->>'role' FROM graph.edges ut WHERE ut.org_id = $1 AND ut.coll = 'permission' AND ut.from_coll = 'users' AND ut.from_id = $4
+                          AND ut.to_coll = 'teams' AND ut.to_id = e.from_id AND ut.doc->>'type' = 'USER' LIMIT 1) END) = ANY($5::text[]))""",
+                                                  org, grantees, access_sql.PRINCIPALS, user_key, [*_ROLE_RANK, *sorted(RETIRED_ROLES)])}
             app_ids |= {x["cid"] for x in links if x["cid"]}
             gated = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.access_gate */ SELECT a.id FROM graph.nodes a WHERE a.org_id = $1 AND a.coll = 'apps'
                 AND a.doc->>'orgId' = $1 AND a.id = ANY($2::text[])""", org, sorted(app_ids))]
