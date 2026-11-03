@@ -11,16 +11,17 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 from app.services.graph_db.postgres.base import (
-    _LINK_COLLS,
     NotImplementedInPostgres,
     PgBase,
     _arango,
     _doc,
     _edge,
+    _edge_scope,
     _ekey,
     _field,
     _hot_values,
     _j,
+    _kind_sql,
     _node,
 )
 
@@ -271,27 +272,26 @@ class CoreMixin(PgBase):
                        transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
         """One edge between the pair. In ``nodeRelations`` that is the hierarchy edge (a link is a separate edge, as on Neo4j); ``recordLinks`` the links."""
         org = current_org_id()
-        kind = {"nodeRelations": 1, "recordLinks": 2}.get(collection, 0)
-        colls = _LINK_COLLS if collection == "recordLinks" else [collection]
-        r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_edge */ SELECT doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
+        colls, kind = _edge_scope(collection, pair=True)
+        r = await self._q(lambda tx: tx.fetchrow(f"""/* pipeshub:graph.get_edge */ SELECT doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
             AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND e.to_id = $6
-            AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) ORDER BY e.ekey LIMIT 1""",
+            AND {_kind_sql(7)} ORDER BY e.ekey LIMIT 1""",
                                                   org, colls, from_collection, from_id, to_collection, to_id, kind), transaction)
         if not r:
             return None
         return {**_doc(r["doc"]), "from_id": from_id, "from_collection": from_collection, "to_id": to_id, "to_collection": to_collection}
 
-    # A node's edges read its links too: in ``nodeRelations`` that is the hierarchy rows and the link rows (``ekey`` is the link type), and the
-    # link collection ``recordLinks`` is the same rows by another name; both edge shapes are given.
+    # A node's edges: in ``nodeRelations`` the hierarchy rows and the links, in ``recordLinks`` the links only, wherever they are stored
+    # (``_edge_scope``); both edge shapes are given.
     async def _node_edges(self, node_id: str, edge_collection: str, *, org: str, incoming: bool, transaction: str | None) -> list[dict]:
         coll, key = node_id.split("/", 1) if "/" in node_id else ("records", node_id)
-        colls = _LINK_COLLS if edge_collection == "nodeRelations" else [edge_collection]
+        colls, kind = _edge_scope(edge_collection)
         if incoming:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_edges_to_node */ SELECT e.from_coll AS fc, e.from_id AS fi, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4""", org, colls, coll, key), transaction)
+            rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_edges_to_node */ SELECT e.from_coll AS fc, e.from_id AS fi, e.doc FROM graph.edges e
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND {_kind_sql(5)}""", org, colls, coll, key, kind), transaction)
         else:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_edges_from_node */ SELECT e.to_coll AS fc, e.to_id AS fi, e.doc FROM graph.edges e
-                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4""", org, colls, coll, key), transaction)
+            rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.get_edges_from_node */ SELECT e.to_coll AS fc, e.to_id AS fi, e.doc FROM graph.edges e
+                WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND {_kind_sql(5)}""", org, colls, coll, key, kind), transaction)
         out = []
         for r in rows:
             far_ref = f"{r['fc']}/{r['fi']}"
@@ -334,11 +334,10 @@ class CoreMixin(PgBase):
             pairs.append({"fc": fc, "fi": fi, "tc": tc, "ti": ti})
         if not pairs:
             return 0
-        kind = {"nodeRelations": 1, "recordLinks": 2}.get(collection, 0)    # 1: the hierarchy edge only, 2: links only
-        colls = _LINK_COLLS if collection == "recordLinks" else [collection]
-        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.batch_delete_edges */ WITH d AS (DELETE FROM graph.edges e USING
+        colls, kind = _edge_scope(collection, pair=True)
+        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.batch_delete_edges */ WITH d AS (DELETE FROM graph.edges e USING
             jsonb_to_recordset($3::jsonb) x(fc text, fi text, tc text, ti text) WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = x.fc
-            AND e.from_id = x.fi AND e.to_coll = x.tc AND e.to_id = x.ti AND ($4::int = 0 OR ($4::int = 1 AND e.ekey = '') OR ($4::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
+            AND e.from_id = x.fi AND e.to_coll = x.tc AND e.to_id = x.ti AND {_kind_sql(4)}
             RETURNING 1) SELECT count(*) FROM d""", current_org_id(), colls, _j(pairs), kind), transaction, write=True)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> bool:
@@ -347,8 +346,10 @@ class CoreMixin(PgBase):
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
-        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
-            AND from_coll = $3 AND from_id = $4 RETURNING 1) SELECT count(*) FROM d""", org, collection, from_collection, from_id), transaction, write=True)
+        colls, kind = _edge_scope(collection)
+        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND {_kind_sql(5)} RETURNING 1) SELECT count(*) FROM d""",
+                                                     org, colls, from_collection, from_id, kind), transaction, write=True)
 
     async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None = None) -> int:
         """Every edge of ``collection`` that starts or ends at ``node_key`` (``coll/key``); 0 for a key with no collection."""
@@ -357,10 +358,10 @@ class CoreMixin(PgBase):
             self.logger.warning("Could not parse collection from node_key: %s", node_key)
             return 0
         org = current_org_id()
-        colls = _LINK_COLLS if collection == "nodeRelations" else [collection]
-        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_all_edges_for_node */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1
-            AND coll = ANY($2::text[]) AND ((from_coll = $3 AND from_id = $4) OR (to_coll = $3 AND to_id = $4)) RETURNING 1) SELECT count(*) FROM d""",
-                                                     org, colls, coll, key), transaction, write=True)
+        colls, kind = _edge_scope(collection)
+        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_all_edges_for_node */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND ((e.from_coll = $3 AND e.from_id = $4) OR (e.to_coll = $3 AND e.to_id = $4)) AND {_kind_sql(5)}
+            RETURNING 1) SELECT count(*) FROM d""", org, colls, coll, key, kind), transaction, write=True)
 
     async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str, transaction: str | None = None) -> None:
         """The record's INHERIT_PERMISSIONS edge to the record group."""
@@ -369,6 +370,8 @@ class CoreMixin(PgBase):
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
-        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
-            AND to_coll = $3 AND to_id = $4 RETURNING 1) SELECT count(*) FROM d""", org, collection, to_collection, to_id), transaction, write=True)
+        colls, kind = _edge_scope(collection)
+        return await self._q(lambda tx: tx.fetchval(f"""/* pipeshub:graph.delete_edges_to */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
+            AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND {_kind_sql(5)} RETURNING 1) SELECT count(*) FROM d""",
+                                                     org, colls, to_collection, to_id, kind), transaction, write=True)
 
