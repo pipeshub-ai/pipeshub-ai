@@ -311,3 +311,38 @@ async def test_a_link_stored_with_no_key_is_found_and_deleted_under_its_own_coll
         assert await p.get_edge("x", "records", "y", "records", "nodeRelations") is None            # not the hierarchy edge of the pair
         assert await p.batch_delete_edges([link], "recordLinks") == 1
         assert await p.get_edge("x", "records", "y", "records", "recordLinks") is None
+
+
+async def _links_and_a_hierarchy_edge(p, org_ctx, org: str) -> None:
+    """Between x and y: the hierarchy edge, a keyed link in nodeRelations and a keyless row of recordLinks; and from x to z another keyed link."""
+    def edge(f: str, t: str, **kw: str) -> dict:
+        return {"from_id": f, "from_collection": "records", "to_id": t, "to_collection": "records", **kw}
+    with org_ctx(org):
+        await p.batch_create_edges([edge("x", "y", relationshipType="PARENT_CHILD"), edge("x", "y", relationshipType="BOOKMARK"), edge("x", "z", relationshipType="BOOKMARK")],
+                                   "nodeRelations")
+        await p.batch_create_edges([edge("x", "y")], "recordLinks")
+
+
+@pytest.mark.parametrize(("direction", "node"), [("from", "x"), ("to", "y")])
+async def test_a_directional_delete_over_record_links_covers_both_physical_link_collections(pg_provider, orgs, org_ctx, direction: str, node: str) -> None:
+    a, _ = orgs
+    p = pg_provider
+    await _links_and_a_hierarchy_edge(p, org_ctx, a)
+    with org_ctx(a):
+        delete = p.delete_edges_from if direction == "from" else p.delete_edges_to
+        n = await delete(node, "records", "recordLinks")
+        assert n == (3 if direction == "from" else 2)                                                  # the keyed links and the keyless row, never the hierarchy edge
+        assert await p.get_edge("x", "records", "y", "records", "nodeRelations") is not None
+        assert await p.get_edge("x", "records", "y", "records", "recordLinks") is None
+
+
+async def test_a_node_wide_read_or_delete_over_node_relations_covers_hierarchy_and_links_and_over_record_links_only_links(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    await _links_and_a_hierarchy_edge(p, org_ctx, a)
+    with org_ctx(a):
+        assert len(await p.get_edges_from_node("records/x", "recordLinks")) == 3
+        assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 4
+        assert await p.delete_edges_from("x", "records", "recordLinks") == 3
+        assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 1
+        assert await p.delete_edges_from("x", "records", "nodeRelations") == 1
