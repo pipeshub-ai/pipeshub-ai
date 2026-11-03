@@ -185,14 +185,15 @@ async def test_the_single_collection_role_matches_the_listing(store, name, expec
     assert await store.provider.get_user_kb_permission(_kb_id(name), USER) == expected
 
 
-async def _load_odd(store, nodes: list[dict], edges: list[dict]) -> None:
-    """Load edges carrying a role no writer stores; ArangoDB's permissions schema refuses them."""
-    try:
+async def _load_odd(store, nodes: list[dict], edges: list[dict]) -> bool:
+    """Load edges carrying a role no writer stores. ArangoDB's permissions schema refuses them,
+    which is its guarantee: that is asserted here and False returned, so the caller stops."""
+    if not isinstance(store, _Arango):
         await store.load(nodes, edges)
-    except Exception as exc:
-        if not (isinstance(store, _Arango) and "permissions schema" in str(exc)):
-            raise
-        pytest.skip(f"ArangoDB's permissions schema refuses the role: {exc}")
+        return True
+    with pytest.raises(Exception, match="permissions schema"):
+        await store.load(nodes, edges)
+    return False
 
 
 def _odd_graph(role: str, team_reader: bool) -> tuple[list[dict], list[dict]]:
@@ -214,7 +215,8 @@ def _odd_graph(role: str, team_reader: bool) -> tuple[list[dict], list[dict]]:
 async def test_an_unrecognised_direct_role_is_no_access(store, role, team_reader) -> None:
     """A direct edge with a role no writer stores neither wins nor lists the
     collection; a team grant beside it still gives its own role."""
-    await _load_odd(store, *_odd_graph(role, team_reader))
+    if not await _load_odd(store, *_odd_graph(role, team_reader)):
+        return
     expected = "READER" if team_reader else None
     assert await store.provider.get_user_kb_permission("kbr-odd", USER) == expected
     roles, _, _ = await _listed(store.provider)
@@ -227,7 +229,8 @@ async def test_an_unrecognised_direct_role_is_no_access(store, role, team_reader
 @pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
 async def test_an_unrecognised_direct_role_opens_no_collection_or_record(store, role) -> None:
     """The access paths that read the direct edge themselves agree with the role lookup."""
-    await _load_odd(store, *_odd_graph(role, False))
+    if not await _load_odd(store, *_odd_graph(role, False)):
+        return
     provider = store.provider
 
     accessible = await provider._get_accessible_kb_ids("kbr-m")
@@ -241,7 +244,8 @@ async def test_an_unrecognised_direct_role_opens_no_collection_or_record(store, 
 
 
 async def test_the_hub_ranks_a_team_reader_above_an_unrecognised_direct_role(store) -> None:
-    await _load_odd(store, *_odd_graph("ADMIN", True))
+    if not await _load_odd(store, *_odd_graph("ADMIN", True)):
+        return
 
     context = await store.provider.get_knowledge_hub_context_permissions(
         USER, ORG, "kbr-odd", parent_type="app")
@@ -252,8 +256,9 @@ async def test_the_hub_ranks_a_team_reader_above_an_unrecognised_direct_role(sto
 async def test_a_connector_app_keeps_the_hub_role_of_its_direct_edge(store) -> None:
     """Only a knowledge base holds direct roles to the KB rule; no writer stores EDITOR on a
     connector app, but the hub reads one as it always did."""
-    await _load_odd(store, [_org(app("kbr-conn", "conn", connector="DRIVE", app_group="Google Workspace"))],
-                    [perm(USER, "kbr-conn", role="EDITOR")])
+    if not await _load_odd(store, [_org(app("kbr-conn", "conn", connector="DRIVE", app_group="Google Workspace"))],
+                           [perm(USER, "kbr-conn", role="EDITOR")]):
+        return
 
     context = await store.provider.get_knowledge_hub_context_permissions(
         USER, ORG, "kbr-conn", parent_type="app")
