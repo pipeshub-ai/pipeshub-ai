@@ -40,7 +40,7 @@ npx -y -p @pipeshub-ai/mcp pipeshub login --wait
 
 The CLI stores the sign-in (\`~/.config/pipeshub/credentials.json\`, mode 0600) and refreshes it. \`npx -y @pipeshub-ai/mcp start\` uses it, so an MCP client config needs no token.
 
-Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and no \`scope\` (the sign-in gets the agent scopes below${info.deviceRefreshes ? ' plus `offline_access`, so it can refresh' : ''}), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token.`);
+Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and no \`scope\` (the sign-in gets the agent scopes below${info.deviceRefreshes ? ' plus `offline_access`, so it can refresh' : ''}), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token. Until the person approves, that call answers HTTP 400 with \`error: authorization_pending\`: keep polling. On \`slow_down\`, add 5 seconds to the interval. Stop on \`access_denied\` or \`expired_token\`.`);
   }
 
   if (info.dcrEnabled) {
@@ -52,6 +52,11 @@ MCP clients that support OAuth register at \`${oauth}/register\` and sign the pe
   ways.push(`### A personal access token
 
 The person creates one in **Workspace → Developer settings → Personal access tokens** and puts it in your environment as \`PIPESHUB_TOKEN\` (with \`PIPESHUB_BASE_URL=${origin}\`). Never ask them to paste it into the chat.`);
+
+  const refresh =
+    'A device sign-in comes with a refresh token: `POST ' +
+    `${oauth}/token\` with \`grant_type=refresh_token\`, \`refresh_token\` and \`client_id\`` +
+    ' (the CLI does this for you). Otherwise sign';
 
   return `# PipesHub: authentication for agents
 
@@ -76,7 +81,7 @@ An agent sign-in is granted these scopes: ${info.agentScopes.map((s) => `\`${s}\
 
 ## 4. When a call is refused
 
-- \`401\`: the token expired or was revoked. ${info.deviceRefreshes ? 'A device sign-in refreshes itself (the CLI does it for you); otherwise sign' : 'Sign'} in again or ask the person for a new token.
+- \`401\`: the token expired or was revoked. ${info.deviceRefreshes ? refresh : 'Sign'} in again or ask the person for a new token.
 - \`403\` with \`Insufficient scope\`: the token lacks the scope it names. The person needs a new token with it; do not try another route to the same data.
 `;
 }

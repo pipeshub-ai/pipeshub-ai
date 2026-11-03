@@ -190,11 +190,15 @@ describe('OIDCProviderController', () => {
       let out = await md()
       expect(out).to.include('and no `scope`')
       expect(out).to.include('plus `offline_access`, so it can refresh')
-      expect(out).to.include('A device sign-in refreshes itself')
+      expect(out).to.include('comes with a refresh token')
+      expect(out).to.include('grant_type=refresh_token')
+      // A pending poll is HTTP 400; a client that stops on 400 never finishes.
+      expect(out).to.include('authorization_pending`: keep polling')
+      expect(out).to.include('slow_down')
       mockAppConfig.mcpScopes = ['kb:read']
       out = await md()
       expect(out).to.not.include('offline_access')
-      expect(out).to.not.include('refreshes itself')
+      expect(out).to.not.include('refresh token')
     })
 
     it('lists only the agent scopes this instance offers', async () => {
