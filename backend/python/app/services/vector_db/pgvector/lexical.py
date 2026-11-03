@@ -58,6 +58,12 @@ def rows_asked(leg: int, scope: Scope, t: Tuning) -> int:
     return min(leg * (t.lexical_overfetch if scope.extra is not None else 1), MAX_LEG)
 
 
+async def _fetch(tx: Tx, statement: str, *args: object) -> list:
+    """The one place the statement ``lexical_sql`` builds (fixed text, every value a ``$n``) reaches the database; the shared SQL guard
+    takes a statement passed in as an argument as it is and does not follow it, so this one is pinned by its test instead."""
+    return await tx.fetch(statement, *args)
+
+
 async def _run(tx: Tx, org: str, collection_id: int, sparse: SparseVector, scope: Scope, leg: int, t: Tuning) -> tuple[list[tuple[int, str]], bool]:
     """``(rows, partial)``. With extra conditions the function cannot apply them, so when its answer was full and the conditions dropped
     rows the statement is asked again for four times as many, up to ``MAX_LEG``; ``partial``: that bound was reached with fewer than
@@ -66,7 +72,7 @@ async def _run(tx: Tx, org: str, collection_id: int, sparse: SparseVector, scope
     extra, extra_params = scope.extra_sql(first_param=11)
     sql, asked = lexical_sql(extra), rows_asked(leg, scope, t)
     while True:
-        rows = await tx.fetch(sql, org, collection_id, terms, weights, *scope.args(), asked, *extra_params)
+        rows = await _fetch(tx, sql, org, collection_id, terms, weights, *scope.args(), asked, *extra_params)
         kept = [(r["point_sk"], str(r["point_id"])) for r in rows if r["ok"]][:leg]
         more = len(rows) >= asked                       # the function had at least as many as asked: there may be more
         if len(kept) >= leg or not more or scope.extra is None:
