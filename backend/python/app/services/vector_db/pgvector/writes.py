@@ -235,12 +235,21 @@ _REVIVE = f"""/* pipeshub:pgvector.revive */
         {_COUNT % '(SELECT 1 FROM r WHERE r.lex_terms IS NOT NULL) x'}"""
 
 
+# The group rows the points join, locked FOR KEY SHARE (the lightest lock that the group collection's FOR UPDATE conflicts with; it does not
+# block another writer's update of the row) in key order, before any point is written: the collection never removes the membership of a
+# group under a writer that is adding points to it, whether or not the points carry membership. A group with no row has no membership to lose.
+_LOCK_GROUPS = """/* pipeshub:pgvector.lock_groups */
+        SELECT 1 FROM retrieval.point_groups WHERE org_id = $1 AND collection_id = $2 AND group_key = ANY($3::text[])
+        ORDER BY group_key FOR KEY SHARE"""
+
+
 async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime, *, safe_mode: bool) -> None:
     """Points, their text, payload and postings, and their groups' membership, in this transaction. New points are inserted; points
     that exist are locked and updated in place (``point_sk`` is kept: the generated bit column and the indexes follow). A point
-    deleted between the two steps is inserted by the next round."""
+    deleted between the two steps is inserted by the next round. The rows of the points' groups are locked first (see ``_LOCK_GROUPS``)."""
     args = (b.org, collection_id, space_id, b.point_ids, b.group_keys, b.vrids, b.block_ids, b.ent_types, b.ent_ids, b.ent_kinds,
             b.ent_levels, b.embeddings, b.term_start, b.term_end, b.terms, b.weights, b.payloads, b.contents)
+    await tx.execute(_LOCK_GROUPS, b.org, collection_id, sorted(set(b.group_keys)))
     todo = list(b.point_ids)
     for _ in range(4):
         made = {r["point_id"] for r in await tx.fetch(_INSERT_NEW, *args, todo)}

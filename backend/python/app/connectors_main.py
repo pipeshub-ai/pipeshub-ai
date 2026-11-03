@@ -1363,6 +1363,9 @@ async def health_check() -> JSONResponse:
         )
 
 
+PG_PROBE_TIMEOUT_SEC = 3.0
+
+
 @app.get("/health/graph-db")
 async def graph_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured graph database using the same driver the app uses.
@@ -1499,6 +1502,29 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                     "error": "Neo4j health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
+            )
+
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    if data_store == "postgres":
+        try:
+            # Under Node's 5s graph timeout (also the Helm probe budget): a saturated pool must answer 503, not hang the probe.
+            # Not wait_for: that also waits for the cancelled ping to finish, and a stalled unit can take seconds to roll back.
+            ping = spawn_detached(request.app.state.graph_provider.ping(), name="pg_graph_health_ping")
+            try:
+                done, _ = await asyncio.wait({ping}, timeout=PG_PROBE_TIMEOUT_SEC)
+            finally:  # a timeout or the handler's own cancellation: do not leave the ping holding a pooled connection
+                if not ping.done():
+                    ping.cancel()
+                    ping.add_done_callback(lambda t: t.cancelled() or t.exception())  # retrieved, so nothing logs "never retrieved"
+            if not done:
+                raise TimeoutError("PostgreSQL graph ping timed out")
+            ping.result()
+            return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
+        except Exception:
+            request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "error": "PostgreSQL graph health check failed", "timestamp": get_epoch_timestamp_in_ms()},
             )
 
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
