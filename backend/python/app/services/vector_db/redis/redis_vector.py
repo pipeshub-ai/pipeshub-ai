@@ -1218,7 +1218,10 @@ class RedisVectorService(IVectorDBService):
         stable across calls (documents still settling in the index move between pages), so a page-by-page
         scan repeats some keys and misses others, and a payload write would then skip the missed points.
         A cursor can still repeat a key, so keys are de-duplicated, and a scan that ends with fewer distinct
-        keys than the index reported for the query raises instead of answering with a part.
+        keys than a count query reported for the same filter raises instead of answering with a part. The
+        count is a separate ``FT.SEARCH ... LIMIT 0 0``: the first integer of an aggregate reply is not
+        defined as the number of matches. Documents may change between the two calls, so only a scan that
+        finds fewer than counted raises (a retry by the caller then sees a settled index).
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
@@ -1227,6 +1230,12 @@ class RedisVectorService(IVectorDBService):
         total = 0
         cursor = 0
         try:
+            counted = await self.client.execute_command(  # type: ignore
+                "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+            )
+            if not isinstance(counted, (list, tuple)) or not counted:
+                raise RuntimeError(f"unexpected count reply {counted!r}")
+            total = int(counted[0])
             reply = await self.client.execute_command(  # type: ignore
                 "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key",
                 "WITHCURSOR", "COUNT", "1000", *_NO_TIMEOUT,
@@ -1235,8 +1244,6 @@ class RedisVectorService(IVectorDBService):
                 if not isinstance(reply, (list, tuple)) or len(reply) != 2:
                     raise RuntimeError(f"unexpected reply {reply!r}")
                 rows, cursor = reply
-                if rows and not total:
-                    total = int(rows[0])
                 for row in rows[1:]:
                     fields = dict(zip(row[::2], row[1::2]))
                     key = fields.get(b"__key") or fields.get("__key")
@@ -1259,7 +1266,7 @@ class RedisVectorService(IVectorDBService):
 
         if len(found) < total:
             raise RuntimeError(
-                f"Key lookup on '{collection_name}' returned {len(found)} of {total} matching key(s)"
+                f"Key lookup on '{collection_name}' returned {len(found)} of {total} counted key(s)"
             )
         return list(found)
 
