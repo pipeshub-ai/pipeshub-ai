@@ -228,3 +228,21 @@ async def test_reindex_of_a_record_group_checks_the_group_the_connector_and_the_
     assert (await p.reindex_record_group_records("g2", 0, "ext-me", p.org))["code"] == 400                       # no connector on the group
     assert (await p.reindex_record_group_records("g1", 0, "ext-nobody", p.org))["code"] == 404
     assert (await p.reindex_record_group_records("g1", 0, "ext-me", p.org))["code"] == 403                       # the user cannot reach the group
+
+
+async def test_reindex_of_a_connector_record_goes_through_the_access_check_and_the_connector_state(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "c1", "orgId": p.org, "type": "CONNECTOR", "isActive": True, "name": "Git"}], "apps")
+    await p.batch_upsert_nodes([{"_key": "me", "userId": "ext-me", "orgId": p.org}, {"_key": "nobody", "userId": "ext-nobody", "orgId": p.org}], "users")
+    await p.batch_upsert_nodes([rec(p.org, "open"), rec(p.org, "shut")], "records")
+    await p.batch_create_edges([{"from_id": "me", "from_collection": "users", "to_id": "c1", "to_collection": "apps", "type": "USER", "role": "READER"},
+                                {"from_id": "me", "from_collection": "users", "to_id": "open", "to_collection": "records", "type": "USER", "role": "READER"}], "permission")
+    ok = await p.reindex_single_record("open", "ext-me", p.org, depth=3, status_filters=["FAILED"])
+    assert ok["success"] and ok["connector"] == "GITHUB" and ok["useBatchReindex"] is True and ok["userRole"] is None
+    assert ok["eventData"]["topic"] == "sync-events" and ok["eventData"]["eventType"] == "github.reindex"
+    assert ok["eventData"]["payload"] == {"orgId": p.org, "recordId": "open", "depth": 3, "connectorId": "c1", "connector": "github", "userKey": "me", "statusFilters": ["FAILED"]}
+    assert (await p.reindex_single_record("shut", "ext-me", p.org))["code"] == 403                                 # no grant on the record
+    assert (await p.reindex_single_record("open", "ext-nobody", p.org))["code"] == 403                             # a user with no path to it
+    await p.batch_update_nodes([{"id": "c1", "isActive": False}], "apps")
+    off = await p.reindex_single_record("open", "ext-me", p.org)
+    assert off["code"] == 409 and "Git" in off["reason"]                                                          # the connector is disabled
