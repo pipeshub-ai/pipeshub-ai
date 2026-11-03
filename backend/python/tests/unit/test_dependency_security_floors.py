@@ -104,6 +104,9 @@ def test_the_check_finds_each_payload_file_and_leaves_a_legitimate_sitecustomize
     dropped.mkdir()
     (clean / "sitecustomize.py").write_text("import os\nos.environ.setdefault('TZ', 'UTC')\n")
     (dropped / "cook.pth").write_text("import cook\n")
+    (dropped / "litellm_init.pth").write_text("import os\n")
     (dropped / "sitecustomize.py").write_text("LOCK = '/tmp/remote_code_loader.lock'\n")
     assert _compromised_files({clean}) == []
-    assert sorted(_compromised_files({dropped})) == sorted([str(dropped / "cook.pth"), str(dropped / "sitecustomize.py")])
+    assert sorted(_compromised_files({dropped})) == sorted(
+        str(dropped / name) for name in ("cook.pth", "litellm_init.pth", "sitecustomize.py")
+    )
