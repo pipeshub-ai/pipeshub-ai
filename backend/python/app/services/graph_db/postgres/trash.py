@@ -105,6 +105,7 @@ class TrashMixin(PgBase):
         if not restores:
             return []
         items, reclaims = restore_items(restores, connector_id)
+        items = list({i["id"]: i for i in items}.values())      # an item named twice is restored once (Neo4j's UNWIND finds it twice and restores it)
         ids = [i["id"] for i in items]
         org = current_org_id()
 
@@ -214,6 +215,9 @@ class TrashMixin(PgBase):
     async def get_purgeable_trashed_records(self, org_id: str, deleted_before: int, *, after: tuple[int, str] | None = None, limit: int = 500,
                                             max_attempts: int = 5, transaction: str | None = None) -> dict[str, Any]:
         """A page of the org's trash due for the purge, in (deletedAtTimestamp, id) order after the cursor ``after``."""
+        org = current_org_id()
+        if limit <= 0:
+            return {"records": [], "held": 0, "next": None}
         after_ts, after_key = after if after else (None, None)
         lower = after_ts if after_ts is not None else -1
         rows = await self._qrows("""/* pipeshub:graph.get_purgeable_trashed_records */ WITH c AS (
@@ -227,7 +231,7 @@ class TrashMixin(PgBase):
             FROM c LEFT JOIN graph.nodes app ON app.org_id = $1 AND app.coll = 'apps' AND app.id = c.doc->>'connectorId'
             LEFT JOIN LATERAL (SELECT t.doc FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
               WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id = c.id ORDER BY e.to_id LIMIT 1) ty ON true
-            ORDER BY c.ts, c.id""", current_org_id(), org_id, max_attempts, after_ts if after_ts is not None else lower - 1, after_key or "", lower, deleted_before,
+            ORDER BY c.ts, c.id""", org, org_id, max_attempts, after_ts if after_ts is not None else lower - 1, after_key or "", lower, deleted_before,
                                 limit, APP_STATUS_DELETING, transaction=transaction)
         listed = [r for r in rows if not r["skip"] and not r["held"]]
         refs = await deleted_record_taxonomy_refs(self, [_doc(r["rec"]) for r in listed], self.logger)

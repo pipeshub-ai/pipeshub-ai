@@ -170,7 +170,7 @@ async def kb(p: OrgBound, status: str = "ACTIVE") -> None:
     await p.batch_upsert_nodes([rec(p.org, "k1", connectorId="kb1", externalRecordId="d1", externalRevisionId="r1", version=1)], "records")
 
 
-async def test_a_push_create_takes_the_kb_lock_and_one_of_two_racing_creators_wins(pg_db) -> None:
+async def test_two_racing_push_creates_both_pass_the_claim_and_a_taken_key_is_refused(pg_db) -> None:
     p = bound(pg_db)
     await kb(p)
     new = PushSet(document_id="d9", version=1)
@@ -246,3 +246,38 @@ async def test_reindex_of_a_connector_record_goes_through_the_access_check_and_t
     await p.batch_update_nodes([{"id": "c1", "isActive": False}], "apps")
     off = await p.reindex_single_record("open", "ext-me", p.org)
     assert off["code"] == 409 and "Git" in off["reason"]                                                          # the connector is disabled
+
+
+async def test_a_purge_page_of_no_rows_is_empty_and_a_restore_of_the_wrong_batch_restores_nothing(pg_db) -> None:
+    p = bound(pg_db)
+    await tree(p)
+    await trash(p, ["m"], "bt1")
+    assert await p.get_purgeable_trashed_records(p.org, 10**12, limit=0) == {"records": [], "held": 0, "next": None}
+    assert await p.restore_records([{"id": "m"}], None) == []                                   # the batch must match: None means a record with no batch
+    assert await p.restore_records([{"id": "m"}, {"id": "m"}], "bt1") == ["m"]                  # an id named twice is restored once
+
+
+async def test_a_second_push_claim_in_a_shared_transaction_is_lost(pg_db) -> None:
+    p = bound(pg_db)
+    await kb(p)
+    t = await p.begin_transaction([], [])
+    try:
+        expected = PushExpect(document_id="d1", revision="r1", version=1)
+        assert await p.claim_push_record(kb_id="kb1", org_id=p.org, key="k1", expected=expected, new=PushSet(document_id="d2", version=2), transaction=t) is PushClaim.CLAIMED
+        assert await p.claim_push_record(kb_id="kb1", org_id=p.org, key="k1", expected=expected, new=PushSet(document_id="d3", version=2), transaction=t) is PushClaim.LOST
+    finally:
+        await p.rollback_transaction(t)
+
+
+async def test_reindex_of_a_record_group_returns_the_connector_for_the_caller_to_publish(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "c1", "orgId": p.org, "type": "CONNECTOR", "isActive": True, "name": "Git"}], "apps")
+    await p.batch_upsert_nodes([{"_key": "g1", "orgId": p.org, "connectorId": "c1", "connectorName": "GITHUB"}], "recordGroups")
+    await p.batch_upsert_nodes([{"_key": "me", "userId": "ext-me", "orgId": p.org}], "users")
+    await p.batch_create_edges([{"from_id": "me", "from_collection": "users", "to_id": "c1", "to_collection": "apps", "type": "USER", "role": "READER"},
+                                {"from_id": "me", "from_collection": "users", "to_id": "g1", "to_collection": "recordGroups", "type": "USER", "role": "READER"}], "permission")
+    ok = await p.reindex_record_group_records("g1", -1, "ext-me", p.org)
+    assert ok == {"success": True, "connectorId": "c1", "connectorName": "GITHUB", "depth": 100, "recordGroupId": "g1", "userKey": "me"}
+    assert (await p.reindex_record_group_records("g1", -5, "ext-me", p.org))["depth"] == 0                       # any other negative depth is direct records only
+    await p.batch_update_nodes([{"id": "c1", "isActive": False}], "apps")
+    assert (await p.reindex_record_group_records("g1", 0, "ext-me", p.org))["code"] == 409
