@@ -829,6 +829,42 @@ class TestStageEnrichment:
         orch.persist_named_entities.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_links_the_organisations_the_classification_names(self) -> None:
+        """Indexing classifies through this stage, not ``apply``: a record must
+        link here to the organisations it names, and their points be written."""
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.entity_vector_store = AsyncMock()
+        taxonomy, organisation = MagicMock(), MagicMock()
+        resolution = MagicMock()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[taxonomy])
+        orch.graphdb.resolution_of = MagicMock(return_value=resolution)
+        orch.graphdb.link_organizations = AsyncMock(return_value=[organisation])
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.", organizations=["Acme"])
+
+        await orch.write_enrichment(ctx)
+
+        orch.graphdb.link_organizations.assert_awaited_once_with(ctx.record, resolution)
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once_with([taxonomy, organisation])
+
+    @pytest.mark.asyncio
+    async def test_no_resolution_leaves_the_organisation_links_alone(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        orch.graphdb.link_organizations = AsyncMock(return_value=[])
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.")
+
+        await orch.write_enrichment(ctx)
+
+        orch.graphdb.link_organizations.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_the_other_records_of_the_content_share_the_owners_summary(self) -> None:
         from app.models.blocks import SemanticMetadata
 

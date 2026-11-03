@@ -134,7 +134,7 @@ class GraphDBTransformer(Transformer):
             )
             record.extraction_status = ProgressStatus.COMPLETED.value
             if resolution is not None:
-                result.extend(await self._link_organizations(record, resolution))
+                result.extend(await self.link_organizations(record, resolution))
             return result
 
     # ------------------------------------------------------------------
@@ -259,7 +259,7 @@ class GraphDBTransformer(Transformer):
         provider = self.graph_data_store.graph_provider
         for entity in resolution.entries.values():
             if entity.kind is ORGANIZATION:
-                continue  # _link_organizations
+                continue  # link_organizations
             collection = entity.kind.collection
             if entity.is_new:
                 await provider.create_taxonomy_node_if_absent(
@@ -289,7 +289,7 @@ class GraphDBTransformer(Transformer):
                         collection, entity.key, exc,
                     )
 
-    async def _link_organizations(self, record: object, resolution: EntityResolution) -> List[EntityRecord]:
+    async def link_organizations(self, record: object, resolution: EntityResolution) -> List[EntityRecord]:
         """Replace the record's EXTRACTED links to the organisations it names,
         after its transaction: a connector's INFERRED links are left alone.
         Returns the points of those now searchable.

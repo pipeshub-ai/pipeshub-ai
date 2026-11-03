@@ -914,7 +914,7 @@ class SinkOrchestrator(Transformer):
         )
 
     async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:
-        """The summary point, graph taxonomy and the entity points it touches, of a
+        """The summary point, graph taxonomy, organisation links and the entity points they touch, of a
         prepared classification (``prepare_enrichment``), for ``ctx.record``.
 
         ``extractionStatus`` is not written: the classify stage's headline owns it,
@@ -928,10 +928,13 @@ class SinkOrchestrator(Transformer):
             return
         if index_summary:
             await self.write_summary_point(ctx)
+        resolution = self.graphdb.resolution_of(ctx)
         with stage("graph.enrich"):
-            touched_entities = await self.graphdb.write_taxonomy(
-                record.id, metadata, resolution=self.graphdb.resolution_of(ctx)
-            )
+            touched_entities = await self.graphdb.write_taxonomy(record.id, metadata, resolution=resolution)
+            if resolution is not None:
+                touched_entities = [
+                    *(touched_entities or []), *await self.graphdb.link_organizations(record, resolution),
+                ]
         await self._upsert_touched_entities(ctx, touched_entities)
 
     async def enrich(self, ctx: TransformContext) -> None:

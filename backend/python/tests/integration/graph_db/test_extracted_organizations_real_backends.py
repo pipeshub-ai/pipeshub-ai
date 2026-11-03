@@ -173,15 +173,15 @@ async def test_the_graph_write_links_a_record_to_what_it_names_and_reports_what_
         return SimpleNamespace(id=f"{org}-{rid}", connector_id=f"{org}-conn", record_group_id=None)
 
     try:
-        assert await transformer._link_organizations(_record("r1"), _resolution("Initech")) == []
+        assert await transformer.link_organizations(_record("r1"), _resolution("Initech")) == []
         assert await _edges_from(provider, f"{org}-r1") == sorted([
             (f"{org}-acme", "FOR_ACCOUNT", "INFERRED"), (key, "MENTIONS", "EXTRACTED"),
         ])
-        (searchable,) = await transformer._link_organizations(_record("r2"), _resolution("Initech"))
+        (searchable,) = await transformer.link_organizations(_record("r2"), _resolution("Initech"))
         assert (searchable.entity_id, searchable.name) == (key, "Initech")
         assert searchable.connector_ids == [f"{org}-conn"]  # read from the graph's membership
 
-        await transformer._link_organizations(_record("r1"), _resolution("Hooli"))
+        await transformer.link_organizations(_record("r1"), _resolution("Hooli"))
         assert await _edges_from(provider, f"{org}-r1") == sorted([
             (f"{org}-acme", "FOR_ACCOUNT", "INFERRED"), (taxonomy_node_key(org, ORGS, "hooli"), "MENTIONS", "EXTRACTED"),
         ])
