@@ -42,6 +42,7 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.named_entities.domain.models import model_failed
 from app.modules.named_entities.kept import keep_extraction
 from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
 from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
@@ -175,7 +176,7 @@ async def _complete_one(
     record_obj.block_containers = BlocksContainer.model_validate(containers)
     ctx = TransformContext(record=record_obj, settings={"skip_blob": True})
     extraction = await asyncio.wait_for(sink.extract_named_entities(ctx, reextract=True), EXTRACT_TIMEOUT_SECONDS)
-    if extraction.status == "FAILED":
+    if extraction.status == "FAILED" or model_failed(extraction):
         return "extract_failed"
     if extraction.status == "SKIPPED":
         return "gone"

@@ -127,12 +127,12 @@ def urls(md: str) -> list[str]:
 
 
 def cpu(fn: Callable[[str], object], text: str, repeat: int = 3) -> float:
-    """Best of ``repeat`` runs in process CPU time (not disturbed by other processes)."""
+    """Best of ``repeat`` runs in this thread's CPU time (not disturbed by other processes or threads)."""
     best = float("inf")
     for _ in range(repeat):
-        start = time.process_time()
+        start = time.thread_time()
         fn(text)
-        best = min(best, time.process_time() - start)
+        best = min(best, time.thread_time() - start)
     return best
 
 
@@ -280,7 +280,7 @@ async def test_the_image_parser_refuses_a_data_uri_that_is_not_an_image(monkeypa
 
     monkeypatch.setattr(module, "PublicUrlFetcher", Boom)
     result = await module.ImageParser.urls_to_base64(
-        ["data:text/html,<script>alert(1)</script>", "javascript:alert(1)"]
+        ["data:text/html,<script>alert(1)</script>", "javascript:alert(1)"], allow_remote_fetch=True
     )
     assert result == [None, None]
 

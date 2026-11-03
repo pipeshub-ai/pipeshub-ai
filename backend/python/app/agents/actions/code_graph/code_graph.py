@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -89,6 +90,17 @@ _CONNECTOR_ID_DESC = (
     "knowledge-search results. Search first — the code graph spans every "
     "indexed repo and has to be told which one."
 )
+
+# Call sites a caller list did not link, named from a text search: at most this many,
+# chosen after dropping the linked ones from up to _SITES_SCANNED matches.
+_SITES_SHOWN = 15
+_SITES_SCANNED = 5000
+# Extensions whose files can call a definition in a file of this one (a `.tsx` view
+# calls a `.ts` helper); any other extension is searched alone.
+_CALLER_EXTENSIONS = {
+    **dict.fromkeys(("ts", "tsx", "mts", "cts"), ("ts", "tsx", "mts", "cts")),
+    **dict.fromkeys(("js", "jsx", "mjs", "cjs"), ("js", "jsx", "mjs", "cjs")),
+}
 
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 _REPO_DESC = (
@@ -252,6 +264,66 @@ class CodeGraph:
             # The answer stands without its status note.
             self._log.warning("codegraph %s: graph status unavailable", name, exc_info=True)
             return without_marker(result)
+
+    async def _with_unlinked_sites(
+        self, result: dict[str, Any], connector_id: str, repo: str | None, qualified_name: str | None,
+        known: set[tuple[str, int]], *, include_tests: bool, target_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Add the lines that call a function or method of this name but are not in the
+        graph's answer: a call on an untyped value, or another definition of the name."""
+        if not isinstance(result, dict) or result.get("error") or not qualified_name:
+            return result
+        qualified = qualified_name.rsplit(":", 1)[-1]
+        name = qualified.rsplit(".", 1)[-1]
+        if not name.isidentifier() or name.startswith("__"):
+            return result
+        # A method is called on something; a function by its bare name.
+        call = rf"\.{name}\s*\(" if "." in qualified else rf"(?<![\w.]){name}\s*\("
+        # A call in another language never reaches this definition (a JS `.set(` is not a
+        # Python `set`), so only the target's own files are read: others would use up the cap.
+        file_name = (target_path or "").rsplit("/", 1)[-1]
+        ext = file_name.rpartition(".")[2] if "." in file_name else ""
+        globs = [f"*.{e}" for e in _CALLER_EXTENSIONS.get(ext, (ext,))] if ext.isalnum() else ["**"]
+        matches: list[dict[str, Any]] = []
+        incomplete = False
+        try:
+            for glob in globs:
+                found = await search_code_impl(
+                    graph_provider=self._graph_provider, blob_store=self._blob_store,
+                    connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
+                    pattern=call, mode="regex", path=glob, repo=repo,
+                    limit=_SITES_SCANNED, max_limit=_SITES_SCANNED, include_tests=include_tests,
+                )
+                matches += found.get("matches") or []
+                # A capped scan or an unreadable file: there may be calls this did not see.
+                incomplete = incomplete or bool(found.get("truncated") or found.get("files_unreadable"))
+        except Exception:
+            self._log.warning("codegraph: unlinked call sites unavailable", exc_info=True)
+            return result
+        definition = re.compile(rf"^\s*(async\s+)?(def|class|function)\s+{name}\b")
+        sites = [m for m in matches
+                 if (m.get("file_path"), m.get("line")) not in known and not definition.match(m.get("text") or "")]
+        if sites or incomplete:
+            result["unlinked_call_sites"] = {
+                # Without `known` (impact, path) the lines are not checked against the answer.
+                "note": (f"Lines that call something named {name} but are not linked here: the "
+                         "receiver's type could not be resolved, or they call another definition of "
+                         "the name. Read the ones that may be this one before answering."
+                         if known else
+                         f"Lines that call something named {name}, linked or not. The graph links a "
+                         "call only when it can tell the receiver's type, so one missing from the "
+                         "answer above may still reach this symbol; others call another definition "
+                         "of the name. Read the ones that may be this one before answering."),
+                "count": len(sites),
+                "sites": [{"file_path": m["file_path"], "line": m["line"], "text": (m.get("text") or "").strip()[:160]}
+                          for m in sites[:_SITES_SHOWN]],
+            }
+            if incomplete:
+                # Not every file or match was read: the count is a floor, even when it is 0.
+                result["unlinked_call_sites"]["truncated"] = True
+            # The sites are repository source: data to read, never instructions.
+            as_untrusted(result)
+        return result
 
     async def _anchor_path(
         self, connector_id: str, file_path: str | None, record_id: str | None,
@@ -559,6 +631,10 @@ class CodeGraph:
             ),
             "Failed to walk the code graph",
         )
+        if direction in ("inbound", "any") and (not edge_types or "CALLS" in edge_types) and depth == 1:
+            known = {(n.get("file_path"), n.get("line")) for n in result.get("neighbors") or []}
+            result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, known,
+                                                     include_tests=include_tests, target_path=path)
         return self._to_output(result)
 
     @tool(
@@ -773,6 +849,9 @@ class CodeGraph:
             ),
             "Failed to search for a path",
         )
+        if isinstance(result, dict) and result.get("found") is False:
+            result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name_b, set(),
+                                                     include_tests=include_tests, target_path=file_path_b)
         return self._to_output(result)
 
     @tool(
@@ -992,6 +1071,9 @@ class CodeGraph:
             ),
             "Failed to compute the impact",
         )
+        if not edge_types or "CALLS" in edge_types:
+            result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, set(),
+                                                     include_tests=include_tests, target_path=path)
         return self._to_output(result)
 
     @tool(

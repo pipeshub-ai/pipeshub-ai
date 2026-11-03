@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { useUserStore } from '@/lib/store/user-store';
 
 // JWT token helpers are in lib/utils — re-exported for convenience
 export { getUserIdFromToken, getUserEmailFromToken, getAccountTypeFromToken } from '@/lib/utils/jwt';
@@ -63,13 +64,20 @@ export const ProfileApi = {
     }
   },
 
-  /** PUT /api/v1/users/{userId} */
+  /** PUT /api/v1/users/{userId}; a change to the signed-in user also updates the cached profile. */
   async updateUser(
     userId: string,
     payload: UpdateUserPayload,
     config?: { suppressErrorToast?: boolean },
   ): Promise<void> {
     await apiClient.put(`${USERS_URL}/${userId}`, payload, config);
+    const store = useUserStore.getState();
+    if (store.profile?.userId !== userId) return;
+    store.updateProfile({
+      ...(payload.fullName !== undefined ? { fullName: payload.fullName } : {}),
+      ...(payload.designation !== undefined ? { designation: payload.designation } : {}),
+      ...(payload.role !== undefined ? { isAdmin: payload.role === 'admin' } : {}),
+    });
   },
 
   /** GET /api/v1/users/dp — download current user's avatar (resolved from JWT) */

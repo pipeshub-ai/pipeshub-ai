@@ -52,6 +52,17 @@ _GITHUB_OP_DEFAULT_TIMEOUT_SECONDS = 300.0
 # (visible-email phase).
 _GITHUB_USER_ENRICHMENT_CONCURRENCY = 4
 
+# How long a fetched GET /users/:login profile is reused before it is asked for
+# again. Without it, every sync of every connector re-fetched each member that
+# has no public email, and a new connector re-fetched the whole org: on a
+# 1,700-member org, a third of the hour's 5,000 calls on each sync. The cost of
+# the bound: a member with no AppUser yet whose fetched profile had no public
+# email waits up to this long to gain access after making one public. A member
+# already bound to an email keeps it (Phase A reads the stored AppUser and never
+# this cache); a connector that reuses a profile up to this old binds the email
+# it carried.
+_GITHUB_PROFILE_REUSE_SECONDS = 24 * 60 * 60.0
+
 # ---------------------------------------------------------------------------
 # Code indexing
 # ---------------------------------------------------------------------------

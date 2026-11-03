@@ -702,14 +702,15 @@ async def test_names_sort_by_utf16_unit_and_sizes_keep_zero(shapes, backend, req
     """Lowercased names sort by UTF-16 unit, as Cypher
     orders them (an astral name before U+FF5A), ties by id, nulls last; a size of
     0 is a size, a missing one is not. Arango sorts in Python with the merge's
-    comparator, so the two agree."""
+    comparator, so the two agree. A name query's "_" reads as a space, never as
+    a wildcard: "a_b" finds "a b" and "a_b", not "a%b"."""
     provider = request.getfixturevalue(f"{backend}_provider")
     by_name = await _page(provider, app_id=SO)
     assert _ids(by_name) == SO_NAME_ASC
     assert {r["id"]: r["sortKey"] for r in by_name["rows"]}["so-02"] == "alpha"
     assert _ids(await _page(provider, app_id=SO, sort_field="sizeInBytes")) == SO_SIZE_ASC
     assert set(_ids(await _page(provider, app_id=SO, filters={"size": {"gte": 0}}))) == SO_SIZED
-    assert _ids(await _page(provider, app_id=SO, filters={"search_query": "a_b"})) == ["so-15"]
+    assert _ids(await _page(provider, app_id=SO, filters={"search_query": "a_b"})) == ["so-17", "so-15"]
     assert _ids(await _page(provider, app_id=SO, filters={"search_query": "%"})) == ["so-16"]
 
 

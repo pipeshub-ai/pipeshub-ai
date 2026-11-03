@@ -1642,7 +1642,8 @@
       "internalSearch": "Interní vyhledávání",
       "webSearch": "Vyhledávání na webu",
       "internalAndWebSearch": "Interní + webové vyhledávání"
-    }
+    },
+    "searchDegraded": "Výsledky mohou být neúplné."
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -2518,6 +2519,7 @@
         "developerSettings": "Nastavení pro vývojáře",
         "oauth2": "OAuth 2.0 aplikace",
         "personalAccessTokens": "Osobní přístupové tokeny",
+        "apiDocumentation": "Dokumentace API",
         "profile": "Profil",
         "yourConnectors": "Vaše osobní konektory",
         "yourActions": "Vaše akce",

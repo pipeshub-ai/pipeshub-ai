@@ -36,6 +36,9 @@ SEARCH_TOOL_NAME = "knowledgegraph__search"
 SEARCH_ENTITIES_TOOL_NAME = "knowledgegraph__search_entities"
 FIND_RECORDS_BY_ENTITY_TOOL_NAME = "knowledgegraph__find_records_by_entity"
 FIND_RECORDS_BY_VALUE_TOOL_NAME = "knowledgegraph__find_records_by_value"
+FIND_CO_MENTIONED_TOOL_NAME = "knowledgegraph__find_co_mentioned_entities"
+# Tools that read only named entities: left out with extraction off, where they could only fail.
+_NAMED_ENTITY_ONLY_TOOLS = frozenset({FIND_RECORDS_BY_VALUE_TOOL_NAME, FIND_CO_MENTIONED_TOOL_NAME})
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,15 @@ _VARIANTS: dict[str, _Variant] = {
         optional=("query",),
         args_summary=lambda args: _searched_entities_for(args),
     ),
+    FIND_CO_MENTIONED_TOOL_NAME: _Variant(
+        description=(_Edit(
+            "entity_ids search_entities returned for that one entity",
+            "entity_ids search_entities or search_by_entities returned for that one entity",
+        ),),
+        parameters=(("entity_ids", (_Edit(
+            "that search_entities returned", "that search_entities or search_by_entities returned",
+        ),)),),
+    ),
     FIND_RECORDS_BY_ENTITY_TOOL_NAME: _Variant(
         description=(
             _Edit(
@@ -136,17 +148,6 @@ _VARIANTS: dict[str, _Variant] = {
                 "'language', 'record_group' or 'record'. Optional",
                 "'language', 'record_group', 'record' or 'named_entity'. Optional",
             ),)),
-        ),
-    ),
-    FIND_RECORDS_BY_VALUE_TOOL_NAME: _Variant(
-        description=(
-            _Edit(
-                "an amount in a currency, a quantity, or a percentage. Requires",
-                "an amount in a currency, a quantity, or a percentage. Use it when the question "
-                "is about a value rather than words (\"deals over $50k\", \"incidents in March "
-                "2026\", \"latency above 200 ms\"): it finds a record however the value is "
-                "written there. Requires",
-            ),
         ),
     ),
 }
@@ -166,7 +167,7 @@ def tools_for_request(
     return [
         _without_named_entity_kinds(instance, tool)
         for tool in served
-        if tool.name != FIND_RECORDS_BY_VALUE_TOOL_NAME
+        if tool.name not in _NAMED_ENTITY_ONLY_TOOLS
     ]
 
 

@@ -47,6 +47,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseWorkerError
+from app.modules.parsers.parse_pool_lanes import interactive_parsing
 from app.modules.parsers.pdf.pdf_inspection import needs_ocr_and_page_count
 from app.modules.parsers.pdf.pdf_rasterizer import (
     render_all_pages_as_png,
@@ -64,6 +65,7 @@ from app.modules.transformers.transformer import (
     TransformContext,
 )
 from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.model_identity.boundary import (
@@ -73,6 +75,7 @@ from app.services.model_identity.boundary import (
 from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
+from app.services.parsing.interface import ParseError
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -91,11 +94,17 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import EXCEL_TOO_LARGE
 from app.utils.user_lookup import get_user_or_503
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
 OCR_IMAGE_PAGE_CAP = 30
+# Pages of one PDF attached to a chat message. This bounds the memory one upload can use:
+# the layout parse holds every page it reads. It is not a promise about time: on a busy
+# host a file near the cap can still run past _CHAT_ATTACHMENT_UPLOAD_BUDGET_S, and the
+# user is then told it took too long (_attachment_too_slow).
+CHAT_PDF_PAGE_CAP = 50
 
 router = APIRouter()
 
@@ -474,6 +483,20 @@ def _attachment_too_heavy(file_name: str) -> str:
     )
 
 
+def _attachment_too_long(file_name: str, page_count: int) -> str:
+    return (
+        f"{file_name} has {page_count} pages, more than the {CHAT_PDF_PAGE_CAP} pages a PDF can have "
+        "when attached to a message. Attach a part of it, or split it into smaller files."
+    )
+
+
+def _attachment_too_slow(file_name: str) -> str:
+    return (
+        f"{file_name} took too long to read, so it wasn't attached. "
+        "Try again, attach fewer pages, or add it to a knowledge base."
+    )
+
+
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
 _CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
 
@@ -605,6 +628,17 @@ async def upload_chat_attachments(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
+) -> dict[str, Any]:
+    # A person is waiting: every parse below, however deep in a parser, runs on
+    # the chat attachment pool, never behind background indexing.
+    with interactive_parsing():
+        return await _upload_chat_attachments(request, graph_provider, config_service)
+
+
+async def _upload_chat_attachments(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
 ) -> dict[str, Any]:
     try:
         body = await request.json()
@@ -749,6 +783,16 @@ async def upload_chat_attachments(
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
+            except (ParseWorkerError, TimeoutError, BrokenProcessPool, MemoryError) as e:
+                # Same as the PDF branch: a worker that overran or died is most likely out of
+                # memory, not a damaged file. ParseWorkerError is a ParseError, so it goes first.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
+            except ParseError as e:
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                if e.message == EXCEL_TOO_LARGE:
+                    raise HTTPException(status_code=400, detail=EXCEL_TOO_LARGE) from e
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet")) from e
             except Exception as e:
                 logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
@@ -771,9 +815,12 @@ async def upload_chat_attachments(
                     needs_ocr, page_count = await parse_pool.submit(
                         needs_ocr_and_page_count,
                         file_binary,
+                        CHAT_PDF_PAGE_CAP,
                         label=item.fileName,
                         size=len(file_binary),
                     )
+                    if page_count > CHAT_PDF_PAGE_CAP:
+                        raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
                     if needs_ocr:
                         if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
                             raise HTTPException(
@@ -801,8 +848,12 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise
-            except (TimeoutError, ParseWorkerError, BrokenProcessPool, MemoryError) as e:
-                # A worker that overran or died, or a renderer it started that
+            except TimeoutError as e:
+                # The upload deadline fired: the file was being read, just not fast enough.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_slow(item.fileName)) from e
+            except (ParseWorkerError, BrokenProcessPool, MemoryError) as e:
+                # A worker that died, or a renderer it started that
                 # died: most likely out of memory, not a damaged file.
                 logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
                 raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
@@ -1087,6 +1138,7 @@ async def _grant_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+        await notify_principals_changed(org_id)  # a new READER grant
     return len(edges)
 
 
@@ -1143,6 +1195,8 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+    if edges or direct_kept:
+        await notify_principals_changed(org_id)  # a narrowing PERMISSION write
     return len(edges) + len(direct_kept)
 
 

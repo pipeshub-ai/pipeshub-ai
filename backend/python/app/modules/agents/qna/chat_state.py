@@ -8,7 +8,6 @@ from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
-from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import (
@@ -51,7 +50,7 @@ class ChatState(TypedDict):
 
     retrieval_service: RetrievalService
     graph_provider: IGraphDBProvider
-    reranker_service: RerankerService
+    reranker_service: object | None  # unused; always None
     config_service: ConfigurationService
     entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
@@ -522,7 +521,7 @@ _CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
+                        reranker_service: object | None, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 

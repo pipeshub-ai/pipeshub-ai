@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import random
 from collections import deque
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -1729,3 +1730,115 @@ class TestDownstreamBrake:
         )
         assert limits.get(Pool.INDEX_HEAVY) == 32
         assert limits.get(Pool.INDEX_LIGHT) == 64
+
+
+class TestBrakesNeverRaiseALimit:
+    """A brake or target walk may hold or lower a limit, never raise it.
+
+    The memory target can hold heavy parse below its pressure floor (one
+    Docling working set is larger than the free memory). A brake computed as
+    ``max(floor, current - step)`` then lifts the limit back to the floor,
+    and the next sample walks it down again: 1, 2, 1, 2 under constant
+    pressure, admitting another working set on every even sample.
+    """
+
+    GIB = 1024 ** 3
+    CEILINGS = Ceilings(heavy=4, light=32, index_heavy=8, index_light=64)
+
+    @staticmethod
+    def _pressured() -> ResourceSnapshot:
+        # 75% of 4 GiB in use: past MEM_SOFT, under MEM_HARD, 1 GiB free so
+        # the heavy target is 1 (less than one 1.5 GiB working set fits).
+        return _snapshot(mem_limit_bytes=4 * 1024 ** 3, mem_working_set_bytes=3 * 1024 ** 3)
+
+    def test_constant_pressure_never_oscillates_heavy_parse(self) -> None:
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        state = ControllerState.initial()
+        trace = []
+        for i in range(20):
+            limits, state = next_limits(
+                limits, self._pressured(), self.CEILINGS, state, _no_demand(),
+                now=1000.0 + i * INTERVAL,
+            )
+            trace.append(limits.get(Pool.HEAVY_PARSE))
+        assert trace == [1] * 20
+
+    def test_heavy_hold_below_floor_is_not_raised_by_the_soft_brake(self) -> None:
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        out, _ = next_limits(
+            limits, self._pressured(), self.CEILINGS, ControllerState.initial(),
+            _no_demand(), now=1000.0,
+        )
+        assert out.get(Pool.HEAVY_PARSE) == 1
+
+    def test_hard_brake_below_floor_is_not_raised(self) -> None:
+        snap = _snapshot(mem_limit_bytes=4 * self.GIB, mem_working_set_bytes=int(3.4 * self.GIB))
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        out, state = next_limits(
+            limits, snap, self.CEILINGS, ControllerState.initial(), _no_demand(), now=1000.0,
+        )
+        assert out.get(Pool.HEAVY_PARSE) == 1
+        # Still treated as a shrink: the incident cooldown applies.
+        assert state.get(Pool.HEAVY_PARSE).cooldown_until == 1000.0 + INCIDENT_COOLDOWN_SECONDS
+
+    def test_downstream_incident_does_not_raise_a_pool_below_its_floor(self) -> None:
+        feedback = FeedbackWindow(
+            throttles={"qdrant": 3},
+        )
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        out, _ = next_limits(
+            limits, _snapshot(), self.CEILINGS, ControllerState.initial(), _no_demand(),
+            now=1000.0, feedback=feedback,
+        )
+        for pool in (Pool.INDEX_HEAVY, Pool.INDEX_LIGHT):
+            assert out.get(pool) <= 1
+
+    def test_no_pressure_behaviour_is_unchanged(self) -> None:
+        limits = Limits(values={
+            Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 32, Pool.INDEX_HEAVY: 8, Pool.INDEX_LIGHT: 64,
+        })
+        out, _ = next_limits(
+            limits,
+            _snapshot(mem_limit_bytes=64 * self.GIB, mem_working_set_bytes=1 * self.GIB),
+            self.CEILINGS, ControllerState.initial(), _no_demand(), now=1000.0,
+        )
+        assert out == limits
+
+    def test_a_real_brake_still_lowers_a_limit_above_the_floor(self) -> None:
+        limits = Limits(values=dict.fromkeys(Pool, 4))
+        snap = _snapshot(mem_limit_bytes=64 * self.GIB, mem_working_set_bytes=int(46 * self.GIB))
+        out, _ = next_limits(
+            limits, snap, self.CEILINGS, ControllerState.initial(), _no_demand(), now=1000.0,
+        )
+        assert out.get(Pool.HEAVY_PARSE) == 3
+
+    def test_property_no_limit_is_ever_raised_without_demand(self) -> None:
+        # Without demand nothing may grow, so any rise is a brake raising.
+        rng = random.Random(20260502)
+        for _ in range(3000):
+            limit = rng.choice([2 * self.GIB, 4 * self.GIB, 8 * self.GIB, 16 * self.GIB])
+            snap = _snapshot(
+                cpu_quota=rng.choice([1.0, 2.0, 4.0, 16.0]),
+                cpu_utilisation=rng.random(),
+                cpu_throttled_ratio=rng.random() * 0.5,
+                cpu_pressure=rng.random() * 0.5,
+                mem_limit_bytes=limit,
+                mem_working_set_bytes=int(limit * rng.random()),
+                mem_baseline_bytes=rng.choice([None, int(limit * 0.3 * rng.random())]),
+            )
+            ceilings = Ceilings(
+                heavy=rng.randint(1, 16), light=rng.randint(1, 64),
+                index_heavy=rng.randint(1, 32), index_light=rng.randint(1, 64),
+            )
+            limits = Limits(values={pool: rng.randint(1, 40) for pool in Pool})
+            feedback = rng.choice([
+                None,
+                FeedbackWindow(throttles={"qdrant": 1}),
+                FeedbackWindow(timeouts={"qdrant": 9}),
+            ])
+            out, _ = next_limits(
+                limits, snap, ceilings, ControllerState.initial(), _no_demand(),
+                now=1000.0, feedback=feedback, worker_count=rng.choice([1, 2, 4]),
+            )
+            for pool in Pool:
+                assert out.get(pool) <= limits.get(pool), (pool, snap, ceilings, limits, feedback)

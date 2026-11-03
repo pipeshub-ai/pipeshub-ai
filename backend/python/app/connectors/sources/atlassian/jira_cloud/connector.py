@@ -117,6 +117,7 @@ from app.connectors.sources.atlassian.jira_cloud.comment_access import (
     attachment_ids_only_in_restricted_comments,
     public_comments,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -6570,7 +6571,7 @@ class JiraConnector(BaseConnector):
         external_record_id = f"{external_id_prefix}{attachment_id}"
 
         file_record = FileRecord(
-            id=record_id or str(uuid4()),
+            id=record_id or new_record_id(self.connector_id, external_record_id),
             org_id=self.data_entities_processor.org_id,
             record_name=filename,
             record_type=RecordType.FILE,
@@ -7063,7 +7064,8 @@ class JiraConnector(BaseConnector):
             parent_key = str((fields.get("parent") or {}).get("key") or "")
             if (
                 parent_external_id and not getattr(record, "parent_external_record_id", None)
-                and parent_key.rsplit("-", 1)[0] != str(project.get("key") or "")
+                and not issue_data["is_subtask"]  # a sub-task always follows its parent, whatever the stored copy had
+                and "-" in parent_key and parent_key.rsplit("-", 1)[0] != str(project.get("key") or "")
             ):
                 # The sync left this parent out (its project is not synced); keep it that way.
                 parent_external_id = None

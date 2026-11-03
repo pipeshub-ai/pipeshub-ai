@@ -39,6 +39,10 @@ import {
   type OAuthTokenRepository,
   type RefreshTokenDto,
 } from './types';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importOAuthTokenDocs } from './pg-import';
+import { kernelTx } from '../pg';
+import type { Tx } from '../uow';
 
 /** A value in the position of an id: undefined when it cannot be one (such a value matches nothing). */
 const id24 = (v: unknown): string | undefined =>
@@ -250,7 +254,17 @@ const deviceDto = (r: DeviceRow): DeviceCodeDto => {
   return o as unknown as DeviceCodeDto;
 };
 
-export class PgOAuthTokenRepository implements OAuthTokenRepository {
+export class PgOAuthTokenRepository
+  implements OAuthTokenRepository, Importable
+{
+  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importOAuthTokenDocs(kernelTx(tx), collection, docs);
+  }
   // ---- issue ----------------------------------------------------------------------------------------------------------------
   async issueAccess(input: NewAccessToken): Promise<AccessTokenDto> {
     const i = stripNul(input, 'oauth-token', 'access');

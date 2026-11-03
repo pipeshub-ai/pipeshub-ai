@@ -1,0 +1,22 @@
+- id: REGR-07
+  title: 'Citation: the smallest admitted copy is cited; indexed_only skips an unindexed one'
+  source: independent review of the conformance harness
+  rule: citation
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: D, kind: app}
+      - {id: s, kind: group, connector: D, rule: OPEN, parents: [D], belongs: [D]}
+      - {id: a1, kind: record, connector: D, rule: RESTRICTED, vrid: vr, parents: [s], inherits: [s], belongs: [s]}
+      - {id: b1, kind: record, connector: D, rule: OPEN, vrid: vr, indexing: FAILED, parents: [s], inherits: [s], belongs: [s]}
+      - {id: c1, kind: record, connector: D, rule: OPEN, vrid: vr, parents: [s], inherits: [s], belongs: [s]}
+    grants:
+      - [u, s]
+    gates:
+      - [u, D]
+  expect:
+    verdicts:
+      u: {a1: deny, b1: admit, c1: admit}
+    cite: [{viewer: u, vrid: vr, record: b1, indexed_only: false}, {viewer: u, vrid: vr, record: c1, indexed_only: true}]
+  tags: [regression, qa, citation]

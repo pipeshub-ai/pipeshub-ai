@@ -11,6 +11,12 @@ export const docstoreMetrics = {
     help: 'Writes refused by the store fence',
     labelNames: ['store', 'reason'],
   }),
+  fenceCheck: metricsBackend.createHistogram({
+    name: 'docstore_fence_check_seconds',
+    help: 'Time spent reading the Mongo fence before a write',
+    labelNames: [],
+    buckets: [0.0005, 0.001, 0.005, 0.01, 0.05, 0.2, 1, 2],
+  }),
   rlsViolation: metricsBackend.createCounter({
     name: 'docstore_rls_violation_total',
     help: 'Writes the database refused for privilege or row policy (a wrong-org bug); alert on > 0',

@@ -12,10 +12,12 @@ import {
 } from '../../../../src/libs/errors/http.errors'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
+import { useInertWriteState } from '../../../support/inert-write-state'
 
 // A retried upload (same Idempotency-Key) must never store a second document,
 // and must be able to finish what a failed attempt left behind.
 describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', () => {
+  useInertWriteState()
   let adapter: any
   let findOne: sinon.SinonStub
   let create: sinon.SinonStub

@@ -226,6 +226,48 @@ describe('UserController', () => {
       expect(response).to.have.property('pagination');
     });
 
+    it('filters by join and last-active dates in the query, so the total matches the pages', async () => {
+      req.query = {
+        joinedFrom: '1759622400000',
+        joinedTo: '1759708800000',
+        lastActiveTo: '1760000000000',
+      };
+      const find = stubUsersFind([]);
+      const count = stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.createdAt).to.deep.equal({
+        $gte: new Date(1759622400000),
+        $lt: new Date(1759708800000),
+      });
+      expect(filter.updatedAt).to.deep.equal({ $lt: new Date(1760000000000) });
+      expect(count.firstCall.args[0]).to.deep.equal(filter);
+    });
+
+    it('keeps a bound before 1970, which is a negative epoch', async () => {
+      req.query = { joinedTo: '-157766400000' };
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.createdAt).to.deep.equal({ $lt: new Date(-157766400000) });
+    });
+
+    it('leaves the dates unfiltered when no date is given', async () => {
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter).to.not.have.property('createdAt');
+      expect(filter).to.not.have.property('updatedAt');
+    });
+
     it('leaves service accounts out of the list of people by default', async () => {
       // They can never sign in, so listing them here would park them in the
       // pending-invite set for good and sweep them into bulk invites meant for

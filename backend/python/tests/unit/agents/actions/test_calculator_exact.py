@@ -472,7 +472,7 @@ class TestRefusedExpressions:
             "sqrt(2*10**800)", "2 ** 0.5 ** 10000",
         ],
     )
-    def test_huge_results_are_refused_before_they_are_computed(self, expression: str) -> None:
+    def test_huge_results_are_refused_before_they_are_computed(self, expression: str, frozen_heap: None) -> None:
         started = time.process_time()
         with pytest.raises(CalculationError, match="too large"):
             evaluate(expression)
@@ -490,7 +490,7 @@ class TestRefusedExpressions:
             return
         assert payload["result"] == 1
 
-    def test_the_closest_large_angle_to_a_quarter_turn_stays_fast(self) -> None:
+    def test_the_closest_large_angle_to_a_quarter_turn_stays_fast(self, frozen_heap: None) -> None:
         # A 494-digit convergent of pi/2: its reduction cancels about 494
         # more digits. Its sine (1.3e-495) is below a double's range.
         convergent = "17839370513524201499748668616592542108626995409288572013029872004471324123607627527454223464272772054176082126556885213677277954876867504992212681236462708790448353242926198280850747392707199373021378606222557604413387879486933906869398442149234697972962966389238328329808193081488550161312884326085994415166742276475551449836263931234426093372624990964550490295016812656093335087914326890380938534417693168481758783330959477883741143485211273518438907375097830567310289121244081038348220434485"
@@ -500,7 +500,7 @@ class TestRefusedExpressions:
             evaluate(f"sin({convergent})")
         assert time.process_time() - started < 1.0
 
-    def test_worst_case_operands_stay_fast(self) -> None:
+    def test_worst_case_operands_stay_fast(self, frozen_heap: None) -> None:
         # Every intermediate sits just under the digit cap: the cap bounds
         # the CPU a single call can spend on the event loop.
         terms = [f"(10**499 - {k})/(10**498 + {k})" for k in range(1, 120)]

@@ -125,6 +125,14 @@ EPUB_NO_READABLE_CHAPTERS = (
     "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
     "save a fresh copy from there, and upload it again."
 )
+EXCEL_TOO_LARGE = (
+    "This spreadsheet is too large to index: it holds more data than PipesHub reads from one workbook. "
+    "Split it into several smaller workbooks, or remove unused rows and columns, and upload it again."
+)
+PARSE_WORKER_UNAVAILABLE = (
+    "PipesHub could not start the process that reads this file, so it wasn't indexed. "
+    "Try Reindex; if it keeps failing, ask your admin for help."
+)
 GENERATED_FILE_SKIPPED = (
     "This is a generated file (a lock file, minified bundle, source map, test snapshot or "
     "a file its generator marked DO NOT EDIT), "
@@ -154,7 +162,10 @@ _STORED_AS_WRITTEN = frozenset({
     EPUB_TOO_LARGE,
     EPUB_UNSAFE_PATHS,
     EPUB_NO_READABLE_CHAPTERS,
+    EXCEL_TOO_LARGE,
+    UNREADABLE_FILE,
     PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
 })
 

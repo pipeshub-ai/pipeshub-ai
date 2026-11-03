@@ -90,6 +90,25 @@ async def test_an_exact_match_of_the_asked_kind_settles_the_name_without_a_check
 
 
 @pytest.mark.asyncio
+async def test_a_learned_alias_is_taken_beside_the_exact_match_without_a_check() -> None:
+    verifier = _Verifier({0: [0]})
+    exact = _c("e1", "Pinecrest", "organization", CandidateSource.EXACT)
+    alias = _c("e2", "Pinecrest Hospitality", "organization", CandidateSource.ALIAS, record="r2")
+    linking = await _link([([exact, alias], False)], verifier)
+    (result,) = linking.results
+    assert result.status is LinkStatus.MATCHED and result.accepted == [exact, alias]
+    assert verifier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_learned_alias_alone_settles_the_name() -> None:
+    # "Edge Pro" has no node of its own; it is the learned short form of one product.
+    alias = _c("e2", "Lumora Edge Pro", "product", CandidateSource.ALIAS)
+    linking = await _link([([alias], False)], _Verifier({}), mentions=_mentions({"name": "Edge Pro", "kind": "product"}))
+    assert linking.results[0].accepted == [alias]
+
+
+@pytest.mark.asyncio
 async def test_an_exact_first_name_lets_the_check_add_the_one_full_name_it_starts() -> None:
     verifier = _Verifier({0: [0]})
     sam = _c("e1", "Sam", "person", CandidateSource.EXACT)

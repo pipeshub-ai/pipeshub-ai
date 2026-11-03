@@ -1509,7 +1509,8 @@
       "internalSearch": "Búsqueda interna",
       "webSearch": "Búsqueda web",
       "internalAndWebSearch": "Búsqueda interna + web"
-    }
+    },
+    "searchDegraded": "Es posible que los resultados estén incompletos."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -2303,6 +2304,7 @@
         "developerSettings": "Configuración de desarrollador",
         "oauth2": "Apps de OAuth 2.0",
         "personalAccessTokens": "Tokens de acceso personal",
+        "apiDocumentation": "Documentación de la API",
         "profile": "Perfil",
         "yourConnectors": "Tus conectores personales",
         "yourActions": "Tus acciones",

@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import {
   StorageConfigurationError,
   StorageValidationError,
+  StorageUrlParseError,
   StorageNotFoundError,
   StorageUploadError,
   StorageDownloadError,
@@ -183,6 +184,32 @@ describe('AzureBlobStorageAdapter', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(StorageValidationError)
       }
+    })
+
+    it('says a URL outside the configured container cannot be parsed, as a StorageUrlParseError (still a StorageValidationError)', () => {
+      const proto = require(
+        '../../../../src/modules/storage/providers/azure.provider',
+      ).default.prototype
+      proto.containerName = 'test-container'
+      for (const url of ['not-a-url', 'https://acct.blob.core.windows.net/other-container/a/b.txt']) {
+        let thrown: unknown
+        try { proto.getBlobPath(url) } catch (error) { thrown = error }
+        expect(thrown, url).to.be.instanceOf(StorageUrlParseError)
+        expect(thrown, url).to.be.instanceOf(StorageValidationError)
+      }
+    })
+
+    it('statObject rejects a URL outside the container with StorageUrlParseError, before the store is asked', async () => {
+      const adapter = Object.create(
+        require('../../../../src/modules/storage/providers/azure.provider').default.prototype,
+      )
+      adapter.containerName = 'test-container'
+      adapter.waitForContainer = sinon.stub().resolves()
+      let thrown: unknown
+      try {
+        await adapter.statObject({ azureBlob: { url: 'https://acct.blob.core.windows.net/other-container/a/b.txt' } })
+      } catch (error) { thrown = error }
+      expect(thrown).to.be.instanceOf(StorageUrlParseError)
     })
 
     it('should extract blob path from valid URL', () => {

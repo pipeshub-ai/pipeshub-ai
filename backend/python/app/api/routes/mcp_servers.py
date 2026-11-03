@@ -388,6 +388,8 @@ def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPReg
             )
         if template.supported_auth_modes and payload.auth_mode not in template.supported_auth_modes:
             raise _bad_request(f"{template.display_name} does not support the {payload.auth_mode.value} auth mode.")
+        if template.url_editable is True and not (payload.url or "").strip():
+            raise _bad_request(f"{template.display_name} needs your server URL.")
         return
 
     # Custom server — validate transport-specific required fields.
@@ -459,7 +461,11 @@ def _build_instance_record(
     if template:
         # A catalog server's launch and OAuth settings are fixed by its template: taking
         # them from the request would let a "GitHub" instance run any command or URL.
-        record.update(template_connection_fields(template))
+        # `url_editable` is the exception: the admin supplies that one address.
+        fields = template_connection_fields(template)
+        if template.url_editable is True:
+            fields["url"] = payload.url
+        record.update(fields)
     else:
         record.update({
             "command": payload.command,

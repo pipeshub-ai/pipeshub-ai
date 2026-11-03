@@ -15,7 +15,7 @@
 
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort, projectAgentCapabilities } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort, projectAgentCapabilities } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
@@ -224,6 +224,44 @@ function followRemoteRun(slotId: string, convId: string): void {
   useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
 }
 
+/** The assistant row a finished turn ends on, or null when the turn kept no reply (the history ends on the question). */
+function turnReply(messages: ThreadMessageLike[]): ThreadMessageLike | null {
+  const last = messages[messages.length - 1];
+  return last?.role === 'assistant' ? last : null;
+}
+
+type AnswerCustom = { messageId?: string; searchDegraded?: boolean };
+const answerCustom = (m: ThreadMessageLike) => m.metadata?.custom as AnswerCustom | undefined;
+
+/** Whether `row` is the assistant answer `target` names: by row id, or by the backend message id when the row id differs from it. */
+function isAnswerRow(row: ThreadMessageLike, target: string | null | undefined, backendId?: string | null): boolean {
+  if (row.role !== 'assistant') return false;
+  if (target && row.id === target) return true;
+  const id = backendId ?? target;
+  return Boolean(id) && (row.id === id || answerCustom(row)?.messageId === id);
+}
+
+/**
+ * The partial-search note belongs to an answer, so it is kept on the message (`metadata.custom.searchDegraded`) and shown from there: an
+ * old answer that stays on screen keeps its note, and a new answer brings its own. A list reloaded from the server carries no flags,
+ * so the notes of the answers already on screen are carried over by row id or backend message id. `mark` is the answer whose final
+ * event said its search was partial; `fresh` is an answer that was just replaced, so its old note is not carried.
+ */
+function withSearchDegraded(
+  next: ThreadMessageLike[],
+  previous: ThreadMessageLike[],
+  opts: { mark?: ThreadMessageLike | null; fresh?: string | null } = {},
+): ThreadMessageLike[] {
+  const degradedBefore = previous.filter((m) => m.role === 'assistant' && answerCustom(m)?.searchDegraded === true);
+  return next.map((row) => {
+    if (row.role !== 'assistant') return row;
+    const marked = Boolean(opts.mark) && row.id === opts.mark!.id;
+    const carried = !isAnswerRow(row, opts.fresh ?? null) && degradedBefore.some((p) => isAnswerRow(row, typeof p.id === 'string' ? p.id : null, answerCustom(p)?.messageId));
+    if (!marked && !carried) return row;
+    return { ...row, metadata: { ...row.metadata, custom: { ...row.metadata?.custom, searchDegraded: true } } };
+  });
+}
+
 /**
  * Builds the post-stop message list for the offline fallback (grace-timeout
  * abort) — commits whatever text streamed so far as a locally-synthesized
@@ -251,11 +289,12 @@ function buildStoppedMessages(
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>
-      m.id === regenerateMessageId
+      isAnswerRow(m, regenerateMessageId)
         ? {
             ...m,
             content: [{ type: 'text' as const, text: streamingContent }],
-            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+            // The streamed text replaces the old answer, so the old answer's note goes with it.
+            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const, searchDegraded: undefined } },
           }
         : m
     );
@@ -1341,7 +1380,7 @@ export async function streamMessageForSlot(
                 if (current?.convId !== reloadId || current.messages !== settledMessages) return;
                 // History returns its latest page only, so pagination restarts from it.
                 useChatStore.getState().updateSlot(slotId, {
-                  messages: loadHistoricalMessages(detail.messages).messages,
+                  messages: withSearchDegraded(loadHistoricalMessages(detail.messages).messages, current.messages),
                   rawMessages: detail.messages,
                   messagePagination: {
                     currentPage: detail.pagination.page,
@@ -1500,7 +1539,15 @@ export async function streamMessageForSlot(
             streamingParts: [],
             pendingCollections: [],
             artifacts: [],
-            messages: finalMessages,
+            messages: withSearchDegraded(finalMessages, slotBeforeComplete?.messages ?? [], {
+              // This turn's own reply is the row the history ends on. A turn stopped before any text has none (history drops the
+              // empty reply and ends on the question), and then the note belongs to no row: an earlier answer must not get it.
+              mark: data.meta?.searchDegraded === true
+                ? (reuseExistingAssistant
+                    ? (cardRow ?? turnReply(finalMessages))
+                    : turnReply(finalMessages))
+                : null,
+            }),
             hasLoaded: true,
             abortController: null,
             runId: null,
@@ -1772,7 +1819,6 @@ export async function streamRegenerateForSlot(
   const abortController = new AbortController();
   const runId = generateRunId();
   const streamRunId = runId ?? null;
-
   store.updateSlot(slotId, {
     // An answered card is not this run's: left in the slot it would be opened again when the run ends,
     // and the next click on it would add an answer message after the reply.
@@ -1951,7 +1997,7 @@ export async function streamRegenerateForSlot(
       stopIdleStatus();
     },
 
-    onComplete: async () => {
+    onComplete: async (data) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
       const wasStopped = Boolean(useChatStore.getState().slots[slotId]?.stopping);
       if (flushTimer !== null) {
@@ -2019,7 +2065,16 @@ export async function streamRegenerateForSlot(
           currentStatusMessage: null,
           streamingCitationMaps: null,
           streamingParts: [],
-          messages: finalMessages,
+          messages: withSearchDegraded(
+            finalMessages,
+            useChatStore.getState().slots[slotId]?.messages ?? [],
+            {
+              fresh: regenRowId,
+              mark: data?.meta?.searchDegraded === true
+                ? (finalMessages.find((m) => m.id === regenRowId) ?? null)
+                : null,
+            },
+          ),
           rawMessages: detail.messages,
           abortController: null,
           runId: null,
@@ -2124,11 +2179,7 @@ export async function streamRegenerateForSlot(
         : [...new Set(agentToolsSel.map(stripInstancePrefix))];
       const scopedCaps = useChatStore.getState().scopedAgentCapabilities[threadAgentId]
         ?? { internalSearch: true, webSearch: true };
-      const agentRegenReasoningEffortOverride = useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
-      const agentRegenDefault = getAgentDefaultReasoningEffort(regenCtxKey);
-      const agentRegenReasoningEffort =
-        agentRegenReasoningEffortOverride ??
-        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? agentRegenDefault : null);
+      const agentRegenReasoningEffort = getRequestReasoningEffort(regenCtxKey, resolvedModel);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -2165,9 +2216,7 @@ export async function streamRegenerateForSlot(
       const regenCaps = regenProjectId
         ? projectAgentCapabilities(useChatStore.getState().scopedAgentCapabilities, regenProjectId)
         : store.settings.agentCapabilities;
-      // Left unset when the user chose nothing, so the backend applies the model's default.
-      const assistantRegenReasoningEffort =
-        useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      const assistantRegenReasoningEffort = getRequestReasoningEffort(regenCtxKey, resolvedModel);
       await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
         modelKey: resolvedModel.modelKey,
         modelName: resolvedModel.modelName,

@@ -145,6 +145,7 @@ def _make_graph_provider():
         return records
 
     gp.get_documents_paginated = AsyncMock(side_effect=get_documents_paginated)
+    gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
     return gp
 
 
@@ -966,7 +967,7 @@ class TestRecoverCutShortEnrichment:
         by_key = {r["_key"]: r for r in records}
 
         async def paginated(*_a, filters=None, **_k) -> list[dict]:
-            (field, value), = (filters or {}).items()
+            (field, value), = ((k, v) for k, v in (filters or {}).items() if k != "orgId")
             return [dict(r) for r in by_key.values() if r.get(field) == value]
 
         async def get_document(doc_id, collection, *, raise_on_error=False, **_k) -> dict | None:
@@ -988,6 +989,7 @@ class TestRecoverCutShortEnrichment:
         gp.get_document = AsyncMock(side_effect=get_document)
         gp.update_node = AsyncMock(side_effect=update_node)
         gp.get_nodes_by_filters = AsyncMock(return_value=[])
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
         return gp, by_key
 
     @staticmethod
@@ -1014,6 +1016,45 @@ class TestRecoverCutShortEnrichment:
         assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "twin"
         assert rows["twin"]["indexingStatus"] == ProgressStatus.COMPLETED.value
         assert rows["twin"]["processingStartedAt"] > 0, "kept off the next scans while the event waits"
+
+    async def test_the_scan_and_each_follow_up_run_in_the_orgs_context(self) -> None:
+        from app.core.org_context import current_org_id
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(0)])
+        seen: list[tuple[str, str]] = []
+        paginated, update = gp.get_documents_paginated.side_effect, gp.update_node.side_effect
+
+        async def recording_paginated(*a: object, **k: object) -> list[dict]:
+            seen.append(("scan", current_org_id()))
+            assert k["filters"]["orgId"] == "org-1"
+            return await paginated(*a, **k)
+
+        async def recording_update(*a: object, **k: object) -> bool:
+            seen.append(("update", current_org_id()))
+            return await update(*a, **k)
+
+        gp.get_documents_paginated.side_effect, gp.update_node.side_effect = recording_paginated, recording_update
+
+        await recover_in_progress_records(container, gp)
+
+        assert {o for _, o in seen} == {"org-1"} and {"scan", "update"} <= {k for k, _ in seen}
+
+    async def test_a_stuck_record_of_an_inactive_external_org_is_still_recovered(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(0)])
+
+        async def orgs(*, active: bool = True, is_external: bool = False, **_: object) -> list[dict]:
+            return [{"_key": "org-1"}] if (active, is_external) == (False, True) else []
+
+        gp.get_all_orgs = AsyncMock(side_effect=orgs)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
 
     async def test_a_failed_connector_read_never_turns_it_auto_index_off(self) -> None:
         from app.indexing_main import recover_in_progress_records
@@ -1702,6 +1743,23 @@ class TestIndexingHealthCheck:
 
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
+
+    async def test_governor_stats_run_off_the_event_loop(self) -> None:
+        """stats() can wait up to a second on the lane mutex; it must not hold the loop
+        nor queue behind parse work on the default executor."""
+        import threading
+
+        from app.indexing_main import health_check
+
+        seen: list[str] = []
+        mock_governor = MagicMock()
+        mock_governor.stats.side_effect = lambda: seen.append(threading.current_thread().name) or {}
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            await health_check(_make_health_request(governor=mock_governor))
+
+        # Its own threads: the default executor also runs parse work.
+        assert seen and seen[0].startswith("health-stats")
 
     @pytest.mark.parametrize("failure", [None, SystemExit("worker loop killed")])
     async def test_health_check_is_unhealthy_once_the_worker_loop_died(self, failure) -> None:

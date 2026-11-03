@@ -530,3 +530,41 @@ describe('reasoning effort picker', () => {
     expect(screen.getByText('Defaults to Low when not set.')).toBeTruthy();
   });
 });
+
+describe('a model menu entry an edition adds', () => {
+  const editionEntry = { modelKey: 'edition-entry', modelName: 'edition-entry', modelFriendlyName: 'Edition entry' };
+
+  it('sends no reasoningEffort, even with a stale pick', () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: true });
+    useChatStore.getState().setSelectedModelForCtx(ASSISTANT_CTX, editionEntry);
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'max');
+    const request = buildStreamChatRequestForSlot(useChatStore.getState().createSlot(null), 'hello');
+    expect(request?.modelKey).toBe('edition-entry');
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it("sends no reasoningEffort in an agent chat with a default effort", () => {
+    registerModel('agent-99', { isReasoning: true });
+    setAgentDefault('agent-99', 'medium');
+    useChatStore.getState().setSelectedModelForCtx('agent-99', editionEntry);
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+    expect(buildStreamChatRequestForSlot(slotId, 'hello')).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('regenerating with it sends no reasoningEffort', async () => {
+    registerModel('agent-99', { isReasoning: true });
+    useChatStore.getState().setReasoningEffortForCtx('agent-99', 'max');
+    const agent = vi.spyOn(ChatApi, 'streamAgentRegenerate').mockResolvedValue(undefined);
+    try {
+      const slotId = useChatStore.getState().createSlot('conv-1');
+      useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+      await streamRegenerateForSlot(slotId, 'a1', editionEntry);
+      const body = agent.mock.calls[0][4] as Record<string, unknown>;
+      expect(body.modelKey).toBe('edition-entry');
+      expect(body).not.toHaveProperty('reasoningEffort');
+    } finally {
+      agent.mockRestore();
+    }
+  });
+});

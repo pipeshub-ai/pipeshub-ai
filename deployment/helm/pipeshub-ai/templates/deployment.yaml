@@ -451,6 +451,8 @@ spec:
             {{- end }}
             - name: MAX_AUTH_REQUESTS_PER_MINUTE
               value: {{ .Values.maxAuthRequestsPerMinute | default 10 | quote }}
+            - name: ADDRESS_RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.addressRateLimitPerMinute | default 60 | quote }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

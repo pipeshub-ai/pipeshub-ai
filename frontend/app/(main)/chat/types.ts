@@ -91,6 +91,9 @@ export interface ModelInfo {
   modelFriendlyName?: string;
   /** Restored from the conversation's saved modelInfo when loading a thread. */
   reasoningEffort?: ReasoningEffort;
+  modelProvider?: string;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -421,6 +424,11 @@ export interface ChatSettings {
    * the user hasn't set an explicit override.
    */
   agentDefaultReasoningEffort: Record<string, ReasoningEffort | null>;
+  /**
+   * What a new assistant chat opens on when the edition sets one. A stored
+   * pick still wins, and a project chat keeps the concrete default model.
+   */
+  newChatDefaultModel: ModelOverride | null;
 }
 
 /**
@@ -901,6 +909,7 @@ export interface SSECompleteEvent {
     requestId: string;
     timestamp: string;
     duration: number;
+    searchDegraded?: boolean;
   };
 }
 
@@ -1192,6 +1201,7 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
 
@@ -1238,6 +1248,11 @@ export interface ChatSlot {
    * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
    */
   isOwner: boolean | null;
+  /**
+   * Who the conversation is shared with: from the loaded detail, or from the
+   * last share/unshare answer. `null` when not known.
+   */
+  sharedWith: SharedWithEntry[] | null;
   /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
@@ -1299,5 +1314,7 @@ export interface SearchResponse {
   searchId: string;
   searchResponse: {
     searchResults: SearchResultItem[];
+    /** The search store answered with less than its full search (e.g. it was busy). */
+    searchDegraded?: boolean;
   };
 }

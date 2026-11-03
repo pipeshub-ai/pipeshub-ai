@@ -15,6 +15,7 @@ Only the extensions in ``SUPPORTED_BLOCK_FILE_EXTENSIONS`` are accepted.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from pathlib import Path
@@ -303,7 +304,7 @@ class FileContentParser:
     async def handle_xlsx(self, raw: bytes, file_name: str) -> BlocksContainer:
         llm, _ = await get_llm_for_role(self._config, "indexing", reasoning_effort="low")
         excel = ExcelParser(self._logger, self._config)
-        excel.load_workbook_from_binary(raw)
+        await asyncio.to_thread(excel.load_workbook_from_binary, raw)
         return await excel.create_blocks(llm)
 
     async def handle_csv(self, raw: bytes, file_name: str) -> BlocksContainer:
@@ -355,7 +356,7 @@ class FileContentParser:
         modified_html, images = self._html_parser.extract_and_replace_images(html_content)
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
@@ -378,7 +379,7 @@ class FileContentParser:
         caption_map: dict[str, str] = {}
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]

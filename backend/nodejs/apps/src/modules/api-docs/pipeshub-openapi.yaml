@@ -2,17 +2,11 @@ openapi: 3.0.0
 info:
   title: PipesHub API
   description: |
-    Unified API documentation for PipesHub services.
+    Search and chat over your company's knowledge, with citations to the source.
 
-    PipesHub is an enterprise-grade platform providing:
-    - User authentication and management
-    - Document storage and version control
-    - Knowledge base management
-    - Enterprise search and conversational AI
-    - Third-party integrations via connectors
-    - System configuration management
-    - Crawling job scheduling
-    - Email services
+    PipesHub connects workplace apps such as Google Drive, Slack, Confluence and Jira and indexes
+    their content. This API searches and chats over that knowledge, runs agents, and manages
+    knowledge bases, connectors, users and access.
 
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
@@ -24,7 +18,7 @@ info:
 
     **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters.
 
-    **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
+    **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse or whose top level is not an object or an array (a bare string, number, `true`, `false` or `null`), or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
     **Request size.** On every route with a request validator, the body, query and path values are measured before the schema runs. An array over 10,000 items (`<path> can have at most 10000 items.`), an object over 10,000 keys (`<path> can have at most 10000 fields.`), more than 100,000 array items and object keys in the whole request (`The request holds too many items in total (the limit is 100000); the limit is reached at <path>.`) or nesting deeper than 64 levels (`<path> is nested more than 64 levels deep.`) is refused with `400 VALIDATION_ERROR` (detail code `TOO_BIG`, or `TOO_DEEP` for nesting; the path reads like `body.items`). The deployment can change the first three limits with `VALIDATION_MAX_ARRAY_LENGTH`, `VALIDATION_MAX_OBJECT_KEYS` and `VALIDATION_MAX_TOTAL_ITEMS`.
 
@@ -46,14 +40,14 @@ servers:
     description: Base API URL
     variables:
       instance_url:
-        default: https://app.pipeshub.com
-        description: Base server URL (without /api/v1)
+        default: app.pipeshub.com
+        description: Host name, with an optional port, of a PipesHub instance served over HTTPS. For a plain-HTTP instance, such as a local one, set the full server URL instead.
   - url: "{instance_url}"
     description: Root URL (used for MCP endpoints mounted at /mcp)
     variables:
       instance_url:
-        default: https://app.pipeshub.com
-        description: Base server URL
+        default: app.pipeshub.com
+        description: Host name, with an optional port, of a PipesHub instance served over HTTPS. For a plain-HTTP instance, such as a local one, set the full server URL instead.
 tags:
   - name: User Account
     description: User authentication including multi-step MFA, password reset, OTP login, and token management
@@ -253,9 +247,11 @@ tags:
       project.
 
       Projects are a Labs feature. While an admin has **Enable Projects**
-      turned off, every `/projects` route answers `403`, as do starting a
-      chat with a `projectId` and moving a chat into a project; an existing
-      project chat keeps answering, without its project's context.
+      turned off, every `/projects` route answers a signed-in caller with
+      `403`, as do starting a chat with a `projectId` and moving a chat into
+      a project; an existing project chat keeps answering, without its
+      project's context. A caller who is not signed in gets `401` first,
+      whatever the switch says.
 
       Name, description and instruction lengths count UTF-16 code units, the
       way a browser's `maxLength` does, so an emoji counts as two characters.
@@ -5004,6 +5000,55 @@ components:
         - __v
 
     # ==================== STORAGE SCHEMAS ====================
+    StorageFingerprint:
+      type: object
+      description: |
+        What a reader may rely on about a document's stored bytes. Only `trusted` may justify skipping a re-read. `value` is
+        comparable only between verified responses (`verified: true`); store it only when `trusted` is true.
+
+        The ETag is reported without quotes and without a weak marker; add exactly one pair of quotes to build `If-Match`. On local
+        storage the ETag is synthetic (a hash of device, inode, size and modification time of the file). On S3 only virtual-hosted
+        style stored URLs can be checked: a path-style endpoint, or a bucket or region that does not match the configuration, answers
+        `objectUnverifiable: true` with `reason: unparseable_storage_url` (HTTP 200, not trusted, no retry needed).
+
+        Operators bump `STORAGE_FINGERPRINT_EPOCH` after a restore from backup or a store migration; every stored `value` then stops
+        matching once (one re-read). It is a per-pod setting, so during a rolling restart a value can alternate, which only ever
+        reads as "changed".
+      required: [version, value, settled, verified, object, objectMissing, objectUnverifiable, trusted]
+      properties:
+        version:
+          type: integer
+          example: 1
+        value:
+          type: string
+          description: 32 hex characters.
+        settled:
+          type: boolean
+          description: No writer is mid-write.
+        verified:
+          type: boolean
+        object:
+          nullable: true
+          type: object
+          description: Present only when verified and the object exists.
+          properties:
+            size:
+              type: integer
+            etag:
+              type: string
+            lastModified:
+              type: string
+              nullable: true
+              description: Informational; one-second resolution on Azure. Not part of `value`.
+        objectMissing:
+          type: boolean
+        objectUnverifiable:
+          type: boolean
+        reason:
+          type: string
+          description: '`unparseable_storage_url` or `server_clock_unavailable`.'
+        trusted:
+          type: boolean
     Document:
       type: object
       description: |
@@ -5024,6 +5069,14 @@ components:
           type: string
           description: Display name of the document
           example: "Q4 Financial Report.pdf"
+        awaitingDirectUpload:
+          type: boolean
+          description: A direct upload was started and has not been recorded as finished (a verified read of the document records it).
+        retiredAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Server time (ms) the document was marked retired.
         alternateDocumentName:
           type: string
           description: Alternative name for search/display purposes
@@ -9217,6 +9270,11 @@ components:
             duration:
               type: integer
               minimum: 0
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -9250,6 +9308,11 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentStreamCreateConversationRequest:
       allOf:
         - $ref: '#/components/schemas/AgentCreateConversationRequest'
@@ -9829,6 +9892,11 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentAddMessageStreamRequest:
       allOf:
         - $ref: '#/components/schemas/AgentAddMessageRequest'
@@ -10346,6 +10414,10 @@ components:
           type: string
           enum: [none, low, medium, high, max]
           description: Reasoning effort requested for the turn, when one was set.
+        modelNote:
+          type: string
+          description: On an answer, a short note the AI service added about the model that answered.
+
     FollowUpQuestion:
       type: object
       additionalProperties: false
@@ -12349,6 +12421,11 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        searchDegraded:
+          type: boolean
+          description: |
+            Present (`true`) only when the search store answered from a partial search.
+            The results are valid but may be incomplete.
         searchIncomplete:
           type: string
           description: |
@@ -15896,6 +15973,7 @@ components:
           `result` is `{ conversation, recordsUsed, meta }` — the updated
           conversation plus request metadata after the regenerated response
           is persisted.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
           lookup failures, unauthorized conversation access, and regenerate
           rule failures such as "not the last message" are reported here.
@@ -15948,6 +16026,7 @@ components:
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
 
@@ -16005,6 +16084,7 @@ components:
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16065,6 +16145,7 @@ components:
           `{ conversation, recordsUsed, meta }`.
           `recordsUsed` is the count of citations attached to the new
           assistant message.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16122,6 +16203,8 @@ components:
         `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+        Optional `result.meta.searchDegraded` (`true`) is present on `RUN_FINISHED` only when a search behind the
+        answer was answered from a partial search.
       properties:
         event:
           type: string
@@ -16171,6 +16254,7 @@ components:
           parsed, citations are saved, and the updated conversation is
           persisted. The gateway emits `{ type, result }`; `result` carries
           `{ conversation, recordsUsed, meta }`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired for runtime failures after the stream has
           already started, including conversation lookup failures, upstream
           AI startup failures, save failures, and stream transport errors.
@@ -16393,6 +16477,7 @@ components:
         - BEARER_TOKEN
         - BASIC_AUTH
         - ACCESS_KEY
+        - KEY_PAIR
         - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
@@ -23341,6 +23426,11 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     StoredAIModelsConfig:
       type: object
       additionalProperties: false
@@ -23820,6 +23910,217 @@ components:
         $ref:
           type: string
           example: '#/components/responses/XssRejected'
+    EntityType:
+      type: string
+      description: Kind of knowledge-graph entity.
+      enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
+    EntityRecordDate:
+      type: object
+      description: >-
+        The one date shown for a record, under the key that says what it is: `modified` (last change in the source),
+        `dated` (the document's own date), `fileModified` (the file's last change) or `uploaded` (when it was added).
+        Absent when the record has no date. The same shape in `POST /search/entities` and `POST /search/entities/neighbors`.
+      properties:
+        modified:
+          type: string
+          example: '2026-04-30'
+        dated:
+          type: string
+          example: '2026-04-30'
+        fileModified:
+          type: string
+          example: '2026-04-30'
+        uploaded:
+          type: string
+          example: '2026-04-30'
+    EntitySearchRequest:
+      type: object
+      description: Request body for `POST /search/entities`.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: A name or phrase.
+        entityTypes:
+          type: array
+          maxItems: 10
+          description: Only these kinds. Leave out for all.
+          items:
+            $ref: '#/components/schemas/EntityType'
+        namedEntityKinds:
+          type: array
+          maxItems: 10
+          description: For `named_entity`, only these kinds, such as `person` or `organization`.
+          items:
+            type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 25
+          default: 10
+          description: Most entities to return.
+    EntitySearchResponse:
+      type: object
+      description: Result of `POST /search/entities`.
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          description: Set when nothing matched.
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+                description: Named-entity kind, for `named_entity` results.
+              apps:
+                type: array
+                description: Connectors whose records carry the entity.
+                items:
+                  type: string
+              records:
+                type: array
+                description: A few readable records, for the first entities only.
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/EntityRecordDate'
+                    - type: object
+                      properties:
+                        recordId:
+                          type: string
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        app:
+                          type: string
+              moreRecords:
+                type: boolean
+        scopeNote:
+          type: string
+          description: Set when the caller's access covers only part of some connectors' records, so matches can be missing.
+        ignoredEntityTypes:
+          type: array
+          description: Requested `entityTypes` this search does not cover; they were left out.
+          items:
+            type: string
+        kindNotes:
+          type: array
+          description: Why some requested `namedEntityKinds` were not searched.
+          items:
+            type: string
+    EntityNeighborsRequest:
+      type: object
+      description: Request body for `POST /search/entities/neighbors`.
+      required:
+        - entityId
+        - entityType
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          description: Only records of these types, such as `FILE` or `TICKET`.
+          items:
+            type: string
+        recordLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most records to list.
+        relatedLimit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+          description: Most related entities to list.
+        cursor:
+          type: string
+          maxLength: 64
+          description: "`nextCursor` from the previous page."
+    EntityNeighborsResponse:
+      type: object
+      description: Result of `POST /search/entities/neighbors`.
+      properties:
+        status:
+          type: string
+          example: success
+        entityId:
+          type: string
+        entityType:
+          $ref: '#/components/schemas/EntityType'
+        records:
+          type: array
+          description: Readable records connected to the entity, newest first.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/EntityRecordDate'
+              - type: object
+                properties:
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  recordType:
+                    type: string
+                  app:
+                    type: string
+                  webUrl:
+                    type: string
+                    nullable: true
+        relatedEntities:
+          type: array
+          description: Entities those records share with this one, most shared first.
+          items:
+            type: object
+            properties:
+              entityId:
+                type: string
+              entityType:
+                $ref: '#/components/schemas/EntityType'
+              name:
+                type: string
+              kind:
+                type: string
+              relation:
+                type: string
+                description: Edge type joining a record to this entity.
+              sharedRecords:
+                type: integer
+                description: How many of the listed records carry it.
+        relationTypes:
+          type: array
+          items:
+            type: string
+        nextCursor:
+          type: string
+          description: Pass as `cursor` for the next page of records.
+        note:
+          type: string
+          description: Set when the entity has more records than one listing can scan.
+        relatedNote:
+          type: string
+          description: Set when `relatedEntities` covers only the records on this page.
   responses:
     XssRejected:
       description: >-
@@ -25915,6 +26216,88 @@ paths:
                 bearer_methods_supported: ["header"]
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
+  /auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: authMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
+  /.well-known/auth.md:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Authentication guide for agents (auth.md)
+      description: |
+        A Markdown guide an AI agent follows to get a credential for this
+        instance and use it: discovery, the device-code sign-in (with this
+        instance's `pipeshub_device_client_id`), client registration when
+        enabled, personal access tokens, the scopes an agent sign-in gets, and
+        what a `401` or `403` means. Built from the same settings as discovery.
+        `/auth.md` and `/.well-known/auth.md` return the same document.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication. It takes no parameters; query parameters are ignored.
+      operationId: wellKnownAuthMd
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: |
+                # PipesHub: authentication for agents
+
+                You are an agent. This is how to get a credential for the PipesHub at https://pipeshub.example.com and use it.
+
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
     get:
@@ -27434,6 +27817,10 @@ paths:
 
         - Multiple OTP requests may be rate-limited
         - Wait for the current OTP to expire before requesting a new one
+        - Requests about **one email address** are also limited across all clients
+          (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+          the same `200` and message but no code is sent, so the limit does not show whether the
+          address has an account. Password sign-in is not affected.
 
         **CAPTCHA:**
 
@@ -27508,6 +27895,10 @@ paths:
         email is registered. If the account exists a reset link is sent;
         otherwise the request is silently ignored. Internal lookup or mail
         delivery failures are logged server-side and do not change the response.
+
+        Requests about **one email address** are also limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+        the same `200` and message but no email is sent.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -27652,6 +28043,10 @@ paths:
 
         **Known defects:** a value that is not an email is stored although the answer is `422`;
         a token without a `newEmail` claim stores the word `undefined` the same way.
+
+        **Rate limit:** confirmations for one new address are limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute); the address is the one in the
+        verified token. Over the limit the answer is `429` with `Retry-After`.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -27701,6 +28096,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many confirmations for this new address in the current minute. Try again after `Retry-After` seconds.
+          headers:
+            Retry-After:
+              description: Seconds until the current minute ends.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error. Also returned when the token's `userId` is not a valid
@@ -28557,6 +28963,34 @@ paths:
           schema:
             type: string
             pattern: '^,*([a-fA-F0-9]{24}(,+[a-fA-F0-9]{24})*)?,*$'
+        - name: joinedFrom
+          in: query
+          required: false
+          description: Only users who joined at or after this time, in epoch milliseconds (inclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: joinedTo
+          in: query
+          required: false
+          description: Only users who joined before this time, in epoch milliseconds (exclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: lastActiveFrom
+          in: query
+          required: false
+          description: Only users last active (last updated) at or after this time, in epoch milliseconds (inclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: lastActiveTo
+          in: query
+          required: false
+          description: Only users last active (last updated) before this time, in epoch milliseconds (exclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
         - name: includeServiceAccounts
           in: query
           required: false
@@ -35064,15 +35498,57 @@ paths:
       tags:
         - Internal Storage
       summary: Read a document record (service-to-service)
-      description: Mirrors `GET /document/{documentId}`.
+      description: |
+        Returns the stored document record plus a `storageFingerprint`: a value that changes whenever the document's bytes can have
+        changed, on every write path. Without `verify` the object store is not asked: the fingerprint follows the document's
+        counters only and is never trusted. With `verify=1` the stored object is checked (HEAD on S3 and Azure, a file stat on
+        local storage) and `object` holds its real size and ETag; `trusted` is then the only flag that may justify skipping a
+        re-read.
+
+        A direct upload that finished is recorded by the first verified read (the `awaitingDirectUpload` flag is cleared and
+        `sizeInBytes` follows the object); for documents uploaded before this existed that is a one-time write on a GET.
+        `sizeInBytes` is advisory; `object.size` is the truth. Every response carries `Cache-Control: no-store`.
+
+        Presigned upload links can change a document's bytes for as long as they live (one hour) without any event the server
+        sees; the ETag check and the `If-Match` rule below are what cover that.
       operationId: internalGetDocumentById
       security:
         - scopedToken: []
       parameters:
         - $ref: '#/components/parameters/InternalDocumentId'
+        - name: verify
+          in: query
+          required: false
+          description: '`1` or `true` checks the stored object. Any other value is a 400.'
+          schema:
+            type: string
+            enum: ['1', 'true']
       responses:
         '200':
-          description: The document record.
+          description: The document record and its fingerprint.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Document'
+                  - type: object
+                    required:
+                      - storageFingerprint
+                    properties:
+                      storageFingerprint:
+                        $ref: '#/components/schemas/StorageFingerprint'
+        '503':
+          description: |
+            The object store or the document store could not be read. A verified read still answers 200 with
+            `trusted: false` when the object is missing (`objectMissing`, no `object`), when its stored URL cannot be
+            parsed (`objectUnverifiable`, no `object`), when the document is awaiting its direct upload or is a deleted or
+            retired row (`object` holds the stored object's size and ETag when there is one), when it is an artifact set
+            (no `object`), and when the store clock is unavailable (no `object`; the `reason` says why).
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
@@ -36291,7 +36767,12 @@ paths:
       summary: Download a document (service-to-service)
       description: |
         Returns a time-limited link for S3 or Azure, or the file itself for local
-        storage. Mirrors `GET /document/{documentId}/download`.
+        storage.
+
+        Bind the download to a verified fingerprint: on S3 and Azure send `If-Match: "<object.etag>"` on every request to the
+        signed link (a range download on each range) and compare the `ETag` header of every response with `object.etag`; a 412 or a
+        mismatch means the object changed. On local storage pass the bare `object.etag` as `ifMatch`; the identity is taken from
+        the open file and a different one answers 412 before a byte is sent. The response always carries `ETag`.
       operationId: internalDownloadDocument
       security:
         - scopedToken: []
@@ -36311,9 +36792,22 @@ paths:
           schema:
             type: integer
             minimum: 1
+        - name: ifMatch
+          in: query
+          required: false
+          description: Local storage only. The `object.etag` the caller verified; any other file identity answers 412.
+          schema:
+            type: string
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+          headers:
+            ETag:
+              description: Local storage only. The quoted identity of the file that was sent.
+              schema:
+                type: string
+        '412':
+          description: Local storage only. The file is not the one named by `ifMatch`.
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
@@ -36376,7 +36870,8 @@ paths:
       tags:
         - Internal Storage
       summary: Replace a document's bytes (service-to-service)
-      description: Mirrors `PUT /document/{documentId}/buffer`.
+      description: |
+        Replaces the document's bytes. Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalUpdateDocumentBuffer
       security:
         - scopedToken: []
@@ -36425,7 +36920,9 @@ paths:
       tags:
         - Internal Storage
       summary: Add a new version of a document (service-to-service)
-      description: Mirrors `POST /document/{documentId}/uploadNextVersion`.
+      description: |
+        Uploads the next version.
+        Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalUploadNextVersion
       security:
         - scopedToken: []
@@ -36472,7 +36969,9 @@ paths:
       tags:
         - Internal Storage
       summary: Roll a document back to an earlier version (service-to-service)
-      description: Mirrors `POST /document/{documentId}/rollBack`.
+      description: |
+        Restores a past version as the current one.
+        Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalRollBackToPreviousVersion
       security:
         - scopedToken: []
@@ -36515,6 +37014,8 @@ paths:
           description: No such document, or no such version.
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: Another write to this document was in progress, or the store's clock could not be read; nothing was written. Safe to retry.
   /document/internal/{documentId}/directUpload:
     post:
       tags:
@@ -36522,7 +37023,11 @@ paths:
       summary: Get a link to upload straight to storage (service-to-service)
       description: |
         Returns a time-limited link the caller uses to send the file directly to
-        S3 or Azure. Mirrors `POST /document/{documentId}/directUpload`.
+        S3 or Azure.
+
+        The link replaces the document's current file and stays valid for one hour: the bytes can change at any time in that hour
+        without an event the server sees. Issuing the link moves the document's `storageFingerprint`; only a verified read
+        (`verify=1`) with an `If-Match` download is sound after that.
       operationId: internalDirectUpload
       security:
         - scopedToken: []
@@ -44279,14 +44784,6 @@ paths:
             SSE stream established. The body is a sequence of
             `text/event-stream` frames using the event vocabulary described
             on the schema below.
-
-            The conversation is looked up only after the stream is open, so
-            a conversation that does not exist, is deleted, belongs to
-            another user or is an agent conversation is not answered `404`:
-            the stream is `200` and carries a `CUSTOM` `conversation_created`
-            frame echoing the path's `conversationId`, then a single
-            `RUN_ERROR` with `message: "Conversation not found"` and
-            `code: "internal_error"`.
           content:
             text/event-stream:
               schema:
@@ -44310,6 +44807,15 @@ paths:
           description: |
             Forbidden — the caller's token does not include the
             `conversation:chat` OAuth scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Answered before the stream opens when the conversation does not
+            exist, is deleted, belongs to another user or is an agent
+            conversation (`HTTP_NOT_FOUND`, "Conversation not found").
           content:
             application/json:
               schema:
@@ -45260,6 +45766,7 @@ paths:
             `{ type, message, code? }` on failure. Forwarded lifecycle and
             child-run events may contain `runId`, `threadId`, and
             `parentRunId`. Clients should ignore unknown event names.
+            Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
 
             Refusals after validation are not HTTP errors. A missing, deleted
             or inaccessible conversation, a conversation with no messages, a
@@ -46885,11 +47392,14 @@ paths:
       summary: Ensure (create-if-absent) the project's hidden file Collection
       description: |
         Requires editor access. Lazily creates the project's own hidden
-        Knowledge Base (`isHidden: true` in Python `POST /api/v1/kb`) the
-        first time a caller needs to upload a file, and returns its id
-        either way. Race-safe: concurrent callers converge on one KB —
-        the losing request's KB is deleted. The hidden KB is excluded from
-        the Collections sidebar, Knowledge Hub, and unscoped search, but is
+        Knowledge Base (`isHidden: true` and `ownerUserId` of the project
+        owner in Python `POST /api/v1/kb`) the first time a caller needs
+        to upload a file, and returns its id either way. The collection is
+        owned by the project owner even when an editor triggers first use,
+        so removing that editor also revokes their collection grant.
+        Race-safe: concurrent callers converge on one KB — the losing
+        request's KB is deleted. The hidden KB is excluded from the
+        Collections sidebar, Knowledge Hub, and unscoped search, but is
         always included in this project's own chat scope
         (`filters.kb`) and file uploads go through the normal
         `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
@@ -47598,6 +48108,9 @@ paths:
         yet) is a `200` with an empty `chunks` list.
       operationId: retrieve
       x-pipeshub-sdk: true
+      x-speakeasy-usage-example:
+        title: Retrieve passages with citations
+        position: 1
       security:
         - bearerAuth: []
         - oauth2: [semantic:write]
@@ -47608,6 +48121,11 @@ paths:
             schema:
               $ref: '#/components/schemas/RetrieveRequest'
             examples:
+              basic:
+                summary: Chunks from everything the caller can see
+                value:
+                  query: "how do we roll back a canary?"
+                  limit: 8
               simple:
                 summary: Chunks from one collection
                 value:
@@ -49812,12 +50330,7 @@ paths:
               $ref: '#/components/schemas/AgentAddMessageStreamRequest'
       responses:
         '200':
-          description: |
-            SSE stream (text/event-stream). The stream opens before the
-            conversation is looked up, so a conversation that does not exist,
-            belongs to another user or to another agent also answers 200: the
-            stream carries one `RUN_ERROR` frame with `code: internal_error`
-            and ends. There is no 404.
+          description: SSE stream (text/event-stream).
           content:
             text/event-stream:
               schema:
@@ -49841,6 +50354,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The access token lacks the `agent:execute` OAuth scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Answered before the stream opens when the conversation does not
+            exist, is deleted, belongs to another user or belongs to another
+            agent, including an `agentKey` that names no agent
+            (`HTTP_NOT_FOUND`, "Conversation not found").
           content:
             application/json:
               schema:
@@ -49940,6 +50463,7 @@ paths:
             Stable event names:
             - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
               updated conversation and metadata
+              Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
             - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
               authorization, or regenerate-rule failures
 
@@ -51906,7 +52430,14 @@ paths:
         <b>Editing an instance:</b><br>
         Pass <code>connectorId</code> to lay the settings over the instance's saved
         ones, as <code>PUT /connectors/{connectorId}/config/auth</code> does. The
-        caller must be allowed to update that instance.
+        caller must be allowed to update that instance.<br><br>
+        <b>Addresses:</b><br>
+        A check runs under the rules of the connector it is for. A personal
+        connector (any check by a non-admin, or with the <code>connectorId</code> of
+        a personal instance) can only reach servers on public addresses; any other
+        host gets <code>200</code> with <code>success: false</code> and one message
+        for every refused host. A team connector follows the deployment's
+        address policy.
       operationId: testConnectorConnection
       x-pipeshub-sdk: true
       security:
@@ -52003,6 +52534,8 @@ paths:
             Docs, Zendesk, Airtable) while the platform feature flag
             `ENABLE_BETA_CONNECTORS` is off (the default), with the message
             `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`
+            Also returned to a non-admin for a connector type that only supports team
+            scope, with the message `Only administrators can set up <type> connectors`.
           content:
             application/json:
               schema:
@@ -52017,14 +52550,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: Service unavailable - Connector service is unreachable
           content:
@@ -52393,14 +52919,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/active:
     get:
       tags:
@@ -53874,14 +54393,7 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: |
             The sync event could not be published to the message broker, so
@@ -54406,14 +54918,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/{connectorId}/config/filters-sync:
     put:
       tags:
@@ -54427,8 +54932,13 @@ paths:
         <b>Merging:</b><br>
         `sync` is merged key by key into the saved sync settings. Each of
         `filters.sync` and `filters.indexing` that is sent replaces the saved
-        one. A `sync` or `filters` value that is not an object is skipped
-        without an error. Fields other than `sync` and `filters`, `baseUrl`
+        one. At least one of `sync` and `filters` must be truthy in
+        JavaScript (`400` otherwise), so `{"filters": false}` on its own is a
+        `400`. Past that check, a `sync` value that is not an object, and a
+        falsy `filters` value (`null`, `false`, `0`, `""` or `[]`), is
+        skipped without an error; any other `filters` value that is not an object, such as
+        `true`, `[null]` or a non-empty string, is answered `500`. Fields
+        other than `sync` and `filters`, `baseUrl`
         included, are dropped without an error.<br><br>
         The connector must be disabled (`400` otherwise).
       operationId: updateConnectorFiltersSyncConfig
@@ -54475,7 +54985,8 @@ paths:
                   - config
         '400':
           description: |
-            Invalid settings, a required sync filter is missing, `filters.sync` or `filters.indexing`
+            Invalid settings, neither `sync` nor `filters` is truthy ("Sync or filters configuration is
+            required"), a required sync filter is missing, `filters.sync` or `filters.indexing`
             is present but not an object ("filters.sync must be an object"), or the connector is active
           content:
             application/json:
@@ -54507,9 +55018,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal error, for example when the body or `filters` is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+            Internal error, for example when `filters` is neither an object nor falsy, such as `true`, `[null]` or a non-empty string. A body the app-wide parsers refuse is not answered here: malformed JSON is a `400`, a body past the size limits a `413` and an unsupported encoding a `415` (see Body parsers in the introduction).
           content:
             application/json:
               schema:
@@ -54611,14 +55120,7 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -54845,7 +55347,7 @@ paths:
         An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
         any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
         <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
-        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
+        <code>KEY_PAIR</code>, <code>IAM_ROLE</code>, <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
         including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
         needs saved settings but no auth section. Otherwise the request is refused with
         <code>400</code>.
@@ -64232,14 +64734,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /oauth/{connectorType}/{configId}:
     get:
       tags:
@@ -64437,14 +64932,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
     delete:
       tags:
         - OAuth Configuration
@@ -65957,6 +66445,14 @@ paths:
                       contextLength:
                         type: number
                         nullable: true
+                      configuration:
+                        type: object
+                        additionalProperties: true
+                        description: |
+                          Non-secret settings that differ for this model, applied over the shared `configuration`.
+                          Only the model's public settings apply (those reads return as stored, such as
+                          `defaultReasoningEffort`); credentials, the endpoint, `model` and `modelFriendlyName`
+                          stay shared, and any other key is ignored. `contextLength` goes in the field of its own.
       responses:
         '200':
           description: |
@@ -70498,7 +70994,7 @@ paths:
         - url: "{instance_url}"
           variables:
             instance_url:
-              default: https://app.pipeshub.com
+              default: app.pipeshub.com
       security:
         - bearerAuth: []
         - oauth2: []
@@ -70672,7 +71168,7 @@ paths:
         - url: "{instance_url}"
           variables:
             instance_url:
-              default: https://app.pipeshub.com
+              default: app.pipeshub.com
       security:
         - bearerAuth: []
         - oauth2: []
@@ -71644,6 +72140,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /search/entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search knowledge-graph entities
+      description: |
+        Find entities in the organisation's knowledge graph by name or meaning:
+        departments, categories, subcategories, topics, languages, record
+        groups (a drive, a space, a project), record titles and, where
+        named-entity extraction is on, people, organisations and other named
+        entities.
+
+        Only entities connected to records the caller can read are returned,
+        decided by the same access check as the assistant's entity tools. Each
+        result carries an `entityId` and `entityType`; pass both to
+        `POST /search/entities/neighbors` to see the records and related
+        entities around it.
+      operationId: searchEntities
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: What to look for.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntitySearchRequest'
+            examples:
+              topic:
+                summary: Find a topic
+                value:
+                  query: "payments"
+                  entityTypes: ["topic", "category"]
+      responses:
+        '200':
+          description: Entities the caller can reach, best match first. An empty `results` list means none matched, or none are connected to records the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitySearchResponse'
+        '400':
+          description: The request is invalid, for example an unsupported entity type or named-entity lookup turned off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: Entity search is not available in this deployment or timed out before the access check finished. This is not an empty result; try again.
+
+  /search/entities/neighbors:
+    post:
+      tags:
+        - Semantic Search
+      summary: Get an entity's records, related entities and relation types
+      description: |
+        Walk one step out from an entity: the records connected to it that the
+        caller can read (newest first), the other entities those records are
+        tagged with or mention (most shared first), and the relation types
+        that join them (`belongsToCategory`, `belongsToTopic`,
+        `belongsToLanguage`, `belongsToDepartment`, `mentionsEntity`).
+
+        Related entities are counted over the records listed in the same
+        response, never over records the caller cannot read. An entity the
+        caller cannot reach and an entity with no readable records answer the
+        same way: empty lists. Use `cursor` to page the records.
+      operationId: entityNeighbors
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        description: The entity to expand.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityNeighborsRequest'
+            examples:
+              topic:
+                summary: Neighbourhood of a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: Records, related entities and relation types around the entity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityNeighborsResponse'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: The lookup failed or timed out. This is not an empty result; try again.
+
   /search/updateAppConfig:
     post:
       tags:

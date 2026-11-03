@@ -116,3 +116,36 @@ class TestParsePdfLayoutModelRasters:
         assert (cache._dpi, cache._num_pages, cache._window) == (
             layout_pages.MODEL_DPI, 3, layout_pages.MODEL_RASTER_WINDOW_PAGES,
         )
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [({}, []), ({"PIPESHUB_LANE_THREADS": "2"}, [2]), ({"PIPESHUB_LANE_THREADS": "2", "PIPESHUB_LANE_CV2_THREADS": "1"}, [1]),
+     ({"PIPESHUB_LANE_THREADS": "2", "PIPESHUB_LANE_CV2_THREADS": "0"}, []), ({"PIPESHUB_LANE_CV2_THREADS": "3"}, [3])],
+)
+def test_cv2_cap_applied_once(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: list[int]) -> None:
+    import cv2
+
+    from app.modules.parsers.pdf import layout_pages
+
+    for name in ("PIPESHUB_LANE_THREADS", "PIPESHUB_LANE_CV2_THREADS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    calls: list[int] = []
+    monkeypatch.setattr(cv2, "setNumThreads", calls.append)
+    monkeypatch.setitem(layout_pages._cv2_cap, "applied", False)
+    layout_pages._cap_cv2_threads()
+    layout_pages._cap_cv2_threads()
+    assert calls == expected
+
+
+def test_parse_pdf_layout_caps_before_it_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.modules.parsers.pdf import layout_pages
+
+    order: list[str] = []
+    monkeypatch.setattr(layout_pages, "_cap_cv2_threads", lambda: order.append("cap"))
+    monkeypatch.setattr(layout_pages.pdfplumber, "open", lambda *a, **k: order.append("open") or (_ for _ in ()).throw(RuntimeError))
+    with pytest.raises(RuntimeError):
+        parse_pdf_layout(text_pdf(1))
+    assert order == ["cap", "open"]

@@ -1572,7 +1572,8 @@
       "internalSearch": "내부 검색",
       "webSearch": "웹 검색",
       "internalAndWebSearch": "내부 + 웹 검색"
-    }
+    },
+    "searchDegraded": "결과가 완전하지 않을 수 있습니다."
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -2404,6 +2405,7 @@
         "developerSettings": "개발자 설정",
         "oauth2": "OAuth 2.0 앱",
         "personalAccessTokens": "개인 액세스 토큰",
+        "apiDocumentation": "API 문서",
         "profile": "프로필",
         "yourConnectors": "내 개인 커넥터",
         "yourActions": "내 액션",

@@ -40,7 +40,7 @@ PROPERTY_NAME_PATTERN = r"^[a-z][a-zA-Z0-9_]{0,63}$"
 #: manifests, mapping nodes); a property of the same name would shadow one.
 PIPELINE_FIELD_NAMES = frozenset({
     "orgId", "virtualRecordId", "recordId", "blockId", "blockIndex", "blockType",
-    "isBlock", "isBlockGroup", "rev", "contentRev", "currentRev", "previousRev",
+    "isBlock", "isBlockGroup", "rowBlockIds", "rev", "contentRev", "currentRev", "previousRev",
     "manifestDocId", "storedRev", "storedRun", "storedMeta", "currentRun", "switchSeq",
     "switchDoc", "switchUpdatedAt", "lastSwitchAt", "retired",
     "schemaId", "connectorId", "connectorIds", "recordGroupIds", "rootRecordGroupIds",

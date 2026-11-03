@@ -422,7 +422,9 @@ TRASH_STATE_FIELDS = (
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
 # when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
-# taxonomy copy. No client reads them, and the record endpoint's response
+# taxonomy copy, the mark a push leaves for indexing, and the projected property values with their controls
+# (`recordProps`, `propsSet`, `propsGen`, `propsSrc`, `propsVer`; on Neo4j the values are flat `p_<name>` keys,
+# dropped by `api_record` too). No client reads them, and the record endpoint's response
 # schema rejects fields it does not list, so the endpoint leaves these out.
 # `deletedByUserId` predates the trash and is documented, so it stays in.
 INTERNAL_RECORD_FIELDS = frozenset({
@@ -437,13 +439,26 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "republishCount",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
+    "extractionDeferred",
     "duplicateReconcileDueAt",
+    "pushOrigin",
+    "recordProps",
+    "propsSet",
+    "propsGen",
+    "propsSrc",
+    "propsVer",
 })
+
+#: A projected property value on a Neo4j record node (``p_<name>``); never part of a record the API returns.
+_PROJECTED_PROPERTY_KEY = re.compile(r"^p_[a-zA-Z0-9_]{1,64}$")
 
 
 def api_record(record: dict[str, Any]) -> dict[str, Any]:
     """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
-    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+    return {
+        key: value for key, value in record.items()
+        if key not in INTERNAL_RECORD_FIELDS and not _PROJECTED_PROPERTY_KEY.match(key)
+    }
 
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
@@ -650,17 +665,22 @@ def jira_issue_browse_url_regex(issue_key: str) -> str:
     return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"
 
 
-async def org_id_from_app_edge(graph_provider: "IGraphDBProvider", app_id: str) -> str | None:
+async def org_id_from_app_edge(
+    graph_provider: "IGraphDBProvider", app_id: str, *, raise_on_error: bool = False
+) -> str | None:
     """The org an app belongs to, from its org-app edge.
 
     Connector apps created before ``orgId`` was stored on the document have
     their org only on this edge. Neo4j returns a bare id in ``from_id``;
     Arango a document handle in ``_from`` ("organizations/<key>").
+    ``raise_on_error=True`` raises a failed edge read instead of answering None.
     """
-    edges = await graph_provider.get_edges_to_node(
-        f"{CollectionNames.APPS.value}/{app_id}",
-        CollectionNames.ORG_APP_RELATION.value,
-    )
+    node_id = f"{CollectionNames.APPS.value}/{app_id}"
+    # Only passed when set, so the default call is unchanged for every caller and test double.
+    if raise_on_error:
+        edges = await graph_provider.get_edges_to_node(node_id, CollectionNames.ORG_APP_RELATION.value, raise_on_error=True)
+    else:
+        edges = await graph_provider.get_edges_to_node(node_id, CollectionNames.ORG_APP_RELATION.value)
     for edge in edges or []:
         if not isinstance(edge, dict):
             continue

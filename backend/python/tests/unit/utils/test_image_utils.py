@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 from unittest.mock import MagicMock, patch
@@ -12,18 +11,17 @@ from PIL import Image
 
 from app.utils.image_utils import (
     EXT_TO_MIME,
-    _fetch_image_as_base64,
     downscale_to_limits,
     get_extension_from_mimetype,
     get_image_info_from_url,
     get_mime_type_from_base64,
+    is_below_content_size,
+    is_decorative_image,
+    is_extreme_aspect_ratio,
     mime_to_extension,
     normalize_image_to_base64,
     supported_mime_types,
-    is_below_content_size,
-    is_extreme_aspect_ratio,
-    is_decorative_image,
-    to_llm_image_format, 
+    to_llm_image_format,
 )
 
 _RASTERIZE = "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64"
@@ -246,120 +244,6 @@ class TestGetImageInfoFromUrl:
         ext, mime = get_image_info_from_url("https://example.com/PHOTO.PNG")
         assert ext == ".png"
         assert mime == "image/png"
-
-
-# ---------------------------------------------------------------------------
-# _fetch_image_as_base64 (async)
-# ---------------------------------------------------------------------------
-
-
-class TestFetchImageAsBase64:
-    def test_unsupported_mime_skips_fetch(self) -> None:
-        with patch(
-            "app.utils.image_utils.get_image_info_from_url",
-            return_value=(".gif", "image/gif"),
-        ):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/anim.gif")
-            )
-        assert result is None
-
-    def test_non_200_status_returns_none(self) -> None:
-        mock_result = MagicMock()
-        mock_result.status_code = 404
-        mock_result.content = b""
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/img.png")
-            )
-        assert result is None
-
-    def test_empty_content_returns_none(self) -> None:
-        mock_result = MagicMock()
-        mock_result.status_code = 200
-        mock_result.content = b""
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/img.png")
-            )
-        assert result is None
-
-    def test_success_with_png_content(self) -> None:
-        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
-        import base64 as b64mod
-        mock_result = MagicMock()
-        mock_result.status_code = 200
-        mock_result.content = png_bytes
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(".png", "image/png")), \
-             patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/img.png")
-            )
-        assert result is not None
-        b64_str, mime = result
-        assert mime == "image/png"
-        assert isinstance(b64_str, str)
-
-    def test_unknown_mime_from_bytes_returns_none(self) -> None:
-        # Content that doesn't match any known signature
-        mock_result = MagicMock()
-        mock_result.status_code = 200
-        mock_result.content = b"\x00\x01\x02\x03" * 10
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/img")
-            )
-        assert result is None
-
-    def test_fetch_error_returns_none(self) -> None:
-        from app.utils.url_fetcher import FetchError
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", side_effect=FetchError("connection refused")):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/img.png")
-            )
-        assert result is None
-
-    def test_generic_exception_returns_none(self) -> None:
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", side_effect=RuntimeError("unexpected")):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/img.png")
-            )
-        assert result is None
-
-    def test_mime_not_in_supported_list_returns_none(self) -> None:
-        # TIFF is detected but not in supported_mime_types
-        tiff_bytes = b"II*\x00" + b"\x00" * 20
-        mock_result = MagicMock()
-        mock_result.status_code = 200
-        mock_result.content = tiff_bytes
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", return_value=mock_result):
-            result = asyncio.run(
-                _fetch_image_as_base64("https://example.com/photo.tiff")
-            )
-        assert result is None
-
-    def test_fetches_with_private_host_blocking_on(self) -> None:
-        mock_result = MagicMock()
-        mock_result.status_code = 404
-        mock_result.content = b""
-
-        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
-             patch("app.utils.image_utils.fetch_url", return_value=mock_result) as mock_fetch:
-            asyncio.run(_fetch_image_as_base64("https://example.com/img.png"))
-
-        assert mock_fetch.call_args.kwargs["block_private_hosts"] is True
 
 
 # ---------------------------------------------------------------------------
