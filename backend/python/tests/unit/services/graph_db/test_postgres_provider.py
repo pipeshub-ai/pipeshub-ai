@@ -175,3 +175,14 @@ def test_the_shared_name_and_upload_helpers_give_what_each_store_gave() -> None:
                     p._generate_upload_message(result, "folder"), p._analyze_upload_structure(files, valid)))
     assert out[0] == out[1] == out[2]
     assert out[2][0] == "\u00e9cole" and out[2][1] is None
+
+
+@pytest.mark.asyncio
+async def test_ping_runs_one_constant_select_through_the_service_role() -> None:
+    """The health probe costs one `SELECT 1` and reads no org or graph rows."""
+    tx = MagicMock(fetchval=AsyncMock(return_value=1))
+    db = MagicMock()
+    db.runtime_uow.return_value.__aenter__ = AsyncMock(return_value=tx)
+    db.runtime_uow.return_value.__aexit__ = AsyncMock(return_value=False)
+    await PgBase(logging.getLogger("t"), db).ping()
+    tx.fetchval.assert_awaited_once_with("/* pipeshub:graph.ping */ SELECT 1")

@@ -46,6 +46,8 @@ def _stage_records(monkeypatch: pytest.MonkeyPatch, bound) -> None:
     async def insert_record(provider, record_id, rev):  # noqa: ANN202
         await provider.batch_upsert_nodes([{"id": record_id, "orgId": ss.ORG, "contentRev": rev}], ss.RECORDS)
     monkeypatch.setattr(ss, "_insert_record", insert_record)
+    # PostgreSQL reports the org of the row, the org the state was written under, not the document's field.
+    monkeypatch.setattr(ss, "_org_of", lambda provider: provider.org)
 
 
 async def test_ensure_nodes_creates_once_under_concurrency_and_never_modifies(bound: OrgBound) -> None:
