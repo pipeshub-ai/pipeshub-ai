@@ -515,8 +515,8 @@ async def _with_search_without_dates(
 
 # Said with the matches a search found only by name, when no content matched.
 _ONLY_BY_NAME_MESSAGE = (
-    "No indexed content matched. Records whose names match, but whose content is not "
-    "indexed yet, are in unindexedMatches."
+    "No indexed content matched; {n} record(s) matched by name only, content not indexed yet. "
+    "They are in unindexedMatches."
 )
 
 
@@ -555,7 +555,7 @@ async def _unindexed_matches(
 def _with_unindexed_matches(results: dict[str, Any], matches: list[UnindexedMatch]) -> dict[str, Any]:
     """The results with an ``unindexedMatches`` field: the records found by name
     only, apart from the passages and without a record the passages already cite.
-    A search that found no indexed content (404) answers 200 instead, as a search
+    A search that found no indexed content (404, or an empty 200) answers a 200 success instead, as a search
     with matches outside its dates does."""
     if results.get("status_code") not in (200, 404):
         return results
@@ -565,8 +565,11 @@ def _with_unindexed_matches(results: dict[str, Any], matches: list[UnindexedMatc
     if not by_name:
         return results
     payload = {**results, "unindexedMatches": [m.payload() for m in by_name]}
-    if results.get("status_code") == 404:
-        payload.update(status="success", status_code=200, message=_ONLY_BY_NAME_MESSAGE)
+    if results.get("status_code") == 404 or (
+        results.get("status") == Status.EMPTY_RESPONSE.value and not results.get("searchResults")
+    ):
+        n = len(by_name)
+        payload.update(status="success", status_code=200, message=_ONLY_BY_NAME_MESSAGE.format(n=n))
     return payload
 
 

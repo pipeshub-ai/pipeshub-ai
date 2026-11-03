@@ -10,6 +10,7 @@ the public search response, labelled with ``utils.not_indexed``.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -32,6 +33,11 @@ if TYPE_CHECKING:
 # kept, so the vector search reads more than the caller shows.
 TITLE_SEARCH_TOP_K = 25
 MAX_UNINDEXED_MATCHES = 10
+# Cosine of the query to a record name below which the record is not a match.
+# Measured with text-embedding-3-small: meaning matches 0.50-0.95 ("staff policy
+# document" to "Employee handbook" 0.59), near misses up to 0.37, gibberish up to
+# 0.25, unrelated text up to 0.17. Other models spread differently; re-measure.
+MIN_TITLE_COSINE = 0.45
 _MAX_NAME_CHARS = 200
 
 TITLE_BLOCK_HEADER = (
@@ -78,6 +84,12 @@ def _one_line(name: str) -> str:
     return text if len(text) <= _MAX_NAME_CHARS else text[: _MAX_NAME_CHARS - 1] + "…"
 
 
+def _names_the_query(query: str, name: str) -> bool:
+    """Whether the name contains a word of the query: a literal match always passes."""
+    text = name.casefold()
+    return any(word in text for word in re.findall(r"\w{3,}", query.casefold()))
+
+
 def unindexed_matches(
     hits: Iterable[EntityHit], context: EntityAccessContext, limit: int = MAX_UNINDEXED_MATCHES,
 ) -> list[UnindexedMatch]:
@@ -122,7 +134,16 @@ async def find_unindexed_matches(
         store, graph_provider, context, query,
         entity_types=[RECORD_ENTITY_TYPE], top_k=TITLE_SEARCH_TOP_K, include_named=False,
     )
-    return unindexed_matches(hits, context, limit)
+    candidates = unindexed_matches(hits, context, TITLE_SEARCH_TOP_K)
+    if not candidates:
+        return []
+    # The hit scores are rank fused (the best hit scores the same for any query),
+    # so relevance is the dense cosine of the query to the name.
+    cosines = await store.dense_similarities(query, [m.name for m in candidates])
+    return [
+        m for m, cosine in zip(candidates, cosines)
+        if cosine >= MIN_TITLE_COSINE or _names_the_query(query, m.name)
+    ][:limit]
 
 
 def _line(match: UnindexedMatch, shortener: _Shortener | None) -> str:

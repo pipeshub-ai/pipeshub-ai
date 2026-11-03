@@ -12506,7 +12506,7 @@ components:
         unindexedMatches:
           type: array
           description: |
-            Present only when records match the query by name but their content is not
+            Present only when records match the query by name or meaning but their content is not
             indexed yet (just synced, queued, or with automatic indexing off). Search reads
             only indexed text, so these are never in `searchResults`; they are found by their
             names. Best match first, up to 10, only records the caller may read, and never a
@@ -48834,8 +48834,8 @@ paths:
                       status: success
                       status_code: 200
                       message: >-
-                        No indexed content matched. Records whose names match, but whose content
-                        is not indexed yet, are in unindexedMatches.
+                        No indexed content matched; 1 record(s) matched by name only, content
+                        not indexed yet. They are in unindexedMatches.
                       unindexedMatches:
                         - recordId: 3f1c2a9e-7d4b-4c55-9a0e-2b6d8e1f4a73
                           recordName: Quarterly planning

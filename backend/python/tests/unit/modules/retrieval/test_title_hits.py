@@ -70,6 +70,7 @@ def _store(*hits: tuple[str, float]) -> MagicMock:
         return [found if i == 0 else [] for i in range(len(passes))]
 
     store.search_entities_passes = AsyncMock(side_effect=_passes)
+    store.dense_similarities = AsyncMock(side_effect=lambda query, texts: [1.0] * len(texts))
     return store
 
 
@@ -206,6 +207,28 @@ class TestEveryStatusRenders:
         assert shown == [match]
         assert f"status: {status or 'unknown'}" in text
         assert "content is not indexed yet" in text
+
+
+class TestRelevance:
+    """Rank-fused scores say nothing about relevance: the dense cosine decides, or a literal word of the name."""
+
+    async def _find(self, query: str, cosine: float) -> list[str]:
+        rows = {"r1": _row("r1", recordName="Quarterly planning", indexingStatus=QUEUED)}
+        store = _store(("r1", 0.9))
+        store.dense_similarities = AsyncMock(return_value=[cosine])
+        return [m.record_id for m in await find_unindexed_matches(store, _graph(rows), _context(), query)]
+
+    @pytest.mark.asyncio
+    async def test_a_semantic_match_passes(self) -> None:
+        assert await self._find("Q3 plan", 0.65) == ["r1"]
+
+    @pytest.mark.asyncio
+    async def test_gibberish_fails(self) -> None:
+        assert await self._find("zzqx nonexistent", 0.25) == []
+
+    @pytest.mark.asyncio
+    async def test_an_exact_word_always_passes(self) -> None:
+        assert await self._find("PLANNING notes", 0.1) == ["r1"]
 
 
 class TestTheTitleBlock:

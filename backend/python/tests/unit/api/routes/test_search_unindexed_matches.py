@@ -61,6 +61,13 @@ def _nothing_indexed() -> dict[str, Any]:
     }
 
 
+def _empty_200() -> dict[str, Any]:
+    return {
+        "searchResults": [], "records": [], "status": "empty_response",
+        "status_code": 200, "message": "No relevant documents found for your search query.",
+    }
+
+
 def _request(user: dict | None = None) -> MagicMock:
     request = MagicMock()
     request.state.user = user or {"userId": "user1", "orgId": "org1"}
@@ -125,6 +132,18 @@ class TestNothingIndexedMatched:
         assert body["searchResults"] == [] and body["records"] == []
         assert "unindexedMatches" in body["message"]
         assert [m["recordId"] for m in body["unindexedMatches"]] == ["r2"]
+
+    @pytest.mark.asyncio
+    async def test_a_name_only_match_after_an_empty_200_is_a_success(self) -> None:
+        status, body, _ = await _search(_empty_200(), [_match()])
+        assert status == 200 and body["status"] == "success"
+        assert body["message"].startswith("No indexed content matched; 1 record(s) matched by name only")
+        assert [m["recordId"] for m in body["unindexedMatches"]] == ["r2"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_200_without_matches_stays_empty(self) -> None:
+        _, body, _ = await _search(_empty_200(), [])
+        assert body["status"] == "empty_response" and "unindexedMatches" not in body
 
     @pytest.mark.asyncio
     async def test_without_matches_the_404_stays(self) -> None:

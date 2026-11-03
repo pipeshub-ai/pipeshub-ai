@@ -67,6 +67,7 @@ def _store(*keys: str) -> MagicMock:
         return [list(hits) for _ in passes]
 
     store.search_entities_passes = AsyncMock(side_effect=_passes)
+    store.dense_similarities = AsyncMock(side_effect=lambda query, texts: [1.0] * len(texts))
     return store
 
 
