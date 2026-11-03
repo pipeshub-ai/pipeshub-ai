@@ -1291,14 +1291,20 @@ export function tryParseMarkdownTableAtLine(
   };
 }
 
+interface FencedLine {
+  line: string;
+  at: number;
+  fenced: boolean;
+}
+
 /** Each line with where it starts, and whether it is inside a code fence. */
-function linesOutsideFences(content: string): { line: string; at: number; fenced: boolean }[] {
-  const out: { line: string; at: number; fenced: boolean }[] = [];
+function linesOutsideFences(content: string): FencedLine[] {
+  const out: FencedLine[] = [];
   let activeFenceMarker: FenceMarker | null = null;
   let at = 0;
-  for (const line of content.split("\n")) {
+  for (const line of content.split('\n')) {
     let fenced = activeFenceMarker !== null;
-    if (activeFenceMarker) {
+    if (activeFenceMarker !== null) {
       if (isFenceClosingLine(line, activeFenceMarker)) activeFenceMarker = null;
     } else {
       activeFenceMarker = getFenceMarker(line);
@@ -1313,11 +1319,16 @@ function linesOutsideFences(content: string): { line: string; at: number; fenced
 /** Where the first table outside code fences (a header row, then its separator) starts, or -1. */
 export function markdownTableStart(content: string): number {
   const lines = linesOutsideFences(content);
-  for (let i = 0; i < lines.length - 1; i += 1) {
-    const { line, at, fenced } = lines[i]!;
-    const next = lines[i + 1]!;
-    if (!fenced && !next.fenced && isMarkdownTableRow(line) && isMarkdownTableSeparatorRow(next.line)) {
-      return at;
+  for (const [i, current] of lines.entries()) {
+    const next = lines[i + 1];
+    if (
+      next !== undefined &&
+      !current.fenced &&
+      !next.fenced &&
+      isMarkdownTableRow(current.line) &&
+      isMarkdownTableSeparatorRow(next.line)
+    ) {
+      return current.at;
     }
   }
   return -1;
@@ -1331,11 +1342,12 @@ export function trailingTableRowsStart(content: string): number {
   const lines = linesOutsideFences(content);
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const { line, at, fenced } = lines[i]!;
+    const current = lines[i];
+    if (current === undefined) break;
     // The last line may be empty (text ended with a newline): a row can still come.
-    if (i === lines.length - 1 && line === "") continue;
-    if (fenced || !/^\s*\|/.test(line)) break;
-    start = at;
+    if (i === lines.length - 1 && current.line === '') continue;
+    if (current.fenced || !/^\s*\|/.test(current.line)) break;
+    start = current.at;
   }
   return start;
 }

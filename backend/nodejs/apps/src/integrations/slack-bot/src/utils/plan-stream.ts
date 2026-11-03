@@ -461,9 +461,8 @@ function mainArgument(summary: string, label: string): string {
   // Each quoted value is masked on its own, so a secret in it can't take its closing quote; a secret key's value is never shown.
   // The query a call ran is its argument (jql, not the cloudId beside it); ids are never it.
   let quoted: string | undefined;
-  let preferred = false;
   for (const match of summary.matchAll(QUOTED_ARGUMENT)) {
-    const key = match[1];
+    const key: string | undefined = match[1];
     const value = redactSecrets(match[2] ?? '').trim();
     if (
       (key !== undefined && (isSecretKey(key) || ID_KEY.test(key))) ||
@@ -472,12 +471,11 @@ function mainArgument(summary: string, label: string): string {
     ) {
       continue;
     }
-    const isQuery = key !== undefined && QUERY_KEY.test(key);
-    if (quoted === undefined || (isQuery && !preferred)) {
+    if (key !== undefined && QUERY_KEY.test(key)) {
       quoted = value;
-      preferred = isQuery;
+      break;
     }
-    if (preferred) break;
+    quoted ??= value;
   }
   const safe = redactSecrets(summary);
   let text = quoted ?? safe;
@@ -1713,7 +1711,7 @@ export class SlackPlanStream {
     this.liveness = setInterval(() => {
       void this.pulse();
     }, 1000);
-    this.liveness.unref?.();
+    this.liveness.unref();
   }
 
   private stopLiveness(): void {

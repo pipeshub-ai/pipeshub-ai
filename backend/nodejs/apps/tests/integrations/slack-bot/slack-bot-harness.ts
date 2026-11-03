@@ -378,11 +378,11 @@ export const GOLDEN_RUNS: { name: string; clock?: boolean; frames: () => Record<
       const answer = [
         '## Findings',
         '',
-        `${'Revenue grew in every quarter, led by enterprise seats [source](ref1). '.repeat(90)}`,
+        'Revenue grew in every quarter, led by enterprise seats [source](ref1). '.repeat(90),
         '',
         '## Detail',
         '',
-        `${'Costs fell as hosting moved to reserved capacity. '.repeat(120)}`,
+        'Costs fell as hosting moved to reserved capacity. '.repeat(120),
         '',
         'In short: growth held and margins improved.',
       ].join('\n');
