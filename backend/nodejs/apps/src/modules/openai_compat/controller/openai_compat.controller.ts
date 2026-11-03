@@ -8,19 +8,24 @@ import {
   toOpenAIModel,
 } from '../utils/chat-models';
 import { ChatRunError, runChat } from '../utils/chat-run';
+import { projectFromHeader } from './projects.controller';
 import {
   asString,
+  attachedFileIds,
   chatAnswerChunks,
   chatChunk,
   chatCompletion,
   chatMessagesToTurns,
   conversationIdFromResponseId,
+  fileSearchStoreIds,
   isJson,
   Json,
+  kbIdFromVectorStoreId,
   newChatCompletionId,
   newMessageItemId,
   newResponseId,
   openAIError,
+  recordIdFromFileId,
   responseAnswerEvents,
   responseMessageItem,
   responseObject,
@@ -42,7 +47,7 @@ function flush(res: Response): void {
   (res as Response & { flush?: () => void }).flush?.();
 }
 
-function sendError(
+export function sendError(
   res: Response,
   status: number,
   message: string,
@@ -53,7 +58,7 @@ function sendError(
   res.status(status).json(openAIError(message, code, type, param));
 }
 
-function sendRunError(res: Response, error: unknown): void {
+export function sendRunError(res: Response, error: unknown): void {
   if (error instanceof ChatRunError) {
     const param =
       error.code === 'model_not_found'
@@ -106,7 +111,7 @@ function writeData(res: Response, payload: unknown): void {
   flush(res);
 }
 
-function requestBody(req: Request): Json {
+export function requestBody(req: Request): Json {
   const body: unknown = req.body;
   return isJson(body) ? body : {};
 }
@@ -181,11 +186,76 @@ export const retrieveModel =
     }
   };
 
+const FILE_ONLY_QUERY = 'Use the attached files.';
+
+/**
+ * Chat fields beyond the query: the `OpenAI-Project` project (new conversations
+ * only), message files as attachments, and `file_search` vector stores as the
+ * knowledge filter. Null after answering 400 for a malformed one.
+ */
+function chatExtras(
+  req: Request,
+  res: Response,
+  opts: {
+    fileIds: unknown[];
+    storeIds: unknown[];
+    followUp: boolean;
+    fileParam: string;
+  },
+): Record<string, unknown> | null {
+  const extra: Record<string, unknown> = {};
+  const projectId = projectFromHeader(req);
+  if (projectId === undefined) {
+    sendError(
+      res,
+      400,
+      'OpenAI-Project must be a project id from GET /organization/projects',
+      'invalid_request',
+      'OpenAI-Project',
+    );
+    return null;
+  }
+  if (projectId !== null && !opts.followUp) extra.projectId = projectId;
+  const recordIds = opts.fileIds.map(recordIdFromFileId);
+  if (recordIds.some((id) => id === null)) {
+    sendError(
+      res,
+      400,
+      'File parts must name a file id returned by POST /files',
+      'invalid_request',
+      opts.fileParam,
+    );
+    return null;
+  }
+  if (recordIds.length > 0) {
+    extra.attachments = [...new Set(recordIds as string[])].map((recordId) => ({
+      recordId,
+    }));
+  }
+  const kbIds = opts.storeIds.map(kbIdFromVectorStoreId);
+  if (kbIds.some((id) => id === null)) {
+    sendError(
+      res,
+      400,
+      'file_search vector_store_ids must be ids from GET /vector_stores',
+      'invalid_request',
+      'tools',
+    );
+    return null;
+  }
+  if (kbIds.length > 0)
+    extra.filters = { apps: [...new Set(kbIds as string[])] };
+  return extra;
+}
+
 export const createChatCompletion =
   (deps: OpenAICompatDeps): Handler =>
   async (req, res) => {
     const body = requestBody(req);
-    const query = turnsToQuery(chatMessagesToTurns(body.messages));
+    const fileIds = attachedFileIds(body.messages);
+    const query =
+      turnsToQuery(chatMessagesToTurns(body.messages)) ||
+      (fileIds.length > 0 ? FILE_ONLY_QUERY : '');
     if (query === '') {
       sendError(
         res,
@@ -196,6 +266,13 @@ export const createChatCompletion =
       );
       return;
     }
+    const chatExtra = chatExtras(req, res, {
+      fileIds,
+      storeIds: [],
+      followUp: false,
+      fileParam: 'messages',
+    });
+    if (chatExtra === null) return;
     let chatModel: ChatModel | null;
     try {
       chatModel = await resolveModel(deps, body, res);
@@ -216,6 +293,7 @@ export const createChatCompletion =
         frontendUrl: deps.appConfig.frontendUrl,
         authorization: req.headers.authorization ?? '',
         model: chatModel,
+        extra: chatExtra,
         query,
         signal: controller.signal,
         onFrame: () => keepalive?.(),
@@ -271,10 +349,14 @@ export const createResponse =
       return;
     }
     const instructions = asString(body.instructions) || null;
-    const query = turnsToQuery(
-      responsesInputToTurns(body.input),
-      instructions ?? undefined,
+    const inputFileIds = attachedFileIds(
+      Array.isArray(body.input) ? body.input : [],
     );
+    const query =
+      turnsToQuery(
+        responsesInputToTurns(body.input),
+        instructions ?? undefined,
+      ) || (inputFileIds.length > 0 ? FILE_ONLY_QUERY : '');
     if (query === '') {
       sendError(
         res,
@@ -285,6 +367,13 @@ export const createResponse =
       );
       return;
     }
+    const chatExtra = chatExtras(req, res, {
+      fileIds: inputFileIds,
+      storeIds: fileSearchStoreIds(body.tools),
+      followUp: conversationId !== null,
+      fileParam: 'input',
+    });
+    if (chatExtra === null) return;
     let chatModel: ChatModel | null;
     try {
       chatModel = await resolveModel(deps, body, res);
@@ -315,6 +404,7 @@ export const createResponse =
         frontendUrl: deps.appConfig.frontendUrl,
         authorization: req.headers.authorization ?? '',
         model: chatModel,
+        extra: chatExtra,
         query,
         conversationId,
         signal: controller.signal,

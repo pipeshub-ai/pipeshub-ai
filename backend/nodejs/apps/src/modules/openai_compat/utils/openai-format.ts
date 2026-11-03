@@ -97,6 +97,44 @@ export function turnsToQuery(
   return sections.join('\n\n');
 }
 
+/**
+ * File ids attached to messages: Chat Completions `{type: "file", file: {file_id}}`
+ * and Responses `{type: "input_file", file_id}` parts. Inline file data is not read.
+ */
+export function attachedFileIds(messages: unknown): unknown[] {
+  if (!Array.isArray(messages)) return [];
+  const ids: unknown[] = [];
+  for (const message of messages.filter(isJson)) {
+    const parts = Array.isArray(message.content)
+      ? message.content.filter(isJson)
+      : [];
+    for (const part of parts) {
+      if (
+        part.type === 'file' &&
+        isJson(part.file) &&
+        part.file.file_id !== undefined
+      ) {
+        ids.push(part.file.file_id);
+      } else if (part.type === 'input_file' && part.file_id !== undefined) {
+        ids.push(part.file_id);
+      }
+    }
+  }
+  return ids;
+}
+
+/** Vector store ids named by Responses `file_search` tools. */
+export function fileSearchStoreIds(tools: unknown): unknown[] {
+  if (!Array.isArray(tools)) return [];
+  return tools
+    .filter(isJson)
+    .filter(
+      (tool) =>
+        tool.type === 'file_search' && Array.isArray(tool.vector_store_ids),
+    )
+    .flatMap((tool) => tool.vector_store_ids as unknown[]);
+}
+
 /** Chat Completions `messages[]` → turns. */
 export function chatMessagesToTurns(messages: unknown): TurnMessage[] {
   if (!Array.isArray(messages)) return [];
@@ -133,6 +171,28 @@ export function conversationIdFromResponseId(
 ): string | null {
   if (typeof responseId !== 'string') return null;
   return /^resp_([a-f0-9]{24})_[a-f0-9]+$/i.exec(responseId)?.[1] ?? null;
+}
+
+const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** `file-<recordId>`: a PipesHub record exposed as an OpenAI file. */
+export const toFileId = (recordId: string): string => `file-${recordId}`;
+
+export function recordIdFromFileId(fileId: unknown): string | null {
+  if (typeof fileId !== 'string' || !fileId.startsWith('file-')) return null;
+  const id = fileId.slice('file-'.length);
+  return SAFE_ID.test(id) ? id : null;
+}
+
+/** `vs_<collectionId>`: a PipesHub collection exposed as an OpenAI vector store. */
+export const toVectorStoreId = (kbId: string): string => `vs_${kbId}`;
+
+export function kbIdFromVectorStoreId(vectorStoreId: unknown): string | null {
+  if (typeof vectorStoreId !== 'string' || !vectorStoreId.startsWith('vs_')) {
+    return null;
+  }
+  const id = vectorStoreId.slice('vs_'.length);
+  return SAFE_ID.test(id) ? id : null;
 }
 
 export function newChatCompletionId(): string {

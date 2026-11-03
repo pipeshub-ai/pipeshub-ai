@@ -18,6 +18,8 @@ export interface ChatRunRequest {
   frontendUrl: string;
   authorization: string;
   model: ChatModel;
+  /** Extra chat fields (projectId, filters, attachments); a follow-up keeps its conversation's project. */
+  extra?: Record<string, unknown>;
   query: string;
   /** Continue this conversation instead of starting one. */
   conversationId?: string | null;
@@ -79,7 +81,7 @@ export async function* readSSE(
   if (tail) yield tail;
 }
 
-function upstreamErrorMessage(body: unknown, fallback: string): string {
+export function upstreamErrorMessage(body: unknown, fallback: string): string {
   if (!isJson(body)) return fallback;
   const error = body.error;
   if (isJson(error) && asString(error.message) !== '') {
@@ -88,7 +90,7 @@ function upstreamErrorMessage(body: unknown, fallback: string): string {
   return asString(error) || asString(body.message) || fallback;
 }
 
-function codeForStatus(status: number): string {
+export function codeForStatus(status: number): string {
   if (status === 401) return 'invalid_api_key';
   if (status === 403) return 'permission_denied';
   if (status === 404) return 'model_not_found';
@@ -96,7 +98,7 @@ function codeForStatus(status: number): string {
   return status >= 500 ? 'server_error' : 'invalid_request';
 }
 
-function parseJson(text: string): unknown {
+export function parseJson(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -198,6 +200,7 @@ export async function runChat(req: ChatRunRequest): Promise<ChatAnswer> {
       ...(model.friendlyName !== ''
         ? { modelFriendlyName: model.friendlyName }
         : {}),
+      ...req.extra,
     }),
     signal: req.signal,
   });

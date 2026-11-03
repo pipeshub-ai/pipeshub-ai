@@ -1089,6 +1089,18 @@ components:
           type: string
           nullable: true
           description: An `id` this server returned; continues that conversation.
+        tools:
+          type: array
+          description: Only `file_search` is read; other tool types are ignored.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              vector_store_ids:
+                type: array
+                items:
+                  type: string
         stream:
           type: boolean
           default: false
@@ -1154,6 +1166,342 @@ components:
           type: object
           nullable: true
           description: Always null; token counts are not reported.
+    OpenAIFile:
+      type: object
+      required:
+      - id
+      - object
+      - bytes
+      - created_at
+      - filename
+      - purpose
+      - status
+      properties:
+        id:
+          type: string
+          description: '`file-<record id>`'
+        object:
+          type: string
+          enum:
+          - file
+        bytes:
+          type: integer
+        created_at:
+          type: integer
+        expires_at:
+          type: integer
+          nullable: true
+        filename:
+          type: string
+        purpose:
+          type: string
+        status:
+          type: string
+          enum:
+          - uploaded
+          - processed
+          - error
+        status_details:
+          type: string
+          nullable: true
+    OpenAIFileList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIFile'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    OpenAIFileCounts:
+      type: object
+      properties:
+        in_progress:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+        total:
+          type: integer
+    OpenAIVectorStore:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      - name
+      - file_counts
+      - status
+      properties:
+        id:
+          type: string
+          description: '`vs_<collection id>`'
+        object:
+          type: string
+          enum:
+          - vector_store
+        created_at:
+          type: integer
+        name:
+          type: string
+        usage_bytes:
+          type: integer
+        file_counts:
+          $ref: '#/components/schemas/OpenAIFileCounts'
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+        expires_after:
+          type: object
+          nullable: true
+        expires_at:
+          type: integer
+          nullable: true
+        last_active_at:
+          type: integer
+        metadata:
+          type: object
+    OpenAIVectorStoreList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIVectorStore'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    OpenAIVectorStoreFile:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      - vector_store_id
+      - status
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - vector_store.file
+        usage_bytes:
+          type: integer
+        created_at:
+          type: integer
+        vector_store_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+        last_error:
+          type: object
+          nullable: true
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        chunking_strategy:
+          type: object
+        attributes:
+          type: object
+    OpenAIVectorStoreFileList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIVectorStoreFile'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    OpenAIVectorStoreFileBatch:
+      type: object
+      required:
+      - id
+      - object
+      - vector_store_id
+      - status
+      - file_counts
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - vector_store.files_batch
+        created_at:
+          type: integer
+        vector_store_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+        file_counts:
+          $ref: '#/components/schemas/OpenAIFileCounts'
+    OpenAIVectorStoreSearchPage:
+      type: object
+      required:
+      - object
+      - data
+      properties:
+        object:
+          type: string
+          enum:
+          - vector_store.search_results.page
+        search_query:
+          type: array
+          items:
+            type: string
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              file_id:
+                type: string
+              filename:
+                type: string
+              score:
+                type: number
+              attributes:
+                type: object
+              content:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                      - text
+                    text:
+                      type: string
+        has_more:
+          type: boolean
+        next_page:
+          type: string
+          nullable: true
+    OpenAIDeleted:
+      type: object
+      required:
+      - id
+      - object
+      - deleted
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - file
+          - vector_store.deleted
+          - vector_store.file.deleted
+        deleted:
+          type: boolean
+    OpenAIProject:
+      type: object
+      required:
+      - id
+      - object
+      - name
+      - created_at
+      - status
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum:
+          - organization.project
+        name:
+          type: string
+        created_at:
+          type: integer
+        archived_at:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - archived
+    OpenAIProjectList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          type: string
+          enum:
+          - list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIProject'
+        first_id:
+          type: string
+          nullable: true
+        last_id:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
     DiscoveredAIModel:
       type: object
       required: [id, displayName, capabilities, source]
@@ -24764,8 +25112,10 @@ paths:
         messages) are folded into the query as a plain-text transcript ahead of
         the last user message. Only text content is read.
 
-        Fields this endpoint does not use (`temperature`, `tools`, `max_tokens`,
-        ...) are accepted and ignored. `usage` is `null`. Citations come back as
+        File parts (`{"type": "file", "file": {"file_id": ...}}`) attach those
+        files to the chat; inline file data is not read. Fields this endpoint
+        does not use (`temperature`, `tools`, `max_tokens`, ...) are accepted and
+        ignored. `usage` is `null`. Citations come back as
         `url_citation` annotations on the message, and `conversation_id` names the
         PipesHub conversation.
 
@@ -24777,6 +25127,16 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [conversation:chat]
+      parameters:
+        - name: OpenAI-Project
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            A project `id` from `GET /openai/organization/projects` (the OpenAI
+            SDKs' `project` option). A new conversation runs inside that project,
+            with its instructions and knowledge scope; a follow-up keeps its own.
       requestBody:
         required: true
         content:
@@ -24842,11 +25202,13 @@ paths:
         sends only the new message. A `previous_response_id` this server did not
         return is refused.
 
-        `input` is a string or a list of message items; only their text is read,
-        and other item types are ignored. `instructions` is passed to the
-        assistant with the message. Other fields (`tools`, `temperature`, `store`, ...) are
-        accepted and ignored. Citations come back as `url_citation` annotations
-        on the `output_text` part.
+        `input` is a string or a list of message items. Their text is read, and
+        `input_file` parts with a `file_id` attach those files; other item types
+        are ignored. `instructions` is passed to the assistant with the message.
+        A `file_search` tool limits the knowledge the assistant searches to its
+        `vector_store_ids` (collections); other tools are ignored. Other fields
+        (`temperature`, `store`, ...) are accepted and ignored. Citations come
+        back as `url_citation` annotations on the `output_text` part.
 
         With `stream: true` the Responses events are sent in order
         (`response.created`, `response.in_progress`, `response.output_item.added`,
@@ -24861,6 +25223,16 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [conversation:chat]
+      parameters:
+        - name: OpenAI-Project
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            A project `id` from `GET /openai/organization/projects` (the OpenAI
+            SDKs' `project` option). A new conversation runs inside that project,
+            with its instructions and knowledge scope; a follow-up keeps its own.
       requestBody:
         required: true
         content:
@@ -24919,6 +25291,1202 @@ paths:
               schema:
                 $ref: '#/components/schemas/OpenAIModelError'
 
+  /openai/files:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List files (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/files`: the files the caller uploaded through `POST /openai/files`,
+        kept in their own collection named "OpenAI API files". `purpose` is not stored, so listed files
+        report `user_data`.'
+      operationId: listFilesOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIFileList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Upload a file (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/files` (multipart, `file` and `purpose`). The file is stored as a record
+        in the caller''s "OpenAI API files" collection, created on first upload, and indexed like any upload.
+        The returned `purpose` echoes the request. The platform upload size limit applies.
+
+
+        `status` is `uploaded` while indexing runs, `processed` once indexed, and `error` if indexing fails.'
+      operationId: createFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+        - kb:write
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                purpose:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, `kb:write`, or the caller has no access (the
+            knowledge base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: No `file` part, or the upload was refused (`invalid_request`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/files/{fileId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a file (OpenAI-compatible)
+      description: OpenAI `GET /v1/files/{file_id}` for any record the caller can read, by `file-<record
+        id>`.
+      operationId: retrieveFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    delete:
+      tags:
+      - AI Models Providers
+      summary: Delete a file (OpenAI-compatible)
+      description: 'OpenAI `DELETE /v1/files/{file_id}`: deletes the record. Personal access tokens cannot
+        carry `kb:delete`, so deleting needs an OAuth token with that scope (or a session).'
+      operationId: deleteFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIDeleted'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:delete`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/files/{fileId}/content:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Download a file (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/files/{file_id}/content`: the original bytes, with the stored content
+        type.'
+      operationId: fileContentOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: The file bytes
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List vector stores (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/vector_stores`: every collection the caller can read is a vector store,
+        `vs_<collection id>`. `file_counts` and `usage_bytes` are counted from its records; `status` is
+        `in_progress` while any is still indexing.'
+      operationId: listVectorStoresOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Create a vector store (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores`: creates a collection named `name` and adds `file_ids`
+        to it (see `POST .../files`). `expires_after`, `chunking_strategy` and `metadata` are accepted and
+        ignored.'
+      operationId: createVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+        - kb:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  nullable: true
+                file_ids:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStore'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, `kb:write`, or the caller has no access (the
+            knowledge base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: A `file_ids` entry is not a file id (`invalid_request`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a vector store (OpenAI-compatible)
+      description: OpenAI `GET /v1/vector_stores/{vector_store_id}`.
+      operationId: retrieveVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStore'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Modify a vector store (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores/{vector_store_id}`: renames the collection when `name`
+        is set.'
+      operationId: modifyVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:write
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStore'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:write`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    delete:
+      tags:
+      - AI Models Providers
+      summary: Delete a vector store (OpenAI-compatible)
+      description: 'OpenAI `DELETE /v1/vector_stores/{vector_store_id}`: deletes the collection and the
+        records in it. Files uploaded through `POST /openai/files` stay in the files collection. Needs `kb:delete`,
+        which personal access tokens cannot carry.'
+      operationId: deleteVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIDeleted'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:delete`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/files:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List vector store files (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/vector_stores/{vector_store_id}/files`: the records in the collection.
+        A file copied in by `POST .../files` is listed under its copy''s id.'
+      operationId: listVectorStoreFilesOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+          - cancelled
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    post:
+      tags:
+      - AI Models Providers
+      summary: Add a file to a vector store (OpenAI-compatible)
+      description: OpenAI `POST /v1/vector_stores/{vector_store_id}/files`. A record belongs to one collection,
+        so a file from another collection (the files collection, another store) is copied in and indexed
+        there. Adding a file the store already holds (same id, or a copy with the same name and size) changes
+        nothing. The returned object keeps the requested `file_id`, and `GET .../files/{file_id}` finds
+        the copy by it. `attributes` and `chunking_strategy` are ignored.
+      operationId: createVectorStoreFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - file_id
+              properties:
+                file_id:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: '`file_id` is not a file id (`invalid_request`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/files/{fileId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a vector store file (OpenAI-compatible)
+      description: OpenAI `GET /v1/vector_stores/{vector_store_id}/files/{file_id}`, by the file's own id
+        or the id it was added with.
+      operationId: retrieveVectorStoreFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+    delete:
+      tags:
+      - AI Models Providers
+      summary: Remove a file from a vector store (OpenAI-compatible)
+      description: 'OpenAI `DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}`: deletes the record
+        that holds it in the collection (the copy, for a copied file). Needs `kb:delete`.'
+      operationId: deleteVectorStoreFileOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: fileId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`file-<record id>` from `POST /openai/files`.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIDeleted'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:delete`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches:
+    post:
+      tags:
+      - AI Models Providers
+      summary: Add files in a batch (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores/{vector_store_id}/file_batches`: adds each file as `POST
+        .../files` does, before answering. The batch `id` carries its file ids, so it needs no storage;
+        up to 100 files.'
+      operationId: createVectorStoreFileBatchOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:upload
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - file_ids
+              properties:
+                file_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileBatch'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:upload`, `kb:read`, or the caller has no access (the knowledge
+            base answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: '`file_ids` is empty, too long, or holds a non-file id (`invalid_request`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches/{batchId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a file batch (OpenAI-compatible)
+      description: OpenAI `GET /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}`, with counts
+        from the files' indexing status.
+      operationId: retrieveVectorStoreFileBatchOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `id` returned by `POST .../file_batches`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileBatch'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches/{batchId}/cancel:
+    post:
+      tags:
+      - AI Models Providers
+      summary: Cancel a file batch (OpenAI-compatible)
+      description: OpenAI `POST .../file_batches/{batch_id}/cancel`. Files are added when the batch is created,
+        so nothing is left to cancel; answers the batch as `GET` does.
+      operationId: cancelVectorStoreFileBatchOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `id` returned by `POST .../file_batches`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileBatch'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/file_batches/{batchId}/files:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List a file batch's files (OpenAI-compatible)
+      description: OpenAI `GET .../file_batches/{batch_id}/files`.
+      operationId: listVectorStoreFileBatchFilesOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `id` returned by `POST .../file_batches`.
+      - name: filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+          - cancelled
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreFileList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `kb:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/vector_stores/{vectorStoreId}/search:
+    post:
+      tags:
+      - AI Models Providers
+      summary: Search a vector store (OpenAI-compatible)
+      description: 'OpenAI `POST /v1/vector_stores/{vector_store_id}/search`: runs the Retrieval API limited
+        to the collection (`filters.apps`), with the caller''s permissions. `query` may be a list of strings,
+        searched as one text. `filters` and `ranking_options` are ignored.'
+      operationId: searchVectorStoreOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - semantic:write
+      parameters:
+      - name: vectorStoreId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: '`vs_<collection id>` from `GET /openai/vector_stores`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - query
+              properties:
+                query:
+                  oneOf:
+                  - type: string
+                  - type: array
+                    items:
+                      type: string
+                max_num_results:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  default: 10
+                rewrite_query:
+                  type: boolean
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIVectorStoreSearchPage'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `semantic:write`, or the caller has no access (the knowledge base
+            answer, passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '400':
+          description: '`query` is empty (`missing_required_parameter`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/organization/projects:
+    get:
+      tags:
+      - AI Models Providers
+      summary: List projects (OpenAI-compatible)
+      description: 'OpenAI `GET /v1/organization/projects`: the PipesHub projects the caller can see, as
+        `organization.project` objects. Pass a project `id` as the `OpenAI-Project` header (the OpenAI SDKs''
+        `project` option) on `/openai/chat/completions` or `/openai/responses` to chat inside it.'
+      operationId: listProjectsOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: before
+        in: query
+        schema:
+          type: string
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      - name: include_archived
+        in: query
+        schema:
+          type: boolean
+          default: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIProjectList'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `project:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+  /openai/organization/projects/{projectId}:
+    get:
+      tags:
+      - AI Models Providers
+      summary: Retrieve a project (OpenAI-compatible)
+      description: OpenAI `GET /v1/organization/projects/{project_id}`.
+      operationId: retrieveProjectOpenAI
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Project id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIProject'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `project:read`, or the caller has no access (the knowledge base answer,
+            passed through).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+        '404':
+          description: No such object, or not one the caller can see (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
     get:
