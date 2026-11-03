@@ -25,7 +25,7 @@ DO $$ DECLARE r text; BEGIN
     'pipeshub_node', 'pipeshub_connectors', 'pipeshub_indexing', 'pipeshub_query',
     'pipeshub_kv',         -- key-value table only: the processes that just read configuration
     'pipeshub_restore', 'pipeshub_import',
-    'pipeshub_vetted_kernel', 'pipeshub_vetted_identity', 'pipeshub_vetted_platform'   -- owners of SECURITY DEFINER functions
+    'pipeshub_vetted_kernel', 'pipeshub_vetted_identity', 'pipeshub_vetted_platform', 'pipeshub_vetted_graph'   -- owners of SECURITY DEFINER functions
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF;
   END LOOP;
@@ -50,7 +50,7 @@ GRANT pipeshub_indexing TO pipeshub_indexing_login WITH INHERIT FALSE, SET TRUE;
 GRANT pipeshub_query TO pipeshub_query_login WITH INHERIT FALSE, SET TRUE;
 GRANT pipeshub_kv TO pipeshub_kv_login WITH INHERIT FALSE, SET TRUE;
 -- the migration owner may only hand the vetted roles out (ADMIN), never use them
-GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform TO pipeshub_owner
+GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform, pipeshub_vetted_graph TO pipeshub_owner
   WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 -- extensions are installed here, by the superuser, into schema ext (a migration cannot create an extension that is not trusted);
 -- `vector` is added with the schema that uses it

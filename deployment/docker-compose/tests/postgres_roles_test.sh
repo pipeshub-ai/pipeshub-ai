@@ -51,6 +51,9 @@ for major in 17 18; do
     "pipeshub_backup,pipeshub_connectors_login,pipeshub_indexing_login,pipeshub_jobs,pipeshub_kv_login,pipeshub_migrate,pipeshub_node_login,pipeshub_query_login,pipeshub_ro"
   check "$major: a login holds a service role by SET only, never by inheritance" \
     "$(sql "select count(*) from pg_auth_members m join pg_roles r on r.oid=m.roleid join pg_roles u on u.oid=m.member where u.rolname like '%\\_login' and (m.inherit_option or not m.set_option)")" 0
+  check "$major: the roles that own the schemas' SECURITY DEFINER functions exist, and none can log in" \
+    "$(sql "select string_agg(rolname||':'||rolcanlogin, ',' order by rolname) from pg_roles where rolname like 'pipeshub\\_vetted\\_%'")" \
+    "pipeshub_vetted_graph:f,pipeshub_vetted_identity:f,pipeshub_vetted_kernel:f,pipeshub_vetted_platform:f"
   check "$major: pipeshub_ro has no password" "$(sql "select rolpassword is null from pg_authid where rolname='pipeshub_ro'")" t
   check "$major: stored verifiers are SCRAM" "$(sql "select count(*) from pg_authid where rolname like 'pipeshub\\_%' and rolpassword is not null and rolpassword not like 'SCRAM-SHA-256\$%'")" 0
   check "$major: pg_trgm sits in schema ext, and vector is not installed yet" "$(sql "select string_agg(extname,',' order by extname) from pg_extension e join pg_namespace n on n.oid=e.extnamespace where n.nspname='ext' and extname in ('vector','pg_trgm')")" "pg_trgm"
