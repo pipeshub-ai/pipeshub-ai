@@ -127,6 +127,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
+    "_get_kb_context_for_record": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "filter_linked_record_ids": (

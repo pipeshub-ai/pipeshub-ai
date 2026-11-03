@@ -218,6 +218,16 @@ describe('es_controller non-streaming chat routes', () => {
         if (!flow.create) expect((r.res.jsonBody as { recordsUsed: number }).recordsUsed).to.equal(1)
       })
 
+      it('tells the client when the answer\'s search was degraded', async () => {
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 200, answer('ok', { searchDegraded: true })))
+        expect((r.res.jsonBody as { meta: { searchDegraded?: boolean } }).meta.searchDegraded).to.equal(true)
+      })
+
+      it('adds no degraded flag for a complete search', async () => {
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 200, answer('ok')))
+        expect((r.res.jsonBody as { meta: object }).meta).not.to.have.property('searchDegraded')
+      })
+
       it('keeps a 4xx from the AI backend, with its message, and records the failure', async () => {
         const r = await run(flow, (ai) =>
           ai.reply(exactPath(flow.aiPath), 424, { status: 'error', code: 'llm_not_configured', message: 'Set up a model first.' }),

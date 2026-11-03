@@ -67,6 +67,9 @@ class SparseVector:
     values: list[float]
 
 
+_ORG_KEYS = frozenset({"orgId", "metadata.orgId"})
+
+
 @dataclass
 class FieldCondition:
     """One filter predicate on a payload field.
@@ -101,6 +104,11 @@ class FilterExpression:
         too, so a count-only expression matches most of a collection. Delete
         paths refuse one on that basis.
 
+        A condition on the organisation field does not count once ``must``
+        carries a length bound: org plus a bound selects most of that org, not
+        the narrow purge the caller meant. Without a bound, org alone is the
+        deliberate whole-organisation removal and still counts.
+
         ``must_not`` never counts: it only ever *subtracts*, so a term there is
         not the positive match a bound needs. Counting it would let
         ``filter_collection(MUST_NOT, max_values=..., virtualRecordId=x)``, a
@@ -116,15 +124,18 @@ class FilterExpression:
         outright), which leaves the bound standing alone as the whole filter —
         and a point whose field is absent satisfies a bound.
         """
+        bounded = any(cond.values_count_lte is not None for cond in self.must)
+
         def _matches_a_value(conds: list[FieldCondition]) -> bool:
             return any(
-                cond.value is not None or cond.values is not None
+                (cond.value is not None or cond.values is not None)
+                and not (bounded and cond.key in _ORG_KEYS)
                 for cond in conds
             )
 
         if _matches_a_value(self.must):
             return True
-        if any(cond.values_count_lte is not None for cond in self.must):
+        if bounded:
             return False
         return _matches_a_value(self.should)
 
@@ -242,6 +253,10 @@ class SearchResult:
     id: str
     score: float
     payload: dict[str, Any] = field(default_factory=dict)
+    # Set by a provider that answered with less than its full search (the reason, e.g. "timeout"); None for a complete answer.
+    # A provider with no hits to mark calls ``app.modules.retrieval.degraded_notice.note(reason)`` instead.
+    # Not part of equality: a flag does not change which document ranks where.
+    degraded: str | None = field(default=None, compare=False)
 
 
 class QuantizationType(Enum):

@@ -74,4 +74,30 @@ describe('search response meta', () => {
 
     expect(searchResultsExtras).not.toHaveBeenCalled();
   });
+
+  it('says so when the search store answered with less than its full search', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResponseMeta: { searchId: 's', searchResponse: { searchResults: [], searchDegraded: true } },
+      isSearching: false,
+    });
+
+    const { getByRole } = render(<Theme><SearchResultsView /></Theme>);
+
+    expect(getByRole('status').textContent).toContain('chat.searchDegraded');
+  });
+
+  it('shows no note for a complete search', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResponseMeta: { searchId: 's', searchResponse: { searchResults: [] } },
+      isSearching: false,
+    });
+
+    const { queryByRole } = render(<Theme><SearchResultsView /></Theme>);
+
+    expect(queryByRole('status')).toBeNull();
+  });
 });

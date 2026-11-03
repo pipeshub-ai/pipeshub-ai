@@ -2179,6 +2179,12 @@ export const sendSSEErrorEvent = async (
   res.write(`event: error\ndata: ${JSON.stringify(errorData)}\n\n`);
 };
 
+/** The answer's search was served with less than the full search (the query service says so): the UI shows a note. */
+export const searchDegradedMeta = (
+  data: Pick<IAIResponse, 'searchDegraded'> | null | undefined,
+): { searchDegraded?: true } =>
+  data?.searchDegraded === true ? { searchDegraded: true } : {};
+
 /**
  * Send complete event to client with conversation data — `RUN_FINISHED`
  * in AG-UI mode (mirrors `AGUIFormatter.answer_final`'s `RUN_FINISHED`,
@@ -2192,6 +2198,7 @@ export const sendSSECompleteEvent = (
   requestId: string,
   startTime: number,
   protocol?: SSEProtocol,
+  extraMeta: Record<string, unknown> = {},
 ): void => {
   const responsePayload = {
     conversation,
@@ -2201,6 +2208,7 @@ export const sendSSECompleteEvent = (
       timestamp: new Date().toISOString(),
       duration: Date.now() - startTime,
       recordsUsed,
+      ...extraMeta,
     },
   };
 
