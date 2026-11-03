@@ -19,7 +19,8 @@
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
 #   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
-#   postgres      — PostgreSQL + PgBouncer (opt-in; nothing in the app uses it yet, see ./postgres/README.md)
+#   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml, see ./postgres/README.md)
+#   postgres-migrate — the schema migration job (needs the `postgres` profile too)
 #   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
 #                    Workspace → Web search)
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
@@ -684,6 +685,27 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Runs the schema migrations straight against postgres (a session and an advisory lock are needed, so not through the pooler; the
+  # runner refuses one). Idempotent: a database at head is left as it is, and a failed run changes nothing on an installed database.
+  # Exit 4 means the catalog check found violations. Built from backend/db/Dockerfile.
+  pipeshub-migrate:
+    profiles: ["postgres-migrate"]
+    image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: backend/db/Dockerfile
+    command: ["python", "-m", "db.migrate"]
+    environment:
+      - PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:${PG_MIGRATE_PASSWORD:-}@postgres:5432/pipeshub
+      - PG_MIGRATE_LOCK_TIMEOUT_S=${PG_MIGRATE_LOCK_TIMEOUT_S:-600}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - pipeshub
 
   qdrant:
     image: qdrant/qdrant:v1.15

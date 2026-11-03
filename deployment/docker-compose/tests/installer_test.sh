@@ -411,7 +411,7 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
-check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"'
+check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
@@ -494,6 +494,24 @@ echo "== In-tree installer: persist_env_var replaces in place =="
   persist_env_var COMPOSE_PROFILES "graph-neo4j"
   check "missing key appended" "$(cat "$ENV_FILE")" "COMPOSE_PROFILES=graph-neo4j"
 )
+
+echo "== In-tree installer: the opt-in postgres profiles =="
+check "keeps postgres in COMPOSE_PROFILES" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+check "does not invent postgres" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
+check "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra dp neo4j redis redis)" "graph-neo4j,sandbox"
+check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate"'
+check "uninstall asks before deleting the PostgreSQL volume" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" "Also delete the PostgreSQL data volume?"
+# The .env the wizard writes carries one random password per login; an existing value is kept across --reconfigure.
+wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^  done/{exit}' "$INNER_INSTALLER")"
+(
+  get_existing_val() { case "$1" in PG_NODE_PASSWORD) echo kept;; *) echo "${2:-}";; esac; }
+  gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
+  eval "$wizard"
+  check "wizard keeps an existing PG password" "$PG_NODE_PASSWORD" "kept"
+  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
+  check "wizard pins the major" "$PG_MAJOR" "18"
+)
+check ".env writer lists all eight PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "8"
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="
 # `docker compose up -d` reuses a cached :latest without re-checking the registry,

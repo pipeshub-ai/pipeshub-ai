@@ -282,6 +282,11 @@ derive_compose_profiles() {
   # Coding sandbox image. Eval skips it: Neo4j stays (search ACLs live there);
   # run_code is the cut. Slim/full keep the profile so SANDBOX_MODE=docker works.
   [[ "${DEPLOY_TYPE:-}" != "eval" ]] && p+=("sandbox")
+  # Opt-in profiles are not derived from a selector: keep the ones the operator already set.
+  local o
+  for o in postgres postgres-migrate; do
+    [[ ",${COMPOSE_PROFILES:-}," == *",${o},"* ]] && p+=("$o")
+  done
   # Guard the empty-array case: on bash 3.2 under `set -u`, "${p[*]}" on an empty
   # array is an unbound-variable error.
   if (( ${#p[@]} == 0 )); then echo ""; return; fi
@@ -663,7 +668,7 @@ if $FLAG_STOP; then
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -686,7 +691,22 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  # `down -v` with the postgres profile would delete the database with everything else: ask first.
+  _keep_pg=false
+  if ! $FLAG_YES && [[ -n "$(docker volume ls -q --filter "name=^${PROJECT_NAME}_postgres_data$" 2>/dev/null)" ]]; then
+    printf "\n  ${BOLD}%s${RESET} [y/N]: " "Also delete the PostgreSQL data volume?"
+    read -r _confirm_pg
+    [[ "${_confirm_pg:-N}" =~ ^[Yy]$ ]] || _keep_pg=true
+  fi
+  if $_keep_pg; then
+    # Remove the PostgreSQL containers without -v, then everything else with it.
+    COMPOSE_PROFILES="postgres,postgres-migrate" docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" rm -sf postgres pgbouncer pipeshub-migrate 2>/dev/null || true
+    export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
+    docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
+    success "PipesHub stopped and data volumes removed, except PostgreSQL (project ${PROJECT_NAME})."
+    exit 0
+  fi
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
@@ -1185,6 +1205,11 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_PASSWORD="$(get_existing_val MONGO_PASSWORD "$(gen_secret 16)")"
   REDIS_PASSWORD="$(get_existing_val REDIS_PASSWORD "$(gen_secret 16)")"
   QDRANT_API_KEY="$(get_existing_val QDRANT_API_KEY "$(gen_secret 20)")"
+  # PostgreSQL profile (opt-in): kept across --reconfigure like the other credentials.
+  PG_MAJOR="$(get_existing_val PG_MAJOR "18")"
+  for _pg in ADMIN NODE CONNECTORS INDEXING QUERY JOBS MIGRATE BACKUP; do
+    printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$(gen_secret 16)")"
+  done
 
   # Optional MongoDB knobs from env.template. The wizard never asks about these,
   # but .env is rewritten in full below, so read back anything the operator set
@@ -1331,6 +1356,18 @@ REDIS_STREAMS_MAXLEN=500000
 
 # ── Redis ────────────────────────────────────────────────────────────────────
 REDIS_PASSWORD=${REDIS_PASSWORD}
+
+# ── PostgreSQL (opt-in profile "postgres"; unused unless it is in COMPOSE_PROFILES) ──
+# The major is pinned so --upgrade never swaps it under an existing data directory.
+PG_MAJOR=${PG_MAJOR}
+PG_ADMIN_PASSWORD=${PG_ADMIN_PASSWORD}
+PG_NODE_PASSWORD=${PG_NODE_PASSWORD}
+PG_CONNECTORS_PASSWORD=${PG_CONNECTORS_PASSWORD}
+PG_INDEXING_PASSWORD=${PG_INDEXING_PASSWORD}
+PG_QUERY_PASSWORD=${PG_QUERY_PASSWORD}
+PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD}
+PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD}
+PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD}
 
 # ── MongoDB ──────────────────────────────────────────────────────────────────
 MONGO_USERNAME=${MONGO_USERNAME}

@@ -35,4 +35,8 @@ run "cluster at data/ refused under PGDATA=data/pgdata"         78 ROOT/data/pgd
 for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_BACKUP_PASSWORD; do
   EXTRA_ENV="$v=" run "empty $v refused before anything is started" 78 ROOT/data
 done
+# the passwords go into connection URLs, so reserved characters are refused too
+for bad in 'a@b' 'a:b' 'a/b' 'a?b' 'a%b'; do
+  EXTRA_ENV="PG_JOBS_PASSWORD=$bad" run "password '$bad' refused" 78 ROOT/data
+done
 exit $fail

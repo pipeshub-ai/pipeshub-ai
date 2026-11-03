@@ -21,6 +21,9 @@ if [ "$1" = postgres ]; then
   for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PASSWORD PG_QUERY_PASSWORD \
            PG_JOBS_PASSWORD PG_MIGRATE_PASSWORD PG_BACKUP_PASSWORD; do
     eval "val=\${$v:-}"
+    # The same values go into connection URLs (docker-compose.postgres-docstore.yml), which cannot carry reserved characters.
+    case "$val" in *[!A-Za-z0-9._~-]*) [ "$v" = POSTGRES_PASSWORD ] && v=PG_ADMIN_PASSWORD
+      echo "pg-entrypoint: $v may contain only letters, digits and . _ ~ - (it is used in a URL). Not starting." >&2; exit 78;; esac
     if [ -z "$val" ]; then
       [ "$v" = POSTGRES_PASSWORD ] && v=PG_ADMIN_PASSWORD
       echo "pg-entrypoint: $v is empty; set it in .env. Not starting." >&2

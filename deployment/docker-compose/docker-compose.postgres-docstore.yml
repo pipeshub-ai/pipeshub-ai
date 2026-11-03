@@ -1,0 +1,20 @@
+# Runs the Node API's document store on PostgreSQL (DOC_STORE=postgres) instead of MongoDB.
+#
+#   COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate in .env, the PG_*_PASSWORD values set, then
+#   docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -p pipeshub-ai up -d
+#   (install.sh: PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml)
+#
+# Start order: postgres healthy, pgbouncer healthy, pipeshub-migrate completed (exit 0), then the app; if the migration fails the app
+# never starts (see postgres/README.md). This switches the document store of a NEW install: it does not copy data from MongoDB.
+# MongoDB, Qdrant and the other stores are untouched.
+services:
+  pipeshub-ai:
+    environment:
+      - DOC_STORE=postgres
+      - PG_NODE_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD:?PG_NODE_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+      - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@pgbouncer:6432/pipeshub
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      pipeshub-migrate:
+        condition: service_completed_successfully
