@@ -59,7 +59,11 @@ export async function* readSSE(
     return data.length > 0 ? { event, data: data.join('\n') } : null;
   };
   for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+    // Normalize after appending: a chunk can end on the `\r` of a `\r\n` pair.
+    buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(
+      /\r\n/g,
+      '\n',
+    );
     for (
       let cut = buffer.indexOf('\n\n');
       cut >= 0;
@@ -70,7 +74,7 @@ export async function* readSSE(
       if (frame) yield frame;
     }
   }
-  const tail = parse(buffer);
+  const tail = parse((buffer + decoder.decode()).replace(/\r\n/g, '\n'));
   if (tail) yield tail;
 }
 

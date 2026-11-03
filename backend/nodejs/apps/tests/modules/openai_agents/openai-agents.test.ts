@@ -101,6 +101,14 @@ describe('openai_agents agent stream', () => {
     expect(out).to.deep.equal(['A={"x":1}', 'B=2']);
   });
 
+  it('finds a frame boundary whose CRLF pair is split across chunks', async () => {
+    const out: string[] = [];
+    for await (const f of readSSE(chunks('data: 1\r\n\r', '\ndata: 2\r\n\r\n'))) {
+      out.push(f.data);
+    }
+    expect(out).to.deep.equal(['1', '2']);
+  });
+
   it('returns the root answer and ignores sub-agent finishes', async () => {
     const seen: string[] = [];
     const answer = await answerFromFrames(
