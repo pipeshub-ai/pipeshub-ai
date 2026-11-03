@@ -248,6 +248,29 @@ async def test_two_writers_of_one_group_leave_the_members_of_the_one_that_read_t
     assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "b")]                          # not (1, a), (1, b)
 
 
+async def test_a_writer_that_carries_no_membership_still_holds_its_groups_rows_until_it_commits(store) -> None:
+    """The maintenance job that collects the membership of groups without points takes its candidates ``FOR UPDATE SKIP LOCKED``. A writer
+    that adds points to a group without carrying membership must hold that group's row too, or the job removes the membership under it."""
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])])
+    coll = (await sql(store, "SELECT collection_id FROM retrieval.collections WHERE name = 'records'"))[0][0]
+    space = (await sql(store, "SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1", A))[0][0]
+    candidates = ("SELECT group_key FROM retrieval.point_groups WHERE org_id = $1 AND collection_id = $2 FOR UPDATE SKIP LOCKED")
+    writer, collector = await store.env.admin(), await store.env.admin()
+    try:
+        tx = writer.transaction()
+        await tx.start()
+        await writes.upsert(writer, coll, space, writes.prepare([point(A, "p2")]), datetime.now(UTC), safe_mode=False)       # group r1, no membership keys
+        async with collector.transaction():
+            assert await collector.fetch(candidates, A, coll) == []                    # the collector skips the group the open writer holds
+        await tx.commit()
+        async with collector.transaction():
+            assert [r["group_key"] for r in await collector.fetch(candidates, A, coll)] == ["r1"]       # free again once the writer has committed
+    finally:
+        for c in (writer, collector):
+            await c.close()
+    assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "c1")]            # the membership is still there
+
+
 async def test_a_point_written_again_after_a_safe_mode_delete_is_counted_once_whichever_way_its_terms_change(store) -> None:
     safe = dataclasses.replace(store.pg_capabilities, hnsw_safe_mode=True)
     store.pg_capabilities = safe
