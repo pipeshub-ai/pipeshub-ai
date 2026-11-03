@@ -163,6 +163,9 @@ class CoreMixin(PgBase):
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
         if not keys:
             return True
+        if collection == "records":
+            # A record goes with its type documents and blocks; that cascade belongs to the records module, so a plain delete would leave them behind.
+            raise NotImplementedInPostgres("deleting records needs the records module of the PostgreSQL graph provider")
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
@@ -174,9 +177,6 @@ class CoreMixin(PgBase):
         return n == len(set(keys))
 
     async def delete_nodes_and_edges(self, keys: list[str], collection: str, graph_name: str = "knowledgeGraph", transaction: str | None = None) -> None:
-        if collection == "records" and keys:
-            # A record goes with its type documents and blocks; that cascade belongs to the records module, so a plain delete would leave them behind.
-            raise NotImplementedInPostgres("deleting records needs the records module of the PostgreSQL graph provider")
         await self.delete_nodes(keys, collection, transaction)
 
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
@@ -201,10 +201,13 @@ class CoreMixin(PgBase):
 
     async def get_nodes_by_field_in(self, collection: str, field_name: str, field_values: list[Any], return_fields: list[str] | None = None,
                                     transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
-        """``field_name="_key"`` is the stored ``id``."""
+        """``field_name="_key"`` is the stored ``id``; ``"_id"`` is ``collection/id`` and names this collection only."""
         org = current_org_id()
-        if field_name in ("_key", "id", "_id"):   # the primary key (a stored ``_id`` is ``coll/id``)
-            keys = [str(v).split("/", 1)[-1] for v in field_values if v is not None]
+        if field_name in ("_key", "id", "_id"):   # the primary key
+            if field_name == "_id":
+                keys = [v.split("/", 1)[1] for v in field_values if isinstance(v, str) and v.startswith(f"{collection}/")]
+            else:
+                keys = [str(v) for v in field_values if v is not None]
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_nodes_by_ids */ SELECT doc FROM graph.nodes n
                 WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])""", org, collection, keys), transaction)
         elif all(isinstance(v, str) for v in field_values):    # text compare, so an expression index on ``doc->>'field'`` serves it
@@ -217,11 +220,14 @@ class CoreMixin(PgBase):
         return [self._shape(_doc(r["doc"]), collection, return_fields) for r in rows]
 
     async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None) -> bool:
+        if not expected:
+            raise ValueError("update_node_fields_if_match needs an expectation")
         org = current_org_id()
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = n.doc || $4::jsonb
+        upd = {k: v for k, v in updates.items() if k not in ("_key", "_id", "id")}      # as update_node; a None removes the field
+        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls(n.doc || $4::jsonb)
             WHERE org_id = $1 AND coll = $2 AND id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_each($5::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
                 AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL)) RETURNING 1) SELECT count(*) FROM u""",
-                                                  org, collection, key, _j(updates), _j(expected)), transaction, write=True)
+                                                  org, collection, key, _j(upd), _j(expected)), transaction, write=True)
         return bool(r)
 
     # ---- generic edges -----------------------------------------------------------------------------------------

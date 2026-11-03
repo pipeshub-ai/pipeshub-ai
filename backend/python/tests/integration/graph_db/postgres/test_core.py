@@ -250,3 +250,51 @@ async def test_an_unknown_or_finished_transaction_is_a_clear_error(pg_provider, 
         await pg_provider.commit_transaction(t)
         with pytest.raises(TransactionClosed):
             await pg_provider.commit_transaction(t)
+
+
+async def test_a_null_filter_means_absent_in_get_nodes_by_filters_and_nothing_in_a_page(pg_provider, orgs, org_ctx) -> None:
+    """As on the Neo4j provider: ``get_nodes_by_filters`` reads None as 'absent or null'; ``get_documents_paginated`` compares with equality, so a None matches nothing."""
+    a, _ = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "has", "v": "x"}, {"_key": "none"}], "things")
+        assert [d["_key"] for d in await p.get_nodes_by_filters("things", {"v": None})] == ["none"]
+        assert [d["_key"] for d in await p.get_nodes_by_filters("things", {"v": "x"})] == ["has"]
+        assert await p.get_documents_paginated("things", filters={"v": None}) == []
+
+
+async def test_a_conditional_update_removes_a_field_set_to_none_and_needs_an_expectation(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "c", "v": "x", "w": "y"}], "things")
+        assert await p.update_node_fields_if_match("c", "things", {"w": None, "z": 1}, {"v": "x"}) is True
+        got = await p.get_document("c", "things")
+        assert "w" not in got and got["z"] == 1
+        assert await p.update_node_fields_if_match("c", "things", {"z": 2}, {"missing": None}) is True     # None expects the field absent
+        assert await p.update_node_fields_if_match("c", "things", {"z": 3}, {"v": None}) is False
+        with pytest.raises(ValueError, match="expectation"):
+            await p.update_node_fields_if_match("c", "things", {"z": 4}, {})
+        assert (await p.get_document("c", "things"))["z"] == 2
+
+
+async def test_a_collection_prefix_must_name_the_collection_asked(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "x"}], "users")
+        await p.batch_upsert_nodes([{"_key": "x"}], "things")
+        assert [d["_id"] for d in await p.get_nodes_by_field_in("things", "_id", ["things/x"])] == ["things/x"]
+        assert await p.get_nodes_by_field_in("things", "_id", ["users/x"]) == []             # another collection's id is not this one's
+        assert [d["_key"] for d in await p.get_nodes_by_field_in("things", "_key", ["x"])] == ["x"]
+        assert await p.get_nodes_by_field_in("things", "_key", ["users/x"]) == []            # a key has no collection prefix
+
+
+async def test_deleting_records_by_key_waits_for_the_records_module_too(pg_provider, orgs, org_ctx) -> None:
+    from app.services.graph_db.postgres.base import NotImplementedInPostgres
+    a, _ = orgs
+    with org_ctx(a):
+        await pg_provider.batch_upsert_nodes([{"_key": "r1"}], "records")
+        with pytest.raises(NotImplementedInPostgres):
+            await pg_provider.delete_nodes(["r1"], "records")
+        assert await pg_provider.get_document("r1", "records") is not None                   # nothing was deleted
