@@ -39,6 +39,7 @@ import {
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
 import {
   buildApprovalCard,
+  withoutWaitingLine,
   type ToolApprovalDetails,
 } from './utils/approval-card';
 import {
@@ -1093,7 +1094,8 @@ async function processSlackMessage(
         }
         scheduleActivityUpdate();
       },
-      onAnswerAccumulated: handleAnswerAccumulated,
+      onAnswerAccumulated: (accumulated) =>
+        handleAnswerAccumulated(withoutWaitingLine(accumulated)),
       onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
       onApprovalRequested: handleApprovalRequested,
@@ -1420,6 +1422,10 @@ async function processSlackMessage(
         await sendOrUpdateNonStreamMessage(invalidResponseMessage);
       }
       return;
+    }
+
+    if (botResponse.content) {
+      botResponse.content = withoutWaitingLine(botResponse.content).trimEnd();
     }
 
     // Keep tools/thinking timeline above the answer; remove a bare Thinking placeholder.
