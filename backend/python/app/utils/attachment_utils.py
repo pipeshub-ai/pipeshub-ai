@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import CollectionNames
+from app.modules.artifacts.reader import record_artifact_reader
+from app.modules.retrieval.selection_scope import outside_connection
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -16,6 +19,14 @@ from app.utils.image_admission import (
     ImageOrigin,
     admission_from_state,
 )
+from app.utils.record_access import caller_can_read_virtual_record
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+    from app.utils.chat_helpers import CitationRefMapper
+    from app.utils.render_budget import RecordRenderOutcome, RenderBudget
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
@@ -24,6 +35,92 @@ _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
     "data:image/jpg",
     "data:image/webp",
 )
+
+
+def is_chat_attachment(record: dict | None, org_id: str) -> bool:
+    """Whether ``record`` is a file uploaded to a chat of ``org_id``."""
+    return (
+        bool(record)
+        and record.get("orgId") == org_id
+        and record.get("origin") == "UPLOAD"
+        and record.get("connectorId") == f"attachments_{org_id}"
+    )
+
+
+async def keep_accessible_attachments(
+    graph_provider: "IGraphDBProvider",
+    *,
+    org_id: str,
+    user_id: str | None,
+    is_service_account: bool,
+    attachments: list[dict[str, Any]],
+    previous_conversations: list[dict[str, Any]],
+    logger: logging.Logger,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """This turn's attachments and the history's, without those whose record the
+    user may not access.
+
+    They arrive from the client by ``virtualRecordId`` and every resolver reads
+    them from blob storage checking the org only. Each kept attachment's
+    ``recordId`` is replaced by the record the check found for its
+    ``virtualRecordId``: the client's copy is never trusted, since the tools
+    read an attached ``recordId`` past the turn's scope. A service account has
+    no User node to check, so it keeps only this org's chat attachments. A
+    connected app limited to ``connection_sources`` keeps only the records
+    inside its limit, and chat uploads, which are part of the question.
+    """
+    history_attachments = [a for conv in previous_conversations or [] for a in conv.get("attachments") or []]
+    vrids = {a.get("virtualRecordId") for a in [*(attachments or []), *history_attachments]} - {None, ""}
+
+    record_by_vrid: dict[str, str] = {}
+    if vrids and is_service_account:
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORDS.value, "virtualRecordId", sorted(vrids),
+            return_fields=["id", "virtualRecordId", "orgId", "origin", "connectorId"],
+            raise_on_error=True,
+        )
+        for row in rows or []:
+            record_id = row.get("id") or row.get("_key")
+            if record_id and is_chat_attachment(row, org_id):
+                record_by_vrid.setdefault(row["virtualRecordId"], record_id)
+    elif vrids:
+        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+        user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
+        # A failed check raises: answering as if nothing were attached would hide
+        # the outage from the user.
+        if user_key:
+            record_by_vrid = dict((await graph_provider.check_access(
+                user_key, org_id, virtual_record_ids=vrids,
+            )).records_by_vrid)
+
+    if connection_sources is not None and record_by_vrid:
+        outside = await outside_connection(
+            graph_provider, user_id or "", org_id, record_by_vrid.values(), connection_sources,
+        )
+        if outside:
+            rows = await graph_provider.get_nodes_by_field_in(
+                CollectionNames.RECORDS.value, "id", sorted(outside),
+                return_fields=["id", "orgId", "origin", "connectorId"], raise_on_error=True,
+            )
+            outside -= {row.get("id") or row.get("_key") for row in rows or [] if is_chat_attachment(row, org_id)}
+            record_by_vrid = {vrid: rid for vrid, rid in record_by_vrid.items() if rid not in outside}
+
+    def keep(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        return [
+            {**a, "recordId": record_by_vrid[a["virtualRecordId"]]}
+            for a in items or []
+            if a.get("virtualRecordId") in record_by_vrid
+        ]
+
+    kept = keep(attachments)
+    dropped = len(attachments or []) - len(kept) + len(history_attachments) - len(keep(history_attachments))
+    if dropped:
+        logger.warning("Dropped %d attachment(s) the user may not access", dropped)
+    return kept, [
+        {**conv, "attachments": keep(conv["attachments"])} if conv.get("attachments") else conv
+        for conv in previous_conversations or []
+    ]
 
 
 async def resolve_attachments(
@@ -36,6 +133,11 @@ async def resolve_attachments(
     out_records: dict[str, dict[str, Any]] | None = None,
     image_budget: ImageBudget | None = None,
     image_admission: "ImageAdmission | None" = None,
+    user_id: str | None = None,
+    graph_provider: Any = None,
+    is_service_account: bool = False,
+    render_budget: "RenderBudget | None" = None,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -59,12 +161,21 @@ async def resolve_attachments(
         is_multimodal_llm: Whether the configured LLM supports image inputs.
         logger: Logger instance.
 
+        render_budget: Characters the documents may render into, split
+            across them (see `render_attachment_record`). None renders each
+            document in full.
+        outcomes: Receives each budgeted document's `RecordRenderOutcome`.
+
     Returns:
         List of LangChain content-dict blocks ready to be inserted into a
         ``HumanMessage(content=[...])`` list.
     """
     if not attachments:
         return []
+    docs_left = sum(
+        1 for att in attachments
+        if (att.get("mimeType") or "").lower() in DOC_ATTACHMENT_MIME_TYPES and att.get("virtualRecordId")
+    )
 
     if image_budget is None:
         image_budget = ImageBudget()
@@ -117,6 +228,9 @@ async def resolve_attachments(
                 ),
                 image_budget=image_budget,
                 image_admission=admission,
+                user_id=user_id,
+                graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
             if img_content:
                 blocks.extend(img_content)
@@ -137,7 +251,14 @@ async def resolve_attachments(
                 fallback_block={"type": "text", "text": f"[Document attached by user: {record_name}]\n"},
                 image_budget=image_budget,
                 image_admission=admission,
+                user_id=user_id,
+                graph_provider=graph_provider,
+                is_service_account=is_service_account,
+                render_budget=render_budget,
+                docs_left=docs_left,
+                outcomes=outcomes,
             )
+            docs_left -= 1
             if doc_content:
                 blocks.extend(doc_content)
             else:
@@ -161,6 +282,12 @@ async def _resolve_attachment_content(
     empty_content_fallback: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
     image_budget: ImageBudget | None = None,
     image_admission: "ImageAdmission | None" = None,
+    user_id: str | None = None,
+    graph_provider: Any = None,
+    is_service_account: bool = False,
+    render_budget: "RenderBudget | None" = None,
+    docs_left: int = 1,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -175,12 +302,19 @@ async def _resolve_attachment_content(
         logger.warning(unavailable_log_msg, record_name)
         return [fallback_block], ref_mapper
 
-    try:
-        from app.utils.chat_helpers import record_to_message_content
+    if not await caller_can_read_virtual_record(
+        graph_provider,
+        user_id=user_id,
+        org_id=org_id,
+        virtual_record_id=virtual_record_id,
+        logger=logger,
+        is_service_account=is_service_account,
+    ):
+        return [], ref_mapper
 
-        record = await blob_store.get_record_from_storage(
-            virtual_record_id=virtual_record_id,
-            org_id=org_id,
+    try:
+        record = await record_artifact_reader(blob_store).read_record(
+            virtual_record_id, org_id,
         )
         if not record:
             logger.warning(
@@ -193,11 +327,15 @@ async def _resolve_attachment_content(
         if out_records is not None:
             out_records[virtual_record_id] = record
 
-        content, ref_mapper = record_to_message_content(
+        content, ref_mapper = render_attachment_record(
             record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm,
             image_budget=image_budget,
             image_admission=image_admission,
             image_origin=ImageOrigin.ATTACHMENT,
+            render_budget=render_budget,
+            docs_left=docs_left,
+            outcomes=outcomes,
+            logger=logger,
         )
         if not content and empty_content_fallback is not None:
             content = empty_content_fallback(record)
@@ -211,6 +349,56 @@ async def _resolve_attachment_content(
             exc_info=True,
         )
         return [], ref_mapper
+
+
+def render_attachment_record(
+    record: dict[str, Any],
+    *,
+    ref_mapper: "CitationRefMapper | None",
+    is_multimodal_llm: bool,
+    image_budget: ImageBudget | None,
+    image_admission: "ImageAdmission | None",
+    image_origin: ImageOrigin,
+    render_budget: "RenderBudget | None",
+    docs_left: int,
+    outcomes: "list[RecordRenderOutcome] | None",
+    logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], "CitationRefMapper"]:
+    """`record_to_message_content` for an attachment, within `render_budget`.
+
+    The record gets an equal share of what is left among the `docs_left`
+    documents still to render; one that needs less leaves the rest to the
+    ones after it. A record cut short ends with the renderer's note saying
+    where it stopped and how to read on with `knowledgegraph__fetch_record`.
+    """
+    from app.utils.chat_helpers import record_to_message_content
+
+    if render_budget is not None:
+        render_budget.allot(
+            attachment_record_key(record), render_budget.call_chars_remaining // max(docs_left, 1),
+        )
+    content, ref_mapper = record_to_message_content(
+        record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm,
+        image_budget=image_budget,
+        image_admission=image_admission,
+        image_origin=image_origin,
+        budget=render_budget,
+    )
+    if render_budget is not None:
+        outcome = render_budget.outcome(attachment_record_key(record))
+        if outcomes is not None:
+            outcomes.append(outcome)
+        if not outcome.complete:
+            logger.warning(
+                "attachment_truncated record_id=%s chars_shown=%d blocks_shown=%d stopped_at_block=%s",
+                outcome.record_id, outcome.chars_rendered, outcome.blocks_rendered, outcome.stopped_at_block,
+            )
+    return content, ref_mapper
+
+
+def attachment_record_key(record: dict[str, Any]) -> str:
+    """The key `record_to_message_content` accounts a record under in its budget."""
+    return str(record.get("id") or record.get("virtual_record_id") or "")
 
 
 def _extract_image_blocks(
@@ -385,6 +573,9 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             out_records=attachment_records,
             image_budget=image_budget,
             image_admission=admission_from_state(state),
+            user_id=state.get("user_id") or "",
+            graph_provider=state.get("graph_provider"),
+            is_service_account=bool(state.get("is_service_account")),
         )
 
         if attachment_records:

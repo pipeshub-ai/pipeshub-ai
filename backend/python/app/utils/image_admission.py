@@ -37,6 +37,10 @@ Two properties the callers depend on:
   while the cap counted it once. The transport guard then had to cut the
   overflow, evicting pictures the model had not seen to keep repeats of one
   it had (`agents/agent_loop/image_guard.py`).
+
+Retrieval also gets only part of the per-request cap
+(`ImagePolicy.max_retrieved_images`): search hits arrive first, and would
+otherwise leave nothing for a record the model fetches for its figures.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
 from typing import TYPE_CHECKING
 
+from app.utils.bounded_cache import SizeBoundedCache
 from app.utils.image_utils import (
     MAX_CONTENT_ASPECT_RATIO,
     MIN_CONTENT_AREA_PX,
@@ -63,6 +68,18 @@ if TYPE_CHECKING:
 # `chat_helpers` re-exports it, which is where the codebase has always
 # imported it from.
 MAX_IMAGES_IN_CONVERSATION = 50
+
+# Normalization verdicts shared across requests, keyed by (content hash, long
+# edge limit, byte limit). The per-request caches below forget everything at
+# the end of a turn, so the same record images were decoded, resized and
+# re-encoded by Pillow on every turn -- 19% of query-service CPU at 16 users.
+_UNSENDABLE = object()
+_UNCHANGED = object()
+_shared_normalized: SizeBoundedCache[object] = SizeBoundedCache(
+    max_size=400_000_000,
+    size_of=lambda v: len(v) if isinstance(v, str) else 0,
+    max_entries=2000,
+)
 
 
 class ImageBudget:
@@ -114,6 +131,11 @@ class ImageOrigin(IntEnum):
     SEARCH_HIT = 2       # retrieval surfaced it
     HISTORY = 3          # replayed from an earlier turn
 
+    @property
+    def is_retrieved(self) -> bool:
+        """Arrived without the user or the model asking for this record."""
+        return self in (ImageOrigin.SEARCH_HIT, ImageOrigin.HISTORY)
+
 
 class DegradeReason(str, Enum):
     """Why an image is going out as text only. Carried back to the renderer
@@ -126,6 +148,7 @@ class DegradeReason(str, Enum):
     DUPLICATE = "duplicate"
     OVER_REQUEST_CAP = "over_request_cap"
     OVER_CONVERSATION_CAP = "over_conversation_cap"
+    UNSUPPORTED_FORMAT = "unsupported_format"
 
 
 def content_hash(data_uri: str) -> str:
@@ -240,6 +263,9 @@ class ImageAdmission:
         # Hashes already sent this request. Gives idempotent re-renders and a
         # stable image set across turns (see the module docstring).
         self._admitted_hashes: set[str] = set()
+        # How many of `_admitted_hashes` came from search hits or history,
+        # which may use only `policy.max_retrieved_images` of the cap.
+        self._retrieved_slots_used = 0
         # Original hash -> the bytes actually admitted for it, whenever
         # `_normalize` had to rewrite them. Kept because the renderers hold a
         # decision, not a candidate, and re-read the source block's own URI:
@@ -250,6 +276,27 @@ class ImageAdmission:
         # Hashes whose normalization has been decided, including the ones that
         # needed no rewrite. Without it a no-op re-decodes on every render.
         self._normalization_checked: set[str] = set()
+        # Hashes of images in a format the provider rejects that could not be
+        # converted (a corrupt SVG, unknown bytes). They degrade to text.
+        self._unsendable_hashes: set[str] = set()
+
+    def trial(self) -> "ImageAdmission":
+        """An arbiter that decides exactly as this one would from here on,
+        without spending this one's slots.
+
+        For sizing a render before committing to it. The downscale caches are
+        shared, not copied: they depend only on the bytes and the policy, so
+        work a trial does is not repeated by the real render.
+        """
+        budget = ImageBudget(self.budget.max_images)
+        budget.used = self.budget.used
+        clone = ImageAdmission(self.policy, budget=budget)
+        clone._admitted_hashes = set(self._admitted_hashes)
+        clone._retrieved_slots_used = self._retrieved_slots_used
+        clone._normalized_by_hash = self._normalized_by_hash
+        clone._normalization_checked = self._normalization_checked
+        clone._unsendable_hashes = self._unsendable_hashes
+        return clone
 
     @property
     def allows_images(self) -> bool:
@@ -262,6 +309,14 @@ class ImageAdmission:
             return 0
         per_request = self.policy.max_images_per_request - len(self._admitted_hashes)
         return max(0, min(per_request, self.budget.remaining))
+
+    def _remaining_for(self, candidates: list[ImageCandidate]) -> int:
+        """Slots left for `candidates`: the retrieval share bounds a batch
+        made only of retrieved images."""
+        if candidates and all(c.origin.is_retrieved for c in candidates):
+            share = self.policy.max_retrieved_images - self._retrieved_slots_used
+            return max(0, min(self.remaining, share))
+        return self.remaining
 
     def already_admitted(self, candidate: ImageCandidate) -> bool:
         return candidate.hash in self._admitted_hashes
@@ -307,7 +362,8 @@ class ImageAdmission:
         # picture at all.
         # With no slots left at all there is nothing to choose between, and a
         # capacity reason tells the reader more than "too small" would.
-        if self.remaining > 0 and len(fresh) > self.remaining:
+        room = self._remaining_for(fresh)
+        if room > 0 and len(fresh) > room:
             eligible: list[ImageCandidate] = []
             for candidate in fresh:
                 reason = _prefilter_reason(candidate)
@@ -319,13 +375,24 @@ class ImageAdmission:
             eligible = fresh
 
         for candidate in sorted(eligible, key=_rank_key):
-            if self.policy.max_images_per_request - len(self._admitted_hashes) <= 0:
+            retrieved = candidate.origin.is_retrieved
+            if self.policy.max_images_per_request - len(self._admitted_hashes) <= 0 or (
+                retrieved and self._retrieved_slots_used >= self.policy.max_retrieved_images
+            ):
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_REQUEST_CAP))
                 continue
             if not self.budget.can_add():
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_CONVERSATION_CAP))
                 continue
+            # Decided before the slot is spent: an image no provider will
+            # accept would otherwise take a slot and then 400 the request.
+            self._decide_normalization(candidate.data_uri)
+            if candidate.hash in self._unsendable_hashes:
+                degraded.append(DegradedImage(candidate, DegradeReason.UNSUPPORTED_FORMAT))
+                continue
             _ = self.budget.try_consume(1)
+            if retrieved:
+                self._retrieved_slots_used += 1
             self._admitted_hashes.add(candidate.hash)
             admitted.append(self._normalize(candidate))
 
@@ -333,13 +400,27 @@ class ImageAdmission:
         # what the model reads still matches the record it came from.
         #
         admitted.sort(key=lambda c: (c.turn_index, c.block_index))
+        # A copy is only "shown above" if the first one actually went out;
+        # otherwise it shares the first copy's reason.
+        first_reason = {
+            d.candidate.hash: d.reason for d in degraded if d.reason is not DegradeReason.DUPLICATE
+        }
+        degraded = [
+            DegradedImage(d.candidate, first_reason[d.candidate.hash])
+            if d.reason is DegradeReason.DUPLICATE
+            and d.candidate.hash not in self._admitted_hashes
+            and d.candidate.hash in first_reason
+            else d
+            for d in degraded
+        ]
         return AdmissionResult(admitted=admitted, degraded=degraded)
 
     def _normalize(self, candidate: ImageCandidate) -> ImageCandidate:
         """Fit an admitted image to the model's per-image limits.
 
         Runs only on images that won a slot, and only rewrites the ones that
-        actually exceed a limit -- see `downscale_to_limits`. Done here rather
+        are in a format LLM APIs reject or exceed a limit -- see
+        `to_llm_image_format` and `downscale_to_limits`. Done here rather
         than at each renderer so every delivery path (tool result, user
         message, history replay) gets it from one place.
         """
@@ -354,18 +435,24 @@ class ImageAdmission:
     def _decide_normalization(self, data_uri: str) -> None:
         """Work out the admitted bytes for `data_uri`, once.
 
-        Pure apart from the two caches it fills, and safe to run on a worker
+        Pure apart from the caches it fills, and safe to run on a worker
         thread -- which is the point: `downscale_to_limits` is a Pillow decode,
         resize and re-encode, ~600 ms for a 4000x3000 image, and the render
         that calls it sits on an async request path.
         """
-        from app.utils.image_utils import downscale_to_limits
+        from app.utils.image_utils import downscale_to_limits, to_llm_image_format
 
         digest = content_hash(data_uri)
-        if digest in self._normalization_checked:
+        if digest in self._normalization_checked or self._adopt_shared(digest):
+            return
+        sendable = to_llm_image_format(data_uri, max_long_edge_px=self.policy.max_long_edge_px)
+        if sendable is None:
+            self._unsendable_hashes.add(digest)
+            self._normalization_checked.add(digest)
+            _shared_normalized.put(self._shared_key(digest), _UNSENDABLE)
             return
         normalized = downscale_to_limits(
-            data_uri,
+            sendable,
             max_long_edge_px=self.policy.max_long_edge_px,
             max_bytes=self.policy.max_bytes_per_image,
         )
@@ -374,6 +461,24 @@ class ImageAdmission:
             # Keyed by the ORIGINAL hash: that is what a renderer holds and
             # what a later batch will present again.
             self._normalized_by_hash[digest] = normalized
+            _shared_normalized.put(self._shared_key(digest), normalized)
+        else:
+            _shared_normalized.put(self._shared_key(digest), _UNCHANGED)
+
+    def _shared_key(self, digest: str) -> "tuple[str, int | None, int | None]":
+        return (digest, self.policy.max_long_edge_px, self.policy.max_bytes_per_image)
+
+    def _adopt_shared(self, digest: str) -> bool:
+        """Take an earlier request's verdict for these bytes under this policy."""
+        verdict = _shared_normalized.get(self._shared_key(digest))
+        if verdict is None:
+            return False
+        if verdict is _UNSENDABLE:
+            self._unsendable_hashes.add(digest)
+        elif verdict is not _UNCHANGED:
+            self._normalized_by_hash[digest] = verdict
+        self._normalization_checked.add(digest)
+        return True
 
     async def warm(self, data_uris: "list[str]") -> None:
         """Precompute the downscales `data_uris` will need, off the event loop.
@@ -389,7 +494,10 @@ class ImageAdmission:
             return
         todo = [
             uri for uri in dict.fromkeys(data_uris)
-            if uri and content_hash(uri) not in self._normalization_checked
+            if uri and not (
+                (digest := content_hash(uri)) in self._normalization_checked
+                or self._adopt_shared(digest)
+            )
         ]
         if not todo:
             return

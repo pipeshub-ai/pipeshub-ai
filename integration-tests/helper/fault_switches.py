@@ -12,6 +12,9 @@ call it in ``finally``.
 * Blob storage: the local storage folder is moved aside and a plain file takes
   its name, so writing into it fails for every user, root included. (A real
   full disk needs a mount the container is not allowed to make.)
+* Broker publish: run in the redis container instead. One stream is renamed
+  aside and a plain string takes its name, so publishing to that topic fails
+  while Redis keeps serving configuration and every other topic.
 """
 
 from __future__ import annotations
@@ -44,6 +47,39 @@ HOSTS_BACKUP = "/tmp/pipeshub-resilience-hosts.bak"
 
 LOCAL_STORAGE_ROOT = os.getenv("PIPESHUB_LOCAL_STORAGE_ROOT", "/root/.local")
 LOCAL_STORAGE_MOUNT = os.getenv("PIPESHUB_LOCAL_STORAGE_MOUNT", "PipesHub")
+
+
+REDIS_CLI = 'redis-cli ${REDIS_PASSWORD:+-a "$REDIS_PASSWORD"} --no-auth-warning'
+
+# One script each, so no publish can land between the rename and the placeholder.
+_STREAM_OFF_LUA = (
+    "if redis.call('TYPE', KEYS[1]).ok ~= 'stream' or redis.call('EXISTS', KEYS[2]) == 1 "
+    "then return 'REFUSED' end "
+    "redis.call('RENAME', KEYS[1], KEYS[2]) "
+    "redis.call('SET', KEYS[1], 'resilience-off') "
+    "return 'OFF'"
+)
+_STREAM_ON_LUA = (
+    "if redis.call('EXISTS', KEYS[2]) == 0 then return 'UNCHANGED' end "
+    "redis.call('RENAME', KEYS[2], KEYS[1]) "
+    "return 'ON'"
+)
+
+
+def _stream_eval(lua: str, stream: str) -> str:
+    # The braces keep both names in one hash slot, which a clustered Redis requires of a script.
+    aside = f"{{{stream}}}:resilience-off"
+    return f"{REDIS_CLI} eval {shlex.quote(lua)} 2 {shlex.quote(stream)} {shlex.quote(aside)}"
+
+
+def stream_off_script(stream: str) -> str:
+    """Make publishing to ``stream`` fail. Fails, changing nothing, unless it is a stream that is switched on."""
+    return f'[ "$({_stream_eval(_STREAM_OFF_LUA, stream)})" = OFF ]'
+
+
+def stream_on_script(stream: str) -> str:
+    """Undo :func:`stream_off_script`, consumer groups included; does nothing if it was never switched off."""
+    return f'case "$({_stream_eval(_STREAM_ON_LUA, stream)})" in ON|UNCHANGED) ;; *) exit 1 ;; esac'
 
 
 def ai_provider_hosts(env: Mapping[str, str] | None = None) -> list[str]:

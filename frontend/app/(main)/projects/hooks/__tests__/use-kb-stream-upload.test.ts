@@ -151,6 +151,54 @@ describe('useKbStreamUpload', () => {
     expect(items[0]!.errors?.[0]).toContain('connection dropped');
   });
 
+  it('keeps a finished upload completed when the connection drops after `done`', async () => {
+    // The server finished the batch, then the response closed uncleanly.
+    scriptedEvents = [{ event: 'done', data: {} }];
+    scriptedError = new Error('The connection to PipesHub dropped before this finished. Please try again.');
+    const getKbId = vi.fn().mockResolvedValue('kb1');
+    const onUploaded = vi.fn();
+    const hook = mountHook(() => useKbStreamUpload({ getKbId, onUploaded }));
+
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+
+    const items = useUploadStore.getState().items;
+    expect(items[0]!.status).toBe('completed');
+    expect(onUploaded).toHaveBeenCalledTimes(1);
+  });
+
+  it('never fails a row the server already reported as succeeded', async () => {
+    scriptedEvents = [{ event: 'file:succeeded', data: { filePath: 'a.txt' } }];
+    scriptedError = new Error('connection dropped');
+    const getKbId = vi.fn().mockResolvedValue('kb1');
+    const hook = mountHook(() => useKbStreamUpload({ getKbId }));
+
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt')]);
+    });
+
+    expect(useUploadStore.getState().items[0]!.status).toBe('completed');
+  });
+
+  it('matches a succeeded event whose path the server prefixed', async () => {
+    scriptedEvents = [
+      { event: 'file:succeeded', data: { filePath: '/a.txt' } },
+      { event: 'file:failed', data: { filePath: 'dir/b.txt', errors: ['Too big'] } },
+    ];
+    scriptedError = new Error('connection dropped');
+    const getKbId = vi.fn().mockResolvedValue('kb1');
+    const hook = mountHook(() => useKbStreamUpload({ getKbId }));
+
+    await act(async () => {
+      await hook.current.uploadFiles([makeFile('a.txt'), makeFile('b.txt')]);
+    });
+
+    const byName = Object.fromEntries(useUploadStore.getState().items.map((i) => [i.name, i]));
+    expect(byName['a.txt']!.status).toBe('completed');
+    expect(byName['b.txt']!.errors).toEqual(['Too big']);
+  });
+
   it('is a no-op for an empty file list', async () => {
     const getKbId = vi.fn();
     const hook = mountHook(() => useKbStreamUpload({ getKbId }));

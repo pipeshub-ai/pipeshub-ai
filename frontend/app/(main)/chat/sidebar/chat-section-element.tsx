@@ -4,7 +4,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
-import { Box, Flex } from '@radix-ui/themes';
+import { Box, Flex, Tooltip } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import { Conversation } from '@/chat/types';
 import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
@@ -17,6 +18,8 @@ import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
 import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
+import { toast } from '@/lib/store/toast-store';
+import { exportConversation } from '@/chat/utils/export-conversation';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -48,6 +51,36 @@ function StreamingTitleLabel({ title }: { title: string }) {
   );
 }
 
+/** Title text with a dot for an answer that finished while the chat was out of view. */
+function UnreadTitleLabel({ title, dotLabel }: { title: string; dotLabel: string }) {
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <span
+        style={{
+          flex: 1,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {title}
+      </span>
+      <span
+        role="img"
+        aria-label={dotLabel}
+        data-testid="unread-dot"
+        style={{
+          flexShrink: 0,
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: 'var(--accent-9)',
+        }}
+      />
+    </Flex>
+  );
+}
+
 interface ChatSectionElementProps {
   conversation: Conversation;
   isActive: boolean;
@@ -64,13 +97,28 @@ interface ChatSectionElementProps {
    * `agentId` is set (see `buildChatHref`).
    */
   projectId?: string;
+  /**
+   * Called with the new pin state when the user pins or unpins this row, and
+   * again with the old one if the request fails. For lists that keep their own
+   * copy of the rows (the "More" panel) rather than reading the store.
+   */
+  onPinnedChange?: (pinned: boolean) => void;
 }
 
 /**
  * A single conversation item in the chat sidebar.
  */
-export function ChatSectionElement({ conversation, isActive, onClick, agentId, projectId }: ChatSectionElementProps) {
+export function ChatSectionElement({
+  conversation,
+  isActive,
+  onClick,
+  agentId: sectionAgentId,
+  projectId,
+  onPinnedChange,
+}: ChatSectionElementProps) {
   const { t } = useTranslation();
+  // A shared agent chat in the global list carries its own agent; the agent sidebar passes it per section.
+  const agentId = sectionAgentId ?? conversation.agentKey;
 
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -92,6 +140,14 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
   const isConversationStreaming = useChatStore((s) =>
     isConversationStreamingInScope(s.slots, conversation.id, agentId ?? null),
   );
+
+  const hasUnreadAnswer = useChatStore((s) => s.unreadConversationIds.has(conversation.id));
+  const markConversationRead = useChatStore((s) => s.markConversationRead);
+
+  // Covers every way a chat gets opened (click, URL, back button), not just a row click.
+  useEffect(() => {
+    if (isActive && hasUnreadAnswer) markConversationRead(conversation.id);
+  }, [isActive, hasUnreadAnswer, conversation.id, markConversationRead]);
 
   const convStreamingBlocksSidebarMutation = () =>
     isConversationStreamingInScope(
@@ -116,6 +172,10 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
   const renameConversation = useChatStore((s) => s.renameConversation);
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const moveConversationToProject = useChatStore((s) => s.moveConversationToProject);
+  const setConversationPinned = useChatStore((s) => s.setConversationPinned);
+  // One request at a time: a second click while the first is in flight would
+  // otherwise send the opposite request and the two could land out of order.
+  const isPinRequestInFlight = useRef(false);
 
   useEffect(() => {
     if (isRenaming) {
@@ -165,6 +225,48 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
       renameInputRef.current?.blur();
     } else if (e.key === 'Escape') {
       setIsRenaming(false);
+    }
+  };
+
+  const handleTogglePin = async () => {
+    if (isPinRequestInFlight.current) return;
+    isPinRequestInFlight.current = true;
+    const pinned = conversation.isPinned !== true;
+    setConversationPinned(conversation.id, pinned);
+    onPinnedChange?.(pinned);
+    try {
+      await ChatApi.setConversationPinned(conversation.id, pinned);
+      bumpConversationsVersion();
+    } catch {
+      setConversationPinned(conversation.id, !pinned);
+      onPinnedChange?.(!pinned);
+      toast.error(pinned ? t('chat.pinFailed') : t('chat.unpinFailed'));
+    } finally {
+      isPinRequestInFlight.current = false;
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      await toast.promise(
+        exportConversation({
+          conversationId: conversation.id,
+          title: conversation.title,
+          agentId,
+          labels: {
+            you: t('common.you'),
+            assistant: t('chat.export.assistant'),
+            sources: t('chat.sources'),
+          },
+        }),
+        {
+          loading: t('chat.export.exporting'),
+          success: t('chat.export.done'),
+          error: t('chat.export.failed'),
+        },
+      );
+    } catch {
+      // error already shown via toast
     }
   };
 
@@ -253,10 +355,27 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
   };
 
   const sharedByName = conversation.sharedBy?.name?.trim();
+  const sharedByText =
+    conversation.isOwner === false && sharedByName ? t('chat.sharedBy', { name: sharedByName }) : undefined;
+  // In the global list an agent chat looks like any other shared chat, so the agent symbol follows the sharer's name.
+  const isAgentChatInGlobalList = Boolean(conversation.agentKey) && !sectionAgentId;
   const sharedBySubtitle =
-    conversation.isOwner === false && sharedByName
-      ? t('chat.sharedBy', { name: sharedByName })
-      : undefined;
+    sharedByText && isAgentChatInGlobalList ? (
+      <>
+        {sharedByText}
+        <Tooltip content={t('chat.agentChat')}>
+          <span
+            aria-label={t('chat.agentChat')}
+            role="img"
+            style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: 4 }}
+          >
+            <MaterialIcon name="smart_toy" size={13} color="var(--accent-9)" />
+          </span>
+        </Tooltip>
+      </>
+    ) : (
+      sharedByText
+    );
 
 
   // Inline rename mode — render a plain input instead of SidebarItem
@@ -305,6 +424,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         label={
           isConversationStreaming ? (
             <StreamingTitleLabel title={conversation.title} />
+          ) : hasUnreadAnswer && !isActive ? (
+            <UnreadTitleLabel title={conversation.title} dotLabel={t('chat.answerReady.unread')} />
           ) : isTypingTitle ? (
             <TypingTitle title={conversation.title} />
           ) : (
@@ -325,6 +446,11 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
               isParentHovered={isHovered}
               onOpenChange={setMenuOpen}
               onRename={handleStartRename}
+              onExport={() => void handleExport()}
+              // Agent chats have no pin API, and project rows come from a list that
+              // does not carry the pin, so only the main list offers it.
+              onTogglePin={agentId || projectId ? undefined : () => void handleTogglePin()}
+              isPinned={conversation.isPinned === true}
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}

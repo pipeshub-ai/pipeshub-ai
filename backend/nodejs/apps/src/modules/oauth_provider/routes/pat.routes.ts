@@ -3,6 +3,7 @@ import { Container } from 'inversify'
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware'
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { PatController } from '../controller/pat.controller'
 import { AppConfig } from '../../tokens_manager/config/config'
@@ -30,6 +31,10 @@ export function createPatRouter(container: Container): Router {
 
   // All routes require authentication — non-admins mint their own tokens.
   router.use(authMiddleware.authenticate.bind(authMiddleware))
+  // ...and an interactive session. createToken caps requested scopes at the
+  // instance's MCP scope set, not at the caller's own, so a PAT or OAuth
+  // token scoped to org:read could otherwise mint a full-scope PAT.
+  router.use(requireSessionAuth)
   router.use(patRateLimiter)
   // Personal access tokens belong to people. A service account holds the
   // credential it was given and does not mint more — otherwise a read-only,

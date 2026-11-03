@@ -8,8 +8,8 @@
  *
  *  1. User sends a message on an agent chat (/chat/?agentId=…)
  *  2. Backend fires AG-UI frames:
- *       CUSTOM(conversation_created) → CUSTOM(ask_user_question)
- *       (no `RUN_FINISHED` — stream stays open)
+ *       CUSTOM(conversation_created) → CUSTOM(ask_user_question) → RUN_FINISHED
+ *       (`ask_user_question` ends the turn; the answer is sent as the next one)
  *  3. The AskUserQuestionCard renders with:
  *       - heading "Quick question :" / "Quick questions :"
  *       - question text + option labels (radio or checkbox)
@@ -19,7 +19,8 @@
  *  4. User selects an option → Submit enabled
  *  5. User clicks Submit → store sets status 'submitted';
  *       a second stream fires to the existing agent conversation endpoint
- *       with the formatted answer as the new user message
+ *       with the formatted answer as the query (agent context) but no new
+ *       user bubble — the follow-up answer streams on the same assistant row
  *  6. Card collapses into the 'submitted' read-only view ("Question :", "Show more")
  *
  * ── i18n key → English string map (from en-US.json) ─────────────────────
@@ -142,11 +143,13 @@ const MOCK_MAIN_CONVERSATIONS_EMPTY = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Builds an AG-UI SSE body that stops after the CUSTOM(ask_user_question)
- * frame. The stream deliberately has no `RUN_FINISHED` — the card should
- * remain interactive.
+ * Builds the AG-UI SSE body of a turn that ends by asking `questions`: the
+ * run finishes after CUSTOM(ask_user_question), and the card stays
+ * interactive. `sentText` is the user's message, which the stored
+ * conversation in `RUN_FINISHED` carries.
  */
 function buildAskQuestionSse(
+  sentText: string,
   questions: Array<{
     uuid: string;
     question: string;
@@ -155,11 +158,15 @@ function buildAskQuestionSse(
   }>,
   userIntent?: string,
 ): string {
-  return buildAguiAskUserQuestionSseBody(
-    AGENT_CONV_ID,
-    { name: 'ask_user_question', ...(userIntent ? { userIntent } : {}), questions },
-    'E2E Ask Question Test',
-  );
+  return buildAguiAskUserQuestionSseBody({
+    conversationId: AGENT_CONV_ID,
+    userMessageId: 'msg-user-ask-question',
+    botMessageId: 'msg-bot-ask-question',
+    question: sentText,
+    modelInfo: MOCK_MODEL_INFO,
+    toolData: { name: 'ask_user_question', ...(userIntent ? { userIntent } : {}), questions },
+    title: 'E2E Ask Question Test',
+  });
 }
 
 /**
@@ -202,6 +209,16 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
     }
     return route.continue();
   });
+
+  // Real backend 400s a made-up user id; that toast covers the card's buttons.
+  await page.route('**/api/v1/users/by-ids', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
 }
 
 async function mockAgentApis(page: import('@playwright/test').Page) {
@@ -224,6 +241,32 @@ async function mockAgentApis(page: import('@playwright/test').Page) {
       body: JSON.stringify(MOCK_AGENT_CONVERSATIONS_EMPTY),
     });
   });
+
+  // The header reads the new conversation for its share avatars. The real backend
+  // 400s the made-up id, and that toast covers the card's buttons too.
+  const conversationPath = `/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}`;
+  await page.route(
+    (url) => url.pathname.replace(/\/$/, '') === conversationPath,
+    (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          conversation: {
+            _id: AGENT_CONV_ID,
+            id: AGENT_CONV_ID,
+            title: 'E2E Ask Question Test',
+            messages: [],
+            sharedWith: [],
+            access: { isOwner: true, accessLevel: 'OWNER' },
+          },
+          filters: {},
+          meta: {},
+        }),
+      });
+    },
+  );
 }
 
 /**
@@ -270,7 +313,7 @@ test.describe('Ask User Question — single-select card', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
-        body: buildAskQuestionSse([SINGLE_Q], 'I need to understand your context.'),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [SINGLE_Q], 'I need to understand your context.'),
       });
     });
 
@@ -496,7 +539,7 @@ test.describe('Ask User Question — "Something else" custom input', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAskQuestionSse([Q_WITH_ELSE]),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [Q_WITH_ELSE]),
       });
     });
     await gotoAgentChat(page);
@@ -610,7 +653,7 @@ test.describe('Ask User Question — multi-select card', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAskQuestionSse([MULTI_Q]),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [MULTI_Q]),
       });
     });
     await gotoAgentChat(page);
@@ -740,7 +783,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAskQuestionSse([Q1, Q2], 'I need a few details to generate your report.'),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [Q1, Q2], 'I need a few details to generate your report.'),
       });
     });
     await gotoAgentChat(page);
@@ -906,7 +949,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAskQuestionSse([SINGLE_Q]),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [SINGLE_Q]),
       });
     });
 
@@ -934,7 +977,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAskQuestionSse([SINGLE_Q]),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [SINGLE_Q]),
       });
     });
 
@@ -986,7 +1029,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAskQuestionSse([SINGLE_Q]),
+        body: buildAskQuestionSse(route.request().postDataJSON().query, [SINGLE_Q]),
       });
     });
 

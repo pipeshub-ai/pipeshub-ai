@@ -74,8 +74,9 @@ class TestCreate:
         assert provider.mode == "standalone"
 
     def test_unknown_mode_raises_value_error(self):
+        # A name no build registers: a downstream build may register "memorydb".
         with pytest.raises(ValueError, match="Unknown REDIS_MODE"):
-            RedisConnectionProviderFactory.create(RedisConnectionConfig(), mode="memorydb")
+            RedisConnectionProviderFactory.create(RedisConnectionConfig(), mode="no-such-mode")
 
     def test_registered_mode_is_used(self):
         RedisConnectionProviderFactory.register("fake", _FakeProvider)
@@ -111,7 +112,12 @@ class TestCreate:
 
 class TestDiscoverViaProviderModule:
     def test_imports_configured_module_before_raising(self):
-        with patch.dict("os.environ", {"REDIS_MODE": "memorydb", "REDIS_PROVIDER_MODULE": "does.not.exist"}, clear=True):
+        # Not "memorydb" -- see the comment on test_unknown_mode_raises_value_error.
+        with patch.dict(
+            "os.environ",
+            {"REDIS_MODE": "no-such-mode", "REDIS_PROVIDER_MODULE": "does.not.exist"},
+            clear=True,
+        ):
             with pytest.raises(ValueError, match="Unknown REDIS_MODE"):
                 RedisConnectionProviderFactory.create(RedisConnectionConfig())
 

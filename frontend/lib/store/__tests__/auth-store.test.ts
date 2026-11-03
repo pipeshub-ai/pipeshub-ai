@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const isElectronMock = vi.fn();
 const clearElectronLogoutServerStateMock = vi.fn();
@@ -52,5 +52,183 @@ describe('requestElectronServerUrlChange', () => {
     expect(listener).not.toHaveBeenCalled();
 
     window.removeEventListener(ELECTRON_SERVER_URL_NAVIGATION_EVENT, listener);
+  });
+});
+
+describe('chat drafts and signing out', () => {
+  const DRAFT_KEY = 'pipeshub-chat-draft:u1:-:conv-1';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    isElectronMock.mockReturnValue(true);
+    window.localStorage.clear();
+    const { allowChatDraftWrites } = await import('@/lib/storage/chat-drafts');
+    allowChatDraftWrites();
+  });
+
+  it('removes unsent chat text when the user signs out from the workspace menu', async () => {
+    window.localStorage.setItem(DRAFT_KEY, '{"text":"private","savedAt":1}');
+    window.localStorage.setItem('theme', 'dark');
+    const { logoutFromWorkspaceMenu } = await import('../auth-store');
+
+    logoutFromWorkspaceMenu();
+
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull();
+    expect(window.localStorage.getItem('theme')).toBe('dark');
+  });
+
+  it('removes drafts before the session is cleared', async () => {
+    window.localStorage.setItem(DRAFT_KEY, '{"text":"private","savedAt":1}');
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('access', 'refresh');
+    let draftAtLogout: string | null | undefined;
+    const unsubscribe = useAuthStore.subscribe((state) => {
+      if (!state.isAuthenticated) draftAtLogout = window.localStorage.getItem(DRAFT_KEY);
+    });
+
+    logoutFromWorkspaceMenu();
+    unsubscribe();
+
+    expect(draftAtLogout).toBeNull();
+  });
+
+  it('keeps unsent text when the session merely ends', async () => {
+    window.localStorage.setItem(DRAFT_KEY, '{"text":"keep me","savedAt":1}');
+    const { useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('access', 'refresh');
+
+    useAuthStore.getState().logout();
+
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBe('{"text":"keep me","savedAt":1}');
+  });
+
+  it('does not let a draft be written back after a deliberate sign-out, until the next sign-in', async () => {
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    const { saveDraft, loadDraft } = await import('@/chat/utils/composer-draft');
+
+    logoutFromWorkspaceMenu();
+    saveDraft(DRAFT_KEY, 'typed as the page unloads');
+    expect(loadDraft(DRAFT_KEY)).toBe('');
+
+    useAuthStore.getState().setTokens('access', 'refresh');
+    saveDraft(DRAFT_KEY, 'typed after signing in again');
+    expect(loadDraft(DRAFT_KEY)).toBe('typed after signing in again');
+  });
+});
+
+describe('signing out ends the session on the server', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+    isElectronMock.mockReturnValue(false);
+  });
+
+  it('sends the access token it is about to discard to the logout endpoint', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+
+    logoutFromWorkspaceMenu();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/userAccount/logout/manual');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer old-access');
+    // The page navigates away right after; keepalive lets the request finish.
+    expect(init.keepalive).toBe(true);
+    expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+
+  it('still signs out on this device when the server cannot be reached', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+
+    expect(() => logoutFromWorkspaceMenu()).not.toThrow();
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(window.localStorage.getItem('jwt_refresh_token')).toBeNull();
+  });
+
+  it('does not call the server when there is no session to end', async () => {
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().logout();
+
+    logoutFromWorkspaceMenu();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not call the server when the session merely expires', async () => {
+    const { useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+
+    useAuthStore.getState().logout();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('signing out drops what was cached for this user', () => {
+  let tokenAtReset: string | null | undefined;
+  const reset = vi.fn();
+  let stop: () => void = () => {};
+  const originalLocation = window.location;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    // jsdom cannot navigate; a plain object takes the web path's `href = '/login'` quietly.
+    Object.defineProperty(window, 'location', { value: { href: 'http://localhost/chat/' }, configurable: true });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    const { onSessionEnd } = await import('@/lib/api/session-cache');
+    const { useAuthStore } = await import('../auth-store');
+    tokenAtReset = undefined;
+    stop = onSessionEnd(() => {
+      tokenAtReset = useAuthStore.getState().accessToken;
+      reset();
+    });
+    useAuthStore.getState().setTokens('access', 'refresh');
+  });
+
+  afterEach(() => {
+    stop();
+    Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+  });
+
+  it('when the session expires, after the tokens are gone', async () => {
+    const { useAuthStore } = await import('../auth-store');
+
+    useAuthStore.getState().logout();
+
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(tokenAtReset).toBeNull();
+  });
+
+  it.each([
+    ['web', false],
+    ['Electron', true],
+  ])('on %s, after a refresh failure or a forced logout', async (_name, electron) => {
+    isElectronMock.mockReturnValue(electron);
+    const { logoutAndRedirect } = await import('../auth-store');
+
+    logoutAndRedirect();
+
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['web', false],
+    ['Electron', true],
+  ])('on %s, from the workspace menu', async (_name, electron) => {
+    isElectronMock.mockReturnValue(electron);
+    const { logoutFromWorkspaceMenu } = await import('../auth-store');
+
+    logoutFromWorkspaceMenu();
+
+    expect(reset).toHaveBeenCalledTimes(1);
   });
 });

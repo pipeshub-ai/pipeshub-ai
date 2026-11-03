@@ -26,13 +26,7 @@ const CANDIDATE_SELECTOR = [
 
 const STYLE_ID = 'ph-highlight-styles';
 
-function ensureHighlightStyles(): void {
-  if (typeof document === 'undefined') return;
-  if (document.getElementById(STYLE_ID)) return;
-
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = `
+export const HIGHLIGHT_CSS = `
     .${HL_BASE} {
       background-color: rgba(16, 185, 129, 0.18);
       border-radius: 2px;
@@ -83,6 +77,14 @@ function ensureHighlightStyles(): void {
       }
     }
   `;
+
+function ensureHighlightStyles(): void {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(STYLE_ID)) return;
+
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = HIGHLIGHT_CSS;
   document.head.appendChild(style);
 }
 
@@ -432,6 +434,84 @@ function highlightFuzzyFallback(
   }
 }
 
+/**
+ * Wrap each citation's matching text under `root` in a highlight span and
+ * return the cleanups, keyed by citation id. Synchronous and DOM-only, so it
+ * also works on a detached document (the sandboxed HTML preview highlights
+ * before serialising into its iframe).
+ */
+export function highlightCitations(
+  root: Element,
+  citations: PreviewCitation[],
+  onHighlightClick?: (citationId: string) => void,
+): Map<string, () => void> {
+  const candidates = Array.from(root.querySelectorAll(CANDIDATE_SELECTOR));
+  if (candidates.length === 0 && root.hasChildNodes()) {
+    candidates.push(root);
+  }
+
+  const candidateTexts = candidates.map((el) => normalizeText(el.textContent).toLowerCase());
+
+  let rootTextData: ScopeTextData | null | undefined;
+  const getRootTextData = () => {
+    if (rootTextData === undefined) rootTextData = buildScopeTextData(root);
+    return rootTextData;
+  };
+
+  const newCleanups = new Map<string, () => void>();
+
+  for (const citation of citations) {
+    const normalized = normalizeText(citation.content);
+    if (!normalized || normalized.length < 3) continue;
+
+    const id = citation.id;
+    const searchLower = normalized.toLowerCase();
+
+    let matched = false;
+    for (let i = 0; i < candidates.length; i++) {
+      const el = candidates[i];
+      if (el.querySelector(`.highlight-${CSS.escape(id)}`) || el.classList.contains(`highlight-${id}`)) continue;
+      if (!candidateTexts[i].includes(searchLower)) continue;
+
+      const result = highlightTextInScope(el, normalized, id, 'exact', onHighlightClick);
+      if (result.success) {
+        if (result.cleanup) newCleanups.set(id, result.cleanup);
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      const rtd = getRootTextData();
+      if (rtd && rtd.normalizedLower.includes(searchLower)) {
+        const result = highlightTextInScope(root, normalized, id, 'exact', onHighlightClick, rtd);
+        if (result.success) {
+          if (result.cleanup) newCleanups.set(id, result.cleanup);
+          matched = true;
+        }
+      }
+    }
+
+    if (!matched && candidates.length > 0) {
+      const scored = candidates
+        .map((el, i) => ({ el, score: jaccardSimilarity(normalized, candidateTexts[i]) }))
+        .filter((x) => x.score > SIMILARITY_THRESHOLD)
+        .sort((a, b) => b.score - a.score);
+
+      if (scored.length > 0) {
+        const best = scored[0];
+        if (!best.el.querySelector(`.highlight-${CSS.escape(id)}`) && !best.el.classList.contains(`highlight-${id}`)) {
+          const result = highlightTextInScope(best.el, normalized, id, 'fuzzy', onHighlightClick);
+          if (result.success && result.cleanup) {
+            newCleanups.set(id, result.cleanup);
+          }
+        }
+      }
+    }
+  }
+  return newCleanups;
+}
+
 // ── Public hook ──────────────────────────────────────────────────────────────
 
 interface UseTextHighlighterOptions {
@@ -473,72 +553,7 @@ export function useTextHighlighter({
         try {
           if (!root) { isHighlightingRef.current = false; return; }
 
-          const candidates = Array.from(root.querySelectorAll(CANDIDATE_SELECTOR));
-          if (candidates.length === 0 && root.hasChildNodes()) {
-            candidates.push(root);
-          }
-
-          const candidateTexts = candidates.map((el) => normalizeText(el.textContent).toLowerCase());
-
-          let rootTextData: ScopeTextData | null | undefined;
-          const getRootTextData = () => {
-            if (rootTextData === undefined) rootTextData = buildScopeTextData(root);
-            return rootTextData;
-          };
-
-          const newCleanups = new Map<string, () => void>();
-
-          for (const citation of citations) {
-            const normalized = normalizeText(citation.content);
-            if (!normalized || normalized.length < 3) continue;
-
-            const id = citation.id;
-            const searchLower = normalized.toLowerCase();
-
-            let matched = false;
-            for (let i = 0; i < candidates.length; i++) {
-              const el = candidates[i];
-              if (el.querySelector(`.highlight-${CSS.escape(id)}`) || el.classList.contains(`highlight-${id}`)) continue;
-              if (!candidateTexts[i].includes(searchLower)) continue;
-
-              const result = highlightTextInScope(el, normalized, id, 'exact', onHighlightClick);
-              if (result.success) {
-                if (result.cleanup) newCleanups.set(id, result.cleanup);
-                matched = true;
-                break;
-              }
-            }
-
-            if (!matched) {
-              const rtd = getRootTextData();
-              if (rtd && rtd.normalizedLower.includes(searchLower)) {
-                const result = highlightTextInScope(root, normalized, id, 'exact', onHighlightClick, rtd);
-                if (result.success) {
-                  if (result.cleanup) newCleanups.set(id, result.cleanup);
-                  matched = true;
-                }
-              }
-            }
-
-            if (!matched && candidates.length > 0) {
-              const scored = candidates
-                .map((el, i) => ({ el, score: jaccardSimilarity(normalized, candidateTexts[i]) }))
-                .filter((x) => x.score > SIMILARITY_THRESHOLD)
-                .sort((a, b) => b.score - a.score);
-
-              if (scored.length > 0) {
-                const best = scored[0];
-                if (!best.el.querySelector(`.highlight-${CSS.escape(id)}`) && !best.el.classList.contains(`highlight-${id}`)) {
-                  const result = highlightTextInScope(best.el, normalized, id, 'fuzzy', onHighlightClick);
-                  if (result.success && result.cleanup) {
-                    newCleanups.set(id, result.cleanup);
-                  }
-                }
-              }
-            }
-          }
-
-          cleanupsRef.current = newCleanups;
+          cleanupsRef.current = highlightCitations(root, citations, onHighlightClick);
         } catch (e) {
           console.error('[useTextHighlighter] applyHighlights error:', e);
         } finally {

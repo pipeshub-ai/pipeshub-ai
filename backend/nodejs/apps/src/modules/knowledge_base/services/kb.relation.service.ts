@@ -4,6 +4,7 @@ import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
 import {
   InternalServerError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
@@ -11,10 +12,7 @@ import {
 } from '../../../libs/errors/reader-friendly';
 import {
   DeletedRecordEvent,
-  Event,
-  EventType,
   NewRecordEvent,
-  RecordsEventProducer,
   UpdateRecordEvent,
 } from './records_events.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -39,29 +37,17 @@ const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
 });
 
+export const RESYNC_NOT_QUEUED_MESSAGE =
+  "We couldn't start this sync because PipesHub couldn't queue it. Nothing was synced. Try again in a minute; if it keeps happening, ask your admin to check the services page.";
+
 @injectable()
 export class RecordRelationService {
 
   constructor(
-    @inject(RecordsEventProducer) readonly eventProducer: RecordsEventProducer,
     @inject(SyncEventProducer) readonly syncEventProducer: SyncEventProducer,
     private readonly defaultConfig: DefaultStorageConfig,
   ) {
-
-    this.initializeEventProducer();
     this.initializeSyncEventProducer();
-  }
-
-  private async initializeEventProducer() {
-    try {
-      await this.eventProducer.start();
-      logger.info('Event producer initialized successfully');
-    } catch (error) {
-      logger.error('Failed to initialize event producer', error);
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('start the knowledge base')),
-      );
-    }
   }
 
   private async initializeSyncEventProducer() {
@@ -74,104 +60,6 @@ export class RecordRelationService {
         new InternalServerError(serverFailureMessage('start the knowledge base')),
       );
     }
-  }
-
-  /**
-   * Publishes events for multiple records and their associated file records
-   * @param records The inserted records
-   * @param fileRecords The associated file records
-   */
-  async publishRecordEvents(
-    records: IRecordDocument[],
-    fileRecords: IFileRecordDocument[],
-    keyValueStoreService: KeyValueStoreService,
-  ): Promise<void> {
-    try {
-      // Create a batch of promises for event publishing
-      const publishPromises = records.map(async (record, index) => {
-        try {
-          // Create the payload using the separate function
-          const newRecordPayload = await this.createNewRecordEventPayload(
-            record,
-            keyValueStoreService,
-            fileRecords[index],
-          );
-
-          const event: Event = {
-            eventType: EventType.NewRecordEvent,
-            timestamp: Date.now(),
-            payload: newRecordPayload,
-          };
-
-          // Return the promise for event publishing
-          return this.eventProducer.publishEvent(event);
-        } catch (error) {
-          logger.error(
-            `Failed to create event payload for record ${record._key}`,
-            { error },
-          );
-          // Return a resolved promise to avoid failing the Promise.all
-          return Promise.resolve();
-        }
-      });
-
-      // Execute all publish operations concurrently
-      await Promise.all(publishPromises);
-      logger.info(`Published events for ${records.length} records`);
-    } catch (error) {
-      // Log but don't throw the error to avoid affecting the main operation
-      logger.error('Error publishing batch record events', { error });
-    }
-  }
-
-  /**
-   * Creates a standardized new record event payload considering both record and file record information
-   * @param record The record document
-   * @param fileRecord Optional associated file record for additional metadata
-   * @returns NewRecordEvent payload for Kafka
-   */
-  async createNewRecordEventPayload(
-    record: IRecordDocument,
-    keyValueStoreService: KeyValueStoreService,
-    fileRecord?: IFileRecordDocument,
-  ): Promise<NewRecordEvent> {
-    // Generate signed URL route based on record information
-
-    const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
-
-    const storageUrl =
-      JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
-    const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
-
-    // Determine the appropriate extension by prioritizing different sources
-    let extension = '';
-    if (fileRecord && fileRecord.extension) {
-      extension = fileRecord.extension;
-    }
-    let mimeType = '';
-    if (fileRecord && fileRecord.mimeType) {
-      mimeType = fileRecord.mimeType;
-    }
-
-    return {
-      orgId: record.orgId,
-      connectorId: record.connectorId,
-      recordId: record._key,
-      recordName: record.recordName,
-      recordType: record.recordType,
-      version: record.version || 1,
-      signedUrlRoute: signedUrlRoute,
-      origin: record.origin,
-      extension: extension,
-      mimeType: mimeType,
-      createdAtTimestamp: (record.createdAtTimestamp || Date.now()).toString(),
-      updatedAtTimestamp: (record.updatedAtTimestamp || Date.now()).toString(),
-      sourceCreatedAtTimestamp: (
-        record.sourceCreatedAtTimestamp ||
-        record.createdAtTimestamp ||
-        Date.now()
-      ).toString(),
-    };
   }
 
   /**
@@ -286,7 +174,13 @@ export class RecordRelationService {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-      const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
+      // Global replace, matching Python's str.replace, which is already global.
+      // The single-space version happened to route correctly because this value
+      // is normalized twice (normalizeAppName, then here) and the consumer
+      // normalizes again -- but it left an embedded space in the published
+      // payload.connector for three-word types. Same result, one pass.
+      const eventType =
+        resyncPayload.connector.replace(/ /g, '').toLowerCase() + '.resync';
       const event: SyncEvent = {
         eventType: eventType,
         timestamp: Date.now(),
@@ -306,8 +200,7 @@ export class RecordRelationService {
       if (eventError?.statusCode === 409) {
         throw eventError;
       }
-      // Don't throw the error to avoid affecting the main operation
-      return { success: false, error: eventError.message };
+      throw markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE));
     }
   }
 

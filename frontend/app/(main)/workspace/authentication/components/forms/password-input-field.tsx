@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FieldLabel } from './field-label';
@@ -10,10 +10,15 @@ interface PasswordInputFieldProps {
   field: PasswordFieldDef;
   value: string;
   onChange: (val: string) => void;
+  /** Set once the form has fetched the stored secret, so the field shows it instead of dots. */
+  revealed?: boolean;
 }
 
-export function PasswordInputField({ field, value, onChange }: PasswordInputFieldProps) {
+export function PasswordInputField({ field, value, onChange, revealed = false }: PasswordInputFieldProps) {
   const [showSecret, setShowSecret] = useState(false);
+  useEffect(() => {
+    if (revealed) setShowSecret(true);
+  }, [revealed]);
 
   return (
     <Flex direction="column" gap="1">

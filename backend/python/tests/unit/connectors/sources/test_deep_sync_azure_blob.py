@@ -6,18 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
-    get_file_extension,
-    get_folder_path_segments_from_blob_name,
-    get_mimetype_for_azure_blob,
-    get_parent_path_from_blob_name,
 )
 from app.models.entities import User
-from app.models.permission import EntityType, PermissionType
 
 
 # ---------------------------------------------------------------------------
@@ -36,8 +30,10 @@ def mock_dep():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
-    proc.account_name = "teststorage"
+    proc.account_url = "https://teststorage.blob.core.windows.net"
     proc.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -97,7 +93,7 @@ def connector(mock_logger, mock_dep, mock_ds_provider, mock_config):
             created_by="test-user-id",
         )
     conn.data_source = AsyncMock()
-    conn.account_name = "teststorage"
+    conn.account_url = "https://teststorage.blob.core.windows.net"
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     conn.record_sync_point = AsyncMock()
@@ -167,7 +163,8 @@ class TestAzureBlobRunSync:
             return_value=_make_response(success=False, error="Access denied")
         )
         with patch.object(connector, "_sync_container", new_callable=AsyncMock) as mock_sync:
-            await connector.run_sync()
+            with pytest.raises(ConnectionError, match="Access denied"):
+                await connector.run_sync()
             mock_sync.assert_not_called()
 
     @patch("app.connectors.sources.azure_blob.connector.load_connector_filters", new_callable=AsyncMock)
@@ -186,7 +183,9 @@ class TestAzureBlobRunSync:
 
         with patch.object(connector, "_create_record_groups_for_containers", new_callable=AsyncMock), \
              patch.object(connector, "_sync_container", side_effect=sync_fail):
-            await connector.run_sync()
+            with pytest.raises(RuntimeError, match="c1"):
+                await connector.run_sync()
+        # The other container is still synced before the run fails.
         assert call_count == 2
 
 
@@ -200,7 +199,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     async def test_personal_scope_uses_creator_permission(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
@@ -209,8 +208,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].email == "creator@t.com"
-        assert permissions[0].type == PermissionType.OWNER
+        assert permissions == []
 
     async def test_personal_scope_no_creator_falls_back_to_org(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
@@ -218,7 +216,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     async def test_empty_list_no_op(self, connector):
         await connector._create_record_groups_for_containers([])
@@ -245,7 +243,8 @@ class TestSyncContainer:
         connector.data_source.list_blobs = AsyncMock(
             return_value=_make_response(success=False, error="failed")
         )
-        await connector._sync_container("c1")
+        with pytest.raises(ConnectionError, match="failed"):
+            await connector._sync_container("c1")
         connector.data_entities_processor.on_new_records.assert_not_called()
 
     async def test_none_blobs_iterator(self, connector):
@@ -270,7 +269,7 @@ class TestSyncContainer:
             await connector._sync_container("c1")
             connector.data_entities_processor.on_new_records.assert_called()
 
-    async def test_folder_blob_skips_ensure_parent(self, connector):
+    async def test_folder_marker_becomes_the_implicit_folder(self, connector):
         async def _blob_iter():
             yield {"name": "folder/", "last_modified": datetime(2025, 1, 1, tzinfo=timezone.utc), "size": 0}
 
@@ -278,10 +277,13 @@ class TestSyncContainer:
             return_value=_make_response(data=_blob_iter())
         )
 
-        with patch.object(connector, "_process_azure_blob", new_callable=AsyncMock, return_value=(MagicMock(), [])), \
+        with patch.object(connector, "_process_azure_blob", new_callable=AsyncMock, return_value=(MagicMock(), [])) as mock_proc, \
              patch.object(connector, "_ensure_parent_folders_exist", new_callable=AsyncMock) as mock_ensure:
             await connector._sync_container("c1")
-            mock_ensure.assert_not_called()
+            # Same folder record (c1/folder) as the paths of its files imply, not a second one.
+            mock_ensure.assert_awaited_once()
+            assert mock_ensure.await_args.args[:2] == ("c1", ["folder"])
+            mock_proc.assert_not_called()
 
     async def test_blob_error_continues(self, connector):
         async def _blob_iter():
@@ -294,7 +296,7 @@ class TestSyncContainer:
 
         call_count = 0
 
-        async def _proc(blob, container):
+        async def _proc(blob, container, recorded=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

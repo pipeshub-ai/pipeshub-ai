@@ -13,9 +13,9 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.zendesk.zendesk import ZendeskClient
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
@@ -100,7 +100,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("Zendesk")\
     .in_group("Customer Support")\
     .with_description("Zendesk integration for customer support ticket management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Zendesk",

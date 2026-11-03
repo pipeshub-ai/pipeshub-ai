@@ -101,6 +101,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
         <TextField.Slot side="right">
           <IconButton
             type="button"
+            className="touch-hit"
             size="1"
             variant="ghost"
             color="gray"

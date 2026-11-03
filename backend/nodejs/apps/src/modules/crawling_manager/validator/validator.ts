@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { CrawlingScheduleType } from '../schema/enums';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 // Base Schedule Configuration Schemas
 const BaseScheduleConfigSchema = z.object({
-  scheduleType: z.nativeEnum(CrawlingScheduleType),
+  scheduleType: z.enum(CrawlingScheduleType),
   isEnabled: z.boolean().default(true),
   timezone: z.string().default('UTC'),
 });
@@ -44,14 +45,14 @@ const CustomScheduleConfigSchema = BaseScheduleConfigSchema.extend({
 
 const OnceScheduleConfigSchema = BaseScheduleConfigSchema.extend({
   scheduleType: z.literal(CrawlingScheduleType.ONCE),
-  scheduledTime: z.string().datetime(),
+  scheduledTime: z.iso.datetime(),
 });
 
 const IntervalScheduleConfigSchema = BaseScheduleConfigSchema.extend({
   scheduleType: z.literal(CrawlingScheduleType.INTERVAL),
   scheduleConfig: z.object({
-    intervalMinutes: z.number().int().min(1).max(60 * 24 * 365),
-    timezone: z.string().default('UTC').optional(),
+    intervalMinutes: z.number().check(integerCheck()).min(1).max(60 * 24 * 365),
+    timezone: z.string().optional(),
   }),
 });
 

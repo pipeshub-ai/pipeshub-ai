@@ -17,6 +17,8 @@
 /coverage/
 /test-results/
 /playwright-report/
+/test-results-first-run/
+/playwright-report-first-run/
 /blob-report/
 /.auth/
 /.nyc_output/

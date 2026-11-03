@@ -23,6 +23,8 @@ this system must scale up for.
 """
 from __future__ import annotations
 
+import functools
+import hashlib
 import logging
 import os
 import re
@@ -46,6 +48,7 @@ except ImportError:  # pragma: no cover - environment dependent, no hard depende
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 _PROC_MEMINFO = Path("/proc/meminfo")
 _PROC_STAT = Path("/proc/stat")
 # Some kernels report this sentinel for memory.limit_in_bytes / memsw limits
@@ -127,6 +130,26 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
             if candidate.exists():
                 return candidate
     return None
+
+
+@functools.cache
+def memory_domain_id() -> str | None:
+    """An opaque id shared by every process under this memory cgroup, and by no other.
+
+    The cgroup directory's device and inode (unique on a host) with the kernel's boot
+    id (unique per host). None where either cannot be read, so callers keep their own
+    memory brake.
+    """
+    boot_id = _read_text(_BOOT_ID)
+    limit_file = _resolve_cgroup_path("memory", "memory.limit_in_bytes", "memory.max")
+    if not boot_id or limit_file is None:
+        return None
+    try:
+        directory = limit_file.parent.stat()
+    except OSError:
+        return None
+    raw = f"{boot_id.strip()}:{directory.st_dev}:{directory.st_ino}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +456,7 @@ def _cgroup_v2_cpu_quota() -> float | None:
         quota_us, period_us = int(parts[0]), int(parts[1])
     except ValueError:
         return None
-    if period_us <= 0:
+    if period_us <= 0 or quota_us <= 0:
         return None
     return quota_us / period_us
 
@@ -455,16 +478,59 @@ def _affinity_cpu_count() -> int | None:
         return None
 
 
-def _resolve_cpu_quota() -> float:
+@functools.cache
+def _resolve_effective_cpus() -> tuple[int, str]:
     quota = _cgroup_v2_cpu_quota()
+    source = "cgroup_v2"
+    if quota is None:
+        quota = _cgroup_v1_cpu_quota()
+        source = "cgroup_v1"
+    affinity = _affinity_cpu_count()
     if quota is not None:
-        return quota
-    quota = _cgroup_v1_cpu_quota()
+        # A fractional quota rounds down; a smaller affinity mask still wins.
+        count = max(1, int(quota))
+        if affinity and affinity < count:
+            return affinity, "affinity"
+        return count, source
+    if affinity:
+        return affinity, "affinity"
+    return max(1, os.cpu_count() or 1), "os_cpu_count"
+
+
+def effective_cpu_count() -> int:
+    """Whole CPUs this process may use, for sizing workers, threads and pools.
+
+    cgroup v2 ``cpu.max`` -> cgroup v1 CFS quota -> ``sched_getaffinity`` ->
+    ``os.cpu_count()``. A fractional quota rounds down, never below 1, and a
+    smaller affinity mask wins over the quota. Cached for the process lifetime
+    and side-effect free; callers must never use a bare ``os.cpu_count()`` to
+    size anything.
+    """
+    return _resolve_effective_cpus()[0]
+
+
+def effective_cpu_source() -> str:
+    """Where :func:`effective_cpu_count` got its answer (for health output)."""
+    return _resolve_effective_cpus()[1]
+
+
+def _resolve_cpu_quota() -> float:
+    """CPUs this container can burn, fractions kept (1.5 stays 1.5).
+
+    The smaller of the cgroup quota and the affinity mask, as in
+    ``effective_cpu_count``: with a larger quota than cpuset the quota can never
+    be reached, so utilisation divided by it would never exceed the cpuset
+    share and the utilisation brake could not fire. Ceilings floor this value
+    (``ceiling_cpus``); utilisation divides by it as is.
+    """
+    quota = _cgroup_v2_cpu_quota()
+    if quota is None:
+        quota = _cgroup_v1_cpu_quota()
+    affinity = _affinity_cpu_count()
     if quota is not None:
-        return quota
-    count = _affinity_cpu_count()
-    if count:
-        return float(count)
+        return min(quota, float(affinity)) if affinity else quota
+    if affinity:
+        return float(affinity)
     count = os.cpu_count()
     return float(count) if count else 1.0
 

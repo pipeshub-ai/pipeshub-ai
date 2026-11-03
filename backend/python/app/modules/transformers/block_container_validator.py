@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from app.exceptions.indexing_exceptions import BlockContainerValidationError
 from app.models.blocks import BlockType, BlocksContainer, DataFormat, GroupType, IndexRange
 import base64
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
  
 # ── image magic signatures ──────────────────────────────────────────
 # Each entry: (prefix_bytes, secondary_bytes_at_offset_8_or_None)
@@ -63,6 +67,55 @@ _RAW_B64_RE = re.compile(
 )
  
  
+# Docs, tickets and chats quote truncated examples
+# ("data:image/png;base64,iVBORw0KGgo...") whose prefix decodes to a valid PNG
+# signature; rejecting them failed whole records over a few harmless characters.
+# 64 bytes is under the smallest real PNG (67) and over the header of every
+# supported format; a smaller image left in a text block costs only a few dozen
+# characters, which is all this check exists to prevent.
+_MIN_IMAGE_PAYLOAD_BYTES = 64
+_MIN_IMAGE_PAYLOAD_CHARS = (_MIN_IMAGE_PAYLOAD_BYTES * 4 + 2) // 3
+# Wrapped base64 breaks lines at 64 (PEM) or 76 (MIME) characters. A run of
+# full lines may be led by one short line (the rest of a "data:image/...;base64,"
+# line) and closed by one padded short line. An unpadded short line after a full
+# one ends the run uncounted, so a prose word after a quoted fragment cannot push
+# it over the minimum.
+_MIN_WRAPPED_LINE_CHARS = 60
+_SEGMENT_RE = re.compile(r"\S+")
+
+
+def _image_payload_prefixes(raw: str) -> Iterator[str]:
+    """Yield the start of each base64 run in *raw* long enough to be an image.
+
+    A run led by a short segment yields twice: from the short segment and from
+    the first full line, because the short one may be a prose word.
+    """
+    lead = ""
+    run: list[str] = []
+    length = 0
+    for m in _SEGMENT_RE.finditer(raw):
+        segment = m.group()
+        chars = len(segment.rstrip("="))
+        full = chars >= _MIN_WRAPPED_LINE_CHARS
+        # Padding only ever ends an encoding, so a padded short line is the
+        # last line of a wrap rather than prose.
+        tail = not full and segment.endswith("=") and bool(run or lead)
+        if full or tail:
+            if not run:
+                run = [lead + segment] if lead else []
+                if full:
+                    run.append(segment)
+                length = len(lead.rstrip("="))
+            before, length = length, length + chars
+            if before < _MIN_IMAGE_PAYLOAD_CHARS <= length:
+                yield from run
+            if full:
+                lead = ""
+                continue
+        run, length = [], 0
+        lead = "" if segment.endswith("=") else segment
+
+
 def _decode_b64_prefix(raw: str, decoded_bytes_needed: int = 32) -> Optional[bytes]:
     """Decode just enough of a base64 string to check magic bytes.
  
@@ -128,20 +181,335 @@ def contains_base64_image(text: str) -> bool:
         if tried >= _MAX_CANDIDATES:
             break
         tried += 1
-        decoded = _decode_b64_prefix(m.group(1))
-        if decoded and _is_image_data(decoded):
-            return True
+        for prefix in _image_payload_prefixes(m.group(1)):
+            decoded = _decode_b64_prefix(prefix)
+            if decoded and _is_image_data(decoded):
+                return True
  
     # ── pass 2: raw base64 ───────────────────────────────────────
     for m in _RAW_B64_RE.finditer(text):
         if tried >= _MAX_CANDIDATES:
             break
         tried += 1
-        decoded = _decode_b64_prefix(m.group())
-        if decoded and _is_image_data(decoded):
-            return True
- 
+        for prefix in _image_payload_prefixes(m.group()):
+            decoded = _decode_b64_prefix(prefix)
+            if decoded and _is_image_data(decoded):
+                return True
+
     return False
+
+
+# What a TEXT block keeps where an image payload was.
+BASE64_IMAGE_PLACEHOLDER = "[image data omitted]"
+
+
+# A line too short to hold an image by itself is a line of a wrap (MIME wraps at
+# 76, other encoders at 80 or 84); one at least that long is a whole payload.
+_MAX_WRAPPED_LINE_CHARS = _MIN_IMAGE_PAYLOAD_CHARS - 1
+
+
+def _png_length(data: bytes | bytearray) -> int | None:
+    """Length of the PNG at the start of *data* once its IEND chunk is in, by
+    walking the chunks (length, type, data, CRC)."""
+    pos = 8
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        pos += 12 + length
+        if kind == b"IEND":
+            return pos if pos <= len(data) else None
+    return None
+
+
+def _jpeg_length(data: bytes | bytearray) -> int | None:
+    """Length of the JPEG at the start of *data* once its end-of-image marker is
+    in. Segments are skipped by their length, so an EXIF thumbnail's own EOI
+    inside APP1 is passed over; entropy-coded data after SOS runs to the next
+    marker that isn't a stuffed byte or a restart marker."""
+    pos = 2
+    while pos + 2 <= len(data):
+        if data[pos] != 0xFF:
+            return None
+        marker = data[pos + 1]
+        if marker == 0xFF:  # fill byte
+            pos += 1
+            continue
+        pos += 2
+        if marker == 0xD9:
+            return pos
+        if 0xD0 <= marker <= 0xD7 or marker == 0x01:
+            continue
+        if pos + 2 > len(data):
+            return None
+        pos += int.from_bytes(data[pos:pos + 2], "big")
+        if marker == 0xDA:
+            while True:
+                pos = data.find(b"\xff", pos)
+                if pos < 0 or pos + 1 >= len(data):
+                    return None
+                following = data[pos + 1]
+                if following == 0x00 or 0xD0 <= following <= 0xD7:
+                    pos += 2
+                    continue
+                break
+    return None
+
+
+def _gif_length(data: bytes | bytearray) -> int | None:
+    """Length of the GIF at the start of *data* once its trailer is in, by
+    walking the colour tables, extensions and image data sub-blocks."""
+
+    def sub_blocks(pos: int) -> int | None:
+        while pos < len(data):
+            size = data[pos]
+            pos += 1 + size
+            if size == 0:
+                return pos
+        return None
+
+    if len(data) < 13:
+        return None
+    flags = data[10]
+    pos = 13 + (3 * 2 ** ((flags & 7) + 1) if flags & 0x80 else 0)
+    while pos < len(data):
+        block = data[pos]
+        if block == 0x3B:
+            return pos + 1
+        if block == 0x21:
+            pos = sub_blocks(pos + 2)
+        elif block == 0x2C:
+            if pos + 10 > len(data):
+                return None
+            local = data[pos + 9]
+            pos += 10 + (3 * 2 ** ((local & 7) + 1) if local & 0x80 else 0) + 1
+            pos = sub_blocks(pos)
+        else:
+            return None
+        if pos is None:
+            return None
+    return None
+
+
+def _webp_length(data: bytes | bytearray) -> int | None:
+    return int.from_bytes(data[4:8], "little") + 8 if len(data) >= 8 else None
+
+
+def _ico_length(data: bytes | bytearray) -> int | None:
+    """End of the last image an ICO or CUR directory points at."""
+    if len(data) < 6:
+        return None
+    count = int.from_bytes(data[4:6], "little")
+    if not count or len(data) < 6 + 16 * count:
+        return None
+    return max(
+        int.from_bytes(data[at + 8:at + 12], "little") + int.from_bytes(data[at + 12:at + 16], "little")
+        for at in range(6, 6 + 16 * count, 16)
+    )
+
+
+# How to tell the image's length from its first bytes, per format, and the last
+# bytes that can end it (None: its length is in its header). TIFF, AVIF and
+# HEIC have no end that can be read in order, so their runs go on through every
+# line of the wrap.
+_IMAGE_ENDS: tuple[tuple[bytes, Callable[[bytearray], int | None], bytes | None], ...] = (
+    (b"\x89PNG\r\n\x1a\n", _png_length, b"IEND\xaeB`\x82"),
+    (b"\xff\xd8\xff", _jpeg_length, b"\xff\xd9"),
+    (b"GIF8", _gif_length, b"\x3b"),
+    (b"RIFF", _webp_length, None),
+    (b"\x00\x00\x01\x00", _ico_length, None),
+    (b"\x00\x00\x02\x00", _ico_length, None),
+)
+
+
+class _ImageEnd:
+    """Decodes a payload line by line and says when the image is whole.
+
+    Only whole quads are decoded; the rest waits for the next line. A format
+    whose length is in its header is measured once; one that ends with a marker
+    is walked only when the bytes so far end with that marker.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._data = bytearray()
+        self._measure: Callable[[bytearray], int | None] | None = None
+        self._ending: bytes | None = None
+        self._known = False
+        self._length: int | None = None
+
+    def feed(self, line: str) -> None:
+        self._pending += line.rstrip("=").replace("-", "+").replace("_", "/")
+        whole = len(self._pending) // 4 * 4
+        try:
+            self._data += base64.b64decode(self._pending[:whole], validate=True)
+        except Exception:
+            self._measure = None  # not base64 after all: no end can be read
+            self._known = True
+        self._pending = self._pending[whole:]
+        if not self._known:
+            for magic, measure, ending in _IMAGE_ENDS:
+                if self._data[: len(magic)] == magic:
+                    self._measure, self._ending = measure, ending
+                    break
+            self._known = len(self._data) >= 8
+
+    def finished_by(self, line: str) -> bool:
+        """Whether *line*, a short last line, completes the image. Asked once,
+        at the end of a run, so the copy it makes is made once."""
+        probe = _ImageEnd()
+        probe.__dict__.update(self.__dict__)
+        probe._data = bytearray(self._data)
+        probe.feed(line)
+        return probe.whole
+
+    @property
+    def whole(self) -> bool:
+        """Whether the bytes so far hold the whole image."""
+        if self._measure is None or self._pending:
+            return False
+        data = self._data
+        if self._ending is None:
+            if self._length is None:
+                self._length = self._measure(data)
+            return self._length is not None and self._length <= len(data)
+        if not data.endswith(self._ending):
+            return False
+        length = self._measure(data)
+        return length is not None and length <= len(data)
+
+
+def _one_line_break(gap: str) -> bool:
+    """Whether *gap* between two segments is a single line break: the next
+    line of a wrap. A blank line, or a space on the same line, ends it."""
+    return gap.count("\n") == 1 and not gap.strip()
+
+
+def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
+    """Yield ``(start, end)`` in *raw* of each base64 run that holds an image.
+
+    A run starts as ``_image_payload_prefixes`` reads it: a full line, maybe led
+    by one short segment, which belongs to the span only when the image is found
+    by reading from it (otherwise it is a prose word before the payload). Unlike
+    that check, which only has to find an image, the span has to stop where the
+    payload does, or it takes the next line of text with it. So a run goes on
+    only through the lines of a wrap:
+
+    - A line long enough to be an image by itself, or one that ends in padding,
+      is the whole of what is left: the run ends with it.
+    - Each next line is one line break further on. The second line sets the
+      wrap's width; the first can be shorter (the rest of a ``base64,`` line).
+      Every later full line has that width.
+    - The run ends once the lines so far decode to a whole image of the format
+      its first bytes name (``_ImageEnd``): a PNG at IEND, a JPEG at the EOI
+      after its scans, a GIF at its trailer, WEBP, ICO and CUR at the size in
+      their headers. So a same-width line after an image that ends on a full
+      line is not taken. TIFF, AVIF and HEIC can't be measured that way, so
+      their runs go on through every line of the wrap.
+    - A shorter last line belongs to the run when it is padded and brings the
+      run to a whole number of base64 quads, or when it completes the image. An
+      unpadded short line that doesn't (or follows a format whose end can't be
+      read) is left as text: it can't be told apart from a word, and it is too
+      short to be an image.
+    """
+    segments = list(_SEGMENT_RE.finditer(raw))
+    i = 0
+    while i < len(segments):
+        m = segments[i]
+        segment = m.group()
+        if len(segment.rstrip("=")) < _MIN_WRAPPED_LINE_CHARS:
+            i += 1
+            continue
+        previous = segments[i - 1] if i else None
+        lead = (
+            previous
+            if previous is not None
+            and len(previous.group().rstrip("=")) < _MIN_WRAPPED_LINE_CHARS
+            and not previous.group().endswith("=")
+            else None
+        )
+        start = None
+        image = _ImageEnd()
+        if lead is not None:
+            decoded = _decode_b64_prefix(lead.group() + segment)
+            if decoded and _is_image_data(decoded):
+                start = lead.start()
+                image.feed(lead.group())
+        if start is None:
+            decoded = _decode_b64_prefix(segment)
+            if decoded and _is_image_data(decoded):
+                start = m.start()
+        image.feed(segment)
+
+        end = m.end()
+        total = len(re.sub(r"\s", "", raw[start if start is not None else m.start():end]))
+        last = i
+        if len(segment) <= _MAX_WRAPPED_LINE_CHARS and not segment.endswith("="):
+            width = None
+            for j in range(i + 1, len(segments)):
+                if image.whole:
+                    break
+                line = segments[j]
+                text = line.group()
+                if not _one_line_break(raw[segments[j - 1].end():line.start()]):
+                    break
+                limit = width or _MAX_WRAPPED_LINE_CHARS
+                if text.endswith("=") and len(text) <= limit:
+                    if (total + len(text)) % 4 == 0:
+                        end, last = line.end(), j
+                    break
+                if len(text) < (width or len(segment)):
+                    # A short last line, unpadded: part of the image only if it
+                    # completes it, so a word after the payload stays.
+                    if image.finished_by(text):
+                        end, last = line.end(), j
+                    break
+                if not _MIN_WRAPPED_LINE_CHARS <= len(text) <= limit:
+                    break
+                if width is None:
+                    if len(text) < len(segment):
+                        break
+                    width = len(text)
+                elif len(text) != width:
+                    break
+                total += len(text)
+                image.feed(text)
+                end, last = line.end(), j
+
+        chars = len(re.sub(r"[\s=]", "", raw[start:end])) if start is not None else 0
+        if start is not None and chars >= _MIN_IMAGE_PAYLOAD_CHARS:
+            yield start, end
+        i = last + 1
+
+
+def _strip_image_runs(raw: str) -> str:
+    spans = list(_image_payload_spans(raw))
+    for start, end in reversed(spans):
+        raw = raw[:start] + BASE64_IMAGE_PLACEHOLDER + raw[end:]
+    return raw
+
+
+def strip_base64_images(text: str) -> str:
+    """*text* with every base64 image payload replaced by a short placeholder.
+
+    For text that cannot become an IMAGE block: an image inside code, a table
+    cell, or a code fence the author never closed. Without this the block fails
+    TEXT_DATA_CONTAINS_BASE64_IMAGE and takes the whole record with it. A data
+    URI keeps its ``data:image/<type>;base64,`` header, and markdown image syntax
+    keeps its alt text, so the text still says an image was there.
+
+    Unlike ``contains_base64_image`` this reads the whole text, so a payload past
+    that check's candidate cap is removed too. Text without an image comes back
+    unchanged.
+    """
+    if not text:
+        return text
+
+    def strip_data_uri(m: re.Match[str]) -> str:
+        return m.group()[: m.start(1) - m.start()] + _strip_image_runs(m.group(1))
+
+    text = _DATA_URI_RE.sub(strip_data_uri, text)
+    return _RAW_B64_RE.sub(lambda m: _strip_image_runs(m.group()), text)
+
 
 class Severity(str, Enum):
     ERROR = "error"

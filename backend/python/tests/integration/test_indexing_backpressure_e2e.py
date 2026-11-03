@@ -58,6 +58,11 @@ def _make_response(status: int, body: dict | None = None, headers: dict | None =
     return httpx.Response(status, content=content, headers=headers or {})
 
 
+class _SecretsConfigService:
+    async def get_config(self, key, **kwargs):
+        return {"scopedJwtSecret": "scoped-secret-for-tests"}
+
+
 @contextmanager
 def _fake_http_client(client: ParsingClient, request_impl):
     """Same double as ``tests/unit/services/test_base_client_backpressure.py``
@@ -154,6 +159,9 @@ def _make_event_processor(
         doc["indexingStatus"] = "COMPLETED"
 
     sink_orchestrator.index = AsyncMock(side_effect=_index)
+    # Classification is a pipeline stage; this test is about parsing backpressure.
+    stage_ingress = MagicMock()
+    stage_ingress.on_indexed = AsyncMock(return_value=[])
     return EventProcessor(
         logger=logging.getLogger("test.integration.indexing_backpressure"),
         processor=MagicMock(),
@@ -162,6 +170,7 @@ def _make_event_processor(
         parsing_client=parsing_client,
         extraction_client=MagicMock(),
         sink_orchestrator=sink_orchestrator,
+        stage_ingress=stage_ingress,
     )
 
 
@@ -172,13 +181,16 @@ def _assert_breaker_untouched(parsing_client: ParsingClient) -> None:
 
 
 @pytest.mark.asyncio
-@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true", "DEFER_EXTRACTION": "true"})
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 class TestIndexingBackpressureE2E:
     async def test_recovers_within_backpressure_budget_single_call_reaches_completed(self) -> None:
         """429s that clear before ParsingClient's own backpressure budget is
         exhausted never surface as an exception at all — the record reaches
         COMPLETED from a single on_event() call."""
-        parsing_client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0)
+        parsing_client = ParsingClient(
+            service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+            config_service=_SecretsConfigService(),
+        )
         doc = _make_doc()
         graph_provider = _make_graph_provider(doc)
         ep = _make_event_processor(parsing_client, graph_provider, doc)
@@ -212,6 +224,7 @@ class TestIndexingBackpressureE2E:
         COMPLETED. The breaker never opens across either attempt."""
         parsing_client = ParsingClient(
             service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+            config_service=_SecretsConfigService(),
         )
         parsing_client.max_backpressure_attempts = 2
         doc = _make_doc()

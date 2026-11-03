@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { SmtpConfig } from './types';
 
 // ============================================================
@@ -28,12 +29,28 @@ export const SmtpApi = {
     }
   },
 
+  /** Stored SMTP config with real values instead of placeholders. Only where the deployment allows it. */
+  async revealSmtpConfig(): Promise<SmtpConfig | null> {
+    const { data } = await apiClient.get<SmtpConfig>(SMTP_URL, { params: REVEAL_PARAMS });
+    return data?.host ? data : null;
+  },
+
   /**
    * POST /api/v1/configurationManager/smtpConfig
    * Creates or updates the SMTP configuration.
    */
   async saveSmtpConfig(payload: SmtpConfig): Promise<void> {
     await apiClient.post(SMTP_URL, payload);
+  },
+
+  /** DELETE /api/v1/configurationManager/smtpConfig — admin only. */
+  async deleteSmtpConfig(): Promise<void> {
+    await apiClient.delete(SMTP_URL);
+  },
+
+  /** PUT /api/v1/configurationManager/smtpConfig/enabled — turns sending off or on, keeping the settings. */
+  async setSmtpEnabled(enabled: boolean): Promise<void> {
+    await apiClient.put(`${SMTP_URL}/enabled`, { enabled });
   },
 
   /**

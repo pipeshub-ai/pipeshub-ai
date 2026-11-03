@@ -13,8 +13,11 @@ nothing. ``capture_footprint`` exists to make the ordering explicit, and the
 assertions take a footprint rather than a record name so that a test cannot be
 written the wrong way round by accident.
 
-Blob storage and MongoDB both key a record's files on
-``{orgId}/PipesHub/records/{virtualRecordId}``, so one footprint answers for
+Blob storage and MongoDB both file a record's processed content in one
+folder, under the record's place in its connector
+(``{orgId}/PipesHub/records/{connectorId}/<folders>/<name>``, or the flat
+``records/{virtualRecordId}`` when indexing cannot work that out). The footprint
+reads that folder from MongoDB before the delete, so one footprint answers for
 both.
 """
 
@@ -23,6 +26,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from helper.mongo_store import records_folder
 
 if TYPE_CHECKING:
     from helper.blob_store import BlobStoreProbe
@@ -44,15 +49,12 @@ class RecordFootprint:
     record_name: str
     virtual_record_id: str
     org_id: str
+    # Where both blob storage and MongoDB filed this record's content.
+    storage_prefix: str
     connector_id: str | None = None
     embedding_count: int = 0
     blob_file_count: int = 0
     mongo_document_count: int = 0
-
-    @property
-    def storage_prefix(self) -> str:
-        """Where both blob storage and MongoDB file this record's content."""
-        return f"{self.org_id}/PipesHub/records/{self.virtual_record_id}"
 
     def __str__(self) -> str:
         return (
@@ -78,10 +80,11 @@ async def capture_footprint(
 
     Requires the graph record, its virtual id, and embeddings: without those a
     footprint is meaningless and every later "it is gone" assertion would pass
-    against nothing, the failure mode this module exists to avoid. The blob and
-    Mongo counts are captured as they stand and may be zero -- the indexing
-    fixture waits only for embeddings, so those two can still be catching up; a
-    caller that needs them present before a delete must assert that itself.
+    against nothing, the failure mode this module exists to avoid. The folder
+    the content was filed in is read from the record's ``record_<vrid>`` storage
+    document, waiting for indexing to write it; the blob and Mongo counts in it
+    are then captured as they stand and may be zero, so a caller that needs them
+    present before a delete must assert that itself.
     """
     record = await graph.get_record_by_name(connector_id, record_name)
     assert record is not None, (
@@ -96,8 +99,15 @@ async def capture_footprint(
         "could only ever check the graph — which is the gap it exists to close."
     )
 
-    prefix = f"{org_id}/PipesHub/records/{virtual_record_id}"
     embeddings = await vector.count_for_virtual_record(virtual_record_id)
+    assert embeddings > 0, (
+        f"{record_name!r} has no embeddings before the delete. Either indexing "
+        "has not finished or the record was never indexed; either way, "
+        "asserting they are gone afterwards would prove nothing."
+    )
+    prefix = await mongo.envelope_path(
+        org_id, virtual_record_id, within=records_folder(org_id, connector_id)
+    )
     files = await blob.count_under(prefix, storage_vendor)
     documents = await mongo.count_documents_under_path(prefix)
 
@@ -105,15 +115,11 @@ async def capture_footprint(
         record_name=record_name,
         virtual_record_id=virtual_record_id,
         org_id=org_id,
+        storage_prefix=prefix,
         connector_id=connector_id,
         embedding_count=embeddings,
         blob_file_count=files,
         mongo_document_count=documents,
-    )
-    assert embeddings > 0, (
-        f"{record_name!r} has no embeddings before the delete. Either indexing "
-        "has not finished or the record was never indexed; either way, "
-        "asserting they are gone afterwards would prove nothing."
     )
     logger.info("Captured footprint before delete: %s", footprint)
     return footprint

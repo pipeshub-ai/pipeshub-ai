@@ -7,20 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
-from app.models.entities import (
-    AppUser,
-    FileRecord,
-    MailRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-)
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _make_logger():
@@ -203,7 +193,7 @@ class TestProcessMessage:
     async def test_sender_gets_owner_permission(self, connector):
         msg = _make_gmail_message(from_email="user@e.com")
         result = await connector._process_gmail_message("user@e.com", msg, "t1", None)
-        assert any(p.type == PermissionType.OWNER for p in result.new_permissions)
+        assert result.new_permissions == []
 
 
 class TestExtractAttachments:
@@ -263,14 +253,6 @@ class TestExtractBody:
         assert connector._extract_body_from_payload({"mimeType": "text/html", "body": {}}) == ""
 
 
-class TestMergeHistoryChanges:
-    def test_deduplicates(self, connector):
-        i = {"history": [{"id": "1"}, {"id": "2"}]}
-        s = {"history": [{"id": "2"}, {"id": "3"}]}
-        result = connector._merge_history_changes(i, s)
-        assert len(result["history"]) == 3
-
-
 class TestNotImplementedMethods:
     def test_get_signed_url_raises(self, connector):
         with pytest.raises(NotImplementedError):
@@ -309,7 +291,12 @@ class TestRunSync:
         connector._create_app_user = AsyncMock()
         connector._create_personal_record_group = AsyncMock()
         connector._sync_user_mailbox = AsyncMock()
-        await connector.run_sync()
+        connector.register_authenticated_source_user = AsyncMock()
+        with patch("app.connectors.sources.google.gmail.individual.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
+            await connector.run_sync()
+        connector._sync_user_mailbox.assert_awaited_once_with("user@test.com")
+        connector.register_authenticated_source_user.assert_awaited_once_with("user@test.com", "user@test.com")
 
     async def test_sync_error(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))

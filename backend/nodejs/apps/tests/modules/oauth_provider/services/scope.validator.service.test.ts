@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
+import { ScopeValidatorService, parseScopeString } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
 import { InvalidScopeError } from '../../../../src/libs/errors/oauth.errors'
 
 describe('ScopeValidatorService', () => {
@@ -63,6 +63,16 @@ describe('ScopeValidatorService', () => {
     it('should handle multiple spaces between scopes', () => {
       const result = service.parseScopes('org:read    org:write')
       expect(result).to.deep.equal(['org:read', 'org:write'])
+    })
+  })
+
+  describe('parseScopeString', () => {
+    it('drops empty entries from a claim', () => {
+      expect(parseScopeString('read  write')).to.deep.equal(['read', 'write'])
+      expect(parseScopeString('')).to.deep.equal([])
+      expect(parseScopeString('   ')).to.deep.equal([])
+      expect(parseScopeString(undefined)).to.deep.equal([])
+      expect(parseScopeString(null)).to.deep.equal([])
     })
   })
 
@@ -165,6 +175,36 @@ describe('ScopeValidatorService', () => {
     it('should return empty array when no overlap', () => {
       const result = service.getGrantedScopes(['org:read'], ['org:write'])
       expect(result).to.deep.equal([])
+    })
+  })
+
+  describe('resolveGrantedScopes', () => {
+    it('grants the allowed scopes and reports the rest as not granted', () => {
+      const result = service.resolveGrantedScopes(
+        ['openid', 'kb:read', 'agent:read'],
+        ['kb:read', 'conversation:chat'],
+      )
+      expect(result).to.deep.equal({ granted: ['kb:read'], notGranted: ['openid', 'agent:read'] })
+    })
+
+    it('throws InvalidScopeError when no requested scope is allowed', () => {
+      expect(() => service.resolveGrantedScopes(['agent:read'], ['kb:read']))
+        .to.throw(InvalidScopeError)
+    })
+
+    it('throws InvalidScopeError for an unknown scope name', () => {
+      expect(() => service.resolveGrantedScopes(['kb:read', 'nope:read'], ['kb:read']))
+        .to.throw(InvalidScopeError)
+    })
+
+    it('returns empty lists for an empty request', () => {
+      expect(service.resolveGrantedScopes([], ['kb:read']))
+        .to.deep.equal({ granted: [], notGranted: [] })
+    })
+
+    it('lists a repeated scope once', () => {
+      expect(service.resolveGrantedScopes(['kb:read', 'openid', 'kb:read', 'openid'], ['kb:read']))
+        .to.deep.equal({ granted: ['kb:read'], notGranted: ['openid'] })
     })
   })
 

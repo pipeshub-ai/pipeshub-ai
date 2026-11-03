@@ -55,8 +55,8 @@ export interface KnowledgeBaseFilter {
   recordTypes?: RecordType[];     // NEW: for filtering by record type
   indexingStatus?: IndexingStatus[]; // Aligned with API: was 'statuses'
   origins?: NodeOrigin[];         // Aligned with API: was 'sources'
-  connectorIds?: string[];        // NEW: for filtering by connector
-  kbIds?: string[];              // NEW: for filtering by KB
+  connectorIds?: string[];        // Collections too: a collection is an App, and
+                                  // connectorIds matches an App or anything under it
   sizeRange?: SizeRange;         // Single size range (radio select)
   createdAfter?: string;         // Keep as-is
   createdBefore?: string;        // Keep as-is
@@ -158,7 +158,11 @@ export type IndexingStatus =
   | 'NOT_STARTED'
   | 'AUTO_INDEX_OFF'
   | 'QUEUED'
-  | 'EMPTY';
+  | 'EMPTY'
+  | 'PAUSED'
+  | 'ENABLE_MULTIMODAL_MODELS'
+  | 'SKIPPED'
+  | 'PASSWORD_PROTECTED';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -183,8 +187,11 @@ export interface NodePermission {
  * All parameters are optional and can be combined for flexible filtering.
  */
 export interface KnowledgeHubQueryParams {
-  // Pagination
-  page?: number;              // Page number (≥ 1)
+  // Pagination is keyset: `cursor` is the token from a previous response, and
+  // its absence means "first page". `page` is sent only when that response
+  // says another page exists but does not include a cursor.
+  cursor?: string;
+  page?: number;
   limit?: number;             // Items per page (1-200)
   
   // Response includes (comma-separated string)
@@ -208,8 +215,7 @@ export interface KnowledgeHubQueryParams {
   nodeTypes?: string;         // Filter by node types (max 100 items)
   recordTypes?: string;       // 'FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET' (max 100)
   origins?: string;           // 'COLLECTION', 'CONNECTOR' (max 100)
-  connectorIds?: string;      // Connector UUIDs (max 100)
-  kbIds?: string;             // KB UUIDs (max 100) - used for sidebar expansion
+  connectorIds?: string;      // Connector *or collection* UUIDs (max 100)
   indexingStatus?: string;    // 'COMPLETED', 'IN_PROGRESS', 'FAILED' (max 100)
   
   // Date range filters (epoch ms format: "gte:X,lte:Y")
@@ -221,6 +227,20 @@ export interface KnowledgeHubQueryParams {
 }
 
 /**
+ * The parent a node is listed under.
+ *
+ * The type is what makes it addressable — browsing to it needs
+ * `/nodes/{nodeType}/{id}`, and an id alone would have to be guessed. This is
+ * the node's *placement* parent, which is not always its storage parent: an
+ * ancestor the user cannot open is replaced rather than named.
+ */
+export interface ParentRef {
+  id: string;
+  nodeType: string;
+  name?: string;
+}
+
+/**
  * Knowledge Hub Node (used in API responses)
  */
 export interface KnowledgeHubNode {
@@ -228,8 +248,11 @@ export interface KnowledgeHubNode {
   name: string;
   nodeType: NodeType;
   parentId: string | null;
+  parent?: ParentRef;
   origin: NodeOrigin;
   connector?: string;
+  /** Connector instance a CONNECTOR-origin node belongs to; marks demo records. `null` otherwise. */
+  connectorId?: string | null;
   hasChildren: boolean;
   permission: NodePermission;
   sharingStatus: SharingStatus;
@@ -247,6 +270,7 @@ export interface KnowledgeHubNode {
   sourceType?: string;
   isInternal?: boolean;
   isPlaceholder?: boolean;
+  previewRenderable?: boolean;
 }
 
 /**
@@ -266,6 +290,8 @@ export interface FilterOption {
   id: string;
   label: string;
   type?: string | null;
+  /** Sources only: the connector type, or the origin (`KB` / `COLLECTION` for a collection). */
+  connectorType?: string | null;
 }
 
 /**
@@ -289,6 +315,8 @@ export interface NodePermissions {
   canEdit: boolean;
   canDelete: boolean;
   canManagePermissions: boolean;
+  /** The user's own role on the collection this node is in, the same at every level inside it; null outside a collection. */
+  collectionRole?: string | null;
 }
 
 /**
@@ -298,8 +326,8 @@ export interface AvailableFilters {
   nodeTypes: FilterOption[];
   recordTypes: FilterOption[];
   origins: FilterOption[];
+  /** Every source the user can open — connectors *and* collections. */
   connectors: FilterOption[];
-  kbs: FilterOption[];
   indexingStatus: FilterOption[];
 }
 
@@ -312,7 +340,6 @@ export interface AppliedFilters {
   recordTypes: string | null;
   origins: string | null;
   connectorIds: string | null;
-  kbIds: string | null;
   indexingStatus: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -347,12 +374,20 @@ export interface KnowledgeHubApiResponse {
   } | null;
   items: KnowledgeHubNode[];
   pagination: {
-    page: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
     hasNext: boolean;
     hasPrev: boolean;
+    /** 1-based position of this page's first and last item. */
+    startIndex?: number;
+    endIndex?: number;
+    currentPageItems?: number;
+    /** Opaque tokens; absent when there is nothing in that direction. */
+    nextCursor?: string | null;
+    prevCursor?: string | null;
+    /** Legacy offset fields — sent only while a request still uses `page`. */
+    page?: number;
+    totalPages?: number;
   };
   filters?: {
     applied: AppliedFilters;
@@ -361,6 +396,8 @@ export interface KnowledgeHubApiResponse {
   breadcrumbs?: Breadcrumb[];
   counts?: NodeCounts;
   permissions?: NodePermissions;
+  /** Deepest a collection folder may be nested; a folder directly in the collection is depth 1. */
+  maxFolderDepth?: number;
 }
 
 /**
@@ -481,14 +518,24 @@ export interface AllRecordsSortConfig {
   order: 'asc' | 'desc';
 }
 
-// Pagination for All Records
+/**
+ * Table pagination state, for both modes.
+ *
+ * `cursor` is the position the current page was fetched at (null = first page);
+ * `nextCursor`/`prevCursor` are where the arrows go. There is no page number,
+ * because keyset paging has no concept of one — `startIndex`/`endIndex` carry
+ * what the footer needs to say instead.
+ */
 export interface AllRecordsPagination {
-  page: number;
+  cursor: string | null;
   limit: number;
   totalItems: number;
-  totalPages: number;
+  startIndex: number;
+  endIndex: number;
   hasNext: boolean;
   hasPrev: boolean;
+  nextCursor: string | null;
+  prevCursor: string | null;
 }
 
 // More Connectors link item (navigates to connectors page with the connector panel open)
@@ -519,6 +566,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    // Set while the record waits out its source's rate limit (epoch ms).
+    retryNotBefore?: number | null;
     connectorName?: string;
     hideWeburl?: boolean;
     previewRenderable?: boolean;
@@ -528,11 +577,12 @@ export interface RecordDetailsResponse {
     connectorId: string;
     sizeInBytes?: number | null;
     md5Checksum: string;
-    extractionStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
+    extractionStatus: IndexingStatus;
     isDirty: boolean;
     lastIndexTimestamp: number;
     virtualRecordId: string;
     lastExtractionTimestamp: number;
+    parsingStatus?: IndexingStatus | null;
     fileRecord: {
       _key: string;
       _id: string;
@@ -575,4 +625,17 @@ export interface RecordDetailsResponse {
     relationship: 'OWNER' | 'READER' | 'WRITER';
     accessType: string;
   }>;
+  /** Empty or absent for records indexed before pipeline stages existed. */
+  stageStates?: StageStateSummary[];
+}
+
+/** Status of one pipeline stage for the record's current content revision. */
+export interface StageStateSummary {
+  stage: string;
+  status: IndexingStatus;
+  reason: string | null;
+  attempt: number;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  updatedAtMs: number | null;
 }

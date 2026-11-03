@@ -1,0 +1,144 @@
+- id: SP-C-01
+  title: Site permission changed; Auditors added to Finance see the forecast, not Payroll and not the board deck
+  source: permission model doc, sharepoint section
+  rule: override
+  comment: >
+    The doc listed the board deck for auditors. A file with unique permissions keeps its own list: SharePoint does not
+    push a later site grant into it (at most Limited Access), so the vendor hides the deck and the graph agrees.
+  world: golden/sharepoint_finance
+  mutation: {kind: grant_added, node: site:Finance, ref: g:auditors}
+  expect:
+    before: {audrey: {forecast: deny}}
+    verdicts:
+      audrey: {forecast: admit, folder:Payroll: deny, salaries: deny, board-deck: deny}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/site-grant"]
+- id: SP-C-02
+  title: Group membership changed; Bob joins HR-Payroll and sees the salaries
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutation: {kind: member_added, node: g:hr-payroll, ref: bob}
+  expect:
+    before: {bob: {salaries: deny}}
+    verdicts:
+      bob: {salaries: admit, forecast: admit}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/member-change"]
+- id: SP-C-03
+  title: Folder breaks inheritance; Archive gets unique permissions and its subtree should follow HR-Payroll
+  source: permission model doc, sharepoint section
+  rule: override
+  comment: >
+    The folder is re-read and gets its own grants; the file under it stores none and follows the folder.
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: inherit_set, node: folder:Archive, ref: library:Docs, value: "false"}
+    - {kind: grant_added, node: folder:Archive, ref: g:hr-payroll}
+  expect:
+    before: {bob: {archive: admit}}
+    verdicts:
+      bob: {archive: deny, folder:Archive: deny}
+      hana: {archive: admit, folder:Archive: admit}
+    index_writes: subtree
+    during: fail_closed
+  tags: [sharepoint, "cell:sharepoint/break-restore-inheritance"]
+- id: SP-C-04
+  title: Folder restores inheritance; Payroll inherits again, Finance gains the salaries, 2026 keeps its scope
+  source: permission model doc, sharepoint section
+  rule: override
+  comment: >
+    The folder takes the inherited list again and drops its own grants; the file under it stores none and follows the folder.
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: inherit_set, node: folder:Payroll, ref: library:Docs, value: "true"}
+    - {kind: grant_removed, node: folder:Payroll, ref: g:hr-payroll}
+  expect:
+    before: {bob: {salaries: deny}}
+    verdicts:
+      bob: {salaries: admit, folder:Payroll-2026: deny}
+      hana: {salaries: deny}
+      leo: {folder:Payroll-2026: admit}
+    index_writes: subtree
+    during: fail_closed
+  tags: [sharepoint, "cell:sharepoint/break-restore-inheritance"]
+- id: SP-C-05
+  title: Grant edited on a unique folder; the CFO added to Payroll sees the salaries at once
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutation: {kind: grant_added, node: folder:Payroll, ref: cfo}
+  expect:
+    before: {cfo: {salaries: deny}}
+    verdicts:
+      cfo: {salaries: admit, forecast: deny}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/unique-grant-change"]
+- id: SP-C-06
+  title: File shared with a person; the memo becomes its own scope and Alice sees it only
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: inherit_set, node: memo, ref: library:Docs, value: "false"}
+    - {kind: grant_added, node: memo, ref: g:finance-members}
+    - {kind: grant_added, node: memo, ref: alice}
+  expect:
+    before: {alice: {memo: deny}}
+    verdicts:
+      alice: {memo: admit, forecast: deny}
+      bob: {memo: admit}
+      hana: {memo: deny}
+    index_writes: 1
+  tags: [sharepoint, "cell:sharepoint/file-shared"]
+- id: SP-C-07
+  title: Org link created and opened by Raj; Raj sees the minutes, Zoe does not
+  source: permission model doc, sharepoint section (sharing links)
+  rule: override
+  comment: >
+    Creating the link gives the item unique permissions (the inherited list is copied) and the link grants only the
+    people who redeem it (connector.py:2822-2825), so Raj gains the minutes and the rest of the organization does not.
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: inherit_set, node: minutes, ref: library:Docs, value: "false"}
+    - {kind: grant_added, node: minutes, ref: g:finance-members}
+    - {kind: grant_added, node: minutes, ref: raj}
+  expect:
+    verdicts:
+      raj: {minutes: admit}
+      zoe: {minutes: deny}
+      hana: {minutes: deny}
+      bob: {minutes: admit}
+    index_writes: 0
+  tags: [sharepoint, "cell:sharepoint/org-link", "cell:sharepoint/link-redeemed"]
+- id: SP-C-08
+  title: File moved; the salaries moved to the library root follow their new parent
+  source: permission model doc, sharepoint section
+  rule: override
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: moved, node: salaries, ref: library:Docs}
+  expect:
+    before: {hana: {salaries: admit}}
+    verdicts:
+      bob: {salaries: admit}
+      hana: {salaries: deny}
+    index_writes: 1
+  tags: [sharepoint, "cell:sharepoint/move"]
+- id: SP-C-09
+  title: Inheriting folder moved under a unique folder; its unchanged child follows it
+  source: permission model doc, sharepoint section; a move instead of a break
+  rule: override
+  comment: >
+    The moved folder inherits its new parent; the file under it stores no grants, so it follows without being re-read.
+  world: golden/sharepoint_finance
+  mutations:
+    - {kind: moved, node: folder:Archive, ref: folder:Payroll}
+  expect:
+    before: {bob: {archive: admit}}
+    verdicts:
+      bob: {archive: deny, folder:Archive: deny}
+      hana: {archive: admit}
+    index_writes: subtree
+    during: fail_closed
+  tags: [sharepoint, "cell:sharepoint/move"]

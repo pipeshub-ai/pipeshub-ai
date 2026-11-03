@@ -315,12 +315,13 @@ class TestParseKnowledgeSourcesExtended:
         result = _parse_knowledge_sources(raw)
         assert result["app1"]["filters"] == {"key": "value"}
 
-    def test_invalid_json_string_filters(self):
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_string_filters_are_refused(self):
+        """Saved as "no filters" they would let the agent search the whole source."""
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
 
         raw = [{"connectorId": "app1", "filters": "not-json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["app1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_dict_filters_kept_as_is(self):
         from app.api.routes.agent import _parse_knowledge_sources
@@ -578,10 +579,10 @@ class TestCreateKnowledgeEdges:
         knowledge_sources = {
             "app1": {"connectorId": "app1", "filters": {}},
         }
-        result = await _create_knowledge_edges(
-            "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges(
+                "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
+            )
 
     @pytest.mark.asyncio
     async def test_batch_upsert_exception(self):
@@ -593,10 +594,10 @@ class TestCreateKnowledgeEdges:
         knowledge_sources = {
             "app1": {"connectorId": "app1", "filters": {}},
         }
-        result = await _create_knowledge_edges(
-            "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
-        )
-        assert result == []
+        with pytest.raises(Exception, match="DB error"):
+            await _create_knowledge_edges(
+                "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
+            )
 
     @pytest.mark.asyncio
     async def test_batch_create_edges_exception(self):
@@ -610,11 +611,11 @@ class TestCreateKnowledgeEdges:
             "app1": {"connectorId": "app1", "filters": {}},
         }
         logger = MagicMock()
-        result = await _create_knowledge_edges(
-            "agent-key", knowledge_sources, "user-key", graph_provider, logger
-        )
-        # Knowledge still built even if edges fail
-        assert len(result) == 1
+        # A knowledge node with no edge is unreachable from the agent, so this must not pass as success.
+        with pytest.raises(Exception, match="Edge error"):
+            await _create_knowledge_edges(
+                "agent-key", knowledge_sources, "user-key", graph_provider, logger
+            )
 
 
 # ============================================================================

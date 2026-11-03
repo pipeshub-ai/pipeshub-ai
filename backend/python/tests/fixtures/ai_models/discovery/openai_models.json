@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "id": "gpt-5.6-luna",
+      "owned_by": "openai"
+    },
+    {
+      "id": "text-embedding-3-small"
+    },
+    {
+      "id": "whisper-1"
+    },
+    {
+      "id": "tts-1"
+    },
+    {
+      "id": "dall-e-3"
+    },
+    {
+      "id": "omni-moderation-latest"
+    },
+    {
+      "id": "gpt-4o-realtime-preview"
+    },
+    {
+      "id": "custom-ft",
+      "shutdown_date": "2026-01-01"
+    }
+  ]
+}

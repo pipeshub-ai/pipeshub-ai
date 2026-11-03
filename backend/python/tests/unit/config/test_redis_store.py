@@ -8,6 +8,7 @@ close, _build_key, _strip_prefix, _notify_watchers.
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -464,6 +465,21 @@ class TestListKeysInDirectory:
         store._mock_client.scan_iter = _scan_iter
         await store.list_keys_in_directory("mydir")
         assert scan_calls[0] == "pipeshub:kv:mydir/*"
+
+    @pytest.mark.asyncio
+    async def test_glob_characters_in_the_path_are_matched_literally(self) -> None:
+        store = _make_store()
+
+        scan_calls = []
+
+        async def _scan_iter(match: str | None = None) -> AsyncIterator[bytes]:
+            scan_calls.append(match)
+            return
+            yield
+
+        store._mock_client.scan_iter = _scan_iter
+        await store.list_keys_in_directory("dir[1]/a*b?/")
+        assert scan_calls[0] == "pipeshub:kv:dir\\[1\\]/a\\*b\\?/*"
 
     @pytest.mark.asyncio
     async def test_directory_with_trailing_slash(self):

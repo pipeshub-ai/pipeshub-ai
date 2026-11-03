@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -35,14 +36,22 @@ from app.services.messaging.lanes.interface import LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.services.resource_governor.models import ParseTier
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.messaging.conftest import (
     DRAIN_TIMEOUT_SECONDS,
+    OneTopicProducer,
     committed_offsets,
     create_kafka_topic,
     delete_kafka_topic,
     held_handler,
+    run_stranded_sweep,
     stop_mid_flight,
+    wait_until_held,
 )
+from tests.support.fake_record_graph import FakeRecordGraph
+
+if TYPE_CHECKING:
+    from app.services.messaging.lanes.backlog import LaneBacklog
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -64,19 +73,23 @@ def _fair(**overrides) -> FairSchedulerConfig:
     return FairSchedulerConfig(**base)
 
 
-async def _publish(bootstrap: str, topic: str, records: list[tuple[str, str]]) -> None:
-    """Publish through the real lane-aware producer, so placement is the
-    broker's own partitioner acting on the lane key."""
+def _lane_producer(bootstrap: str, topic: str) -> LaneAwareProducer:
     inner = KafkaMessagingProducer(
         logging.getLogger("it-producer"),
         KafkaProducerConfig(bootstrap_servers=[bootstrap], client_id="it-producer"),
     )
-    producer = LaneAwareProducer(
+    return LaneAwareProducer(
         logging.getLogger("it-producer"),
         inner,
         KafkaLaneRouter(_PARTITIONS),
         LaneConfig(lane_count=_PARTITIONS, laned_topics=(topic,)),
     )
+
+
+async def _publish(bootstrap: str, topic: str, records: list[tuple[str, str]]) -> None:
+    """Publish through the real lane-aware producer, so placement is the
+    broker's own partitioner acting on the lane key."""
+    producer = _lane_producer(bootstrap, topic)
     await producer.initialize()
     try:
         for connector_id, record_id in records:
@@ -341,3 +354,144 @@ class TestCrashRecoveryOnARealBroker:
             await consumer.stop()
 
         assert set(seen) == expected
+
+
+async def _partition_timestamps(bootstrap: str, topic: str) -> dict[int, list[int]]:
+    """Per partition, the timestamp of every record in offset order, read by a
+    consumer that belongs to no group."""
+    from aiokafka import AIOKafkaConsumer, TopicPartition
+
+    partitions = [TopicPartition(topic, p) for p in range(_PARTITIONS)]
+    reader = AIOKafkaConsumer(bootstrap_servers=bootstrap, auto_offset_reset="earliest")
+    await reader.start()
+    try:
+        reader.assign(partitions)
+        await reader.seek_to_beginning(*partitions)
+        end = await reader.end_offsets(partitions)
+        timestamps: dict[int, list[int]] = {tp.partition: [] for tp in partitions}
+        deadline = asyncio.get_running_loop().time() + DRAIN_TIMEOUT_SECONDS
+        while any(len(timestamps[tp.partition]) < end[tp] for tp in partitions):
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("could not read the topic back")
+            for tp, batch in (await reader.getmany(timeout_ms=500)).items():
+                timestamps[tp.partition].extend(record.timestamp for record in batch)
+        return timestamps
+    finally:
+        await reader.stop()
+
+
+async def _oldest_uncommitted(bootstrap: str, group: str, topic: str) -> dict[str, float]:
+    """Worked out from the log and the group's committed offsets as the broker holds them."""
+    timestamps = await _partition_timestamps(bootstrap, topic)
+    committed = await committed_offsets(bootstrap, group, topic)
+    return {
+        f"{topic}-{partition}": float(log[committed.get(partition, 0)])
+        for partition, log in timestamps.items()
+        if committed.get(partition, 0) < len(log)
+    }
+
+
+async def _backlog_settles(
+    consumer, bootstrap: str, group: str, topic: str, *, empty: bool
+) -> LaneBacklog:
+    """Commits land a moment after the handler returns, so compare against the
+    broker read both before and after the backlog itself."""
+    deadline = asyncio.get_running_loop().time() + DRAIN_TIMEOUT_SECONDS
+    while True:
+        before = await _oldest_uncommitted(bootstrap, group, topic)
+        backlog = await consumer.lane_backlog(topic)
+        after = await _oldest_uncommitted(bootstrap, group, topic)
+        if before == after == dict(backlog.oldest_waiting_ms) and bool(before) != empty:
+            return backlog
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError(
+                f"backlog {dict(backlog.oldest_waiting_ms)} never matched the broker's {after}"
+            )
+        await asyncio.sleep(0.5)
+
+
+class TestLaneBacklogOnARealBroker:
+    """What the stranded-record sweep asks the broker before re-sending a record."""
+
+    @pytest.fixture(autouse=True)
+    def _one_hour_threshold(self, monkeypatch) -> None:
+        monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "3600")
+
+    async def test_each_partition_reports_its_oldest_uncommitted_record_until_it_is_drained(
+        self, kafka_available, topic, unique_suffix
+    ) -> None:
+        records = [("user-a", f"a-{i}") for i in range(12)]
+        records += [("user-b", f"b-{i}") for i in range(4)]
+        await _publish(kafka_available, topic, records)
+
+        group = f"it-backlog-{unique_suffix}"
+        # A low per-key cap, so a partition is paused with records unread.
+        consumer = _consumer(kafka_available, topic, group, max_per_entity_messages=3)
+        seen: list[str] = []
+        parked: list[str] = []
+        gate = threading.Event()
+        await consumer.start(held_handler(seen, 5, gate, parked))
+        try:
+            await wait_until_held(seen, parked)
+
+            backlog = await _backlog_settles(consumer, kafka_available, group, topic, empty=False)
+
+            # Any partition may hold an event, so the oldest of them all answers.
+            assert backlog.oldest_waiting_for({"connectorId": "user-b"}) == min(
+                backlog.oldest_waiting_ms.values()
+            )
+            # Looking did not move the group: the consumer carries on to the end.
+            gate.set()
+            await _drain(consumer, seen, len(records))
+            await _backlog_settles(consumer, kafka_available, group, topic, empty=True)
+        finally:
+            gate.set()
+            await consumer.stop()
+
+    async def test_the_sweep_resends_only_the_record_the_queue_has_moved_past(
+        self, kafka_available, topic, unique_suffix
+    ) -> None:
+        records = [("user-a", f"a-{i}") for i in range(8)]
+        graph = FakeRecordGraph()
+        queued_at = get_epoch_timestamp_in_ms()
+        for connector_id, record_id in records:
+            graph.add_queued(record_id, connector_id, queued_at)
+        # Queued with the rest, but its event never reached the broker.
+        graph.add_queued("lost", "user-a", queued_at)
+        await _publish(kafka_available, topic, records)
+
+        group = f"it-sweep-{unique_suffix}"
+        consumer = _consumer(kafka_available, topic, group)
+        seen: list[str] = []
+        parked: list[str] = []
+        gate = threading.Event()
+        lane_producer = _lane_producer(kafka_available, topic)
+        await lane_producer.initialize()
+        producer = OneTopicProducer(lane_producer, topic)
+        await consumer.start(held_handler(seen, 2, gate, parked))
+        try:
+            await wait_until_held(seen, parked)
+            for record_id in seen:
+                graph.mark_indexed(record_id)
+
+            # Two hours on, the unindexed records and the lost one are all still
+            # QUEUED, and the topic still holds events as old as they are.
+            assert await run_stranded_sweep(graph, producer, consumer, topic, hours_later=2) == 0
+            published = await _partition_timestamps(kafka_available, topic)
+            assert sum(len(log) for log in published.values()) == len(records)
+
+            gate.set()
+            await _drain(consumer, seen, len(records))
+            for record_id in seen:
+                graph.mark_indexed(record_id)
+            await _backlog_settles(consumer, kafka_available, group, topic, empty=True)
+
+            assert graph.still_queued() == ["lost"]
+            assert await run_stranded_sweep(graph, producer, consumer, topic, hours_later=2) == 1
+            await _drain(consumer, seen, len(records) + 1)
+            assert seen.count("lost") == 1
+            assert graph.records["lost"]["republishCount"] == 1
+        finally:
+            gate.set()
+            await consumer.stop()
+            await lane_producer.cleanup()

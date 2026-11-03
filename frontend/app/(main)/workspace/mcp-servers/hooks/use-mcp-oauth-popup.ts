@@ -1,11 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { TFunction } from 'i18next';
+import { isProcessedError } from '@/lib/api';
 import { McpServersApi } from '../api';
 import {
   isMcpOAuthErrorMessageType,
   isMcpOAuthSuccessMessageType,
 } from '../oauth/mcp-oauth-window-messages';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
+import type { DesktopIntegrationFamily } from '@/lib/auth/desktop-oauth';
+import {
+  DesktopOAuthError,
+  desktopIntegrationErrorMessage,
+  isElectron,
+  runDesktopIntegrationOAuth,
+} from '@/lib/electron';
 
 // ── Constants — match the connector/toolset OAuth popup timing ──────────
 const OAUTH_POPUP_POLL_MS = 1000;
@@ -16,6 +26,16 @@ const OAUTH_VERIFY_ATTEMPTS = 5;
 const OAUTH_VERIFY_GAP_MS = 1500;
 const OAUTH_POPUP_WIDTH = 600;
 const OAUTH_POPUP_HEIGHT = 700;
+
+/** Only http(s) sign-in URLs may be opened; a `javascript:` URL would run in this page's origin. */
+export function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'https:' || protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
 
 function openCenteredOAuthWindow(url: string, name: string): Window | null {
   const w = OAUTH_POPUP_WIDTH;
@@ -31,17 +51,49 @@ function openCenteredOAuthWindow(url: string, name: string): Window | null {
 
 export type McpOAuthPopupStatus = 'idle' | 'authenticating' | 'success' | 'failed';
 
+/** Why a sign-in didn't complete, so the page can say so. */
+export type McpOAuthFailureReason =
+  /** The browser blocked the popup. */
+  | 'blocked'
+  /** The user closed the popup without finishing. */
+  | 'cancelled'
+  /** The provider or the callback reported an error (`message` has it when known). */
+  | 'provider_error'
+  /** Nothing happened within the time limit. */
+  | 'timeout'
+  /** The sign-in address couldn't be obtained or isn't a web address (`message` may say why). */
+  | 'unavailable';
+
+export interface McpOAuthFailure {
+  reason: McpOAuthFailureReason;
+  message?: string;
+}
+
+/** The text to show for a failed sign-in. */
+export function mcpOAuthFailureMessage(t: TFunction, failure: McpOAuthFailure): string {
+  switch (failure.reason) {
+    case 'blocked':
+      return t('agentBuilder.oauthPopupBlocked');
+    case 'cancelled':
+      return t('agentBuilder.oauthSignInCancelled');
+    case 'timeout':
+      return t('workspace.mcpServers.toasts.oauthTimedOut');
+    case 'provider_error':
+      return failure.message
+        ? t('workspace.mcpServers.toasts.oauthProviderError', { message: failure.message })
+        : t('workspace.mcpServers.toasts.authenticateError');
+    default:
+      return failure.message || t('workspace.mcpServers.toasts.authenticateError');
+  }
+}
+
 interface UseMcpOAuthPopupOptions {
   /** Re-checks the instance's `isAuthenticated` flag; return true once verified. */
   verifyAuthenticated: () => Promise<boolean>;
   /** Called once verification succeeds — refresh lists / close dialogs, etc. */
   onVerified?: () => void;
-  /**
-   * Called when OAuth does not complete successfully (popup blocked/closed without
-   * auth, error postMessage, verify timeout, missing authorize URL, or fetch error).
-   * Use to clear page-level busy state that `onVerified` would otherwise leave stuck.
-   */
-  onFailed?: () => void;
+  /** Called when the sign-in doesn't complete, with the reason (see `mcpOAuthFailureMessage`). */
+  onFailed?: (failure: McpOAuthFailure) => void;
   /**
    * Defaults to the current user's own instance OAuth URL
    * (`McpServersApi.getOAuthAuthorizationUrl`). Pass to scope the authorize call to an
@@ -49,19 +101,26 @@ interface UseMcpOAuthPopupOptions {
    * `agent-mcp-credentials-dialog.tsx`.
    */
   getAuthorizationUrl?: (instanceId: string) => Promise<{ authorizationUrl?: string }>;
+  /** Desktop app only: the deep-link family and the call that finishes the sign-in. Default: MCP's. */
+  desktopFamily?: DesktopIntegrationFamily;
+  completeCallback?: (params: { code: string; state: string }) => Promise<{ success?: boolean; errorMessage?: string }>;
 }
 
 /**
  * Popup OAuth consent + postMessage callback handling for an MCP server instance.
- * Mirrors `useConnectorOAuthPopup` / toolset's popup flow: open the authorization URL
- * in a popup, listen for `postMessage` from the callback page, verify with retries
- * (gives the backend time to persist tokens), then report back to the caller.
+ *
+ * Call `startOAuthPopup` straight from the click handler: the popup opens (blank) before
+ * anything is awaited, because browsers with strict popup rules block a window opened after an
+ * async gap, then navigates to the sign-in address once it arrives. Reconnecting is the same
+ * call: the callback replaces the stored tokens only when the new sign-in succeeds.
  */
 export function useMcpOAuthPopup({
   verifyAuthenticated,
   onVerified,
   onFailed,
   getAuthorizationUrl,
+  desktopFamily = 'mcp',
+  completeCallback = McpServersApi.completeOAuthCallback,
 }: UseMcpOAuthPopupOptions) {
   const [status, setStatus] = useState<McpOAuthPopupStatus>('idle');
 
@@ -73,12 +132,16 @@ export function useMcpOAuthPopup({
   onFailedRef.current = onFailed;
   const getAuthorizationUrlRef = useRef(getAuthorizationUrl);
   getAuthorizationUrlRef.current = getAuthorizationUrl;
+  const completeCallbackRef = useRef(completeCallback);
+  completeCallbackRef.current = completeCallback;
 
   const popupRef = useRef<Window | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const completionHandledRef = useRef(false);
   const verifyAbortRef = useRef(false);
   const aliveRef = useRef(true);
+  /** Desktop only: cancels the wait for the browser to hand the callback back. */
+  const desktopWaitStopRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -89,6 +152,7 @@ export function useMcpOAuthPopup({
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
+      desktopWaitStopRef.current?.();
     };
   }, []);
 
@@ -97,13 +161,11 @@ export function useMcpOAuthPopup({
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    desktopWaitStopRef.current?.();
+    desktopWaitStopRef.current = null;
   }, []);
 
-  const completeOAuthFlow = useCallback(async () => {
-    if (completionHandledRef.current) return;
-    completionHandledRef.current = true;
-    clearPoll();
-
+  const closePopup = useCallback(() => {
     const pop = popupRef.current;
     popupRef.current = null;
     if (pop && !pop.closed) {
@@ -113,38 +175,74 @@ export function useMcpOAuthPopup({
         /* ignore */
       }
     }
+  }, []);
 
+  const fail = useCallback(
+    (failure: McpOAuthFailure) => {
+      clearPoll();
+      closePopup();
+      completionHandledRef.current = false;
+      if (!aliveRef.current) return;
+      setStatus('failed');
+      onFailedRef.current?.(failure);
+    },
+    [clearPoll, closePopup]
+  );
+
+  const succeed = useCallback(() => {
+    if (!aliveRef.current) return;
+    setStatus('success');
+    onVerifiedRef.current?.();
+  }, []);
+
+  /** The callback reported success: give the backend time to persist the tokens. */
+  const completeOAuthFlow = useCallback(async () => {
+    if (completionHandledRef.current) return;
+    completionHandledRef.current = true;
+    clearPoll();
+    closePopup();
     if (!aliveRef.current) return;
 
-    let verified = false;
     for (let attempt = 0; attempt < OAUTH_VERIFY_ATTEMPTS; attempt++) {
-      if (verifyAbortRef.current || !aliveRef.current) break;
+      if (verifyAbortRef.current || !aliveRef.current) return;
       await new Promise<void>((r) => setTimeout(r, OAUTH_VERIFY_GAP_MS));
-      if (verifyAbortRef.current || !aliveRef.current) break;
+      if (verifyAbortRef.current || !aliveRef.current) return;
       try {
-        verified = await verifyAuthenticatedRef.current();
-        if (verified) break;
+        if (await verifyAuthenticatedRef.current()) {
+          succeed();
+          return;
+        }
       } catch {
         /* retry */
       }
     }
+    fail({ reason: 'provider_error' });
+  }, [clearPoll, closePopup, fail, succeed]);
 
-    if (verifyAbortRef.current || !aliveRef.current) return;
-
-    if (verified) {
-      setStatus('success');
-      onVerifiedRef.current?.();
-    } else {
-      completionHandledRef.current = false;
-      setStatus('failed');
-      onFailedRef.current?.();
+  /** The popup closed without a message: one check, then it was cancelled. */
+  const handleClosedPopup = useCallback(async () => {
+    if (completionHandledRef.current) return;
+    completionHandledRef.current = true;
+    clearPoll();
+    popupRef.current = null;
+    let verified = false;
+    try {
+      verified = await verifyAuthenticatedRef.current();
+    } catch {
+      verified = false;
     }
-  }, [clearPoll]);
+    if (verifyAbortRef.current || !aliveRef.current) return;
+    if (verified) succeed();
+    else fail({ reason: 'cancelled' });
+  }, [clearPoll, fail, succeed]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
-      const type = (event.data as { type?: string } | null)?.type;
+      // Only our own popup's messages: another MCP sign-in open elsewhere on the page has its own.
+      if (event.source && popupRef.current && event.source !== popupRef.current) return;
+      const data = event.data as { type?: string; error?: unknown } | null;
+      const type = data?.type;
 
       if (isMcpOAuthSuccessMessageType(type)) {
         void completeOAuthFlow();
@@ -152,68 +250,120 @@ export function useMcpOAuthPopup({
       }
       if (isMcpOAuthErrorMessageType(type)) {
         verifyAbortRef.current = true;
-        completionHandledRef.current = false;
-        clearPoll();
-        popupRef.current = null;
-        setStatus('failed');
-        onFailedRef.current?.();
+        fail({ reason: 'provider_error', message: typeof data?.error === 'string' ? data.error : undefined });
       }
     };
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [completeOAuthFlow, clearPoll]);
+  }, [completeOAuthFlow, fail]);
+
+  /** The desktop shell denies popups, so consent runs in the system browser instead. */
+  const startDesktopOAuth = useCallback(
+    async (instanceId: string) => {
+      let authorizationUrl: string | undefined;
+      try {
+        const fetchAuthUrl =
+          getAuthorizationUrlRef.current ??
+          ((id: string) => McpServersApi.getOAuthAuthorizationUrl(id, browserOAuthBaseUrl()));
+        ({ authorizationUrl } = await fetchAuthUrl(instanceId));
+      } catch (error) {
+        fail({ reason: 'unavailable', message: isProcessedError(error) ? error.message : undefined });
+        return;
+      }
+      if (!authorizationUrl || !isWebUrl(authorizationUrl)) {
+        fail({ reason: 'unavailable' });
+        return;
+      }
+
+      const flow = runDesktopIntegrationOAuth({
+        family: desktopFamily,
+        authUrl: authorizationUrl,
+        complete: async ({ code, state }) => {
+          const data = await completeCallbackRef.current({ code, state });
+          if (!data?.success) {
+            throw new Error(data?.errorMessage?.trim() || 'The server rejected the OAuth authentication.');
+          }
+        },
+      });
+      desktopWaitStopRef.current = flow.cancel;
+      flow.promise.then(
+        () => {
+          desktopWaitStopRef.current = null;
+          void completeOAuthFlow();
+        },
+        (error: unknown) => {
+          desktopWaitStopRef.current = null;
+          const message = desktopIntegrationErrorMessage(error);
+          if (message === null) return;
+          const reason = error instanceof DesktopOAuthError ? error.reason : null;
+          if (reason === 'timeout') fail({ reason: 'timeout' });
+          else if (reason === 'open-failed' || reason === 'unavailable') fail({ reason: 'unavailable', message });
+          else fail({ reason: 'provider_error', message });
+        }
+      );
+    },
+    [completeOAuthFlow, desktopFamily, fail]
+  );
 
   const startOAuthPopup = useCallback(
     async (instanceId: string) => {
       clearPoll();
       completionHandledRef.current = false;
       verifyAbortRef.current = false;
-      popupRef.current = null;
       setStatus('authenticating');
 
+      if (isElectron()) {
+        await startDesktopOAuth(instanceId);
+        return;
+      }
+
+      // Opened before any await, while the click still counts as a user gesture.
+      const popup = openCenteredOAuthWindow('about:blank', `mcp-oauth-${instanceId}`);
+      if (!popup || popup.closed) {
+        fail({ reason: 'blocked' });
+        return;
+      }
+      popupRef.current = popup;
+
+      let authorizationUrl: string | undefined;
       try {
         const fetchAuthUrl =
           getAuthorizationUrlRef.current ??
-          ((id: string) => McpServersApi.getOAuthAuthorizationUrl(id, window.location.origin));
-        const { authorizationUrl } = await fetchAuthUrl(instanceId);
-        if (!authorizationUrl) {
-          setStatus('failed');
-          onFailedRef.current?.();
-          return;
-        }
-
-        const popup = openCenteredOAuthWindow(authorizationUrl, `mcp-oauth-${instanceId}`);
-        if (!popup || popup.closed) {
-          setStatus('idle');
-          onFailedRef.current?.();
-          return;
-        }
-
-        popupRef.current = popup;
-        popup.focus();
-
-        let pollCount = 0;
-        pollRef.current = setInterval(() => {
-          pollCount += 1;
-          if (pollCount >= OAUTH_POPUP_MAX_POLLS) {
-            clearPoll();
-            completionHandledRef.current = false;
-            setStatus('idle');
-            onFailedRef.current?.();
-            return;
-          }
-          if (!popup.closed || completionHandledRef.current) return;
-          void completeOAuthFlow();
-        }, OAUTH_POPUP_POLL_MS);
-      } catch {
-        clearPoll();
-        popupRef.current = null;
-        setStatus('failed');
-        onFailedRef.current?.();
+          ((id: string) => McpServersApi.getOAuthAuthorizationUrl(id, browserOAuthBaseUrl()));
+        ({ authorizationUrl } = await fetchAuthUrl(instanceId));
+      } catch (error) {
+        fail({ reason: 'unavailable', message: isProcessedError(error) ? error.message : undefined });
+        return;
       }
+      if (!authorizationUrl || !isWebUrl(authorizationUrl)) {
+        fail({ reason: 'unavailable' });
+        return;
+      }
+      if (popup.closed) {
+        fail({ reason: 'cancelled' });
+        return;
+      }
+      try {
+        popup.location.href = authorizationUrl;
+        popup.focus();
+      } catch {
+        fail({ reason: 'blocked' });
+        return;
+      }
+
+      let pollCount = 0;
+      pollRef.current = setInterval(() => {
+        pollCount += 1;
+        if (pollCount >= OAUTH_POPUP_MAX_POLLS) {
+          fail({ reason: 'timeout' });
+          return;
+        }
+        if (!popup.closed || completionHandledRef.current) return;
+        void handleClosedPopup();
+      }, OAUTH_POPUP_POLL_MS);
     },
-    [clearPoll, completeOAuthFlow]
+    [clearPoll, fail, handleClosedPopup, startDesktopOAuth]
   );
 
   const reset = useCallback(() => setStatus('idle'), []);

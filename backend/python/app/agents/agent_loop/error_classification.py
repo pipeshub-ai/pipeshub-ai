@@ -28,8 +28,18 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from http import HTTPStatus
+from typing import TYPE_CHECKING
+
+from app.services.model_identity.errors import classify_for_user
+from app.utils.log_redaction import redact_secrets_in_text
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 # Provider content-moderation rejections (Azure `content_filter` /
 # `ResponsibleAIPolicyViolation`, OpenAI `content_policy_violation`, ...).
@@ -40,6 +50,11 @@ from http import HTTPStatus
 # would be actively wrong.
 _CONTENT_FILTER_HINTS = (
     "content_filter",
+    # The SDKs' wording for a filtered finish (langchain-openai's Azure model,
+    # openai's ContentFilterFinishReasonError); anchored, so a bare mention of
+    # "content filter" elsewhere in an error is not a refusal.
+    "due to a content filter",
+    "rejected by the content filter",
     "content management policy",
     "content policy",
     "content_policy",
@@ -56,6 +71,9 @@ _REQUEST_TOO_LARGE_HINTS = (
     "reduce your message size",
     "context length exceeded",
     "maximum context length",
+    # `Agent.step` ends the run with this when the shapers cannot fit the
+    # context into the model's window (see agent_loop_lib/context/errors.py).
+    "context could not be shaped",
 )
 # Checked BEFORE rate_limit: OpenAI reports a used-up balance as a 429 too, but
 # waiting a minute never fixes it.
@@ -66,6 +84,8 @@ _QUOTA_HINTS = (
 )
 _RATE_LIMIT_HINTS = ("429", "rate limit", "rate_limit", "too many requests")
 _AUTH_HINTS = ("401", "403", "unauthorized", "authentication", "invalid api key", "permission denied")
+# OpenAI `model_not_found`, Azure `DeploymentNotFound`: the configured model name is wrong.
+_MODEL_NOT_FOUND_HINTS = ("error code: 404", "model_not_found", "deploymentnotfound")
 # Matched after content_filter: Azure prompt-shields are also HTTP 400.
 _INVALID_REQUEST_HINTS = ("invalid_request_error", "error code: 400")
 _SERVER_ERROR_HINTS = (
@@ -101,6 +121,10 @@ _USER_MESSAGES: dict[str, str] = {
         "The AI model's provider rejected its API key. Ask a workspace admin to "
         "check the key in Workspace → AI Models."
     ),
+    "model_not_found": (
+        "The AI model's provider couldn't find this model at its endpoint. Ask a "
+        "workspace admin to check the model name and endpoint in Workspace → AI Models."
+    ),
     "request_too_large": (
         "This conversation is too long for the selected model. Shorten your "
         "message or start a new conversation."
@@ -119,6 +143,25 @@ _USER_MESSAGES: dict[str, str] = {
         "happening, contact your workspace admin."
     ),
 }
+
+# An unclassified failure of the model call itself still tells the user more
+# than "something went wrong": the model call, not the search, failed.
+_MODEL_CALL_FAILURE_MARKERS = ("llm call failed", "transport error")
+_MODEL_CALL_FAILED_MESSAGE = (
+    "The call to the AI model failed while answering. Please try "
+    "again, and if it keeps happening, ask a workspace admin to check the "
+    "model in Workspace → AI Models."
+)
+
+# Checked before the built-in hints. Each returns `(error_code, user_message)`
+# or `None` to pass.
+_extra_classifiers: list[Callable[[str], tuple[str, str] | None]] = []
+
+
+def register_error_classifier(fn: Callable[[str], tuple[str, str] | None]) -> None:
+    if fn not in _extra_classifiers:
+        _extra_classifiers.append(fn)
+
 
 _ERROR_PAYLOAD_RE = re.compile(
     r"Error code:\s*\d+\s*-\s*(\{.*\})\s*$",
@@ -179,13 +222,29 @@ def classify_error(error_msg: str) -> tuple[str, str]:
     """Returns `(error_code, user_message)` for a raw error string.
 
     `error_code` is one of `content_filter` / `request_too_large` /
-    `quota_exceeded` / `rate_limit` / `auth_error` / `invalid_request` / `server_error` /
+    `quota_exceeded` / `rate_limit` / `auth_error` / `model_not_found` / `invalid_request` / `server_error` /
     `timeout` / `unknown` — checked in this priority order since a single
     message can contain multiple hints (e.g. a Groq 413 body that also
     mentions "rate_limit_exceeded"; the request-too-large classification
     must win because "try again in a moment" is wrong advice for a
     permanently oversized request).
     """
+    for fn in _extra_classifiers:
+        try:
+            hit = fn(error_msg)
+        except Exception:
+            logger.exception("Error classifier %r failed; skipping it", fn)
+            continue
+        if hit is not None:
+            return hit
+
+    # A gateway that enforces per-user budgets and model access answers with the
+    # statuses broken providers use; read before the generic 429/403 hints, whose
+    # advice ("wait a minute", "the API key is wrong") would be wrong for these.
+    gateway = classify_for_user(error_msg)
+    if gateway is not None:
+        return gateway
+
     lower = error_msg.lower()
 
     if any(hint in lower for hint in _CONTENT_FILTER_HINTS):
@@ -198,6 +257,8 @@ def classify_error(error_msg: str) -> tuple[str, str]:
         error_code = "rate_limit"
     elif any(hint in lower for hint in _AUTH_HINTS):
         error_code = "auth_error"
+    elif any(hint in lower for hint in _MODEL_NOT_FOUND_HINTS):
+        error_code = "model_not_found"
     elif any(hint in lower for hint in _INVALID_REQUEST_HINTS):
         error_code = "invalid_request"
     elif any(hint in lower for hint in _SERVER_ERROR_HINTS):
@@ -213,7 +274,21 @@ def classify_error(error_msg: str) -> tuple[str, str]:
             prefix = _USER_MESSAGES[error_code].split(".")[0]
             return error_code, f"{prefix}: {provider_msg}"
 
+    if error_code == "unknown" and any(marker in lower for marker in _MODEL_CALL_FAILURE_MARKERS):
+        return error_code, _MODEL_CALL_FAILED_MESSAGE
+
     return error_code, _USER_MESSAGES[error_code]
+
+
+def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
+    """The raw error with URLs, account ids and credentials masked, capped at `max_len`.
+
+    A provider's error can echo the request URL, whose query string may carry
+    a credential (Google's REST endpoints accept `?key=`), or a request header.
+    """
+    text = _URL_RE.sub("[url]", error_msg)
+    text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
+    return redact_secrets_in_text(text)[:max_len]
 
 
 def _status_phrase(status_code: int) -> str | None:
@@ -248,4 +323,9 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
-__all__ = ["classify_error", "classify_exception"]
+__all__ = [
+    "classify_error",
+    "classify_exception",
+    "redact_error_for_log",
+    "register_error_classifier",
+]

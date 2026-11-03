@@ -9,10 +9,10 @@ Deliberately *not* built on ``PIPESHUB_TEST_NON_ADMIN_EMAIL`` /
 template, so the one suite that reads them skips on every run. A fixture that
 silently does nothing is worse than no fixture.
 
-Deliberately *not* built on ``second_user_auth.second_pipeshub_client`` either:
-that routes through an OAuth app whose scope list is fixed at creation, and
-search is not in it. Logging in returns the same token the UI uses, which
-carries the user's real permissions -- which is precisely what is under test.
+Deliberately *not* built on an OAuth app either: an app's scope list is fixed
+at creation. Logging in returns the same token the UI uses, which carries the
+user's real permissions -- which is precisely what is under test. It is also
+the only token session-only routes accept, such as ``/oauth-clients`` (#3626).
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ for _p in (_ROOT, _ROOT / "helper"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import local_auth  # noqa: E402
 from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
 
@@ -142,12 +143,15 @@ def _create_user(client: PipeshubClient, email: str) -> dict[str, Any]:
     return resp.json()
 
 
-def _credential_document(org_id: str, user_id: str, hashed: str) -> dict[str, Any]:
+def _credential_document(org_id: str, user_id: str, email: str, hashed: str) -> dict[str, Any]:
     now = datetime.datetime.now(datetime.timezone.utc)
     return {
-        # Both ids are declared String in userCredentials.schema.ts.
+        # Both ids are declared String in userCredentials.schema.ts. The email
+        # too, so the row is found whether a sign-in looks it up by the ids or
+        # by the address.
         "userId": str(user_id),
         "orgId": str(org_id),
+        "email": email,
         "hashedPassword": hashed,
         "ipAddress": "127.0.0.1",
         "wrongCredentialCount": 0,
@@ -159,7 +163,7 @@ def _credential_document(org_id: str, user_id: str, hashed: str) -> dict[str, An
     }
 
 
-def _seed_password_direct(org_id: str, user_id: str, hashed: str) -> None:
+def _seed_password_direct(org_id: str, user_id: str, email: str, hashed: str) -> None:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
     try:
         collection = client[MONGO_DB_NAME].userCredentials
@@ -167,12 +171,12 @@ def _seed_password_direct(org_id: str, user_id: str, hashed: str) -> None:
         # for this user would leave duplicates, and which one login picks up is
         # not defined.
         collection.delete_many({"userId": str(user_id), "orgId": str(org_id)})
-        collection.insert_one(_credential_document(org_id, user_id, hashed))
+        collection.insert_one(_credential_document(org_id, user_id, email, hashed))
     finally:
         client.close()
 
 
-def _seed_password_via_docker(org_id: str, user_id: str, hashed: str) -> None:
+def _seed_password_via_docker(org_id: str, user_id: str, email: str, hashed: str) -> None:
     """Fallback for stacks that do not publish 27017.
 
     The integration compose publishes Mongo, so the direct client is the normal
@@ -183,7 +187,7 @@ def _seed_password_via_docker(org_id: str, user_id: str, hashed: str) -> None:
     script = (
         f'db = db.getSiblingDB("{MONGO_DB_NAME}");'
         f'db.userCredentials.deleteMany({{userId:"{user_id}",orgId:"{org_id}"}});'
-        f'db.userCredentials.insertOne({{userId:"{user_id}",orgId:"{org_id}",'
+        f'db.userCredentials.insertOne({{userId:"{user_id}",orgId:"{org_id}",email:"{email}",'
         f'hashedPassword:"{hashed}",ipAddress:"127.0.0.1",wrongCredentialCount:0,'
         f"isBlocked:false,forceNewPasswordGeneration:false,isDeleted:false,"
         f"createdAt:new Date(),updatedAt:new Date()}});"
@@ -205,7 +209,7 @@ def _seed_password_via_docker(org_id: str, user_id: str, hashed: str) -> None:
     raise RuntimeError("mongosh via docker exec failed:\n  " + "\n  ".join(errors))
 
 
-def _seed_password(org_id: str, user_id: str) -> None:
+def _seed_password(org_id: str, user_id: str, email: str) -> None:
     """Give the new account a password so it can log in.
 
     `POST /users` creates an account with no credentials, and the invite route
@@ -213,11 +217,11 @@ def _seed_password(org_id: str, user_id: str) -> None:
     """
     hashed = bcrypt.hashpw(TEST_USER_PASSWORD.encode(), bcrypt.gensalt()).decode()
     try:
-        _seed_password_direct(org_id, user_id, hashed)
+        _seed_password_direct(org_id, user_id, email, hashed)
     except Exception as direct_error:  # noqa: BLE001 - fall back, then report both
         logger.info("Direct Mongo seed failed (%s); trying docker exec", direct_error)
         try:
-            _seed_password_via_docker(org_id, user_id, hashed)
+            _seed_password_via_docker(org_id, user_id, email, hashed)
         except Exception as docker_error:
             raise RuntimeError(
                 f"Could not seed a password for {user_id}.\n"
@@ -239,36 +243,9 @@ def _delete_credentials(org_id: str, user_id: str) -> None:
         logger.warning("Could not clean up credentials for user %s", user_id)
 
 
-def _login(base_url: str, email: str, timeout: int) -> str:
-    init_resp = requests.post(
-        f"{base_url}/api/v1/userAccount/initAuth",
-        json={"email": email},
-        timeout=timeout,
-    )
-    if init_resp.status_code >= 400:
-        raise RuntimeError(
-            f"initAuth failed for {email}: HTTP {init_resp.status_code}: {init_resp.text[:200]}"
-        )
-    session_token = init_resp.headers.get("x-session-token")
-    if not session_token:
-        raise RuntimeError("initAuth returned no x-session-token")
-
-    auth_resp = requests.post(
-        f"{base_url}/api/v1/userAccount/authenticate",
-        headers={"x-session-token": session_token},
-        json={
-            "method": "password",
-            "credentials": {"password": TEST_USER_PASSWORD},
-            "email": email,
-        },
-        timeout=timeout,
-    )
-    if auth_resp.status_code >= 400:
-        raise RuntimeError(
-            f"authenticate failed for {email}: "
-            f"HTTP {auth_resp.status_code}: {auth_resp.text[:200]}"
-        )
-    return str(auth_resp.json()["accessToken"])
+def log_in(base_url: str, email: str, timeout: int) -> str:
+    """Log in as a disposable user with the password ``_seed_password`` gave it."""
+    return local_auth.log_in(base_url, email, TEST_USER_PASSWORD, timeout)
 
 
 def _wait_for_graph_user(client: PipeshubClient, email: str) -> dict[str, Any]:
@@ -316,13 +293,13 @@ def create_second_user(client: PipeshubClient) -> SecondUser:
     if not user_id or not org_id:
         raise RuntimeError(f"createUser response missing _id/orgId: {sorted(user)}")
 
-    _seed_password(org_id, user_id)
+    _seed_password(org_id, user_id, email)
     graph_user = _wait_for_graph_user(client, email)
     graph_id = str(graph_user.get("id") or "")
     if not graph_id:
         raise RuntimeError(f"graph user for {email} has no id: {graph_user}")
 
-    token = _login(client.base_url, email, client.timeout_seconds)
+    token = log_in(client.base_url, email, client.timeout_seconds)
     logger.info("Second user ready: %s (graph id %s)", email, graph_id)
     return SecondUser(
         user_id=user_id,
@@ -332,6 +309,31 @@ def create_second_user(client: PipeshubClient) -> SecondUser:
         base_url=client.base_url,
         timeout=client.timeout_seconds,
     )
+
+
+def source_user_account(client: PipeshubClient, email: str, name: str) -> SecondUser:
+    """A logged-in PipesHub account with a source user's email: connector permissions are keyed by it.
+
+    Kept, not deleted, by its callers: an email whose account was deleted cannot be added to the org again.
+    """
+    resp = requests.post(
+        f"{client.base_url}/api/v1/users",
+        headers=client._headers(),
+        json={"fullName": name, "email": email},
+        timeout=client.timeout_seconds,
+    )
+    created = resp.json() if resp.status_code < 400 else {}
+    if resp.status_code >= 400:
+        logger.info("createUser %s answered %s; looking for an existing account", email, resp.status_code)
+    graph_user = _wait_for_graph_user(client, email)
+    user_id = str(created.get("_id") or created.get("id") or graph_user.get("userId") or "")
+    graph_id = str(graph_user.get("id") or "")
+    if not user_id or not graph_id:
+        raise RuntimeError(f"no usable PipesHub account for {email}: created={created} graph={graph_user}")
+    _seed_password(client.org_id, user_id, email)
+    token = log_in(client.base_url, email, client.timeout_seconds)
+    return SecondUser(user_id=user_id, graph_id=graph_id, email=email, token=token,
+                      base_url=client.base_url, timeout=client.timeout_seconds)
 
 
 def _credential_filter(org_id: str, user_id: str) -> dict[str, str]:
@@ -380,12 +382,12 @@ def log_in_existing_user(client: PipeshubClient, user_id: str, email: str) -> Se
     try:
         # Inside the try: seeding deletes the old rows before inserting, so a
         # failed insert must restore them too.
-        _seed_password(client.org_id, user_id)
+        _seed_password(client.org_id, user_id, email)
         graph_user = _wait_for_graph_user(client, email)
         graph_id = str(graph_user.get("id") or "")
         if not graph_id:
             raise RuntimeError(f"graph user for {email} has no id: {graph_user}")
-        token = _login(client.base_url, email, client.timeout_seconds)
+        token = log_in(client.base_url, email, client.timeout_seconds)
     except BaseException:
         # The caller never gets a user to log out, so restore here.
         _restore_credentials(client.org_id, user_id, saved)

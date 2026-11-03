@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import re
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,6 +45,9 @@ from app.utils.chat_helpers import (
 from app.utils.image_admission import ImageAdmission
 from app.utils.image_policy import resolve_image_policy
 from tests.unit.utils.test_chat_helpers import _make_record_blob, _make_text_block
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _MIN_PNG_DATA_URI = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
@@ -86,6 +90,11 @@ def _make_sql_table_record(vrid="vr-1", record_id="rec-sql-1") -> dict:
             }],
         },
     }
+
+
+def _all_live(record_ids: list[str], org_id: str, visibility: object = None) -> list[dict]:
+    """``get_records_by_record_ids`` when every related table is live."""
+    return [{"_key": rid, "orgId": org_id} for rid in record_ids]
 
 
 def _run(coro):
@@ -379,6 +388,7 @@ class TestIsBase64ImageBranches:
             return real(data, *a, **k)
 
         monkeypatch.setattr(chat_helpers_module.base64, "b64decode", spy)
+        monkeypatch.setattr(chat_helpers_module, "_base64_image_verdicts", {})
         big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000).decode()
         assert is_base64_image(big) is True
         assert seen and max(seen) <= 272, f"decoded {max(seen)} chars, expected <= 272"
@@ -1048,9 +1058,17 @@ class TestGenerateTextFragmentUrlEdgeBranches:
         assert "#:~:text=" in url
 
 class TestEnrichFkChildrenExtraBranches:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self) -> "Iterator[None]":
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_skips_non_dict_record_entries(self):
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         blob = AsyncMock()
@@ -1064,6 +1082,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_blob_fetch_none_sets_placeholder(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(
@@ -1083,6 +1102,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_graph_merge_exception_is_non_fatal(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(
@@ -1103,6 +1123,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_blob_storage_exception_sets_none(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(
@@ -1121,6 +1142,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_fk_relations_fetched_when_not_in_precache_for_ddl_branch(self):
         """Lines 603-621: related table without precached FK relations."""
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(
             side_effect=[
                 [{"record_id": "rec-rel"}],  # children of SQL table in vr map
@@ -1157,6 +1179,7 @@ class TestEnrichWarningsNoTableGroup:
     async def test_no_table_block_group_does_not_emit_fk_flattened_entry(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(

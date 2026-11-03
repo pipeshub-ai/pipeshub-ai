@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Heading } from '@radix-ui/themes';
+import { Flex, Text, Heading, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
@@ -14,13 +14,14 @@ import {
   selectInfraServices,
   selectInfraServiceNames,
   APP_SERVICE_LABELS,
-  formatServiceList,
   type AppServices,
   type InfraServices,
 } from '@/lib/store/services-health-store';
 import { toast } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { useShouldPollServiceHealth, logoutAndRedirect, logoutFromWorkspaceMenu } from '@/config';
+import { isElectron } from '@/lib/electron';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -57,15 +58,32 @@ function classifyUnhealthyServices(
   return { critical, nonCritical };
 }
 
+/**
+ * The app shell (and its workspace menu) is hidden behind this screen, so it
+ * must carry its own way out: a dead desktop server URL would otherwise trap
+ * the user here with no logout and no way to point at another server.
+ */
+function leaveUnreachableServer(): void {
+  // The flag is global; left false, the next HealthGate mount (after signing in
+  // to another server) would block until the first retry succeeds.
+  useServicesHealthStore.setState({ apiServerReachable: true });
+  if (isElectron()) {
+    logoutFromWorkspaceMenu();
+  } else {
+    logoutAndRedirect();
+  }
+}
+
 function BackendUnavailableScreen() {
   const { t } = useTranslation();
+  const electron = isElectron();
 
   return (
     <Flex
       align="center"
       justify="center"
+      className="viewport-height"
       style={{
-        height: '100vh',
         width: '100%',
         backgroundColor: 'var(--olive-2)',
       }}
@@ -102,6 +120,16 @@ function BackendUnavailableScreen() {
         </Text>
 
         <LottieLoader variant="loader" size={48} />
+
+        <Button
+          type="button"
+          size="2"
+          variant="soft"
+          onClick={leaveUnreachableServer}
+          style={{ cursor: 'pointer' }}
+        >
+          {electron ? t('electron.serverUrlSetup.changeServer') : t('workspaceMenu.logOut')}
+        </Button>
       </Flex>
     </Flex>
   );
@@ -123,7 +151,9 @@ function BackendUnavailableScreen() {
  */
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const { t, i18n } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const shouldPoll = useShouldPollServiceHealth();
 
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
@@ -140,10 +170,14 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasUnreachableRef = useRef(false);
 
-  // ── Start background polling on mount ────────────────────────────────────
   useEffect(() => {
-    startBackgroundPolling();
     fetchFeatureFlags();
+  }, [fetchFeatureFlags]);
+
+  // ── Background polling, only while this user is allowed to watch health ──
+  useEffect(() => {
+    if (!shouldPoll) return;
+    startBackgroundPolling();
     return () => {
       stopBackgroundPolling();
       if (criticalToastIdRef.current) {
@@ -151,7 +185,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         criticalToastIdRef.current = null;
       }
     };
-  }, [startBackgroundPolling, stopBackgroundPolling, fetchFeatureFlags]);
+  }, [shouldPoll, startBackgroundPolling, stopBackgroundPolling]);
 
   // ── Refresh data on server recovery to clear stale state ────────────────
   useEffect(() => {
@@ -223,21 +257,21 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
       // member.
       const description =
         isAdmin === true
-          ? `Affected: ${critical.join(', ')}`
-          : "Some features are temporarily unavailable. We'll reconnect automatically; if it lasts, contact your admin.";
+          ? t('healthGate.toasts.affected', { services: critical.join(', ') })
+          : t('healthGate.toasts.featuresUnavailableReconnect');
       // The profile often resolves after the first failed health check, so the
       // action is set on every pass: an admin who was still "unknown" when the
       // toast appeared would otherwise never get the button.
       const adminAction =
         isAdmin === true
           ? {
-              label: 'View status',
+              label: t('healthGate.toasts.viewStatus'),
               onClick: () => router.push('/workspace/services'),
             }
           : undefined;
       if (criticalToastIdRef.current === null) {
         criticalToastIdRef.current = toast.error(
-          'Some services are unavailable',
+          t('healthGate.toasts.servicesUnavailableTitle'),
           {
             description,
             duration: null,
@@ -246,6 +280,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         );
       } else {
         toast.update(criticalToastIdRef.current, {
+          title: t('healthGate.toasts.servicesUnavailableTitle'),
           description,
           action: adminAction,
         });
@@ -262,12 +297,15 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         lastNonCriticalToastRef.current = now;
         toast.warning(
           isAdmin === true
-            ? `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`
-            : 'Some features are temporarily unavailable',
+            ? t('healthGate.toasts.servicesDown', {
+                count: nonCritical.length,
+                services: new Intl.ListFormat(i18n.language, { type: 'conjunction' }).format(nonCritical),
+              })
+            : t('healthGate.toasts.featuresUnavailable'),
           {
             ...(isAdmin === true && {
               action: {
-                label: 'View status',
+                label: t('healthGate.toasts.viewStatus'),
                 onClick: () => router.push('/workspace/services'),
               },
             }),
@@ -275,7 +313,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         );
       }
     }
-  }, [apiServerReachable, backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router]);
+  }, [apiServerReachable, backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router, t, i18n.language]);
 
   if (!apiServerReachable) {
     return <BackendUnavailableScreen />;

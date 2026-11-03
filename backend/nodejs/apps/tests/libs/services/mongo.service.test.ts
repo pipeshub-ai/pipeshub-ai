@@ -302,21 +302,12 @@ describe('MongoService', () => {
     });
   });
 
-  describe('gracefulShutdown', () => {
-    it('should call destroy', async () => {
-      (service as any).isInitialized = true;
-      sinon.stub(mongoose, 'disconnect').resolves();
-      (service as any).connection = { readyState: 1 };
-      await (service as any).gracefulShutdown();
-      expect((service as any).isInitialized).to.be.false;
-    });
-
-    it('should call process.exit(1) when destroy throws', async () => {
-      (service as any).isInitialized = true;
-      sinon.stub(mongoose, 'disconnect').rejects(new Error('shutdown failed'));
-      const exitStub = sinon.stub(process, 'exit');
-      await (service as any).gracefulShutdown();
-      expect(exitStub.calledWith(1)).to.be.true;
+  describe('shutdown ownership', () => {
+    it('does not disconnect on process signals itself (Application.stop owns the order)', () => {
+      const before = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT');
+      (service as any).connection = { on: sinon.stub() };
+      (service as any).setupConnectionHandlers();
+      expect(process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')).to.equal(before);
     });
   });
 

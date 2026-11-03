@@ -58,9 +58,14 @@ def test_item_json_object_string() -> None:
 
 
 def test_insufficient_pipe_options_still_raises() -> None:
-    raw = {"user_intent": "test", "questions": ["Only two opts|A|B"]}
+    raw = {"user_intent": "test", "questions": ["Only one opt|A"]}
     with pytest.raises(ValidationError):
         AskUserQuestionInput.model_validate(raw)
+
+
+def test_two_pipe_options_are_enough() -> None:
+    model = AskUserQuestionInput.model_validate({"user_intent": "test", "questions": ["Close which?|PROJ-42|PROJ-57"]})
+    assert [o.label for o in model.questions[0].options] == ["PROJ-42", "PROJ-57"]
 
 
 def test_plain_string_question_without_pipe_raises() -> None:
@@ -113,3 +118,49 @@ async def test_ask_user_question_returns_structured_json_for_ui() -> None:
     assert options[0]["isUserInput"] is False
     assert options[0]["id"] == "opt_#general"
     assert options[2]["isUserInput"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("questions", [[], [{"question": "  ", "options": []}]])
+async def test_asking_nothing_is_refused_not_answered(questions: list) -> None:
+    """With no question to show, the call fails so the run goes on; a
+    success here would end the run with nothing asked."""
+    from app.agent_loop_lib.tools.base import ToolOutput
+
+    result = await InternalTools().ask_user_question(
+        user_intent="The question is clear.", questions=questions,
+    )
+
+    assert isinstance(result, ToolOutput)
+    assert result.success is False
+    assert "without a question" in result.error
+
+
+@pytest.mark.asyncio
+async def test_blank_questions_beside_a_real_one_are_dropped() -> None:
+    """Only the real question becomes a card; a blank one would render empty."""
+    result_json = await InternalTools().ask_user_question(
+        user_intent="User wants to pick a channel.",
+        questions=[
+            {"question": "Which channel?", "options": [{"label": "#general"}, {"label": "#dev"}]},
+            {"question": "   ", "options": [{"label": "a"}]},
+            {"options": [{"label": "b"}]},
+        ],
+    )
+
+    payload = json.loads(result_json)
+    assert [q["question"] for q in payload["questions"]] == ["Which channel?"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, 3, ["Which channel?"]])
+async def test_a_non_string_question_is_not_shown_as_its_repr(value: object) -> None:
+    from app.agent_loop_lib.tools.base import ToolOutput
+
+    result = await InternalTools().ask_user_question(
+        user_intent="User wants to pick a channel.",
+        questions=[{"question": value, "options": [{"label": "#general"}]}],
+    )
+
+    assert isinstance(result, ToolOutput)
+    assert result.success is False

@@ -1,0 +1,1603 @@
+"""Personal Google Drive sync, driven over a fake Drive API with the real Google client.
+
+The connector, ``GoogleClient``, the discovery-built Drive service, ``execute()`` with
+its retry/backoff, google-auth's OAuth credentials and ``MediaIoBaseDownload`` are all
+real; every HTTP request is answered by ``DriveWorld`` and our databases are in-memory.
+"""
+
+import logging
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta
+from typing import Any, Optional
+from unittest.mock import AsyncMock
+
+import pytest
+from drive_world import GDOC, GSHEET, GSLIDES, DriveWorld
+from fastapi.responses import StreamingResponse
+from google_behaviour_fakes import (
+    ApiRequest,
+    FakeConfigService,
+    FakeEntitiesProcessor,
+    FakeGoogleHttp,
+    FakeSyncPointStore,
+)
+from googleapiclient.errors import HttpError
+
+from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.sources.google.common import datasource_refresh
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
+    GoogleDriveError,
+)
+from app.connectors.sources.google.drive.individual.connector import (
+    GoogleDriveIndividualConnector,
+)
+from app.models.permission import PermissionType
+
+CONNECTOR_ID = "drive-personal-1"
+ME = "me@example.com"
+ROOT = "root-me"
+CHECKPOINT = "/personal_drive"
+
+
+class Harness:
+    def __init__(self, http: FakeGoogleHttp, records: FakeEntitiesProcessor, sync_points: FakeSyncPointStore) -> None:
+        self.http = http
+        self.records = records
+        self.sync_points = sync_points
+        self.world = DriveWorld(http)
+        self.world.add_user(ME, "Me Myself")
+        self.world.aliases["oauth:refresh-1"] = ME
+        self.http.accept_token("access-1", ME)
+        self.config: dict[str, Any] = {
+            "auth": {"oauthConfigId": "oauth-app-1", "connectorScope": "personal"},
+            "credentials": {
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "scope": "https://www.googleapis.com/auth/drive.readonly",
+            },
+        }
+        self.config_service = FakeConfigService(
+            CONNECTOR_ID,
+            self.config,
+            {"drive": [{"_id": "oauth-app-1", "config": {"clientId": "client-1", "clientSecret": "secret-1"}}]},
+        )
+        self.connector: Optional[GoogleDriveIndividualConnector] = None
+
+    def filters(self, **sync_values: object) -> None:
+        self.config["filters"] = {"sync": {"values": sync_values}}
+
+    async def connector_(self) -> GoogleDriveIndividualConnector:
+        if self.connector is None:
+            self.connector = GoogleDriveIndividualConnector(
+                logging.getLogger("drive-individual-behaviour"),
+                self.records,
+                self.sync_points,
+                self.config_service,
+                CONNECTOR_ID,
+                "personal",
+                "user-1",
+            )
+            assert await self.connector.init()
+        return self.connector
+
+    async def sync(self) -> None:
+        """One run. A run that left part of Drive unread ends with DriveSyncIncomplete, after doing everything
+        else it could; that is recorded in `incomplete` rather than raised, so a test checks what the run did
+        and, where it matters, that it was reported as incomplete."""
+        try:
+            await (await self.connector_()).run_sync()
+            self.incomplete = False
+        except DriveSyncIncomplete:
+            self.incomplete = True
+
+    def checkpoint(self) -> Optional[str]:
+        value = self.sync_points.value(CHECKPOINT)
+        return value.get("pageToken") if value else None
+
+    def names(self) -> set[str]:
+        return {r.record_name for r in self.records.records.values() if not r.is_placeholder}
+
+
+@pytest.fixture
+async def drive(google_http: FakeGoogleHttp, records: FakeEntitiesProcessor, sync_points: FakeSyncPointStore) -> AsyncIterator[Harness]:
+    harness = Harness(google_http, records, sync_points)
+    yield harness
+    if harness.connector is not None:
+        await harness.connector.cleanup()
+    assert not google_http.unrouted, google_http.unrouted
+
+
+def my_file(world: DriveWorld, file_id: str, name: str, parent: str = ROOT, **kwargs: object) -> None:
+    world.add_item(file_id, name, parent=parent, owner=ME, **kwargs)
+
+
+# --- full sync and pagination -------------------------------------------------
+
+
+async def test_full_sync_reads_every_page_and_saves_the_token_taken_before_listing(drive: Harness) -> None:
+    for n in range(5):
+        my_file(drive.world, f"f{n}", f"doc-{n}.txt")
+    token_before = str(len(drive.world.log) + 1)
+
+    await drive.sync()
+
+    assert drive.names() == {f"doc-{n}.txt" for n in range(5)}
+    listing = [r for r in drive.http.calls("GET", "/drive/v3/files") if "sharedWithMe" not in r.query.get("q", "")]
+    assert len(listing) == 3
+    assert drive.checkpoint() == token_before
+    assert drive.records.permissions["f0"] == [], "the file inherits the drive instead of granting its owner"
+    assert drive.records.records["f0"].inherit_permissions is True
+    assert drive.records.record_groups[ROOT].name == f"Google Drive - {ME}"
+    assert drive.records.record_groups[ROOT].inherit_permissions is True
+    assert drive.records.record_group_permissions[ROOT] == []
+
+
+async def test_trashed_files_are_not_synced_on_full_sync(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    my_file(drive.world, "bin", "bin.txt")
+    drive.world.trash("bin")
+
+    await drive.sync()
+
+    assert drive.names() == {"keep.txt"}
+
+
+async def test_an_empty_page_with_a_next_token_does_not_end_the_full_sync(drive: Harness) -> None:
+    for n in range(4):
+        my_file(drive.world, f"f{n}", f"doc-{n}.txt")
+    drive.world.empty_page_at = 1
+
+    await drive.sync()
+
+    assert drive.names() == {f"doc-{n}.txt" for n in range(4)}
+
+
+# --- change tracking ----------------------------------------------------------
+
+
+async def test_incremental_sync_applies_create_rename_edit_move_and_delete(drive: Harness) -> None:
+    drive.world.folder("dir-a", "A", parent=ROOT, owner=ME)
+    drive.world.folder("dir-b", "B", parent=ROOT, owner=ME)
+    my_file(drive.world, "f-rename", "old.txt", parent="dir-a")
+    my_file(drive.world, "f-edit", "edit.txt", parent="dir-a")
+    my_file(drive.world, "f-move", "move.txt", parent="dir-a")
+    my_file(drive.world, "f-delete", "delete.txt", parent="dir-a")
+    await drive.sync()
+    first_checkpoint = drive.checkpoint()
+
+    drive.world.rename("f-rename", "new.txt")
+    drive.world.edit("f-edit", b"new content")
+    drive.world.move("f-move", "dir-b")
+    drive.world.delete("f-delete")
+    my_file(drive.world, "f-new", "brand-new.txt", parent="dir-b")
+    await drive.sync()
+
+    assert drive.names() == {"A", "B", "new.txt", "edit.txt", "move.txt", "brand-new.txt"}
+    assert drive.records.records["f-move"].parent_external_record_id == "dir-b"
+    assert [r.external_record_id for r in drive.records.content_updates] == ["f-edit"]
+    assert drive.records.records["f-edit"].external_revision_id == "f-edit-rev2"
+    assert int(drive.checkpoint()) > int(first_checkpoint)
+
+
+async def test_trash_in_the_changes_feed_deletes_the_record(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    await drive.sync()
+
+    drive.world.trash("f1")
+    await drive.sync()
+
+    assert "f1" not in drive.records.records
+
+
+async def test_every_change_page_is_read_and_each_file_is_written_once(drive: Harness) -> None:
+    await drive.sync()
+    for n in range(5):
+        my_file(drive.world, f"n{n}", f"new-{n}.txt")
+    drive.world.rename("n0", "new-0-renamed.txt")
+
+    await drive.sync()
+
+    assert drive.names() == {"new-0-renamed.txt"} | {f"new-{n}.txt" for n in range(1, 5)}
+    written = [ext for batch in drive.records.new_record_batches for ext in batch]
+    assert sorted(written) == sorted(f"n{n}" for n in range(5))
+    assert len(drive.http.calls("GET", "/drive/v3/changes")) == 3
+
+
+async def test_a_second_run_with_no_changes_keeps_the_checkpoint_and_writes_nothing(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    await drive.sync()
+    checkpoint, batches = drive.checkpoint(), len(drive.records.new_record_batches)
+
+    await drive.sync()
+
+    assert drive.checkpoint() == checkpoint
+    assert len(drive.records.new_record_batches) == batches
+
+
+async def test_a_failed_change_page_does_not_advance_the_checkpoint(drive: Harness) -> None:
+    await drive.sync()
+    checkpoint = drive.checkpoint()
+    for n in range(4):
+        my_file(drive.world, f"n{n}", f"new-{n}.txt")
+    drive.http.fail("GET", "/drive/v3/changes", 500, "backendError", when=lambda r: ":" in r.query["pageToken"])
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    assert drive.checkpoint() == checkpoint
+
+    drive.http.clear_faults()
+    await drive.sync()
+    assert drive.names() == {f"new-{n}.txt" for n in range(4)}
+    assert int(drive.checkpoint()) > int(checkpoint)
+
+
+# --- rate limits --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("status", "reason"), [(429, "rateLimitExceeded"), (403, "userRateLimitExceeded"), (403, "rateLimitExceeded")])
+async def test_quota_errors_are_retried_with_backoff(drive: Harness, backoff_sleeps: list[float], status: int, reason: str) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    drive.http.fail("GET", "/drive/v3/files", status, reason, times=2)
+
+    await drive.sync()
+
+    assert drive.names() == {"one.txt"}
+    assert len(backoff_sleeps) == 2
+    assert backoff_sleeps[1] > 0
+
+
+async def test_a_quota_error_that_outlasts_the_retries_fails_the_run_without_a_checkpoint(drive: Harness, backoff_sleeps: list[float]) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    drive.http.fail("GET", "/drive/v3/files", 429, "rateLimitExceeded")
+
+    with pytest.raises(HttpError) as raised:
+        await drive.sync()
+
+    assert raised.value.resp.status == 429
+    assert len(backoff_sleeps) == 3
+    assert drive.checkpoint() is None
+
+
+async def test_a_permission_403_is_not_retried(drive: Harness, backoff_sleeps: list[float]) -> None:
+    drive.http.fail("GET", "/drive/v3/files", 403, "insufficientPermissions")
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+
+    assert backoff_sleeps == []
+
+
+# --- shared with me -----------------------------------------------------------
+
+
+async def test_items_shared_from_a_shared_drive_are_synced_as_read_with_their_folder_contents(drive: Harness) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-child", "inside.txt", parent="sd-folder")
+    drive.world.add_item("sd-hidden", "not-shared.txt", parent="sd-1")
+    drive.world.add_item("personal-share", "from-a-colleague.txt", parent="root-owner", owner="owner@example.com",
+                         perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+
+    await drive.sync()
+
+    assert drive.names() == {"Shared folder", "inside.txt", "from-a-colleague.txt"}
+    assert drive.records.permissions["sd-child"] == []
+    assert drive.records.records["sd-child"].inherit_permissions is True
+    assert drive.records.records["sd-child"].parent_external_record_id == "sd-folder"
+
+
+async def test_a_rate_limited_shared_folder_walk_fails_the_run_instead_of_skipping_its_contents(drive: Harness) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-child", "inside.txt", parent="sd-folder")
+    drive.http.fail("GET", "/drive/v3/files", 403, "userRateLimitExceeded", when=lambda r: "in parents" in r.query.get("q", ""))
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+
+    assert drive.checkpoint() is None
+
+
+async def test_a_daily_quota_error_walking_a_shared_folder_fails_the_run_instead_of_skipping_its_contents(drive: Harness) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-child", "inside.txt", parent="sd-folder")
+    drive.http.fail("GET", "/drive/v3/files", 403, "dailyLimitExceeded", times=1, when=lambda r: "in parents" in r.query.get("q", ""))
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    assert drive.checkpoint() is None
+
+    await drive.sync()
+    assert "inside.txt" in drive.names()
+
+
+@pytest.mark.parametrize("reason", ["sharingRateLimitExceeded", "someReasonDriveAddsLater", None, pytest.param(["insufficientFilePermissions", "dailyLimitExceeded"], id="refusal+dailyLimit")])
+async def test_a_403_walking_a_shared_folder_that_is_not_a_known_refusal_fails_the_run(drive: Harness, reason: Optional[str | list[str]]) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-child", "inside.txt", parent="sd-folder")
+    drive.http.fail("GET", "/drive/v3/files", 403, reason, times=1, when=lambda r: "in parents" in r.query.get("q", ""))
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    assert drive.checkpoint() is None
+
+    await drive.sync()
+    assert "inside.txt" in drive.names()
+
+
+async def test_a_shared_folder_whose_access_was_refused_mid_walk_is_skipped_and_the_rest_still_syncs(drive: Harness) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-file", "shared-file.txt", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.http.fail("GET", "/drive/v3/files", 403, "insufficientFilePermissions", when=lambda r: "in parents" in r.query.get("q", ""))
+
+    await drive.sync()
+
+    assert drive.names() == {"Shared folder", "shared-file.txt"}
+    assert drive.checkpoint() is not None
+
+
+async def test_a_shared_folder_that_vanished_mid_walk_is_skipped_and_the_rest_still_syncs(drive: Harness) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-file", "shared-file.txt", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.http.fail("GET", "/drive/v3/files", 404, "notFound", when=lambda r: "in parents" in r.query.get("q", ""))
+
+    await drive.sync()
+
+    assert drive.names() == {"Shared folder", "shared-file.txt"}
+    assert drive.checkpoint() is not None
+
+
+def shared_folder_world(world: DriveWorld) -> None:
+    world.add_user("owner@example.com")
+    world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    world.add_item("sd-child", "inside.txt", parent="sd-folder")
+    world.add_item("sd-file", "shared-file.txt", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    my_file(world, "mine", "mine.txt")
+
+
+def walking(folder_id: str) -> Callable[[ApiRequest], bool]:
+    return lambda r: f"'{folder_id}' in parents" in r.query.get("q", "")
+
+
+@pytest.mark.parametrize("reason", ["someReasonDriveAddsLater", None])
+async def test_a_shared_folder_refused_without_a_known_reason_is_skipped_on_the_fifth_run(
+    drive: Harness, caplog: pytest.LogCaptureFixture, reason: str | None
+) -> None:
+    shared_folder_world(drive.world)
+    drive.http.fail("GET", "/drive/v3/files", 403, reason, when=walking("sd-folder"))
+
+    for _ in range(4):
+        with pytest.raises(HttpError):
+            await drive.sync()
+        assert drive.checkpoint() is None
+
+    await drive.sync()
+
+    assert drive.checkpoint() is not None
+    assert drive.names() == {"mine.txt", "Shared folder", "shared-file.txt"}
+    stored = drive.sync_points.value(CHECKPOINT)
+    assert stored["skippedSharedFolders"] == ["sd-folder"]
+    assert stored["heldSharedFolders"] == []
+    assert "Skipping the contents of shared folder sd-folder" in caplog.text
+
+    drive.world.rename("mine", "renamed.txt")
+    await drive.sync()
+    assert "renamed.txt" in drive.names(), "the change feed runs once the checkpoint is saved"
+
+
+def second_shared_folder(world: DriveWorld) -> None:
+    world.folder("sd-folder-2", "Second shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    world.add_item("sd-child-2", "inside-2.txt", parent="sd-folder-2")
+
+
+async def runs_until_checkpoint(drive: Harness, limit: int = 30) -> int:
+    for attempt in range(1, limit + 1):
+        try:
+            await drive.sync()
+        except HttpError:
+            continue
+        return attempt
+    raise AssertionError(f"no checkpoint after {limit} runs")
+
+
+async def test_two_shared_folders_refused_without_a_known_reason_use_their_five_runs_together(drive: Harness) -> None:
+    shared_folder_world(drive.world)
+    second_shared_folder(drive.world)
+    for folder_id in ("sd-folder", "sd-folder-2"):
+        drive.http.fail("GET", "/drive/v3/files", 403, "someReasonDriveAddsLater", when=walking(folder_id))
+
+    assert await runs_until_checkpoint(drive) == 5
+
+    stored = drive.sync_points.value(CHECKPOINT)
+    assert stored["skippedSharedFolders"] == ["sd-folder", "sd-folder-2"]
+    assert stored["heldSharedFolders"] == []
+    assert {"Shared folder", "Second shared folder", "shared-file.txt", "mine.txt"} <= drive.names()
+
+
+async def test_a_shared_folder_at_the_limit_keeps_its_count_while_another_still_fails_the_walk(drive: Harness) -> None:
+    shared_folder_world(drive.world)
+    second_shared_folder(drive.world)
+    second_refused = {"on": False}
+    drive.http.fail("GET", "/drive/v3/files", 403, "someReasonDriveAddsLater", when=walking("sd-folder"))
+    drive.http.fail("GET", "/drive/v3/files", 403, "someReasonDriveAddsLater",
+                    when=lambda r: second_refused["on"] and walking("sd-folder-2")(r))
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    second_refused["on"] = True
+    for _ in range(4):
+        with pytest.raises(HttpError):
+            await drive.sync()
+
+    stored = drive.sync_points.value(CHECKPOINT)
+    assert drive.checkpoint() is None
+    assert stored["heldSharedFolders"] == ["sd-folder:5", "sd-folder-2:4"], "the skipped folder is not started over"
+    assert stored["skippedSharedFolders"] == ["sd-folder"]
+
+    await drive.sync()
+
+    assert drive.checkpoint() is not None
+    stored = drive.sync_points.value(CHECKPOINT)
+    assert stored["skippedSharedFolders"] == ["sd-folder", "sd-folder-2"]
+    assert stored["heldSharedFolders"] == [], "a later full sync starts every folder fresh"
+
+
+async def test_a_shared_folder_that_recovers_on_the_third_run_is_synced_and_its_count_cleared(drive: Harness) -> None:
+    shared_folder_world(drive.world)
+    drive.http.fail("GET", "/drive/v3/files", 403, "someReasonDriveAddsLater", times=2, when=walking("sd-folder"))
+
+    for _ in range(2):
+        with pytest.raises(HttpError):
+            await drive.sync()
+    assert drive.sync_points.value(CHECKPOINT)["heldSharedFolders"] == ["sd-folder:2"]
+
+    await drive.sync()
+
+    assert "inside.txt" in drive.names()
+    assert drive.checkpoint() is not None
+    assert drive.sync_points.value(CHECKPOINT)["heldSharedFolders"] == []
+
+
+# --- partial failures ---------------------------------------------------------
+
+
+async def test_one_unreadable_item_does_not_abort_the_sync(drive: Harness) -> None:
+    my_file(drive.world, "good-1", "good-1.txt")
+    my_file(drive.world, "bad", "bad.txt")
+    my_file(drive.world, "good-2", "good-2.txt")
+    drive.world.files["bad"].meta["createdTime"] = "not a timestamp"
+
+    await drive.sync()
+
+    assert drive.names() == {"good-1.txt", "good-2.txt"}
+    assert drive.incomplete, "a run that skipped an item is not reported as complete"
+    assert drive.checkpoint() is None, "nothing else would bring the skipped item back"
+
+
+async def test_a_database_failure_on_a_change_fails_the_run_and_keeps_the_checkpoint(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    await drive.sync()
+    checkpoint = drive.checkpoint()
+    drive.world.rename("f1", "renamed.txt")
+    drive.records.fail_writes_for.add("f1")
+
+    with pytest.raises(RuntimeError):
+        await drive.sync()
+
+    assert drive.checkpoint() == checkpoint
+
+
+# --- folder filter ------------------------------------------------------------
+
+
+async def test_folder_filter_syncs_only_the_selected_subtree(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.folder("pick-sub", "Picked sub", parent="pick", owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    my_file(drive.world, "in-2", "in-2.txt", parent="pick-sub")
+    my_file(drive.world, "out", "out.txt", parent=ROOT)
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "Picked sub", "in-1.txt", "in-2.txt"}
+
+
+
+async def test_a_selected_folder_id_that_does_not_exist_is_reported_to_the_user(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await drive.connector_()).notify = notify
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "in-1.txt"}
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
+
+async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(drive: Harness) -> None:
+    drive.world.hide_unreadable_parents = True
+    drive.world.add_user("owner@example.com")
+    drive.world.folder("their-parent", "Their projects", parent="root-owner", owner="owner@example.com")
+    drive.world.folder("pick", "Picked", parent="their-parent", owner="owner@example.com",
+                       perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("deep", "deep.txt", parent="pick", owner="owner@example.com")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert drive.records.records["pick"].parent_external_record_id is None, "Drive hides a parent I cannot open"
+
+    drive.world.share("their-parent", {"type": "user", "role": "reader", "emailAddress": ME})
+    await drive.sync()
+
+    parent = drive.records.records.get("their-parent")
+    assert parent is not None and not parent.is_placeholder and parent.record_name == "Their projects"
+    assert drive.records.records["pick"].parent_external_record_id == "their-parent"
+
+
+async def test_a_selected_shortcut_syncs_the_folder_it_points_to(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    my_file(drive.world, "out", "out.txt")
+    drive.world.add_shortcut("sc", "Link to Picked", parent=ROOT, owner=ME, target_id="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["sc"]})
+
+    await drive.sync()
+
+    assert {"Picked", "in-1.txt"} <= drive.names()
+    assert "out.txt" not in drive.names()
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_folder(drive: Harness) -> None:
+    drive.world.folder("new", "New folder", parent=ROOT, owner=ME)
+    drive.world.folder("nested", "nested folder 2", parent="new", owner=ME)
+    drive.world.folder("pick", "test", parent="nested", owner=ME)
+    drive.world.folder("sub-1", "subfolder 1", parent="pick", owner=ME)
+    drive.world.folder("sub-2", "subfolder 2", parent="sub-1", owner=ME)
+    my_file(drive.world, "deep", "deep.txt", parent="sub-2")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert {"New folder", "nested folder 2", "test"} <= drive.names()
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert {"New folder", "nested folder 2", "test", "subfolder 1", "subfolder 2", "deep.txt"} <= drive.names()
+    assert drive.records.deleted == []
+    assert drive.records.records["pick"].parent_external_record_id == "nested"
+    assert drive.records.records["nested"].parent_external_record_id == "new"
+
+
+@pytest.mark.parametrize("mime", [GDOC, GSHEET, GSLIDES])
+async def test_a_full_resync_writes_an_indexed_google_file_shared_since_as_a_metadata_update(
+    drive: Harness, mime: str
+) -> None:
+    # The full sync removes the links of every record it does not write, so a file whose
+    # version moved with no new content must still be written, without being re-indexed.
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=mime, content=b"doc body")
+    await drive.sync()
+    drive.records.records["doc"].indexing_status = ProgressStatus.COMPLETED.value
+    drive.world.share("doc", {"type": "user", "role": "reader", "emailAddress": "friend@example.com"})
+    batches_before = len(drive.records.new_record_batches)
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert "doc" in {r.external_record_id for r in drive.records.metadata_updates}
+    assert drive.records.content_updates == [], "a sharing change is not new content"
+    assert all("doc" not in batch for batch in drive.records.new_record_batches[batches_before:])
+    assert drive.records.records["doc"].indexing_status == ProgressStatus.COMPLETED.value
+    assert drive.records.records["doc"].external_revision_id == drive.world.files["doc"].meta["version"]
+
+
+async def test_a_full_resync_writes_an_edited_google_doc_as_new_content(drive: Harness) -> None:
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=GDOC, content=b"doc body")
+    await drive.sync()
+    drive.world.edit("doc", b"new body")
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert [r.external_record_id for r in drive.records.content_updates] == ["doc"]
+    assert "doc" not in {r.external_record_id for r in drive.records.metadata_updates}
+
+
+async def test_a_selected_folder_that_cannot_be_listed_keeps_its_subtree_records(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    for n in range(4):
+        my_file(drive.world, f"in-{n}", f"in-{n}.txt", parent="pick")
+    drive.world.folder("pick-sub", "Picked sub", parent="pick", owner=ME)
+    my_file(drive.world, "deep", "deep.txt", parent="pick-sub")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert "deep.txt" in drive.names()
+
+    drive.world.files["pick"].meta["capabilities"]["canListChildren"] = False
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert "deep.txt" in drive.names()
+
+
+async def test_a_file_moved_out_of_the_selected_folder_is_deleted(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "leaver", "leaver.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert "leaver.txt" in drive.names()
+
+    drive.world.move("leaver", ROOT)
+    await drive.sync()
+
+    assert "leaver" not in drive.records.records
+
+
+async def test_a_folder_moved_into_the_selected_folder_brings_its_contents(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.folder("outside", "Outside", parent=ROOT, owner=ME)
+    my_file(drive.world, "inner", "inner.txt", parent="outside")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert drive.names() == {"Picked"}
+
+    drive.world.move("outside", "pick")
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "Outside", "inner.txt"}
+
+
+async def test_a_transient_error_resolving_a_selected_folder_fails_the_run_instead_of_narrowing_it(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.folder("pick-sub", "Picked sub", parent="pick", owner=ME)
+    my_file(drive.world, "deep", "deep.txt", parent="pick-sub")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    drive.http.fail("GET", "/drive/v3/files/pick", 500, "backendError", times=4)
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    assert drive.checkpoint() is None
+
+    await drive.sync()
+    assert drive.names() == {"Picked", "Picked sub", "deep.txt"}
+
+
+@pytest.mark.parametrize("reason", ["dailyLimitExceeded", "quotaExceeded", "someReasonDriveAddsLater", pytest.param(["insufficientFilePermissions", "dailyLimitExceeded"], id="refusal+dailyLimit")])
+async def test_a_quota_or_unknown_403_on_a_selected_folder_fails_the_run_instead_of_narrowing_it(
+    drive: Harness, backoff_sleeps: list[float], reason: str | list[str]
+) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.folder("pick-sub", "Picked sub", parent="pick", owner=ME)
+    my_file(drive.world, "deep", "deep.txt", parent="pick-sub")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    drive.http.fail("GET", "/drive/v3/files/pick", 403, reason, times=1)
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    assert drive.checkpoint() is None
+
+    await drive.sync()
+    assert drive.names() == {"Picked", "Picked sub", "deep.txt"}
+
+
+async def test_a_selected_folder_the_account_is_refused_is_left_out_without_failing_the_run(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.add_user("owner@example.com")
+    drive.world.folder("walled", "Walled", parent="root-owner", owner="owner@example.com")
+    my_file(drive.world, "f", "kept.txt", parent="pick")
+    drive.world.add_item("w", "walled.txt", parent="walled", owner="owner@example.com")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "walled"]})
+    drive.http.fail("GET", "/drive/v3/files/walled", 403, "insufficientFilePermissions", times=1)
+
+    await drive.sync()
+
+    assert {"Picked", "kept.txt"} <= drive.names()
+    assert "walled.txt" not in drive.names()
+    assert drive.checkpoint() is not None
+
+
+async def test_a_selected_folder_that_no_longer_exists_does_not_fail_the_run(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "f", "kept.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "deleted-folder"]})
+
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "kept.txt"}
+    assert drive.checkpoint() is not None
+
+
+def two_selected_folders(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.folder("pick-sub", "Picked sub", parent="pick", owner=ME)
+    my_file(drive.world, "deep", "deep.txt", parent="pick-sub")
+    drive.world.folder("other", "Other", parent=ROOT, owner=ME)
+    drive.world.folder("other-sub", "Other sub", parent="other", owner=ME)
+    my_file(drive.world, "other-deep", "other-deep.txt", parent="other-sub")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "other"]})
+
+
+@pytest.mark.parametrize("reason", ["someReasonDriveAddsLater", None])
+async def test_a_selected_folder_refused_without_a_known_reason_is_left_out_on_the_fifth_run(
+    drive: Harness, caplog: pytest.LogCaptureFixture, reason: str | None
+) -> None:
+    two_selected_folders(drive)
+    drive.http.fail("GET", "/drive/v3/files/pick", 403, reason)
+
+    for _ in range(4):
+        with pytest.raises(HttpError):
+            await drive.sync()
+        assert drive.checkpoint() is None
+
+    await drive.sync()
+
+    assert drive.checkpoint() is not None
+    assert {"Other", "Other sub", "other-deep.txt"} <= drive.names()
+    assert "deep.txt" not in drive.names()
+    assert drive.sync_points.value(CHECKPOINT)["heldFilterFolders"] == ["pick:5"]
+    assert "Leaving selected folder pick out of this sync" in caplog.text
+
+    await drive.sync()
+    assert drive.checkpoint() is not None, "a folder already given up on does not fail later runs"
+
+
+async def test_two_selected_folders_refused_without_a_known_reason_use_their_five_runs_together(drive: Harness) -> None:
+    two_selected_folders(drive)
+    drive.world.folder("third", "Third", parent=ROOT, owner=ME)
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "other", "third"]})
+    drive.http.fail("GET", "/drive/v3/files/pick", 403, "someReasonDriveAddsLater")
+    drive.http.fail("GET", "/drive/v3/files/third", 403, None)
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+    assert drive.sync_points.value(CHECKPOINT)["heldFilterFolders"] == ["pick:1", "third:1"], "every refused seed is counted"
+
+    assert await runs_until_checkpoint(drive) == 4
+
+    assert {"Other", "Other sub", "other-deep.txt"} <= drive.names()
+    assert drive.sync_points.value(CHECKPOINT)["heldFilterFolders"] == ["pick:5", "third:5"]
+
+
+async def test_a_selected_folder_that_recovers_on_the_third_run_is_synced_and_its_count_cleared(drive: Harness) -> None:
+    two_selected_folders(drive)
+    drive.http.fail("GET", "/drive/v3/files/pick", 403, "someReasonDriveAddsLater", times=2)
+
+    for _ in range(2):
+        with pytest.raises(HttpError):
+            await drive.sync()
+    assert drive.sync_points.value(CHECKPOINT)["heldFilterFolders"] == ["pick:2"]
+
+    await drive.sync()
+
+    assert {"deep.txt", "other-deep.txt"} <= drive.names()
+    assert drive.sync_points.value(CHECKPOINT)["heldFilterFolders"] == []
+
+
+# --- tokens -------------------------------------------------------------------
+
+
+def refresh_grants(http: FakeGoogleHttp) -> list[dict[str, str]]:
+    return [t for t in http.token_requests if t.get("grant_type") == "refresh_token"]
+
+
+def saved_token(config: dict[str, Any], access_token: str, *, age: timedelta, lifetime_s: int = 3600) -> None:
+    """Put a token in settings the way the OAuth flow and the token refresher save one."""
+    config["credentials"].update(
+        access_token=access_token,
+        created_at=(datetime.now() - age).isoformat(),  # noqa: DTZ005 - OAuthToken saves local time
+        expires_in=lifetime_s,
+    )
+
+
+async def test_a_rotated_access_token_in_config_is_used_on_the_next_call(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    await drive.sync()
+    drive.http.accept_token("access-2", ME)
+    drive.config["credentials"]["access_token"] = "access-2"
+
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    last = drive.http.requests[-1]
+    assert last.headers["authorization"] == "Bearer access-2"
+    assert drive.names() == {"one.txt", "two.txt"}
+
+
+async def test_a_rejected_access_token_is_refreshed_once_and_the_call_retried(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    drive.config["credentials"]["access_token"] = "expired-token"
+    drive.http.accept_token("expired-token", ME)
+    await drive.connector_()
+    drive.http._token_owner.pop("expired-token")
+
+    await drive.sync()
+
+    assert drive.names() == {"one.txt"}
+    refreshes = refresh_grants(drive.http)
+    assert len(refreshes) == 1, f"{len(refreshes)} refreshes over {len(drive.http.requests)} requests"
+    assert refreshes[0]["refresh_token"] == "refresh-1"
+    assert refreshes[0]["client_id"] == "client-1"
+
+
+async def test_an_expired_saved_token_is_refreshed_once_for_the_whole_sync(drive: Harness) -> None:
+    for n in range(6):
+        my_file(drive.world, f"f{n}", f"file-{n}.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+
+    await drive.sync()
+
+    assert drive.names() == {f"file-{n}.txt" for n in range(6)}
+    refreshes = refresh_grants(drive.http)
+    assert len(refreshes) == 1, f"{len(refreshes)} refreshes over {len(drive.http.requests)} requests"
+    assert [r.path for r in drive.http.requests if r.identity is None] == []
+
+
+async def test_a_refreshed_token_is_saved_back_to_settings(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    scope = drive.config["credentials"]["scope"]
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+
+    await drive.sync()
+
+    saved = drive.config["credentials"]
+    issued = drive.http.requests[-1].headers["authorization"].removeprefix("Bearer ")
+    assert issued != "expired-token"
+    assert saved["access_token"] == issued
+    assert saved["refresh_token"] == "refresh-1"
+    assert saved["scope"] == scope
+    assert 3500 <= saved["expires_in"] <= 3600
+    assert datetime.now() - datetime.fromisoformat(saved["created_at"]) < timedelta(minutes=1)  # noqa: DTZ005
+    assert drive.config["auth"] == {"oauthConfigId": "oauth-app-1", "connectorScope": "personal"}
+
+    # A restarted connector signs in with the saved token and has nothing to refresh.
+    await drive.connector.cleanup()
+    drive.connector = None
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert drive.names() == {"one.txt", "two.txt"}
+    assert len(refresh_grants(drive.http)) == 1
+
+
+async def test_a_newer_token_saved_by_another_process_is_adopted(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    await drive.sync()
+    refreshes_before = len(refresh_grants(drive.http))
+    drive.http.accept_token("access-2", ME)
+    saved_token(drive.config, "access-2", age=timedelta(0), lifetime_s=7200)
+
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert drive.http.requests[-1].headers["authorization"] == "Bearer access-2"
+    assert len(refresh_grants(drive.http)) == refreshes_before
+    assert drive.config["credentials"]["access_token"] == "access-2"
+
+
+async def test_an_older_saved_token_does_not_replace_a_fresher_one_in_memory(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    await drive.sync()
+    fresh = drive.config["credentials"]["access_token"]
+    drive.http.accept_token("older-token", ME)
+    saved_token(drive.config, "older-token", age=timedelta(minutes=30))
+
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert drive.http.requests[-1].headers["authorization"] == f"Bearer {fresh}"
+    assert drive.config["credentials"]["access_token"] == fresh
+
+
+@pytest.mark.parametrize("first_seen_lifetime_s", [1800, 5400], ids=["older-than-memory", "newer-than-memory"])
+async def test_a_token_saved_while_the_check_waits_for_the_refresh_lock_is_used_at_once(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch, first_seen_lifetime_s: int
+) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    await drive.sync()
+    for token in ("first-seen-token", "winning-token"):
+        drive.http.accept_token(token, ME)
+    saved_token(drive.config, "first-seen-token", age=timedelta(0), lifetime_s=first_seen_lifetime_s)
+
+    real_lock = datasource_refresh.connector_refresh_lock
+    raced: list[str] = []
+
+    def lock_after_the_token_refresher_saved(connector_id: str) -> object:
+        if not raced:
+            raced.append(connector_id)
+            saved_token(drive.config, "winning-token", age=timedelta(0), lifetime_s=7200)
+        return real_lock(connector_id)
+
+    monkeypatch.setattr(datasource_refresh, "connector_refresh_lock", lock_after_the_token_refresher_saved)
+    requests_before = len(drive.http.requests)
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    sent = {r.headers["authorization"] for r in drive.http.requests[requests_before:]}
+    assert sent == {"Bearer winning-token"}
+    assert raced == [CONNECTOR_ID]
+    assert drive.config["credentials"]["access_token"] == "winning-token"
+    assert drive.names() == {"one.txt", "two.txt"}
+
+
+@pytest.mark.parametrize("first_seen_lifetime_s", [1800, 5400], ids=["older-than-memory", "newer-than-memory"])
+async def test_a_re_authentication_while_the_check_waits_for_the_transport_is_kept_and_used(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch, first_seen_lifetime_s: int
+) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    connector = await drive.connector_()
+    await drive.sync()
+    drive.http.accept_token("first-seen-token", ME)
+    drive.http.accept_token("reauth-token", ME)
+    drive.world.aliases["oauth:refresh-2"] = ME
+    saved_token(drive.config, "first-seen-token", age=timedelta(0), lifetime_s=first_seen_lifetime_s)
+
+    real_execute = connector.drive_data_source.execute
+    reauthenticated: list[bool] = []
+
+    async def execute(operation: Callable[[], object]) -> object:
+        # The OAuth callback writes settings without the refresh lock.
+        if getattr(operation, "__name__", "") == "reconcile" and not reauthenticated:
+            reauthenticated.append(True)
+            saved_token(drive.config, "reauth-token", age=timedelta(0))
+            drive.config["credentials"]["refresh_token"] = "refresh-2"
+            drive.config["oauth"] = {"used_codes": ["code-1"]}
+        return await real_execute(operation)
+
+    monkeypatch.setattr(connector.drive_data_source, "execute", execute)
+    requests_before = len(drive.http.requests)
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert reauthenticated == [True]
+    assert drive.config["credentials"]["access_token"] == "reauth-token"
+    assert drive.config["credentials"]["refresh_token"] == "refresh-2"
+    assert drive.config["oauth"] == {"used_codes": ["code-1"]}
+    sent = {r.headers["authorization"] for r in drive.http.requests[requests_before:]}
+    assert sent == {"Bearer reauth-token"}
+
+
+async def test_the_connection_test_fails_once_the_refresh_token_is_revoked(drive: Harness) -> None:
+    connector = await drive.connector_()
+    assert await connector.test_connection_and_access()
+
+    drive.http._token_owner.pop("access-1")
+    drive.http.revoked_refresh_tokens.add("refresh-1")
+
+    with pytest.raises(ConnectorInitError, match="sign in to Google again"):
+        await connector.test_connection_and_access()
+
+
+async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    await drive.connector_()
+    drive.http._token_owner.pop("access-1")
+    drive.http.revoked_refresh_tokens.add("refresh-1")
+
+    with pytest.raises(Exception, match="invalid_grant"):
+        await drive.sync()
+
+    assert drive.checkpoint() is None
+    assert drive.names() == set()
+
+
+# --- streaming ----------------------------------------------------------------
+
+
+async def _body(response: StreamingResponse) -> bytes:
+    return b"".join([chunk async for chunk in response.body_iterator])
+
+
+async def test_streaming_downloads_a_binary_file_and_exports_a_google_doc(drive: Harness) -> None:
+    my_file(drive.world, "bin", "report.txt", content=b"0123456789" * 5)
+    drive.world.add_item("doc", "Notes", parent=ROOT, owner=ME, mime=GDOC, content=b"doc body")
+    await drive.sync()
+    connector = await drive.connector_()
+
+    download = await connector.stream_record(drive.records.records["bin"])
+    export = await connector.stream_record(drive.records.records["doc"])
+
+    assert await _body(download) == b"0123456789" * 5
+    assert await _body(export) == b"exported:doc body"
+    assert drive.http.calls("GET", "/drive/v3/files/doc/export")[0].query["mimeType"].endswith("wordprocessingml.document")
+
+
+async def test_streaming_a_file_deleted_at_source_reports_not_found(drive: Harness) -> None:
+    my_file(drive.world, "gone", "gone.txt")
+    await drive.sync()
+    drive.world.delete("gone")
+    connector = await drive.connector_()
+
+    with pytest.raises(Exception) as raised:
+        await connector.stream_record(drive.records.records["gone"])
+
+    assert getattr(raised.value, "status_code", None) == 404
+
+
+async def test_reindex_refreshes_changed_records_and_republishes_unchanged_ones(drive: Harness) -> None:
+    drive.world.folder("d", "Docs", parent=ROOT, owner=ME)
+    my_file(drive.world, "same", "same.txt", parent="d")
+    my_file(drive.world, "changed", "changed.txt", parent="d")
+    await drive.sync()
+    drive.world.rename("changed", "changed-at-source.txt")
+    connector = await drive.connector_()
+
+    await connector.reindex_records([drive.records.records["same"], drive.records.records["changed"]])
+
+    assert drive.records.records["changed"].record_name == "changed-at-source.txt"
+    assert [r.external_record_id for r in drive.records.reindexed] == ["same", "changed"], \
+        "a rename is applied, and the file is re-queued too: reindex re-queues every record it is given"
+
+
+async def test_reindex_of_an_unchanged_file_at_the_top_of_my_drive_asks_for_a_reindex(drive: Harness) -> None:
+    my_file(drive.world, "top", "top.txt")
+    await drive.sync()
+    connector = await drive.connector_()
+
+    await connector.reindex_records([drive.records.records["top"]])
+
+    assert [r.external_record_id for r in drive.records.reindexed] == ["top"]
+
+
+async def test_folders_are_recorded_as_folders(drive: Harness) -> None:
+    drive.world.folder("d", "Docs", parent=ROOT, owner=ME)
+    my_file(drive.world, "f", "a.txt", parent="d")
+
+    await drive.sync()
+
+    assert drive.records.records["d"].mime_type == MimeTypes.FOLDER.value, "stored as text/directory, not Google's folder type"
+    assert drive.records.records["d"].is_file is False
+    assert drive.records.records["f"].parent_external_record_id == "d"
+    assert drive.records.records["f"].extension == "txt"
+
+
+# --- shared drives, shortcuts, export and cleanup ----------------------------
+
+
+async def test_the_connecting_account_is_registered_from_about(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+
+    await drive.sync()
+
+    assert drive.records.linked_authenticators == [
+        (CONNECTOR_ID, "user-1", ME, drive.world.users[ME].permission_id)
+    ]
+
+
+async def test_a_file_shared_out_by_the_user_stays_indexed_when_shared_indexing_is_off(drive: Harness) -> None:
+    drive.config["filters"] = {
+        "indexing": {"values": {"shared": {"operator": "is", "type": "boolean", "value": False}}}
+    }
+    my_file(
+        drive.world,
+        "mine",
+        "mine.txt",
+        perms=[{"type": "user", "role": "reader", "emailAddress": "other@example.com"}],
+    )
+    drive.world.add_user("owner@example.com")
+    drive.world.add_item(
+        "theirs",
+        "theirs.txt",
+        parent="root-owner",
+        owner="owner@example.com",
+        perms=[{"type": "user", "role": "reader", "emailAddress": ME}],
+    )
+
+    await drive.sync()
+
+    assert drive.records.records["mine"].indexing_status != "AUTO_INDEX_OFF"
+    assert drive.records.permissions["mine"] == []
+    assert drive.records.records["theirs"].indexing_status == "AUTO_INDEX_OFF"
+    assert drive.records.permissions["theirs"] == []
+    assert drive.records.records["theirs"].inherit_permissions is True
+
+
+async def test_a_member_shared_drive_syncs_as_its_own_group_and_leaves_when_membership_ends(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+
+    await drive.sync()
+
+    assert drive.records.record_groups["sd-1"].name == "Engineering"
+    assert [p.type for p in drive.records.record_group_permissions["sd-1"]] == [PermissionType.WRITE]
+    assert "spec.txt" in drive.names()
+    assert drive.records.permissions["spec"] == [], "the file takes the user's role from the drive's group"
+    assert drive.records.records["spec"].inherit_permissions is True
+    assert drive.records.records["spec"].external_record_group_id == "sd-1"
+
+    drive.world.add_item("later", "later.txt", parent="sd-1")
+    await drive.sync()
+    assert "later.txt" in drive.names()
+
+    drive.world.drives["sd-1"]["members"].pop(ME)
+    await drive.sync()
+
+    assert "sd-1" not in drive.records.record_groups
+    assert "spec.txt" not in drive.names()
+    assert "later.txt" not in drive.names()
+
+
+async def test_an_incomplete_shared_drive_listing_does_not_remove_the_drives_it_left_out(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+    await drive.sync()
+    assert "spec.txt" in drive.names()
+
+    connector = await drive.connector_()
+    monkeypatch.setattr(connector, "_list_member_drives", AsyncMock(return_value=([], False)))
+    await drive.sync()
+
+    assert "sd-1" in drive.records.record_groups
+    assert "spec.txt" in drive.names()
+    stored = drive.sync_points.value("/member_shared_drives")
+    assert stored is not None and stored["driveIds"] == ["sd-1"]
+
+
+async def test_a_rate_limited_tracked_folder_in_a_member_drive_fails_the_drive_without_a_checkpoint(
+    drive: Harness, backoff_sleeps: list[float]
+) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("pick", "Picked", parent="sd-1")
+    drive.world.add_item("spec", "spec.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    drive.http.fail(
+        "GET", "/drive/v3/files/pick", 403, "rateLimitExceeded",
+        when=lambda r: "shortcutDetails" in r.query.get("fields", ""),
+    )
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+
+    assert drive.sync_points.value("/drives/sd-1") is None
+
+
+async def test_a_rate_limited_shortcut_target_fails_the_run_without_a_checkpoint(
+    drive: Harness, backoff_sleeps: list[float]
+) -> None:
+    # Two files fill the first page, so the shortcut on the next page has to fetch its target.
+    my_file(drive.world, "target", "Target.txt")
+    my_file(drive.world, "filler", "filler.txt")
+    drive.world.add_shortcut("sc", "Link", parent=ROOT, owner=ME, target_id="target")
+    drive.http.fail("GET", "/drive/v3/files/target", 403, "rateLimitExceeded")
+
+    with pytest.raises(HttpError):
+        await drive.sync()
+
+    assert drive.checkpoint() is None
+
+
+async def test_a_folder_shortcut_into_a_shared_drive_the_user_is_not_in_lists_its_contents(drive: Harness) -> None:
+    drive.world.add_user("owner@example.com")
+    drive.world.add_drive("sd-1", "Team", {"owner@example.com": "organizer"})
+    drive.world.folder("sd-folder", "Shared folder", parent="sd-1", perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("sd-child", "inside.txt", parent="sd-folder")
+    drive.world.add_shortcut("sc", "Link", parent=ROOT, owner=ME, target_id="sd-folder")
+
+    await drive.sync()
+
+    assert {"Shared folder", "inside.txt"} <= drive.names()
+    assert drive.checkpoint() is not None
+
+
+async def test_a_failed_drive_lookup_does_not_narrow_a_selected_member_drive_folder(
+    drive: Harness, backoff_sleeps: list[float]
+) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("pick", "Picked", parent="sd-1")
+    drive.world.add_item("spec", "spec.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    drive.http.fail(
+        "GET", "/drive/v3/files/pick", 403, "rateLimitExceeded",
+        when=lambda r: r.query.get("fields") == "driveId",
+    )
+
+    await drive.sync()
+
+    assert "spec.txt" in drive.names()
+
+
+async def test_an_incomplete_member_drive_listing_keeps_that_drives_changes_out_of_my_drive(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+    await drive.sync()
+    assert drive.records.records["spec"].external_record_group_id == "sd-1"
+
+    connector = await drive.connector_()
+    monkeypatch.setattr(connector, "_list_member_drives", AsyncMock(return_value=([], False)))
+    drive.world.rename("spec", "spec-v2.txt")
+    await drive.sync()
+
+    assert drive.records.records["spec"].external_record_group_id == "sd-1"
+
+
+async def test_an_incomplete_listing_of_a_folder_entering_scope_keeps_the_checkpoint(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    drive.world.folder("outside", "Outside", parent=ROOT, owner=ME)
+    my_file(drive.world, "inner", "inner.txt", parent="outside")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    before = drive.checkpoint()
+
+    drive.world.move("outside", "pick")
+    drive.world.incomplete_search_when = lambda r: "'outside' in parents" in r.query.get("q", "")
+    with pytest.raises(GoogleDriveError):
+        await drive.sync()
+    assert drive.checkpoint() == before
+
+    drive.world.incomplete_search_when = None
+    await drive.sync()
+    assert "inner.txt" in drive.names()
+
+
+async def test_an_incomplete_subfolder_expansion_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("pick", "Picked", parent="sd-1")
+    drive.world.folder("sub", "Sub", parent="pick")
+    drive.world.add_item("deep", "deep.txt", parent="sub")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    drive.world.incomplete_search_when = lambda r: (
+        r.query.get("q", "").startswith("mimeType=") and "'pick' in parents" in r.query.get("q", "")
+    )
+
+    with pytest.raises(GoogleDriveError):
+        await drive.sync()
+    assert drive.checkpoint() is None
+
+    drive.world.incomplete_search_when = None
+    await drive.sync()
+    assert "deep.txt" in drive.names()
+
+
+@pytest.mark.parametrize("missing", ["emailAddress", "permissionId"])
+async def test_a_user_lookup_missing_an_identity_field_keeps_my_drive_records(drive: Harness, missing: str) -> None:
+    my_file(drive.world, "mine", "mine.txt")
+    await drive.sync()
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+    drive.world.add_item("plan", "plan.txt", parent="sd-1")
+    me = drive.world.users[ME]
+
+    def about(req: ApiRequest) -> object:
+        user = {"displayName": me.name, "emailAddress": me.email, "permissionId": me.permission_id}
+        # Only the My Drive sync's lookup is partial; storageQuota marks the run-level one.
+        if "storageQuota" not in req.query.get("fields", ""):
+            user.pop(missing)
+        return {"user": user, "storageQuota": {}}
+
+    drive.http.route("GET", "/drive/v3/about", about)
+    await drive.sync()
+
+    assert {"mine.txt", "spec.txt", "plan.txt"} <= drive.names()
+
+
+async def test_a_member_drive_folder_filter_walks_each_folder_once(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("pick", "Picked", parent="sd-1")
+    # Sorts before its parent, so a walk over every tracked folder reached it first.
+    drive.world.folder("a-sub", "A sub", parent="pick")
+    drive.world.add_item("deep", "deep.txt", parent="a-sub")
+    drive.world.folder("z-sub", "Z sub", parent="pick")
+    drive.world.add_item("z-file", "z.txt", parent="z-sub")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "z-sub"]})
+
+    await drive.sync()
+
+    assert {"Picked", "A sub", "deep.txt", "Z sub", "z.txt"} <= drive.names()
+    writes = [rid for batch in drive.records.new_record_batches for rid in batch]
+    assert writes.count("a-sub") == 1
+    assert writes.count("z-sub") == 1
+    assert drive.http.calls("GET", "/drive/v3/files/a-sub") == []
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_member_drive_folder(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("new", "New folder", parent="sd-1")
+    drive.world.folder("nested", "nested folder 2", parent="new")
+    drive.world.folder("pick", "test", parent="nested")
+    drive.world.folder("sub-1", "subfolder 1", parent="pick")
+    drive.world.add_item("deep", "deep.txt", parent="sub-1")
+    my_file(drive.world, "mine", "mine.txt")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert {"New folder", "nested folder 2", "test"} <= drive.names()
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert {"New folder", "nested folder 2", "test", "subfolder 1", "deep.txt"} <= drive.names()
+    assert drive.records.deleted == []
+    assert drive.records.records["pick"].parent_external_record_id == "nested"
+    assert drive.records.records["nested"].parent_external_record_id == "new"
+    assert {drive.records.records[i].external_record_group_id for i in ("new", "nested")} == {"sd-1"}
+
+
+async def test_member_drive_changes_follow_the_folder_filter(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("pick", "Picked", parent="sd-1")
+    drive.world.folder("other", "Other", parent="sd-1")
+    drive.world.add_item("leaver", "leaver.txt", parent="pick")
+    drive.world.folder("arrival", "Arrival", parent="other")
+    drive.world.add_item("deep", "deep.txt", parent="arrival")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert "leaver.txt" in drive.names()
+    assert "deep.txt" not in drive.names()
+
+    drive.world.move("leaver", "other")
+    drive.world.move("arrival", "pick")
+    await drive.sync()
+
+    assert "leaver" not in drive.records.records
+    assert {"Arrival", "deep.txt"} <= drive.names()
+
+
+async def test_a_left_shared_drive_whose_records_cannot_be_removed_is_retried_next_run(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+    await drive.sync()
+    drive.world.drives["sd-1"]["members"].pop(ME)
+    remove = drive.records.on_records_deleted_cascade
+    monkeypatch.setattr(
+        drive.records,
+        "on_records_deleted_cascade",
+        AsyncMock(return_value={"success": True, "failed_count": 1, "failed_records": ["spec"]}),
+    )
+
+    await drive.sync()
+
+    assert "sd-1" in drive.records.record_groups
+    assert drive.sync_points.value("/drives/sd-1") is not None
+    stored = drive.sync_points.value("/member_shared_drives")
+    assert stored is not None and stored["driveIds"] == ["sd-1"]
+
+    monkeypatch.setattr(drive.records, "on_records_deleted_cascade", remove)
+    await drive.sync()
+
+    assert "sd-1" not in drive.records.record_groups
+    assert "spec.txt" not in drive.names()
+
+
+async def test_a_google_doc_named_like_source_code_is_stored_as_docx(drive: Harness) -> None:
+    drive.world.add_item("doc", "script.py", parent=ROOT, owner=ME, mime=GDOC, content=b"doc body")
+
+    await drive.sync()
+
+    assert drive.records.records["doc"].extension == "docx"
+    assert drive.records.records["doc"].indexing_status != "AUTO_INDEX_OFF"
+    connector = await drive.connector_()
+    export = await connector.stream_record(drive.records.records["doc"])
+    assert await _body(export) == b"exported:doc body"
+
+
+async def test_a_form_stays_visible_and_cannot_be_exported(drive: Harness) -> None:
+    from fastapi import HTTPException
+
+    drive.world.add_item(
+        "form",
+        "Survey",
+        parent=ROOT,
+        owner=ME,
+        mime="application/vnd.google-apps.form",
+        content=b"",
+    )
+
+    await drive.sync()
+
+    assert drive.records.records["form"].indexing_status == "AUTO_INDEX_OFF"
+    connector = await drive.connector_()
+    with pytest.raises(HTTPException) as raised:
+        await connector.stream_record(drive.records.records["form"])
+    assert raised.value.status_code == 415
+
+
+async def test_a_shortcut_target_is_synced_once_and_a_folder_shortcut_cycle_ends(drive: Harness) -> None:
+    my_file(drive.world, "target", "Target.txt", content=b"target-bytes")
+    drive.world.add_shortcut("sc", "Link", parent=ROOT, owner=ME, target_id="target")
+    drive.world.folder("folder-a", "A", parent=ROOT, owner=ME)
+    drive.world.add_shortcut("sc-folder", "Into A", parent=ROOT, owner=ME, target_id="folder-a")
+    drive.world.add_shortcut("sc-back", "Back", parent="folder-a", owner=ME, target_id="sc-folder")
+    my_file(drive.world, "inside", "inside.txt", parent="folder-a")
+
+    await drive.sync()
+
+    assert "Link" not in drive.names()
+    assert "Into A" not in drive.names()
+    assert "Back" not in drive.names()
+    assert {"Target.txt", "A", "inside.txt"} <= drive.names()
+    assert [batch for batch in drive.records.new_record_batches if "target" in batch].count(["target"]) <= 1
+    written = [ext for batch in drive.records.new_record_batches for ext in batch]
+    assert written.count("target") == 1
+    assert "sc" not in written
+
+
+async def test_a_doc_over_the_export_limit_streams_through_export_links(drive: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    drive.world.add_item("big", "Big notes", parent=ROOT, owner=ME, mime=GDOC, content=b"huge")
+    drive.world.files["big"].export_too_large = True
+    await drive.sync()
+    seen: dict[str, str] = {}
+
+    class _Content:
+        async def iter_chunked(self, _size: int):
+            yield b"via-export-link"
+
+    class _Response:
+        status = 200
+        headers: dict[str, str] = {}
+        closed = False
+        content = _Content()
+
+        async def release(self) -> None:
+            self.closed = True
+
+    class _Session:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def get(self, url: str, headers: dict[str, str] | None = None, allow_redirects: bool = True) -> _Response:
+            seen["url"] = url
+            seen["auth"] = (headers or {}).get("Authorization", "")
+            assert allow_redirects is False
+            return _Response()
+
+    monkeypatch.setattr(
+        "app.connectors.sources.google.drive.utils.drive_export.aiohttp.ClientSession",
+        _Session,
+    )
+    connector = await drive.connector_()
+    body = await _body(await connector.stream_record(drive.records.records["big"]))
+
+    assert body == b"via-export-link"
+    assert seen["url"].startswith("https://docs.google.com/")
+    assert seen["auth"].startswith("Bearer ")
+
+
+async def test_a_full_resync_drops_files_deleted_in_drive(drive: Harness) -> None:
+    for n in range(3):
+        my_file(drive.world, f"f{n}", f"f{n}.txt")
+    await drive.sync()
+    drive.world.delete("f0")
+    drive.sync_points.sync_points.clear()
+
+    await drive.sync()
+
+    assert drive.names() == {"f1.txt", "f2.txt"}
+
+
+async def test_a_full_resync_removes_an_unlisted_folder_but_keeps_the_files_it_listed_inside(drive: Harness) -> None:
+    drive.world.folder("old-dir", "Old", parent=ROOT, owner=ME)
+    my_file(drive.world, "inside", "inside.txt", parent="old-dir")
+    for n in range(3):
+        my_file(drive.world, f"f{n}", f"f{n}.txt")
+    await drive.sync()
+    drive.world.files["old-dir"].meta["trashed"] = True
+    drive.sync_points.sync_points.clear()
+
+    await drive.sync()
+
+    assert "Old" not in drive.names()
+    assert "inside.txt" in drive.names()
+
+
+async def test_stale_cleanup_refuses_to_delete_more_than_half_the_records(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    my_file(drive.world, "also", "also.txt")
+    await drive.sync()
+    template = drive.records.records["keep"]
+    for n in range(3):
+        drive.records.records[f"ghost-{n}"] = template.model_copy(update={
+            "id": f"ghost-{n}",
+            "external_record_id": f"ghost-{n}",
+            "record_name": f"ghost-{n}.txt",
+        })
+    drive.sync_points.sync_points.clear()
+
+    await drive.sync()
+
+    assert all(f"ghost-{n}" in drive.records.records for n in range(3))
+    assert {"keep.txt", "also.txt"} <= drive.names()
+
+
+async def test_an_incomplete_listing_does_not_delete_records_it_did_not_see(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    my_file(drive.world, "also", "also.txt")
+    await drive.sync()
+    template = drive.records.records["keep"]
+    drive.records.records["ghost-1"] = template.model_copy(update={
+        "id": "ghost-1",
+        "external_record_id": "ghost-1",
+        "record_name": "ghost.txt",
+    })
+    drive.sync_points.sync_points.clear()
+    drive.world.incomplete_search = True
+
+    await drive.sync()
+
+    assert "ghost-1" in drive.records.records
+    assert {"keep.txt", "also.txt"} <= drive.names()
+
+
+async def test_an_incomplete_listing_saves_no_checkpoint_so_the_next_run_lists_again(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    drive.world.incomplete_search = True
+
+    await drive.sync()
+
+    assert "keep.txt" in drive.names()
+    assert drive.checkpoint() is None
+    drive.world.incomplete_search = False
+    await drive.sync()
+    assert drive.checkpoint() is not None
+
+
+async def test_an_incomplete_shared_with_me_listing_saves_no_checkpoint(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    drive.world.incomplete_search_when = lambda r: "sharedWithMe" in r.query.get("q", "")
+
+    await drive.sync()
+
+    assert "keep.txt" in drive.names()
+    assert drive.checkpoint() is None
+
+
+async def test_an_incomplete_member_drive_listing_saves_no_drive_checkpoint(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+    drive.world.incomplete_search_when = lambda r: r.query.get("driveId") == "sd-1"
+
+    await drive.sync()
+
+    assert "spec.txt" in drive.names()
+    assert drive.sync_points.value("/drives/sd-1") is None
+    assert drive.checkpoint() is not None
+
+
+async def test_an_incomplete_folder_listing_in_a_member_drive_saves_no_drive_checkpoint(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("pick", "Picked", parent="sd-1")
+    drive.world.add_item("spec", "spec.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    drive.world.incomplete_search_when = lambda r: (
+        r.query.get("q", "").startswith("trashed=false") and "'pick' in parents" in r.query.get("q", "")
+    )
+
+    await drive.sync()
+
+    assert "spec.txt" in drive.names()
+    assert drive.sync_points.value("/drives/sd-1") is None
+    drive.world.incomplete_search_when = None
+    await drive.sync()
+    assert drive.sync_points.value("/drives/sd-1") is not None
+

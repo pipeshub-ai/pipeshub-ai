@@ -36,6 +36,10 @@ class TestGetDownloadUrl:
         url = await broker.get_download_url(org_id=ORG, document_id="doc-1")
         assert url == "https://blob.example/download/doc-1"
 
+    async def test_returns_none_when_storage_cannot_sign(self) -> None:
+        broker = SignedUrlBroker(FakeBlobStore(signs_urls=False), MAX_BYTES)
+        assert await broker.get_download_url(org_id=ORG, document_id="doc-1") is None
+
 
 class TestGetUploadGrant:
     async def test_issues_grant_within_size_cap(self) -> None:

@@ -26,6 +26,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
+from app.connectors.core.base.sync_point.sync_point import FailedItems
 from app.models.entities import Record, RecordGroupType, RecordType, PullRequestRecord
 from app.models.blocks import (
     Block,
@@ -39,11 +40,13 @@ from app.models.blocks import (
     GroupType,
     IndexRange,
 )
-from app.utils.time_conversion import parse_timestamp, string_to_datetime
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
+from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, string_to_datetime
 
 from app.models.blocks import wire_block_group_parent_children
 
 from .common.utils import parse_item_id_from_url
+from .issues import count_failed_work_item
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
@@ -76,89 +79,113 @@ class MergeRequestsSync:
         updated_before = filter_before
         created_after, created_before = c.datetime_range_from_sync_filter("created")
 
-        prs_res = await c.runtime.ds_call(
+        prs_res = await c.listing.list(
             c.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
             updated_before=updated_before,
             created_after=created_after,
             created_before=created_before,
-            order_by=GitlabLiterals.UPDATED_AT.value,
-            sort="asc",
-            get_all=True,
         )
         if not prs_res.success:
             self.logger.error("Error fetching merge requests for project %s: %s", project_id, prs_res.error)
-            return
-        if not prs_res.data:
-            self.logger.debug("No merge requests found for project %s", project_id)
+            c.note_failed_read(f"merge requests of project {project_id}", prs_res)
             return
 
-        all_prs = prs_res.data
+        all_prs = prs_res.data or []
         self.logger.info("Fetched %s merge requests for project %s; processing in batches", len(all_prs), project_id)
 
         # Checkpoint advancement is deferred to the end of the sweep — see
         # ``IssuesSync.process_new_records``.
         watermarks: dict[str, int] = {}
+        failed = FailedItems()
         for i in range(0, len(all_prs), c.batch_size):
-            batch_records = await self._build_pr_records(all_prs[i : i + c.batch_size])
+            batch_records = await self._build_pr_records(all_prs[i : i + c.batch_size], failed)
             if not await c.issues.process_new_records(batch_records, watermarks):
                 self.logger.warning(
                     "Merge request batch failed for project %s at offset %s; stopping so the "
                     "checkpoint stays behind the failure instead of skipping past it.",
                     project_id, i,
                 )
+                c.note_sync_problem(f"merge requests of project {project_id}: a batch could not be stored")
                 return
+        if failed.count:
+            self.logger.warning(
+                "%s merge request(s) in project %s could not be fully synced; the checkpoint "
+                "stays before the earliest one so the next sync retries them.",
+                failed.count, project_id,
+            )
+            c.note_sync_problem(f"{failed.count} merge request(s) of project {project_id} could not be synced")
         for group_id, last_sync_time in watermarks.items():
-            await c.issues._update_sync_checkpoint(group_id, last_sync_time)
+            await c.issues._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
+        await c.deleted_merge_requests.reconcile(
+            project_id, listed=all_prs,
+            listed_everything=since_dt is None and updated_before is None,
+            created_after=created_after, created_before=created_before,
+        )
 
     # ------------------------------------------------------------------
     # Record building
     # ------------------------------------------------------------------
 
-    async def _build_pr_records(self, prs_batch: list[Any]) -> list[RecordUpdate]:
-        """Build PullRequestRecord + attachment records from a batch of GitLab MRs."""
-        c = self.c
+    async def _build_pr_records(
+        self, prs_batch: list[Any], failed: FailedItems | None = None
+    ) -> list[RecordUpdate]:
+        """Build PullRequestRecord + attachment records from a batch of GitLab MRs.
+
+        A merge request that cannot be built is counted in ``failed`` so the caller
+        keeps the checkpoint before it; the rest of the batch still syncs.
+        """
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
         mrs_enabled = self._merge_requests_indexing_enabled()
 
         for pr in prs_batch:
-            record_update = await self._process_mr_to_pull_request(pr)
+            try:
+                record_update = await self._process_mr_to_pull_request(pr)
+            except Exception:  # already logged by the mapper
+                count_failed_work_item(failed, pr)
+                continue
             if not record_update:
+                count_failed_work_item(failed, pr)
                 continue
             if not mrs_enabled:
                 record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
             record_updates_batch.append(record_update)
 
-            # Description attachments
-            markdown_content_raw: str = getattr(pr, "description", "") or ""
-            attachments, _ = await c.attachments.parse_gitlab_uploads(markdown_content_raw)
-            if attachments:
-                file_record_updates = await c.attachments.make_file_records_from_list(
-                    attachments=attachments, record=record_update.record
+            try:
+                attachment_records = await self._mr_attachment_records(pr, record_update.record)
+            except Exception as e:
+                self.logger.warning(
+                    "Could not collect attachments of merge request %s in project %s; it will be retried: %s",
+                    getattr(pr, "iid", "?"), getattr(pr, "project_id", "?"), e,
                 )
-                if file_record_updates:
-                    if not mrs_enabled:
-                        for ru in file_record_updates:
-                            ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                    record_updates_batch.extend(file_record_updates)
-                    attachments_count += len(file_record_updates)
-
-            # Note attachments follow the parent MR's indexing flag
-            attachment_records = await c.attachments.make_files_records_from_notes_mr(
-                pr, record_update.record
-            )
-            if attachment_records:
-                if not mrs_enabled:
-                    for ru in attachment_records:
-                        ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                record_updates_batch.extend(attachment_records)
-                attachments_count += len(attachment_records)
+                count_failed_work_item(failed, pr)
+                continue
+            # Attachments follow the parent MR's indexing flag
+            if not mrs_enabled:
+                for ru in attachment_records:
+                    ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            record_updates_batch.extend(attachment_records)
+            attachments_count += len(attachment_records)
 
         if attachments_count:
             self.logger.debug("Added %s attachments for merge requests batch", attachments_count)
         return record_updates_batch
+
+    async def _mr_attachment_records(self, pr: object, record: Record) -> list[RecordUpdate]:
+        """File records for uploads linked from a merge request's description and its comments."""
+        c = self.c
+        records: list[RecordUpdate] = []
+        markdown_content_raw: str = getattr(pr, "description", "") or ""
+        attachments, _ = await c.attachments.parse_gitlab_uploads(markdown_content_raw)
+        if attachments:
+            records.extend(
+                await c.attachments.make_file_records_from_list(attachments=attachments, record=record)
+                or []
+            )
+        records.extend(await c.attachments.make_files_records_from_notes_mr(pr, record) or [])
+        return records
 
     async def _process_mr_to_pull_request(self, pr: Any) -> RecordUpdate | None:
         """Map a single GitLab MR to a PullRequestRecord RecordUpdate."""
@@ -209,6 +236,8 @@ class MergeRequestsSync:
                 assignee=assignee_list,
                 merged_by=merged_by,
                 review_name=reviewer_names,
+                merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
+                closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
             )
             return RecordUpdate(
                 record=merge_request_record,
@@ -320,7 +349,7 @@ class MergeRequestsSync:
                 sub_type=BlockSubType.COMMIT.value,
                 weburl=commit_web_url,
                 format=DataFormat.MARKDOWN,
-                data=commit_message,
+                data=redact_secrets(commit_message or "").text,
                 source_id=commit_id,
                 name=commit_title,
                 source_creation_date=string_to_datetime(commit_committed_date),

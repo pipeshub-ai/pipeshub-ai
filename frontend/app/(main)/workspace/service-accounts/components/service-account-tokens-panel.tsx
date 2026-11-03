@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { asArray } from '@/lib/utils/safe';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   Badge,
   Box,
@@ -17,7 +18,11 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConfirmationDialog, FormField, WorkspaceRightPanel } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceTokensApi } from '../api';
-import type { ServiceAccount, ServiceToken } from '../types';
+import type {
+  ServiceAccount,
+  ServiceToken,
+  ServiceTokenScopeItem,
+} from '../types';
 
 /**
  * A token within this many days of expiry is flagged, so the rotation happens
@@ -27,6 +32,16 @@ const EXPIRING_SOON_DAYS = 14;
 
 const EXPIRY_OPTIONS = [30, 90, 365];
 const DEFAULT_EXPIRY_DAYS = 90;
+/** The longest lifetime the server accepts for a service account token. */
+const MAX_EXPIRY_DAYS = 365;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A whole number of days the server will accept, or null. */
+function parseCustomDays(value: string): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const days = Number(value.trim());
+  return days >= 1 && days <= MAX_EXPIRY_DAYS ? days : null;
+}
 
 const CREDENTIAL_MONO: React.CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -35,7 +50,9 @@ const CREDENTIAL_MONO: React.CSSProperties = {
 
 function daysUntil(iso: string): number {
   const ms = new Date(iso).getTime() - Date.now();
-  return Math.floor(ms / (24 * 60 * 60 * 1000));
+  // Rounded up, so a token minted for 7 days reads 7 rather than 6, and one
+  // with hours left is not shown as having none; zero or less means expired.
+  return Math.ceil(ms / DAY_MS);
 }
 
 function formatDate(value: string | undefined, locale?: string): string | null {
@@ -73,14 +90,15 @@ export function ServiceAccountTokensPanel({
   const addToast = useToastStore((s) => s.addToast);
 
   const [tokens, setTokens] = useState<ServiceToken[]>([]);
-  const [availableScopes, setAvailableScopes] = useState<string[]>([]);
+  const [availableScopes, setAvailableScopes] = useState<ServiceTokenScopeItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const [isMinting, setIsMinting] = useState(false);
   const [showMintForm, setShowMintForm] = useState(false);
   const [tokenName, setTokenName] = useState('');
   const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
-  const [expiryDays, setExpiryDays] = useState<number>(DEFAULT_EXPIRY_DAYS);
+  const [expiryChoice, setExpiryChoice] = useState<number | 'custom'>(DEFAULT_EXPIRY_DAYS);
+  const [customDays, setCustomDays] = useState('');
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<ServiceToken | null>(null);
@@ -114,7 +132,8 @@ export function ServiceAccountTokensPanel({
       setIssuedToken(null);
       setTokenName('');
       setSelectedScopes([]);
-      setExpiryDays(DEFAULT_EXPIRY_DAYS);
+      setExpiryChoice(DEFAULT_EXPIRY_DAYS);
+      setCustomDays('');
       setCopied(false);
       setRevokeTarget(null);
       return;
@@ -130,8 +149,10 @@ export function ServiceAccountTokensPanel({
     );
   }, []);
 
+  const expiryDays = expiryChoice === 'custom' ? parseCustomDays(customDays) : expiryChoice;
+
   const handleMint = useCallback(async () => {
-    if (!account) return;
+    if (!account || expiryDays === null) return;
     setIsMinting(true);
     try {
       const result = await ServiceTokensApi.create({
@@ -195,7 +216,61 @@ export function ServiceAccountTokensPanel({
     }
   }, [issuedToken]);
 
-  const canMint = tokenName.trim().length > 0 && selectedScopes.length > 0;
+  /**
+   * The permissions grouped under the category the scope catalogue gives them,
+   * so the picker reads as a few short lists rather than one long one. Order
+   * follows the order the server sent, which keeps related permissions
+   * together without this screen having an opinion about it.
+   */
+  const scopeGroups = useMemo(() => {
+    const groups = new Map<string, ServiceTokenScopeItem[]>();
+    availableScopes.forEach((scope) => {
+      const existing = groups.get(scope.category);
+      if (existing) {
+        existing.push(scope);
+      } else {
+        groups.set(scope.category, [scope]);
+      }
+    });
+    return Array.from(groups, ([category, scopes]) => ({ category, scopes }));
+  }, [availableScopes]);
+
+  const availableScopeNames = useMemo(
+    () => availableScopes.map((scope) => scope.name),
+    [availableScopes],
+  );
+
+  /**
+   * Whether every permission on offer is ticked.
+   *
+   * Asked by membership rather than by comparing lengths, because the two can
+   * agree while the contents do not: reloading the panel can replace one
+   * permission in the catalogue with another, leaving the same count with a
+   * selection that no longer covers it. Counting would then label the control
+   * "Clear all" and clear a selection the reader had not finished making.
+   */
+  const allSelected =
+    availableScopeNames.length > 0 &&
+    availableScopeNames.every((name) => selectedScopes.includes(name));
+
+  /**
+   * One control that selects everything or clears it, matching the personal
+   * access token and OAuth application pickers. Granting every permission is
+   * still a deliberate act, so this is a shortcut for someone who has decided
+   * to do it rather than a default.
+   */
+  const toggleAllScopes = useCallback(() => {
+    setSelectedScopes((current) =>
+      availableScopeNames.every((name) => current.includes(name))
+        ? []
+        : availableScopeNames,
+    );
+  }, [availableScopeNames]);
+
+  const canMint =
+    tokenName.trim().length > 0 && selectedScopes.length > 0 && expiryDays !== null;
+  const customDaysInvalid = expiryChoice === 'custom' && customDays.trim() !== '' && expiryDays === null;
+  const customDaysMessageId = useId();
 
   const expiringSoon = useMemo(
     () => tokens.filter((token) => daysUntil(token.expiresAt) <= EXPIRING_SOON_DAYS),
@@ -321,40 +396,137 @@ export function ServiceAccountTokensPanel({
             </FormField>
 
             <FormField label={t('workspace.serviceAccounts.tokens.scopesLabel')} required>
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                {t('workspace.serviceAccounts.tokens.scopesHelp')}
-              </Text>
-              <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-2)' }}>
-                {availableScopes.map((scope) => (
-                  <Flex key={scope} align="center" gap="2" asChild>
-                    <label style={{ cursor: 'pointer' }}>
-                      <Checkbox
-                        checked={selectedScopes.includes(scope)}
-                        onCheckedChange={(checked) => toggleScope(scope, checked)}
-                      />
-                      <Text size="1" style={CREDENTIAL_MONO}>
-                        {scope}
-                      </Text>
-                    </label>
-                  </Flex>
+              <Flex align="start" justify="between" gap="3">
+                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  {t('workspace.serviceAccounts.tokens.scopesHelp')}
+                </Text>
+                {availableScopes.length > 0 && (
+                  <Button
+                    size="1"
+                    variant="ghost"
+                    type="button"
+                    onClick={toggleAllScopes}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {allSelected
+                      ? t('workspace.serviceAccounts.tokens.clearAllScopes')
+                      : t('workspace.serviceAccounts.tokens.selectAllScopes')}
+                  </Button>
+                )}
+              </Flex>
+              <Flex direction="column" gap="3" style={{ marginTop: 'var(--space-2)' }}>
+                {scopeGroups.map((group) => (
+                  <Box key={group.category}>
+                    <Text
+                      size="1"
+                      weight="medium"
+                      style={{ color: 'var(--slate-11)' }}
+                    >
+                      {group.category}
+                    </Text>
+                    <Flex
+                      direction="column"
+                      gap="2"
+                      style={{ marginTop: 'var(--space-1)' }}
+                    >
+                      {group.scopes.map((scope) => (
+                        <Flex key={scope.name} align="start" gap="2" asChild>
+                          <label style={{ cursor: 'pointer' }}>
+                            <Checkbox
+                              checked={selectedScopes.includes(scope.name)}
+                              onCheckedChange={(checked) =>
+                                toggleScope(scope.name, checked)
+                              }
+                            />
+                            <Box>
+                              <Text size="1" style={CREDENTIAL_MONO}>
+                                {scope.name}
+                              </Text>
+                              <Text
+                                as="p"
+                                size="1"
+                                style={{ color: 'var(--slate-10)', margin: 0 }}
+                              >
+                                {scope.description}
+                              </Text>
+                            </Box>
+                          </label>
+                        </Flex>
+                      ))}
+                    </Flex>
+                  </Box>
                 ))}
               </Flex>
             </FormField>
 
             <FormField label={t('workspace.serviceAccounts.tokens.expiryLabel')}>
-              <Flex gap="2">
+              <Flex gap="2" wrap="wrap">
                 {EXPIRY_OPTIONS.map((days) => (
                   <Button
                     key={days}
                     size="1"
-                    variant={expiryDays === days ? 'solid' : 'soft'}
+                    variant={expiryChoice === days ? 'solid' : 'soft'}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => setExpiryDays(days)}
+                    onClick={() => setExpiryChoice(days)}
                   >
                     {t('workspace.serviceAccounts.tokens.expiryDays', { count: days })}
                   </Button>
                 ))}
+                <Button
+                  size="1"
+                  variant={expiryChoice === 'custom' ? 'solid' : 'soft'}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setExpiryChoice('custom')}
+                >
+                  {t('workspace.serviceAccounts.tokens.expiryCustom')}
+                </Button>
               </Flex>
+              {expiryChoice === 'custom' && (
+                <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-2)' }}>
+                  <Flex align="center" gap="2">
+                    <TextField.Root
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MAX_EXPIRY_DAYS}
+                      step={1}
+                      autoFocus
+                      value={customDays}
+                      onChange={(e) => setCustomDays(e.target.value)}
+                      aria-label={t('workspace.serviceAccounts.tokens.expiryCustomLabel')}
+                      aria-invalid={customDaysInvalid}
+                      aria-describedby={customDaysMessageId}
+                      color={customDaysInvalid ? 'red' : undefined}
+                      style={{ width: 96 }}
+                    />
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                      {t('workspace.serviceAccounts.tokens.expiryCustomUnit')}
+                    </Text>
+                  </Flex>
+                  <Text
+                    id={customDaysMessageId}
+                    size="1"
+                    role={customDaysInvalid ? 'alert' : undefined}
+                    style={{ color: customDaysInvalid ? 'var(--red-11)' : 'var(--slate-10)' }}
+                  >
+                    {customDaysInvalid
+                      ? t('workspace.serviceAccounts.tokens.expiryCustomInvalid', {
+                          max: MAX_EXPIRY_DAYS,
+                        })
+                      : expiryDays !== null
+                        ? t('workspace.serviceAccounts.tokens.expiryCustomPreview', {
+                            date:
+                              formatDate(
+                                new Date(Date.now() + expiryDays * DAY_MS).toISOString(),
+                                i18n.language,
+                              ) ?? '',
+                          })
+                        : t('workspace.serviceAccounts.tokens.expiryCustomHelp', {
+                            max: MAX_EXPIRY_DAYS,
+                          })}
+                  </Text>
+                </Flex>
+              )}
             </FormField>
 
             <Flex gap="2" justify="end">
@@ -419,7 +591,7 @@ export function ServiceAccountTokensPanel({
                     </Text>
                     {soon && (
                       <Badge color="amber" size="1">
-                        {remaining < 0
+                        {remaining <= 0
                           ? t('workspace.serviceAccounts.tokens.expired')
                           : t('workspace.serviceAccounts.tokens.expiresInDays', {
                               count: remaining,
@@ -428,7 +600,7 @@ export function ServiceAccountTokensPanel({
                     )}
                   </Flex>
                   <Text size="1" style={{ color: 'var(--slate-10)', ...CREDENTIAL_MONO }}>
-                    {token.scopes.join(', ')}
+                    {asArray(token.scopes).join(', ')}
                   </Text>
                   <Text size="1" style={{ color: 'var(--slate-10)' }}>
                     {lastUsed

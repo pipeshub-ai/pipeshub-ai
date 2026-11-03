@@ -128,3 +128,32 @@ class TestSlackDataSourceHandleApiCalls:
         assert resp.success is True
         assert resp.data == {"ok": True, "messages": []}
         mock_wc.conversations_history.assert_called_once()
+
+
+class TestScopeReporting:
+    @pytest.mark.asyncio
+    async def test_missing_scope_names_the_scope_slack_asked_for(self) -> None:
+        ds = _make_datasource()
+        exc = Exception("The request to the Slack API failed.")
+        exc.response = MagicMock(data={"ok": False, "error": "missing_scope", "needed": "im:read"})
+        resp = await ds._handle_slack_error(exc)
+        assert resp.error == "missing_scope"
+        assert resp.message.endswith("Needed scope: im:read.")
+
+    @pytest.mark.asyncio
+    async def test_check_token_scopes_reads_the_oauth_scopes_header(self) -> None:
+        ds = _make_datasource()
+        ds.client.auth_test = MagicMock(return_value=MagicMock(
+            data={"ok": True, "user_id": "U1"},
+            headers={"X-OAuth-Scopes": "channels:read, groups:read"},
+        ))
+        resp = await ds.check_token_scopes()
+        assert resp.success is True
+        assert resp.data == {"ok": True, "user_id": "U1", "scopes": ["channels:read", "groups:read"]}
+
+    @pytest.mark.asyncio
+    async def test_check_token_scopes_without_the_header_leaves_scopes_out(self) -> None:
+        ds = _make_datasource()
+        ds.client.auth_test = MagicMock(return_value=MagicMock(data={"ok": True}, headers={}))
+        resp = await ds.check_token_scopes()
+        assert resp.data == {"ok": True}

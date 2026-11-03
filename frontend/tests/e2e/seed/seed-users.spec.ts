@@ -41,8 +41,8 @@ test.describe.skip('Seed Users', () => {
       await page.waitForTimeout(100);
     }
 
-    // Click "Send Invite"
-    const submitButton = page.locator('button').filter({ hasText: 'Send Invite' });
+    // Click "Send invite"
+    const submitButton = page.locator('button').filter({ hasText: 'Send invite' });
     await submitButton.first().click();
 
     // Wait for success feedback

@@ -9,10 +9,13 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.utils.logger import create_logger
 from app.utils.request_context import (
+    HEADER_ADMITTED_IN,
     HEADER_REQUEST_ID,
     new_anon_root,
+    reset_admitted_in,
     reset_context,
     sanitize_root_id,
+    set_admitted_in,
     set_context,
 )
 
@@ -47,6 +50,8 @@ class RequestContextMiddleware:
         root_id = sanitized or new_anon_root()
 
         token = set_context(root_id)
+        # Set by an upstream service that already admitted this parse under a memory brake.
+        admitted_token = set_admitted_in(sanitize_root_id(_header(headers, HEADER_ADMITTED_IN)))
         try:
             if raw_id and sanitized != raw_id:
                 logger.debug(
@@ -56,4 +61,5 @@ class RequestContextMiddleware:
                 )
             await self.app(scope, receive, send)
         finally:
+            reset_admitted_in(admitted_token)
             reset_context(token)

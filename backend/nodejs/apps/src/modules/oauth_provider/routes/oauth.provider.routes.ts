@@ -3,12 +3,14 @@ import { Container } from 'inversify'
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware'
 import { AuthMiddleware } from '../../../config'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
 import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
 import { createOAuthRedirectMiddleware } from '../middlewares/oauth.redirect.middleware'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
+import { oauthTokenValidationErrorHandler } from '../middlewares/oauth.token-validation-error.middleware';
 import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
@@ -76,10 +78,13 @@ export function createOAuthProviderRouter(container: Container): Router {
    * admin-only. A read-only service account consenting to such an
    * application would end up holding a write-capable token, by a different
    * door to the same room.
+   * User consent submission. Session only: consent must come from the user,
+   * never from a token a client already holds.
    */
   router.post(
     '/authorize',
     authMiddleware.authenticate.bind(authMiddleware),
+    requireSessionAuth,
     refuseServiceAccountCaller,
     ValidationMiddleware.validate(authorizeConsentSchema),
     (req: Request, res: Response, next: NextFunction) =>
@@ -98,6 +103,7 @@ export function createOAuthProviderRouter(container: Container): Router {
     ValidationMiddleware.validate(tokenSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.token(req, res, next),
+    oauthTokenValidationErrorHandler,
   )
 
   /**
@@ -168,11 +174,14 @@ export function createOAuthProviderRouter(container: Container): Router {
 
   /**
    * POST /device/verify — authenticated user_code lookup for the consent page.
+   * Session only, like /device/consent below: the page must not be drivable
+   * by a bearer token at all.
    */
   router.post(
     '/device/verify',
     oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
+    requireSessionAuth,
     refuseServiceAccountCaller,
     ValidationMiddleware.validate(deviceUserCodeSchema),
     (req: Request, res: Response, next: NextFunction) =>
@@ -185,11 +194,15 @@ export function createOAuthProviderRouter(container: Container): Router {
 
   /**
    * POST /device/consent — user approves or denies a device grant.
+   * Session only, for the same reason as POST /authorize: approving issues a
+   * token to the polling device as the approver, so a client holding an
+   * access token or PAT for the user must not be able to self-consent.
    */
   router.post(
     '/device/consent',
     oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
+    requireSessionAuth,
     refuseServiceAccountCaller,
     ValidationMiddleware.validate(deviceConsentSchema),
     (req: Request, res: Response, next: NextFunction) =>

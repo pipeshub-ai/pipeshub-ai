@@ -19,31 +19,41 @@ import {
   BaseRedisStreamsConsumerConnection,
   RedisStreamsAdminService,
 } from './redis-streams.service';
+import {
+  BasePgQueueProducerConnection,
+  BasePgQueueConsumerConnection,
+  PgQueueAdminService,
+  PgQueueConsumerConfig,
+} from './pg-queue.service';
 import { AppConfig } from '../../modules/tokens_manager/config/config';
+import { MAIL_CONSUMER_LIVENESS_MS } from '../../modules/mail/types/mail-event.types';
 import { loadMessagingEnv } from '../config/messaging.env';
 import { MESSAGING_ERRORS } from '../constants/messaging.constants';
 
 export { REQUIRED_TOPICS } from './kafka-admin.service';
 
 export type ResolvedMessageBrokerConfig =
+  | { type: MessageBrokerType.POSTGRES }
   | { type: MessageBrokerType.KAFKA; kafka: KafkaConfig }
   | { type: MessageBrokerType.REDIS; redis: RedisBrokerConfig };
 
 export function getMessageBrokerType(): MessageBrokerType {
   const { messageBrokerRaw } = loadMessagingEnv();
   const brokerType = messageBrokerRaw.toLowerCase();
-  if (
-    brokerType !== MessageBrokerType.KAFKA &&
-    brokerType !== MessageBrokerType.REDIS
-  ) {
+  const known = Object.values(MessageBrokerType).find((t) => t === brokerType);
+  if (known === undefined) {
     throw new Error(MESSAGING_ERRORS.unsupportedBrokerType(brokerType));
   }
-  return brokerType as MessageBrokerType;
+  return known;
 }
 
 class ConcreteKafkaProducer extends BaseKafkaProducerConnection {}
 
 class ConcreteKafkaConsumer extends BaseKafkaConsumerConnection {}
+
+class ConcretePgProducer extends BasePgQueueProducerConnection {}
+
+class ConcretePgConsumer extends BasePgQueueConsumerConnection {}
 
 class ConcreteRedisProducer extends BaseRedisStreamsProducerConnection {}
 
@@ -55,6 +65,9 @@ function createMessageProducerByParts(
   redisConfig: RedisBrokerConfig | undefined,
   logger: Logger,
 ): IMessageProducer {
+  if (brokerType === MessageBrokerType.POSTGRES) {
+    return new ConcretePgProducer(logger);
+  }
   if (brokerType === MessageBrokerType.KAFKA) {
     if (!kafkaConfig) {
       throw new Error(MESSAGING_ERRORS.kafkaConfigRequired);
@@ -72,7 +85,11 @@ function createMessageConsumerByParts(
   kafkaConfig: KafkaConfig | undefined,
   redisConfig: RedisBrokerConfig | undefined,
   logger: Logger,
+  pgConfig: PgQueueConsumerConfig = {},
 ): IMessageConsumer {
+  if (brokerType === MessageBrokerType.POSTGRES) {
+    return new ConcretePgConsumer(pgConfig, logger);
+  }
   if (brokerType === MessageBrokerType.KAFKA) {
     if (!kafkaConfig) {
       throw new Error(MESSAGING_ERRORS.kafkaConfigRequired);
@@ -91,6 +108,9 @@ function createMessageAdminByParts(
   redisConfig: RedisBrokerConfig | undefined,
   logger: Logger,
 ): IMessageAdmin {
+  if (brokerType === MessageBrokerType.POSTGRES) {
+    return new PgQueueAdminService();
+  }
   if (brokerType === MessageBrokerType.KAFKA) {
     if (!kafkaConfig) {
       throw new Error(MESSAGING_ERRORS.kafkaConfigRequired);
@@ -117,6 +137,9 @@ export function resolveMessageBrokerConfig(
     };
     return { type: MessageBrokerType.KAFKA, kafka };
   }
+  if (brokerType === MessageBrokerType.POSTGRES) {
+    return { type: MessageBrokerType.POSTGRES };
+  }
   if (appConfig.redis.host === '') {
     throw new Error(MESSAGING_ERRORS.redisHostRequired);
   }
@@ -131,6 +154,13 @@ function resolvedToParts(resolved: ResolvedMessageBrokerConfig): {
   kafka: KafkaConfig | undefined;
   redis: RedisBrokerConfig | undefined;
 } {
+  if (resolved.type === MessageBrokerType.POSTGRES) {
+    return {
+      brokerType: MessageBrokerType.POSTGRES,
+      kafka: undefined,
+      redis: undefined,
+    };
+  }
   if (resolved.type === MessageBrokerType.KAFKA) {
     return {
       brokerType: MessageBrokerType.KAFKA,
@@ -170,6 +200,18 @@ export function createNotificationMessageConsumer(
   logger: Logger,
 ): IMessageConsumer {
   const resolved = resolveMessageBrokerConfig(appConfig);
+  if (resolved.type === MessageBrokerType.POSTGRES) {
+    return createMessageConsumerByParts(
+      MessageBrokerType.POSTGRES,
+      undefined,
+      undefined,
+      logger,
+      {
+        clientId: NOTIFICATION_CLIENT_ID,
+        groupId: NOTIFICATION_CONSUMER_GROUP,
+      },
+    );
+  }
   if (resolved.type === MessageBrokerType.KAFKA) {
     const kafka: KafkaConfig = {
       ...resolved.kafka,
@@ -225,6 +267,62 @@ function rejectNamespacedRedisStreams(): void {
   }
 }
 
+const MAIL_CONSUMER_GROUP = 'mail-consumer-group';
+const MAIL_CLIENT_ID = 'mail-consumer';
+
+/** Dedicated consumer group/stream group for the mail topic (Kafka + Redis). */
+export function createMailMessageConsumer(
+  appConfig: AppConfig,
+  logger: Logger,
+): IMessageConsumer {
+  const resolved = resolveMessageBrokerConfig(appConfig);
+  if (resolved.type === MessageBrokerType.POSTGRES) {
+    return createMessageConsumerByParts(
+      MessageBrokerType.POSTGRES,
+      undefined,
+      undefined,
+      logger,
+      {
+        clientId: MAIL_CLIENT_ID,
+        groupId: MAIL_CONSUMER_GROUP,
+        claimMinIdleMs: MAIL_CONSUMER_LIVENESS_MS,
+        readCount: 1,
+      },
+    );
+  }
+  if (resolved.type === MessageBrokerType.KAFKA) {
+    const kafka: KafkaConfig = {
+      ...resolved.kafka,
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+      sessionTimeout: MAIL_CONSUMER_LIVENESS_MS,
+      rebalanceTimeout: MAIL_CONSUMER_LIVENESS_MS,
+    };
+    return createMessageConsumerByParts(
+      MessageBrokerType.KAFKA,
+      kafka,
+      undefined,
+      logger,
+    );
+  }
+  const redis: RedisBrokerConfig = {
+    ...buildRedisBrokerConfig(appConfig.redis, {
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+    }),
+    claimMinIdleMs: MAIL_CONSUMER_LIVENESS_MS,
+    // A batch would idle later entries past claimMinIdleMs while earlier
+    // sends run, letting a replica that starts up reclaim and resend them.
+    readCount: 1,
+  };
+  return createMessageConsumerByParts(
+    MessageBrokerType.REDIS,
+    undefined,
+    redis,
+    logger,
+  );
+}
+
 export function buildRedisBrokerConfig(
   redisConfig: RedisConfig,
   options?: { clientId?: string; groupId?: string },
@@ -237,7 +335,10 @@ export function buildRedisBrokerConfig(
     port: redisConfig.port,
     password: redisConfig.password,
     db: redisConfig.db,
-    maxLen: env.redisStreamsMaxLen,
+    maxLen:
+      env.redisStreamsRetentionMode === 'maxlen'
+        ? env.redisStreamsMaxLen
+        : undefined,
     clientId: options?.clientId,
     groupId: options?.groupId,
   };

@@ -6,7 +6,6 @@ Targets uncovered lines:
 - 89-99: deserialize closure (empty bytes, non-JSON, UnicodeDecodeError)
 - 152->156: etcd URL parsing - URL without port
 - 215->229: create_key verification for unencrypted excluded key
-- 354-356: list_keys_in_directory key processing error
 """
 
 import json
@@ -316,60 +315,6 @@ class TestCreateKeyUnencryptedVerification:
 
         result = await ekv.create_key(excluded_key, value)
         assert result is True
-
-
-# ============================================================================
-# list_keys_in_directory key processing error (lines 354-356)
-# ============================================================================
-
-
-class TestListKeysKeyProcessingError:
-    """Test that key processing errors in list_keys_in_directory are skipped."""
-
-    @pytest.mark.asyncio
-    async def test_key_processing_error_continues(self):
-        """When processing a single key raises Exception, it's skipped (lines 354-356)."""
-        ekv, mock_store, mock_encryption = _build_store_simple()
-
-        # Set up: first key causes error in the is_unencrypted check (by making
-        # startswith fail), second key works fine
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "bad:key:data",
-            "/services/endpoints/good",
-        ])
-
-        # Make decrypt raise for the first key (has 2 colons, looks encrypted)
-        call_count = [0]
-        def side_effect(v):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise Exception("decrypt failed for bad key")
-            return "/services/decrypted"
-
-        mock_encryption.decrypt.side_effect = side_effect
-
-        result = await ekv.list_keys_in_directory("/services")
-        # The bad key falls back to raw and doesn't match /services prefix
-        # The good key matches /services prefix
-        assert "/services/endpoints/good" in result
-
-    @pytest.mark.asyncio
-    async def test_key_processing_general_error_skipped(self):
-        """A general exception during key processing is caught and skipped."""
-        ekv, mock_store, mock_encryption = _build_store_simple()
-
-        # Create a key that will cause an error during the any() check
-        # by making the key not a string
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "normal:key:data",
-        ])
-
-        # Make the decrypt fail with a general error
-        mock_encryption.decrypt.side_effect = RuntimeError("general error")
-
-        result = await ekv.list_keys_in_directory("")
-        # Key falls back to raw key
-        assert "normal:key:data" in result
 
 
 # ============================================================================

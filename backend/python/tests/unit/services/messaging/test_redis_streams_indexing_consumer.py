@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -46,6 +47,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 )
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
+from app.utils import indexing_timing as timing
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 # ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ class TestInit:
         assert consumer.message_handler is None
         assert len(consumer._active_futures) == 0
         assert consumer._backpressure_active is False
-        assert consumer.consumer_name.startswith(f"{config.client_id}-")
+        assert consumer.consumer_name.startswith(f"{config.client_id}/sp3-")
 
     def test_consumer_name_is_unique_per_instance(self, logger, config):
         first = IndexingRedisStreamsConsumer(logger, config)
@@ -359,15 +361,39 @@ class TestStartStopWorkerThread:
         assert len(consumer._active_futures) == 0
         assert consumer._is_in_flight("1-0") is False
 
-    def test_stop_with_loop_not_running(self, consumer):
-        """When worker_loop exists but is not running, stop skips loop.stop()."""
+    def test_stop_is_requested_even_when_loop_is_not_running_yet(self, consumer) -> None:
+        """A worker still on its way into run_forever() must be told to stop."""
         mock_loop = MagicMock()
         mock_loop.is_running.return_value = False
+        mock_loop.is_closed.return_value = False
         consumer.worker_loop = mock_loop
         consumer.worker_executor = MagicMock()
 
         consumer._stop_worker_thread()
+        mock_loop.call_soon_threadsafe.assert_called_once_with(mock_loop.stop)
+        assert consumer.worker_executor is None
+
+    def test_stop_skips_request_when_loop_already_closed(self, consumer) -> None:
+        mock_loop = MagicMock()
+        mock_loop.is_closed.return_value = True
+        consumer.worker_loop = mock_loop
+        mock_executor = MagicMock()
+        consumer.worker_executor = mock_executor
+
+        consumer._stop_worker_thread()
         mock_loop.call_soon_threadsafe.assert_not_called()
+        mock_executor.shutdown.assert_called_once_with(wait=True)
+
+    def test_stop_still_shuts_down_when_loop_closes_mid_request(self, consumer) -> None:
+        mock_loop = MagicMock()
+        mock_loop.is_closed.return_value = False
+        mock_loop.call_soon_threadsafe.side_effect = RuntimeError("Event loop is closed")
+        consumer.worker_loop = mock_loop
+        mock_executor = MagicMock()
+        consumer.worker_executor = mock_executor
+
+        consumer._stop_worker_thread()
+        mock_executor.shutdown.assert_called_once_with(wait=True)
         assert consumer.worker_executor is None
 
 
@@ -628,7 +654,7 @@ class TestStop:
 class TestParseMessage:
     async def test_valid_json(self, consumer):
         fields = _valid_fields("CREATE", {"id": 42})
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.eventType == "CREATE"
         assert result.payload == {"id": 42}
@@ -636,20 +662,20 @@ class TestParseMessage:
     async def test_double_encoded_json(self, consumer):
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
         fields = {"value": json.dumps(inner)}
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "val"}
 
     async def test_missing_value_field_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"_init": "1"})
+        result = await consumer._parse_message("1-0", {"_init": "1"}, "records")
         assert result is None
 
     async def test_empty_fields_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {})
+        result = await consumer._parse_message("1-0", {}, "records")
         assert result is None
 
     async def test_invalid_json_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"value": "not-json{{{"})
+        result = await consumer._parse_message("1-0", {"value": "not-json{{{"}, "records")
         assert result is None
 
     async def test_valid_json_invalid_schema_returns_none(self, consumer):
@@ -659,12 +685,12 @@ class TestParseMessage:
         parser must treat it as unparseable (return None) so the message is
         dropped, not crash the worker into a no-ACK loop.
         """
-        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
+        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})}, "records")
         assert result is None
 
     async def test_non_mapping_json_returns_none(self, consumer):
         """JSON decoding to a non-object (list) is poison -> None, not a TypeError."""
-        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])})
+        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])}, "records")
         assert result is None
 
     async def test_valid_with_timestamp(self, consumer):
@@ -673,7 +699,7 @@ class TestParseMessage:
                 {"eventType": "test", "payload": {"k": "v"}, "timestamp": 12345}
             )
         }
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.timestamp == 12345
 
@@ -840,6 +866,54 @@ class TestProcessMessageWrapper:
         consumer.message_handler.assert_not_called()
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+
+    @pytest.mark.asyncio
+    async def test_ownership_check_timeout_leaves_entry_pending(self, consumer) -> None:
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range.side_effect = TimeoutError()
+        consumer.main_loop = asyncio.get_running_loop()
+        consumer.message_handler = MagicMock()
+        consumer._ack_message = AsyncMock()
+        consumer._pending_message_is_owned = (
+            IndexingRedisStreamsConsumer._pending_message_is_owned.__get__(
+                consumer, IndexingRedisStreamsConsumer
+            )
+        )
+
+        result = await consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert result is False
+        consumer.message_handler.assert_not_called()
+        consumer._ack_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retry_counter_timeout_leaves_failed_entry_pending(self, consumer) -> None:
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(return_value=0)
+        consumer.retry_manager.increment_and_check = AsyncMock(side_effect=TimeoutError())
+        consumer._requeue_message = AsyncMock()
+        consumer._ack_message = AsyncMock()
+
+        async def handler(msg: object) -> AsyncGenerator[PipelineEvent, None]:
+            raise ConnectionError("embedding endpoint unreachable")
+            yield  # pragma: no cover
+
+        consumer.message_handler = handler
+
+        result = await consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert result is False
+        consumer._requeue_message.assert_not_called()
+        consumer._ack_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_successful_processing_with_xack(self, consumer):
@@ -1255,6 +1329,22 @@ class TestProcessMessageWrapper:
         assert consumer.lease_renewer._handles == {}
 
     @pytest.mark.asyncio
+    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self, consumer) -> None:
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.logger = MagicMock()
+        consumer._ack_message = AsyncMock()
+
+        async def handler(msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise RecordDeletedError("r1")
+            yield
+
+        consumer.message_handler = handler
+        await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+        assert not any("process_message_wrapper" in str(c.args[0]) for c in consumer.logger.error.call_args_list)
+        assert any("ended as expected" in str(c.args[0]) for c in consumer.logger.info.call_args_list)
+
+    @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
         """Handler raises after yielding PARSING_COMPLETE. Only indexing released in finally."""
         consumer.parsing_semaphore = asyncio.Semaphore(1)
@@ -1290,8 +1380,8 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
+        # Never resolved: a reply that already arrived is not a timeout.
         ack_future = Future()
-        ack_future.set_result(1)
 
         with patch(
             "asyncio.run_coroutine_threadsafe",
@@ -1395,6 +1485,310 @@ class TestProcessMessageWrapper:
         # Semaphores still released in finally despite the early return.
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+
+
+    @pytest.mark.asyncio
+    async def test_deadline_during_handler_cleanup_does_not_cut_it_short(
+        self, consumer
+    ) -> None:
+        """The handler generator is closed outside the processing timeout: a
+        deadline that passes while the handler's cleanup is still running must
+        not cancel that cleanup (it reverts IN_PROGRESS)."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        cleanup_finished = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            try:
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="r1"),
+                )
+            finally:
+                await asyncio.sleep(0.2)
+                cleanup_finished.set()
+
+        releases = 0
+
+        async def release_fails_once(*_args) -> None:
+            nonlocal releases
+            releases += 1
+            if releases == 1:
+                raise RuntimeError("lease store unavailable")
+
+        consumer.message_handler = handler
+        consumer._release_distributed_slot = release_fails_once
+
+        with patch.object(
+            type(messaging_env),
+            "record_processing_timeout",
+            new_callable=PropertyMock,
+            return_value=0.05,
+        ):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is False
+        assert cleanup_finished.is_set()
+
+
+    @pytest.mark.asyncio
+    async def test_bookkeeping_after_indexing_complete_runs_past_the_deadline(
+        self, consumer
+    ) -> None:
+        """Once INDEXING_COMPLETE is out the record is done: the handler's work
+        after it (releasing queued copies) must finish, and the record count as
+        a success, even when the processing deadline passes meanwhile."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        bookkeeping_finished = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            await asyncio.sleep(0.2)
+            bookkeeping_finished.set()
+
+        consumer.message_handler = handler
+        consumer._ack_message = AsyncMock()
+
+        with patch.object(
+            type(messaging_env),
+            "record_processing_timeout",
+            new_callable=PropertyMock,
+            return_value=0.05,
+        ):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is True
+        assert bookkeeping_finished.is_set()
+
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_handler_after_indexing_complete_is_bounded(
+        self, consumer
+    ) -> None:
+        """The work after INDEXING_COMPLETE runs past the processing deadline but
+        has its own bound: a handler stalled there fails the attempt (so the
+        message is redelivered) instead of holding it forever."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        never = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            await never.wait()
+
+        consumer.message_handler = handler
+
+        with patch.object(concurrency, "POST_INDEXING_TAIL_TIMEOUT_S", 0.05):
+            result = await asyncio.wait_for(consumer._process_message_wrapper("s", "1-0", _valid_fields()), timeout=5)
+
+        assert result is False
+
+
+class TestTimingSummary:
+    """The per-record timing line names how the delivery ended, and is
+    written only once the record has let go of everything it held."""
+
+    @pytest.fixture
+    def summaries(self, monkeypatch) -> list[dict]:
+        captured: list[dict] = []
+        real_end_record = timing.end_record
+
+        def spy(timeline, token, *, outcome, logger=None) -> None:
+            captured.append({
+                "outcome": outcome,
+                "phases": timeline.phases(),
+                "at": time.perf_counter(),
+            })
+            real_end_record(timeline, token, outcome=outcome, logger=logger)
+
+        monkeypatch.setattr(timing, "end_record", spy)
+        return captured
+
+    @staticmethod
+    def _gated(consumer, try_acquire=None) -> AsyncMock:
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        manager = AsyncMock()
+        if try_acquire is None:
+            manager.try_acquire.return_value = True
+        else:
+            manager.try_acquire.side_effect = try_acquire
+        consumer.concurrency_manager = manager
+        return manager
+
+    @staticmethod
+    def _fields() -> dict:
+        return _valid_fields(payload={"recordId": "r1"})
+
+    @pytest.mark.asyncio
+    async def test_giving_up_the_index_lease_on_shutdown_reads_stopped(
+        self, consumer, summaries
+    ) -> None:
+        self._gated(consumer)
+        consumer.running = False
+
+        result = await consumer._process_message_wrapper("s", "1-0", self._fields())
+
+        assert result is False
+        assert [s["outcome"] for s in summaries] == ["stopped"]
+
+    @pytest.mark.asyncio
+    async def test_losing_the_record_lease_to_a_duplicate_reads_contended(
+        self, consumer, summaries
+    ) -> None:
+        async def try_acquire(pool, _owner, _limit, _lease_seconds) -> bool:
+            return not pool.startswith("record:")
+
+        self._gated(consumer, try_acquire)
+        with (
+            patch.object(
+                type(messaging_env), "record_lease_wait_seconds",
+                new_callable=PropertyMock, return_value=0.05,
+            ),
+            patch.object(
+                type(messaging_env), "concurrency_acquire_poll_seconds",
+                new_callable=PropertyMock, return_value=0.01,
+            ),
+        ):
+            result = await consumer._process_message_wrapper("s", "1-0", self._fields())
+
+        assert result is False
+        assert [s["outcome"] for s in summaries] == ["contended"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_handed_back_for_want_of_a_parse_slot_reads_requeued(
+        self, logger, config, summaries, monkeypatch
+    ) -> None:
+        consumer = IndexingRedisStreamsConsumer(
+            logger, config, retry_manager=None, producer=None,
+            governor=make_test_governor(logger_name="test_redis_timing_summary"),
+        )
+        consumer._pending_message_is_owned = AsyncMock(return_value=True)
+        consumer.running = True
+        consumer.main_loop = asyncio.get_running_loop()
+        consumer._requeue_message = AsyncMock()
+        consumer._ack_message = AsyncMock()
+        gate = consumer.governor.gate(Pool.LIGHT_PARSE)
+        for _ in range(gate.limit):
+            assert await gate.acquire()
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.05)
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+
+        consumer.message_handler = handler
+        result = await consumer._process_message_wrapper("stream-a", "1-0", self._fields())
+
+        assert result is False
+        consumer._requeue_message.assert_awaited_once()
+        assert [s["outcome"] for s in summaries] == ["requeued"]
+
+    @pytest.mark.asyncio
+    async def test_slow_cleanup_after_a_failure_counts_toward_the_hold(
+        self, consumer, summaries
+    ) -> None:
+        self._gated(consumer)
+        finished: list[float] = []
+
+        async def slow_release(pool, _owner) -> None:
+            if pool.startswith("indexing"):
+                await asyncio.sleep(0.2)
+            finished.append(time.perf_counter())
+
+        consumer._release_distributed_slot = slow_release
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise RuntimeError("handler error")
+            yield
+
+        consumer.message_handler = handler
+        result = await consumer._process_message_wrapper("s", "1-0", self._fields())
+
+        assert result is False
+        [summary] = summaries
+        assert summary["outcome"] == "failed"
+        assert summary["phases"]["held"] >= 0.2
+        assert summary["at"] >= max(finished)
+
+    @pytest.mark.asyncio
+    async def test_slow_release_after_success_counts_toward_the_hold(
+        self, consumer, summaries
+    ) -> None:
+        self._gated(consumer)
+        consumer._ack_message = AsyncMock()
+
+        async def slow_release(pool, _owner) -> None:
+            if pool.startswith("indexing"):
+                await asyncio.sleep(0.2)
+
+        consumer._release_distributed_slot = slow_release
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        consumer.message_handler = handler
+        result = await consumer._process_message_wrapper("s", "1-0", self._fields())
+
+        assert result is True
+        [summary] = summaries
+        assert summary["outcome"] == "ok"
+        assert summary["phases"]["held"] >= 0.2
+
+    @pytest.mark.asyncio
+    async def test_the_record_lease_release_after_success_counts_toward_the_hold(
+        self, consumer, summaries
+    ) -> None:
+        self._gated(consumer)
+        consumer._ack_message = AsyncMock()
+
+        async def slow_release(pool, _owner) -> None:
+            if pool.startswith("record:"):
+                await asyncio.sleep(0.2)
+
+        consumer._release_distributed_slot = slow_release
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        consumer.message_handler = handler
+        result = await consumer._process_message_wrapper("s", "1-0", self._fields())
+
+        assert result is True
+        [summary] = summaries
+        assert summary["outcome"] == "ok"
+        assert summary["phases"]["held"] >= 0.2
+
+    @pytest.mark.asyncio
+    async def test_the_summary_is_written_even_when_a_release_raises(
+        self, consumer, summaries
+    ) -> None:
+        self._gated(consumer)
+        consumer._release_distributed_slot = AsyncMock(side_effect=RuntimeError("release failed"))
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise ValueError("handler error")
+            yield
+
+        consumer.message_handler = handler
+        with pytest.raises(RuntimeError, match="release failed"):
+            await consumer._process_message_wrapper("s", "1-0", self._fields())
+
+        assert [s["outcome"] for s in summaries] == ["failed"]
+        assert timing.current_timeline() is None
 
 
 class TestProcessMessageWrapperWithGovernor:
@@ -1836,17 +2230,51 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer._ack_message.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_paused_dependency_hand_back_waits_its_delay_and_is_not_a_crash_loop(
+        self, governor_consumer
+    ) -> None:
+        """However long an outage lasts, a job waiting on it is never dead-lettered for waiting."""
+
+        class DependencyPaused(concurrency.RequeueWithoutAttempt):
+            counts_toward_backstop = False
+
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise DependencyPaused("provider down", delay_s=42.0)
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper("stream-a", "1-0", _valid_fields())
+
+        assert result is False
+        assert governor_consumer._requeue_message.await_args.kwargs["delay_s"] == 42.0
+        governor_consumer.retry_manager.record_delivery.assert_not_awaited()
+        governor_consumer.retry_manager.clear_deliveries.assert_awaited_once()
+        governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
+        governor_consumer._ack_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_admission_requeues_stop_at_the_delivery_backstop(
         self, governor_consumer, monkeypatch
     ) -> None:
         """A record that is never admitted must not append stream entries
-        forever: past the delivery backstop it stays in the PEL."""
+        forever: past the delivery backstop it is failed and acknowledged."""
         governor_consumer.running = True
         governor_consumer.main_loop = asyncio.get_running_loop()
         governor_consumer.retry_manager = AsyncMock()
         governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=10)
+        governor_consumer.retry_manager.unfinished_attempts = AsyncMock(return_value=0)
+        governor_consumer.retry_manager.start_attempt = AsyncMock(return_value=0)
         governor_consumer._requeue_message = AsyncMock()
         governor_consumer._ack_message = AsyncMock()
+        sink = MagicMock()
+        sink.on_message_abandoned = AsyncMock()
+        governor_consumer.disposition_sink = sink
         gate = governor_consumer.governor.gate(Pool.LIGHT_PARSE)
         for _ in range(gate.limit):
             assert await gate.acquire()
@@ -1868,7 +2296,8 @@ class TestProcessMessageWrapperWithGovernor:
 
         assert result is False
         governor_consumer._requeue_message.assert_not_awaited()
-        governor_consumer._ack_message.assert_not_awaited()
+        sink.on_message_abandoned.assert_awaited_once()
+        governor_consumer._ack_message.assert_awaited_once_with("stream-a", "1-0")
 
     @pytest.mark.asyncio
     async def test_time_spent_waiting_for_a_parse_slot_does_not_count_against_the_record(
@@ -1958,6 +2387,59 @@ class TestRetryDelayBeforeSemaphore:
         assert sent_payload["_retry_tracking_id"] == "stable-id"
         # retry_count=2 -> ~60s backoff
         assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
+
+    @pytest.mark.asyncio
+    async def test_requeue_message_keeps_request_id_and_org(self, consumer) -> None:
+        from app.utils.request_context import RequestContext, get_context
+
+        consumer.producer = AsyncMock()
+        seen: list[RequestContext | None] = []
+        consumer.producer.send_event.side_effect = lambda **_: seen.append(get_context())
+        message = StreamMessage(
+            eventType="newRecord", payload={"recordId": "r1"}, requestId="root-1", orgId="org-1"
+        )
+
+        await consumer._requeue_message("stream-a", message, "stable-id")
+
+        assert seen == [RequestContext(root_id="root-1", org_id="org-1")]
+
+    @pytest.mark.asyncio
+    async def test_requeue_message_holds_for_a_given_delay(self, consumer) -> None:
+        consumer.producer = AsyncMock()
+        before = time.time()
+
+        await consumer._requeue_message(
+            "stream-a", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
+            retry_count=0, delay_s=90.0,
+        )
+
+        sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
+        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+
+    @pytest.mark.asyncio
+    async def test_requeue_is_signed_afresh_under_the_message_org(self, consumer, monkeypatch) -> None:
+        from app.core import envelope, org_context
+
+        key = envelope.derive_key("requeue-secret")
+        envelope.configure(None, None, key)
+        monkeypatch.setenv("ENVELOPE_SIGN", "true")
+        sent = []
+
+        async def send_event(topic, event_type, payload) -> None:
+            sent.append(envelope.sign_message(topic, {"eventType": event_type, "payload": payload}))
+
+        consumer.producer = AsyncMock()
+        consumer.producer.send_event.side_effect = send_event
+        ctx = org_context.OrgContext("org_a", None, "service", "envelope", "r")
+        message = StreamMessage(eventType="newRecord", payload={"orgId": "org_a", "recordId": "r1"}, org_ctx=ctx)
+        try:
+            assert org_context._ctx.get() is None  # the handler's bind is gone by the time a retry is queued
+            await consumer._requeue_message("stream-a", message, "stable-id", retry_count=1)
+            # signed with a fresh issuedAt, so it is inside the accepted window however old the original was
+            opened = await envelope.open_envelope("stream-a", sent[0], keys=(key,), required=True)
+            assert opened.ctx.org_id == "org_a" and opened.message["payload"]["_retry_tracking_id"] == "stable-id"
+        finally:
+            envelope.configure(None)
 
     @pytest.mark.asyncio
     async def test_requeue_requires_producer(self, consumer):
@@ -2436,22 +2918,13 @@ class TestExceedsMaxRetries:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_backstop_fires_when_retry_manager_present_but_app_counter_lags(
-        self, consumer
-    ):
-        """Regression test for #2992: a poison message must still dead-letter via
-        the Redis-native times_delivered backstop even when a RetryManager is
-        configured (the production case) and its app-tracked failure count
-        hasn't reached the threshold — e.g. because the process crashed before
-        ever incrementing it. Before the fix, the RetryManager branch always
-        returned early and this backstop was unreachable dead code.
-
-        Uses a current message_id distinct from the stable retry-tracking id
-        (as a re-queued entry would carry) to prove the backstop clears retry
-        state under the stable id, not the current Redis message_id.
-        """
+    async def test_with_a_retry_tracker_times_delivered_drops_nothing(self, consumer):
+        """#2992's poison loop (a record that kills the process before any
+        failure is counted) is bounded by unfinished attempts now. Redis's
+        times_delivered also counts every claim after a restart, of entries
+        that never ran, so it no longer dead-letters anything."""
         consumer.retry_manager = AsyncMock()
-        consumer.retry_manager.get_count.return_value = 1  # app counter lagging
+        consumer.retry_manager.get_count.return_value = 1
         consumer.redis = AsyncMock()
         consumer.redis.xpending_range = AsyncMock(
             return_value=[{"times_delivered": 11}]
@@ -2463,19 +2936,14 @@ class TestExceedsMaxRetries:
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
             mock_env.redis_max_deliveries = 11
-            mock_env.max_pending_indexing_tasks = 100
-            mock_env.max_concurrent_parsing = 5
-            mock_env.max_concurrent_indexing = 10
             result = await consumer._should_dead_letter(
                 "topic-a", "2-0", stable_message_id="stable-1"
             )
 
-        assert result is True
-        consumer.redis.xack.assert_awaited_once_with(
-            "topic-a", consumer.config.group_id, "2-0"
-        )
+        assert result is False
+        consumer.redis.xack.assert_not_awaited()
+        consumer.redis.xpending_range.assert_not_awaited()
         consumer.retry_manager.get_count.assert_awaited_once_with("stable-1")
-        consumer.retry_manager.clear.assert_awaited_once_with("stable-1")
 
     @pytest.mark.asyncio
     async def test_app_counter_alone_still_dead_letters_with_retry_manager(
@@ -2506,12 +2974,7 @@ class TestExceedsMaxRetries:
         consumer.redis.xpending_range.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_backstop_fires_when_app_counter_lookup_raises(self, consumer):
-        """A RetryManager lookup error must not skip the times_delivered
-        backstop: it used to share a try/except with the backstop, so an
-        exception from the app-tracked count check returned False before
-        ever reaching xpending_range, even though the backstop doesn't
-        depend on that lookup succeeding."""
+    async def test_a_failed_lookup_of_the_failure_count_leaves_the_entry_pending(self, consumer):
         consumer.retry_manager = AsyncMock()
         consumer.retry_manager.get_count = AsyncMock(
             side_effect=Exception("redis down")
@@ -2527,15 +2990,10 @@ class TestExceedsMaxRetries:
         ) as mock_env:
             mock_env.max_delivery_attempts = 10
             mock_env.redis_max_deliveries = 11
-            mock_env.max_pending_indexing_tasks = 100
-            mock_env.max_concurrent_parsing = 5
-            mock_env.max_concurrent_indexing = 10
             result = await consumer._should_dead_letter("topic-a", "1-0")
 
-        assert result is True
-        consumer.redis.xack.assert_awaited_once_with(
-            "topic-a", consumer.config.group_id, "1-0"
-        )
+        assert result is False
+        consumer.redis.xack.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_backstop_does_not_abandon_while_a_sibling_delivery_is_in_flight(

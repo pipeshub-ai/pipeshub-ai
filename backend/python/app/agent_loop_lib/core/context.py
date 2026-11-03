@@ -29,6 +29,11 @@ class RunContext(BaseModel):
     # agent_id. None for solo spawns / the root agent — "team" only means
     # something for a genuinely concurrent sibling group.
     team_id: str | None = None
+    # The person's request the spawn tree works on, verbatim. Set on a
+    # sub-agent's context when it is spawned and inherited by its own
+    # children, so every child at any depth is told the same words rather
+    # than its parent's paraphrase of them.
+    user_request: str | None = None
 
     def child(self, role_name: str, model: str | None = None, team_id: str | None = None) -> "RunContext":
         """Create a RunContext for a sub-agent, inheriting the trace_id."""
@@ -39,6 +44,7 @@ class RunContext(BaseModel):
             model=model or self.model,
             spawn_depth=self.spawn_depth + 1,
             team_id=team_id,
+            user_request=self.user_request,
         )
 
 

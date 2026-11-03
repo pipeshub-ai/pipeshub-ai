@@ -9,6 +9,7 @@ import pytest
 
 from app.agent_loop_lib.core.types import Source, ToolResult
 from app.agent_loop_lib.tools.summarizer import ToolCallSummary
+from app.agents.actions.util.tool_summaries import inline_args
 from app.agents.agent_loop.tool_summarizer import (
     PipesHubToolSummarizer,
     _extract_record_summaries,
@@ -352,6 +353,29 @@ class TestSandbox:
         summary = self.summarizer.summarize_result("run_code", {}, r)
         assert "SyntaxError" in summary.result_summary
 
+    def test_sandbox_result_non_zero_exit_names_the_error(self) -> None:
+        r = _result(content={
+            "stdout": "", "stderr": "Traceback (most recent call last):\n  ...\nZeroDivisionError: division by zero",
+            "exit_code": 1, "error_analysis": {"category": "runtime", "message": "ZeroDivisionError: division by zero"},
+        })
+        summary = self.summarizer.summarize_result("run_code", {}, r)
+        assert summary.result_summary == "Failed with exit code 1: ZeroDivisionError: division by zero"
+
+    def test_sandbox_result_non_zero_exit_falls_back_to_stderr(self) -> None:
+        r = _result(content={"stdout": "", "stderr": "Killed\n", "exit_code": 137, "error_analysis": None})
+        summary = self.summarizer.summarize_result("run_code", {}, r)
+        assert summary.result_summary == "Failed with exit code 137: Killed"
+
+    def test_sandbox_result_zero_exit_is_success(self) -> None:
+        r = _result(content={"stdout": "42", "stderr": "", "exit_code": 0})
+        summary = self.summarizer.summarize_result("run_code", {}, r)
+        assert summary.result_summary == "Executed successfully"
+
+    def test_install_packages_failure(self) -> None:
+        r = _result(content={"success": False, "installed": [], "stdout": "", "stderr": "ERROR: No matching distribution"})
+        summary = self.summarizer.summarize_result("install_packages", {}, r)
+        assert summary.result_summary == "Failed: ERROR: No matching distribution"
+
 
 # ---------------------------------------------------------------------------
 # create_plan / spawn_agent / task_complete
@@ -441,9 +465,31 @@ class TestGenericArgs:
         assert len(result) < 120
         assert result.endswith("…\"")
 
-    def test_no_matching_key(self):
-        result = _generic_args_formatter({"foo": "bar"}, "app__tool")
-        assert result == "Tool"
+    def test_no_matching_key_lists_the_arguments(self) -> None:
+        result = _generic_args_formatter({"foo": "bar", "limit": 5}, "app__tool")
+        assert result == 'Tool — foo: "bar", limit: 5'
+
+    def test_no_arguments_is_just_the_label(self) -> None:
+        assert _generic_args_formatter({}, "app__tool") == "Tool"
+
+
+class TestInlineArgs:
+    def test_none_for_no_arguments(self) -> None:
+        assert inline_args({}) is None
+
+    def test_scalars_render_as_json_literals(self) -> None:
+        assert inline_args({"a": None, "b": True, "c": 1.5}) == "a: null, b: true, c: 1.5"
+
+    def test_collections_are_summarized(self) -> None:
+        assert inline_args({"ids": [1, 2], "one": [1], "filter": {"x": 1}}) == 'ids: [2 items], one: [1 item], filter: {…}'
+
+    def test_long_strings_are_truncated(self) -> None:
+        text = inline_args({"q": "x" * 200})
+        assert text.startswith('q: "') and text.endswith('…"')
+        assert len(text) < 100
+
+    def test_stops_after_max_items(self) -> None:
+        assert inline_args({"a": 1, "b": 2, "c": 3, "d": 4}) == "a: 1, b: 2, c: 3, …"
 
     def test_skips_empty_string(self):
         result = _generic_args_formatter({"query": "  ", "text": "real"}, "app__tool")

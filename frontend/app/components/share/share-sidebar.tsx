@@ -1,7 +1,11 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
+import { useTranslation } from 'react-i18next';
+
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
+import { AlertDialog, Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useAuthStore } from '@/config';
@@ -18,7 +22,8 @@ const SCROLL_THRESHOLD_PX = 40;
 import { ShareSearchInput } from './share-search-input';
 import { ShareableRow } from './shareable-row';
 import {
-  SHARE_ROLE_LABELS,
+  getShareRoleLabels,
+  ShareFeedbackShownError,
   type ShareAdapter,
   type SharedMember,
   type ShareTeam,
@@ -47,6 +52,9 @@ export function ShareSidebar({
   onShareSuccess,
   headerContent,
 }: ShareSidebarProps) {
+  const isMobile = useIsMobile();
+  const { t } = useTranslation();
+  const roleLabels = getShareRoleLabels(t);
   const currentUser = useAuthStore((s) => s.user);
 
   // View toggle
@@ -59,6 +67,7 @@ export function ShareSidebar({
   // Tracks whether any portaled role dropdown is open — used to suppress the
   // dialog's outside-click handler while the dropdown is active.
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
+  const [pendingRemoval, setPendingRemoval] = useState<SharedMember | null>(null);
 
   // Fetched data
   const [suggestedTeams, setSuggestedTeams] = useState<ShareTeam[]>([]);
@@ -251,21 +260,24 @@ export function ShareSidebar({
       setExistingMembers(updatedMembers);
 
       const names = selectedItems.map((s) => s.name).join(', ');
-      toast.success('Access shared', { description: `Shared with ${names}` });
+      toast.success(t('shareSidebar.accessShared'), { description: t('shareSidebar.sharedWith', { names }) });
 
       setSelectedItems([]);
       updateSearchQuery('');
+      // Least privilege: the next person starts at the default level, not the last pick.
+      setSelectedRole('READER');
 
       onShareSuccess?.();
     } catch (error) {
+      if (error instanceof ShareFeedbackShownError) return;
       // Error is already processed by apiClient interceptor
       const processedError = error as { message?: string };
-      const message = processedError?.message ?? 'Could not share access. Please try again.';
-      toast.error('Failed to share', { description: message });
+      const message = processedError?.message ?? t('shareSidebar.shareError');
+      toast.error(t('shareSidebar.shareFailed'), { description: message });
     } finally {
       setIsSubmitting(false);
     }
-  }, [selectedItems, selectedRole, adapter, onShareSuccess, updateSearchQuery]);
+  }, [selectedItems, selectedRole, adapter, onShareSuccess, updateSearchQuery, t]);
 
   // Update role for existing member.
   // Note: the "at least one owner must remain" invariant is enforced server-side;
@@ -283,41 +295,65 @@ export function ShareSidebar({
             m.id === memberId ? { ...m, role: newRole, isOwner: newRole === 'OWNER' } : m
           )
         );
-        toast.success('Role updated', {
-          description: `${member?.name ?? 'Member'} is now a ${newRole.toLowerCase()}`,
+        toast.success(t('shareSidebar.roleUpdated'), {
+          description: t('shareSidebar.roleUpdatedDescription', {
+            name: member?.name ?? t('shareSidebar.member'),
+            role: (adapter.roleOptions?.labels ?? getShareRoleLabels(t))[newRole].label,
+          }),
         });
       } catch (error) {
+        if (error instanceof ShareFeedbackShownError) return;
         // Error is already processed by apiClient interceptor
         const processedError = error as { message?: string };
-        const message = processedError?.message ?? 'Could not update role. Please try again.';
-        toast.error('Failed to update role', { description: message });
+        const message = processedError?.message ?? t('shareSidebar.roleError');
+        toast.error(t('shareSidebar.roleFailed'), { description: message });
       }
     },
-    [adapter, existingMembers]
+    [adapter, existingMembers, t]
   );
 
   // Remove member.
   // Note: the "at least one owner must remain" invariant is enforced server-side.
-  const handleRemoveMember = useCallback(
+  const removeMemberNow = useCallback(
     async (memberId: string, memberType: 'user' | 'team') => {
       const member = existingMembers.find((m) => m.id === memberId);
       // Users cannot remove themselves (use the leave/revoke own access flow instead)
       if (member?.isCurrentUser) return;
+      const name = member?.name ?? t('shareSidebar.member');
       try {
-        await adapter.removeMember(memberId, memberType);
+        const result = await adapter.removeMember(memberId, memberType);
         setExistingMembers((prev) => prev.filter((m) => m.id !== memberId));
-        toast.success('Access revoked', {
-          description: `${member?.name ?? 'Member'} no longer has access`,
-        });
+        if (result && result.removed === false) {
+          toast.info(t('shareSidebar.alreadyRemoved'), {
+            description: t('shareSidebar.alreadyRemovedDescription', { name }),
+          });
+        } else {
+          toast.success(t('shareSidebar.accessRevoked'), {
+            description: t('shareSidebar.accessRevokedDescription', { name }),
+          });
+        }
         onShareSuccess?.();
       } catch (error) {
+        if (error instanceof ShareFeedbackShownError) return;
         // Error is already processed by apiClient interceptor
         const processedError = error as { message?: string };
-        const message = processedError?.message ?? 'Could not remove access. Please try again.';
-        toast.error('Failed to revoke access', { description: message });
+        const message = processedError?.message ?? t('shareSidebar.revokeError');
+        toast.error(t('shareSidebar.revokeFailed'), { description: message });
       }
     },
-    [adapter, existingMembers, onShareSuccess]
+    [adapter, existingMembers, onShareSuccess, t]
+  );
+
+  const handleRemoveMember = useCallback(
+    (memberId: string, memberType: 'user' | 'team') => {
+      if (!adapter.confirmBeforeRemove) {
+        void removeMemberNow(memberId, memberType);
+        return;
+      }
+      const member = existingMembers.find((m) => m.id === memberId && m.type === memberType);
+      if (member && !member.isCurrentUser) setPendingRemoval(member);
+    },
+    [adapter.confirmBeforeRemove, existingMembers, removeMemberNow]
   );
 
   // Team created callback
@@ -351,19 +387,13 @@ export function ShareSidebar({
           }
         }}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
+          backdropFilter: 'var(--frost-filter)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -384,8 +414,6 @@ export function ShareSidebar({
               style={{
                 padding: '12px 16px',
                 borderBottom: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
                 flexShrink: 0,
               }}
             >
@@ -395,7 +423,7 @@ export function ShareSidebar({
                   color="gray"
                   size="2"
                   onClick={() => setCurrentView('share')}
-                  aria-label="Back"
+                  aria-label={t('common.back')}
                 >
                   <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />
                 </IconButton>
@@ -412,15 +440,17 @@ export function ShareSidebar({
                   <MaterialIcon name="group" size={16} color="var(--slate-11)" />
                 </Flex>
                 <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  Create Team
+                  {t('workspace.teams.createTeam')}
                 </Text>
               </Flex>
               <IconButton
                 variant="ghost"
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ margin: 0 }}
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
-                aria-label="Close"
+                aria-label={t('common.close')}
               >
                 <MaterialIcon name="close" size={18} color="var(--slate-11)" />
               </IconButton>
@@ -444,8 +474,6 @@ export function ShareSidebar({
               style={{
                 padding: '12px 16px',
                 borderTop: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
                 flexShrink: 0,
               }}
             >
@@ -456,7 +484,7 @@ export function ShareSidebar({
                 onClick={() => setCurrentView('share')}
                 disabled={createFormState.isSubmitting}
               >
-                Cancel
+                {t('action.cancel')}
               </Button>
               <LoadingButton
                 variant="solid"
@@ -464,9 +492,9 @@ export function ShareSidebar({
                 onClick={() => createFormRef.current?.submit()}
                 disabled={!createFormState.isValid}
                 loading={createFormState.isSubmitting}
-                loadingLabel="Creating..."
+                loadingLabel={t('action.creating')}
               >
-                Create Team
+                {t('workspace.teams.createTeam')}
               </LoadingButton>
             </Flex>
           </Flex>
@@ -479,8 +507,6 @@ export function ShareSidebar({
               style={{
                 padding: '8px 16px',
                 borderBottom: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -488,6 +514,8 @@ export function ShareSidebar({
               </Text>
               <IconButton
                 variant="ghost"
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ margin: 0 }}
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
@@ -497,12 +525,15 @@ export function ShareSidebar({
             </Flex>
 
             {/* Search input */}
-            <Box style={{ padding: '16px 16px 8px', background: 'var(--effects-translucent)', backdropFilter: 'blur(8px)' }}>
+            <Box style={{ padding: '16px 16px 8px' }}>
               <ShareSearchInput
                 selections={selectedItems}
                 searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
+                supportsTeams={adapter.supportsTeams}
+                teamsHaveRoles={adapter.teamsHaveRoles}
+                roleOptions={adapter.roleOptions}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
                 onRoleChange={setSelectedRole}
@@ -521,8 +552,6 @@ export function ShareSidebar({
                 flex: 1,
                 overflow: 'auto',
                 padding: '0 16px 16px',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               {headerContent}
@@ -549,14 +578,14 @@ export function ShareSidebar({
                           fontStyle: 'normal',
                         }}
                       >
-                        Suggested teams
+                        {t('shareSidebar.suggestedTeams')}
                       </Text>
                       {filteredTeams.map((team) => (
                         <ShareableRow
                           key={team.id}
                           type="team"
                           name={team.name}
-                          subtitle={`${team.memberCount} member${team.memberCount !== 1 ? 's' : ''}`}
+                          subtitle={t('shareSidebar.memberCount', { count: team.memberCount })}
                           isSelected={selectedIds.has(team.id)}
                           showRadio
                           onToggle={() =>
@@ -588,7 +617,7 @@ export function ShareSidebar({
                           fontStyle: 'normal',
                         }}
                       >
-                        Suggested members
+                        {t('shareSidebar.suggestedMembers')}
                       </Text>
                       {/* Cap suggestions at 5; search narrows further */}
                       {filteredMembers.slice(0, 5).map((user) => (
@@ -629,7 +658,7 @@ export function ShareSidebar({
                           letterSpacing: '0.05em',
                         }}
                       >
-                        Members
+                        {t('workspace.teams.detail.members')}
                       </Text>
                       {/* Teams first, then users */}
                       {[...existingMembers]
@@ -639,7 +668,7 @@ export function ShareSidebar({
                         })
                         .map((member) => (
                         <ShareableRow
-                          key={member.id}
+                          key={`${member.type}:${member.id}`}
                           type={member.type === 'user' ? 'member' : 'team'}
                           name={member.name}
                           subtitle={member.email}
@@ -648,9 +677,11 @@ export function ShareSidebar({
                           isOwner={member.isOwner}
                           role={member.role}
                           showRoleDropdown={!member.isCurrentUser}
+                          roleOptions={adapter.roleOptions}
+                          teamHasRoles={adapter.teamsHaveRoles}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
-                              ? { title: SHARE_ROLE_LABELS[member.role]?.label ?? 'Can view', description: SHARE_ROLE_LABELS[member.role]?.description ?? '' }
+                              ? { title: roleLabels[member.role]?.label ?? roleLabels.READER.label, description: roleLabels[member.role]?.description ?? '' }
                               : undefined
                           }
                           onRoleChange={
@@ -668,7 +699,7 @@ export function ShareSidebar({
                   {/* Loading more indicator */}
                   {paginated.isLoadingMore && (
                     <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'center', padding: 8, display: 'block' }}>
-                      Loading more users...
+                      {t('shareSidebar.loadingMoreUsers')}
                     </Text>
                   )}
 
@@ -682,7 +713,7 @@ export function ShareSidebar({
                         style={{ padding: '40px 0' }}
                       >
                         <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                          No users or teams found
+                          {t('shareSidebar.noResults')}
                         </Text>
                       </Flex>
                     )}
@@ -699,8 +730,6 @@ export function ShareSidebar({
                 padding: '12px 16px',
                 borderTop: '1px solid var(--olive-3)',
                 flexShrink: 0,
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               <Button
@@ -710,7 +739,7 @@ export function ShareSidebar({
                 onClick={() => onOpenChange(false)}
                 // style={{borderRadius: 'var(--radius-2)', border: '1px solid var(--slate-a8)'}}
               >
-                Cancel
+                {t('action.cancel')}
               </Button>
 
               {adapter.supportsTeams && (
@@ -719,7 +748,7 @@ export function ShareSidebar({
                   size="2"
                   onClick={() => setCurrentView('create-team')}
                 >
-                  Create a New Team
+                  {t('shareSidebar.createNewTeam')}
                 </Button>
               )}
 
@@ -729,14 +758,40 @@ export function ShareSidebar({
                 onClick={handleShare}
                 disabled={selectedItems.length === 0 || selectedItems.some((s) => s.isInvalid)}
                 loading={isSubmitting}
-                loadingLabel="Sharing..."
+                loadingLabel={t('shareSidebar.sharing')}
                 style={selectedItems.length > 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) ? { backgroundColor: 'var(--emerald-10)' } : undefined}
               >
-                Share
+                {t('action.share')}
               </LoadingButton>
             </Flex>
           </Flex>
         )}
+        <AlertDialog.Root open={pendingRemoval !== null} onOpenChange={(next) => !next && setPendingRemoval(null)}>
+          <AlertDialog.Content style={{ maxWidth: '24rem' }}>
+            <AlertDialog.Title size="3">{t('shareSidebar.removeConfirmTitle')}</AlertDialog.Title>
+            <AlertDialog.Description size="2">
+              {t('shareSidebar.removeConfirmDescription', { name: pendingRemoval?.name ?? t('shareSidebar.member') })}
+            </AlertDialog.Description>
+            <Flex gap="2" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray">
+                  {t('action.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action>
+                <Button
+                  color="red"
+                  onClick={() => {
+                    if (pendingRemoval) void removeMemberNow(pendingRemoval.id, pendingRemoval.type);
+                    setPendingRemoval(null);
+                  }}
+                >
+                  {t('action.remove')}
+                </Button>
+              </AlertDialog.Action>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
       </Dialog.Content>
     </Dialog.Root>
   );

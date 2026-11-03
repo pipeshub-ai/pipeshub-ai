@@ -1,5 +1,6 @@
 """Comprehensive tests for Web connector - extended coverage for uncovered methods."""
 
+import asyncio
 import base64
 import hashlib
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, FILE_MIME_TYPES, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
@@ -29,10 +31,10 @@ from app.connectors.sources.web.connector import (
     WebApp,
     WebConnector,
     _bytes_async_gen,
+    failed_page_reason,
 )
 from app.connectors.sources.web.fetch_strategy import MAX_RATE_LIMIT_BACKOFF, FetchResponse
 from app.models.entities import RecordType
-from app.models.permission import EntityType, Permission, PermissionType
 from PIL import Image as PILImage
 
 _TINY_PNG = base64.b64decode(
@@ -56,6 +58,8 @@ def _make_connector(scope: str = "personal", created_by: str = "test-user-id"):
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
@@ -83,6 +87,8 @@ def _make_connector(scope: str = "personal", created_by: str = "test-user-id"):
     )
     c.record_sync_point.read_sync_point = AsyncMock(return_value={})
     c.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 
@@ -432,8 +438,6 @@ class TestDetermineMimeTypeComprehensive:
         assert mime == MimeTypes.HEIF
 
     def test_docx_content_type_via_url(self):
-        # Note: The openxml content-type contains 'xml' which matches earlier in the code.
-        # DOCX is detected via URL extension fallback or via msword content-type.
         c = _make_connector()
         mime, ext = c._determine_mime_type("https://example.com/doc.docx", "")
         assert mime == MimeTypes.DOCX
@@ -817,34 +821,14 @@ class TestCleanDataUris:
 # ===========================================================================
 class TestCreateWebPermissions:
     @pytest.mark.asyncio
-    async def test_team_scope_org_read(self):
-        c = _make_connector(scope=ConnectorScope.TEAM.value)
+    @pytest.mark.parametrize("scope", [ConnectorScope.TEAM.value, ConnectorScope.PERSONAL.value])
+    async def test_group_inherits_the_app_and_has_no_grants(self, scope):
+        c = _make_connector(scope=scope)
         c.url = "https://example.com"
-        await c.create_record_group([])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.ORG
-
-    @pytest.mark.asyncio
-    async def test_personal_with_app_users_grants_user_read(self):
-        c = _make_connector()
-        c.url = "https://example.com"
-        app_user = MagicMock()
-        app_user.email = "owner@example.com"
-        await c.create_record_group([app_user])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.USER
-        assert perms[0].email == "owner@example.com"
-
-    @pytest.mark.asyncio
-    async def test_personal_without_creator_yields_no_permissions(self):
-        c = _make_connector()
-        c.url = "https://example.com"
-        await c.create_record_group([])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        await c.create_record_group()
+        group, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert group.inherit_permissions is True
+        # [] rather than None, so a re-sync clears grants an older version stored.
         assert perms == []
 
     @pytest.mark.asyncio
@@ -855,18 +839,7 @@ class TestCreateWebPermissions:
             side_effect=RuntimeError("perm fail")
         )
         with pytest.raises(RuntimeError, match="perm fail"):
-            await c.create_record_group([])
-
-
-class TestCreateRecordGroupTeam:
-    @pytest.mark.asyncio
-    async def test_team_without_app_users_uses_org_permission(self):
-        c = _make_connector(scope=ConnectorScope.TEAM.value)
-        c.url = "https://example.com"
-        c.connector_name = Connectors.WEB
-        await c.create_record_group([])
-        _, permissions = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert permissions[0].entity_type == EntityType.ORG
+            await c.create_record_group()
 
 
 class TestReloadConfigOrchestration:
@@ -1341,7 +1314,7 @@ class TestFetchAndProcessUrlOrchestration:
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
             return_value=None,
-        ):
+        ), patch.object(c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             result = await c._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
         assert "https://example.com/page" in c.retry_urls
@@ -1432,7 +1405,7 @@ class TestFetchAndProcessUrlOrchestration:
         with patch(
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
-        ) as mock_fetch:
+        ) as mock_fetch, patch.object(c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             mock_fetch.return_value = FetchResponse(
                 status_code=code,
                 content_bytes=b"",
@@ -1443,6 +1416,29 @@ class TestFetchAndProcessUrlOrchestration:
             result = await c._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
         assert c.retry_urls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [asyncio.TimeoutError(), RuntimeError("browser crashed")])
+    async def test_a_failed_headless_fallback_still_queues_the_retry(self, failure) -> None:
+        c = _make_connector()
+        c.url = "https://example.com"
+        c.base_domain = "https://example.com"
+        c.session = MagicMock()
+        c.max_size_mb = 10
+        c.retry_urls = {}
+        c._normalize_url = MagicMock(return_value="https://example.com/page")
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=FetchResponse(
+                status_code=429, content_bytes=b"", headers={},
+                final_url="https://example.com/page", strategy="aiohttp",
+            ),
+        ), patch.object(c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=MagicMock()), \
+                patch.object(c, "_headless_fetch", new_callable=AsyncMock, side_effect=failure):
+            result = await c._fetch_and_process_url("https://example.com/page", 0)
+        assert result is None
+        assert "https://example.com/page" in c.retry_urls
 
     @pytest.mark.asyncio
     async def test_success_clears_pending_retry(self):
@@ -1520,6 +1516,7 @@ class TestFetchAndProcessUrlOrchestration:
         existing.id = "rec-1"
         existing.record_name = "Old"
         existing.external_revision_id = "oldhash"
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
@@ -1606,7 +1603,9 @@ class TestFetchAndProcessUrlOrchestration:
         # Re-crawled unchanged: same name, parent and content hash as what was stored.
         unchanged = MagicMock()
         unchanged.id = "rec-1"
+        unchanged.is_internal = False
         unchanged.version = 7
+        unchanged.etag = unchanged.ctag = None
         unchanged.record_name = first.record.record_name
         unchanged.parent_external_record_id = first.record.parent_external_record_id
         unchanged.external_revision_id = first.record.external_revision_id
@@ -1619,7 +1618,9 @@ class TestFetchAndProcessUrlOrchestration:
         # Content changed: the stored hash no longer matches what was fetched.
         changed = MagicMock()
         changed.id = "rec-1"
+        changed.is_internal = False
         changed.version = 7
+        changed.etag = changed.ctag = None
         changed.record_name = first.record.record_name
         changed.parent_external_record_id = first.record.parent_external_record_id
         changed.external_revision_id = "a-different-hash"
@@ -1631,7 +1632,9 @@ class TestFetchAndProcessUrlOrchestration:
         # That is a rewrite, not a change to the page, so the version is carried over.
         legacy = MagicMock()
         legacy.id = "rec-1"
+        legacy.is_internal = False
         legacy.version = 7
+        legacy.etag = legacy.ctag = None
         legacy.record_name = first.record.record_name
         legacy.parent_external_record_id = first.record.parent_external_record_id
         legacy.external_revision_id = first.record.external_revision_id
@@ -1661,8 +1664,10 @@ class TestFetchAndProcessUrlOrchestration:
         html = b"<html><head><title>New</title></head><body>body</body></html>"
         existing = MagicMock()
         existing.id = "rec-1"
+        existing.is_internal = False
         existing.record_name = "Old"
         existing.external_revision_id = "stale"
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = "https://example.com/"
         existing.indexing_status = ProgressStatus.QUEUED.value
         existing.extraction_status = "QUEUED"
@@ -2283,7 +2288,35 @@ class TestStreamRecordComprehensive:
         ):
             with pytest.raises(HTTPException) as exc:
                 await c.stream_record(record)
-        assert exc.value.status_code == 409
+        # Nor as "reconnect the connector": a page behind a login is refused for good.
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("site_status", "our_status"),
+        [(400, 422), (401, 403), (403, 403), (404, 404), (429, 429), (500, 502), (503, 502), (None, 502)],
+    )
+    async def test_a_refused_page_says_what_the_site_answered(self, site_status: int | None, our_status: int) -> None:
+        c = _make_connector()
+        c.session = MagicMock()
+        record = MagicMock(
+            weburl="https://example.com/page", record_name="Page", id="r1",
+            mime_type="text/html", storage_document_id=None,
+        )
+        answer = None if site_status is None else FetchResponse(
+            status_code=site_status, content_bytes=b"", headers={},
+            final_url="https://example.com/page", strategy="aiohttp", success=False,
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=answer,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await c.stream_record(record)
+        assert exc.value.status_code == our_status
+        assert exc.value.detail == failed_page_reason(site_status)
+        # A refusal is marked; the site being down or unreachable is an outage, not a refusal.
+        assert (SOURCE_REFUSAL_HEADER in (exc.value.headers or {})) == (our_status < 500)
 
     @pytest.mark.asyncio
     async def test_failed_fetch_with_2xx_status_is_not_streamed_as_empty(self):
@@ -2585,7 +2618,10 @@ class TestWebConnectorRemainingCoverageGaps:
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
             side_effect=RuntimeError("fetch boom"),
-        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock), patch(
+            # No backoff: with sleep mocked, a pending backoff would never elapse and the retry loop would spin.
+            "app.connectors.sources.web.connector._BACKOFF_BASE", 0,
+        ):
             results = []
             async for ru in c._crawl_recursive_generator("https://example.com", 0):
                 results.append(ru)
@@ -2703,8 +2739,10 @@ class TestWebConnectorRemainingCoverageGaps:
         c._store_crawled_content = AsyncMock(return_value=None)
         existing = MagicMock()
         existing.id = "rec-1"
+        existing.is_internal = False
         existing.record_name = "Same"
         existing.external_revision_id = content_hash
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = "https://example.com/wrong-parent/"
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"

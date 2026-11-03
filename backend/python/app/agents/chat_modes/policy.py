@@ -61,6 +61,9 @@ class ChatModePolicy:
             mode-specific addendum to the agent's system prompt (mirrors
             today's `get_model_config_for_mode()["system_prompt"]` framing,
             e.g. "answer ONLY from internal knowledge" for internal_search).
+        deep_research: research thoroughly on the web before answering (agent
+            mode's `deepSearch` capability, only with web search on). Kept apart
+            from `system_prompt_key` so the agent's custom instructions still apply.
     """
 
     name: str
@@ -68,6 +71,7 @@ class ChatModePolicy:
     include_web_search: bool
     prefetch_retrieval: bool
     system_prompt_key: str
+    deep_research: bool = False
 
     @property
     def loop_chat_mode(self) -> str:
@@ -113,6 +117,7 @@ def resolve_agent_policy(capabilities: AgentCapabilities | None = None) -> ChatM
         include_web_search=caps.web_search,
         prefetch_retrieval=False,
         system_prompt_key="agent",
+        deep_research=caps.deep_search and caps.web_search,
     )
 
 

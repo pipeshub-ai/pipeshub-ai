@@ -16,12 +16,17 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 
 from app.models.blocks import BlocksContainer
-from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
+from app.modules.parsers.html_parser.html_to_blocks import (
+    ORIGINAL_ALT_ATTR,
+    HtmlToBlocksConverter,
+)
 from app.modules.parsers.html_parser.url_utils import replace_relative_image_urls
+from app.modules.parsers.text_decoding import decode_text
 
 
 class SelectolaxHtmlParser:
@@ -53,10 +58,7 @@ class SelectolaxHtmlParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if isinstance(content, bytes):
-            html_content = content.decode("utf-8")
-        else:
-            html_content = content
+        html_content = decode_text(content, html=True)
 
         html_content = html_content.strip()
 
@@ -72,7 +74,9 @@ class SelectolaxHtmlParser:
         if images:
             
             urls_to_convert = [image["url"] for image in images]
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
 
             for i, image in enumerate(images):
                 if base64_urls[i]:
@@ -161,7 +165,8 @@ class SelectolaxHtmlParser:
 
         Returns:
             A 2-tuple of:
-            - Modified HTML with ``alt`` attributes rewritten to ``Image_N``.
+            - Modified HTML with ``alt`` attributes rewritten to ``Image_N``
+              and the author's alt kept in ``data-ph-alt``.
             - List of dicts describing each image::
 
                 {
@@ -184,12 +189,18 @@ class SelectolaxHtmlParser:
                         src = first_part[0].strip()
             if not src:
                 continue
-            if src.startswith("data:"):
+            # A raster data: image already is the image; the converter stores it
+            # as it is. Anything else, an SVG or another data: URI, is reported
+            # for the caller to rasterise or refuse.
+            if is_inline_raster_image(src):
                 continue
 
             original_alt = img_tag.get("alt", "").strip()
             new_alt = f"Image_{image_counter}"
             img_tag["alt"] = new_alt
+            # The key replaces the only description the image has; the
+            # converter reads it back as the image's alt text and caption.
+            img_tag[ORIGINAL_ALT_ATTR] = original_alt
             images.append({
                 "url": src,
                 "alt_text": original_alt,

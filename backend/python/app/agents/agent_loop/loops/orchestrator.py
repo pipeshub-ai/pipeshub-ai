@@ -199,6 +199,7 @@ def domain_spec_factory(
     default_tool_names: list[str],
     context: "AgentContext | None" = None,
     max_turns: int = _SUB_AGENT_MAX_TURNS,
+    context_window: int | None = None,
 ) -> "Callable[..., AgentSpec]":
     """Builds the `AgentRuntime.spec_factory` callable `spawn_agent` needs
     to resolve a domain "role" string into a concrete `AgentSpec` (see
@@ -214,9 +215,11 @@ def domain_spec_factory(
         model = overrides.get("model") or model_name
         return AgentSpec(
             name=f"pipeshub-subagent-{role_name}",
-            system_prompt=build_sub_agent_prompt(role_name, context),
+            system_prompt=build_sub_agent_prompt(role_name, context, tool_names=tool_names),
             tool_names=list(tool_names),
-            model=ModelSpec(provider=provider, model=model),
+            model=ModelSpec(
+                provider=provider, model=model, context_window=context_window if model == model_name else None,
+            ),
             loop=ReActLoop(),
             max_turns=max_turns,
         )
@@ -265,7 +268,7 @@ def _domain_overview(agent: "Agent") -> str:
         if isinstance(tool, AgentTool):
             agent_lines.append(f"- **{name}** (domain agent): {tool.short_description}")
             continue
-        domain = getattr(tool, "app_name", None)
+        domain = tool.app_name
         if not domain:
             domain = name.split("__", 1)[0] if "__" in name else name
         groups.setdefault(domain, []).append(name)
@@ -619,8 +622,15 @@ class OrchestratorLoop(LoopStrategy):
                 turn_index += 1
                 if outcome.status == "stop":
                     return outcome.result
-                if agent.last_tool_result("spawn_agent") is not None:
-                    if agent.has_successful_tool_result("spawn_agent"):
+                # Only this turn's spawns count: the phase gate refuses early
+                # spawn_agent calls during Phase 1, and a run-wide lookup would
+                # keep treating that refusal as a fresh failed dispatch.
+                spawn_results = [
+                    tr for tr in (outcome.turn.tool_results if outcome.turn else [])
+                    if tr.name == "spawn_agent"
+                ]
+                if spawn_results:
+                    if any(not tr.is_error for tr in spawn_results):
                         dispatched = True
                         break
                     dispatch_retries += 1

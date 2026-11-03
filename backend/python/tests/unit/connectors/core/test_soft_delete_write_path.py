@@ -1,0 +1,654 @@
+"""The record delete paths with ENABLE_SOFT_DELETE off and on.
+
+Off, every path is the hard delete, unchanged. On, the same paths mark the
+records (one batch id per action) and publish ``softDeleteRecords`` for their
+vectors, never ``deleteRecord``, which is what removes blob and Mongo content.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from app.config.constants.arangodb import (
+    Connectors,
+    DeleteSource,
+    EventTypes,
+    OriginTypes,
+)
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.services.vector_cleanup_events import (
+    MAX_VIRTUAL_RECORD_IDS_PER_EVENT,
+)
+from app.models.entities import FileRecord, Record, RecordType
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+MODULE = "app.connectors.core.base.data_processor.data_source_entities_processor"
+
+
+def _processor() -> DataSourceEntitiesProcessor:
+    proc = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), AsyncMock())
+    proc.org_id = "org-1"
+    proc.messaging_producer = AsyncMock()
+    proc.messaging_producer.send_messages = AsyncMock(side_effect=lambda topic, messages: [True] * len(messages))
+    return proc
+
+
+def _with_store(proc: DataSourceEntitiesProcessor, store: MagicMock) -> MagicMock:
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=store)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    proc.data_store_provider.transaction.return_value = ctx
+    return store
+
+
+def _soft_result(marked: list[tuple[str, str | None]], batch_id: str = "b-1") -> dict:
+    return {
+        "success": True,
+        "soft_deleted_records": [{"record_id": rid, "name": rid, "virtual_record_id": v} for rid, v in marked],
+        "failed_records": [],
+        "total_requested": 1,
+        "successfully_deleted": 1,
+        "failed_count": 0,
+        "virtual_record_ids": [v for _, v in marked if v],
+        "org_id": "org-1",
+        "batch_id": batch_id,
+    }
+
+
+def _event_types(proc: DataSourceEntitiesProcessor) -> list[str]:
+    return [c.args[1]["eventType"] for c in proc.messaging_producer.send_message.await_args_list]
+
+
+def flag(on: bool) -> AbstractContextManager[AsyncMock]:
+    return patch(f"{MODULE}.is_soft_delete_enabled", AsyncMock(return_value=on))
+
+
+class _AutoCommitGraph:
+    """One record under a parent, on a graph where each statement lands as it runs
+    (Neo4j's default) and the connection drops after the first write."""
+
+    def __init__(self) -> None:
+        self.logger = MagicMock()
+        self.record: dict | None = {"_key": "r1", "connectorId": "c1", "virtualRecordId": "v1"}
+        self.parent_edge = True
+        self.writes = 0
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
+    async def begin_transaction(self, read: list | None = None, write: list | None = None,
+                                explicit: bool | None = None) -> str:
+        self.explicit = explicit
+        return "txn"
+
+    async def commit_transaction(self, txn: str) -> None:
+        pass
+
+    async def rollback_transaction(self, txn: str) -> None:
+        pass  # Nothing to undo: every statement already committed.
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return False
+
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return False
+
+    async def get_document(self, key: str, collection: str, *, transaction: str | None = None,
+                           raise_on_error: bool = False) -> dict | None:
+        return dict(self.record) if self.record else None
+
+    def _statement(self) -> None:
+        self.writes += 1
+        if self.writes > 1:
+            raise RuntimeError("connection reset after the first statement")
+
+    async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
+        self._statement()
+        self.parent_edge = False
+        return True
+
+    async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
+        self._statement()
+        self.record, self.parent_edge = None, False  # DETACH DELETE
+        return True
+
+    async def delete_nodes_and_edges(self, keys: list[str], collection: str, graph_name: str = "knowledgeGraph",
+                                     transaction: str | None = None) -> None:
+        self._statement()
+        self.record, self.parent_edge = None, False
+
+    async def delete_blocks_for_records(self, record_ids: list[str], transaction: str | None = None) -> int:
+        self._statement()
+        return 0
+
+    async def delete_single_record(self, record_id: str, transaction: str | None = None) -> dict:
+        # DETACH DELETE: the record and every edge on it, including the parent
+        # edge, go in the same statement.
+        self._statement()
+        self.record, self.parent_edge = None, False
+        return {"success": True, "eventData": None}
+
+
+def _stored(record_id: str = "r1", **overrides) -> Record:
+    fields = {
+        "id": record_id, "org_id": "org-1", "record_name": "a.pdf", "record_type": RecordType.FILE,
+        "external_record_id": "ext-1", "version": 1, "origin": OriginTypes.CONNECTOR,
+        "connector_name": Connectors.GOOGLE_DRIVE, "connector_id": "c1",
+    }
+    fields.update(overrides)
+    return Record(**fields)
+
+
+# ---------------------------------------------------------------------------
+# Flag off: today's hard delete
+# ---------------------------------------------------------------------------
+
+
+class TestFlagOff:
+    async def test_a_connector_delete_removes_the_record(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        store.get_record_by_key = AsyncMock(return_value={"_key": "r1", "connectorId": "c1", "virtualRecordId": "v1"})
+        store.delete_single_record = AsyncMock(return_value={"success": True, "eventData": None})
+        orphans = [{"record_id": "child"}]
+        with flag(False), patch.object(proc, "_collect_orphans", AsyncMock(return_value=orphans)),                 patch.object(proc, "_reparent_orphans", AsyncMock()) as reparented:
+            await proc.on_record_deleted("r1")
+        store.delete_single_record.assert_awaited_once_with("r1")
+        reparented.assert_awaited_once_with(store, orphans)
+        # The delete takes the parent edge with it; a separate edge delete is a
+        # statement that can commit on its own and leave the record live.
+        store.delete_parent_child_edge_to_record.assert_not_called()
+        store.delete_record_by_key.assert_not_called()
+        store.get_record_by_key.assert_awaited_once_with("r1", raise_on_error=True)
+        store.soft_delete_records.assert_not_called()
+        assert EventTypes.SOFT_DELETE_RECORDS.value not in _event_types(proc)
+
+    async def test_a_failed_record_read_deletes_nothing(self) -> None:
+        """The store answers None to a failed read as well as to a missing record; read
+        as "nothing stored", the record was deleted with no cleanup event for its vectors."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_key = AsyncMock(side_effect=RuntimeError("LockAcquisitionTimeout"))
+        with flag(False), pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await proc.on_record_deleted("r1")
+        store.get_record_by_key.assert_awaited_once_with("r1", raise_on_error=True)
+        store.delete_record_by_key.assert_not_called()
+
+    async def test_a_failure_after_the_first_statement_leaves_no_live_record(self) -> None:
+        proc = _processor()
+        graph = _AutoCommitGraph()
+        proc.data_store_provider = GraphDataStore(proc.logger, graph)
+        with flag(False), contextlib.suppress(RuntimeError):
+            await proc.on_record_deleted("r1")
+        assert graph.explicit is True, "without an explicit transaction Neo4j commits each statement on its own"
+        assert graph.record is None, "the record stayed live, and searchable, after its parent edge was gone"
+        assert graph.parent_edge is False
+
+    async def test_a_cascade_removes_the_subtree(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.delete_records_recursive = AsyncMock(return_value={"success": True, "successfully_deleted": 1})
+        with flag(False):
+            await proc.on_records_deleted_cascade(["f1"], "kb1", delete_source=DeleteSource.USER)
+        store.delete_records_recursive.assert_awaited_once()
+        store.soft_delete_records.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Flag on: marked, vectors only
+# ---------------------------------------------------------------------------
+
+
+class TestFlagOn:
+    async def test_a_failed_read_raises_rather_than_dropping_the_delete(self) -> None:
+        """Like the real stores, the read answers None on a failure unless asked to raise."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+
+        async def read(key: str, *, raise_on_error: bool = False) -> None:
+            if raise_on_error:
+                raise RuntimeError("graph busy")
+
+        store.get_record_by_key = AsyncMock(side_effect=read)
+        with flag(True), pytest.raises(RuntimeError, match="graph busy"):
+            await proc.on_record_deleted("r1")
+        store.soft_delete_records.assert_not_called()
+
+    async def test_a_record_that_is_already_gone_is_left_alone(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_key = AsyncMock(return_value=None)
+        with flag(True):
+            await proc.on_record_deleted("r1")
+        store.soft_delete_records.assert_not_called()
+
+    async def test_a_connector_delete_marks_only_the_record(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_key = AsyncMock(return_value={"_key": "r1", "connectorId": "c1"})
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1")]))
+        with flag(True):
+            await proc.on_record_deleted("r1")
+
+        kwargs = store.soft_delete_records.await_args.kwargs
+        assert store.soft_delete_records.await_args.args == (["r1"], "c1")
+        assert kwargs["delete_source"] == DeleteSource.CONNECTOR.value
+        assert kwargs["follow"] == ()
+        assert kwargs["batch_id"]
+        store.delete_record_by_key.assert_not_called()
+        store.delete_parent_child_edge_to_record.assert_not_called()
+        assert _event_types(proc) == [EventTypes.SOFT_DELETE_RECORDS.value]
+        payload = proc.messaging_producer.send_message.await_args.args[1]["payload"]
+        assert payload["virtualRecordIds"] == ["v1"]
+        assert payload["batchId"] == kwargs["batch_id"]
+
+    @pytest.mark.parametrize(("cascade", "follow"), [
+        (True, ("PARENT_CHILD", "ATTACHMENT")),
+        (False, ("ATTACHMENT",)),
+    ])
+    async def test_a_user_folder_delete_is_one_batch(self, cascade, follow) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("f1", None), ("a", "va"), ("b", "vb")]))
+        with flag(True):
+            result = await proc.on_records_deleted_cascade(
+                ["f1"], "kb1", cascade, delete_source=DeleteSource.USER, deleted_by_user_id="uk1"
+            )
+
+        store.soft_delete_records.assert_awaited_once()
+        kwargs = store.soft_delete_records.await_args.kwargs
+        assert (kwargs["delete_source"], kwargs["deleted_by_user_id"], kwargs["follow"]) == ("USER", "uk1", follow)
+        store.delete_records_recursive.assert_not_called()
+        assert result["softDeleted"] is True
+        assert [r["record_id"] for r in result["deleted_records"]] == ["f1", "a", "b"]
+        (event,) = [c.args[1] for c in proc.messaging_producer.send_message.await_args_list]
+        assert event["eventType"] == EventTypes.SOFT_DELETE_RECORDS.value
+        assert event["payload"]["virtualRecordIds"] == ["va", "vb"]
+        assert event["payload"]["deleteSource"] == "USER"
+
+    async def test_each_action_gets_its_own_batch(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r", "v")]))
+        with flag(True):
+            await proc.on_records_deleted_cascade(["a"], "c1")
+            await proc.on_records_deleted_cascade(["b"], "c1")
+        batches = {c.kwargs["batch_id"] for c in store.soft_delete_records.await_args_list}
+        assert len(batches) == 2
+
+    async def test_many_vectors_are_sent_in_chunks(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        count = MAX_VIRTUAL_RECORD_IDS_PER_EVENT + 1
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([(f"r{i}", f"v{i}") for i in range(count)]))
+        with flag(True):
+            await proc.on_records_deleted_cascade(["root"], "c1")
+        sizes = [len(c.args[1]["payload"]["virtualRecordIds"]) for c in proc.messaging_producer.send_message.await_args_list]
+        assert sizes == [MAX_VIRTUAL_RECORD_IDS_PER_EVENT, 1]
+
+    async def test_an_unpublished_cleanup_is_reported_not_raised(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1")]))
+        proc.messaging_producer.send_message = AsyncMock(side_effect=RuntimeError("broker down"))
+        with flag(True), patch(f"{MODULE}.retry_async", AsyncMock(side_effect=RuntimeError("broker down"))):
+            result = await proc.on_records_deleted_cascade(["r1"], "c1")
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedVirtualRecordIds"] == ["v1"]
+
+    async def test_a_cleanup_the_broker_refuses_is_reported_as_unpublished(self) -> None:
+        """send_message answers False without raising when the broker refuses the event."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1")]))
+        proc.messaging_producer.send_message = AsyncMock(return_value=False)
+
+        async def once(fn, **_kwargs) -> object:
+            return await fn()
+
+        with flag(True), patch(f"{MODULE}.retry_async", once):
+            result = await proc.on_records_deleted_cascade(["r1"], "c1")
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedVirtualRecordIds"] == ["v1"]
+
+    async def test_an_unpublished_cleanup_names_the_records_like_the_hard_path(self) -> None:
+        """KB folder delete reads vectorCleanupFailedRecordIds; the soft path must set it too."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1"), ("r2", "v2"), ("r3", None)]))
+        with flag(True), patch.object(proc, "_publish_soft_delete_events", AsyncMock(return_value=["v2"])):
+            result = await proc.on_records_deleted_cascade(["r1"], "c1")
+        assert result["vectorCleanupFailedRecordIds"] == ["r2"]
+
+    async def test_a_failed_mark_raises(self) -> None:
+        """Nothing was marked, so nothing may be reported as deleted."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(side_effect=RuntimeError("graph down"))
+        with flag(True), pytest.raises(RuntimeError, match="graph down"):
+            await proc.on_records_deleted_cascade(["r1"], "c1")
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_the_counter_counts_marked_records_by_source(self) -> None:
+        proc = _processor()
+        _with_store(proc, AsyncMock()).soft_delete_records = AsyncMock(
+            return_value=_soft_result([("a", "va"), ("b", None)])
+        )
+        with flag(True), patch(f"{MODULE}.record_soft_deleted") as counted:
+            await proc.on_records_deleted_cascade(["a"], "kb1", delete_source=DeleteSource.USER)
+        counted.assert_called_once_with("USER", 2)
+
+
+# ---------------------------------------------------------------------------
+# Delete by external id (Outlook's sync delete)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteByExternalId:
+    """The record is looked up and handed to the cascade: its ATTACHMENT
+    descendants go with it, its PARENT_CHILD children stay."""
+
+    async def test_flag_off_hard_deletes_the_record_and_its_attachments(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.delete_records_recursive = AsyncMock(return_value={"success": True, "successfully_deleted": 1})
+        with flag(False), patch.object(proc, "_records_above_survivors", AsyncMock(return_value=({}, {}))),                 patch.object(proc, "_reparent_orphans", AsyncMock()):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+
+        store.get_record_by_external_id.assert_awaited_once_with("c1", "msg-1")
+        store.delete_records_recursive.assert_awaited_once_with(
+            ["m1"], "c1", cascade_children=False, within_folder_id=None, include_trashed_roots=True,
+        )
+        store.soft_delete_records.assert_not_called()
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_flag_on_trashes_what_the_hard_delete_removes_as_a_connector_delete(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("m1", "vm"), ("a1", "va")]))
+        with flag(True), patch(f"{MODULE}.record_soft_deleted") as counted:
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+
+        call = store.soft_delete_records.await_args
+        assert call.args == (["m1"], "c1")
+        assert call.kwargs["delete_source"] == DeleteSource.CONNECTOR.value
+        assert call.kwargs["follow"] == ("ATTACHMENT",)
+        assert call.kwargs["include_trashed_roots"] is True
+        assert call.kwargs["deleted_by_user_id"] is None
+        store.delete_records_recursive.assert_not_called()
+        counted.assert_called_once_with("CONNECTOR", 2)
+        assert _event_types(proc) == [EventTypes.SOFT_DELETE_RECORDS.value]
+        payload = proc.messaging_producer.send_message.await_args.args[1]["payload"]
+        assert payload["virtualRecordIds"] == ["vm", "va"]
+        assert (payload["batchId"], payload["deleteSource"]) == (call.kwargs["batch_id"], "CONNECTOR")
+
+    async def test_flag_on_a_message_not_stored_is_left_alone(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=None)
+        with flag(True):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        store.soft_delete_records.assert_not_called()
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_flag_on_a_message_already_in_the_trash_publishes_nothing(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([]))
+        with flag(True):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        store.soft_delete_records.assert_awaited_once()
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_flag_on_a_failed_mark_raises(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.soft_delete_records = AsyncMock(side_effect=RuntimeError("graph busy"))
+        with flag(True), pytest.raises(RuntimeError, match="graph busy"):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        proc.messaging_producer.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Sync leaves trashed records alone
+# ---------------------------------------------------------------------------
+
+
+class TestSyncSkipsTheTrash:
+    @pytest.mark.parametrize("source", [DeleteSource.USER, DeleteSource.SYSTEM])
+    async def test_an_upsert_of_a_trashed_record_is_skipped(self, source) -> None:
+        """A user's delete holds until the purge, though the source still has the item.
+
+        An item the connector deleted comes back instead: test_restore_write_path.py.
+        """
+        proc = _processor()
+        store = AsyncMock()
+        # A plain Record, as get_record_by_external_id returns on both providers.
+        store.get_record_by_external_id = AsyncMock(
+            return_value=_stored("stored-1", is_deleted=True, delete_source=source, deleted_at=1)
+        )
+        incoming = FileRecord(
+            org_id="org-1", record_name="a.pdf", record_type=RecordType.FILE, external_record_id="ext-1",
+            version=2, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="c1", is_file=True,
+        )
+        assert await proc._process_record(incoming, [], store) == (None, [])
+        store.batch_upsert_records.assert_not_called()
+        store.batch_create_edges.assert_not_called()
+
+    async def test_a_content_update_of_a_trashed_record_publishes_nothing(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(
+            return_value=_stored("stored-1", is_deleted=True, delete_source=DeleteSource.USER)
+        )
+        incoming = FileRecord(
+            org_id="org-1", record_name="a.pdf", record_type=RecordType.FILE, external_record_id="ext-1",
+            version=2, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="c1", is_file=True,
+        )
+        await proc.on_record_content_update(incoming)
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_a_live_record_is_still_updated(self) -> None:
+        proc = _processor()
+        store = AsyncMock()
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("stored-1", external_revision_id="old"))
+        store.get_record_group_by_external_id = AsyncMock(return_value=None)
+        incoming = FileRecord(
+            org_id="org-1", record_name="a.pdf", record_type=RecordType.FILE, external_record_id="ext-1",
+            external_revision_id="new", version=2, origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GOOGLE_DRIVE, connector_id="c1", is_file=True,
+        )
+        assert (await proc._process_record(incoming, [], store))[0] is not None
+
+
+# ---------------------------------------------------------------------------
+# A move onto an external id a trashed record still holds
+# ---------------------------------------------------------------------------
+
+
+class _MoveStore(AsyncMock):
+    """Records by id. An external-id lookup returns the first match, as both
+    graph stores do (``LIMIT 1``), so a trashed holder stored first wins."""
+
+    # The keys this path may write; any other raises, as Arango's strict schema would refuse it.
+    _FIELDS = {"externalRecordId": "external_record_id", "trashedExternalRecordId": "trashed_external_record_id"}
+
+    def __init__(self, *records: Record) -> None:
+        super().__init__()
+        self.docs = {r.id: r for r in records}
+        self.get_edges_from_node = AsyncMock(return_value=[])
+
+    def _get_child_mock(self, **kwargs: object) -> AsyncMock:
+        return AsyncMock(**kwargs)
+
+    def holders(self, external_id: str) -> list[str]:
+        return [r.id for r in self.docs.values() if r.external_record_id == external_id]
+
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Record | None:
+        return next(
+            (r for r in self.docs.values()
+             if r.connector_id == connector_id and r.external_record_id == external_id
+             and matches_visibility(r, visibility)),
+            None,
+        )
+
+    async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool:
+        for node in nodes:
+            stored = self.docs.get(node["id"])
+            if stored is None:
+                return False
+            fields = {self._FIELDS[k]: v for k, v in node.items() if k != "id"}
+            self.docs[node["id"]] = stored.model_copy(update=fields)
+        return True
+
+    async def batch_upsert_records(self, records: list[Record], *, release_trashed_external_ids: bool = False) -> None:
+        if release_trashed_external_ids:
+            ids = {r.id for r in records}
+            for record in records:
+                for held in list(self.docs.values()):
+                    if (
+                        held.id not in ids and held.is_deleted is True
+                        and held.connector_id == record.connector_id
+                        and held.external_record_id == record.external_record_id
+                    ):
+                        self.docs[held.id] = held.model_copy(update={
+                            "external_record_id": f"trashed:{held.id}",
+                            "trashed_external_record_id": held.external_record_id,
+                        })
+        self.docs.update({r.id: r for r in records})
+
+    async def delete_record_by_key(self, key: str) -> None:
+        self.docs.pop(key, None)
+
+
+def _moving_processor(store: _MoveStore) -> DataSourceEntitiesProcessor:
+    proc = _processor()
+    _with_store(proc, store)
+    proc._handle_record_group = AsyncMock(return_value=None)
+    proc._handle_parent_record = AsyncMock()
+    proc._handle_record_permissions = AsyncMock()
+    proc._get_storage_cleanup = MagicMock(return_value=None)
+    return proc
+
+
+def _published(proc: DataSourceEntitiesProcessor, event_type: str) -> list[dict]:
+    return [
+        c.args[1]["payload"] for c in proc.messaging_producer.send_message.await_args_list
+        if c.args[1]["eventType"] == event_type
+    ]
+
+
+class TestMoveOntoAnIdHeldInTheTrash:
+    """GitLab, GitHub, network share, Local FS and KB moves all land here."""
+
+    @staticmethod
+    def _move() -> tuple[str, Record, list]:
+        return ("src/old.py", _stored("fresh-uuid", external_record_id="src/new.py", version=0), [])
+
+    async def test_the_trash_entry_survives_and_the_moved_record_owns_the_id(self) -> None:
+        trashed = _stored(
+            "trashed-1", external_record_id="src/new.py", virtual_record_id="vr-trashed",
+            is_deleted=True, deleted_at=1, delete_source=DeleteSource.USER, delete_batch_id="b-1",
+        )
+        live = _stored("live-1", external_record_id="src/old.py", virtual_record_id="vr-live")
+        store = _MoveStore(trashed, live)
+        proc = _moving_processor(store)
+
+        await proc.on_records_moved([self._move()])
+
+        kept = store.docs["trashed-1"]
+        assert (kept.is_deleted, kept.delete_batch_id, kept.virtual_record_id) == (True, "b-1", "vr-trashed")
+        assert kept.trashed_external_record_id == "src/new.py"
+        assert kept.external_record_id == "trashed:trashed-1"
+        assert store.holders("src/new.py") == ["live-1"]
+        assert (await store.get_record_by_external_id("c1", "src/new.py")).id == "live-1"
+        assert _published(proc, EventTypes.DELETE_RECORD.value) == []
+
+    async def test_a_live_duplicate_is_still_retired_and_the_trashed_one_kept(self) -> None:
+        trashed = _stored(
+            "trashed-1", external_record_id="src/new.py", virtual_record_id="vr-trashed",
+            is_deleted=True, deleted_at=1, delete_source=DeleteSource.CONNECTOR,
+        )
+        duplicate = _stored("dup-1", external_record_id="src/new.py", virtual_record_id="vr-dup")
+        live = _stored("live-1", external_record_id="src/old.py")
+        store = _MoveStore(trashed, duplicate, live)
+        proc = _moving_processor(store)
+
+        await proc.on_records_moved([self._move()])
+
+        assert "dup-1" not in store.docs
+        assert store.docs["trashed-1"].is_deleted is True
+        assert store.holders("src/new.py") == ["live-1"]
+        assert [p["recordId"] for p in _published(proc, EventTypes.DELETE_RECORD.value)] == ["dup-1"]
+
+    async def test_the_release_is_part_of_the_moved_records_write(self) -> None:
+        """Written on its own, a release outlived a move that failed before its write (Neo4j commits each statement)."""
+        trashed = _stored("trashed-1", external_record_id="src/new.py", is_deleted=True, deleted_at=1)
+        store = _MoveStore(trashed, _stored("live-1", external_record_id="src/old.py"))
+        proc = _moving_processor(store)
+        proc._handle_record_group = AsyncMock(side_effect=RuntimeError("graph unavailable"))
+
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await proc.on_records_moved([self._move()])
+        assert store.docs["trashed-1"].external_record_id == "src/new.py"
+        assert store.docs["trashed-1"].trashed_external_record_id is None
+        assert _published(proc, EventTypes.DELETE_RECORD.value) == []
+
+
+class TestCascadeTakesTheCallersReadOfTheFlag:
+    """A caller that already acted on the flag (the KB deletes schedule file removal on it) passes its answer."""
+
+    async def test_soft_delete_true_trashes_without_reading_the_flag(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("f1", "v1")]))
+        with flag(False) as read:
+            result = await proc.on_records_deleted_cascade(
+                ["f1"], "kb1", delete_source=DeleteSource.USER, soft_delete=True
+            )
+        read.assert_not_awaited()
+        assert result["softDeleted"] is True
+        store.delete_records_recursive.assert_not_called()
+        assert EventTypes.DELETE_RECORD.value not in _event_types(proc)
+
+    async def test_soft_delete_false_hard_deletes_without_reading_the_flag(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.delete_records_recursive = AsyncMock(return_value={"success": True, "successfully_deleted": 1})
+        with flag(True) as read:
+            await proc.on_records_deleted_cascade(
+                ["f1"], "kb1", delete_source=DeleteSource.USER, soft_delete=False
+            )
+        read.assert_not_awaited()
+        store.delete_records_recursive.assert_awaited_once()
+        store.soft_delete_records.assert_not_called()
+
+    @pytest.mark.parametrize("include", [True, False])
+    async def test_the_soft_path_hands_include_trashed_roots_to_the_store(self, include) -> None:
+        """A removal of what the source no longer has also walks from a root already in the trash."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("a", "va")]))
+        await proc.on_records_deleted_cascade(["f1"], "c1", soft_delete=True, include_trashed_roots=include)
+        assert store.soft_delete_records.await_args.kwargs["include_trashed_roots"] is include

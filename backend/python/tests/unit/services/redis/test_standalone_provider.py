@@ -23,6 +23,19 @@ def mock_redis_cls():
         yield mock_cls
 
 
+class TestRespProtocol:
+    """redis-py 6+ defaults to RESP3, which returns FT.SEARCH / FT.INFO /
+    XREAD replies as maps. The vector store and streams code parse the RESP2
+    arrays, so every client the provider builds must ask for protocol 2."""
+
+    @pytest.mark.parametrize("blocking", [False, True])
+    def test_the_real_client_is_built_for_resp2(self, blocking: bool) -> None:
+        client = StandaloneRedisProvider(_config()).create_client(
+            ClientOptions(blocking=blocking)
+        )
+        assert client.connection_pool.connection_kwargs["protocol"] == 2
+
+
 class TestCreateClient:
     def test_create_client_returns_fresh_instance_each_time(self, mock_redis_cls):
         provider = StandaloneRedisProvider(_config())
@@ -49,6 +62,21 @@ class TestCreateClient:
         mock_pool_cls.assert_called_once()
         kwargs = mock_redis_cls.call_args.kwargs
         assert "connection_pool" in kwargs
+
+    @pytest.mark.parametrize("attempts", [0, 1, 3])
+    def test_the_requested_retry_attempts_reach_the_client(self, mock_redis_cls, attempts) -> None:
+        """A caller that falls back on failure (the lane map) asks for fewer
+        retries than the default three; nothing else changes."""
+        provider = StandaloneRedisProvider(_config())
+        provider.create_client(ClientOptions(retry_attempts=attempts))
+
+        assert mock_redis_cls.call_args.kwargs["retry"]._retries == attempts
+
+    def test_three_retries_unless_asked_otherwise(self, mock_redis_cls) -> None:
+        provider = StandaloneRedisProvider(_config())
+        provider.create_client()
+
+        assert mock_redis_cls.call_args.kwargs["retry"]._retries == 3
 
     def test_tls_sets_ssl_kwargs(self, mock_redis_cls):
         provider = StandaloneRedisProvider(

@@ -100,8 +100,6 @@ export function resolveNodeHeaderIconUrl(data: FlowNodeData): string | undefined
 export function resolveNodeConnectorType(data: FlowNodeData): string | null {
   const cfg = (data.config || {}) as Record<string, unknown>;
   const type = data.type;
-  console.log('resolveNodeConnectorType', type);
-  console.log("config", cfg);
 
   if (isAppConnectorNodeType(type)) {
     const fromCfg = typeof cfg.connectorType === 'string' ? cfg.connectorType.trim() : '';
@@ -112,6 +110,14 @@ export function resolveNodeConnectorType(data: FlowNodeData): string | null {
     return fromCfg || type.slice('toolset-'.length) || null;
   }
   return null;
+}
+
+/** The server an `mcp-*` node stands for, as `McpServerIcon` takes it to pick the server's logo. */
+export function mcpNodeServer(data: FlowNodeData): { typeId?: string; name: string } {
+  const cfg = (data.config || {}) as Record<string, unknown>;
+  const typeId = typeof cfg.typeId === 'string' ? cfg.typeId.trim() : '';
+  const name = String(cfg.name ?? '').trim() || String(cfg.displayName ?? '').trim() || data.label;
+  return { typeId: typeId || undefined, name };
 }
 
 export function normalizeDisplayName(name: string): string {

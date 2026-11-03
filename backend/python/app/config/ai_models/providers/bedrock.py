@@ -27,11 +27,11 @@ BEDROCK_LLM_MODEL = AIModelField(
     description=(
         "Bedrock model ID or inference-profile ID "
         "(us.<provider>.<model> or global.<provider>.<model>). "
-        "Short names like claude-sonnet-5 or gpt-5.6-luna are not valid on Converse."
+        "Short names like claude-sonnet-5 or gpt-6-luna are not valid on Converse."
     ),
     examples=[
         {"label": "Claude", "value": "us.anthropic.claude-sonnet-5"},
-        {"label": "OpenAI GPT-5.6 Luna", "value": "us.openai.gpt-5.6-luna"},
+        {"label": "OpenAI GPT-6 Luna", "value": "us.openai.gpt-6-luna"},
         {"label": "OpenAI gpt-oss", "value": "openai.gpt-oss-120b-1:0"},
         {"label": "Nova 2", "value": "us.amazon.nova-2-lite-v1:0"},
         {"label": "Nova 1", "value": "amazon.nova-lite-v1:0"},

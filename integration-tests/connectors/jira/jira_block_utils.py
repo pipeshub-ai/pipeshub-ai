@@ -11,11 +11,15 @@ the expected-snapshot file.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
-_EXPECTED_PATH = Path(__file__).with_name("fixtures") / "jira_issue_blocks.expected.json"
+# JIRA_BLOCKS_SNAPSHOT names another file in fixtures/: each site has its own blocks issue.
+_EXPECTED_PATH = Path(__file__).with_name("fixtures") / os.getenv(
+    "JIRA_BLOCKS_SNAPSHOT", "jira_issue_blocks.expected.json"
+)
 
 # Per-run-varying keys on Block / BlockGroup dropped before comparison.
 _VOLATILE_KEYS = frozenset({

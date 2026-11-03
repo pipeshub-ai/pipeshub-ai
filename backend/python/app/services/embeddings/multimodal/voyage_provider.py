@@ -11,6 +11,7 @@ import logging
 
 from langchain_core.embeddings import Embeddings
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
@@ -53,6 +54,8 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
                         for i in range(len(embeddings), len(batch_imgs))
                     )
                     return results
+                except NonRetryableError:
+                    raise
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"Voyage batch {batch_start} failed: {e}")

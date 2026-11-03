@@ -39,7 +39,7 @@ from app.agent_loop_lib.tools.errors import (
 )
 from app.agent_loop_lib.tools.toolset import Toolset
 
-__all__ = ["ToolRegistry", "ToolsetGroup"]
+__all__ = ["ToolDeferral", "ToolRegistry", "ToolsetGroup"]
 
 
 class ToolsetGroup(BaseModel):
@@ -80,6 +80,15 @@ def _validate_path(path: str) -> None:
         raise InvalidToolPathError(path, "must not contain wildcard segments ('*'/'**')")
 
 
+class ToolDeferral(BaseModel):
+    """What grants a tool left out of an agent's grant (``ToolRegistry.defer_tool``)."""
+
+    model_config = {"frozen": True}
+
+    unlocked_by: str
+    condition: str
+
+
 class ToolRegistry:
     """Registers `Tool` instances by path (primary) and by name (LLM-facing)."""
 
@@ -105,8 +114,21 @@ class ToolRegistry:
         # (see `materialize()`'s TOCTOU note below). Created lazily via a
         # synchronous `setdefault`, so creating the lock itself can't race.
         self._materialize_locks: dict[str, asyncio.Lock] = {}
+        self._deferrals: dict[str, ToolDeferral] = {}
 
     # ---- registration ----------------------------------------------------
+
+    def defer_tool(self, name: str, *, unlocked_by: str, condition: str) -> None:
+        """Mark ``name`` as left out of a grant until ``unlocked_by`` meets
+        ``condition`` (completing "once <unlocked_by> ...", e.g. "returns at least
+        one entity"), so ``fetch_tools``/``search_tools`` can say when it becomes
+        callable instead of reporting it as never granted. The condition must be
+        the one the granting hook checks: a model told a tool unlocks once a call
+        has run, which then ran without unlocking it, drops the tool."""
+        self._deferrals[name] = ToolDeferral(unlocked_by=unlocked_by, condition=condition)
+
+    def deferral(self, name: str) -> ToolDeferral | None:
+        return self._deferrals.get(name)
 
     def register_tool(self, tool: Tool, *, extra_tags: tuple[Tag, ...] = ()) -> None:
         """Register a single tool instance under its own `path` and `name`.

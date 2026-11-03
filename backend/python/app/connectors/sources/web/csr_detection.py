@@ -30,6 +30,10 @@ document.addEventListener('DOMContentLoaded', () => {
 }, { once: true });
 """
 
+# The same reading as ``js_code_before_wait``, for the shared browser (which takes no per-page init
+# scripts): it runs once the document has loaded, before the wait for content.
+PRE_HYDRATION_CAPTURE_JS = "window.__preHydrationLen = (document.body.innerText || '').trim().length;"
+
 # JS executed as ``js_code`` after the page has fully rendered.
 # crawl4ai wraps this in an async IIFE, so bare ``return`` works.
 CSR_PROBE_JS = (
@@ -59,8 +63,10 @@ def analyze_rendering(pre_len: int, post_len: int) -> RenderAnalysis:
         verdict, confidence = "CSR", "medium"
     elif text_ratio > 0.7:
         verdict, confidence = "SSR", "high"
-    elif text_ratio > 0.5:
-        verdict, confidence = "CSR", "medium"
+    elif text_ratio >= 0.5:
+        # The server already sends most of the text; scripts add the rest (widgets, promos). The
+        # browser would cost several times the crawl for little more content.
+        verdict, confidence = "SSR", "medium"
     else:
         verdict, confidence = "CSR", "low"
 

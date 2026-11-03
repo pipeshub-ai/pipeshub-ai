@@ -114,6 +114,39 @@ class UserAccountClient(APIClient):
             auth=False,
         )
 
+    def forgot_password(self, email: str) -> requests.Response:
+        """POST /password/forgot — email a reset link (always answers 200)."""
+        return self.post("/password/forgot", json={"email": email}, auth=False)
+
+    def reset_password_with_link(
+        self, link_token: str, new_password: str
+    ) -> requests.Response:
+        """POST /password/reset/token with the token from an emailed reset link."""
+        return self.post(
+            "/password/reset/token",
+            headers={
+                "Authorization": f"Bearer {link_token}",
+                "Content-Type": "application/json",
+            },
+            json={"password": new_password},
+            auth=False,
+        )
+
+    def request_login_otp(self, email: str) -> requests.Response:
+        """POST /login/otp/generate — email a sign-in code (always answers 200)."""
+        return self.post("/login/otp/generate", json={"email": email}, auth=False)
+
+    def authenticate_with_otp(
+        self, session_token: str, email: str, otp: str
+    ) -> requests.Response:
+        """POST /authenticate with method ``otp``."""
+        return self.authenticate(
+            session_token,
+            email,
+            "",
+            extra_json={"method": "otp", "credentials": {"otp": otp}},
+        )
+
     def get_account(self) -> requests.Response:
         """Get the authenticated user's account."""
         return self.get("/")

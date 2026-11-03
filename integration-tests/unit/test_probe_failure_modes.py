@@ -111,6 +111,40 @@ async def test_a_collection_that_vanished_mid_scan_is_skipped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_connector_count_can_be_held_to_one_collection() -> None:
+    """Entity points carry connectorIds too; a records-only count leaves them out."""
+    from types import SimpleNamespace
+
+    probe = VectorStoreProbe(host="localhost")
+    client = MagicMock()
+    client.count = AsyncMock(
+        side_effect=lambda collection_name, **_: SimpleNamespace(count={"records": 5, "entities": 3}[collection_name])
+    )
+    probe._conn = AsyncMock(return_value=client)
+    probe.collections = AsyncMock(return_value=["entities", "records"])
+
+    assert await probe.count_for_connector("c1") == 8
+    assert await probe.count_for_connector("c1", collection="records") == 5
+
+
+@pytest.mark.asyncio
+async def test_an_org_count_can_be_held_to_one_collection() -> None:
+    """The Labs cleanup drops the records collection; the org's entity points stay."""
+    from types import SimpleNamespace
+
+    probe = VectorStoreProbe(host="localhost")
+    client = MagicMock()
+    client.count = AsyncMock(
+        side_effect=lambda collection_name, **_: SimpleNamespace(count={"records": 0, "entities": 4}[collection_name])
+    )
+    probe._conn = AsyncMock(return_value=client)
+    probe.collections = AsyncMock(return_value=["entities", "records"])
+
+    assert await probe.count_for_org("org-1") == 4
+    assert await probe.count_for_org("org-1", collection="records") == 0
+
+
+@pytest.mark.asyncio
 async def test_a_transport_failure_raises_rather_than_counting_zero() -> None:
     """Zero from a failed count is read as "the store is clean"."""
     probe = VectorStoreProbe(host="localhost")
@@ -181,3 +215,17 @@ def test_a_remote_host_gets_no_default_key(monkeypatch) -> None:
 
 def test_a_remote_host_without_a_key_is_fine() -> None:
     VectorStoreProbe(host="qdrant.example.com", api_key="")
+
+
+def test_a_path_with_a_quote_is_passed_as_an_argument_not_spliced_into_the_script() -> None:
+    import subprocess
+
+    probe = BlobStoreProbe(container="c")
+    with patch.object(probe, "_run_docker", return_value=_completed(0)) as run:
+        probe._local_files_under("org/records/c/pipeshub-it's Files/a")
+    args = run.call_args.args[0]
+    script, target = args[args.index("-c") + 1], args[-1]
+    assert target.endswith("pipeshub-it's Files/a") and "it's" not in script
+    # The real shell sees the name whole.
+    out = subprocess.run(["sh", "-c", 'printf %s "$1"', "sh", target], capture_output=True, text=True)
+    assert out.stdout == target

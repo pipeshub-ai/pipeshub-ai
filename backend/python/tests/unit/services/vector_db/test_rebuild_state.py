@@ -22,7 +22,7 @@ from app.services.vector_db.rebuild_state import (
 
 
 class TestRedisFromConfig:
-    def test_uses_connection_provider_not_direct_client(self):
+    def test_uses_connection_provider_not_direct_client(self) -> None:
         """`_redis_from_config` must delegate to the provider (never
         `redis.asyncio.Redis(...)`), passing the RedisConfig fields through."""
         mock_client = MagicMock()
@@ -48,7 +48,7 @@ class TestRedisFromConfig:
 
 class TestRedisFromConfigService:
     @pytest.mark.asyncio
-    async def test_builds_client_from_config_service(self):
+    async def test_builds_client_from_config_service(self) -> None:
         config_service = AsyncMock()
         config_service.get_redis_config = AsyncMock(
             return_value=RedisConfig(host="localhost", port=6379)
@@ -66,7 +66,7 @@ class TestRedisFromConfigService:
 
 class TestRebuildJobLock:
     @pytest.mark.asyncio
-    async def test_try_acquire_sets_nx(self):
+    async def test_try_acquire_sets_nx(self) -> None:
         redis = AsyncMock()
         redis.set = AsyncMock(return_value=True)
         lock = RebuildJobLock(redis, ttl_seconds=60, token="tok-1")
@@ -77,7 +77,7 @@ class TestRebuildJobLock:
         )
 
     @pytest.mark.asyncio
-    async def test_refresh_uses_compare_and_expire_lua(self):
+    async def test_refresh_uses_compare_and_expire_lua(self) -> None:
         redis = AsyncMock()
         redis.eval = AsyncMock(return_value=1)
         lock = RebuildJobLock(redis, ttl_seconds=60, token="tok-1")
@@ -86,7 +86,7 @@ class TestRebuildJobLock:
         redis.eval.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_release_uses_compare_and_delete_lua(self):
+    async def test_release_uses_compare_and_delete_lua(self) -> None:
         redis = AsyncMock()
         redis.eval = AsyncMock(return_value=1)
         lock = RebuildJobLock(redis, ttl_seconds=60, token="tok-1")
@@ -95,21 +95,39 @@ class TestRebuildJobLock:
         redis.eval.assert_awaited_once()
 
 
+    @pytest.mark.asyncio
+    async def test_a_lock_under_another_key_is_independent(self) -> None:
+        import fakeredis.aioredis
+
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        job = RebuildJobLock(redis, token="job")
+        other = RebuildJobLock(redis, token="other", key="other:lock")
+        rival = RebuildJobLock(redis, token="rival", key="other:lock")
+
+        assert await job.try_acquire() and await other.try_acquire()
+        assert not await rival.try_acquire()
+        await rival.release()
+        assert await redis.get("other:lock") == "other"
+        await other.release()
+        assert await rival.try_acquire()
+        assert await redis.get("vector_store_rebuild:job") == "job"
+
+
 class TestCleanupPhase:
     @pytest.mark.asyncio
-    async def test_get_cleanup_phase_returns_none_when_missing(self):
+    async def test_get_cleanup_phase_returns_none_when_missing(self) -> None:
         redis = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         assert await get_cleanup_phase(redis) is None
 
     @pytest.mark.asyncio
-    async def test_get_cleanup_phase_returns_value(self):
+    async def test_get_cleanup_phase_returns_value(self) -> None:
         redis = AsyncMock()
         redis.get = AsyncMock(return_value="ready")
         assert await get_cleanup_phase(redis) == "ready"
 
     @pytest.mark.asyncio
-    async def test_set_cleanup_phase_sets_with_ttl(self):
+    async def test_set_cleanup_phase_sets_with_ttl(self) -> None:
         redis = AsyncMock()
         await set_cleanup_phase(redis, "dropping")
         redis.set.assert_awaited_once()
@@ -117,14 +135,14 @@ class TestCleanupPhase:
 
 class TestMarkCleanupPhase:
     @pytest.mark.asyncio
-    async def test_uses_provided_client_and_does_not_close_it(self):
+    async def test_uses_provided_client_and_does_not_close_it(self) -> None:
         redis = AsyncMock()
         await mark_cleanup_phase(config_service=AsyncMock(), phase="ready", redis=redis)
         redis.set.assert_awaited_once()
         redis.aclose.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_creates_and_closes_owned_client_when_none_provided(self):
+    async def test_creates_and_closes_owned_client_when_none_provided(self) -> None:
         owned_client = AsyncMock()
         config_service = AsyncMock()
         config_service.get_redis_config = AsyncMock(
@@ -141,7 +159,7 @@ class TestMarkCleanupPhase:
         owned_client.aclose.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_retries_and_logs_without_raising_on_persistent_failure(self):
+    async def test_retries_and_logs_without_raising_on_persistent_failure(self) -> None:
         redis = AsyncMock()
         redis.set = AsyncMock(side_effect=RuntimeError("redis down"))
         logger = MagicMock()

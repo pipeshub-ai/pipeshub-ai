@@ -1,0 +1,12 @@
+{
+  "data": [
+    {
+      "model_name": "proxy-embed",
+      "model_info": {
+        "mode": "embedding",
+        "max_input_tokens": 8192,
+        "supports_vision": false
+      }
+    }
+  ]
+}

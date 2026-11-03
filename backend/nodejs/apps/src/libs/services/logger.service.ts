@@ -4,6 +4,20 @@ import { injectable } from 'inversify';
 import path from 'path';
 import { threadId } from 'worker_threads';
 import { currentDisplayId, getRequestContext } from '../context/request-context';
+import {
+  redactHeadersForLog,
+  redactLogMetadata,
+  redactQueryForLog,
+  redactSecretsInText,
+} from '../utils/log-redaction.utils';
+import { getProvider } from './structured-logging';
+
+const redactMetadata = winston.format((info) => {
+  if (info.metadata !== undefined) {
+    info.metadata = redactLogMetadata(info.metadata);
+  }
+  return info;
+});
 
 export enum LogLevel {
   Debug = 'debug',
@@ -29,6 +43,46 @@ const customLevels = {
 };
 
 winston.addColors(customLevels.colors);
+
+const REDACTED = '[REDACTED]';
+
+/**
+ * Matched against the key with separators stripped, so `api-key`, `api_key`
+ * and `apiKey` all hit. Numeric values are passed through, which keeps LLM
+ * usage counters (maxTokens, totalTokens) readable.
+ */
+const SENSITIVE_KEY_FRAGMENTS = [
+  'authorization',
+  'cookie',
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'apikey',
+  'accesskey',
+  'privatekey',
+  'credential',
+  'signature',
+  'sessionid',
+  'salt',
+];
+
+/** Decoded claims and scope lists are not credentials and stay useful in logs. */
+const SAFE_KEY_EXCEPTIONS = new Set([
+  'tokenpayload',
+  'tokenscopes',
+  'tokenusage',
+]);
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (SAFE_KEY_EXCEPTIONS.has(normalized)) {
+    return false;
+  }
+  return SENSITIVE_KEY_FRAGMENTS.some((fragment) =>
+    normalized.includes(fragment),
+  );
+}
 
 export function getLogLevel(): LogLevel {
   const level = process.env.LOG_LEVEL?.toLowerCase();
@@ -75,6 +129,8 @@ export class Logger {
 
   private initializeLogger(config?: LoggerConfig): winston.Logger {
     const logFormat = winston.format.combine(
+      // First, so the console line and the JSON file lines both get it.
+      redactMetadata(),
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
       winston.format.printf((info) => {
@@ -92,12 +148,11 @@ export class Logger {
           ? `${levelColors[rawLevel]}${rawLevel}\x1b[0m`
           : rawLevel;
 
+        // Already redacted and de-cycled by logWithLevel.
         let metaString = '';
         if (metadata) {
           try {
-            // Handle circular references by using a custom replacer
-            const safeMetadata = this.sanitizeForLogging(metadata);
-            metaString = `\nmetadata: ${JSON.stringify(safeMetadata, null, 2)}`;
+            metaString = `\nmetadata: ${JSON.stringify(metadata, null, 2)}`;
           } catch (error) {
             metaString = '\nmetadata: [Circular Structure]';
           }
@@ -112,12 +167,10 @@ export class Logger {
       })
     );
 
-    return winston.createLogger({
-      levels: customLevels.levels,
-      level: config?.level || getLogLevel(),
-      format: logFormat,
-      defaultMeta: this.defaultMeta,
-      transports: [
+    const provider = getProvider();
+    const transports: winston.transport[] = [];
+    if (provider.fileLoggingEnabled()) {
+      transports.push(
         new winston.transports.File({
           filename: 'error.log',
           level: LogLevel.Error,
@@ -127,10 +180,20 @@ export class Logger {
           filename: 'combined.log',
           format: winston.format.combine(logFormat, winston.format.json())
         }),
-        new winston.transports.Console({
-          format: logFormat,
-        }),
-      ],
+      );
+    }
+    transports.push(
+      new winston.transports.Console({
+        format: provider.consoleFormat(logFormat),
+      }),
+    );
+
+    return winston.createLogger({
+      levels: customLevels.levels,
+      level: config?.level || getLogLevel(),
+      format: logFormat,
+      defaultMeta: this.defaultMeta,
+      transports,
     });
   }
 
@@ -151,11 +214,29 @@ export class Logger {
       return obj.map(item => this.sanitizeForLogging(item, seen));
     }
 
+    if (obj instanceof Error) {
+      return {
+        name: obj.name,
+        message: redactSecretsInText(obj.message),
+        stack:
+          obj.stack === undefined ? undefined : redactSecretsInText(obj.stack),
+      };
+    }
+    // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
+    const { toJSON } = obj as { toJSON?: unknown };
+    if (typeof toJSON === 'function') {
+      return this.sanitizeForLogging((toJSON as () => unknown).call(obj), seen);
+    }
+
     // Handle objects
-    const sanitized: any = {};
+    const sanitized: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       // Skip certain properties that might cause circular references
       if (key === 'parent' || key === '_readableState' || key === 'pipes') {
+        continue;
+      }
+      if (isSensitiveKey(key)) {
+        sanitized[key] = typeof value === 'number' ? value : REDACTED;
         continue;
       }
       try {
@@ -169,7 +250,9 @@ export class Logger {
 
   static getInstance(config?: LoggerConfig): Logger {
     if (!Logger.instance) {
-      Logger.instance = new Logger(config || { service: 'default-service', level: LogLevel.Info });
+      Logger.instance = new Logger(
+        config ?? { service: 'default-service', level: getLogLevel() },
+      );
     } else if (config) {
       Logger.instance.updateDefaultMeta({
         service: config.service,
@@ -236,13 +319,21 @@ export class Logger {
     }
     const callerInfo = this.getCallerInfo();
     // Read at emit time; omitted entirely when there is no context.
-    const traceMeta = getRequestContext()
+    const store = getRequestContext();
+    const traceMeta: Record<string, unknown> = store
       ? { request_id: currentDisplayId(), thread_id: threadId }
       : {};
+    if (store?.orgId) {
+      const orgHash = getProvider().hashOrgId(store.orgId);
+      if (orgHash) traceMeta.organization_id_hash = orgHash;
+    }
+    // Redact here, not in the printf format: the file transports append
+    // winston's json() after it, and json() re-serialises `info` from scratch,
+    // so anything only cleaned inside printf still reaches the log file raw.
     this.logger.log({
       level,
       message,
-      metadata: meta,
+      metadata: meta === undefined ? undefined : this.sanitizeForLogging(meta),
       ...traceMeta,
       ...callerInfo,
     });
@@ -269,16 +360,9 @@ export class Logger {
     this.info(`${req.method} ${req.path}`, {
       ...meta,
       ...callerInfo,
-      query: req.query,
+      query: redactQueryForLog(req.query),
       params: req.params,
-      headers: this.sanitizeHeaders(req.headers),
+      headers: redactHeadersForLog(req.headers),
     });
-  }
-
-  private sanitizeHeaders(headers: any): any {
-    const sanitized = { ...headers };
-    delete sanitized.authorization;
-    delete sanitized.cookie;
-    return sanitized;
   }
 }

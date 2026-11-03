@@ -15,7 +15,11 @@ import {
   maskOAuthConfig,
   maskGithubAuthConfig,
   maskWebSearchProvider,
+  maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
+  maskSlackBotConfig,
+  mergeSlackBotConfigPlaceholders,
+  redactCredentialTemplates,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
 const strip = (entry: unknown) => stripAiModelSecrets(entry as any) as any
@@ -27,7 +31,7 @@ describe('maskConfigSecrets', () => {
         provider: 'azureOpenAI',
         configuration: {
           model: 'text-embedding-3-small', modelName: 'GPT-4o', modelFriendlyName: 'abc',
-          region: 'us-east-1', dimensions: '',
+          region: 'us-east-1', dimensions: '', defaultReasoningEffort: 'low',
           apiKey: 'sk-secret123', endpoint: 'https://api.openai.com',
           deploymentName: 'my-deployment', awsAccessKeyId: 'AKIA', awsAccessSecretKey: 'shh',
           serviceAccountJson: '{"private_key":"x"}',
@@ -40,11 +44,17 @@ describe('maskConfigSecrets', () => {
         model: 'text-embedding-3-small',
         modelFriendlyName: 'abc',
         dimensions: '',
+        defaultReasoningEffort: 'low',
       })
-      expect(Object.keys(result)).to.have.members([...AI_PUBLIC_CONFIG_KEYS])
+      expect(Object.keys(result)).to.have.members(
+        AI_PUBLIC_CONFIG_KEYS.filter((key) => key in entry.configuration),
+      )
       expect(strip(entry).provider).to.equal('azureOpenAI')
       expect(strip(entry).modelKey).to.equal('mk-1')
       expect(strip(entry).isDefault).to.equal(true)
+      expect(strip(entry).configuredFields).to.include('apiKey')
+      expect(strip(entry).configuredFields).to.include('endpoint')
+      expect(JSON.stringify(strip(entry).configuredFields)).to.not.include('sk-secret')
     })
 
     it('should omit an allowlist key that was never stored', () => {
@@ -78,6 +88,23 @@ describe('maskConfigSecrets', () => {
       const entry = { provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'secret' } }
       strip(entry)
       expect(entry.configuration.apiKey).to.equal('secret')
+    })
+  })
+
+  describe('redactCredentialTemplates', () => {
+    it('redacts credential headers and keeps identity headers readable', () => {
+      const out = redactCredentialTemplates({
+        Authorization: 'Bearer abc',
+        'Ocp-Apim-Subscription-Key': 'k',
+        'x-functions-key': 'k',
+        'x-pipeshub-counter-key': '{{SUBJECT}}',
+        'x-litellm-customer-id': '{{SUBJECT}}',
+      }) as Record<string, string>
+      expect(out['Authorization']).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(out['Ocp-Apim-Subscription-Key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(out['x-functions-key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(out['x-pipeshub-counter-key']).to.equal('{{SUBJECT}}')
+      expect(out['x-litellm-customer-id']).to.equal('{{SUBJECT}}')
     })
   })
 
@@ -217,6 +244,19 @@ describe('maskConfigSecrets', () => {
     })
     it('should not mask empty apiKey', () => { expect(maskWebSearchProvider({ apiKey: '' }).apiKey).to.equal('') })
     it('should return null as-is', () => { expect(maskWebSearchProvider(null as any)).to.be.null })
+    it('should leave the server address for admins', () => {
+      expect(maskWebSearchProvider({ baseUrl: 'http://crawl4ai:11235' }).baseUrl).to.equal('http://crawl4ai:11235')
+    })
+  })
+
+  describe('maskWebSearchProviderForMember', () => {
+    it('should mask the API key and the server address', () => {
+      const result = maskWebSearchProviderForMember({ apiKey: 'k', baseUrl: 'http://crawl4ai:11235', other: 'x' })
+      expect(result).to.deep.equal({ apiKey: CONFIG_SECRET_PLACEHOLDER, baseUrl: CONFIG_SECRET_PLACEHOLDER, other: 'x' })
+    })
+    it('should leave an unset address unset', () => {
+      expect(maskWebSearchProviderForMember({ apiKey: 'k' })).to.not.have.property('baseUrl')
+    })
   })
 
   describe('mergeWebSearchProviderPlaceholders', () => {
@@ -229,6 +269,41 @@ describe('maskConfigSecrets', () => {
     })
     it('should return incoming when existing is null', () => {
       expect(mergeWebSearchProviderPlaceholders({ apiKey: CONFIG_SECRET_PLACEHOLDER }, null).apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+  })
+
+  describe('maskSlackBotConfig', () => {
+    it('should mask botToken and signingSecret but keep the rest readable', () => {
+      const result = maskSlackBotConfig({
+        id: 'bot-1',
+        name: 'Support',
+        botToken: 'xoxb-real-token',
+        signingSecret: 'real-signing-secret',
+      })
+      expect(result.botToken).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.signingSecret).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.id).to.equal('bot-1')
+      expect(result.name).to.equal('Support')
+    })
+  })
+
+  describe('mergeSlackBotConfigPlaceholders', () => {
+    it('should keep the stored credential when the form resubmits the mask', () => {
+      const result = mergeSlackBotConfigPlaceholders(
+        { botToken: CONFIG_SECRET_PLACEHOLDER, signingSecret: CONFIG_SECRET_PLACEHOLDER },
+        { botToken: 'xoxb-real-token', signingSecret: 'real-signing-secret' },
+      )
+      expect(result.botToken).to.equal('xoxb-real-token')
+      expect(result.signingSecret).to.equal('real-signing-secret')
+    })
+
+    it('should accept a genuinely rotated credential', () => {
+      const result = mergeSlackBotConfigPlaceholders(
+        { botToken: 'xoxb-rotated', signingSecret: CONFIG_SECRET_PLACEHOLDER },
+        { botToken: 'xoxb-real-token', signingSecret: 'real-signing-secret' },
+      )
+      expect(result.botToken).to.equal('xoxb-rotated')
+      expect(result.signingSecret).to.equal('real-signing-secret')
     })
   })
 })

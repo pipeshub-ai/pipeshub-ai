@@ -6,12 +6,15 @@ import {
   CreateServiceTokenRequest,
   ServiceTokenService,
 } from '../services/service-token.service';
+import { ScopeValidatorService } from '../services/scope.validator.service';
 
 @injectable()
 export class ServiceTokenController {
   constructor(
     @inject('ServiceTokenService')
     private readonly serviceTokens: ServiceTokenService,
+    @inject('ScopeValidatorService')
+    private readonly scopeValidator: ScopeValidatorService,
   ) {}
 
   async createToken(
@@ -59,7 +62,15 @@ export class ServiceTokenController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      res.json({ scopes: await this.serviceTokens.getAvailableScopes() });
+      const names = await this.serviceTokens.getAvailableScopes();
+      // Each scope is returned with the description and category already held
+      // in the scope catalogue, the same way the personal access token
+      // endpoint next door returns them. The picker can then tell an
+      // administrator what a permission actually allows, rather than showing
+      // them a bare identifier such as `semantic:write` and leaving them to
+      // guess. Describing them here rather than in the client keeps one
+      // wording for a scope across every screen that offers it.
+      res.json({ scopes: this.scopeValidator.getScopeDefinitions(names) });
     } catch (error) {
       next(error);
     }

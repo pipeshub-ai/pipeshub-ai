@@ -2,9 +2,10 @@
 import base64
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -13,6 +14,37 @@ from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy
+
+DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1"
+
+
+_logger = logging.getLogger(__name__)
+_reported_overrides: set[str] = set()
+
+
+def notion_api_base_url() -> str:
+    """The Notion API base URL: ``NOTION_API_BASE_URL`` when set (test stacks point it at a local
+    stand-in for the API), else Notion's own. The token goes wherever this points, so a value
+    that is not an http(s) URL with a host is refused, and the host in use is logged once."""
+    raw = (os.environ.get("NOTION_API_BASE_URL") or "").strip().rstrip("/")
+    if not raw:
+        return DEFAULT_NOTION_API_BASE_URL
+    parsed = urlparse(raw)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    valid = parsed.scheme in ("http", "https") and bool(parsed.hostname) and port != -1
+    if raw not in _reported_overrides:
+        _reported_overrides.add(raw)
+        if valid:
+            _logger.warning(
+                "NOTION_API_BASE_URL is set: Notion API calls go to %s://%s%s",
+                parsed.scheme, parsed.hostname, f":{port}" if port else "",
+            )
+        else:
+            _logger.error("NOTION_API_BASE_URL is not an http(s) URL with a host; using %s", DEFAULT_NOTION_API_BASE_URL)
+    return raw if valid else DEFAULT_NOTION_API_BASE_URL
 
 
 @dataclass
@@ -23,6 +55,8 @@ class NotionResponse:
     error: Optional[str] = None
     message: Optional[str] = None
     status_code: Optional[int] = None
+    # Notion's error ``code`` from the JSON body (``validation_error``, ``object_not_found``, ...), when it has one.
+    code: Optional[str] = None
 
     @classmethod
     def from_http(cls, response: HTTPResponse) -> "NotionResponse":
@@ -30,15 +64,22 @@ class NotionResponse:
         status = response.status
         if 200 <= status < 300:
             return cls(success=True, data=response, status_code=status)
-        body = ""
+        text = ""
         try:
-            body = (response.text() or "")[:200]
+            text = response.text() or ""
         except Exception:
-            body = ""
+            text = ""
+        code = None
+        try:
+            parsed = json.loads(text) if text else None
+            if isinstance(parsed, dict) and isinstance(parsed.get("code"), str):
+                code = parsed["code"]
+        except ValueError:
+            code = None
         error = f"HTTP {status}"
-        if body:
-            error = f"{error}: {body}"
-        return cls(success=False, data=response, error=error, status_code=status)
+        if text:
+            error = f"{error}: {text[:200]}"
+        return cls(success=False, data=response, error=error, status_code=status, code=code)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -71,8 +112,8 @@ class NotionRESTClientViaOAuth(HTTPClient):
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer", resilience=resilience)
 
-        self.base_url = "https://api.notion.com/v1"
-        self.oauth_base_url = "https://api.notion.com/v1/oauth"
+        self.base_url = notion_api_base_url()
+        self.oauth_base_url = f"{self.base_url}/oauth"
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
@@ -126,46 +167,6 @@ class NotionRESTClientViaOAuth(HTTPClient):
             Token data from OAuth exchange
         """
         return await self._exchange_code_for_token(authorization_code)
-
-    async def refresh_token(self, refresh_token: str) -> Optional[str]:
-        """Refresh OAuth access token
-        Args:
-            refresh_token: The refresh token from previous OAuth flow
-        Returns:
-            New token data
-        """
-        credentials = f"{self.client_id}:{self.client_secret}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-
-        headers = {
-            "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/json",
-            "Notion-Version": self.version
-        }
-
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token
-        }
-
-        request = HTTPRequest(
-            method="POST",
-            url=f"{self.oauth_base_url}/token",
-            headers=headers,
-            body=data
-        )
-
-        token_data: Dict[str, Any]
-        async with HTTPClient(token="") as client:
-            response = await client.execute(request)
-            token_data = await response.json()
-        self.access_token = token_data.get("access_token")
-
-        # Update headers with new token
-        if self.access_token:
-            self.headers["Authorization"] = f"Bearer {self.access_token}"
-
-        return token_data.get("access_token") if token_data.get("access_token") else None
 
     async def _exchange_code_for_token(self, code: str) -> Optional[str]:
         """Exchange authorization code for access token (internal method)
@@ -254,7 +255,7 @@ class NotionRESTClientViaToken(HTTPClient):
         resilience: Optional[ResiliencePolicy] = None
     ) -> None:
         super().__init__(token, "Bearer", resilience=resilience)
-        self.base_url = "https://api.notion.com/v1"
+        self.base_url = notion_api_base_url()
         self.version = version
         self.headers.update({
             "Notion-Version": version,
@@ -408,6 +409,52 @@ class NotionClient(IClient):
         except Exception as e:
             logger.error(f"Failed to build Notion client from services: {str(e)}")
             raise
+
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: dict[str, Any],
+        logger: logging.Logger,
+        config_service: ConfigurationService | None = None,
+    ) -> "NotionClient":
+        """Build NotionClient from a per-user toolset configuration.
+
+        Args:
+            toolset_config: Toolset configuration from etcd containing:
+                - authType: OAUTH or API_TOKEN
+                - credentials: { access_token, ... } for OAuth
+                - auth: { apiToken } for API_TOKEN
+                - isAuthenticated: bool
+            logger: Logger instance
+            config_service: Unused; accepted for the common factory signature
+
+        Returns:
+            NotionClient instance
+
+        Raises:
+            ValueError: If the configuration is missing or not authenticated
+        """
+        if not toolset_config:
+            raise ValueError("Toolset configuration is required")
+        if not toolset_config.get("isAuthenticated", False):
+            raise ValueError("Toolset is not authenticated. Please complete authentication first.")
+
+        auth_type = (toolset_config.get("authType") or "").upper()
+        version = toolset_config.get("version") or "2025-09-03"
+        if auth_type == "OAUTH":
+            token = (toolset_config.get("credentials") or {}).get("access_token", "")
+            if not token:
+                raise ValueError("Access token not found in OAuth credentials. Please re-authenticate.")
+        elif auth_type == "API_TOKEN":
+            token = ((toolset_config.get("auth") or {}).get("apiToken") or "").strip()
+            if not token:
+                raise ValueError("API token is required for API_TOKEN auth")
+        else:
+            raise ValueError(f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_TOKEN")
+
+        logger.info(f"Created Notion client from toolset config (auth type: {auth_type})")
+        # Both auth types call the API with a bearer token; OAuth refresh is handled by the toolset store.
+        return cls(NotionRESTClientViaToken(token, version))
 
     @staticmethod
     async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:

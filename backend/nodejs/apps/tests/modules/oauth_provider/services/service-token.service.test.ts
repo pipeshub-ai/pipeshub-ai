@@ -45,8 +45,12 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
     revokeEveryTokenForUser: sinon.stub().resolves(),
     revokeAllTokensForApp: sinon.stub().resolves(),
     countActiveAccessTokensForUser: sinon.stub().resolves(0),
+    revokeDelegatedTokensForActor: sinon.stub().resolves(0),
   };
   const scopeValidator = { validateScopesForApp: sinon.stub() };
+  const delegations = {
+    revokeAllForServiceAccount: sinon.stub().resolves(),
+  };
   return {
     service: new ServiceTokenService(
       logger as any,
@@ -54,9 +58,11 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
       config as any,
       tokens as any,
       scopeValidator as any,
+      delegations as any,
     ),
     tokens,
     scopeValidator,
+    delegations,
   };
 }
 
@@ -188,6 +194,23 @@ describe('ServiceTokenService', () => {
         expect.fail('expected an over-long expiry to be refused');
       } catch (error) {
         expect((error as Error).message).to.contain('cannot exceed');
+      }
+    });
+
+    it('takes any whole number of days in between, not only the presets', async () => {
+      // The token screen offers a custom lifetime; the token must live exactly
+      // that long, since its signed expiry is what ends it.
+      const { service, tokens } = makeService();
+      for (const days of [1, 7, 45, SERVICE_TOKEN_MAX_EXPIRY_DAYS]) {
+        await service.createToken(orgId, adminId, {
+          serviceAccountId: accountId,
+          name: 'nightly',
+          scopes: ['kb:read'],
+          expiryDays: days,
+        });
+        expect(
+          tokens.generateTokens.lastCall.args[7].accessTokenLifetimeOverrideSeconds,
+        ).to.equal(days * 86400);
       }
     });
   });

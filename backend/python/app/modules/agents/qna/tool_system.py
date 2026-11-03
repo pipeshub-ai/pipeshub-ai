@@ -11,6 +11,7 @@ This module retains only:
 
 import json
 import logging
+import os
 
 from app.modules.agents.qna.chat_state import ChatState
 
@@ -59,13 +60,23 @@ def code_execution_enabled(state: ChatState) -> bool:
     1. ``state["enable_code_execution"]`` — per-request override
     2. ``PIPESHUB_ENABLE_CODE_EXECUTION`` env var
     3. Default: ``True``
-    """
-    state_flag = state.get("enable_code_execution")
-    if isinstance(state_flag, bool):
-        return state_flag
 
-    import os as _os
-    env_val = _os.environ.get("PIPESHUB_ENABLE_CODE_EXECUTION")
+    If the flag cannot be read at all, code execution is treated as
+    disabled: an outage in flag resolution must not switch it on.
+    """
+    try:
+        state_flag = state.get("enable_code_execution")
+        if isinstance(state_flag, bool):
+            return state_flag
+
+        env_val = os.environ.get("PIPESHUB_ENABLE_CODE_EXECUTION")
+    except Exception:
+        logger.warning(
+            "code_execution_enabled: could not resolve the flag; treating code execution as disabled",
+            exc_info=True,
+        )
+        return False
+
     if env_val is not None:
         raw = env_val.strip().lower()
         if raw in {"1", "true", "yes", "on"}:

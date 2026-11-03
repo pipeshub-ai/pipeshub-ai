@@ -51,6 +51,7 @@ def _make_mock_deps():
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
 
@@ -68,7 +69,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    c = ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    # As after a first complete group read; a just-started connector holds every user back.
+    c._account_statuses_known = True
+    return c
 
 
 def _resp(status=200, data=None):
@@ -131,7 +135,9 @@ class TestConfluenceRunSync:
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
             connector._sync_folders = AsyncMock()
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=MagicMock(checkpoint_time=None))
+            connector._remove_content_gone_from_source = AsyncMock(return_value=True)
+            connector._remove_spaces_out_of_scope = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
@@ -160,7 +166,9 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
             connector._sync_folders = AsyncMock()
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=MagicMock(checkpoint_time=None))
+            connector._remove_content_gone_from_source = AsyncMock(return_value=True)
+            connector._remove_spaces_out_of_scope = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
@@ -194,7 +202,7 @@ class TestSyncUsers:
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_paginates_until_less_than_batch(self):
+    async def test_paginates_until_an_empty_page(self) -> None:
         connector = _make_connector()
 
         call_count = 0
@@ -206,9 +214,12 @@ class TestSyncUsers:
                 return _resp(200, {
                     "results": [{"user": {"accountId": f"u{i}"}, "email": f"u{i}@x.com"} for i in range(100)],
                 })
-            return _resp(200, {
-                "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
-            })
+            if call_count == 2:
+                # A short page is not the end: Cloud can return one before it.
+                return _resp(200, {
+                    "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
+                })
+            return _resp(200, {"results": []})
 
         ds = MagicMock()
         ds.search_users = AsyncMock(side_effect=mock_search)
@@ -218,7 +229,7 @@ class TestSyncUsers:
         ))
 
         await connector._sync_users()
-        assert call_count == 2
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_skips_users_without_email(self):
@@ -840,22 +851,22 @@ class TestFetchSpacePermissions:
         assert {p.external_id for p in perms} == {"g1", "g2"}
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_space_permissions_assignments = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
-        assert perms == []
+        assert perms is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         connector = _make_connector()
         connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================
@@ -883,14 +894,15 @@ class TestFetchPagePermissions:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none_not_empty(self):
+        """Decision 76: "could not determine" is not "no restrictions"."""
         connector = _make_connector()
         ds = MagicMock()
         ds.get_page_permissions_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         perms = await connector._fetch_page_permissions("pg1")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================

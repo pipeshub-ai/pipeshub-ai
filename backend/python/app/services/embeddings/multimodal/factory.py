@@ -21,7 +21,7 @@ from app.services.embeddings.multimodal.openai_compat_provider import (
     OpenAICompatMultimodalProvider,
 )
 from app.services.embeddings.multimodal.voyage_provider import VoyageMultimodalProvider
-from app.utils.aimodels import EmbeddingProvider
+from app.utils.aimodels import EmbeddingProvider, require_allowed_endpoint
 
 # Providers that speak the OpenAI-compatible /v1/embeddings shape. Both are
 # routed through the same provider class, only the label used for logging
@@ -97,4 +97,7 @@ class MultimodalEmbeddingFactory:
     @staticmethod
     def create(config: MultimodalProviderConfig) -> IMultimodalEmbeddingProvider | None:
         builder = _PROVIDER_BUILDERS.get(config.provider)
-        return builder(config) if builder else None
+        if builder is None:
+            return None
+        require_allowed_endpoint(config.base_url)
+        return builder(config)

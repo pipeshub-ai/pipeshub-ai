@@ -33,6 +33,9 @@ RUN set -e; \
     fi
 COPY src ./src
 RUN npm run build --prefix ./
+# tsc does not emit .hbs, and emailTemplates.ts reads them from ${process.cwd()}/src
+# at runtime, so every template under src is staged here with its path kept.
+RUN mkdir -p /build/templates && cd src && find . -name '*.hbs' -exec cp --parents {} /build/templates/ \;
 
 # Stage 2: Runtime
 FROM node:20
@@ -50,7 +53,7 @@ COPY --from=builder /build/dist ./dist
 COPY --from=builder /build/node_modules ./node_modules
 COPY package*.json ./
 
-COPY --from=builder /build/src/modules/mail/views ./src/modules/mail/views
+COPY --from=builder /build/templates ./src
 COPY --from=builder /build/src/modules/api-docs/pipeshub-openapi.yaml ./dist/modules/api-docs/pipeshub-openapi.yaml
 
 # Expose ports used by the services (adjust based on actual service ports)

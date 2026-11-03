@@ -63,3 +63,7 @@ class ConfigClient(APIClient):
             **kwargs: Storage settings fields
         """
         return self.put("/storage", json=kwargs)
+
+    def get_frontend_public_url(self) -> requests.Response:
+        """Get the configured public frontend URL; the body is empty when none is set."""
+        return self.get("/frontendPublicUrl")

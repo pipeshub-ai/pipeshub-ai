@@ -32,7 +32,7 @@ class PromptTemplate:
     """
 
     DEFAULT_ORDER: tuple[str, ...] = (
-        "identity", "goal_brief",
+        "identity", "context_notes", "goal_brief",
         "toolset_overview", "preloaded_tools",
         "skills_overview", "preloaded_skills",
         "todos", "mode", "style",

@@ -5,16 +5,10 @@ profile) instead of paying a full ReAct round-trip (model call -> tool
 call -> model call) just to fetch the same context the model could have
 been handed immediately.
 
-Mirrors the "Standard path: upfront retrieval" branch `chatbot.py`'s
-`_generate_internal_search_stream()` ran today (`search_with_filters` ->
-`get_flattened_results` -> `enrich_virtual_record_id_to_result_with_fk_
-children` -> `enrich_records_with_graph_context` -> sort), and formats
-results with the exact same `build_message_content_array(..., from_tool=True)`
-call the shared `search_internal_knowledge` tool
-(`app/agents/actions/retrieval/retrieval.py`) uses for ITS OWN return text
--- so a prefetched context block and a follow-up tool-call result look
-identical to the model, and citation ref numbering stays on one
-`CitationRefMapper` across both.
+Builds and renders its context through the same `KnowledgeContextBuilder`
+and `KnowledgeRenderer` the search tool uses, so a prefetched context block
+and a follow-up search result look alike to the model, and citation ref
+numbering stays on one `CitationRefMapper` across both.
 """
 
 from __future__ import annotations
@@ -22,23 +16,36 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.utils.chat_helpers import (
-    CitationRefMapper,
-    ImageBudget,
-    build_message_content_array,
-    enrich_records_with_graph_context,
-    enrich_virtual_record_id_to_result_with_fk_children,
-    flattened_result_sort_key,
-    get_flattened_results,
+from app.exceptions.fastapi_responses import Status
+from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.ordering import relevance_ordered_context
+from app.modules.retrieval.context.renderer import render_knowledge
+from app.modules.retrieval.context.targeted import (
+    cap_passages_per_record,
+    more_passages_list,
+    more_passages_note,
+    passages_per_record,
+    search_max_chars,
+    targeted_retrieval_enabled,
 )
+from app.modules.retrieval.context.units import unit_children
+from app.modules.retrieval.selection_scope import connection_sources_of
+from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
 
 if TYPE_CHECKING:
     import logging
 
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+    from app.utils.image_admission import ImageAdmission
 
-__all__ = ["PrefetchResult", "prefetch_retrieval"]
+__all__ = [
+    "PrefetchResult",
+    "filter_notice_constraint",
+    "prefetch_retrieval",
+    "search_failure_constraint",
+    "search_incomplete_constraint",
+]
 
 # Statuses `RetrievalService.search_with_filters()` uses for "the backend
 # itself failed/is unavailable" -- as opposed to "ran fine, found nothing"
@@ -46,6 +53,19 @@ __all__ = ["PrefetchResult", "prefetch_retrieval"]
 # below, not an error). Mirrors the check `_generate_internal_search_
 # stream()` ran on the same call.
 _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 404, 500, 503})
+# The request's own filter was refused (an entity filter too broad for what the
+# user can read, or unusable): not "nothing found", and the user has to be told.
+_FILTER_REFUSED_STATUS_CODE = 422
+# Of the error statuses, the ones where the search itself could not run. The
+# rest (nothing indexed yet, nothing this user can read) are answers.
+_SEARCH_FAILED_STATUSES = frozenset({
+    Status.ERROR.value,
+    Status.SEARCH_INDEX_UNAVAILABLE.value,
+    Status.PERMISSION_CHECK_UNAVAILABLE.value,
+    Status.VECTOR_DB_NOT_READY.value,
+})
+# The raised exception's text describes our infrastructure, not the search.
+_SEARCH_RAISED_NOTICE = "The search could not run."
 
 
 @dataclass
@@ -68,6 +88,16 @@ class PrefetchResult:
     # since prefetch produces plain text (folded into `goal.constraints`),
     # not a tool result that could carry a multipart `ToolMessage`.
     collected_images: list[dict[str, Any]] = field(default_factory=list)
+    # `final_results` most relevant first; `final_results` itself is in
+    # reading order.
+    ranked_results: list[dict[str, Any]] = field(default_factory=list)
+    # Why the request's filter could not be applied; the answer must say so.
+    filter_notice: str | None = field(default=None)
+    # Why the search failed outright, so the model does not read its empty
+    # context as "nothing matched". None for a search that ran.
+    failure_notice: str | None = field(default=None)
+    # The search ran, but part of the index did not answer.
+    incomplete_notice: str | None = field(default=None)
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -93,6 +123,9 @@ async def prefetch_retrieval(
     force: bool = False,
     ref_mapper: CitationRefMapper | None = None,
     image_budget: ImageBudget | None = None,
+    image_admission: ImageAdmission | None = None,
+    read_in_full: bool = False,
+    can_fetch: bool = True,
 ) -> PrefetchResult | None:
     """Runs upfront retrieval for the current query.
 
@@ -111,6 +144,15 @@ async def prefetch_retrieval(
     through one mapper, so a mapper swap after prefetch resolves doesn't
     orphan refs those tools already registered. See `bridge.py`'s
     `_produce()` for the call site this matters for.
+
+    `image_admission`, when given, is the request's arbiter: images prefetch
+    attaches count against the model's cap, and a later search sees them as
+    already sent.
+
+    Under TARGETED_RETRIEVAL the context names records that had more matching
+    passages and how to read them. `read_in_full` (THOROUGH_RETRIEVAL's
+    full-read policy, where the fetch tool takes no `query`) asks for a whole
+    read instead; `can_fetch=False` (a turn with no tools) leaves the note out.
     """
     if not force and _is_followup(previous_conversations):
         return None
@@ -134,10 +176,12 @@ async def prefetch_retrieval(
             citation_ref_mapper=ref_mapper,
             is_empty=True,
             error_message=str(exc),
+            failure_notice=_SEARCH_RAISED_NOTICE,
         )
 
     status_code = result.get("status_code", 500)
-    if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+    if status_code == _FILTER_REFUSED_STATUS_CODE:
+        message = result.get("message") or "The filter could not be applied."
         return PrefetchResult(
             formatted_context="",
             final_results=[],
@@ -145,34 +189,44 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
-            error_message=result.get("message", "Search failed"),
+            error_message=message,
+            filter_notice=message,
+        )
+    if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+        message = result.get("message", "Search failed")
+        return PrefetchResult(
+            formatted_context="",
+            final_results=[],
+            virtual_record_id_to_result={},
+            tool_records=[],
+            citation_ref_mapper=ref_mapper,
+            is_empty=True,
+            error_message=message,
+            failure_notice=(
+                message if result.get("status") in _SEARCH_FAILED_STATUSES
+                else result.get("searchIncomplete") or None
+            ),
         )
 
+    incomplete_notice = result.get("searchIncomplete") or None
     search_results = result.get("searchResults", [])
     virtual_to_record_map = result.get("virtual_to_record_map", {})
 
-    virtual_record_id_to_result: dict[str, Any] = {}
-    flattened_results = await get_flattened_results(
-        search_results, blob_store, org_id, is_multimodal_llm,
-        virtual_record_id_to_result, virtual_to_record_map,
+    knowledge = await KnowledgeContextBuilder(
+        blob_store=blob_store,
         graph_provider=graph_provider,
+        org_id=org_id,
+        user_id=user_id,
+        config_service=getattr(blob_store, "config_service", None),
+        connection_sources=connection_sources_of(filters),
+    ).build(
+        search_results,
+        virtual_to_record_map,
+        is_multimodal_llm=is_multimodal_llm,
+        include_fk_children=True,
     )
-    await enrich_virtual_record_id_to_result_with_fk_children(
-        virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results,
-    )
-    if flattened_results and graph_provider:
-        await enrich_records_with_graph_context(
-            virtual_record_id_to_result,
-            graph_provider,
-            flattened_results,
-            virtual_to_record_map,
-            blob_store=blob_store,
-            org_id=org_id,
-            config_service=getattr(blob_store, "config_service", None),
-        )
-
-    final_results = sorted(flattened_results, key=flattened_result_sort_key)
-    if not final_results:
+    virtual_record_id_to_result = knowledge.virtual_record_id_to_result
+    if not knowledge.ranked:
         return PrefetchResult(
             formatted_context="",
             final_results=[],
@@ -180,26 +234,112 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
+            # Nothing found in the part that answered is no finding at all.
+            failure_notice=incomplete_notice,
         )
 
-    collected_images: list[dict[str, Any]] = []
-    message_content_array, ref_mapper = build_message_content_array(
-        final_results, virtual_record_id_to_result,
-        is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=True,
-        collected_images=collected_images,
+    # TARGETED_RETRIEVAL: the first-turn context is held to what one search
+    # result may hold, a few passages per record, like the search tool's.
+    targeted = targeted_retrieval_enabled()
+    per_record = passages_per_record(limit) if targeted else 0
+    omitted: dict[str, int] = {}
+    if targeted:
+        capped = cap_passages_per_record(knowledge.ranked, per_record)
+        knowledge.ranked = capped.units
+        omitted = capped.omitted
+
+    max_chars: int | None = None
+    if targeted:
+        max_chars = (
+            _room_for_records(omitted, per_record, virtual_record_id_to_result, focused_reads=not read_in_full)
+            if can_fetch else search_max_chars()
+        )
+
+    if image_admission is not None and is_multimodal_llm:
+        await image_admission.warm([
+            content
+            for unit in knowledge.ranked
+            for item in (unit, *unit_children(unit))
+            if is_base64_image(content := item.get("content"))
+        ])
+    rendered = render_knowledge(
+        knowledge.ranked,
+        virtual_record_id_to_result,
+        ref_mapper=ref_mapper,
+        is_multimodal_llm=is_multimodal_llm,
+        by_relevance=relevance_ordered_context(),
         image_budget=image_budget if image_budget is not None else ImageBudget(),
+        image_admission=image_admission,
+        max_chars=max_chars,
     )
-    flat_parts = [item for sublist in message_content_array for item in sublist]
+    flat_parts = [item for sublist in rendered.parts for item in sublist]
     formatted_context = "\n".join(
         part["text"] for part in flat_parts if part.get("type") == "text" and part.get("text")
     )
+    if targeted and can_fetch and formatted_context.strip():
+        shown = {unit.get("virtual_record_id") for unit in rendered.units}
+        shown_omitted = {vrid: count for vrid, count in omitted.items() if vrid in shown}
+        more = more_passages_list(shown_omitted, virtual_record_id_to_result, focused_reads=not read_in_full)
+        if more:
+            formatted_context = (
+                more_passages_note(per_record, len(shown_omitted), 0, focused_reads=not read_in_full)
+                + formatted_context + more
+            )
 
     return PrefetchResult(
         formatted_context=formatted_context,
-        final_results=final_results,
+        final_results=rendered.units,
         virtual_record_id_to_result=virtual_record_id_to_result,
         tool_records=list(virtual_record_id_to_result.values()),
         citation_ref_mapper=ref_mapper,
         is_empty=not formatted_context.strip(),
-        collected_images=collected_images,
+        collected_images=rendered.images,
+        ranked_results=rendered.ranked,
+        incomplete_notice=incomplete_notice,
+        failure_notice=None if formatted_context.strip() else incomplete_notice,
     )
+
+
+def _room_for_records(
+    omitted: dict[str, int], per_record: int, records: dict[str, Any], *, focused_reads: bool,
+) -> int:
+    """What the records may take of a targeted first-turn context: the
+    search result's size less the note and list about trimmed records, sized
+    as if every trimmed record were shown, which the real ones never exceed."""
+    suffix = more_passages_note(per_record, len(omitted), 0, focused_reads=focused_reads) + (
+        more_passages_list(omitted, records, focused_reads=focused_reads)
+    )
+    return max(search_max_chars() - len(suffix), 0)
+
+
+def filter_notice_constraint(notice: str) -> str:
+    """What the model is told when the request's filter was refused."""
+    return (
+        f"The filter on this question could not be applied: {notice} Tell the user this, "
+        "and how to narrow the filter. Do not answer as if no documents matched."
+    )
+
+
+def search_failure_constraint(notice: str, *, can_search: bool) -> str:
+    """What the model is told when the search run before its first turn failed."""
+    then = (
+        "Search again with the search tool. If that fails too, tell the user the "
+        "knowledge base could not be searched just now."
+        if can_search
+        else "Tell the user the knowledge base could not be searched just now."
+    )
+    return (
+        f"The knowledge base search run for this question did not complete: {notice} "
+        f"Its empty result does not show that nothing matches. {then} "
+        "Do not answer as if no documents matched."
+    )
+
+
+def search_incomplete_constraint(notice: str, *, can_search: bool) -> str:
+    """Leads the prefetched context when part of the index did not answer."""
+    then = (
+        "search again before saying it does not."
+        if can_search
+        else "do not say it does not exist."
+    )
+    return f"Note: {notice} A document missing from the context below may still exist; {then}\n\n"

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -9,6 +9,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationCard } from './citations-panel';
+import { VersionSwitcher } from './version-switcher';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
@@ -20,6 +21,12 @@ import {
   PDF_ZOOM_MIN,
 } from './types';
 import type { FilePreviewProps, PaginationControls, PreviewCitation } from './types';
+import {
+  PREVIEW_TOOLBAR_BUTTON,
+  PREVIEW_TOOLBAR_DIVIDER,
+  PREVIEW_TOOLBAR_PAGE,
+  PREVIEW_TOOLBAR_VALUE,
+} from './preview-toolbar-styles';
 
 export function FilePreviewMobile({
   file,
@@ -33,6 +40,11 @@ export function FilePreviewMobile({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
+  onChat,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
@@ -146,7 +158,7 @@ export function FilePreviewMobile({
         style={{
           height: '40px',
           padding: '0 var(--space-2)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           backgroundColor: 'var(--effects-translucent)',
           borderBottom: '1px solid var(--olive-3)',
           flexShrink: 0,
@@ -173,8 +185,16 @@ export function FilePreviewMobile({
           >
             {file.name}
           </Text>
+          {file.version !== undefined && onVersionChange && (
+            <VersionSwitcher
+              version={file.version}
+              latestVersion={latestVersion ?? file.version}
+              onVersionChange={onVersionChange}
+              isSwitching={isSwitchingVersion}
+            />
+          )}
           {!hideFileDetails && (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="ghost"
               color="gray"
               size="1"
@@ -188,8 +208,14 @@ export function FilePreviewMobile({
         </Flex>
 
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {onChat && (
+            <Button size="1" variant="surface" onClick={onChat}>
+              <MaterialIcon name="assistant" size={16} />
+              {t('kb.chatWithSelection')}
+            </Button>
+          )}
           {canDownload && (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="ghost"
               color="gray"
               size="1"
@@ -198,14 +224,15 @@ export function FilePreviewMobile({
                   name: file.name,
                   url: file.url,
                   blob: file.blob,
+                  onDownload,
                 })
               }
-              title="Download"
+              title={t('action.download')}
             >
               <MaterialIcon name="download" size={16} color="var(--slate-11)" />
             </IconButton>
           )}
-          <IconButton
+          <IconButton className="touch-hit"
             variant="ghost"
             color="gray"
             size="1"
@@ -235,7 +262,7 @@ export function FilePreviewMobile({
                 flexShrink: 0,
               }}
             >
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -328,41 +355,36 @@ export function FilePreviewMobile({
               <Flex
                 align="center"
                 justify="center"
-                gap="2"
+                gap="1"
                 style={{
                   position: 'absolute',
                   bottom: hasCitations ? '64px' : 'var(--space-4)',
                   left: '50%',
                   transform: 'translateX(-50%)',
                   padding: 'var(--space-1)',
-                  backgroundColor: 'var(--effects-translucent)',
+                  backgroundColor: 'var(--frost-bg-strong)',
                   border: '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
                   boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
                   zIndex: 20,
                   isolation: 'isolate',
                   pointerEvents: 'auto',
                 }}
               >
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
                   onClick={handlePdfZoomOut}
                   disabled={pdfScale <= PDF_ZOOM_MIN}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom out"
+                  style={PREVIEW_TOOLBAR_BUTTON}
+                  aria-label={t('chat.zoomOut')}
                 >
                   <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
-                <Box
-                  style={{
-                    minWidth: '36px',
-                    textAlign: 'center',
-                  }}
-                >
+                <Box style={PREVIEW_TOOLBAR_VALUE}>
                   <Text
                     as="span"
                     size="2"
@@ -372,24 +394,24 @@ export function FilePreviewMobile({
                     {Math.round(pdfScale * 100)}%
                   </Text>
                 </Box>
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
                   onClick={handlePdfZoomIn}
                   disabled={pdfScale >= PDF_ZOOM_MAX}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom in"
+                  style={PREVIEW_TOOLBAR_BUTTON}
+                  aria-label={t('chat.zoomIn')}
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
                   onClick={toggleZoomLock}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-pressed={isZoomLocked}
@@ -401,33 +423,24 @@ export function FilePreviewMobile({
                   />
                 </IconButton>
 
-                <Box
-                  style={{
-                    width: '1px',
-                    height: '16px',
-                    backgroundColor: 'var(--slate-4)',
-                    flexShrink: 0,
-                  }}
-                  aria-hidden
-                />
+                <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
                   onClick={handlePrevPage}
                   disabled={currentPage === 1}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                 >
                   <MaterialIcon name="chevron_left" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
                 <Box
                   style={{
+                    ...PREVIEW_TOOLBAR_PAGE,
                     backgroundColor: 'var(--olive-2)',
                     border: '1px solid var(--olive-3)',
-                    borderRadius: 'var(--radius-1)',
-                    padding: '4px 12px',
                   }}
                 >
                   <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -435,13 +448,13 @@ export function FilePreviewMobile({
                   </Text>
                 </Box>
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
                   onClick={handleNextPage}
                   disabled={totalPages === null || currentPage === totalPages}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                 >
                   <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -458,8 +471,8 @@ export function FilePreviewMobile({
                   bottom: 'var(--space-4)',
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  backdropFilter: 'blur(25px)',
-                  backgroundColor: 'var(--effects-translucent)',
+                  backdropFilter: 'var(--frost-filter)',
+                  backgroundColor: 'var(--frost-bg-strong)',
                   border: '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
                   boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
@@ -472,7 +485,7 @@ export function FilePreviewMobile({
                 onClick={() => setShowCitationsSheet(true)}
               >
                 <Text size="1" style={{ color: 'var(--accent-12)', whiteSpace: 'nowrap' }}>
-                  View Citations
+                  {t('filePreview.viewCitations')}
                 </Text>
               </Flex>
             )}
@@ -485,7 +498,7 @@ export function FilePreviewMobile({
             style={{
               flexShrink: 0,
               height: '55vh',
-              backdropFilter: 'blur(25px)',
+              backdropFilter: 'var(--frost-filter)',
               backgroundColor: 'var(--olive-2)',
               borderTop: '1px solid var(--olive-3)',
               borderTopLeftRadius: 'var(--radius-2)',
@@ -505,7 +518,7 @@ export function FilePreviewMobile({
               <Text size="1" weight="medium" style={{ color: 'var(--neutral-a12)' }}>
                 {t('chat.citations')}
               </Text>
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="2"

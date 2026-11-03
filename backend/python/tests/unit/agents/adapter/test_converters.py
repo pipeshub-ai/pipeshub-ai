@@ -23,8 +23,11 @@ from app.agent_loop_lib.core.messages import (
     SystemMessage as AgentSystemMessage,
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.transport.tool_images import (
+    RELOCATED_IMAGES_NOTE,
+    has_tool_result_images,
+)
 from app.agents.agent_loop.converters import (
-    _RELOCATED_IMAGES_PREFIX,
     _clamp_tool_call_id,
     convert_assistant_message_from_langchain,
     convert_message_from_langchain,
@@ -33,7 +36,6 @@ from app.agents.agent_loop.converters import (
     convert_tool_call_from_langchain,
     convert_tool_schema_to_langchain_dict,
     convert_tool_schemas_to_langchain,
-    has_tool_result_images,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
@@ -161,7 +163,8 @@ class TestMessageToLangchain:
         `strip_tool_images=True`, a multipart ToolMessage must serialize to
         a plain text string (text parts + step_footer), not the
         list-of-blocks shape, so the image never reaches the provider
-        (the PRE_MODEL fallback hook re-injects it separately)."""
+        inside the tool result (`relocate_tool_images` sends it in a user
+        message)."""
         msg = ToolMessage(
             content=[
                 TextPart(text="[ref1] (image)"),
@@ -216,8 +219,9 @@ class TestMessageToLangchain:
         assert converted[1].content == "[ref1] (image)"
         assert isinstance(converted[-1], HumanMessage)
         assert converted[-1].content == [
-            {"type": "text", "text": _RELOCATED_IMAGES_PREFIX},
+            {"type": "text", "text": f'<context_note source="agent">\n{RELOCATED_IMAGES_NOTE}'},
             {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+            {"type": "text", "text": "</context_note>"},
         ]
 
     def test_relocate_tool_images_adds_no_message_when_there_are_no_images(self) -> None:
@@ -497,6 +501,40 @@ class TestTokenUsage:
         assert usage.cache_read_tokens == 2
         assert usage.cache_write_tokens == 1
 
+
+
+    @staticmethod
+    def _usage(input_tokens: int, details: dict) -> AIMessage:
+        return AIMessage(content="hi", usage_metadata={
+            "input_tokens": input_tokens, "output_tokens": 7, "total_tokens": input_tokens + 7,
+            "input_token_details": details,
+        })
+
+    def test_anthropic_writes_reported_by_ttl_are_counted(self) -> None:
+        """Non-streaming langchain-anthropic moves writes into the TTL counters
+        and zeroes cache_creation."""
+        usage = token_usage_from_ai_message(self._usage(
+            1_000, {"cache_read": 0, "cache_creation": 0, "ephemeral_5m_input_tokens": 900, "ephemeral_1h_input_tokens": 50},
+        ))
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (1_000, 0, 950)
+
+    def test_ttl_counters_win_over_cache_creation_so_nothing_is_counted_twice(self) -> None:
+        usage = token_usage_from_ai_message(self._usage(
+            1_000, {"cache_creation": 900, "ephemeral_5m_input_tokens": 900},
+        ))
+        assert usage.cache_write_tokens == 900
+
+    def test_service_tier_prefixed_counters_are_read(self) -> None:
+        usage = token_usage_from_ai_message(self._usage(
+            1_000, {"priority_cache_read": 600, "flex_cache_read": 100, "cache_creation": 20},
+        ))
+        assert (usage.cache_read_tokens, usage.cache_write_tokens) == (700, 20)
+
+    def test_input_that_excludes_cached_tokens_is_made_to_include_them(self) -> None:
+        usage = token_usage_from_ai_message(
+            self._usage(100, {"cache_read": 800, "cache_creation": 50}), input_excludes_cached=True,
+        )
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (950, 800, 50)
 
 class TestConvertToolSchemaToLangchainDict:
     """`convert_tool_schema_to_langchain_dict` replaced a round-trip through

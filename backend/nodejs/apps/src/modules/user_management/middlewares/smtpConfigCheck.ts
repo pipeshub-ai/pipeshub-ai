@@ -1,6 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
+  BadRequestError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -77,6 +78,12 @@ export const smtpConfigCheck =
       const credentialsData = response.data;
       if (!credentialsData) {
         throw new NotFoundError('Smtp Configuration not found');
+      }
+      const { enabled } = credentialsData as { enabled?: unknown };
+      if (enabled === false) {
+        throw new BadRequestError(
+          'Email is turned off. An admin can turn it on in Mail settings.',
+        );
       }
       if (!credentialsData.host) {
         throw new NotFoundError('Smtp not configured: Host is missing');

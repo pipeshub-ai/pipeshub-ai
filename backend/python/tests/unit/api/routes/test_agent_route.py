@@ -307,11 +307,11 @@ class TestParseKnowledgeSources:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_invalid_json_filters(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_filters_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_empty_and_none_input(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
@@ -495,7 +495,7 @@ class TestGetUserDocument:
         gp.get_user_by_user_id.side_effect = RuntimeError("db error")
         with pytest.raises(HTTPException) as exc_info:
             await _get_user_document("u1", gp, MagicMock())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # =============================================================================
@@ -545,7 +545,7 @@ class TestGetOrgInfo:
         gp.get_document.side_effect = RuntimeError("db error")
         with pytest.raises(HTTPException) as exc_info:
             await _get_org_info({"orgId": "o1"}, gp, MagicMock())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # =============================================================================
@@ -675,7 +675,6 @@ class TestGetServices:
         retrieval.llm = MagicMock()
         container.retrieval_service = AsyncMock(return_value=retrieval)
         container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
         container.logger.return_value = MagicMock()
         request.app.container = container
@@ -702,6 +701,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
 
         request = MagicMock()
@@ -755,6 +755,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"query":"test query"}')
@@ -798,6 +799,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "my-agent",
@@ -839,6 +841,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "my-agent",
@@ -878,6 +881,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "my-agent",
@@ -1031,6 +1035,7 @@ class TestReasoningModelValidation:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -1079,6 +1084,7 @@ class TestKBFilterHandling:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -1119,6 +1125,7 @@ class TestKBFilterHandling:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
 
         request = MagicMock()

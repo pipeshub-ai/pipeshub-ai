@@ -8,6 +8,22 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def _credential_instance_and_schema():
+    """The credential handlers look the instance and its declared fields up in the
+    registry. These tests are about what the handlers do once they have them; the
+    lookups themselves are covered in test_toolset_credential_fields.py."""
+    with patch(
+        "app.api.routes.toolsets._declared_auth_fields",
+        return_value={"apiToken", "username", "password", "email", "baseUrl"},
+    ), patch(
+        "app.api.routes.toolsets._instance_for_credential_update",
+        new_callable=AsyncMock,
+        return_value={"_id": "i1", "orgId": "o1", "authType": "API_TOKEN", "toolsetType": "jira"},
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers for route-handler tests
 # ---------------------------------------------------------------------------
@@ -1302,8 +1318,18 @@ class TestHandleToolsetOAuthCallbackFlows:
         assert "auth_failed" in result.get("error", "")
 
     @pytest.mark.asyncio
-    async def test_agent_flow_permission_denied(self):
-        """Lines 2320-2326 — agent flow with no edit access redirects."""
+    @pytest.mark.parametrize(
+        ("status_code", "expected_error"),
+        [
+            (403, "agent_permission_denied"),
+            (401, "agent_auth_error"),
+            (404, "agent_permission_denied"),
+            (400, "agent_auth_error"),
+            (500, "agent_auth_error"),
+        ],
+    )
+    async def test_agent_flow_access_check_failure_answers_json_not_redirect(self, status_code, expected_error):
+        """The Node API follows redirects, so a failed agent access check must not redirect to the caller's base_url."""
         from app.api.routes.toolsets import handle_toolset_oauth_callback
         cs = AsyncMock()
         encoded_state = self._encode_state("orig-state", "i1", "agent-1", is_agent=True)
@@ -1311,10 +1337,23 @@ class TestHandleToolsetOAuthCallbackFlows:
         req = _make_request()
 
         with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, side_effect=HTTPException(status_code=403, detail="no access")):
-            result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
-        location = result.headers.get("location", "")
-        assert "agent_permission_denied" in location
+             patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, side_effect=HTTPException(status_code=status_code, detail="no access")):
+            result = await handle_toolset_oauth_callback(
+                req, code="code", state=encoded_state, error=None,
+                base_url="http://elsewhere.invalid", config_service=cs,
+            )
+        assert isinstance(result, dict)
+        assert result["success"] is False
+        assert result["error"] == expected_error
+        assert result["error_message"]
+        if status_code == 400:
+            assert result["error_message"] == "no access"
+        elif status_code == 401:
+            assert "verify your account" in result["error_message"]
+        elif status_code == 500:
+            assert "try again" in result["error_message"]
+        else:
+            assert "permission" in result["error_message"]
 
     @pytest.mark.asyncio
     async def test_agent_flow_success(self):

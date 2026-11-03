@@ -17,6 +17,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.github_teams.comments import CommentsHelper
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.pull_requests import PullRequestsSync
@@ -58,6 +59,7 @@ class _ListedPR(SimpleNamespace):
 def _pr(
     *, number: int = 1, title: str = "Add feature", state: str = "open", merged: bool = False,
     mergeable: bool | None = None, head_sha: str = "sha-head", full_payload: bool = False,
+    milestone: dict | None = None,
 ) -> SimpleNamespace:
     """A PullRequest as the LIST endpoint returns it by default.
 
@@ -67,12 +69,15 @@ def _pr(
     object reading it fires a per-PR fetch, so the code must use ``merged_at``.
     """
     raw: dict = {}
+    if milestone is not None:
+        raw["milestone"] = milestone
     if full_payload:
         raw["mergeable"] = mergeable
         raw["merged_by"] = {"login": "maintainer"} if merged else None
     return _ListedPR(
         number=number, title=title, state=state, _rawData=raw,
         merged_at=datetime(2024, 1, 2, tzinfo=timezone.utc) if merged else None,
+        closed_at=datetime(2024, 1, 2, tzinfo=timezone.utc) if state == "closed" else None,
         labels=[SimpleNamespace(name="enhancement")],
         assignees=[SimpleNamespace(login="bob")],
         html_url=f"https://github.com/acme/widgets/pull/{number}",
@@ -97,8 +102,91 @@ class TestFetchPrsBatched:
         c.issues.process_new_records = AsyncMock(return_value=True)
         c.issues._get_sync_checkpoint = AsyncMock(return_value=None)
         c.issues._update_sync_checkpoint = AsyncMock()
+        c.issues._read_checkpoint = AsyncMock(return_value={})
+        c.issues._write_checkpoint = AsyncMock()
         c.comments.clean_github_content = AsyncMock(return_value=("", []))
         return sync
+
+    async def test_a_failure_past_the_first_page_saves_where_it_stopped(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=[
+            ok_response([_pr(number=n) for n in range(100)]),
+            failed_response("rate limited", status_code=429),
+        ])
+        sync = self._sync(c)
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is False
+
+        c.issues._write_checkpoint.assert_awaited_once()
+        group, written = c.issues._write_checkpoint.await_args.args
+        assert group == "10-pull-requests"
+        assert written["listing_resume_page"] == 2
+        assert written["listing_resume_watermark"] > 0
+        c.issues._update_sync_checkpoint.assert_not_awaited()
+
+    async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_pr(number=7)]))
+        sync = self._sync(c)
+        saved = {"listing_resume_page": 3, "listing_resume_since": None,
+                 "listing_resume_watermark": 9_999_999_999_999}
+        c.issues._read_checkpoint = AsyncMock(return_value=saved)
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is True
+
+        # From the page before the saved one: a pull request removed from a page already
+        # read would move a later one onto it.
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 2
+        # The newest PR was on the pages read before the stop.
+        c.issues._update_sync_checkpoint.assert_awaited_once_with("10-pull-requests", 9_999_999_999_999)
+        _, cleared = c.issues._write_checkpoint.await_args.args
+        assert set(cleared) >= set(saved) and all(v is None for v in cleared.values())
+
+    async def test_a_rate_limit_on_the_page_before_keeps_the_saved_place(self) -> None:
+        """Reading on starts a page early. A failure there must not store that earlier
+        page, or each failed sync would step the place back towards page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        sync = self._sync(c)
+        c.issues._read_checkpoint = AsyncMock(return_value={
+            "listing_resume_page": 3, "listing_resume_since": None,
+            "listing_resume_watermark": 9_999_999_999_999})
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is False
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 2
+        _, written = c.issues._write_checkpoint.await_args.args
+        assert written["listing_resume_page"] == 3
+
+    async def test_a_place_read_back_without_its_null_fields_reads_on(self) -> None:
+        """Neo4j drops a property set to null, so a place saved with no window comes back
+        without its start."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_pr(number=7)]))
+        sync = self._sync(c)
+        c.issues._read_checkpoint = AsyncMock(return_value={
+            "listing_resume_page": 3, "listing_resume_watermark": 9_999_999_999_999})
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is True
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 2
+
+    async def test_a_rolling_window_that_moved_on_reads_on_with_its_saved_start(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = FilterCollection(filters=[Filter(
+            key=SyncFilterKey.MODIFIED.value, type="datetime", operator="last_90_days", value=None,
+        )])
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        sync = self._sync(c)
+        saved = {"listing_resume_page": 3, "listing_resume_since": 1_780_000_000_000,
+                 "listing_resume_watermark": 9_999_999_999_999, "listing_resume_window": "last_90_days"}
+        c.issues._read_checkpoint = AsyncMock(return_value=saved)
+
+        await sync.fetch_prs_batched(make_repo(repo_id=10))
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 2
+        _, written = c.issues._write_checkpoint.await_args.args
+        assert written == saved
 
     async def test_pages_until_short_page_and_never_fetches_a_single_pr(self) -> None:
         c = make_mock_connector()
@@ -186,6 +274,31 @@ class TestProcessPullRequest:
         assert ru.record.creator_name == "author-carol"
         assert ru.record.review_name == ["rev-dave", "rev-erin"]
 
+    async def test_names_the_issues_and_addresses_in_its_text(self) -> None:
+        """A PR is joined to the Jira issue its title names and the records its
+        description links to, in whichever connector holds them."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        sync = PullRequestsSync(c)
+        pr = _pr(number=5, title="PA-1844: fix the export")
+        pr.body = "Follow-up of https://acme.atlassian.net/browse/PA-1718"
+        ru = await sync.process_pull_request(repo, pr)
+
+        related = ru.record.related_external_records
+        assert [r.weburl for r in related if r.weburl] == ["https://acme.atlassian.net/browse/PA-1718"]
+        assert [r.issue_key for r in related if r.issue_key] == ["PA-1844"]
+
+    async def test_milestone_title_is_read_off_the_listing_payload(self) -> None:
+        """The /pulls listing carries the milestone object, so no extra call."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        pr = _pr(number=5, milestone={"title": "Airflow 3.5.0", "state": "open"})
+
+        ru = await PullRequestsSync(c).process_pull_request(repo, pr)
+
+        assert ru is not None
+        assert ru.record.milestone == "Airflow 3.5.0"
+
     async def test_maps_fields_for_open_pr(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=10)
@@ -222,6 +335,23 @@ class TestProcessPullRequest:
         # and reading it would fire a per-PR fetch.
         assert merged.record.status == "DONE"
         assert abandoned.record.status == "CANCELLED"
+
+    async def test_merge_and_close_dates_come_from_the_listing(self) -> None:
+        """Asked when a PR merged, the model had only "Merged". Both dates are on
+        the listing payload, so they cost no extra call."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        sync = PullRequestsSync(c)
+        day = int(datetime(2024, 1, 2, tzinfo=timezone.utc).timestamp() * 1000)
+
+        merged = await sync.process_pull_request(repo, _pr(number=5, state="closed", merged=True))
+        abandoned = await sync.process_pull_request(repo, _pr(number=6, state="closed"))
+        still_open = await sync.process_pull_request(repo, _pr(number=7))
+
+        assert (merged.record.merged_at, merged.record.closed_at) == (day, day)
+        assert (abandoned.record.merged_at, abandoned.record.closed_at) == (None, day)
+        assert (still_open.record.merged_at, still_open.record.closed_at) == (None, None)
+        assert merged.record.status_summary() == "Merged 2024-01-02"
 
     async def test_full_payload_still_yields_merge_state(self) -> None:
         """The reindex path fetches the whole PR, so raw_data carries the

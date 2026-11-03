@@ -1,6 +1,7 @@
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
+import { chatModelOptions } from '@/config';
 import { fetchModelsForContext } from './fetch-models-for-context';
-import { normalizeReasoningEffort } from '@/chat/types';
+import { isModelInList } from './model-in-list';
 import type {
   AgentStrategy,
   AvailableLlmModel,
@@ -28,7 +29,7 @@ export function pickModelInfoFromConversationBundle(detail: {
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const m = list[i];
     if (m?.modelInfo) {
-      return m.modelInfo;
+      return chatModelOptions.selectionForAnswer(m.modelInfo);
     }
   }
   return undefined;
@@ -111,7 +112,7 @@ function isConversationModelInCatalog(
   if (!k || !n || !models?.length) {
     return true;
   }
-  return models.some((m) => m.modelKey === k && m.modelName === n);
+  return isModelInList(models, modelInfo);
 }
 
 function mapApiSegmentToAgentStrategy(
@@ -193,14 +194,7 @@ async function refreshSelectedModelFromCatalog(
 ): Promise<void> {
   try {
     const models = await fetchModelsForContext(ctxKey);
-    const k = modelInfo.modelKey?.trim();
-    const n = modelInfo.modelName?.trim();
-    const valid =
-      k &&
-      n &&
-      models.some((m) => m.modelKey === k && m.modelName === n);
-
-    if (!valid) {
+    if (!isModelInList(models, modelInfo)) {
       // Conversation still references a model that was removed from the org/agent
       // list — clear selection so the toolbar shows the default from the catalog.
       useChatStore.getState().setSelectedModelForCtx(ctxKey, null);
@@ -248,14 +242,8 @@ export function applyConversationModelInfoToStore(
     store.setSelectedModelForCtx(ctxKey, null);
   }
 
-  // Only overwrite the reasoning effort when the conversation actually has
-  // one persisted — older conversations (created before the feature) have
-  // `reasoningEffort: undefined`, and blindly writing `null` would clear a
-  // valid user/localStorage override, causing the toolbar to snap to the
-  // default ("High") instead of honouring the user's prior explicit choice.
-  if (modelInfo.reasoningEffort != null) {
-    store.setReasoningEffortForCtx(ctxKey, normalizeReasoningEffort(modelInfo.reasoningEffort));
-  }
+  // The conversation's recorded effort is not restored: it is never cleared
+  // when a later turn sends none, so an old "high" would come back for good.
 
   void refreshSelectedModelFromCatalog(modelInfo, ctxKey);
 }

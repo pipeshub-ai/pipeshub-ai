@@ -18,6 +18,7 @@ import koKR from './ko-KR.json';
 import zhTW from './zh-TW.json';
 import zhSG from './zh-SG.json';
 import zhCN from './zh-CN.json';
+import csCZ from './cs-CZ.json';
 
 import type { Language } from '../supported-languages';
 
@@ -31,4 +32,5 @@ export const locales: Record<Language, unknown> = {
   'zh-TW': zhTW,
   'zh-SG': zhSG,
   'zh-CN': zhCN,
+  'cs-CZ': csCZ,
 };

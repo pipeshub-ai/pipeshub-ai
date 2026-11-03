@@ -15,6 +15,7 @@ Only the extensions in ``SUPPORTED_BLOCK_FILE_EXTENSIONS`` are accepted.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from pathlib import Path
@@ -37,6 +38,7 @@ from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.parsers.pptx.ppt_parser import PPTParser
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 
@@ -71,8 +73,6 @@ _OLE2_EXTENSIONS: Final[frozenset[str]] = frozenset({"doc", "xls", "ppt"})
 _MAGIC_VALIDATED_EXTENSIONS: Final[frozenset[str]] = frozenset(
     {"pdf", *_OOXML_EXTENSIONS, *_OLE2_EXTENSIONS}
 )
-_TEXT_FILE_ENCODINGS: Final[tuple[str, ...]] = ("utf-8", "utf-8-sig", "latin-1", "iso-8859-1")
-_DELIMITED_FILE_ENCODINGS: Final[list[str]] = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
 _TOKEN_LIMIT_SAFETY_FACTOR = 0.8
 
 
@@ -289,22 +289,22 @@ class FileContentParser:
         return await processor.create_blocks(conv_res)
 
     async def handle_doc(self, raw: bytes, file_name: str) -> BlocksContainer:
-        docx_stream = self._doc_parser.convert_doc_to_docx(raw)
+        docx_stream = await self._doc_parser.convert_doc_to_docx_async(raw)
         docx_bytes = docx_stream.read()
         return await self.handle_docx(docx_bytes, file_name)
 
     async def handle_ppt(self, raw: bytes, file_name: str) -> BlocksContainer:
-        pptx_bytes = self._ppt_parser.convert_ppt_to_pptx(raw)
+        pptx_bytes = await self._ppt_parser.convert_ppt_to_pptx_async(raw)
         return await self.handle_pptx(pptx_bytes, file_name)
 
     async def handle_xls(self, raw: bytes, file_name: str) -> BlocksContainer:
-        xlsx_bytes = self._xls_parser.convert_xls_to_xlsx(raw)
+        xlsx_bytes = await self._xls_parser.convert_xls_to_xlsx_async(raw)
         return await self.handle_xlsx(xlsx_bytes, file_name)
 
     async def handle_xlsx(self, raw: bytes, file_name: str) -> BlocksContainer:
         llm, _ = await get_llm_for_role(self._config, "indexing", reasoning_effort="low")
         excel = ExcelParser(self._logger, self._config)
-        excel.load_workbook_from_binary(raw)
+        await asyncio.to_thread(excel.load_workbook_from_binary, raw)
         return await excel.create_blocks(llm)
 
     async def handle_csv(self, raw: bytes, file_name: str) -> BlocksContainer:
@@ -319,21 +319,11 @@ class FileContentParser:
         file_name: str,
         parser: CSVParser,
     ) -> BlocksContainer:
-        all_rows = None
-        for encoding in _DELIMITED_FILE_ENCODINGS:
-            try:
-                text = raw.decode(encoding)
-                stream = io.StringIO(text)
-                all_rows = parser.read_raw_rows(stream)
-                break
-            except UnicodeDecodeError:
-                continue
-            except Exception as exc:
-                self._logger.warning(
-                    "Unexpected error parsing %s with encoding %s: %s",
-                    file_name, encoding, exc,
-                )
-                raise
+        try:
+            all_rows = parser.read_raw_rows(io.StringIO(decode_text(raw)))
+        except Exception as exc:
+            self._logger.warning("Unexpected error parsing %s: %s", file_name, exc)
+            raise
 
         if not all_rows:
             self._logger.info(
@@ -347,28 +337,10 @@ class FileContentParser:
         return await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
 
     async def handle_md(self, raw: bytes, file_name: str) -> BlocksContainer:
-        md_content = None
-        for encoding in _TEXT_FILE_ENCODINGS:
-            try:
-                md_content = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if md_content is None:
-            raise ValueError("Unable to decode Markdown with any supported encoding")
-        return await self._markdown_string_to_blocks(md_content, file_name)
+        return await self._markdown_string_to_blocks(decode_text(raw), file_name)
 
     async def handle_txt(self, raw: bytes, file_name: str) -> BlocksContainer:
-        text_content = None
-        for encoding in _TEXT_FILE_ENCODINGS:
-            try:
-                text_content = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if text_content is None:
-            raise ValueError("Unable to decode text file with any supported encoding")
-        return await self._markdown_string_to_blocks(text_content, file_name)
+        return await self._markdown_string_to_blocks(decode_text(raw), file_name)
 
     async def handle_mdx(self, raw: bytes, file_name: str) -> BlocksContainer:
         md_bytes = self._mdx_parser.convert_mdx_to_md(raw)
@@ -384,7 +356,7 @@ class FileContentParser:
         modified_html, images = self._html_parser.extract_and_replace_images(html_content)
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
@@ -407,7 +379,7 @@ class FileContentParser:
         caption_map: dict[str, str] = {}
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]

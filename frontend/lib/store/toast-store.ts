@@ -54,6 +54,22 @@ export interface ToastOptions {
 
 // Immer cannot safely hold render callbacks; keep them outside the draft state.
 const renderDescriptionByToastId = new Map<string, () => ReactNode>();
+// One auto-dismiss timer per toast, so a variant change replaces the old one instead of racing it.
+const removalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleRemoval(id: string, duration: number | null | undefined, remove: (id: string) => void): void {
+  const existing = removalTimers.get(id);
+  if (existing) clearTimeout(existing);
+  removalTimers.delete(id);
+  if (!duration) return;
+  removalTimers.set(
+    id,
+    setTimeout(() => {
+      removalTimers.delete(id);
+      remove(id);
+    }, duration),
+  );
+}
 
 export function getToastRenderDescription(
   id: string,
@@ -137,12 +153,7 @@ export const useToastStore = create<ToastStore>()(
           state.toasts.unshift(toast);
         });
 
-        // Auto-dismiss if duration is set
-        if (duration) {
-          setTimeout(() => {
-            get().removeToast(id);
-          }, duration);
-        }
+        scheduleRemoval(id, duration, (toastId) => get().removeToast(toastId));
 
         return id;
       },
@@ -151,6 +162,7 @@ export const useToastStore = create<ToastStore>()(
         // Check if toast exists and isn't already exiting
         const existingToast = get().toasts.find((t) => t.id === id);
         if (!existingToast || existingToast.isExiting) return;
+        scheduleRemoval(id, null, () => {});
 
         set((state) => {
           const index = state.toasts.findIndex((t) => t.id === id);
@@ -185,20 +197,19 @@ export const useToastStore = create<ToastStore>()(
           if (toast) {
             Object.assign(toast, toastUpdates);
 
-            // If variant changed and no explicit duration provided, set up auto-dismiss
-            if (toastUpdates.variant && toastUpdates.duration === undefined) {
+            // A changed variant (e.g. loading -> error) gets the new variant's close button and
+            // auto-dismiss, with an explicit duration taking precedence over the default.
+            if (toastUpdates.variant) {
               // Toasts with action buttons persist until user interaction
-              const newDuration = toastUpdates.action || toast.action
-                ? null
-                : DEFAULT_DURATIONS[toastUpdates.variant];
+              const newDuration = toastUpdates.duration !== undefined
+                ? toastUpdates.duration
+                : toastUpdates.action || toast.action
+                  ? null
+                  : DEFAULT_DURATIONS[toastUpdates.variant];
               toast.duration = newDuration;
               toast.showCloseButton = toastUpdates.showCloseButton ?? (toastUpdates.variant !== 'loading');
 
-              if (newDuration) {
-                setTimeout(() => {
-                  get().removeToast(id);
-                }, newDuration);
-              }
+              scheduleRemoval(id, newDuration, (toastId) => get().removeToast(toastId));
             }
           }
         });
@@ -206,6 +217,8 @@ export const useToastStore = create<ToastStore>()(
 
       clearAll: () => {
         renderDescriptionByToastId.clear();
+        removalTimers.forEach((timer) => clearTimeout(timer));
+        removalTimers.clear();
         set((state) => {
           state.toasts = [];
         });

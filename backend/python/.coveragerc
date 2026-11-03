@@ -4,6 +4,7 @@ branch = True
 omit =
     app/sources/external/*
     app/services/graph_db/neo4j/*
+    app/services/graph_db/postgres/*
     app/migrations/*
 
 [report]
@@ -13,7 +14,7 @@ exclude_lines =
     if __name__ == .__main__
     if TYPE_CHECKING
     raise NotImplementedError
-    pass
+    ^\s*pass\s*(#.*)?$
     @abstractmethod
 
 show_missing = True

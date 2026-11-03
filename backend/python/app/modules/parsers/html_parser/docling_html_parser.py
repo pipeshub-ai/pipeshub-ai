@@ -16,14 +16,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
+from docling.datamodel.base_models import InputFormat
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser import url_utils
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.converters.caption_map import apply_caption_map
 
 
@@ -45,7 +48,7 @@ class DoclingHtmlParser:
         logger: logging.Logger | None = None,
         config_service: object | None = None,
     ) -> None:
-        self.converter = DocumentConverter()
+        self.converter = DocumentConverter(allowed_formats=[InputFormat.HTML])
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
 
@@ -132,7 +135,10 @@ class DoclingHtmlParser:
                         src = first_part[0].strip()
             if not src:
                 continue
-            if src.startswith("data:"):
+            # A raster data: image already is the image; the converter stores it
+            # as it is. Anything else, an SVG or another data: URI, is reported
+            # for the caller to rasterise or refuse.
+            if is_inline_raster_image(src):
                 continue
 
             original_alt = img_tag.get("alt", "").strip()
@@ -189,10 +195,7 @@ class DoclingHtmlParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if isinstance(content, bytes):
-            html_content = content.decode("utf-8")
-        else:
-            html_content = content
+        html_content = decode_text(content, html=True)
 
         html_content = html_content.strip()
 
@@ -205,16 +208,18 @@ class DoclingHtmlParser:
 
         if images:
             urls_to_convert = [image["url"] for image in images]
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
 
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        from html_to_markdown import convert  # noqa: PLC0415
+        from app.utils.html_markdown import html_to_markdown_async  # noqa: PLC0415
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor  # noqa: PLC0415
 
-        markdown = convert(modified_html)
+        markdown = await html_to_markdown_async(modified_html)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
@@ -246,10 +251,10 @@ class DoclingHtmlParser:
         Returns:
             Populated ``BlocksContainer``.
         """
-        from html_to_markdown import convert
+        from app.utils.html_markdown import html_to_markdown_async
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
-        markdown = convert(html_content)
+        markdown = await html_to_markdown_async(html_content)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)

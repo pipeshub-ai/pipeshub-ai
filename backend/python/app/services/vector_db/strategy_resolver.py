@@ -111,8 +111,11 @@ async def resolve_persisted_strategy_name(config_service, logger) -> str:
         )
     except Exception as e:
         raise StrategyConfigurationError(
-            f"Could not persist the initial collection strategy: {e}. Refusing to "
-            f"start rather than run against an unknown collection layout."
+            f"Could not persist the initial collection strategy to the config "
+            f"store: {e}. Refusing to start rather than guess which vector "
+            f"collections hold this deployment's data. Check that the config store "
+            f"(Redis or etcd, per KV_STORE_TYPE) is running and reachable, then "
+            f"restart this service."
         ) from e
 
     if created:

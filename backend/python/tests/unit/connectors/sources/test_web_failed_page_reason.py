@@ -27,8 +27,15 @@ def test_known_statuses_say_what_happened_and_what_to_do(status_code: int, expec
     assert failed_page_reason(status_code) == expected
 
 
-@pytest.mark.parametrize("status_code", [None, 0, 999])
+@pytest.mark.parametrize("status_code", [None, 0])
 def test_no_usable_status_means_the_page_could_not_be_reached(status_code: int | None) -> None:
     assert failed_page_reason(status_code) == (
         "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
+    )
+
+
+@pytest.mark.parametrize("status_code", [520, 522, 524, 525, 529, 999])
+def test_a_nonstandard_status_the_site_sent_is_shown_bare(status_code: int) -> None:
+    assert failed_page_reason(status_code) == (
+        f"The site didn't respond properly ({status_code}). PipesHub will try again on the next sync."
     )

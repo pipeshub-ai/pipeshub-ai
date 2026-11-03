@@ -9,8 +9,10 @@ Requires:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -20,7 +22,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     RedisStreamsConfig,
 )
-from app.services.messaging.lanes.hash_router import RedisLaneRouter
+from app.services.messaging.lanes.hash_router import RedisLaneRouter, stable_lane
 from app.services.messaging.lanes.interface import LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.redis_streams.indexing_consumer import (
@@ -29,11 +31,19 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.services.resource_governor.models import ParseTier
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.messaging.conftest import (
     DRAIN_TIMEOUT_SECONDS,
+    OneTopicProducer,
     held_handler,
+    run_stranded_sweep,
     stop_mid_flight,
+    wait_until_held,
 )
+from tests.support.fake_record_graph import FakeRecordGraph
+
+if TYPE_CHECKING:
+    from app.services.messaging.lanes.backlog import LaneBacklog
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -72,17 +82,21 @@ def _fair(**overrides) -> FairSchedulerConfig:
     return FairSchedulerConfig(**base)
 
 
-async def _publish(host, port, base, records):
+def _lane_producer(host, port, base) -> LaneAwareProducer:
     inner = RedisStreamsProducer(
         logging.getLogger("it-producer"),
         RedisStreamsConfig(host=host, port=port, client_id="it-producer"),
     )
-    producer = LaneAwareProducer(
+    return LaneAwareProducer(
         logging.getLogger("it-producer"),
         inner,
         RedisLaneRouter(_LANES),
         LaneConfig(lane_count=_LANES, laned_topics=(base,)),
     )
+
+
+async def _publish(host, port, base, records):
+    producer = _lane_producer(host, port, base)
     await producer.initialize()
     try:
         for connector_id, record_id in records:
@@ -370,3 +384,150 @@ class TestCrashRecoveryOnARealBroker:
             await consumer.stop()
 
         assert set(seen) == expected
+
+
+async def _lane_entries(host, port, base) -> dict[str, list[tuple[float, str]]]:
+    """Per lane stream, (published ms, recordId) of every entry, in stream order."""
+    from redis.asyncio import Redis
+
+    client = Redis(host=host, port=port, decode_responses=True)
+    try:
+        lanes: dict[str, list[tuple[float, str]]] = {}
+        for stream in RedisLaneRouter(_LANES).lane_topics(base):
+            entries = await client.xrange(stream) if await client.exists(stream) else []
+            lanes[stream] = [
+                (float(entry_id.split("-")[0]), json.loads(fields["value"])["payload"]["recordId"])
+                for entry_id, fields in entries
+            ]
+        return lanes
+    finally:
+        await client.aclose()
+
+
+async def _oldest_unfinished(host, port, base, finished: list[str]) -> dict[str, float]:
+    """Worked out from the streams and what the handler finished, not from the group."""
+    done = set(finished)
+    return {
+        stream: next(ms for ms, record_id in entries if record_id not in done)
+        for stream, entries in (await _lane_entries(host, port, base)).items()
+        if any(record_id not in done for _ms, record_id in entries)
+    }
+
+
+async def _backlog_reaches(consumer, base, expected: dict[str, float]) -> LaneBacklog:
+    """Acknowledgements land a moment after the handler returns."""
+    deadline = asyncio.get_running_loop().time() + DRAIN_TIMEOUT_SECONDS
+    while True:
+        backlog = await consumer.lane_backlog(base)
+        if dict(backlog.oldest_waiting_ms) == expected:
+            return backlog
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError(
+                f"backlog {dict(backlog.oldest_waiting_ms)} never became {expected}"
+            )
+        await asyncio.sleep(0.2)
+
+
+class TestLaneBacklogOnARealBroker:
+    """What the stranded-record sweep asks the broker before re-sending a record."""
+
+    @pytest.fixture(autouse=True)
+    def _laned_as_the_producer_is(self, monkeypatch, base_stream) -> None:
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", str(_LANES))
+        monkeypatch.setenv("FAIR_SCHEDULING_LANED_TOPICS", base_stream)
+        monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "3600")
+
+    async def test_each_lane_reports_its_oldest_unfinished_event_until_it_is_drained(
+        self, redis_available, base_stream, unique_suffix
+    ) -> None:
+        """With records in flight, buffered, parked behind a full key and not
+        yet delivered, the lane is as old as the oldest of them."""
+        host, port = redis_available
+        records = [("user-a", f"a-{i}") for i in range(12)]
+        records += [("user-b", f"b-{i}") for i in range(4)]
+        await _publish(host, port, base_stream, records)
+
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-consumer"),
+            _stream_config(host, port, base_stream, _LANES, f"it-backlog-{unique_suffix}"),
+            # A low per-key cap, so user-a's lane is paused with entries undelivered.
+            fair_scheduler_config=_fair(max_per_entity_messages=3),
+        )
+        seen: list[str] = []
+        parked: list[str] = []
+        gate = threading.Event()
+        # Groups created, nothing delivered: each lane is as old as its first entry.
+        await consumer.initialize()
+        try:
+            untouched = await _oldest_unfinished(host, port, base_stream, [])
+            assert len(untouched) >= 1
+            assert dict((await consumer.lane_backlog(base_stream)).oldest_waiting_ms) == untouched
+
+            await consumer.start(held_handler(seen, 5, gate, parked))
+            await wait_until_held(seen, parked)
+            expected = await _oldest_unfinished(host, port, base_stream, seen)
+            assert expected, "the hold was meant to leave work on the lanes"
+
+            backlog = await _backlog_reaches(consumer, base_stream, expected)
+
+            lane_a = f"{base_stream}.{stable_lane('user-a', _LANES)}"
+            assert backlog.oldest_waiting_for({"connectorId": "user-a"}) == expected[lane_a]
+
+            gate.set()
+            await _drain(seen, len(records))
+            await _backlog_reaches(consumer, base_stream, {})
+        finally:
+            gate.set()
+            await consumer.stop()
+
+    async def test_the_sweep_resends_only_the_record_the_lane_has_moved_past(
+        self, redis_available, base_stream, unique_suffix
+    ) -> None:
+        host, port = redis_available
+        records = [("user-a", f"a-{i}") for i in range(8)]
+        graph = FakeRecordGraph()
+        queued_at = get_epoch_timestamp_in_ms()
+        for connector_id, record_id in records:
+            graph.add_queued(record_id, connector_id, queued_at)
+        # Queued with the rest, but its event never reached the broker.
+        graph.add_queued("lost", "user-a", queued_at)
+        await _publish(host, port, base_stream, records)
+
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-consumer"),
+            _stream_config(host, port, base_stream, _LANES, f"it-sweep-{unique_suffix}"),
+            fair_scheduler_config=_fair(),
+        )
+        seen: list[str] = []
+        parked: list[str] = []
+        gate = threading.Event()
+        lane_producer = _lane_producer(host, port, base_stream)
+        await lane_producer.initialize()
+        producer = OneTopicProducer(lane_producer, base_stream)
+        await consumer.start(held_handler(seen, 2, gate, parked))
+        try:
+            await wait_until_held(seen, parked)
+            for record_id in seen:
+                graph.mark_indexed(record_id)
+
+            # Two hours on, six records and the lost one are all still QUEUED,
+            # and the lane still holds events as old as they are.
+            assert await run_stranded_sweep(graph, producer, consumer, base_stream, hours_later=2) == 0
+            published = await _lane_entries(host, port, base_stream)
+            assert sum(len(entries) for entries in published.values()) == len(records)
+
+            gate.set()
+            await _drain(seen, len(records))
+            for record_id in seen:
+                graph.mark_indexed(record_id)
+            await _backlog_reaches(consumer, base_stream, {})
+
+            assert graph.still_queued() == ["lost"]
+            assert await run_stranded_sweep(graph, producer, consumer, base_stream, hours_later=2) == 1
+            await _drain(seen, len(records) + 1)
+            assert seen.count("lost") == 1
+            assert graph.records["lost"]["republishCount"] == 1
+        finally:
+            gate.set()
+            await consumer.stop()
+            await lane_producer.cleanup()

@@ -70,6 +70,11 @@ class BaseExecutor(ABC):
         for root, _dirs, files in os.walk(output_dir):
             for fname in files:
                 fpath = os.path.join(root, fname)
+                if os.path.islink(fpath):
+                    # A symlink is never a real artifact; reporting it would let
+                    # a later reader follow it off the host (SB-5).
+                    logger.warning("collect_artifacts: skipping symlink %s", fpath)
+                    continue
                 try:
                     size = os.path.getsize(fpath)
                 except OSError:

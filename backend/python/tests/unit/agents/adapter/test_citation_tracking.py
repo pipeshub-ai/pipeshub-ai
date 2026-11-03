@@ -13,10 +13,9 @@ replaces the check-then-`register_tool` pattern that used to raise
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
-
-import pytest
 
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import RunContext
@@ -33,6 +32,9 @@ from app.agents.agent_loop.hooks.citations import (
     citation_tracking,
 )
 from app.models.blocks import BlockType
+
+if TYPE_CHECKING:
+    import pytest
 
 
 async def _noop_next() -> None:
@@ -286,7 +288,8 @@ class TestFullReadStartsAtTheBeginning:
 
         structured.coroutine = _coroutine
 
-        with patch(
+        # A first read's max_blocks caps it only with sizing by characters off.
+        with patch.dict("os.environ", {"FETCH_SIZE_BY_CHARS": "false"}), patch(
             "app.utils.fetch_full_record.create_fetch_full_record_tool",
             return_value=structured,
         ):
@@ -307,11 +310,12 @@ class TestFullReadStartsAtTheBeginning:
 
     async def test_oversized_record_is_capped_from_the_start_with_a_hint(self) -> None:
         record = _record_with_blocks("rec-3", 10)
-        text = await self._read(
-            record,
-            final_results=[{"virtual_record_id": "v-rec-3", "block_index": 9}],
-            max_blocks=4,
-        )
+        with patch.dict("os.environ", {"FETCH_SIZE_BY_CHARS": "false"}):
+            text = await self._read(
+                record,
+                final_results=[{"virtual_record_id": "v-rec-3", "block_index": 9}],
+                max_blocks=4,
+            )
         assert "content of block 0" in text
         assert "content of block 4" not in text
         assert "start_block=4" in text
@@ -381,3 +385,24 @@ class TestFetchToolDescription:
 
     def test_metadata_that_answers_outright_does_not_need_a_read(self) -> None:
         assert "settles the question outright" in self._description()
+
+    def test_full_read_chat_drops_the_visible_fact_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Enterprise search under THOROUGH_RETRIEVAL asks for the records an
+        answer rests on in full; the tool's own skip case must agree."""
+        from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+        # Focused reads add a paragraph that the full-read policy drops; this
+        # compares the skip case alone.
+        monkeypatch.setenv("TARGETED_RETRIEVAL", "false")
+        from app.agents.agent_loop.hooks.citations import _FetchFullRecordTool
+
+        default = self._description()
+        context = _agent_context()
+        context.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] = True
+        full = _FetchFullRecordTool(CitationCollector(context), context).description
+
+        assert "is already visible in a block you hold" in default
+        assert "is already visible in a block you hold" not in full
+        assert "(Skip only when you already hold the record in full or nearly so" in full
+        assert "A fact seen in one block still needs the rest of the record" in full
+        assert full.split("(Skip only when", 1)[0] == default.split("(Skip only when", 1)[0]
+        assert full.split(")\nThose are illustrations", 1)[1] == default.split(")\nThose are illustrations", 1)[1]

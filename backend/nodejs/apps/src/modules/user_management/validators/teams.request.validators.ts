@@ -3,6 +3,7 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -48,7 +49,7 @@ const timestampQuerySchema = z.preprocess(
     const value = emptyQueryValue(arg);
     return value === undefined ? undefined : Number(value);
   },
-  z.number().int().positive().optional(),
+  z.number().check(integerCheck()).positive().optional(),
 );
 
 const normalizeOptionalSearch = (arg: unknown): string | undefined => {
@@ -78,7 +79,7 @@ const teamSearchSchema = z.preprocess(
     const message =
       error instanceof Error ? error.message : 'Invalid search parameter';
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       message,
     });
   }

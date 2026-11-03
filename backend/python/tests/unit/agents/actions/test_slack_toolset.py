@@ -54,10 +54,12 @@ from app.agents.actions.slack.slack import (
     SendMessageWithMentionsInput,
     SetUserStatusInput,
     Slack,
+    SlackLookupError,
     UnpinMessageInput,
     UpdateMessageInput,
     UploadFileToChannelInput,
 )
+from app.services.record_content.models import ResolvedRecordContent
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +814,46 @@ class TestSendMessageWithMentionsInput:
         assert data.mentions is None
 
 
+class TestPagerRaisingPage:
+    @pytest.mark.asyncio
+    async def test_page_that_raises_after_a_good_page_keeps_what_was_read(self) -> None:
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(side_effect=[
+            _ok({"members": [{"id": "U1AAAAAAA"}], "response_metadata": {"next_cursor": "c2"}}),
+            RuntimeError("connection reset"),
+        ])
+        ok, payload = await slack.get_users_list()
+        assert ok is True
+        body = json.loads(payload)
+        assert [m["id"] for m in body["data"]["members"]] == ["U1AAAAAAA"]
+        assert body["data"]["complete"] is False
+        assert "only part of the list" in body["message"] and "failed unexpectedly" in body["message"]
+        assert "connection reset" not in payload
+
+    @pytest.mark.asyncio
+    async def test_first_page_that_raises_is_a_plain_failure(self) -> None:
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(side_effect=RuntimeError("connection reset"))
+        ok, payload = await slack.get_users_list()
+        assert ok is False
+        body = json.loads(payload)
+        assert body["error"] == "slack_request_failed"
+        assert "Try again" in body["message"]
+
+
+class TestPagerEmptyData:
+    @pytest.mark.asyncio
+    async def test_successful_page_without_data_is_an_empty_listing(self) -> None:
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=SlackResponse(success=True, data={}))
+        ok, payload = await slack.get_users_list()
+        assert ok is True
+        body = json.loads(payload)
+        assert body["data"]["members"] == []
+        assert body["data"]["count"] == 0
+        assert body["data"]["complete"] is True
+
+
 class TestGetUsersListInput:
     def test_all_optional(self):
         data = GetUsersListInput()
@@ -931,6 +973,89 @@ class TestUploadFileToChannelInput:
         )
         assert data.title is None
         assert data.initial_comment is None
+
+
+class TestUploadFileToChannelAttachments:
+    """A PipesHub record is uploaded as its stored bytes, and a file that never reached Slack is
+    reported instead of the call claiming success."""
+
+    @staticmethod
+    def _record(record_id: str = "rec-1", content: bytes = b"x" * 106) -> ResolvedRecordContent:
+        return ResolvedRecordContent(
+            record_id=record_id, filename="notes.txt", mime_type="text/plain",
+            size_bytes=len(content), content=content, version=None, source="blob",
+        )
+
+    async def _upload(self, slack: Slack, bundle: object, **kwargs: object) -> tuple[bool, str]:
+        with patch.object(slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")), patch(
+            "app.agents.actions.slack.slack.resolve_attachments", AsyncMock(return_value=bundle),
+        ), patch("app.agents.actions.util.attachments.emit_attachment_audit"):
+            return await slack.upload_file_to_channel("#general", **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_the_records_stored_bytes_are_uploaded(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock(
+            return_value=SlackResponse(success=True, data={"files": [{"id": "F1"}]}),
+        )
+        ok, payload = await self._upload(
+            slack, AttachmentBundle(resolved=[self._record()]), attachment_record_ids=["rec-1"],
+        )
+        assert ok is True
+        assert json.loads(payload)["data"]["message"] == "1 file(s) uploaded"
+        kwargs = slack.client.files_upload_v2.await_args.kwargs
+        assert kwargs["content"] == b"x" * 106
+        assert kwargs["channel"] == "C1234ABCD"
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_cannot_be_read_fails_the_call(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+        from app.services.record_content.models import AttachmentFailure
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock()
+        bundle = AttachmentBundle(failures=[AttachmentFailure("rec-1", "access denied", "PermissionError")])
+        ok, payload = await self._upload(slack, bundle, attachment_record_ids=["rec-1"])
+        assert ok is False
+        assert "rec-1: access denied" in json.loads(payload)["error"]
+        slack.client.files_upload_v2.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_upload_fails_the_call(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock(
+            return_value=SlackResponse(success=False, error="not_in_channel"),
+        )
+        ok, payload = await self._upload(
+            slack, AttachmentBundle(resolved=[self._record()]), attachment_record_ids=["rec-1"],
+        )
+        assert ok is False
+        assert "notes.txt: not_in_channel" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_partial_failure_is_reported_alongside_the_success(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+        from app.services.record_content.models import AttachmentFailure
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock(
+            return_value=SlackResponse(success=True, data={"files": [{"id": "F1"}]}),
+        )
+        bundle = AttachmentBundle(
+            resolved=[self._record()],
+            failures=[AttachmentFailure("rec-2", "not found", "KeyError")],
+        )
+        ok, payload = await self._upload(slack, bundle, attachment_record_ids=["rec-1", "rec-2"])
+        assert ok is True
+        assert "rec-2: not found" in json.loads(payload)["message"]
 
 
 # ===========================================================================
@@ -1210,9 +1335,10 @@ class TestResolveUserIdentifier:
         slack.client.users_lookup_by_email.assert_awaited_once_with(email="alice@example.com")
 
     @pytest.mark.asyncio
-    async def test_email_lookup_failure_falls_back_to_users_list(self):
+    async def test_email_not_found_does_not_guess_by_name(self):
+        # "alice@example.com" may be a different Alice from the workspace's "alice".
         slack = _build_slack()
-        slack.client.users_lookup_by_email = AsyncMock(side_effect=RuntimeError("not_found"))
+        slack.client.users_lookup_by_email = AsyncMock(return_value=_fail("users_not_found"))
         slack.client.users_list = AsyncMock(
             return_value=_ok({
                 "members": [{
@@ -1227,7 +1353,20 @@ class TestResolveUserIdentifier:
             })
         )
         result = await slack._resolve_user_identifier("alice@example.com")
-        assert result == "U888"
+        assert result is None
+        slack.client.users_list.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_email_lookup_exception_is_a_lookup_error_not_no_match(self) -> None:
+        slack = _build_slack()
+        slack.client.users_lookup_by_email = AsyncMock(side_effect=RuntimeError("connection reset"))
+        slack.client.users_list = AsyncMock()
+        with pytest.raises(SlackLookupError):
+            await slack._resolve_user_identifier("alice@example.com")
+        slack.client.users_list.assert_not_awaited()
+        ok, payload = await slack.send_direct_message("alice@example.com", "hi")
+        assert ok is False
+        assert json.loads(payload)["error"] == "user_lookup_failed"
 
     @pytest.mark.asyncio
     async def test_exact_name_match_found_via_users_list(self):
@@ -1687,7 +1826,8 @@ class TestFetchChannels:
         slack.client.conversations_list = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await slack.fetch_channels()
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert json.loads(payload)["error"] == "slack_request_failed"
+        assert "boom" not in payload
 
     @pytest.mark.asyncio
     async def test_default_args_preserve_prior_behavior(self):
@@ -1702,7 +1842,7 @@ class TestFetchChannels:
         kwargs = slack.client.conversations_list.await_args.kwargs
         assert kwargs["types"] == "public_channel,private_channel,mpim,im"
         assert kwargs["exclude_archived"] is False
-        assert kwargs["limit"] == 1000
+        assert kwargs["limit"] == 999
 
     @pytest.mark.asyncio
     async def test_types_and_exclude_archived_forwarded(self):
@@ -1792,7 +1932,8 @@ class TestGetChannelMembers:
         ):
             ok, payload = await slack.get_channel_members("C1234ABCD")
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert json.loads(payload)["error"] == "slack_request_failed"
+        assert "boom" not in payload
 
 
 class TestGetChannelMembersById:
@@ -1804,7 +1945,7 @@ class TestGetChannelMembersById:
         )
         ok, payload = await slack.get_channel_members_by_id("C9")
         assert ok is True
-        slack.client.conversations_members.assert_awaited_once_with(channel="C9")
+        slack.client.conversations_members.assert_awaited_once_with(channel="C9", cursor=None, limit=999)
 
     @pytest.mark.asyncio
     async def test_exception_wrapped(self):
@@ -1812,7 +1953,8 @@ class TestGetChannelMembersById:
         slack.client.conversations_members = AsyncMock(side_effect=RuntimeError("oops"))
         ok, payload = await slack.get_channel_members_by_id("C9")
         assert ok is False
-        assert "oops" in json.loads(payload)["error"]
+        assert json.loads(payload)["error"] == "slack_request_failed"
+        assert "oops" not in payload
 
 
 # ===========================================================================
@@ -2013,7 +2155,8 @@ class TestSearchUsers:
         slack.client.users_list = AsyncMock(side_effect=RuntimeError("network error"))
         ok, payload = await slack.search_users("alice")
         assert ok is False
-        assert "network error" in json.loads(payload)["error"]
+        assert json.loads(payload)["error"] == "slack_request_failed"
+        assert "network error" not in payload
 
     @pytest.mark.asyncio
     async def test_response_fields(self):
@@ -2750,7 +2893,8 @@ class TestGetUsersList:
         slack.client.users_list = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await slack.get_users_list()
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert json.loads(payload)["error"] == "slack_request_failed"
+        assert "boom" not in payload
 
 
 # ===========================================================================
@@ -2873,26 +3017,27 @@ class TestGetUserGroups:
 
 
 class TestGetUserGroupInfo:
+    # Slack has no usergroups.info method, so the tool picks the group out of usergroups.list.
     @pytest.mark.asyncio
     async def test_success(self):
         slack = _build_slack()
-        slack.client.usergroups_info = AsyncMock(return_value=_ok({"usergroup": {}}))
+        slack.client.usergroups_list = AsyncMock(return_value=_ok({"usergroups": [{"id": "S123"}]}))
         ok, _ = await slack.get_user_group_info("S123")
         assert ok is True
-        slack.client.usergroups_info.assert_awaited_once_with(usergroup="S123")
+        slack.client.usergroups_list.assert_awaited_once_with(include_users=True)
 
     @pytest.mark.asyncio
     async def test_with_include_disabled(self):
         slack = _build_slack()
-        slack.client.usergroups_info = AsyncMock(return_value=_ok({"usergroup": {}}))
+        slack.client.usergroups_list = AsyncMock(return_value=_ok({"usergroups": [{"id": "S123"}]}))
         await slack.get_user_group_info("S123", include_disabled=True)
-        kwargs = slack.client.usergroups_info.await_args.kwargs
+        kwargs = slack.client.usergroups_list.await_args.kwargs
         assert kwargs["include_disabled"] is True
 
     @pytest.mark.asyncio
     async def test_exception_wrapped(self):
         slack = _build_slack()
-        slack.client.usergroups_info = AsyncMock(side_effect=RuntimeError("boom"))
+        slack.client.usergroups_list = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await slack.get_user_group_info("S123")
         assert ok is False
         assert "boom" in json.loads(payload)["error"]
@@ -4772,14 +4917,13 @@ class TestGetUserGroupsEnrichment:
 
 class TestGetUserGroupInfoEnrichment:
     @pytest.mark.asyncio
-    async def test_singular_usergroup_enriched(self):
+    async def test_matching_usergroup_enriched(self):
         slack = _build_slack()
-        slack.client.usergroups_info = AsyncMock(return_value=_ok({
-            "usergroup": {
-                "id": "S1", "name": "eng",
-                "created_by": "U1AAAAAAA",
-                "users": ["U1AAAAAAA"],
-            }
+        slack.client.usergroups_list = AsyncMock(return_value=_ok({
+            "usergroups": [
+                {"id": "S0", "name": "other", "users": []},
+                {"id": "S1", "name": "eng", "created_by": "U1AAAAAAA", "users": ["U1AAAAAAA"]},
+            ]
         }))
         slack.client.users_info = AsyncMock(return_value=_ok({
             "user": {"id": "U1", "name": "alice",
@@ -4788,27 +4932,18 @@ class TestGetUserGroupInfoEnrichment:
         ok, payload = await slack.get_user_group_info(usergroup="S1")
         assert ok is True
         g = json.loads(payload)["data"]["usergroup"]
+        assert g["id"] == "S1"
         assert g["created_by_display_name"] == "alice"
 
     @pytest.mark.asyncio
-    async def test_plural_usergroups_list_enriched(self):
-        # Defensive: some helpers return `usergroups: [...]` even on .info.
+    async def test_handle_also_finds_the_group(self):
         slack = _build_slack()
-        slack.client.usergroups_info = AsyncMock(return_value=_ok({
-            "usergroups": [{
-                "id": "S1",
-                "created_by": "U1AAAAAAA",
-                "users": [],
-            }]
+        slack.client.usergroups_list = AsyncMock(return_value=_ok({
+            "usergroups": [{"id": "S1", "handle": "eng", "users": []}]
         }))
-        slack.client.users_info = AsyncMock(return_value=_ok({
-            "user": {"id": "U1", "name": "alice",
-                     "profile": {"display_name": "alice"}}
-        }))
-        ok, payload = await slack.get_user_group_info(usergroup="S1")
+        ok, payload = await slack.get_user_group_info(usergroup="@Eng")
         assert ok is True
-        g = json.loads(payload)["data"]["usergroups"][0]
-        assert g["created_by_display_name"] == "alice"
+        assert json.loads(payload)["data"]["usergroup"]["id"] == "S1"
 
 
 # ===========================================================================
@@ -4958,3 +5093,27 @@ class TestGetScheduledMessagesDateEnrichment:
         ok, payload = await slack.get_scheduled_messages()
         assert ok is True
         assert json.loads(payload)["data"]["scheduled_messages"] == ["weird"]
+
+
+class TestExpiredSignIn:
+    @pytest.mark.asyncio
+    async def test_an_expired_rotating_sign_in_says_it_renews_itself(self) -> None:
+        slack = _build_slack()
+        slack.client.conversations_list = AsyncMock(
+            return_value=SlackResponse(success=False, error="token_expired")
+        )
+        ok, payload = await slack.fetch_channels()
+        assert ok is False
+        message = json.loads(payload)["message"]
+        assert "renews it automatically" in message
+        assert "reconnect Slack under Your actions" in message
+
+    @pytest.mark.asyncio
+    async def test_a_refused_sign_in_still_asks_for_a_reconnect(self) -> None:
+        slack = _build_slack()
+        slack.client.conversations_list = AsyncMock(
+            return_value=SlackResponse(success=False, error="invalid_auth")
+        )
+        ok, payload = await slack.fetch_channels()
+        assert ok is False
+        assert json.loads(payload)["message"].startswith("Slack did not accept the saved sign-in.")

@@ -1,9 +1,13 @@
 """Tests for app.connectors.api.connector_resolvers — OSS edition connector resolver helpers."""
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+if TYPE_CHECKING:
+    from app.connectors.core.registry.connector_registry import ConnectorRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -42,177 +46,128 @@ class TestBuildGraphDataStore:
 
 
 # ---------------------------------------------------------------------------
-# lookup_user_for_records
-# ---------------------------------------------------------------------------
-
-
-class TestLookupUserForRecords:
-    async def test_returns_user(self) -> None:
-        from app.connectors.api.connector_resolvers import lookup_user_for_records
-
-        user = {"_key": "u1", "name": "Alice", "orgId": "org-1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(return_value=user)
-
-        result = await lookup_user_for_records(graph_provider, "u1", "org-1")
-        assert result["_key"] == "u1"
-
-    async def test_returns_none_when_not_found(self) -> None:
-        from app.connectors.api.connector_resolvers import lookup_user_for_records
-
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-
-        result = await lookup_user_for_records(graph_provider, "missing", "org-1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# records_user_id_arg
-# ---------------------------------------------------------------------------
-
-
-class TestRecordsUserIdArg:
-    def test_returns_user_key(self) -> None:
-        from app.connectors.api.connector_resolvers import records_user_id_arg
-
-        user = {"_key": "u1", "name": "Alice"}
-        result = records_user_id_arg(user, "ext-user-123")
-        assert result == "u1"
-
-
-# ---------------------------------------------------------------------------
 # authorize_connector_stats
 # ---------------------------------------------------------------------------
 
 
+ORG = "org-1"
+CONN = "conn-1"
+
+
+def _stats_registry(app_doc: dict | None, graph_provider: AsyncMock) -> "ConnectorRegistry":
+    """A real registry, so the stats route meets the same read gate as GET /connectors/{id}."""
+    from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+    registry = ConnectorRegistry.__new__(ConnectorRegistry)
+    registry.logger = MagicMock()
+    registry._graph_provider = graph_provider
+    registry._collection_name = "apps"
+    registry._connectors = {"GOOGLE_DRIVE": {"appGroup": "Google Workspace"}}
+    registry._build_connector_info = MagicMock(return_value={"_key": CONN})
+    graph_provider.get_document = AsyncMock(return_value=app_doc)
+    return registry
+
+
+def _app(*, scope: str = "personal", created_by: str = "member-a", type_: str = "GOOGLE_DRIVE") -> dict:
+    return {"_key": CONN, "type": type_, "scope": scope, "createdBy": created_by, "orgId": ORG}
+
+
+async def _authorize(app_doc: dict | None, caller: str, *, is_admin: bool, kb_role: str | None = None) -> None:
+    from app.connectors.api.connector_resolvers import authorize_connector_stats
+
+    request = MagicMock()
+    request.state.user = {"userId": caller}
+    graph_provider = AsyncMock()
+    graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": f"{caller}-key"})
+    graph_provider.get_user_kb_permission = AsyncMock(return_value=kb_role)
+    registry = _stats_registry(app_doc, graph_provider)
+    with patch("app.connectors.api.connector_resolvers.is_request_admin", return_value=is_admin):
+        await authorize_connector_stats(request, graph_provider, registry, CONN, ORG)
+
+
 class TestAuthorizeConnectorStats:
-    async def test_non_kb_admin_allowed(self) -> None:
+    """Stats answer like every other connector read: 404 where GET /connectors/{id} refuses."""
+
+    @pytest.mark.parametrize(
+        ("app_doc", "caller", "is_admin"),
+        [
+            pytest.param(_app(), "member-a", False, id="creator-personal"),
+            pytest.param(_app(scope="team", created_by="admin"), "admin", True, id="admin-team"),
+            pytest.param(_app(scope="team"), "member-a", False, id="creator-team"),
+        ],
+    )
+    async def test_a_connector_the_caller_can_open_is_allowed(
+        self, app_doc: dict, caller: str, is_admin: bool
+    ) -> None:
+        await _authorize(app_doc, caller, is_admin=is_admin)
+
+    @pytest.mark.parametrize(
+        ("app_doc", "caller", "is_admin"),
+        [
+            pytest.param(None, "member-a", False, id="missing"),
+            pytest.param({**_app(scope="team"), "orgId": "org-2"}, "admin", True, id="another-org"),
+            pytest.param(_app(), "admin", True, id="admin-on-members-personal"),
+            pytest.param(_app(), "member-b", False, id="member-on-members-personal"),
+            pytest.param(_app(scope="team"), "member-b", False, id="member-on-team-not-theirs"),
+            pytest.param(_app(type_="RETIRED_TYPE"), "member-a", False, id="type-not-registered"),
+        ],
+    )
+    async def test_a_connector_the_caller_cannot_open_answers_404(
+        self, app_doc: dict | None, caller: str, is_admin: bool
+    ) -> None:
+        from app.utils.user_messages import not_found
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _authorize(app_doc, caller, is_admin=is_admin)
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == not_found("This connector")
+
+    async def test_kb_reader_is_allowed(self) -> None:
+        await _authorize(_app(type_="KB"), "member-b", is_admin=False, kb_role="READER")
+
+    async def test_kb_without_any_role_answers_404(self) -> None:
+        from app.utils.user_messages import not_found
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _authorize(_app(type_="KB"), "member-b", is_admin=False, kb_role=None)
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == not_found("This connector")
+
+    async def test_kb_role_outside_owner_writer_reader_stays_403(self) -> None:
+        """The caller can see this collection, so the refusal is about permission, not existence."""
+        with pytest.raises(HTTPException) as exc_info:
+            await _authorize(_app(type_="KB"), "member-b", is_admin=False, kb_role="COMMENTER")
+
+        assert exc_info.value.status_code == 403
+
+
+    @pytest.mark.parametrize("app_org", ["org-2", None])
+    async def test_connector_of_another_org_is_404_even_for_an_admin(self, app_org) -> None:
         from app.connectors.api.connector_resolvers import authorize_connector_stats
 
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE"})
+        graph_provider.get_document = AsyncMock(
+            return_value={"type": "GOOGLE_DRIVE", "scope": "team", "orgId": app_org}
+        )
         connector_registry = AsyncMock()
         connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+        # The org check is the registry's: an app without orgId is decided by its org edge.
+        connector_registry.belongs_to_org = AsyncMock(return_value=False)
 
         with patch(
             "app.connectors.api.connector_resolvers.is_request_admin",
             return_value=True,
         ):
-            await authorize_connector_stats(
-                request, graph_provider, connector_registry, "conn-1", "org-1"
-            )
-
-    async def test_non_admin_with_view_permission(self) -> None:
-        from app.connectors.api.connector_resolvers import authorize_connector_stats
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE"})
-        connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
-
-        with patch(
-            "app.connectors.api.connector_resolvers.is_request_admin",
-            return_value=False,
-        ):
-            await authorize_connector_stats(
-                request, graph_provider, connector_registry, "conn-1", "org-1"
-            )
-
-    async def test_not_found_raises_404(self) -> None:
-        from app.connectors.api.connector_resolvers import authorize_connector_stats
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value=None)
-        connector_registry = AsyncMock()
-
-        with patch(
-            "app.connectors.api.connector_resolvers.is_request_admin",
-            return_value=False,
-        ):
             with pytest.raises(HTTPException) as exc_info:
                 await authorize_connector_stats(
                     request, graph_provider, connector_registry, "conn-1", "org-1"
                 )
-            assert exc_info.value.status_code == 404
-
-    async def test_no_view_permission_raises_403(self) -> None:
-        from app.connectors.api.connector_resolvers import authorize_connector_stats
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE"})
-        connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=False)
-
-        with patch(
-            "app.connectors.api.connector_resolvers.is_request_admin",
-            return_value=False,
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await authorize_connector_stats(
-                    request, graph_provider, connector_registry, "conn-1", "org-1"
-                )
-            assert exc_info.value.status_code == 403
-
-    async def test_kb_type_with_owner_role_allowed(self) -> None:
-        from app.connectors.api.connector_resolvers import authorize_connector_stats
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "KB"})
-        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey"})
-        graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connector_registry = AsyncMock()
-
-        with patch(
-            "app.connectors.api.connector_resolvers.is_request_admin",
-            return_value=False,
-        ):
-            await authorize_connector_stats(
-                request, graph_provider, connector_registry, "conn-1", "org-1"
-            )
-
-    async def test_kb_type_no_permission_raises_403(self) -> None:
-        from app.connectors.api.connector_resolvers import authorize_connector_stats
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "KB"})
-        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey"})
-        graph_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        connector_registry = AsyncMock()
-
-        with patch(
-            "app.connectors.api.connector_resolvers.is_request_admin",
-            return_value=False,
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await authorize_connector_stats(
-                    request, graph_provider, connector_registry, "conn-1", "org-1"
-                )
-            assert exc_info.value.status_code == 403
-
-
-# ---------------------------------------------------------------------------
-# assert_hard_delete_record_org (OSS no-op)
-# ---------------------------------------------------------------------------
-
-
-class TestAssertHardDeleteRecordOrg:
-    async def test_no_op(self) -> None:
-        from app.connectors.api.connector_resolvers import assert_hard_delete_record_org
-
-        await assert_hard_delete_record_org(MagicMock(), AsyncMock(), "rec-1")
+        assert exc_info.value.status_code == 404
+        connector_registry.can_user_view_connector.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

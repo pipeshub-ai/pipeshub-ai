@@ -142,32 +142,61 @@ class VectorStoreProbe:
         result = await client.get_collections()
         return sorted(c.name for c in result.collections)
 
+    async def dense_size(self, collection: str = "records") -> int | None:
+        """Width of the collection's dense vectors, or None if it does not exist.
+
+        This is what the product rebuilds on an embedding model change, and
+        what every upsert has to match.
+        """
+        client = await self._conn()
+        try:
+            info = await client.get_collection(collection)
+        except Exception as exc:
+            if _is_missing_collection(exc):
+                return None
+            raise VectorProbeUnavailable(
+                f"Could not read collection {collection!r}: {exc}"
+            ) from exc
+        vectors = info.config.params.vectors
+        if isinstance(vectors, dict):
+            params = vectors.get("dense") or next(iter(vectors.values()), None)
+        else:
+            params = vectors
+        if params is None:
+            raise VectorProbeUnavailable(
+                f"Collection {collection!r} has no dense vector configured: {vectors!r}"
+            )
+        return int(params.size)
+
     async def _count_matching(
         self,
         condition: qmodels.FieldCondition,
         must_not: list[qmodels.FieldCondition] | None = None,
+        *,
+        collection: str | None = None,
     ) -> int:
-        """Total points matching a condition across every collection.
+        """Total points matching a condition across every collection, or only ``collection``.
 
         Retried once on a fresh client: the probe is shared by a whole session,
         and its pooled connection does not survive the vector database
         restarting under it. A second failure is a real one.
         """
         try:
-            return await self._count_matching_once(condition, must_not)
+            return await self._count_matching_once(condition, must_not, collection)
         except Exception as exc:  # noqa: BLE001 - re-raised below if a new client fails too
             logger.info("Reconnecting to the vector database after: %s", exc)
             await self.close()
-            return await self._count_matching_once(condition, must_not)
+            return await self._count_matching_once(condition, must_not, collection)
 
     async def _count_matching_once(
         self,
         condition: qmodels.FieldCondition,
         must_not: list[qmodels.FieldCondition] | None = None,
+        collection: str | None = None,
     ) -> int:
         client = await self._conn()
         total = 0
-        for name in await self.collections():
+        for name in [collection] if collection else await self.collections():
             try:
                 result = await client.count(
                     collection_name=name,
@@ -221,20 +250,64 @@ class VectorStoreProbe:
             ],
         )
 
-    async def count_for_connector(self, connector_id: str) -> int:
+    async def content_texts(self, virtual_record_id: str, limit: int = 256) -> list[str]:
+        """The text of the document's own chunks, so a test can tell old content from new.
+
+        A count cannot: an edit that re-indexes to the same number of chunks, or
+        leaves the old chunks behind next to the new ones, looks the same. The
+        summary vector is left out for the reason ``count_content_chunks`` gives.
+        """
+        client = await self._conn()
+        condition = qmodels.Filter(
+            must=[qmodels.FieldCondition(
+                key="metadata.virtualRecordId",
+                match=qmodels.MatchValue(value=virtual_record_id),
+            )],
+            must_not=[qmodels.FieldCondition(
+                key="metadata.isRecordSummary",
+                match=qmodels.MatchValue(value=True),
+            )],
+        )
+        texts: list[str] = []
+        for name in await self.collections():
+            offset = None
+            while len(texts) < limit:
+                try:
+                    points, offset = await client.scroll(
+                        collection_name=name,
+                        scroll_filter=condition,
+                        limit=min(64, limit - len(texts)),
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                except Exception as exc:
+                    if _is_missing_collection(exc):
+                        break
+                    raise VectorProbeUnavailable(
+                        f"Could not read points in collection {name!r}: {exc}"
+                    ) from exc
+                texts.extend(str((p.payload or {}).get("page_content") or "") for p in points)
+                if offset is None:
+                    break
+        return texts
+
+    async def count_for_connector(self, connector_id: str, *, collection: str | None = None) -> int:
         return await self._count_matching(
             qmodels.FieldCondition(
                 key="connectorIds",
                 match=qmodels.MatchValue(value=connector_id),
-            )
+            ),
+            collection=collection,
         )
 
-    async def count_for_org(self, org_id: str) -> int:
+    async def count_for_org(self, org_id: str, *, collection: str | None = None) -> int:
         return await self._count_matching(
             qmodels.FieldCondition(
                 key="metadata.orgId",
                 match=qmodels.MatchValue(value=org_id),
-            )
+            ),
+            collection=collection,
         )
 
     async def sample_payloads(

@@ -36,6 +36,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.utils.model_egress import guarded_async_client
 
 _CONCURRENCY_LIMIT = 5
 _BATCH_SIZE = 16
@@ -115,7 +116,7 @@ class OpenAICompatMultimodalProvider(IMultimodalEmbeddingProvider):
                     return list(fallback) + invalid_results
                 return map_embedding_response(data, request_indices) + invalid_results
 
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
+        async with guarded_async_client(self.base_url, timeout=_REQUEST_TIMEOUT_SECONDS) as client:
             batches = [
                 (start, image_base64s[start:start + _BATCH_SIZE])
                 for start in range(0, len(image_base64s), _BATCH_SIZE)

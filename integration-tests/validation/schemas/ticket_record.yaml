@@ -25,12 +25,18 @@ fields:
   delivery_status:
     required: false
     type: string
+  due_date:
+    required: false
+    type: integer
   is_email_hidden:
     required: false
     type: boolean
   labels:
     required: false
     type: array
+  milestone:
+    required: false
+    type: string
   priority:
     required: false
     type: string
@@ -46,6 +52,12 @@ fields:
   reporter_source_timestamp:
     required: false
     type: integer
+  resolved_at:
+    required: false
+    type: integer
+  source_status:
+    required: false
+    type: string
   status:
     required: false
     type: string

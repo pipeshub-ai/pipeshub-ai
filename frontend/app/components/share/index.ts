@@ -1,3 +1,5 @@
+'use client';
+
 // Share components barrel export
 export { ShareSidebar } from './share-sidebar';
 export { ShareHeaderGroup } from './share-header-group';
@@ -20,4 +22,4 @@ export type {
   ShareUser,
   SharedAvatarMember,
 } from './types';
-export { SHARE_ROLE_LABELS } from './types';
+export { getShareRoleLabels } from './types';

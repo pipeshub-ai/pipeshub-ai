@@ -277,8 +277,10 @@ class TestSyncUserGroups:
         })
 
         await connector._sync_user_groups()
-        # Group with no user members should not call on_new_user_groups
-        connector.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +303,7 @@ class TestPermissionMapping:
         assert connector._map_drive_role_to_permission_type("fileOrganizer") == PermissionType.WRITE
 
     def test_commenter_role(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader_role(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -320,13 +322,7 @@ class TestEntityTypeMapping:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_domain_type(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_anyone_type(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_anyone_with_link_type(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_unknown_type_defaults_to_user(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("unknown") == EntityType.USER

@@ -1,0 +1,15 @@
+# SearXNG settings for the search-searxng profile. Everything not set here keeps SearXNG's
+# defaults; the secret key comes from SEARXNG_SECRET in .env.
+use_default_settings: true
+
+server:
+  # PipesHub is the only client, on a private network: no public-instance rate limiting.
+  limiter: false
+  image_proxy: false
+  public_instance: false
+
+search:
+  # PipesHub reads results as JSON; SearXNG refuses format=json unless it is listed here.
+  formats:
+    - html
+    - json

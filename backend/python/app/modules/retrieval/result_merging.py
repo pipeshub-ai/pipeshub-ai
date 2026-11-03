@@ -18,7 +18,7 @@ merge, and the provider's own ordering is already correct.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,6 +69,21 @@ def result_identity(result: Any) -> tuple:
     return ("point", getattr(result, "id", None))
 
 
+def search_hit_identity(hit: dict[str, Any]) -> Hashable:
+    """``result_identity`` for a formatted search hit rather than a vector point.
+
+    ``search_with_filters`` returns dicts whose ``metadata`` is the point's
+    payload metadata, so the same block found by two searches shares
+    ``(virtualRecordId, blockId)``. A hit missing either half is kept apart.
+    """
+    metadata = hit.get("metadata") or {}
+    vrid = metadata.get("virtualRecordId")
+    block_id = metadata.get("blockId")
+    if vrid and block_id:
+        return ("block", vrid, block_id)
+    return ("hit", id(hit))
+
+
 class ResultMerger(ABC):
     """Reduces several collections' ranked lists to one top-K."""
 
@@ -112,26 +127,35 @@ class ReciprocalRankFusionMerger(ResultMerger):
     Rewarding it for that would promote duplicates over better unique matches.
     """
 
-    def __init__(self, rank_constant: int = DEFAULT_RRF_RANK_CONSTANT) -> None:
+    def __init__(
+        self,
+        rank_constant: int = DEFAULT_RRF_RANK_CONSTANT,
+        identity: Callable[[Any], Hashable] = result_identity,
+    ) -> None:
         if rank_constant <= 0:
             raise ValueError("RRF rank constant must be positive")
         self._k = rank_constant
+        self._identity = identity
 
-    def merge(self, per_collection: Sequence[CollectionResults], limit: int) -> list:
-        best: dict[tuple, Any] = {}
-        fused: dict[tuple, float] = {}
+    def fuse(self, per_collection: Sequence[CollectionResults]) -> list[tuple[Any, float]]:
+        """Every distinct hit with its fused score, best first."""
+        best: dict[Hashable, Any] = {}
+        fused: dict[Hashable, float] = {}
         # Ties are broken by first appearance so the output is stable across
         # runs; dict preserves insertion order and collections arrive in a
         # deterministic order from the fan-out.
         for collection in per_collection:
             for rank, result in enumerate(collection.results):
-                key = result_identity(result)
+                key = self._identity(result)
                 contribution = 1.0 / (self._k + rank + 1)
                 if key not in fused or contribution > fused[key]:
                     fused[key] = contribution
                     best[key] = result
         ranked = sorted(best, key=lambda key: fused[key], reverse=True)
-        merged = [best[key] for key in ranked]
+        return [(best[key], fused[key]) for key in ranked]
+
+    def merge(self, per_collection: Sequence[CollectionResults], limit: int) -> list:
+        merged = [result for result, _ in self.fuse(per_collection)]
         return merged[:limit] if limit else merged
 
 

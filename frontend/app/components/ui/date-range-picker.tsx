@@ -442,7 +442,7 @@ export function DateRangePicker({
     <Flex
       align="center"
       style={{
-        height: '26px',
+        height: 28,
         border: '1px solid var(--gray-a7)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: 'var(--gray-a3)',
@@ -459,7 +459,7 @@ export function DateRangePicker({
             height: '100%',
           }}
         >
-          <MaterialIcon name={icon} size={14} color="var(--gray-11)" />
+          <MaterialIcon name={icon} size={14} color="var(--neutral-11)" />
         </Flex>
       )}
       <Flex
@@ -470,7 +470,7 @@ export function DateRangePicker({
           height: '100%',
         }}
       >
-        <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>{label}</Text>
+        <Text size="1" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '18px', whiteSpace: 'nowrap' }}>{label}</Text>
       </Flex>
       <Flex
         align="center"
@@ -480,7 +480,7 @@ export function DateRangePicker({
           height: '100%',
         }}
       >
-        <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+        <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400, lineHeight: '18px', whiteSpace: 'nowrap' }}>
           {dateType ? DATE_TYPE_LABELS[dateType].toLowerCase() : 'on'}
         </Text>
       </Flex>
@@ -492,7 +492,7 @@ export function DateRangePicker({
           height: '100%',
         }}
       >
-        <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>{getDateValue()}</Text>
+        <Text size="1" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '18px', whiteSpace: 'nowrap' }}>{getDateValue()}</Text>
       </Flex>
       <Flex
         align="center"
@@ -504,7 +504,7 @@ export function DateRangePicker({
           cursor: 'pointer',
         }}
       >
-        <MaterialIcon name="close" size={16} color="var(--gray-11)" />
+        <MaterialIcon name="close" size={14} color="var(--neutral-11)" />
       </Flex>
     </Flex>
   ) : (
@@ -513,12 +513,22 @@ export function DateRangePicker({
       size="1"
       radius="medium"
       color="gray"
-      style={{ height: '24px', gap: '4px', cursor: 'pointer', borderRadius: 'var(--radius-2)' }}
+      style={{
+        height: 28,
+        padding: '0 6px 0 10px',
+        gap: 6,
+        cursor: 'pointer',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--olive-4)',
+        boxShadow: 'none',
+        fontWeight: 400,
+      }}
     >
       {icon && (
-        <MaterialIcon name={icon} size={14} color="var(--slate-11)" />
+        <MaterialIcon name={icon} size={14} color="var(--neutral-11)" />
       )}
-      <Text size="1">{label}</Text>
+      <Text size="1" style={{ fontWeight: 400, lineHeight: '18px', color: 'var(--neutral-11)' }}>{label}</Text>
+      <MaterialIcon name="expand_more" size={14} color="var(--neutral-11)" />
     </Button>
   );
 
@@ -583,7 +593,10 @@ export function DateRangePicker({
         style={{
           padding: '8px',
           minWidth: '280px',
-          backgroundColor: 'var(--olive-2)',
+          // Frosted like the action menus (shared frost tokens in globals.css)
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           border: '1px solid var(--olive-4)',
           borderRadius: 'var(--radius-2)',
         }}
@@ -631,7 +644,8 @@ export function DateRangePicker({
           justify="between"
           style={{
             padding: '8px 16px',
-            backgroundColor: 'var(--olive-3)',
+            // Translucent so the popover's frost shows through
+            backgroundColor: 'var(--olive-a3)',
             borderRadius: 'var(--radius-2)',
             marginBottom: withTime ? '8px' : '16px',
             border: '1px solid var(--olive-4)',
@@ -755,7 +769,7 @@ export function DateRangePicker({
         {/* Calendar container */}
         <Box
           style={{
-            backgroundColor: 'var(--olive-3)',
+            backgroundColor: 'var(--olive-a3)',
             borderRadius: 'var(--radius-2)',
             padding: '8px',
             border: '1px solid var(--olive-4)',

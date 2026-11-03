@@ -153,6 +153,11 @@ spec:
         resources:
           requests:
             storage: 50Gi
+        {{- if .Values.global.applyStorageClassToStatefulSets }}
+        {{- with .Values.global.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- end }}
 
 ---
 

@@ -10,24 +10,44 @@ class PermissionType(str, Enum):
     READ = "READER"
     WRITE = "WRITER"
     OWNER = "OWNER"
-    COMMENT = "COMMENTER"
-    OTHER = "OTHERS"
+
+#: Roles the model does not have. Stored grants that carry one are not
+#: migrated; they read as READER.
+RETIRED_ROLES = frozenset({"ORGANIZER", "COMMENTER", "FILEORGANIZER", "OTHERS"})
+
+
+def read_role(role: str | None) -> str | None:
+    """A stored role as the model reads it: a retired role is READER."""
+    return PermissionType.READ.value if role in RETIRED_ROLES else role
+
 
 class EntityType(str, Enum):
     USER = "USER"
     GROUP = "GROUP"
     ROLE = "ROLE"
-    DOMAIN = "DOMAIN"
     ORG = "ORG"
     TEAM = "TEAM"
+    # What a source reports for a domain, public or link share. A connector may
+    # name them; they write no grant.
+    DOMAIN = "DOMAIN"
     ANYONE = "ANYONE"
     ANYONE_WITH_LINK = "ANYONE_WITH_LINK"
+
+# The types an organization-to-record (or record group) PERMISSION edge carries when
+# it is a real org-wide share: "ORG" from connector permissions, "ORGANIZATION" from
+# a service account's chat upload (api/routes/chatbot.py). Access queries accept only
+# these, so an org edge of any other type (a domain share) never grants access.
+ORG_SHARE_PERMISSION_TYPES: tuple[str, ...] = (EntityType.ORG.value, "ORGANIZATION")
+
 
 class Permission(BaseModel):
     external_id: Optional[str] = None
     email: Optional[str] = None
     type: PermissionType
     entity_type: EntityType
+    # Set by SharePoint when the grant comes from a sharing link's identities.
+    # Not written onto the permission edge.
+    link_grant: bool = False
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission creation")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission update")
 

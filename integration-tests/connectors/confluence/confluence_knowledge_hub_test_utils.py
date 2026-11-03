@@ -64,11 +64,16 @@ def _kh_permission_role(item: dict[str, Any]) -> str | None:
     return None
 
 
-def assert_kh_item_has_permission(item: dict[str, Any], *, context: str) -> str:
+def assert_kh_item_has_permission(item: dict[str, Any], *, context: str) -> str | None:
+    """A listed connector item is readable; it carries no role of its own.
+
+    Access to a connector item is the app gate plus inheritance, so there is no
+    direct grant to name a role from: only a Collection's items carry one.
+    """
     role = _kh_permission_role(item)
-    assert role, (
-        f"{context}: Knowledge Hub item {item.get('id')!r} ({item.get('name')!r}) "
-        f"has no permission.role (item keys: {sorted(item.keys())})"
+    assert role is None, (
+        f"{context}: Knowledge Hub connector item {item.get('id')!r} ({item.get('name')!r}) "
+        f"carries role {role!r}; connector items carry no role, only Collections do"
     )
     return role
 

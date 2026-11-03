@@ -26,10 +26,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
+from app.agent_loop_lib.transport.openai import (
+    OpenAITransport,
+    RequestDefaults,
+    client_timeout,
+)
 
-if TYPE_CHECKING:  # noqa: F401 - kept for the class docstring's references
-    pass
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +63,9 @@ class AzureOpenAITransport(OpenAITransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
+        cache_plan: OpenAICachePlan | None = None,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         # Skip OpenAITransport.__init__ (it builds AsyncOpenAI) but keep the
         # LLMTransport base contract and the cumulative counters its callers read.
@@ -87,10 +96,13 @@ class AzureOpenAITransport(OpenAITransport):
         # Left unset the SDK applies its own (longer) default; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn must fail at the same point.
         if timeout is not None:
-            client_kwargs["timeout"] = timeout
+            client_kwargs["timeout"] = client_timeout(timeout)
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncAzureOpenAI(**client_kwargs)
+        self._init_prompt_cache(cache_plan, on_cache_rejected)
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
         self.total_llm_calls: int = 0
@@ -100,6 +112,9 @@ class AzureOpenAITransport(OpenAITransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
+        cache_plan: OpenAICachePlan | None = None,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
+        http_client: Any | None = None,
     ) -> "AzureOpenAITransport":
         """Build from an already-configured `AzureChatOpenAI`.
 
@@ -116,16 +131,19 @@ class AzureOpenAITransport(OpenAITransport):
         Azure-only, and silently falling back would hide a misconfiguration
         behind a slower path.
         """
-        def _val(name: str) -> str:
+        def _setting(name: str) -> str:
+            return getattr(llm, name, None) or ""
+
+        def _secret(name: str) -> str:
             raw = getattr(llm, name, None)
             # Credentials arrive as pydantic SecretStr on the LangChain model.
-            secret = getattr(raw, "get_secret_value", None)
-            return (secret() if callable(secret) else raw) or ""
+            unwrap = getattr(raw, "get_secret_value", None)
+            return (unwrap() if callable(unwrap) else raw) or ""
 
-        endpoint = _val("azure_endpoint")
-        deployment = _val("deployment_name")
-        api_key = _val("openai_api_key")
-        api_version = _val("openai_api_version")
+        endpoint = _setting("azure_endpoint")
+        deployment = _setting("deployment_name")
+        api_key = _secret("openai_api_key")
+        api_version = _setting("openai_api_version")
         missing = [
             n for n, v in (
                 ("azure_endpoint", endpoint), ("deployment_name", deployment),
@@ -156,6 +174,9 @@ class AzureOpenAITransport(OpenAITransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=getattr(llm, "max_retries", None),
             model_key=model_key,
+            cache_plan=cache_plan,
+            on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     @property

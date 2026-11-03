@@ -48,6 +48,23 @@ class FailedItems:
             return max_timestamp
         return min(max_timestamp, self._earliest_ms - 1)
 
+
+# S3, MinIO, GCS and Azure refuse requests from a clock more than 15 minutes off, so store times trail ours by less.
+LISTING_CLOCK_SKEW_MS = 15 * 60 * 1000
+
+
+def listing_checkpoint(checkpoint: int, listing_started_at: Optional[int]) -> Optional[int]:
+    """The time to save after a listing by name reached its end; None keeps the saved one.
+
+    A key changed during the listing, behind the point it had reached, is dated
+    after the listing started but can be older than the newest time it saw.
+    ``listing_started_at`` is None for a run resumed from a token saved before
+    the start was recorded.
+    """
+    if listing_started_at is None:
+        return None
+    return min(checkpoint, listing_started_at - LISTING_CLOCK_SKEW_MS)
+
 class SyncPoint(ISyncPoint):
     connector_id: str
     org_id: str

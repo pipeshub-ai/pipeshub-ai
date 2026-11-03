@@ -19,11 +19,25 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Annotated
+from collections.abc import Mapping
+from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.auth import (
+    authMiddleware,
+    require_service_token,
+    service_token_org,
+)
+from app.config.constants.service import TokenScopes
+from app.exceptions.indexing_exceptions import (
+    MultimodalModelNotConfiguredError,
+    PasswordProtectedError,
+)
+from app.modules.parsers.encryption import raise_if_password_protected_office
+from app.services.model_identity.propagation import scope_from_claims
+from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -36,12 +50,25 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.memory_domain import (
+    parse_admission_cap,
+    stamp_admitted_here,
+)
+from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
+from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/parse", tags=["parsing"])
+require_parse_token = require_service_token(TokenScopes.DOCUMENT_PARSE)
+
+# On the router, not the app, so the checks hold wherever this router is included.
+router = APIRouter(
+    prefix="/api/v1/parse",
+    tags=["parsing"],
+    dependencies=[Depends(authMiddleware), Depends(require_parse_token)],
+)
 
 # How long a request will wait for a parsing slot before it's reported as
 # "saturated" (still waiting) and, ultimately, before the gate gives up and
@@ -61,6 +88,13 @@ PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 # heavy documents) can legitimately take several minutes, so this is set
 # well above typical large-document parse times, not just above the median.
 SLOW_PARSE_WARN_SECONDS = 300.0
+# Per pool, one org holds at most this share while another org wants the pool (S-4).
+_ORG_SHARE = OrgShare(max_org_share())
+
+
+def _config_service(request: Request) -> Any:  # noqa: ANN401
+    container = getattr(request.app, "container", None)
+    return container.config_service() if container is not None else None
 
 
 def _get_registry(request: Request) -> ParserRegistry:
@@ -78,12 +112,14 @@ def _get_registry(request: Request) -> ParserRegistry:
 async def parse_file(
     request: Request,
     file: Annotated[UploadFile, File(description="File to parse")],
+    claims: Annotated[Mapping[str, Any], Depends(require_parse_token)],
     record_name: Annotated[str, Form(description="Human-readable filename")] = "",
     mime_type: Annotated[str, Form(description="MIME type of the file")] = "",
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -99,6 +135,7 @@ async def parse_file(
           "error": null
         }
     """
+    service_token_org(claims, org_id)
     registry = _get_registry(request)
 
     # Resolve provider enum if supplied
@@ -108,7 +145,7 @@ async def parse_file(
             provider_enum = ParserProvider(provider)
         except ValueError:
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={
                     "success": False,
                     "error": {
@@ -131,6 +168,8 @@ async def parse_file(
     config: dict = {"extension": extension}
     if skip_table_enrichment:
         config["skip_table_enrichment"] = True
+    if file_path:
+        config["file_path"] = file_path
 
     if provider_enum is None:
         return JSONResponse(
@@ -153,16 +192,29 @@ async def parse_file(
     )
 
     governor = request.app.state.governor
+    pool = gate_pool(tier).value
     gate = governor.gate(gate_pool(tier))
+    cap = parse_admission_cap(governor, gate_pool(tier))
+    org_key = org_id or ""
 
-    admitted = await acquire_gate_with_backpressure(
-        gate, cost, tier, message_id,
-        logger=logger,
-        log_prefix="parsing",
-        queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
-        gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
-    )
+    _ORG_SHARE.arrive(pool, org_key)
+    try:
+        if _ORG_SHARE.over_share(pool, org_key, cost, gate.limit if cap is None else cap):
+            admitted = False
+        else:
+            admitted = await acquire_gate_with_backpressure(
+                gate, cost, tier, message_id,
+                logger=logger,
+                log_prefix="parsing",
+                queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
+                gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
+                cap=cap,
+            )
+    except BaseException:
+        _ORG_SHARE.leave(pool, org_key)
+        raise
     if not admitted:
+        _ORG_SHARE.leave(pool, org_key)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -171,16 +223,62 @@ async def parse_file(
                 "error": {
                     "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
                     "message": "Parsing service is at capacity; retry later.",
-                    "details": {"tier": tier.value, "limit": gate.limit},
+                    "details": {"tier": tier.value, "limit": gate.limit if cap is None else cap},
                 },
             },
         )
+    _ORG_SHARE.hold(pool, org_key, cost)
+
+    if cap is None:
+        # Braked here: a Docling service sharing this memory need not brake it again.
+        stamp_admitted_here()
 
     parse_start = time.monotonic()
     try:
         try:
             parser = registry.resolve(mime_type, extension, provider_enum)
-            result = await parser.parse(content, record_name, config)
+            async with scope_from_claims(
+                claims,
+                Workload.PARSING,
+                fallback_service="parsing",
+                config_service=_config_service(request),
+            ):
+                raise_if_password_protected_office(
+                    content, extension=extension, mime_type=mime_type
+                )
+                result = await parser.parse(content, record_name, config)
+        except PasswordProtectedError as exc:
+            logger.warning(
+                "Parse refused: record='%s' provider=%s code=%s",
+                record_name, provider_enum.value, ParseErrorCode.PASSWORD_REQUIRED.value,
+            )
+            # A fact about the file, like every ParseError: 422, never retried.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": ParseError(
+                        ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
+                    ).to_dict(),
+                },
+            )
+        except MultimodalModelNotConfiguredError as exc:
+            logger.warning(
+                "Parse refused: record='%s' provider=%s: %s",
+                record_name, provider_enum.value, exc.message,
+            )
+            # A fact about the org's AI settings, not an outage: as a 500 the
+            # indexer retried it as transient and then told the person of a
+            # "temporary problem". The message is the reason the record stores.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": ParseError(
+                        ParseErrorCode.PARSE_FAILED, SCANNED_DOCUMENT_NEEDS_OCR, exc.details
+                    ).to_dict(),
+                },
+            )
         except ParseError as exc:
             parse_ms = (time.monotonic() - parse_start) * 1000
             logger.warning(
@@ -196,28 +294,31 @@ async def parse_file(
             # other record fast for the breaker's cooldown and sent them to
             # the back of the queue with a retry attempt spent.
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             parse_ms = (time.monotonic() - parse_start) * 1000
             logger.exception(
                 "Unexpected error parsing '%s' (provider=%s, parse_ms=%.0f)",
                 record_name, provider_enum.value, parse_ms,
             )
+            # The exception and its type stay in the log above: the text can quote the
+            # document or a path, and the caller only needs to correlate.
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
                     "success": False,
                     "error": {
                         "code": ParseErrorCode.PARSE_FAILED.value,
-                        "message": str(exc),
-                        "details": {},
+                        "message": "Unexpected error while parsing the document",
+                        "details": {"requestId": message_id},
                     },
                 },
             )
     finally:
         gate.release(cost)
+        _ORG_SHARE.leave(pool, org_key, cost)
         SemaphoreLogger.log_semaphore_release(
             f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
         )

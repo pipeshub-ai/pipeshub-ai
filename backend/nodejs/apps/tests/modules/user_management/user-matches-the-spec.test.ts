@@ -3,7 +3,7 @@ import { expect } from 'chai'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
-import { Users } from '../../../src/modules/user_management/schema/users.schema'
+import { userSchema } from '../../../src/modules/user_management/schema/users.schema'
 
 /**
  * What a user endpoint sends must be what the published spec promises.
@@ -58,6 +58,9 @@ function declaredProperties(name: string): string[] {
 }
 
 /**
+ * The schema this file declares, not the registered `users` model: a build that
+ * registers its own user model first gets that one from `mongoose.models`.
+ *
  * The stored field names, one level deep: Mongoose reports a subdocument as
  * `address.city`, but the spec declares `address` once and refs its own
  * schema, so comparing full paths would report a gap that is not there.
@@ -67,7 +70,7 @@ function storedFields(): string[] {
     ...new Set(
       // `?? path` only to satisfy the compiler: split always yields a first
       // element, but the index signature is typed as possibly undefined.
-      Object.keys(Users.schema.paths).map((path) => path.split('.')[0] ?? path),
+      Object.keys(userSchema.paths).map((path) => path.split('.')[0] ?? path),
     ),
   ]
 }

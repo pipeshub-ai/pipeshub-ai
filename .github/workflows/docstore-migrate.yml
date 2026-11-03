@@ -1,0 +1,204 @@
+name: docstore-migrate
+
+# The tool that copies an existing MongoDB install into PostgreSQL, against real servers: MongoDB (the tests start their own
+# single-member replica sets from the mongod binary), PostgreSQL 17 and 18 behind PgBouncer, and the migration tool that builds the
+# schema. A skip is a failure here: the suites skip only when a service is missing, which in CI means the workflow is broken.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/nodejs/apps/src/scripts/docstore-migrate/**'
+      - 'backend/nodejs/apps/src/scripts/docstore-migrate.ts'
+      - 'backend/nodejs/apps/tests/scripts/docstore-migrate/**'
+      - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/db/**'
+      - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/tests/stores/pg-store-harness.ts'
+      - 'backend/nodejs/apps/tests/libs/db/pg-harness.ts'
+      - 'backend/nodejs/apps/tests/stores/mongo-fence.itest.ts'
+      - 'backend/nodejs/apps/tests/libs/repositories/fence.itest.ts'
+      - 'backend/nodejs/apps/tests/libs/db/store-fence.itest.ts'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/db/**'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/docstore-migrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docstore-migrate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migrate:
+    # MongoDB 8.0 publishes packages up to Ubuntu 24.04; ubuntu-latest (26.04) has none.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+        # the suites are split over four jobs per PostgreSQL version so that none runs long; the exact case count of every suite is asserted in the last step
+        shard: [cli, reverse, switchover, rest]
+        include:
+          - shard: cli
+            files: tests/scripts/docstore-migrate/cli.itest.ts
+          - shard: reverse
+            files: tests/scripts/docstore-migrate/reverse.itest.ts
+          - shard: switchover
+            files: tests/scripts/docstore-migrate/switchover.itest.ts tests/scripts/docstore-migrate/follow-lifecycle.itest.ts
+          - shard: rest
+            files: ''
+    env:
+      CI: 'true'
+      # the databases' files live in memory: the suites commit thousands of small transactions, and a runner's disk made each wait for a flush
+      PG_TEST_WORK: /dev/shm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PostgreSQL ${{ matrix.pg }}, PgBouncer, MongoDB and the migration tool
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors https://pgp.mongodb.com/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "deb [signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq -o Acquire::Retries=5 "postgresql-${{ matrix.pg }}" "postgresql-${{ matrix.pg }}-pgvector" pgbouncer mongodb-org-server mongodb-mongosh
+          sudo systemctl stop postgresql || true
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Migration tool suites (${{ matrix.shard }})
+        # fail fast: a shard takes minutes; a test past 240 s (mocha's per-test limit) or the step past 40 minutes is a hang, and the log names the test (progress-hooks.ts)
+        timeout-minutes: 40
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          MIGRATE_TEST_MONGOD: /usr/bin/mongod
+          FILES: ${{ matrix.files }}
+        run: |
+          if [ "${{ matrix.shard }}" = rest ]; then
+            # every suite the other shards do not name, so a new suite file runs here without a workflow edit
+            dir=tests/scripts/docstore-migrate
+            FILES=$(cd "$dir" && ls ./*.itest.ts | sed 's|^\./||' | grep -vxF -e cli.itest.ts -e reverse.itest.ts -e switchover.itest.ts -e follow-lifecycle.itest.ts | sed "s|^|$dir/|" | tr '\n' ' ')
+          fi
+          # shellcheck disable=SC2086
+          npm run test:docstore-migrate-files -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-migrate-junit.xml" $FILES
+
+      - name: Start MongoDB for the fence tests (a replica set and a single server)
+        if: ${{ !cancelled() && matrix.shard == 'rest' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/mongo-rs" "$RUNNER_TEMP/mongo-single"
+          nohup mongod --dbpath "$RUNNER_TEMP/mongo-rs" --port 27018 --bind_ip 127.0.0.1 --replSet rs0 --setParameter enableTestCommands=1 > "$RUNNER_TEMP/mongo-rs.log" 2>&1 &
+          nohup mongod --dbpath "$RUNNER_TEMP/mongo-single" --port 27019 --bind_ip 127.0.0.1 --setParameter enableTestCommands=1 > "$RUNNER_TEMP/mongo-single.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            mongosh --quiet --port 27018 --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && mongosh --quiet --port 27019 --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          mongosh --quiet --port 27018 --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27018" }] })'
+          for _ in $(seq 1 30); do
+            [ "$(mongosh --quiet --port 27018 --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Fence suites on a replica set (test:docstore-fence)
+        if: ${{ !cancelled() && matrix.shard == 'rest' }}
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          MIGRATE_TEST_MONGOD: /usr/bin/mongod
+          MONGO_IT_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+          REPLICA_SET_AVAILABLE: 'true'
+        run: npm run test:docstore-fence -- --reporter xunit --reporter-option output="$RUNNER_TEMP/docstore-fence-junit.xml"
+
+      - name: Mongo fence on a single server
+        if: ${{ !cancelled() && matrix.shard == 'rest' }}
+        working-directory: backend/nodejs/apps
+        env:
+          MONGO_IT_URI: mongodb://127.0.0.1:27019
+          REPLICA_SET_AVAILABLE: 'false'
+        run: npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000 --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-fence-single-junit.xml" tests/stores/mongo-fence.itest.ts
+
+      - name: Failed tests (the xunit reporter writes only to its file)
+        if: ${{ always() }}
+        run: |
+          python3 - <<'PY'
+          import glob, os, xml.etree.ElementTree as ET
+          for f in glob.glob(os.environ["RUNNER_TEMP"] + "/*-junit.xml"):
+              for t in ET.parse(f).getroot().iter("testcase"):
+                  for k in t.findall("failure") + t.findall("error"):
+                      print("FAILED:", t.get("classname"), "|", t.get("name"), "\n", (k.get("message") or "")[:1500], "\n", (k.text or "")[:1500])
+          PY
+
+      - name: Keep the junit files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docstore-migrate-junit-${{ matrix.pg }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/*-junit.xml
+          if-no-files-found: warn
+
+      - name: No unexpected skips
+        if: ${{ always() }}
+        # the scale run is opt-in (MIGRATE_SCALE=1; its suite is named "timing")
+        # --expect-suite pins the exact case count of each suite, so a suite that did not run fails the job; every PR that adds a suite adds its line to the shard that runs it
+        run: |
+          T="$RUNNER_TEMP"
+          case "${{ matrix.shard }}" in
+            cli)
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 40 \
+                --expect-suite 'docstore-migrate: CLI end to end=40' ;;
+            reverse)
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 25 \
+                --expect-suite 'docstore-migrate: rollback and the reverse copy=25' ;;
+            switchover)
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 35 \
+                --expect-suite 'docstore-migrate: offline and online switch-over=20' \
+                --expect-suite 'docstore-migrate: follow, drain, reset and schema=15' ;;
+            rest)
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" "$T/docstore-fence-junit.xml" "$T/mongo-fence-single-junit.xml" --allow "timing" --min-tests 100 \
+                --expect-suite 'docstore-migrate: identity collections=8' \
+                --expect-suite 'docstore-migrate: organisations=1' \
+                --expect-suite 'docstore-migrate: bulk copy=3' \
+                --expect-suite 'docstore-migrate: conversation collections=4' \
+                --expect-suite 'docstore-migrate: content mappings=2' \
+                --expect-suite 'docstore-migrate: content, OAuth and platform data=12' \
+                --expect-suite 'docstore-migrate: collection coverage=7' \
+                --expect-suite 'docstore-migrate: table coverage=3' \
+                --expect-suite 'fence cutover waits for fenced writes=3' \
+                --expect-suite 'pre-flight _id check=1' \
+                --expect-suite 'Mongo store fence deadline=2' \
+                --expect-suite 'store fence against PostgreSQL=15' \
+                --expect-suite 'Mongo store fence against a real MongoDB=18' \
+                --expect-suite 'docstore-migrate: pre-flight checks=14' \
+                --expect-suite 'docstore-migrate: command line gates=6' ;;
+          esac

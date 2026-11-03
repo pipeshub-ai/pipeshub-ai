@@ -18,7 +18,8 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
-from app.utils.oauth_config import get_oauth_config
+from app.core.org_context import spawn_detached
+from app.utils.oauth_config import apply_tenant_to_microsoft_oauth_url, get_oauth_config
 from app.utils.request_context import (
     new_system_root,
     reset_context,
@@ -98,13 +99,13 @@ class ToolsetTokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            spawn_detached(self._refresh_all_tokens())
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        spawn_detached(self._periodic_refresh_check())
 
         # Start periodic lock cleanup
-        asyncio.create_task(self._cleanup_old_locks())
+        spawn_detached(self._cleanup_old_locks())
 
     async def stop(self) -> None:
         """Stop the toolset token refresh service"""
@@ -438,8 +439,8 @@ class ToolsetTokenRefreshService:
             if not toolset_registry:
                 return None
 
-            # Get toolset metadata by type (lowercase)
-            metadata = toolset_registry.get_toolset_metadata(toolset_type)
+            # Serialized metadata turns the OAuthConfig into a dict, which the check below rejects.
+            metadata = toolset_registry.get_toolset_metadata(toolset_type, serialize=False)
             if not metadata:
                 return None
 
@@ -490,7 +491,8 @@ class ToolsetTokenRefreshService:
                 if "additionalParams" not in oauth_flow_config:
                     additional_params = getattr(oauth_config_obj, 'additional_params', None)
                     if additional_params:
-                        oauth_flow_config["additionalParams"] = additional_params
+                        # A copy: get_oauth_config writes into it, and the registry's is shared process-wide.
+                        oauth_flow_config["additionalParams"] = dict(additional_params)
 
                 # Add scope_parameter_name if not already set and different from default
                 if "scopeParameterName" not in oauth_flow_config:
@@ -532,7 +534,10 @@ class ToolsetTokenRefreshService:
         Raises:
             ValueError: If credentials cannot be found
         """
-        # Load the full user toolset config to get oauthConfigId and other metadata
+        # Load the full user toolset config to get oauthConfigId and other metadata.
+        # Until it is read the config counts as linked: stored credentials are a fallback
+        # only for a config known to have no central app.
+        linked_to_central_app = True
         try:
             full_user_config = await self.configuration_service.get_config(
                 config_path,
@@ -542,6 +547,12 @@ class ToolsetTokenRefreshService:
 
             if not full_user_config or not isinstance(full_user_config, dict):
                 raise ValueError(f"Could not load toolset config from {config_path}")
+
+            # Tokens of a config linked to a central OAuth app were issued to that app, so
+            # nothing saved under its own "auth" may choose the credentials or where they go.
+            linked_to_central_app = bool(full_user_config.get("oauthConfigId"))
+            if linked_to_central_app:
+                full_user_config = {**full_user_config, "auth": {}}
 
             # Use the new centralized OAuth credential fetching
             from app.api.routes.toolsets import get_oauth_credentials_for_toolset
@@ -554,8 +565,8 @@ class ToolsetTokenRefreshService:
 
             # oauth_creds now contains ALL OAuth config fields dynamically
             # (clientId, clientSecret, tenantId, domain, scopes, URLs, etc.)
-            client_id = oauth_creds.get("clientId")
-            client_secret = oauth_creds.get("clientSecret")
+            client_id = oauth_creds.get("clientId") or oauth_creds.get("client_id")
+            client_secret = oauth_creds.get("clientSecret") or oauth_creds.get("client_secret")
 
             if not client_id or not client_secret:
                 raise ValueError(
@@ -563,11 +574,10 @@ class ToolsetTokenRefreshService:
                     f"Available fields: {list(oauth_creds.keys())}"
                 )
 
-            # Merge OAuth credentials into auth_config (preserves all fields)
-            # Priority: oauth_creds (central config) > auth_config (user overrides)
-            for key, value in oauth_creds.items():
-                if key not in auth_config:  # Don't overwrite user overrides
-                    auth_config[key] = value
+            # Credentials and endpoints come from the same place. Rebinding, rather than
+            # merging into the stored dict, also keeps the client secret out of what is
+            # saved back after the refresh.
+            auth_config = {**oauth_creds, "clientId": client_id, "clientSecret": client_secret}
 
             self.logger.debug(
                 "✅ Fetched OAuth credentials for token refresh from centralized config. "
@@ -575,6 +585,10 @@ class ToolsetTokenRefreshService:
             )
 
         except Exception as e:
+            if linked_to_central_app:
+                raise ValueError(
+                    f"OAuth app for toolset {config_path} could not be loaded: {e}"
+                ) from e
             self.logger.error(
                 f"Failed to fetch OAuth credentials for {config_path}: {e}. "
                 f"Falling back to legacy auth_config (if available).",
@@ -639,7 +653,7 @@ class ToolsetTokenRefreshService:
         elif oauth_config_obj and hasattr(oauth_config_obj, 'scopes'):
             from app.connectors.core.registry.auth_builder import OAuthScopeType
             registry_scopes = oauth_config_obj.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
-            oauth_flow_config["scopes"] = registry_scopes if registry_scopes else []
+            oauth_flow_config["scopes"] = list(registry_scopes) if registry_scopes else []
         else:
             oauth_flow_config["scopes"] = []
 
@@ -652,7 +666,8 @@ class ToolsetTokenRefreshService:
         if "additionalParams" in auth_config:
             oauth_flow_config["additionalParams"] = auth_config["additionalParams"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'additional_params') and oauth_config_obj.additional_params:
-            oauth_flow_config["additionalParams"] = oauth_config_obj.additional_params
+            # A copy: get_oauth_config writes into it, and the registry's is shared process-wide.
+            oauth_flow_config["additionalParams"] = dict(oauth_config_obj.additional_params)
 
         if "scopeParameterName" in auth_config:
             oauth_flow_config["scopeParameterName"] = auth_config["scopeParameterName"]
@@ -669,9 +684,16 @@ class ToolsetTokenRefreshService:
         # instanceUrl is required for self-managed connectors (e.g. GitLab EE)
         # so get_oauth_config() can redirect SaaS-default OAuth URLs to the
         # user's instance during token refresh.
-        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl"]:
+        # loginUrl keeps a Salesforce sandbox refresh on the host that issued the token.
+        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl", "loginUrl"]:
             if field_name in auth_config:
                 oauth_flow_config[field_name] = auth_config[field_name]
+
+        # Sign-in sends a single-tenant Microsoft app to its tenant's endpoints, and a personal
+        # action keeps only the tenant, so the registry's /common URLs must be moved here too.
+        tenant_id = oauth_flow_config.get("tenantId")
+        for url_field in ("authorizeUrl", "tokenUrl"):
+            oauth_flow_config[url_field] = apply_tenant_to_microsoft_oauth_url(oauth_flow_config[url_field], tenant_id)
 
         # Enrich from registry if fields are still missing
         self._enrich_from_toolset_registry(oauth_flow_config, toolset_type)

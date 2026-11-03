@@ -19,13 +19,21 @@ import {
   createMessageProducer,
   createMessageConsumer,
   createMessageProducerFromConfig,
+  createMailMessageConsumer,
   REQUIRED_TOPICS,
 } from '../../../src/libs/services/message-broker.factory';
+import { Kafka } from 'kafkajs';
+import { MAIL_MESSAGE_BUDGET_MS } from '../../../src/modules/mail/types/mail-event.types';
 
 import {
   BaseKafkaProducerConnection,
   BaseKafkaConsumerConnection,
 } from '../../../src/libs/services/kafka.service';
+import {
+  BasePgQueueProducerConnection,
+  BasePgQueueConsumerConnection,
+  PgQueueAdminService,
+} from '../../../src/libs/services/pg-queue.service';
 import { KafkaAdminService } from '../../../src/libs/services/kafka-admin.service';
 import {
   BaseRedisStreamsProducerConnection,
@@ -68,6 +76,44 @@ describe('MessageBrokerFactory', () => {
     sinon.restore();
     delete process.env.MESSAGE_BROKER;
     delete process.env.REDIS_STREAMS_MAXLEN;
+    delete process.env.REDIS_STREAMS_RETENTION_MODE;
+  });
+
+  describe('createMailMessageConsumer', () => {
+    const appConfig = {
+      kafka: { brokers: ['localhost:9092'] },
+      redis: { host: 'localhost', port: 6379 },
+    } as any;
+
+    it('gives the kafka mail group a session long enough for one message budget', () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      const consumerSpy = sinon.spy(Kafka.prototype, 'consumer');
+
+      createMailMessageConsumer(appConfig, mockLogger as any);
+
+      const opts = consumerSpy.firstCall.args[0];
+      expect(opts.groupId).to.equal('mail-consumer-group');
+      expect(opts.sessionTimeout).to.be.greaterThan(MAIL_MESSAGE_BUDGET_MS);
+      expect(opts.rebalanceTimeout).to.be.greaterThan(MAIL_MESSAGE_BUDGET_MS);
+    });
+
+    it('keeps a redis mail job from being reclaimed while it is still running', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+
+      const consumer = createMailMessageConsumer(appConfig, mockLogger as any);
+
+      expect((consumer as any).config.claimMinIdleMs).to.be.greaterThan(
+        MAIL_MESSAGE_BUDGET_MS,
+      );
+    });
+
+    it('takes one redis mail job at a time so queued jobs do not idle into a reclaim', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+
+      const consumer = createMailMessageConsumer(appConfig, mockLogger as any);
+
+      expect((consumer as any).count).to.equal(1);
+    });
   });
 
   // ================================================================
@@ -87,6 +133,11 @@ describe('MessageBrokerFactory', () => {
     it('should return redis when env is redis', () => {
       process.env.MESSAGE_BROKER = 'redis';
       expect(getMessageBrokerType()).to.equal('redis');
+    });
+
+    it('should return postgres when env is postgres', () => {
+      process.env.MESSAGE_BROKER = 'postgres';
+      expect(getMessageBrokerType()).to.equal('postgres');
     });
 
     it('should be case-insensitive', () => {
@@ -291,16 +342,32 @@ describe('MessageBrokerFactory', () => {
       expect(config.groupId).to.equal('my-group');
     });
 
-    it('should use REDIS_STREAMS_MAXLEN env var for maxLen', () => {
+    it('should use REDIS_STREAMS_MAXLEN for maxLen only in maxlen retention mode', () => {
       process.env.REDIS_STREAMS_MAXLEN = '5000';
+      process.env.REDIS_STREAMS_RETENTION_MODE = 'maxlen';
       const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
       expect(config.maxLen).to.equal(5000);
     });
 
-    it('should default maxLen to 500000', () => {
+    it('should default maxLen to 500000 in maxlen retention mode', () => {
       delete process.env.REDIS_STREAMS_MAXLEN;
+      process.env.REDIS_STREAMS_RETENTION_MODE = 'maxlen';
       const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
       expect(config.maxLen).to.equal(500000);
+    });
+
+    it('should fail fast on an invalid REDIS_STREAMS_RETENTION_MODE', () => {
+      process.env.REDIS_STREAMS_RETENTION_MODE = 'bogus';
+      expect(() => buildRedisBrokerConfig({ host: 'localhost', port: 6379 })).to.throw(
+        /REDIS_STREAMS_RETENTION_MODE must be "after_ack" or "maxlen"/,
+      );
+    });
+
+    it('should not cap streams by default, even when REDIS_STREAMS_MAXLEN is set', () => {
+      process.env.REDIS_STREAMS_MAXLEN = '500000';
+      delete process.env.REDIS_STREAMS_RETENTION_MODE;
+      const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
+      expect(config.maxLen).to.be.undefined;
     });
 
   });
@@ -371,6 +438,41 @@ describe('MessageBrokerFactory', () => {
   // ================================================================
   // resolveMessageBrokerConfig
   // ================================================================
+  describe('PostgreSQL broker', () => {
+    it('resolves without any Redis or Kafka settings and builds the queue classes', () => {
+      process.env.MESSAGE_BROKER = 'postgres';
+      const r = resolveMessageBrokerConfig({ kafka: { brokers: [] }, redis: { host: '', port: 0 } } as any);
+      expect(r).to.deep.equal({ type: 'postgres' });
+      expect(createMessageProducer(r, mockLogger as any)).to.be.instanceOf(BasePgQueueProducerConnection);
+      expect(createMessageConsumer(r, mockLogger as any)).to.be.instanceOf(BasePgQueueConsumerConnection);
+      expect(createMessageAdminForBrokerType('postgres' as any, undefined, undefined, mockLogger as any)).to.be.instanceOf(PgQueueAdminService);
+    });
+
+    it('fails connect() when the queue cannot be reached, like the Kafka and Redis connections', async () => {
+      process.env.MESSAGE_BROKER = 'postgres';
+      for (const make of [createMessageProducer, createMessageConsumer]) {
+        const c = make({ type: 'postgres' } as any, mockLogger as any) as any;
+        c.healthCheck = async () => false;
+        let err: unknown;
+        await c.connect().catch((e: unknown) => { err = e; });
+        expect(err, make.name).to.be.instanceOf(Error);
+        expect(c.isConnected()).to.equal(false);
+        c.healthCheck = async () => true;
+        await c.connect();
+        expect(c.isConnected()).to.equal(true);
+      }
+    });
+
+    it('gives the mail consumer its own group and a claim that outlives one send', () => {
+      process.env.MESSAGE_BROKER = 'postgres';
+      const c = createMailMessageConsumer({ kafka: { brokers: [] }, redis: { host: '', port: 0 } } as any, mockLogger as any);
+      expect(c).to.be.instanceOf(BasePgQueueConsumerConnection);
+      expect((c as any).groupId).to.equal('mail-consumer-group');
+      expect((c as any).config.claimMinIdleMs).to.be.greaterThan(MAIL_MESSAGE_BUDGET_MS);
+      expect((c as any).config.readCount).to.equal(1);
+    });
+  });
+
   describe('resolveMessageBrokerConfig', () => {
     it('should resolve kafka when MESSAGE_BROKER=kafka', () => {
       process.env.MESSAGE_BROKER = 'kafka';

@@ -5,7 +5,21 @@ const MODELS_API = '/api/v1/configurationManager/ai-models';
 /** Written by the ai-models setup step, read by its teardown: the models that step added. */
 export const ADDED_MODELS_FILE = '.auth/ai-models.json';
 
+/** Written by the embedding-model setup step, read by its teardown: the model that step added. */
+export const ADDED_EMBEDDING_FILE = '.auth/embedding-model.json';
+
+/** Why the embedding-model setup step could not add the model, for the ai-models step to report. */
+export const EMBEDDING_ERROR_FILE = '.auth/embedding-model-error.txt';
+
 type ModelType = 'llm' | 'embedding';
+
+/**
+ * Part of the backend's refusal to change or delete the embedding model while
+ * the vector store holds its vectors (EMBEDDING_MODEL_IN_USE_MESSAGE in
+ * cm_controller.ts).
+ */
+const EMBEDDING_IN_USE_MARKER = 'is embedding your indexed content';
+
 export type AddedModel = { type: ModelType; modelKey: string };
 
 /**
@@ -82,13 +96,21 @@ export async function hasAnsweringModels(api: APIRequestContext): Promise<boolea
   return (await listModels(api, 'llm')).length > 0 && (await listModels(api, 'embedding')).length > 0;
 }
 
-/** Remove every model in `added`, trying them all before reporting any failure. */
+/**
+ * Remove every model in `added`, trying them all before reporting any failure.
+ *
+ * An embedding model whose vectors are stored is refused by the backend and
+ * left configured; the next run on the same stack finds it and adds nothing.
+ */
 export async function removeModels(api: APIRequestContext, added: AddedModel[]): Promise<void> {
   const failures: string[] = [];
   for (const { type, modelKey } of [...added].reverse()) {
     try {
       const res = await api.delete(`${MODELS_API}/providers/${type}/${modelKey}`);
-      if (!res.ok() && res.status() !== 404) failures.push(`${type} ${modelKey}: ${res.status()} ${await res.text()}`);
+      if (res.ok() || res.status() === 404) continue;
+      const body = await res.text();
+      if (type === 'embedding' && body.includes(EMBEDDING_IN_USE_MARKER)) continue;
+      failures.push(`${type} ${modelKey}: ${res.status()} ${body}`);
     } catch (error) {
       failures.push(`${type} ${modelKey}: ${(error as Error).message}`);
     }
@@ -97,15 +119,19 @@ export async function removeModels(api: APIRequestContext, added: AddedModel[]):
 }
 
 /**
- * Add a chat and a cloud embedding model where the org has none, and return
- * what was added. Models already configured are left alone. Returns undefined
- * when a model is missing and no credentials say how to add one. If adding
- * the second fails, the first is removed again before the error is rethrown.
+ * Add each of `types` (a chat and a cloud embedding model by default) where
+ * the org has none, and return what was added. Models already configured are
+ * left alone. Returns undefined when a model is missing and no credentials say
+ * how to add one. If adding the second fails, the first is removed again
+ * before the error is rethrown.
  */
-export async function provisionAnsweringModels(api: APIRequestContext): Promise<AddedModel[] | undefined> {
+export async function provisionAnsweringModels(
+  api: APIRequestContext,
+  types: readonly ModelType[] = ['llm', 'embedding'],
+): Promise<AddedModel[] | undefined> {
   const added: AddedModel[] = [];
   try {
-    for (const type of ['llm', 'embedding'] as const) {
+    for (const type of types) {
       if ((await listModels(api, type)).length > 0) continue;
       const config = modelConfig(type);
       if (!config) {
@@ -125,7 +151,18 @@ export async function provisionAnsweringModels(api: APIRequestContext): Promise<
         },
         timeout: 120_000,
       });
-      if (!res.ok()) throw new Error(`adding the test ${type} model failed: ${res.status()} ${await res.text()}`);
+      if (!res.ok()) {
+        const body = await res.text();
+        if (type === 'embedding' && body.includes(EMBEDDING_IN_USE_MARKER)) {
+          throw new Error(
+            'adding the test embedding model failed: this deployment already embeds content with the ' +
+              'built-in model, and the backend refuses to switch models while those vectors are stored. ' +
+              'Run on a fresh stack, add the embedding model before anything is indexed, or delete the ' +
+              `embeddings in Labs (Workspace > Labs > Vector store) and run again. Backend answered: ${res.status()} ${body}`
+          );
+        }
+        throw new Error(`adding the test ${type} model failed: ${res.status()} ${body}`);
+      }
       const modelKey = ((await res.json()) as { details?: { modelKey?: string } }).details?.modelKey;
       if (!modelKey) throw new Error(`adding the test ${type} model returned no model key`);
       added.push({ type, modelKey });

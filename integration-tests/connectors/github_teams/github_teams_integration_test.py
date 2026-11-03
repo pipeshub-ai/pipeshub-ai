@@ -18,7 +18,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
 
   order 1  TC-SYNC-001            — full sync baseline + graph self-consistency
   order 2  TC-GH-RG-001           — org/repo/child record-group hierarchy + App edge
-  order 3  TC-GH-USER-001         — AppUsers, USER_APP_RELATION, team→app gate edge
+  order 3  TC-GH-USER-001         — AppUsers, USER_APP_RELATION, no team→app gate edge (private repo)
+  order 3  TC-GH-AUTH-001         — the creator's link to the GitHub account the token belongs to
   order 4  TC-GH-ISSUE-001        — reference issue TICKET properties
   order 5  TC-GH-ISSUE-002        — hierarchy + BLOCKS relation + entity relations
   order 6  TC-GH-ATTACH-001       — issue AND PR body attachments exist after base sync
@@ -30,8 +31,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 12 TC-GH-CODE-HIER-001    — folder PARENT_CHILD chain + folder inventory
   order 13 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
   order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
-  order 15 TC-GH-PERM-002         — public repo ORG grant placement (its own connector)
-  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private refused, public opens
+  order 15 TC-GH-PERM-002         — public repo ORG grant + one team→app gate edge (its own connector)
+  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private refused + unlisted, public opens + listed
   order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
   order 17 TC-GH-CKPT-001         — issue / PR / code checkpoints at their exact values
   order 18 TC-INCR-ISSUE-001      — new issues (one pre-closed → DONE), then edit + not_planned close
@@ -42,6 +43,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 23 TC-GH-FILTEROPT-001    — org/repo picker options, search ranking, paging
   order 24 TC-GH-ONEREPO-001      — enable refused for an instance holding two repositories
   order 25 TC-GH-ONEREPO-002      — one repository saved via filters-sync enables and syncs alone
+  order 26 TC-DEL-ISSUE-001       — an issue deleted on GitHub leaves PipesHub on the next sync
+  order 27 TC-DEL-SCOPE-001       — selecting another repository removes the old one's records and groups
 """
 
 import logging
@@ -64,6 +67,10 @@ from app.config.constants.arangodb import (  # type: ignore[import-not-found]  #
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
+from app.sources.external.github.github_async import (  # type: ignore[import-not-found]  # noqa: E402
+    GitHubAsyncRESTClient,
+)
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_record_by_external_id,
@@ -94,6 +101,7 @@ from connectors.github_teams.github_block_utils import (  # noqa: E402
     ISSUE_BLOCKS_PATH,
     PR_BLOCKS_PATH,
     bootstrap_expected,
+    keep_actual_if_different,
     load_expected,
     normalize_blocks_container,
     parse_connector_blocks_via_processor,
@@ -187,6 +195,34 @@ async def _group_edge_count(
         edge_collection,
     )
     return len(edges or [])
+
+
+async def _team_gate_edges(
+    graph_provider: GraphProviderProtocol, org_id: str, connector_id: str,
+) -> list[Any]:
+    """(Teams all_{org})-[USER_APP_RELATION]->(App): written only for a public repo,
+    whose ORG grant is otherwise unreachable for users with no AppUser."""
+    return await graph_provider.find_edges_between(
+        CollectionNames.TEAMS.value, f"all_{org_id}",
+        CollectionNames.APPS.value, connector_id,
+        CollectionNames.USER_APP_RELATION.value,
+    ) or []
+
+
+def _team_connector_ids(user: SecondUser) -> set[str]:
+    """Team-scoped connector ids this non-admin user is shown in the connector list."""
+    ids: set[str] = set()
+    page = 1
+    while True:
+        resp = user.get(f"/api/v1/connectors/?scope=team&limit=200&page={page}")
+        assert resp.status_code == 200, (
+            f"listing team connectors as {user.email} failed: HTTP {resp.status_code} {resp.text[:300]}"
+        )
+        body = resp.json()
+        ids.update(str(c.get("_key")) for c in body.get("connectors") or [])
+        if not (body.get("pagination") or {}).get("hasNext"):
+            return ids
+        page += 1
 
 
 def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
@@ -462,20 +498,42 @@ class TestGitHubTeamsConnector:
                 source_user_id=bot_id, connector_id=connector_id,
             ) is None, f"bot account {bot_id} was synced as an AppUser"
 
-        # The coarse gate edge: (Teams all_{org})-[USER_APP_RELATION]->(App). It grants
-        # nothing on its own, but the record-access query pre-filters on
-        # `connectorId IN user_apps_ids`, so without it a public repo's ORG grant is
-        # unreachable for anyone whose GitHub account never resolved to an AppUser.
-        gate_edges = await graph_provider.find_edges_between(
-            CollectionNames.TEAMS.value, f"all_{pipeshub_client.org_id}",
-            CollectionNames.APPS.value, connector_id,
-            CollectionNames.USER_APP_RELATION.value,
+        # The fixture connector holds only the private primary repo. Its users reach
+        # the App through their own USER_APP_RELATION above; the org-wide gate edge
+        # exists only for a public repo (asserted in TC-GH-PERM-002) and would list
+        # this connector for every org member.
+        gate_edges = await _team_gate_edges(graph_provider, pipeshub_client.org_id, connector_id)
+        assert not gate_edges, (
+            "private-repo connector carries the (Teams all_{org})→(App) USER_APP_RELATION "
+            "gate edge; ensure_team_app_edge must run only for a public repo"
         )
-        assert gate_edges, (
-            "missing (Teams all_{org})→(App) USER_APP_RELATION gate edge written by "
-            "ensure_team_app_edge at sync start"
+        logger.info("TC-GH-USER-001 passed: %d identities, no gate edge", len(emails))
+
+    @pytest.mark.order(3)
+    async def test_tc_gh_auth_001_authenticated_identity(
+        self,
+        github_connector: dict[str, Any],
+        github_rest: Any,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-AUTH-001: the creator is linked to the GitHub account the token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. It names the email the user sync bound the account
+        to, the one its grants carry, and falls back to the public email of ``GET /user``
+        (empty for most accounts) only when the user sync bound none.
+        """
+        me = await github_rest.get_json("/user")
+        email = me.get("email")
+        if me.get("id") is not None:
+            bound = await graph_provider.get_user_by_source_id(str(me["id"]), github_connector["connector_id"])
+            email = getattr(bound, "email", None) or email
+        await assert_authenticated_identity_link(
+            graph_provider, github_connector["connector_id"],
+            email.strip() if isinstance(email, str) else None,
+            str(me["id"]) if me.get("id") is not None else None,
         )
-        logger.info("TC-GH-USER-001 passed: %d identities, gate edge present", len(emails))
+        logger.info("TC-GH-AUTH-001 passed: GitHub account %s", me.get("id"))
 
 
 # =============================================================================
@@ -678,12 +736,18 @@ class TestGitHubTeamsIssues:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(ISSUE_BLOCKS_PATH, actual)
         expected = load_expected(ISSUE_BLOCKS_PATH)
+        keep_actual_if_different(ISSUE_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed issue blocks do not match the expected snapshot. If the fixture "
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
         )
 
         logger.info("TC-GH-ISSUE-BLOCKS-001 passed: issue #%s blocks validated", number)
+
+
+def _attachment_key(url: str, parent_external_id: str) -> str:
+    """An attachment record's external id: the upload URL and the issue or PR linking it."""
+    return f"{url}#{parent_external_id}"
 
 
 # =============================================================================
@@ -718,24 +782,12 @@ class TestGitHubTeamsAttachments:
             cases.append(("issue", f"{repo_id}/issues/{issue['number']}", url))
 
         pr_pair = state.get("pr_body_attachment")
-        issue_url = cases[0][2] if cases else None
-        if pr_pair and pr_pair[1] != issue_url:
+        if pr_pair:
             pull, url = pr_pair
-            # Singular "pull", asymmetric with the plural "issues" above.
+            # Singular "pull", asymmetric with the plural "issues" above. An upload the
+            # PR shares with the issue is its own record (keyed by URL and parent), so
+            # a shared URL is real coverage too.
             cases.append(("pull request", f"{repo_id}/pull/{pull['number']}", url))
-        elif pr_pair:
-            # An attachment record is keyed by the attachment URL alone, so one upload
-            # referenced from two places collapses into a single record owned by
-            # whichever parent the sync reached first. Asserting the PR against a shared
-            # URL would only re-check the issue's record.
-            logger.warning(
-                "PR ATTACHMENT COVERAGE INACTIVE: the fixture PR reuses the issue's "
-                "attachment URL (%s), and attachment records are keyed by that URL "
-                "alone, so the two collapse into one record owned by the issue. Upload "
-                "a DIFFERENT non-image file into the PR description via the GitHub UI "
-                "(drag-and-drop; there is no attachment upload API) to activate it.",
-                issue_url,
-            )
         else:
             logger.warning(
                 "PR ATTACHMENT COVERAGE INACTIVE: no PR in the primary repo carries a "
@@ -767,6 +819,7 @@ class TestGitHubTeamsAttachments:
         cases = self._body_attachment_cases(github_connector)
 
         for label, parent_external_id, attachment_url in cases:
+            attachment_id = _attachment_key(attachment_url, parent_external_id)
             # Polled, not read once: the fixture's sync wait returns when the record
             # count settles, which a batched sync can satisfy mid-flight. Nothing
             # streams between here and the sync, so a record that turns up during the
@@ -777,16 +830,15 @@ class TestGitHubTeamsAttachments:
                 description=f"{label} parent record",
             )
             await wait_for_record_by_external_id(
-                graph_provider, connector_id, attachment_url,
+                graph_provider, connector_id, attachment_id,
                 timeout=GH_SYNC_WAIT_SEC,
                 description=(
-                    f"the {label} body attachment FileRecord, keyed by the raw "
-                    f"attachment URL verbatim ({attachment_url!r}) and built by the "
-                    "base sync"
+                    f"the {label} body attachment FileRecord, keyed by its URL and its "
+                    f"parent ({attachment_id!r}) and built by the base sync"
                 ),
             )
             attachment = await graph_provider.get_typed_record_by_external_id(
-                connector_id, attachment_url,
+                connector_id, attachment_id,
             )
             assert attachment is not None, (
                 f"the {label} attachment exists as a record but has no typed FileRecord"
@@ -794,7 +846,7 @@ class TestGitHubTeamsAttachments:
 
             assert getattr(attachment.record_type, 'value', attachment.record_type) == RecordType.FILE.value
             assert attachment.is_file is True
-            assert attachment.external_record_id == attachment_url
+            assert attachment.external_record_id == attachment_id
             assert attachment.parent_external_record_id == parent_external_id
             assert attachment.external_record_group_id == parent.external_record_group_id, (
                 f"the {label} attachment must sit in its parent's record group, so it "
@@ -848,8 +900,10 @@ class TestGitHubTeamsAttachments:
 
         cases = self._body_attachment_cases(github_connector)
 
-        for label, _parent_external_id, attachment_url in cases:
-            async def _settled(url: str = attachment_url) -> bool:
+        for label, parent_external_id, attachment_url in cases:
+            attachment_id = _attachment_key(attachment_url, parent_external_id)
+
+            async def _settled(url: str = attachment_id) -> bool:
                 record = await graph_provider.get_record_by_external_id(connector_id, url)
                 return bool(record) and str(
                     getattr(record, "indexing_status", "")
@@ -863,7 +917,7 @@ class TestGitHubTeamsAttachments:
             )
 
             record = await graph_provider.get_record_by_external_id(
-                connector_id, attachment_url,
+                connector_id, attachment_id,
             )
             status = str(record.indexing_status)
             assert status != ProgressStatus.AUTO_INDEX_OFF.value, (
@@ -957,6 +1011,7 @@ class TestGitHubTeamsPullRequests:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(PR_BLOCKS_PATH, actual)
         expected = load_expected(PR_BLOCKS_PATH)
+        keep_actual_if_different(PR_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed PR blocks do not match the expected snapshot. If the fixture PR was "
             f"edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
@@ -976,6 +1031,7 @@ class TestGitHubTeamsCodeFiles:
         self,
         github_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
+        github_rest: GitHubAsyncRESTClient,
     ) -> None:
         """TC-GH-CODE-001: CodeFileRecord and folder FileRecord properties."""
         connector_id = github_connector["connector_id"]
@@ -985,17 +1041,23 @@ class TestGitHubTeamsCodeFiles:
         if not path:
             pytest.skip("No nested code path in the primary repo — seed one (see README.md)")
 
-        sha = next(
-            (e["sha"] for e in tree if e.get("path") == path and e.get("type") == "blob"), None,
+        blob = next(
+            (e for e in tree if e.get("path") == path and e.get("type") == "blob"), None,
         )
-        assert sha, f"no blob sha for {path}"
+        assert blob and blob.get("sha"), f"no blob sha for {path}"
+        # Nothing in this suite pushes to the primary repo, so its head is still the
+        # commit the full sync read the tree at.
+        head = await get_branch_head(
+            github_rest, github_connector["org"], repo["name"], repo["default_branch"],
+        )
 
         external_id = f"/{repo['id']}/blob/{path}"
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, external_id)
         assert actual is not None, f"typed CODE_FILE record missing for {external_id}"
         await assert_graph_entity_with_edges(
             GitHubExpected.code_file_record(
-                repo=repo, path=path, sha=sha, connector_id=connector_id,
+                repo=repo, path=path, sha=blob["sha"], size=blob.get("size"),
+                commit_sha=head, connector_id=connector_id,
             ),
             actual, entity="code_file_record",
             connector_id=connector_id, graph_provider=graph_provider,
@@ -1322,6 +1384,15 @@ class TestGitHubTeamsPermissions:
                 connector_id, str(public["id"]),
             )
 
+            # Without the gate edge the ORG grant above is unreachable for any org
+            # member whose GitHub account never resolved to an AppUser. Exactly one:
+            # the edge is ensured per public repo and must stay idempotent.
+            gate_edges = await _team_gate_edges(graph_provider, pipeshub_client.org_id, connector_id)
+            assert len(gate_edges) == 1, (
+                f"public-repo connector has {len(gate_edges)} (Teams all_{{org}})→(App) "
+                "USER_APP_RELATION gate edge(s); expected exactly 1"
+            )
+
             # The org group legitimately carries the union of every repo's grants, which
             # is why nothing may inherit FROM it — the repo group deliberately does not.
             org_group = await graph_provider.get_record_group_by_external_id(
@@ -1389,7 +1460,18 @@ class TestGitHubTeamsPermissions:
                 second_user, public_record.id, expect_access=True,
                 description=f"{public_path} in public repo {public['full_name']}",
             )
-        logger.info("TC-GH-PERM-003 passed: private refused, public opened")
+
+            # The gate edge is also what lists a team connector for a non-admin, so
+            # the colleague sees the public-repo connector and not the private one.
+            listed = _team_connector_ids(second_user)
+            assert connector_id in listed, (
+                f"public-repo connector {connector_id} is not listed for {second_user.email}"
+            )
+            assert github_connector["connector_id"] not in listed, (
+                f"private-repo connector {github_connector['connector_id']} is listed for "
+                f"{second_user.email}, who is no collaborator on {primary['full_name']}"
+            )
+        logger.info("TC-GH-PERM-003 passed: private refused and unlisted, public opened and listed")
 
 
 # =============================================================================
@@ -1873,8 +1955,10 @@ class TestGitHubTeamsIncremental:
         All five in one commit and one resync: a resync costs minutes, and the deltas
         are independent, so splitting them would quadruple the wall clock for no extra
         coverage. Every path is inside ``it/<run_id>/`` — concurrent runs share this
-        branch and their files land in the same compare, which is harmless precisely
-        because every assertion here is by external id.
+        branch and their files land in the same compare, which is harmless because
+        every assertion here is by external id and every added or deleted body carries
+        the run id: GitHub pairs a delete with any add of the same blob sha as a rename,
+        another run's add included.
         """
         state = github_connector
         org = state["org"]
@@ -1904,15 +1988,18 @@ class TestGitHubTeamsIncremental:
             # Artifacts are reaped by the module teardown (reap_own_artifacts), which
             # clears this run's whole namespace whether or not the test succeeded.
 
+            rename_content = f"rename me {GH_IT_RUN_ID}\n"  # same bytes at both paths → pure rename
+            move_content = f"move me {GH_IT_RUN_ID}\n"
+
             # --- baseline commit + sync ---
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
                     FileChange.upsert(steady, "leave me alone\n"),
                     FileChange.upsert(keep, "v1\n"),
-                    FileChange.upsert(renamed_from, "rename me\n"),
-                    FileChange.upsert(moved_from, "move me\n"),
-                    FileChange.upsert(doomed, "delete me\n"),
+                    FileChange.upsert(renamed_from, rename_content),
+                    FileChange.upsert(moved_from, move_content),
+                    FileChange.upsert(doomed, f"delete me {GH_IT_RUN_ID}\n"),
                 ],
                 message=f"TC-INCR-CODE-001 baseline ({GH_IT_RUN_ID})",
             )
@@ -1929,8 +2016,6 @@ class TestGitHubTeamsIncremental:
                 )
 
             # --- one commit carrying all five deltas ---
-            rename_content = "rename me\n"   # identical → same blob sha → pure rename
-            move_content = "move me\n"
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
@@ -1940,7 +2025,7 @@ class TestGitHubTeamsIncremental:
                     FileChange.delete(moved_from),
                     FileChange.upsert(moved_to, move_content),
                     FileChange.delete(doomed),
-                    FileChange.upsert(fresh, "brand new\n"),
+                    FileChange.upsert(fresh, f"brand new {GH_IT_RUN_ID}\n"),
                 ],
                 message=f"TC-INCR-CODE-001 deltas ({GH_IT_RUN_ID})",
             )
@@ -2413,3 +2498,140 @@ class TestGitHubTeamsFilters:
         logger.info(
             "TC-GH-ONEREPO-002 passed: %s saved, enabled and synced alone", public["full_name"],
         )
+
+
+
+# =============================================================================
+# TestGitHubTeamsRemovals
+# =============================================================================
+
+
+async def _record_live(graph_provider: GraphProviderProtocol, connector_id: str, external_id: str) -> bool:
+    record = await graph_provider.get_record_by_external_id(connector_id, external_id)
+    # With the trash on, a removed record stays, marked deleted, until the purge.
+    return record is not None and not getattr(record, "is_deleted", False)
+
+
+async def _wait_record_gone(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str, description: str,
+) -> None:
+    async def _gone() -> bool:
+        record = await graph_provider.get_record_by_external_id(connector_id, external_id)
+        # With the trash on, a removed record stays, marked deleted, until the purge.
+        return record is None or bool(getattr(record, "is_deleted", False))
+
+    await wait_until_graph_condition(
+        connector_id, check=_gone, timeout=GH_SYNC_WAIT_SEC, description=description,
+    )
+
+
+class TestGitHubTeamsRemovals:
+    """What leaves GitHub or the sync's scope leaves PipesHub. Each case owns its
+    connector over the mutation repo, like the incremental cases."""
+
+    @pytest.mark.order(26)
+    async def test_tc_del_issue_001_deleted_issue_is_removed(
+        self,
+        github_connector: dict[str, Any],
+        github_rest: Any,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-DEL-ISSUE-001: GitHub has no feed of deleted issues; the connector finds
+        them by comparing issue totals and confirming each missing number (410). A
+        kept sibling proves nothing else is removed."""
+        state = github_connector
+        org, repo_name = state["org"], state["mutation_repo_name"]
+        repo_id = state["mutation_repo"]["id"]
+        doomed_num: int | None = None
+        kept_num: int | None = None
+        async with dedicated_connector(
+            pipeshub_client, graph_provider,
+            token=state["token"], name=_connector_name("del-issue"),
+            filters=_mutation_filters(state),
+        ) as connector_id:
+            try:
+                doomed_num = (await create_issue(
+                    github_rest, org, repo_name, title=artifact_title("DeleteMe"), body="Removed by TC-DEL-ISSUE-001.",
+                ))["number"]
+                kept_num = (await create_issue(
+                    github_rest, org, repo_name, title=artifact_title("KeepMe"), body="Kept by TC-DEL-ISSUE-001.",
+                ))["number"]
+                await _resync(pipeshub_client, graph_provider, connector_id)
+                for number in (doomed_num, kept_num):
+                    await wait_for_record_by_external_id(
+                        graph_provider, connector_id, f"{repo_id}/issues/{number}",
+                        description="TC-DEL-ISSUE-001 issue before the delete",
+                    )
+
+                if not await delete_issue(github_rest, org, repo_name, doomed_num):
+                    pytest.skip("the token cannot delete issues (deleteIssue needs repo admin)")
+                deleted, doomed_num = doomed_num, None
+                await _resync(pipeshub_client, graph_provider, connector_id)
+
+                await _wait_record_gone(
+                    graph_provider, connector_id, f"{repo_id}/issues/{deleted}",
+                    "TC-DEL-ISSUE-001 deleted issue to leave PipesHub",
+                )
+                kept = await graph_provider.get_record_by_external_id(connector_id, f"{repo_id}/issues/{kept_num}")
+                assert kept is not None and not getattr(kept, "is_deleted", False), (
+                    "only the deleted issue may be removed"
+                )
+            finally:
+                for number in (doomed_num, kept_num):
+                    if number:
+                        await delete_issue(github_rest, org, repo_name, number)
+        logger.info("TC-DEL-ISSUE-001 passed")
+
+    @pytest.mark.order(27)
+    async def test_tc_del_scope_001_switching_repository_removes_the_old_one(
+        self,
+        github_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+        github_rest: GitHubAsyncRESTClient,
+    ) -> None:
+        """TC-DEL-SCOPE-001: after the admin selects another repository, the old one's
+        records and record groups are gone (before the fix a full sync left them in the
+        graph and the index, unreachable). Read-only on GitHub."""
+        state = github_connector
+        mutation, public = state["mutation_repo"], state["public_repo"]
+        # A named record of the old repository, so the test checks records and not only groups.
+        mutation_paths = sorted(blob_paths(await get_tree(
+            github_rest, state["org"], mutation["name"], mutation["default_branch"],
+        )))
+        if not mutation_paths:
+            pytest.skip("No file in the mutation repo — seed one (see README.md)")
+        old_file = f"/{mutation['id']}/blob/{mutation_paths[0]}"
+        async with dedicated_connector(
+            pipeshub_client, graph_provider,
+            token=state["token"], name=_connector_name("del-scope"),
+            filters=_mutation_filters(state),
+        ) as connector_id:
+            assert await graph_provider.get_record_group_by_external_id(connector_id, str(mutation["id"])) is not None
+            await wait_until_graph_condition(
+                connector_id,
+                check=lambda: _record_live(graph_provider, connector_id, old_file),
+                timeout=GH_SYNC_WAIT_SEC, description=f"TC-DEL-SCOPE-001 {old_file} synced",
+            )
+
+            pipeshub_client.toggle_sync(connector_id, enable=False)
+            pipeshub_client.wait(5)
+            saved = pipeshub_client.request(
+                "PUT", f"/api/v1/connectors/{connector_id}/config/filters-sync",
+                json={"filters": sync_filters(repo_ids=list_filter("in", [public["full_name"]]))},
+            )
+            assert saved.status_code == 200, f"HTTP {saved.status_code}: {saved.text[:300]}"
+            pipeshub_client.toggle_sync(connector_id, enable=True)
+
+            async def _switched() -> bool:
+                old = await graph_provider.get_record_group_by_external_id(connector_id, str(mutation["id"]))
+                new = await graph_provider.get_record_group_by_external_id(connector_id, str(public["id"]))
+                old_record_left = not await _record_live(graph_provider, connector_id, old_file)
+                return old is None and new is not None and old_record_left
+
+            await wait_until_graph_condition(
+                connector_id, check=_switched, timeout=GH_SYNC_WAIT_SEC,
+                description="TC-DEL-SCOPE-001 old repository removed, new one synced",
+            )
+        logger.info("TC-DEL-SCOPE-001 passed")

@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document as MongooseDocument } from 'mongoose';
 import {
+  ArtifactSet,
   Document as IDocument,
   DocumentPermission,
   StorageInfo,
@@ -9,7 +10,9 @@ import {
 } from '../types/storage.service.types';
 
 // Extend the existing Document interface with Mongoose.Document
-export interface DocumentModel extends IDocument, MongooseDocument {}
+// _id comes from MongooseDocument; the plain row type (IDocument) carries it as a string.
+export interface DocumentModel
+  extends Omit<IDocument, '_id'>, MongooseDocument {}
 
 // Create schema for S3 and AzureBlob (without localPath)
 const RemoteStorageInfoSchema = new Schema<StorageInfo>(
@@ -27,7 +30,6 @@ const LocalStorageInfoSchema = new Schema<StorageInfo>(
   },
   { _id: false },
 );
-
 
 // Create schema from CustomMetadata interface
 const CustomMetadataSchema = new Schema<CustomMetadata>(
@@ -56,6 +58,17 @@ const DocumentVersionSchema = new Schema<DocumentVersion>(
   { _id: false },
 );
 
+const ArtifactSetSchema = new Schema<ArtifactSet>(
+  {
+    virtualRecordId: { type: String, required: true },
+    rev: { type: String, required: true },
+    root: { type: String, required: true },
+    // Set when a delete claims the revision; presign refuses it from then on.
+    retiringAt: { type: Number },
+  },
+  { _id: false },
+);
+
 // Main Document Schema
 const DocumentSchema = new Schema(
   {
@@ -75,6 +88,7 @@ const DocumentSchema = new Schema(
     documentPath: {
       type: String,
       trim: true,
+      index: true,
     },
     isVersionedFile: {
       type: Boolean,
@@ -163,6 +177,33 @@ const DocumentSchema = new Schema(
     awaitingDirectUpload: {
       type: Boolean,
     },
+    artifactSet: {
+      type: ArtifactSetSchema,
+    },
+    // Server clock (ms) of the retire mark: the document was replaced by a
+    // newer stored write and must take no more in-place buffer writes.
+    // Downloads and reads are unaffected.
+    retiredAt: {
+      type: Number,
+      default: null,
+    },
+    // Write state: a counter that only grows and the writers that may be mid-write. Hidden from every
+    // query (`select: false`, lean or not) so no reader returns or re-saves them; nothing writes them yet.
+    writeSeq: {
+      type: Number,
+      select: false,
+    },
+    writers: {
+      type: [
+        {
+          t: { type: String },
+          until: { type: Number },
+          _id: false,
+        },
+      ],
+      select: false,
+      default: undefined,
+    },
   },
   {
     timestamps: {
@@ -172,6 +213,8 @@ const DocumentSchema = new Schema(
 );
 
 DocumentSchema.index({ orgId: 1, _id: 1 });
+// Finds a virtual record's record_/metadata_ documents wherever they are filed.
+DocumentSchema.index({ orgId: 1, documentName: 1 });
 // Lets a retried create find what its first attempt made, and settles two
 // attempts racing each other. Keys are per principal (initiatorUserId, null for
 // service tokens). Partial, so documents without a key are exempt.
@@ -182,6 +225,21 @@ DocumentSchema.index(
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
   },
 );
+// One document per content revision of a virtual record, so two presigns of
+// the same revision racing each other settle on one. Its prefix also serves
+// listing and purging a virtual record's revisions.
+DocumentSchema.index(
+  { orgId: 1, 'artifactSet.virtualRecordId': 1, 'artifactSet.rev': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      'artifactSet.virtualRecordId': { $exists: true },
+    },
+  },
+);
 
 // Create and export the model
-export const DocumentModel = mongoose.model<DocumentModel>('Document', DocumentSchema);
+export const DocumentModel = mongoose.model<DocumentModel>(
+  'Document',
+  DocumentSchema,
+);

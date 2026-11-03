@@ -1,4 +1,5 @@
-"""Slack MCP server template — community server, run over STDIO with a bot token."""
+"""Slack community MCP server template — run over STDIO with a bot token. Replaced by Slack's
+own hosted server (`slack_official`): the package is archived and npm marks it unsupported."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
 from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
 
@@ -6,14 +7,15 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
 @mcp_server(
     MCPServerTemplate(
         type_id="slack",
-        display_name="Slack",
-        description="Read and post messages, list channels and users in a Slack workspace.",
+        display_name="Slack (community)",
+        description="The archived community Slack server, run with a bot token. No longer maintained.",
         icon="/icons/connectors/slack.svg",
         transport=MCPTransport.STDIO,
         default_auth_mode=MCPAuthMode.API_TOKEN,
         supported_auth_modes=[MCPAuthMode.API_TOKEN],
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-slack"],
+        # The final release: the package is archived upstream and marked unsupported on npm.
+        args=["-y", "@modelcontextprotocol/server-slack@2025.4.25"],
         required_env=["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
         optional_env=["SLACK_CHANNEL_IDS"],
         documentation_url="https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",
@@ -26,6 +28,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["chat", "collaboration"],
+        replaced_by="slack_official",
     )
 )
 class SlackMCPServer:

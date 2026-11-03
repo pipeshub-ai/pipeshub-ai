@@ -102,8 +102,14 @@ export function downloadPreviewFile(input: {
   name: string;
   url?: string;
   blob?: Blob;
+  /** Saves a different file than the loaded preview bytes (for example the original PPTX when the preview is a PDF conversion). */
+  onDownload?: () => void;
 }): void {
-  const { name, url, blob } = input;
+  const { name, url, blob, onDownload } = input;
+  if (onDownload) {
+    onDownload();
+    return;
+  }
   const href = blob ? URL.createObjectURL(blob) : url;
   if (!href) return;
 

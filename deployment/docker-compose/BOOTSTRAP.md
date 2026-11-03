@@ -33,8 +33,13 @@ PAT scopes the script mints (valid on the stock `MCP_SCOPES` list):
 conversation:chat
 semantic:write
 kb:read
+kb:write
+kb:upload
 user:read
 connector:read
+connector:write
+connector:sync
+code:read
 ```
 
 `semantic:write` is what *runs* a search. `config:read` is omitted on purpose (`llmModels` on sources comes back empty without it).

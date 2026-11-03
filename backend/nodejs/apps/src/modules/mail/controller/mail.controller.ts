@@ -1,36 +1,35 @@
 import { NextFunction, Request, Response } from 'express';
 import {
+  BadGatewayError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
   serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
-import { EmailTemplateType, MailBody, SmtpConfig } from '../middlewares/types';
-import { MailModel } from '../schema/mailInfo.schema';
-import {
-  accountCreation,
-  appUserInvite,
-  domainLimitReached,
-  loginWithOTPRequest,
-  orgEmailVerification,
-  resetEmail,
-  resetPassword,
-  suspiciousLoginAttempt,
-  joinRequestNotify,
-  joinRequestDecision,
-} from '../utils/emailTemplates';
-import nodemailer from 'nodemailer';
+import { MailBody, SmtpConfig } from '../middlewares/types';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { getEmailContent } from '../utils/email-content';
+import {
+  MailSenderService,
+  SMTP_SYNC_SEND_DEADLINE_MS,
+  SmtpSettingsUnreadableError,
+} from '../services/mail.sender.service';
+import { SMTP_PROBLEM_MESSAGES } from '../types/mail-event.types';
+
 @injectable()
 export class MailController {
   constructor(
-    @inject('AppConfig') private config: AppConfig,
+    // Kept for the constructor's shape; SMTP comes from the sender, which reads the stored copy.
+    @inject('AppConfig') _config: AppConfig,
     @inject('Logger') private logger: Logger,
+    @inject(MailSenderService) private readonly sender: MailSenderService,
   ) {}
+
   async sendMail(
     req: Request,
     res: Response,
@@ -39,15 +38,27 @@ export class MailController {
     let result;
     try {
       const body = req.body;
-      if (!this.config.smtp) {
+      let smtp: SmtpConfig | null;
+      try {
+        smtp = await this.sender.getSmtpConfig();
+      } catch (error) {
+        // The settings may well exist; the caller should retry, not be told to set them up.
+        throw error instanceof SmtpSettingsUnreadableError
+          ? new ServiceUnavailableError(error.message)
+          : error;
+      }
+      if (!smtp) {
         throw new NotFoundError('Smtp Configuration not set');
       }
-      result = await this.emailSender(body, this.config.smtp);
+      result = await this.emailSender(body, smtp);
       if (!result.status) {
         // `data` is the mail library's own complaint, packed in by emailSender.
         this.logger.error('Sending the email failed', { reason: result.data });
+        // A bad SMTP setup is the admin's to fix; saying so beats "something went wrong".
         throw markClientSafe(
-          new InternalServerError(serverFailureMessage('send that email')),
+          result.problem
+            ? new BadGatewayError(SMTP_PROBLEM_MESSAGES[result.problem])
+            : new InternalServerError(serverFailureMessage('send that email')),
         );
       }
       res.status(200).json({
@@ -62,106 +73,24 @@ export class MailController {
     emailTemplateType: string,
     templateData: Record<string, any>,
   ) {
-    let emailContent;
     this.logger.debug('emailTemplateType', emailTemplateType);
-    switch (emailTemplateType) {
-      case EmailTemplateType.LoginWithOtp:
-        emailContent = loginWithOTPRequest(templateData);
-        return emailContent;
-
-      case EmailTemplateType.AccountCreation:
-        emailContent = accountCreation(templateData);
-        return emailContent;
-
-      case EmailTemplateType.SuspiciousLoginAttempt:
-        emailContent = suspiciousLoginAttempt(templateData);
-        return emailContent;
-
-      case EmailTemplateType.ResetPassword:
-        emailContent = resetPassword(templateData);
-        return emailContent;
-      case EmailTemplateType.ResetEmail:
-        emailContent = resetEmail(templateData);
-        return emailContent;
-
-      case EmailTemplateType.AppuserInvite:
-        emailContent = appUserInvite(templateData);
-        return emailContent;
-
-      case EmailTemplateType.OrgEmailVerification:
-        emailContent = orgEmailVerification(templateData);
-        return emailContent;
-
-      case EmailTemplateType.DomainLimitReached:
-        emailContent = domainLimitReached(templateData);
-        return emailContent;
-
-      case EmailTemplateType.JoinRequestNotify:
-        emailContent = joinRequestNotify(templateData);
-        return emailContent;
-
-      case EmailTemplateType.JoinRequestDecision:
-        emailContent = joinRequestDecision(templateData);
-        return emailContent;
-
-      default:
-        throw 'Unknown Template';
-    }
+    return getEmailContent(emailTemplateType, templateData);
   }
 
+  /** Kept so the direct HTTP route keeps its existing contract. */
   async emailSender(bodyData: MailBody, smtpConfig: SmtpConfig) {
-    try {
-      const fromEmailDomain = smtpConfig.fromEmail;
-      const attachments = bodyData.attachments || [];
-      const emailContent = this.getEmailContent(
-        bodyData.emailTemplateType!,
-        bodyData.templateData!,
-      );
-      const transporter = nodemailer.createTransport({
-        host: smtpConfig.host,
-        port: smtpConfig.port || 587,
-        secure: false,
-        ...(smtpConfig.password
-          ? {
-            auth: {
-              user: smtpConfig.username,
-              pass: smtpConfig.password, // Included only if password exists
-            },
-          }
-          : {
-            auth: {
-              user: smtpConfig.username, // Include only the username
-            },
-          }),
-      });
-
-      await transporter.sendMail({
-        from: fromEmailDomain,
-        to: bodyData.sendEmailTo,
-        cc: bodyData.sendCcTo,
-        subject: bodyData.subject,
-        html: emailContent,
-        attachments: attachments,
-      });
-
-      const mailEntry = new MailModel({
-        orgId: bodyData.orgId,
-        subject: bodyData.subject,
-        from: bodyData.fromEmailDomain,
-        to: bodyData.sendEmailTo,
-        cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
-        emailTemplateType: bodyData.emailTemplateType,
-      });
-
-      await mailEntry.save();
-
-      return { status: true, data: 'Email sent' };
-    } catch (error) {
-      this.logger.error('Mail send error', { error });
-      return {
-        status: false,
-        data: error instanceof Error ? error.message : (typeof error === 'string' ? error : 'Failed to send email'),
-      };
-    }
+    // Must fail before the HTTP caller waiting on this route times out.
+    const result = await this.sender.send(
+      bodyData,
+      smtpConfig,
+      SMTP_SYNC_SEND_DEADLINE_MS,
+    );
+    return result.status === 'sent'
+      ? { status: true, data: 'Email sent' }
+      : {
+          status: false,
+          data: result.error,
+          problem: 'problem' in result ? result.problem : undefined,
+        };
   }
 }

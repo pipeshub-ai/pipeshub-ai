@@ -10,17 +10,28 @@ import asyncio
 import logging
 from typing import Any
 
-from app.config.constants.arangodb import RecordRelations
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, RecordRelations
+from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
-    FOLDER_MIME_TYPES,
+    MAX_PAGE_WALK,
     KnowledgeHubService,
 )
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import resolve_weburl
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 from .models import NavigationView, NodeRef, NodeRow, PaginationInfo
 
 logger = logging.getLogger(__name__)
+
+
+class ListingFailedError(RuntimeError):
+    """The listing under a node did not complete. Rendered as an empty listing, it read as "(no children)"."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 # All RecordRelations that represent containment (excluded from "Related" section)
 _CONTAINMENT_RELATIONS = frozenset({
@@ -93,6 +104,7 @@ def _node_item_to_row(item: Any) -> NodeRow:
         indexing_status=status,
         source_created_at=created_at,
         source_modified_at=updated_at,
+        upload_dated=getattr(item, "origin", None) == OriginType.COLLECTION.value and node_type == "record",
     )
 
 
@@ -154,15 +166,18 @@ class GraphNavigator:
         user_key: str,
         org_id: str,
         frontend_url: str | None = None,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._graph = graph_provider
         self._user_id = user_id
         self._user_key = user_key
         self._org_id = org_id
         self._frontend_url = frontend_url
+        self._excluded_app_ids = excluded_app_ids
         self._service = KnowledgeHubService(
             logger=logger,
             graph_provider=graph_provider,
+            excluded_app_ids=excluded_app_ids,
         )
 
     async def _context_block(self, node_id: str) -> str | None:
@@ -238,8 +253,9 @@ class GraphNavigator:
         """Build a NavigationView for the given node.
 
         node_id=None → root (list of connected apps).
-        depth > 1 (record/folder parents) fetches descendants up to
-        `depth` levels via get_nodes(flattened=True, depth=...).
+        depth == 1 lists the direct children (browse mode, cursor paged);
+        depth > 1 fetches descendants up to `depth` levels via
+        get_nodes(flattened=True, depth=...).
 
         `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
         "lte": epoch_ms|None}` filters on the child's source timestamps.
@@ -247,6 +263,14 @@ class GraphNavigator:
         limit = min(max(_MIN_LIMIT, limit), _MAX_LIMIT)
         page = max(1, page)
         depth = min(max(1, depth), _MAX_DEPTH)
+        if page > MAX_PAGE_WALK:
+            # The listing's own refusal names a cursor, which navigate neither takes nor returns.
+            raise ListingFailedError(
+                f"Page {page} is past the last page a listing reaches ({MAX_PAGE_WALK}). A larger limit "
+                f"(up to {_MAX_LIMIT}) reaches the same children in fewer pages, and a created or modified "
+                "date range narrows them.",
+                400,
+            )
 
         current: NodeRef | None = None
         breadcrumbs: list[NodeRef] = []
@@ -287,6 +311,12 @@ class GraphNavigator:
                         indexing_status=None,
                         connector=None,
                     )
+            elif await self._service._belongs_to(node_id, node_info["nodeType"], self._excluded_app_ids):
+                # Switched-off demo data: as if the node were not there.
+                return NavigationView(
+                    current=None, breadcrumbs=[], rows=[], related=[], pagination=None,
+                    web_url=None, indexing_status=None, connector=None,
+                )
             else:
                 parent_type = node_info["nodeType"]
                 current = _node_ref(
@@ -299,29 +329,13 @@ class GraphNavigator:
                 indexing_status = node_info.get("indexingStatus")
                 connector = node_info.get("connector")
 
-            # Breadcrumbs and record metadata only on page 1 to save tokens.
-            # Gathered so the extra record read costs no extra latency.
-            if page == 1:
-                crumbs = self._graph.get_knowledge_hub_breadcrumbs(node_id=node_id)
-                if parent_type in ("record", "folder"):
-                    raw_crumbs, context_block = await asyncio.gather(
-                        crumbs, self._context_block(node_id)
-                    )
-                else:
-                    raw_crumbs = await crumbs
-                breadcrumbs = [
-                    _node_ref(
-                        bc.get("id", ""),
-                        bc.get("name", ""),
-                        bc.get("nodeType", ""),
-                        bc.get("subType"),
-                    )
-                    for bc in (raw_crumbs or [])
-                    if bc.get("id") and bc.get("id") != node_id
-                ]
+        # Breadcrumbs and record metadata only on page 1 to save tokens. The
+        # breadcrumbs are the placement trail the listing computes for this
+        # user: the raw hierarchy would name ancestors they cannot open.
+        crumbs_wanted = page == 1 and node_id is not None
 
         # ── Fetch children via unified get_nodes() ────────────────────
-        response = await self._service.get_nodes(
+        nodes = self._service.get_nodes(
             user_id=self._user_id,
             org_id=self._org_id,
             parent_id=node_id,
@@ -333,11 +347,25 @@ class GraphNavigator:
             record_group_ids=record_group_ids,
             created_at=created_at,
             updated_at=updated_at,
-            flattened=True,
+            flattened=depth > 1,
             depth=depth,
             include_typed_records=True,
             node_types=node_types,
+            include=["breadcrumbs"] if crumbs_wanted else None,
         )
+        # Gathered so the extra record read costs no extra latency.
+        if crumbs_wanted and parent_type in ("record", "folder"):
+            response, context_block = await asyncio.gather(nodes, self._context_block(node_id))
+        else:
+            response = await nodes
+        if not response.success:
+            raise ListingFailedError(response.error or "The listing did not complete.", response.errorCode)
+        if crumbs_wanted:
+            breadcrumbs = [
+                _node_ref(crumb.id, crumb.name, crumb.nodeType, crumb.subType)
+                for crumb in (response.breadcrumbs or [])
+                if crumb.id and crumb.id != node_id
+            ]
 
         rows: list[NodeRow] = [_node_item_to_row(item) for item in (response.items or [])]
 
@@ -381,8 +409,12 @@ class GraphNavigator:
                     limit=_MAX_RELATED,
                 )
                 related = [_linked_dict_to_row(d) for d in linked if d.get("id")]
+            except PermissionVerificationUnavailableError:
+                # Fail closed like the listing itself: an unanswerable access
+                # check must not look like "no linked records".
+                raise
             except Exception as e:
-                logger.warning("get_linked_records failed for %s: %s", node_id, e)
+                logger.error("get_linked_records failed for %s: %s", node_id, e, exc_info=True)
 
         return NavigationView(
             current=current,

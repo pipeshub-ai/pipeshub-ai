@@ -1,13 +1,16 @@
 import { config } from "dotenv";
-config(); // Load environment variables first
+import { applyStoreUmbrella } from "../../../libs/config/storeUmbrella";
+config({ quiet: true }); // Load environment variables first
+applyStoreUmbrella(); // PIPESHUB_STORE=postgres fills in the per-store settings
 
 import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
+import { initDocStore } from '../../../libs/repositories/doc-store';
+import { usesMongo } from '../../../libs/repositories/store-select';
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
-// @tryfabric/mack uses the same marked instance internally.
 marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";
@@ -34,10 +37,15 @@ import {
   toolStatusLabel,
 } from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
-import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/citations";
+import {
+  rewriteCitationsForSlack,
+  stripFragmentDirective,
+  stripTinyRefCitationLinks,
+} from "./utils/citations";
 
 import {
   type SlackBotConfig,
+  getCurrentMatchedSlackBot,
 } from "./botRegistry";
 
 import {
@@ -47,6 +55,8 @@ import {
   type SlackMessagePayload,
   type TypedSlackClient,
   type AttachmentRef,
+  type SlackAttachmentUploadResult,
+  type SlackFile,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -64,9 +74,12 @@ import {
   buildFinalSlackChunks,
   splitSlackBlocksByLimit,
   classifySlackFiles,
-  extractSupportedAttachments,
+  resolveSkippedAttachmentsAfterUpload,
   uploadSlackAttachments,
-  postUnsupportedAttachmentsNotice,
+  postSkippedAttachmentsNotice,
+  buildSkippedAttachmentsNotice,
+  handleIncomingAttachments,
+  messageHasQuestionText,
   resolveMentionsInText,
   resolveSlackErrorMessage,
   resolveSlackErrorMessageAsync,
@@ -78,9 +91,15 @@ import {
   slackCallerDisplayName,
   isIgnoredSlackMessage,
   isThreadFollowUpMessage,
-  fetchPriorThreadMessages,
+  fetchPriorThread,
+  collectThreadFilesSinceLastBotReply,
+  resolveOwnBotIdentity,
+  type PriorThreadMessages,
+  MAX_ATTACHMENTS_PER_QUESTION,
   resolveThreadUserLabels,
   inferThreadMessageSpeaker,
+  threadHasOtherParticipants,
+  formatUntrustedThreadContextQuery,
   removeContinuousDuplicateMarkdownLinks,
   addSpaceBetweenMarkdownLinks,
   resolveSlackArtifactLink,
@@ -106,6 +125,8 @@ async function buildThreadContextualQuery(
   priorMessages: SlackMessagePayload[],
   userLabelsById: Map<string, string>,
   typedClient: TypedSlackClient,
+  currentUserId?: string,
+  botUserId?: string,
 ): Promise<string> {
   const contextLines = await Promise.all(
     priorMessages.map(async (message) => {
@@ -117,7 +138,11 @@ async function buildThreadContextualQuery(
       if (!normalizedText) {
         return null;
       }
-      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      const speaker = inferThreadMessageSpeaker(
+        message,
+        userLabelsById,
+        botUserId,
+      );
       return `${speaker}: ${normalizedText}`;
     })
   ).then(lines => lines.filter((line): line is string => Boolean(line)));
@@ -126,25 +151,107 @@ async function buildThreadContextualQuery(
     return query;
   }
 
-  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+  // Alone with the bot, the thread is the user's own words: keep the plain format.
+  if (!threadHasOtherParticipants(priorMessages, currentUserId, botUserId)) {
+    return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+  }
+  return formatUntrustedThreadContextQuery(query, contextLines);
+}
+
+async function fetchThreadContext(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+): Promise<PriorThreadMessages> {
+  if (!isThreadFollowUpMessage(typedMessage)) {
+    return { messages: [], complete: true };
+  }
+  try {
+    return await fetchPriorThread(typedClient, typedMessage);
+  } catch (error) {
+    console.error('Failed to fetch Slack thread context:', error);
+    return { messages: [], complete: false };
+  }
+}
+
+/** Thread files for this question; none unless the whole thread was read. Never throws. */
+async function collectThreadFiles(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  thread: PriorThreadMessages,
+  botCacheKey: string,
+  knownBotUserId: string | undefined,
+): Promise<SlackFile[]> {
+  if (!thread.complete) {
+    return [];
+  }
+  const prior = thread.messages.filter((m) => m.ts !== typedMessage.ts);
+  const hasFiles = prior.some(
+    (m) => Array.isArray(m.files) && m.files.length > 0,
+  );
+  if (!hasFiles) {
+    return [];
+  }
+  const own = await resolveOwnBotIdentity(
+    typedClient,
+    botCacheKey,
+    knownBotUserId,
+  );
+  return collectThreadFilesSinceLastBotReply(prior, own.userId, own.botId);
 }
 
 async function buildQueryWithThreadContext(
   typedClient: TypedSlackClient,
-  typedMessage: SlackMessagePayload,
+  priorMessages: SlackMessagePayload[],
   query: string,
+  currentUserId?: string,
+  botUserId?: string,
 ): Promise<string> {
-  if (!isThreadFollowUpMessage(typedMessage)) {
+  if (priorMessages.length === 0) {
     return query;
   }
 
   try {
-    const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
     const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
-    return await buildThreadContextualQuery(query, priorMessages, userLabelsById, typedClient);
+    return await buildThreadContextualQuery(
+      query,
+      priorMessages,
+      userLabelsById,
+      typedClient,
+      currentUserId,
+      botUserId,
+    );
   } catch (error) {
     console.error("Failed to fetch Slack thread context:", error);
     return query;
+  }
+}
+
+/** Upload thread files for this question. Never fails the reply: on error it logs and sends none. */
+async function uploadThreadFiles(
+  threadFiles: SlackFile[],
+  slots: number,
+  botToken: string | undefined,
+  accessToken: string,
+  agentId: string | null | undefined,
+): Promise<AttachmentRef[]> {
+  const files = threadFiles.slice(0, Math.max(slots, 0));
+  if (files.length === 0 || botToken === undefined || botToken === '') {
+    return [];
+  }
+  try {
+    const upload = await uploadSlackAttachments(
+      files,
+      botToken,
+      accessToken,
+      agentId,
+    );
+    return upload.attachments;
+  } catch (error) {
+    console.error(
+      'Error uploading Slack thread files:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return [];
   }
 }
 
@@ -188,8 +295,8 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     seenRecordIds.add(recordId);
 
     const recordName = citation.citationData.metadata.recordName || "Source";
-    // Strip text fragment directive (#:~:text=...) but preserve other fragments
-    const recordUrl = webUrl.replace(/#:~:text=[^#]*/, '');
+    // Slack does not implement text fragments, and sources are deduped per record
+    const recordUrl = stripFragmentDirective(webUrl);
     uniqueRecords.push({ name: recordName, url: recordUrl });
   }
 
@@ -254,8 +361,7 @@ receiver.router.use(json());
 receiver.router.use(urlencoded());
 
 // Routes
-receiver.router.get("/", (req: Request, res: Response) => {
-  console.log(req);
+receiver.router.get("/", (_req: Request, res: Response) => {
   res.send("Running");
 });
 
@@ -276,6 +382,7 @@ async function processSlackMessage(
   typedContext: TypedSlackContext,
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
+  threadFiles: SlackFile[] = [],
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
@@ -308,14 +415,19 @@ async function processSlackMessage(
   // instead of falling back to the server clock.
   const userTimezone = lookupResult.user.tz || undefined;
   const configService = ConfigService.getInstance();
-  const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
-  console.log("currentAgentId", currentAgentId);
   const currentBotId = resolvedSlackBot?.botId;
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
   }
+
+  const accessToken = slackJwtGenerator(
+    email,
+    await configService.getScopedJwtSecret(),
+    undefined,
+    { configId: currentBotId },
+  );
 
   const conversation = await getFromDatabase(
     threadId,
@@ -486,14 +598,28 @@ async function processSlackMessage(
     // Handle file attachments for agents
     let attachmentRefs: AttachmentRef[] = [];
     if (typedMessage.files && typedMessage.files.length > 0) {
-      const supportedFiles = extractSupportedAttachments(typedMessage.files);
+      const classification = classifySlackFiles(typedMessage.files);
+      const supportedFiles = classification.supported;
       if (supportedFiles.length > 0) {
         try {
+          let upload: SlackAttachmentUploadResult = { attachments: [], unreadable: [], oversized: [] };
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
-            attachmentRefs = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            upload = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            attachmentRefs = upload.attachments;
             console.log(`Uploaded ${attachmentRefs.length} attachment(s) for chat`);
           }
+          const { skipped, followUp, hasSkipped } = resolveSkippedAttachmentsAfterUpload(
+            classification,
+            upload,
+            messageHasQuestionText(typedMessage.text, typedContext.botUserId),
+          );
+          if (hasSkipped && followUp === "none") {
+            // Attachment-only and nothing usable is left: the notice is the reply.
+            await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, followUp));
+            return;
+          }
+          await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, followUp);
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
           const errMsg = errData
@@ -504,6 +630,17 @@ async function processSlackMessage(
           return;
         }
       }
+    }
+
+    if (threadFiles.length > 0) {
+      const threadRefs = await uploadThreadFiles(
+        threadFiles,
+        MAX_ATTACHMENTS_PER_QUESTION - attachmentRefs.length,
+        resolvedSlackBot.botToken,
+        accessToken,
+        currentAgentId,
+      );
+      attachmentRefs = attachmentRefs.concat(threadRefs);
     }
 
     const url = buildChatStreamUrl(conversation, currentAgentId);
@@ -838,6 +975,17 @@ async function processSlackMessage(
         });
     };
 
+    const resetAnswerStream = (): void => {
+      clearAnswerFlushTimer();
+      pendingAppendText = '';
+      streamedAnswerLength = 0;
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => deleteStreamMessages())
+        .catch((error: unknown) => {
+          console.error('Error clearing Slack answer preamble:', error);
+        });
+    };
+
     const aguiHandler = createSlackAGUIEventHandler({
       onStatus: (message) => {
         activityBuilder.setStatus(message);
@@ -852,6 +1000,26 @@ async function processSlackMessage(
           activityBuilder.finishReasoning();
           scheduleActivityUpdate();
         }
+      },
+      onModelCallDiscarded: () => {
+        activityBuilder.dropTrailingReasoning();
+        scheduleActivityUpdate();
+        // A table in the failed attempt paused streaming; its retry may have none.
+        if (tablePauseHintSent) {
+          resetAnswerStream();
+          // With no stream open yet, the hint replaced the activity message.
+          queuedStreamAppend = queuedStreamAppend
+            .then(async () => updateActivityMessage(activityBuilder.format()))
+            .catch((error: unknown) => {
+              console.error(
+                'Error restoring Slack activity after a discard:',
+                error,
+              );
+            });
+        }
+        tableStreamingDisabled = false;
+        streamTableProbeText = '';
+        tablePauseHintSent = false;
       },
       onNarration: (text) => {
         activityBuilder.appendNarration(text);
@@ -881,16 +1049,7 @@ async function processSlackMessage(
         scheduleActivityUpdate();
       },
       onAnswerAccumulated: handleAnswerAccumulated,
-      onClearAnswerPreamble: () => {
-        clearAnswerFlushTimer();
-        pendingAppendText = "";
-        streamedAnswerLength = 0;
-        queuedStreamAppend = queuedStreamAppend
-          .then(async () => deleteStreamMessages())
-          .catch((error) => {
-            console.error("Error clearing Slack answer preamble:", error);
-          });
-      },
+      onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
@@ -1397,28 +1556,17 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
-  const hasAgent = Boolean(resolvedSlackBot?.agentId);
-  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
-
-  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postUnsupportedAttachmentsNotice(
-      typedClient,
-      typedMessage,
-      unsupported,
-      supported.length > 0,
-      oversized,
-    );
-    if (supported.length === 0) return;
-  }
-
-  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
-  if (filesPresent && !hasAgent && supported.length === 0) return;
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "See below attached file(s).";
+    if (hasSupported) query = "See below attached file(s).";
     else query = "Hi";
   }
 
@@ -1445,36 +1593,35 @@ app.event("app_mention", async ({ event, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
-  const hasAgent = Boolean(resolvedSlackBot?.agentId);
-  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
-
-  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postUnsupportedAttachmentsNotice(
-      typedClient,
-      typedMessage,
-      unsupported,
-      supported.length > 0,
-      oversized,
-    );
-    if (supported.length === 0) return;
-  }
-
-  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
-  if (filesPresent && !hasAgent && supported.length === 0) return;
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "Attached file(s).";
+    if (hasSupported) query = "Attached file(s).";
     else query = "Hi";
   }
 
   try {
+    const thread = await fetchThreadContext(typedClient, typedMessage);
     const contextualQuery = await buildQueryWithThreadContext(
       typedClient,
-      typedMessage,
+      thread.messages,
       query,
+      typedMessage.user,
+      typedContext.botUserId,
+    );
+    const threadFiles = await collectThreadFiles(
+      typedClient,
+      typedMessage,
+      thread,
+      resolvedSlackBot?.botId ?? 'default',
+      typedContext.botUserId,
     );
     await processSlackMessage(
       typedMessage,
@@ -1482,6 +1629,7 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedContext,
       contextualQuery,
       resolvedSlackBot,
+      threadFiles,
     );
   } catch (error) {
     console.error("Error handling app mention:", error);
@@ -1496,10 +1644,14 @@ app.event("app_mention", async ({ event, client, context }) => {
   await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
   await getPreparedRedisProvider();
 
-  await connect();
+  // No MongoDB connection (or legacy-index cleanup) when the document store is PostgreSQL.
+  if (usesMongo()) await connect();
+  // Same document-store wiring as the API: a no-op on Mongo, the PostgreSQL runtime under DOC_STORE=postgres.
+  // the bot runs no dispatcher or sweeper, so it needs no jobs login
+  await initDocStore(process.env.APP_VERSION ?? 'dev', { jobs: false });
 
   // Drop legacy threadId + botId index if it exists
-  await dropLegacyThreadBotIndex();
+  if (usesMongo()) await dropLegacyThreadBotIndex();
 
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");

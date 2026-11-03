@@ -63,7 +63,10 @@ export function resolveInsideRoot(rootPath: string, relPath: string): string | n
   } catch {
     root = rawRoot;
   }
-  const candidate = path.resolve(root, String(relPath || ''));
+  let candidate = path.resolve(root, String(relPath || ''));
+  if (!fs.existsSync(candidate)) {
+    candidate = resolveNormalizationVariant(root, String(relPath || '')) ?? candidate;
+  }
   let resolved: string;
   try {
     resolved = fs.realpathSync.native(candidate);
@@ -75,6 +78,45 @@ export function resolveInsideRoot(rootPath: string, relPath: string): string | n
     return null;
   }
   return resolved;
+}
+
+/**
+ * Whether a read error means the file is gone (stop asking) or only that it
+ * cannot be read right now: no permission yet, locked by another program
+ * (EBUSY on Windows), too many open files. The indexer gives up on the first
+ * kind and retries the second, so guessing "gone" loses the file for good.
+ */
+function errorIsTransient(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code !== 'ENOENT' && code !== 'ENOTDIR' && code !== 'ELOOP';
+}
+
+/**
+ * The path as it exists on disk. The server sends paths in NFC (that is how
+ * they are keyed), but a filesystem that keeps names as written (ext4, NTFS)
+ * may hold the NFD form a Mac produced; matching each segment by its NFC form
+ * finds that file instead of answering "not found".
+ */
+function resolveNormalizationVariant(root: string, relPath: string): string | null {
+  let current = root;
+  for (const segment of String(relPath || '').split(/[\\/]+/).filter(Boolean)) {
+    const direct = path.join(current, segment);
+    if (fs.existsSync(direct)) {
+      current = direct;
+      continue;
+    }
+    let names: string[];
+    try {
+      names = fs.readdirSync(current);
+    } catch {
+      return null;
+    }
+    const wanted = segment.normalize('NFC');
+    const match = names.find((name) => name.normalize('NFC') === wanted);
+    if (!match) return null;
+    current = path.join(current, match);
+  }
+  return current;
 }
 
 function failure(
@@ -132,13 +174,13 @@ export class ContentStreamer {
     try {
       stats = await fsp.stat(absPath);
     } catch (error) {
-      // The file is gone or unreadable — terminal for this record, so the
-      // indexing consumer stops retrying instead of burning its budget.
+      // A file that is gone is terminal for this record, so the indexing
+      // consumer stops retrying; one that cannot be read right now is not.
       return failure(
         requestId,
         'FILE_UNREADABLE',
         error instanceof Error ? error.message : String(error),
-        false,
+        errorIsTransient(error),
       );
     }
     if (!stats.isFile()) {
@@ -199,6 +241,12 @@ export class ContentStreamer {
       if (!openedStat.isFile() || openedStat.ino !== expectedStat.ino) {
         throw new Error(`${absPath} changed identity between validation and open`);
       }
+      if (expectedSize === 0) {
+        // The loop below only emits for bytes read, so an empty file would
+        // never send the final frame the server waits for.
+        emitChunk(0, Buffer.alloc(0), true);
+        return;
+      }
       const buffer = Buffer.allocUnsafe(chunkBytes);
       for (;;) {
         const { bytesRead } = await handle.read(buffer, 0, chunkBytes, sent);
@@ -221,7 +269,7 @@ export class ContentStreamer {
       abort({
         code: 'READ_FAILED',
         message: error instanceof Error ? error.message : String(error),
-        retryable: false,
+        retryable: errorIsTransient(error),
       });
     } finally {
       if (handle) await handle.close().catch(() => { /* ignore */ });

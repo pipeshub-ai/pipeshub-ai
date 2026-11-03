@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
@@ -11,7 +11,8 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatSection } from './chat-section';
-import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
+import { groupConversationsWithPinned } from './time-group';
+import { orderPinnedFirst } from '@/chat/utils/pinned-conversations';
 
 /**
  * Maximum number of chat items shown per section before
@@ -34,6 +35,7 @@ export const ChatSections = React.memo(function ChatSections({
 }: {
   onOpenMoreChats: (sectionType: 'shared' | 'your') => void;
 }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
@@ -71,7 +73,9 @@ export const ChatSections = React.memo(function ChatSections({
 
   const [recentsCollapsed, setRecentsCollapsed] = useState(true);
 
-  const handleNewChat = () => dispatch('newChat');
+  const handleNewChat = () => {
+    if (!dispatch('newChat')) router.push('/chat/');
+  };
   const handleSelectConversation = () => {
     if (isMobile) closeMobileSidebar();
   };
@@ -91,13 +95,15 @@ export const ChatSections = React.memo(function ChatSections({
   const visibleShared = hasMoreShared
     ? sharedConversations.slice(0, MAX_VISIBLE_CHATS)
     : sharedConversations;
+  // Pinned chats take the visible slots first, so the cap never hides one
+  // behind "More" while an unpinned chat is shown.
+  const orderedYour = useMemo(() => orderPinnedFirst(conversations), [conversations]);
   const visibleYour = hasMoreYour
-    ? conversations.slice(0, MAX_VISIBLE_CHATS)
-    : conversations;
+    ? orderedYour.slice(0, MAX_VISIBLE_CHATS)
+    : orderedYour;
 
-  // Time-group only "Your Chats"
-  const yourTimeGroups = groupConversationsByTime(visibleYour);
-  const yourNonEmptyGroups = getNonEmptyGroups(yourTimeGroups);
+  // Group only "Your Chats": Pinned first, then by time
+  const yourNonEmptyGroups = groupConversationsWithPinned(visibleYour);
 
   const activePendingConversations = useMemo(() => {
     const convIds = new Set(conversations.map((c) => c.id));

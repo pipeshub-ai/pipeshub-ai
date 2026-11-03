@@ -1,0 +1,107 @@
+name: db-migrations
+
+# Lints the migration tree and runs the migration tests against real PostgreSQL 17 and 18.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/db/**'
+      - 'backend/python/app/edition.py'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/db-migrations.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm      # the retrieval module needs pgvector
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          pip install -r backend/db/requirements.txt pytest
+          sudo apt-get update -qq && sudo apt-get install -y -qq pgbouncer
+
+      - name: Lints
+        working-directory: backend
+        run: |
+          python -m db.epoch_lint
+          python -m db.lint
+          python -m db.lib.vetted check db/versions/kernel/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/platform/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/graph/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/retrieval/vetted/manifest.yaml
+
+      - name: Empty database to heads, then the org isolation catalog check
+        # python -m db.migrate exits 4 when kernel.rls_violations returns any row.
+        working-directory: backend
+        env:
+          PG_ADMIN_URL: postgresql://postgres@127.0.0.1:5432/ci_catalog
+          PG_BOOTSTRAP_EXTENSIONS: vector,pg_trgm
+          PG_MIGRATE_URL: postgresql+psycopg://pipeshub_migrate@127.0.0.1:5432/ci_catalog
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE ci_catalog'
+          python -m db.bootstrap_roles
+          python -m db.migrate
+          psql -h 127.0.0.1 -U postgres -d ci_catalog -v ON_ERROR_STOP=1 -tA -c 'SELECT count(*) FROM kernel.rls_violations' | grep -qx 0
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE ci_catalog'
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c "SELECT format('DROP ROLE %I;', rolname) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%'" | psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1
+
+      - name: Migration tests (planted defects, fault injection through PgBouncer, restore window)
+        working-directory: backend/db
+        env:
+          MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
+          MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+        run: python -m pytest -q --junitxml="$RUNNER_TEMP/db-junit.xml"
+
+      - name: No unexpected skips
+        # The generated vetted-function suite skips the checks that do not apply to a function by design (a function with no organisation
+        # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or fewer cases than
+        # expected, or a graph suite that did not run, fails the job.
+        if: ${{ always() }}
+        run: |
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests 970 --expect-suite 'tests.test_graph=34' --expect-suite 'tests.test_retrieval=21' \
+            --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
+            --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
+            --allow='-kt.set_note_title]' --allow='-kt.token_owner]' --allow='-ku.item_labels]' \
+            --allow='-retrieval.collection_create]' \
+            --allow='-retrieval.collection_mark_deleting]' \
+            --allow='-retrieval.collection_stamp_set]' \
+            --allow='-retrieval.collection_stamp_get]' \
+            --allow='-retrieval.collection_get]' \
+            --allow='-retrieval.collection_list]' \
+            --allow='-retrieval.vrid_orgs]' \
+            --allow='-retrieval.org_space_list]' \
+            --allow='-retrieval.org_space_adopt]' \
+            --allow='-retrieval.org_space_replace_empty]' \
+            --allow='-retrieval.org_space_named_by]' \
+            --allow='-retrieval.org_space_name]' \
+            --allow='-retrieval.org_leaf_request]' \
+            --allow='-retrieval.org_leaf_status]'

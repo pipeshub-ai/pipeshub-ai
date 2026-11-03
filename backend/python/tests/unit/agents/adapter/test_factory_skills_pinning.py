@@ -18,14 +18,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.agent_loop_lib.agent.prompt import build_system_prompt
 from app.agent_loop_lib.agent.tool_loop import initial_visible_tools
+from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
-_SKILL_TOOL_NAMES = {"skills_list", "load_skill", "load_skill_resource", "skill_search", "skill_manage"}
+_SKILL_READ_TOOL_NAMES = {"skills_list", "load_skill", "load_skill_resource", "skill_search"}
+_SKILL_TOOL_NAMES = _SKILL_READ_TOOL_NAMES | {"skill_manage"}
 
 
 class _FakeConnectorTool(Tool):
@@ -72,14 +75,28 @@ async def _fake_load(
     return registry
 
 
-class _FakeSkillManager:
-    """Just enough surface for `register_skill_tools()` and the factory's
-    own log line — the five skill-tool classes only stash this reference
-    at construction time (see `skills.py`), never call into it until
-    `execute()`, which no test here reaches."""
+class _FakeSkillMetadata:
+    name = "pptx"
+    description = "Use this skill whenever the user asks for a PowerPoint presentation."
+    category = "office"
 
-    def catalog_snapshot(self) -> list[dict[str, str]]:
-        return [{"name": "pptx"}]
+
+class _FakeSkillConfig:
+    catalog_render_limit = 40
+
+
+class _FakeSkillManager:
+    """Just enough surface for `register_skill_tools()`, the factory's own
+    log line, and `render_skills_overview()` — the five skill-tool classes
+    only stash this reference at construction time (see `skills.py`), never
+    call into it until `execute()`, which no test here reaches. The
+    `catalog_snapshot()`/`config` pair is what the prompt builder reads, so
+    the rendering tests below need both."""
+
+    config = _FakeSkillConfig()
+
+    def catalog_snapshot(self) -> list[_FakeSkillMetadata]:
+        return [_FakeSkillMetadata()]
 
 
 async def _fake_build_skill_manager(context: Any, transport_registry: Any) -> _FakeSkillManager:
@@ -117,7 +134,11 @@ class TestSkillsToolsetPinnedUnderLazyDisclosure:
         assert "skills" in agent.spec.pinned_toolsets
 
         visible = initial_visible_tools(agent.spec, runtime)
-        assert _SKILL_TOOL_NAMES <= visible
+        assert _SKILL_READ_TOOL_NAMES <= visible
+        # The write surface is registered but lives in its own unpinned
+        # `skill_authoring` group, so it costs no turn-0 prompt tokens.
+        assert "skill_manage" not in visible
+        assert "skill_authoring" not in agent.spec.pinned_toolsets
 
     async def test_skills_not_pinned_when_disclosure_stays_eager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Sanity check for the guard added alongside the pin: an eager
@@ -203,3 +224,55 @@ class TestSkillsGatedByPlatformFlagInAdditionToEnvVar:
         assert runtime.skills is not None
         assert "skills" in agent.spec.pinned_toolsets
         assert _SKILL_TOOL_NAMES <= set(runtime.tool_registry.names())
+
+
+class TestRenderedPromptCarriesNoSkillTextWhenDisabled:
+    """The gate is only worth an env var if it actually buys back the
+    tokens. `runtime.skills is None` and an empty `pinned_toolsets` (above)
+    prove the wiring is skipped; these render the real system prompt
+    through `PipesHubPromptBuilder` and assert the *text* is clean — no
+    `## Skills` catalog, no `load_skill`/`skill_search` usage rules, and no
+    `skill_authoring` entry in the "must load before calling" block that
+    `_collect_leaf_toolsets` builds from whatever groups are registered.
+    """
+
+    async def _prompt(self, monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> tuple[str, set[str]]:
+        monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true" if enabled else "false")
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.is_skills_enabled", AsyncMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.build_skill_manager", _fake_build_skill_manager,
+        )
+        context = make_context(llm=FakeChatModel())
+        agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, "quick", query="make me a pptx",
+        )
+        prompt = build_system_prompt(
+            agent.spec, runtime, Goal(description="make me a pptx"), [], {},
+        )
+        registered = set(runtime.tool_registry.names()) if runtime.tool_registry is not None else set()
+        return prompt, registered
+
+    async def test_no_skill_text_or_tool_definitions_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt, registered = await self._prompt(monkeypatch, enabled=False)
+
+        assert not (_SKILL_TOOL_NAMES & registered)
+        assert not any(name in prompt for name in _SKILL_TOOL_NAMES)
+        assert "## Skills" not in prompt
+        assert "skill_authoring" not in prompt
+        assert "skill" not in prompt.lower()
+
+    async def test_read_only_skill_text_present_when_enabled(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The inverse, so the assertions above can't pass by rendering an
+        empty prompt: enabled, the four read-only tools reach the text and
+        the write surface still does not."""
+        prompt, registered = await self._prompt(monkeypatch, enabled=True)
+
+        assert _SKILL_TOOL_NAMES <= registered
+        assert all(name in prompt for name in _SKILL_READ_TOOL_NAMES)
+        assert "skill_manage" not in prompt

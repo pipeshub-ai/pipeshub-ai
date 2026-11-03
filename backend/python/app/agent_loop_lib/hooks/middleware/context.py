@@ -28,6 +28,7 @@ from uuid import UUID, uuid4
 from app.agent_loop_lib.hooks.middleware.decisions import (
     POST_SEVERITY,
     PRE_SEVERITY,
+    PendingApproval,
     PostDecision,
     PreDecision,
 )
@@ -35,6 +36,8 @@ from app.agent_loop_lib.tools.base import Tag, ToolOutput
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.context.base import ContextBudget
+    from app.agent_loop_lib.context.compaction_memo import CompactionMemo
+    from app.agent_loop_lib.context.protection import CurrentRequest
     from app.agent_loop_lib.core.scope import RunScope, ToolScope, TurnScope
     from app.agent_loop_lib.core.types import (
         AgentResult,
@@ -94,6 +97,7 @@ class ToolCallContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     _decision: PreDecision = field(default=PreDecision.ALLOW, repr=True)
     decision_reason: str | None = None
+    pending_approval: PendingApproval | None = None
 
     @property
     def decision(self) -> PreDecision:
@@ -109,6 +113,12 @@ class ToolCallContext:
         No-op if the decision is already DENY, since DENY is more severe.
         """
         self._escalate(PreDecision.ASK, reason)
+
+    def ask_later(self, pending: PendingApproval) -> None:
+        """Escalate to ASK, to be answered on a later turn (see `PendingApproval`)."""
+        self._escalate(PreDecision.ASK, pending.message)
+        if self._decision == PreDecision.ASK:
+            self.pending_approval = pending
 
     def _escalate(self, new: PreDecision, reason: str) -> None:
         if PRE_SEVERITY[new] > PRE_SEVERITY[self._decision]:
@@ -249,6 +259,34 @@ class ModelCallContext:
     # construction (see tests/hooks/_helpers.py) stays valid untouched.
     turn_index: int = 0
     max_turns: int | None = None
+    # The current request as it stood before any shaper ran, captured once
+    # from the unshaped messages. The final invariant guard checks the
+    # shaped list against it.
+    request: "CurrentRequest | None" = field(init=False)
+
+    def __post_init__(self) -> None:
+        from app.agent_loop_lib.context.protection import current_request
+
+        self.request = current_request(self.messages)
+
+    @property
+    def run_id(self) -> str | None:
+        return self.scope.run.identity.run_id if self.scope is not None else None
+
+    @property
+    def is_child_run(self) -> bool:
+        """A sub-agent's call: its run was spawned by another run."""
+        return self.scope is not None and self.scope.run.identity.parent_run_id is not None
+
+    @property
+    def compaction_memo(self) -> "CompactionMemo | None":
+        """This run's compaction memo (``context/compaction_memo.py``); None
+        outside a run, where every call is shaped on its own."""
+        if self.scope is None:
+            return None
+        from app.agent_loop_lib.context.compaction_memo import COMPACTION_MEMO
+
+        return self.scope.run.get(COMPACTION_MEMO)
 
 
 @dataclass

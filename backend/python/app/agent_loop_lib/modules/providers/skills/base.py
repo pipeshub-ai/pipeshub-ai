@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 
@@ -261,6 +261,32 @@ class SkillFilter(BaseModel):
     source: SkillSource | None = None
     concepts: list[str] | None = None   # match if the skill has at least one of these
     related_to: str | None = None       # match if this skill name appears in `related` or `requires`
+
+    @field_validator("query", "category", "subcategory", "status", "source", "related_to", mode="before")
+    @classmethod
+    def _blank_means_unfiltered(cls, value: object) -> object:
+        """A blank filter is an ABSENT filter, not a literal one to match.
+
+        Tool-calling models routinely emit `""` for optional string
+        parameters instead of omitting them (observed from `skills_list`:
+        `{"category": "", "subcategory": "", "tags": ["pdf"], "status":
+        "active"}`). Without this, `matches_filter`'s `is not None` checks
+        treat `""` as a value no skill can ever equal, so a single blank
+        argument silently empties the whole catalog."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("tags", "concepts", mode="before")
+    @classmethod
+    def _drop_blank_members(cls, value: object) -> object:
+        """Same reasoning as `_blank_means_unfiltered`, for the list-membership
+        filters: `[""]` is truthy, so it would reach the set-intersection test
+        and match nothing. An all-blank list means no filter at all."""
+        if isinstance(value, list):
+            kept = [item for item in value if not (isinstance(item, str) and not item.strip())]
+            return kept or None
+        return value
 
 
 class SkillMatch(BaseModel):

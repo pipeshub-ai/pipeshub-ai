@@ -22,22 +22,13 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import PropertyMock
 from uuid import uuid4
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    BATCH_PROCESSING_SIZE,
-    DEFAULT_MAX_RESULTS,
-    ISSUE_SEARCH_FIELDS,
-    JiraConnector,
-)
+from app.config.constants.arangodb import MimeTypes, OriginTypes, RecordRelations
 from app.models.entities import (
     AppRole,
-    AppUser,
-    AppUserGroup,
     FileRecord,
     RecordGroupType,
-    RecordType,
     TicketRecord,
 )
 
@@ -633,7 +624,7 @@ class TestSyncUserGroups:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_group_error_continues(self):
+    async def test_group_error_maps_the_group_to_none(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "devs"},
@@ -641,16 +632,16 @@ class TestSyncUserGroups:
         connector._fetch_group_members = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._sync_user_groups([])
-        assert result == {}
+        assert result == {"g1": None, "devs": None}, "members unknown, not empty"
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_exception(self):
+    async def test_returns_none_on_exception(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(side_effect=Exception("total failure"))
         connector.notify = AsyncMock()
 
         result = await connector._sync_user_groups([])
-        assert result == {}
+        assert result is None
         connector.notify.assert_awaited_once()
 
 
@@ -753,6 +744,24 @@ class TestSyncProjectRoles:
         connector.data_entities_processor.on_new_app_roles.assert_not_awaited()
         connector.notify.assert_awaited_once()
         assert "PROJ" in connector.notify.await_args.kwargs["message"]
+
+
+class TestRelatedRecords:
+    def test_links_then_what_the_summary_and_description_name(self) -> None:
+        connector = _make_connector()
+        issue = {"fields": {
+            "summary": "Ship OPS-12 first",
+            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [
+                {"type": "inlineCard", "attrs": {"url": "https://github.com/acme/api/pull/3081"}},
+            ]}]},
+            "issuelinks": [],
+        }}
+        related = connector._related_records(issue)
+        assert [r.weburl for r in related if r.weburl] == ["https://github.com/acme/api/pull/3081"]
+        assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
+    def test_empty_issue(self) -> None:
+        assert _make_connector()._related_records(None) == []
 
 
 class TestParseIssueLinks:
@@ -1350,13 +1359,15 @@ class TestCheckAndFetchUpdatedIssue:
                 "creator": {"accountId": "acc-1", "displayName": "Creator", "emailAddress": "c@test.com"},
                 "reporter": {"accountId": "acc-2", "displayName": "Reporter"},
                 "assignee": {"accountId": "acc-3", "displayName": "Assignee"},
-                "project": {"id": "proj-1"},
+                "project": {"id": "proj-id-1"},
                 "parent": None,
             },
         }
 
         mock_ds = MagicMock()
         mock_ds.get_issue = AsyncMock(return_value=_make_mock_response_fullcov(200, issue_response))
+        mock_ds.get_project_issue_security_scheme = AsyncMock(return_value=_make_mock_response_fullcov(
+            404, {"errorMessages": ["Security level for project proj-1 does not exist."]}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record(source_updated_at=1700000000000)
@@ -2131,11 +2142,11 @@ class TestFetchProjectPermissionScheme:
         assert len(permissions) == 0
 
     @pytest.mark.asyncio
-    async def test_application_role_forbidden_grants_creator(self):
-        """When 403 flag is set, grant configuring user instead of ORG."""
+    async def test_application_role_forbidden_grants_authenticated_jira_account(self):
+        """When 403 flag is set, grant the authenticated Jira account instead of ORG."""
         connector = _make_connector()
         connector._app_roles_forbidden = True
-        connector.creator_email = "admin@example.com"
+        connector._authenticated_jira_email = "admin@example.com"
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(200, {
@@ -2159,7 +2170,7 @@ class TestFetchProjectPermissionScheme:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_project_permission_scheme("PROJ")
-        assert permissions == []
+        assert permissions is None, "no owner email to fall back to: keep what is stored"
 
     @pytest.mark.asyncio
     async def test_grants_fetch_failure(self):

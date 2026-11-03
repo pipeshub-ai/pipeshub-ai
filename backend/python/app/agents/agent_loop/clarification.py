@@ -22,22 +22,19 @@ NO-GO on `agent_loop_lib`'s blocking `HILStore.wait_for_response()` /
 answer — workable for a long-lived CLI/control-plane process, but a poor
 fit for one stateless request-per-turn web worker (`runtime.hil_store` is
 never set here; `PipesHubAgentFactory` doesn't register the library's
-`clarify` tool at all). PipesHub's actual mid-run mechanism —
-`ask_user_question` tagged `TAG_LIFECYCLE_TERMINAL` — deliberately ends
-the turn instead of blocking, and the user's answer arrives as an
-ordinary NEW turn; "resume" is therefore conversation-history
-continuity, not in-process suspension. Phase 2a (`tool_results` ->
-`previousConversations`, see `factory.py::_convert_conversation_turn`)
-is what actually closes that continuity gap, and already ships without
-this. Revisit only if PipesHub moves to a long-lived worker-per-run
-model; if the sibling `agent_loop_architecture_fixes` plan's ASK->HIL
-item lands a real persistent `HILStore` first, prefer reusing it over
-building a second one.
+`clarify` tool at all). PipesHub's mid-run mechanism — `ask_user_question` tagged
+`TAG_LIFECYCLE_TERMINAL` — ends THIS HTTP request (the pause) instead of
+blocking on `hil_store.wait_for_response()`. The next request is a
+resume: `factory.py` keeps the original Goal, injects the card answers
+as a `ToolMessage` on the parked tool call, and `stream_bridge` runs
+`agent.stream(..., _skip_start=True)` so the loop does not append a new
+`UserMessage`. That is conversation-history resume, not in-process
+suspension. A persistent `HILStore` would replace the second request
+with a true coroutine resume; prefer that if it lands.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -67,31 +64,22 @@ async def emit_pre_run_clarification(
     Returns the `completion_data` dict, matching `RespondPipeline.run()`'s
     return contract so `stream_bridge.py` can treat both paths uniformly.
     """
-    from app.agents.actions.internal_tools.intrim_tools import InternalTools
+    from app.agents.actions.internal_tools.intrim_tools import (
+        asked_questions,
+        question_payload,
+    )
+    from app.agents.agent_loop.parked_turn import with_expiry
 
-    tool_data = json.loads(await InternalTools().ask_user_question(user_intent=user_intent, questions=questions))
-
-    if context.has_ui_client:
+    questions = asked_questions(questions)
+    # With no question there is no card to show, and the event would make
+    # the client drop the clarifying text that follows.
+    if context.has_ui_client and questions:
+        tool_data = with_expiry(question_payload(user_intent, questions))
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):
             await event_sink.write(evt)
 
     clarifying_text = questions[0].question if questions else user_intent
-    completion_data: dict[str, Any] = {
-        "answer": clarifying_text,
-        "citations": [],
-        "confidence": "Medium",
-        "answerMatchType": "Clarification Needed",
-    }
-    for evt in context.formatter.answer_delta(
-        context, chunk=clarifying_text, accumulated=clarifying_text, citations=[],
-        raw_length=len(clarifying_text),
-    ):
-        await event_sink.write(evt)
-    for evt in context.formatter.answer_final(context, completion_data=completion_data):
-        await event_sink.write(evt)
-
-    context.tool_state["response"] = clarifying_text
-    context.tool_state["completion_data"] = completion_data
+    completion_data = await _emit_text_answer(context, clarifying_text, "Clarification Needed", event_sink=event_sink)
     context.tool_state["ask_user_question_emitted"] = True
     logger.info(
         "Pre-run clarification: asked %d question(s) instead of running the agent (org_id=%s conversation_id=%s)",
@@ -100,4 +88,40 @@ async def emit_pre_run_clarification(
     return completion_data
 
 
-__all__ = ["emit_pre_run_clarification"]
+_ALREADY_ANSWERED = (
+    "This question was already answered, maybe in another tab or window, so I haven't run it again. "
+    "Reload the chat to see the reply."
+)
+
+
+async def emit_already_answered(context: "AgentContext", *, event_sink: "EventSink") -> dict[str, Any]:
+    """Ends a turn whose answers are for a card that already got its reply, without running the
+    agent: running it again would repeat that reply's work (a second ticket, a second message)."""
+    logger.info(
+        "Question card already answered; not running it again (org_id=%s conversation_id=%s)",
+        context.org_id, context.conversation_id,
+    )
+    return await _emit_text_answer(context, _ALREADY_ANSWERED, "Already Answered", event_sink=event_sink)
+
+
+async def _emit_text_answer(
+    context: "AgentContext", text: str, match_type: str, *, event_sink: "EventSink",
+) -> dict[str, Any]:
+    completion_data: dict[str, Any] = {
+        "answer": text,
+        "citations": [],
+        "confidence": "Medium",
+        "answerMatchType": match_type,
+    }
+    for evt in context.formatter.answer_delta(
+        context, chunk=text, accumulated=text, citations=[], raw_length=len(text),
+    ):
+        await event_sink.write(evt)
+    for evt in context.formatter.answer_final(context, completion_data=completion_data):
+        await event_sink.write(evt)
+    context.tool_state["response"] = text
+    context.tool_state["completion_data"] = completion_data
+    return completion_data
+
+
+__all__ = ["emit_already_answered", "emit_pre_run_clarification"]

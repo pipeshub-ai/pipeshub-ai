@@ -1,0 +1,481 @@
+{
+ "description": "Topic names as an extractor produces them across records of one org: surface variants of one entity (casing, punctuation, plural, word order, abbreviation, synonym) and near-miss distinct entities (Q3 vs Q4 planning, release checklist vs release notes, security audit vs security training). Records are resolved in order, so early variants become the nodes later ones must find.",
+ "org": "eval-org",
+ "kind": "topic",
+ "records": [
+  {
+   "id": "r001",
+   "topics": [
+    "Security awareness training",
+    "pricing strategies",
+    "employee on-boarding"
+   ],
+   "gold": {
+    "Security awareness training": "security-training",
+    "pricing strategies": "pricing-strategy",
+    "employee on-boarding": "onboarding"
+   }
+  },
+  {
+   "id": "r002",
+   "topics": [
+    "Security training for staff",
+    "Retention policy for data",
+    "Churn (customers)"
+   ],
+   "gold": {
+    "Security training for staff": "security-training",
+    "Retention policy for data": "data-retention",
+    "Churn (customers)": "customer-churn"
+   }
+  },
+  {
+   "id": "r003",
+   "topics": [
+    "Revenue forecast (quarterly)",
+    "New hire onboarding",
+    "k8s migration"
+   ],
+   "gold": {
+    "Revenue forecast (quarterly)": "quarterly-revenue-forecast",
+    "New hire onboarding": "onboarding",
+    "k8s migration": "kubernetes-migration"
+   }
+  },
+  {
+   "id": "r004",
+   "topics": [
+    "Security audit",
+    "hiring plans",
+    "Data-retention policy"
+   ],
+   "gold": {
+    "Security audit": "security-audit",
+    "hiring plans": "hiring-plan",
+    "Data-retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r005",
+   "topics": [
+    "API rate limiting",
+    "q3 plan",
+    "Bug bash"
+   ],
+   "gold": {
+    "API rate limiting": "api-rate-limiting",
+    "q3 plan": "q3-planning",
+    "Bug bash": "bug-bash"
+   }
+  },
+  {
+   "id": "r006",
+   "topics": [
+    "quarterly revenue forecasts",
+    "Rate limiting (API)"
+   ],
+   "gold": {
+    "quarterly revenue forecasts": "quarterly-revenue-forecast",
+    "Rate limiting (API)": "api-rate-limiting"
+   }
+  },
+  {
+   "id": "r007",
+   "topics": [
+    "incident post mortem",
+    "Bug Bash"
+   ],
+   "gold": {
+    "incident post mortem": "incident-postmortem",
+    "Bug Bash": "bug-bash"
+   }
+  },
+  {
+   "id": "r008",
+   "topics": [
+    "Q3 Planning",
+    "release notes",
+    "Recruiting plan"
+   ],
+   "gold": {
+    "Q3 Planning": "q3-planning",
+    "release notes": "release-notes",
+    "Recruiting plan": "hiring-plan"
+   }
+  },
+  {
+   "id": "r009",
+   "topics": [
+    "Pricing strategy",
+    "Hiring plan",
+    "Data retention policy"
+   ],
+   "gold": {
+    "Pricing strategy": "pricing-strategy",
+    "Hiring plan": "hiring-plan",
+    "Data retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r010",
+   "topics": [
+    "Postmortem of incident",
+    "bug-bash"
+   ],
+   "gold": {
+    "Postmortem of incident": "incident-postmortem",
+    "bug-bash": "bug-bash"
+   }
+  },
+  {
+   "id": "r011",
+   "topics": [
+    "Incident postmortem",
+    "Kubernetes Migration",
+    "Quarterly revenue forecast"
+   ],
+   "gold": {
+    "Incident postmortem": "incident-postmortem",
+    "Kubernetes Migration": "kubernetes-migration",
+    "Quarterly revenue forecast": "quarterly-revenue-forecast"
+   }
+  },
+  {
+   "id": "r012",
+   "topics": [
+    "release-checklist",
+    "API rate limits"
+   ],
+   "gold": {
+    "release-checklist": "release-checklist",
+    "API rate limits": "api-rate-limiting"
+   }
+  },
+  {
+   "id": "r013",
+   "topics": [
+    "Bug bash session",
+    "Employee onboarding"
+   ],
+   "gold": {
+    "Bug bash session": "bug-bash",
+    "Employee onboarding": "onboarding"
+   }
+  },
+  {
+   "id": "r014",
+   "topics": [
+    "Onboarding process",
+    "Strategy for pricing"
+   ],
+   "gold": {
+    "Onboarding process": "onboarding",
+    "Strategy for pricing": "pricing-strategy"
+   }
+  },
+  {
+   "id": "r015",
+   "topics": [
+    "customer churn",
+    "Release notes",
+    "Kubernetes migration"
+   ],
+   "gold": {
+    "customer churn": "customer-churn",
+    "Release notes": "release-notes",
+    "Kubernetes migration": "kubernetes-migration"
+   }
+  },
+  {
+   "id": "r016",
+   "topics": [
+    "data retention policies",
+    "Release Checklist",
+    "Quarterly Revenue Forecasting"
+   ],
+   "gold": {
+    "data retention policies": "data-retention",
+    "Release Checklist": "release-checklist",
+    "Quarterly Revenue Forecasting": "quarterly-revenue-forecast"
+   }
+  },
+  {
+   "id": "r017",
+   "topics": [
+    "Q4 Planning",
+    "Q3 planning"
+   ],
+   "gold": {
+    "Q4 Planning": "q4-planning",
+    "Q3 planning": "q3-planning"
+   }
+  },
+  {
+   "id": "r018",
+   "topics": [
+    "Checklist for release",
+    "Security Audit"
+   ],
+   "gold": {
+    "Checklist for release": "release-checklist",
+    "Security Audit": "security-audit"
+   }
+  },
+  {
+   "id": "r019",
+   "topics": [
+    "Release checklist",
+    "Q4 planning"
+   ],
+   "gold": {
+    "Release checklist": "release-checklist",
+    "Q4 planning": "q4-planning"
+   }
+  },
+  {
+   "id": "r020",
+   "topics": [
+    "Migration to Kubernetes",
+    "security awareness training"
+   ],
+   "gold": {
+    "Migration to Kubernetes": "kubernetes-migration",
+    "security awareness training": "security-training"
+   }
+  },
+  {
+   "id": "r021",
+   "topics": [
+    "Pricing Strategy",
+    "security audits",
+    "Incident post-mortem"
+   ],
+   "gold": {
+    "Pricing Strategy": "pricing-strategy",
+    "security audits": "security-audit",
+    "Incident post-mortem": "incident-postmortem"
+   }
+  },
+  {
+   "id": "r022",
+   "topics": [
+    "Rate limits on the API",
+    "Customer attrition",
+    "Release Notes"
+   ],
+   "gold": {
+    "Rate limits on the API": "api-rate-limiting",
+    "Customer attrition": "customer-churn",
+    "Release Notes": "release-notes"
+   }
+  },
+  {
+   "id": "r023",
+   "topics": [
+    "Customer churn",
+    "Revenue forecast (quarterly)"
+   ],
+   "gold": {
+    "Customer churn": "customer-churn",
+    "Revenue forecast (quarterly)": "quarterly-revenue-forecast"
+   }
+  },
+  {
+   "id": "r024",
+   "topics": [
+    "Retention policy for data",
+    "quarterly revenue forecasts"
+   ],
+   "gold": {
+    "Retention policy for data": "data-retention",
+    "quarterly revenue forecasts": "quarterly-revenue-forecast"
+   }
+  },
+  {
+   "id": "r025",
+   "topics": [
+    "Data retention policy",
+    "Pricing Strategy"
+   ],
+   "gold": {
+    "Data retention policy": "data-retention",
+    "Pricing Strategy": "pricing-strategy"
+   }
+  },
+  {
+   "id": "r026",
+   "topics": [
+    "Security audit",
+    "Release Notes",
+    "Data retention policy"
+   ],
+   "gold": {
+    "Security audit": "security-audit",
+    "Release Notes": "release-notes",
+    "Data retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r027",
+   "topics": [
+    "Pricing strategy",
+    "security audits",
+    "hiring plans"
+   ],
+   "gold": {
+    "Pricing strategy": "pricing-strategy",
+    "security audits": "security-audit",
+    "hiring plans": "hiring-plan"
+   }
+  },
+  {
+   "id": "r028",
+   "topics": [
+    "Incident post-mortem",
+    "Data retention policy"
+   ],
+   "gold": {
+    "Incident post-mortem": "incident-postmortem",
+    "Data retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r029",
+   "topics": [
+    "Q4 Planning",
+    "Data-retention policy"
+   ],
+   "gold": {
+    "Q4 Planning": "q4-planning",
+    "Data-retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r030",
+   "topics": [
+    "Bug bash",
+    "Onboarding process",
+    "security audits"
+   ],
+   "gold": {
+    "Bug bash": "bug-bash",
+    "Onboarding process": "onboarding",
+    "security audits": "security-audit"
+   }
+  },
+  {
+   "id": "r031",
+   "topics": [
+    "release notes",
+    "Q3 Planning"
+   ],
+   "gold": {
+    "release notes": "release-notes",
+    "Q3 Planning": "q3-planning"
+   }
+  },
+  {
+   "id": "r032",
+   "topics": [
+    "Release Notes",
+    "Checklist for release"
+   ],
+   "gold": {
+    "Release Notes": "release-notes",
+    "Checklist for release": "release-checklist"
+   }
+  },
+  {
+   "id": "r033",
+   "topics": [
+    "Checklist for release",
+    "Release notes",
+    "Revenue forecast (quarterly)"
+   ],
+   "gold": {
+    "Checklist for release": "release-checklist",
+    "Release notes": "release-notes",
+    "Revenue forecast (quarterly)": "quarterly-revenue-forecast"
+   }
+  },
+  {
+   "id": "r034",
+   "topics": [
+    "Security audit",
+    "customer churn",
+    "Bug bash session"
+   ],
+   "gold": {
+    "Security audit": "security-audit",
+    "customer churn": "customer-churn",
+    "Bug bash session": "bug-bash"
+   }
+  },
+  {
+   "id": "r035",
+   "topics": [
+    "Release notes",
+    "Data retention policy"
+   ],
+   "gold": {
+    "Release notes": "release-notes",
+    "Data retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r036",
+   "topics": [
+    "Q4 planning",
+    "Customer attrition"
+   ],
+   "gold": {
+    "Q4 planning": "q4-planning",
+    "Customer attrition": "customer-churn"
+   }
+  },
+  {
+   "id": "r037",
+   "topics": [
+    "Customer churn",
+    "Security audit"
+   ],
+   "gold": {
+    "Customer churn": "customer-churn",
+    "Security audit": "security-audit"
+   }
+  },
+  {
+   "id": "r038",
+   "topics": [
+    "Bug Bash",
+    "Security training for staff"
+   ],
+   "gold": {
+    "Bug Bash": "bug-bash",
+    "Security training for staff": "security-training"
+   }
+  },
+  {
+   "id": "r039",
+   "topics": [
+    "Q3 Planning",
+    "Release checklist",
+    "Data retention policy"
+   ],
+   "gold": {
+    "Q3 Planning": "q3-planning",
+    "Release checklist": "release-checklist",
+    "Data retention policy": "data-retention"
+   }
+  },
+  {
+   "id": "r040",
+   "topics": [
+    "Rate limiting (API)"
+   ],
+   "gold": {
+    "Rate limiting (API)": "api-rate-limiting"
+   }
+  }
+ ]
+}

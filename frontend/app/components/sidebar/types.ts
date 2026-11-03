@@ -12,6 +12,8 @@ export interface SidebarBaseProps {
   children: ReactNode;
   /** Optional fixed-height footer at the bottom of the sidebar */
   footer?: ReactNode;
+  /** Footer height in px, or 'auto' to fit its content. Defaults to FOOTER_HEIGHT. */
+  footerHeight?: number | 'auto';
   /**
    * Optional secondary panel that slides in to the right of the primary sidebar.
    * Used for "More Chats", "More items", etc.

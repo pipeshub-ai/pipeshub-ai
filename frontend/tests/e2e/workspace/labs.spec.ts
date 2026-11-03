@@ -11,8 +11,14 @@ test.describe('Workspace Labs', () => {
     await expect(heading).toBeVisible({ timeout: 5_000 });
   });
 
+  test('lists the named entity extraction flag', async ({ page }) => {
+    // An advanced flag: it sits in the collapsed "advanced feature flags" section.
+    await page.getByRole('button', { name: /Show advanced feature flags/i }).click();
+    await expect(page.getByText('Extract Named Entities').first()).toBeVisible({ timeout: 10_000 });
+  });
+
   test('displays file upload limit setting', async ({ page }) => {
-    await expect(page.getByText('File Upload Limit').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('File upload limit').first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByPlaceholder('max. 1000')).toBeVisible();
   });
 });

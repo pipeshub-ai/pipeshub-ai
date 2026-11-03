@@ -3,7 +3,11 @@ from copy import deepcopy
 from enum import Enum
 from typing import Any
 
-from app.config.constants.arangodb import ExtensionTypes, PermissionModel
+from app.config.constants.arangodb import (
+    EXCLUDABLE_FILE_EXTENSIONS,
+    ExtensionTypes,
+    PermissionModel,
+)
 from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -23,6 +27,7 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
 )
+from app.connectors.core.registry.oauth_config_registry import CONNECTOR_SOURCE
 from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, CustomField, DocumentationLink
 
@@ -316,8 +321,28 @@ class ConnectorConfigBuilder:
             field_config["validation"]["minLength"] = field.min_length
         if field.max_length is not None:
             field_config["validation"]["maxLength"] = field.max_length
+        if field.min_value is not None:
+            field_config["validation"]["min"] = field.min_value
+        if field.max_value is not None:
+            field_config["validation"]["max"] = field.max_value
+        presentation = {
+            "unit": field.unit,
+            "optionLabels": field.option_labels,
+            "group": field.group,
+            "showWhen": field.show_when,
+            "placeholder": field.placeholder,
+        }
+        field_config.update({key: value for key, value in presentation.items() if value})
 
         self.config["sync"]["customFields"].append(field_config)
+        return self
+
+    def with_sync_field_group(
+        self, name: str, display_name: str, description: str = "", *, collapsed: bool = False
+    ) -> 'ConnectorConfigBuilder':
+        """Declare a section of sync custom fields; sections render in the order they are declared."""
+        group = {"name": name, "displayName": display_name, "description": description, "collapsed": collapsed}
+        self.config["sync"].setdefault("customFieldGroups", []).append(group)
         return self
 
     def add_filter_field(self, field: FilterField) -> 'ConnectorConfigBuilder':
@@ -530,9 +555,9 @@ class ConnectorBuilder:
             # Ensure connector name matches final builder name
             if oauth_config.connector_name != self.name:
                 # Remove old registration if name changed and it's the same object
-                old_config = oauth_registry.get_config(oauth_config.connector_name)
+                old_config = oauth_registry.get_config(oauth_config.connector_name, source=CONNECTOR_SOURCE)
                 if old_config is oauth_config:
-                    del oauth_registry._configs[oauth_config.connector_name]
+                    oauth_registry.remove_config(oauth_config.connector_name, source=CONNECTOR_SOURCE)
                 oauth_config.connector_name = self.name
 
             # Auto-populate metadata from connector builder if not already set
@@ -564,8 +589,7 @@ class ConnectorBuilder:
                     for link in config.get("documentationLinks", [])
                 ]
 
-            # Register with final name (overwrites if already registered - allows sharing between connector/toolset)
-            oauth_registry.register(oauth_config)
+            oauth_registry.register(oauth_config, source=CONNECTOR_SOURCE)
 
         # Validate OAuth requirements for all OAuth supported auth types
         for auth_type in self.supported_auth_types:
@@ -800,6 +824,7 @@ class CommonFields:
             category=FilterCategory.SYNC,
             description=(
                 f"Folder paths inside each {container} to sync, such as reports/2026. "
+                "Press Enter after each folder; names may contain spaces. "
                 "Include syncs only these folders; Exclude syncs everything except them. "
                 f"Leave empty to sync the whole {container}."
             ),
@@ -812,9 +837,16 @@ class CommonFields:
         description: str | None = None,
         display_name: str = "File Extensions",
         options_endpoint: str | None = None,
+        extensions: list[ExtensionTypes] | None = None,
+        labels: dict[str, str] | None = None,
     ) -> FilterField:
         """
         Standard file extension filter (static multiselect).
+
+        ``extensions`` limits the options to the types the connector can actually return;
+        ``labels`` replaces an option's ".ext" label. Without ``extensions`` every
+        indexable type is offered, followed by common types that cannot be indexed
+        (archives, databases, executables, temporary files, logs) so they can be excluded.
 
         Note: options_endpoint is reserved for a future dynamic-options implementation.
         """
@@ -824,12 +856,20 @@ class CommonFields:
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description=description
-            or "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+            or "Filter files by extension. Use Not in to skip types PipesHub can't index "
+            "(archives, databases, executables, media). Leave empty to sync all files.",
             default_operator=MultiselectOperator.IN.value,
             option_source_type=OptionSourceType.STATIC,
             options=[
-                FilterOption(id=ext.value, label=f".{ext.value}")
-                for ext in ExtensionTypes
+                FilterOption(id=ext, label=(labels or {}).get(ext, f".{ext}"))
+                for ext in (
+                    [ext.value for ext in extensions]
+                    if extensions
+                    else [
+                        *(ext.value for ext in ExtensionTypes),
+                        *EXCLUDABLE_FILE_EXTENSIONS,
+                    ]
+                )
             ]
         )
 
@@ -885,7 +925,7 @@ class CommonFields:
             display_name="Enable Manual Indexing",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
-            description="Disable automatic indexing for all synced records.",
+            description="On: synced records are not indexed until you choose them. Off: every synced record is indexed.",
             default_value=False
         )
 

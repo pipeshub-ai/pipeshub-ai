@@ -5,8 +5,10 @@ import mongoose from 'mongoose';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import { Project } from '../../../../src/modules/projects/schema/project.schema';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
+import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } from '../../../../src/libs/errors/http.errors';
@@ -37,9 +39,9 @@ const OUTSIDER_ID = new mongoose.Types.ObjectId().toString();
 
 function makeProjectDoc(overrides: Record<string, any> = {}): any {
   const doc: any = {
-    _id: new mongoose.Types.ObjectId(),
-    orgId: new mongoose.Types.ObjectId(ORG_ID),
-    userId: new mongoose.Types.ObjectId(OWNER_ID),
+    _id: new mongoose.Types.ObjectId().toString(),
+    orgId: ORG_ID,
+    userId: OWNER_ID,
     name: 'Test Project',
     description: undefined,
     icon: undefined,
@@ -69,7 +71,7 @@ describe('ProjectService', () => {
 
   describe('computeRole', () => {
     it('returns "none" when the project belongs to a different org', () => {
-      const project = makeProjectDoc({ orgId: new mongoose.Types.ObjectId(OTHER_ORG_ID) });
+      const project = makeProjectDoc({ orgId: OTHER_ORG_ID });
       expect(ProjectService.computeRole(project, OWNER_ID, ORG_ID)).to.equal('none');
     });
 
@@ -83,7 +85,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
           },
         ],
@@ -105,7 +107,7 @@ describe('ProjectService', () => {
       const teamId = new mongoose.Types.ObjectId().toString();
       const project = makeProjectDoc({
         members: [
-          { principalType: 'team', principalId: new mongoose.Types.ObjectId(teamId), role: 'editor' },
+          { principalType: 'team', principalId: teamId, role: 'editor' },
         ],
       });
       expect(ProjectService.computeRole(project, OUTSIDER_ID, ORG_ID, [teamId])).to.equal('editor');
@@ -115,7 +117,7 @@ describe('ProjectService', () => {
       const teamId = new mongoose.Types.ObjectId().toString();
       const project = makeProjectDoc({
         members: [
-          { principalType: 'team', principalId: new mongoose.Types.ObjectId(teamId), role: 'editor' },
+          { principalType: 'team', principalId: teamId, role: 'editor' },
         ],
       });
       expect(ProjectService.computeRole(project, OUTSIDER_ID, ORG_ID)).to.equal('none');
@@ -125,8 +127,8 @@ describe('ProjectService', () => {
       const teamId = new mongoose.Types.ObjectId().toString();
       const project = makeProjectDoc({
         members: [
-          { principalType: 'user', principalId: new mongoose.Types.ObjectId(MEMBER_ID), role: 'viewer' },
-          { principalType: 'team', principalId: new mongoose.Types.ObjectId(teamId), role: 'editor' },
+          { principalType: 'user', principalId: MEMBER_ID, role: 'viewer' },
+          { principalType: 'team', principalId: teamId, role: 'editor' },
         ],
       });
       expect(ProjectService.computeRole(project, MEMBER_ID, ORG_ID, [teamId])).to.equal('editor');
@@ -163,7 +165,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'viewer',
           },
         ],
@@ -185,7 +187,8 @@ describe('ProjectService', () => {
         'viewer',
       );
       expect(result.role).to.equal('owner');
-      expect(result.project).to.equal(project);
+      expect(result.project._id).to.equal(project._id.toString());
+      expect(result.project.name).to.equal(project.name);
     });
 
     it('never returns a project soft-deleted under it (filters isDeleted: false)', async () => {
@@ -214,8 +217,8 @@ describe('ProjectService', () => {
       });
       expect(project.name).to.equal('My Project');
       expect(project.description).to.equal('desc');
-      expect(project.orgId.toString()).to.equal(ORG_ID);
-      expect(project.userId.toString()).to.equal(OWNER_ID);
+      expect(project.orgId).to.equal(ORG_ID);
+      expect(project.userId).to.equal(OWNER_ID);
       expect(project.tools).to.deep.equal([]);
       expect(project.linkedKnowledgeBaseId).to.equal(null);
       expect(project.members).to.deep.equal([]);
@@ -233,14 +236,12 @@ describe('ProjectService', () => {
 
   describe('list', () => {
     function stubFindChain(resolved: any[]): sinon.SinonStub {
-      const chain: any = {
-        sort: sinon.stub().returnsThis(),
-        skip: sinon.stub().returnsThis(),
-        limit: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves(resolved),
-      };
-      return sinon.stub(Project, 'find').returns(chain);
+      return sinon.stub(Project, 'aggregate').resolves(resolved as any);
+    }
+
+    /** The `$match` stage of the first aggregate call: the list filter. */
+    function filterOf(stub: sinon.SinonStub): any {
+      return stub.firstCall.args[0][0].$match;
     }
 
     it('includes only the owner branch in scope "mine"', async () => {
@@ -255,7 +256,7 @@ describe('ProjectService', () => {
         includeArchived: false,
       });
 
-      const filter = findStub.firstCall.args[0];
+      const filter = filterOf(findStub);
       expect(filter.$or).to.have.lengthOf(1);
       expect(filter.$or[0]).to.have.property('userId');
       expect(filter.isArchived).to.equal(false);
@@ -273,7 +274,7 @@ describe('ProjectService', () => {
         includeArchived: true,
       });
 
-      const filter = findStub.firstCall.args[0];
+      const filter = filterOf(findStub);
       expect(filter.$or).to.have.lengthOf(3);
       expect(filter).to.not.have.property('isArchived');
     });
@@ -290,7 +291,7 @@ describe('ProjectService', () => {
         isArchived: true,
       });
 
-      expect(findStub.firstCall.args[0].isArchived).to.equal(true);
+      expect(filterOf(findStub).isArchived).to.equal(true);
     });
 
     it('filters to active projects when isArchived is false', async () => {
@@ -305,14 +306,14 @@ describe('ProjectService', () => {
         isArchived: false,
       });
 
-      expect(findStub.firstCall.args[0].isArchived).to.equal(false);
+      expect(filterOf(findStub).isArchived).to.equal(false);
     });
 
     it('adds a fourth team-membership branch in scope "all" when callerTeamIds is non-empty', async () => {
       const findStub = stubFindChain([]);
       sinon.stub(Project, 'countDocuments').resolves(0);
       sinon.stub(ChatSession, 'aggregate').resolves([]);
-      const teamId = new mongoose.Types.ObjectId().toString();
+      const teamId = 'a3e8fa11-0000-team';
 
       await ProjectService.list(
         ORG_ID,
@@ -321,10 +322,12 @@ describe('ProjectService', () => {
         [teamId],
       );
 
-      const filter = findStub.firstCall.args[0];
+      const filter = filterOf(findStub);
       expect(filter.$or).to.have.lengthOf(4);
-      const teamBranch = filter.$or.find((clause: any) => clause['members.principalType'] === 'team');
-      expect(teamBranch['members.principalId'].$in.map((id: any) => id.toString())).to.deep.equal([teamId]);
+      const teamBranch = filter.$or.find(
+        (clause: any) => clause.members?.$elemMatch?.principalType === 'team',
+      );
+      expect(teamBranch.members.$elemMatch.principalId.$in).to.deep.equal([teamId]);
     });
 
     it('applies a case-insensitive name regex when search is provided', async () => {
@@ -340,14 +343,14 @@ describe('ProjectService', () => {
         search: 'road',
       });
 
-      const filter = findStub.firstCall.args[0];
+      const filter = filterOf(findStub);
       expect(filter.name).to.deep.equal({ $regex: 'road', $options: 'i' });
     });
 
     it('enriches each project with role and conversationCount from the $group aggregate', async () => {
       const projectId = new mongoose.Types.ObjectId();
       stubFindChain([
-        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+        { _id: projectId, orgId: ORG_ID, userId: OWNER_ID, members: [], visibility: 'private' },
       ]);
       sinon.stub(Project, 'countDocuments').resolves(1);
       sinon.stub(ChatSession, 'aggregate').resolves([{ _id: projectId, count: 3 }]);
@@ -376,7 +379,7 @@ describe('ProjectService', () => {
         search: 'Q3 (draft).*',
       });
 
-      const pattern = findStub.firstCall.args[0].name.$regex;
+      const pattern = filterOf(findStub).name.$regex;
       expect(pattern).to.equal('Q3 \\(draft\\)\\.\\*');
       expect(new RegExp(pattern, 'i').test('Q3 (draft).*')).to.equal(true);
       expect(new RegExp(pattern, 'i').test('Q3 draft and anything after')).to.equal(false);
@@ -387,8 +390,8 @@ describe('ProjectService', () => {
       const emptyId = new mongoose.Types.ObjectId();
       const row = (id: mongoose.Types.ObjectId) => ({
         _id: id,
-        orgId: new mongoose.Types.ObjectId(ORG_ID),
-        userId: new mongoose.Types.ObjectId(OWNER_ID),
+        orgId: ORG_ID,
+        userId: OWNER_ID,
         members: [],
         visibility: 'private',
       });
@@ -420,9 +423,72 @@ describe('ProjectService', () => {
 
       expect(aggregateStub.called).to.equal(false);
     });
+
+    it('sorts by the caller\'s own pin and never exposes who else pinned', async () => {
+      const otherUser = new mongoose.Types.ObjectId();
+      const aggregateStub = stubFindChain([
+        {
+          _id: new mongoose.Types.ObjectId(),
+          orgId: new mongoose.Types.ObjectId(ORG_ID),
+          userId: new mongoose.Types.ObjectId(OWNER_ID),
+          members: [{ principalType: 'user', principalId: new mongoose.Types.ObjectId(MEMBER_ID), role: 'editor' }],
+          visibility: 'private',
+          isPinned: false,
+          pinnedBy: [otherUser],
+        },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      sinon.stub(ChatSession, 'aggregate').resolves([]);
+
+      const { projects } = await ProjectService.list(ORG_ID, MEMBER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: false,
+      });
+
+      const sortStage = aggregateStub.firstCall.args[0].find((stage: any) => stage.$sort);
+      expect(Object.keys(sortStage.$sort)[0]).to.equal('callerPinned');
+      expect(projects[0]?.isPinned).to.equal(false);
+      expect(projects[0]).to.not.have.property('pinnedBy');
+    });
+
+    it('counts only the chats the caller can open: their own and project-shared ones', async () => {
+      const projectId = new mongoose.Types.ObjectId();
+      stubFindChain([
+        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      const countStub = sinon.stub(ChatSession, 'aggregate').resolves([]);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'mine',
+        includeArchived: false,
+      });
+
+      const match = countStub.firstCall.args[0][0].$match;
+      expect(match.$or).to.deep.equal([
+        { userId: new mongoose.Types.ObjectId(OWNER_ID) },
+        { projectVisibility: 'project' },
+      ]);
+    });
   });
 
   describe('update', () => {
+    it('refuses edits while the project is archived', async () => {
+      const project = makeProjectDoc({ isArchived: true });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { name: 'New' }),
+        ConflictError,
+        /archived/,
+      );
+      expect(project.save.called).to.equal(false);
+    });
+
     it('throws BadRequestError when clearing the name to blank', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
@@ -449,7 +515,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
           },
         ],
@@ -531,7 +597,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
           },
         ],
@@ -556,7 +622,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'viewer',
           },
         ],
@@ -586,11 +652,51 @@ describe('ProjectService', () => {
   });
 
   describe('setPinned / setArchived', () => {
-    it('toggles isPinned for at-least-editor callers', async () => {
-      const project = makeProjectDoc();
+    const viewerRow = {
+      principalType: 'user',
+      principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+      role: 'viewer',
+    };
+
+    it('lets a viewer pin, adding only their own id atomically', async () => {
+      const project = makeProjectDoc({ members: [viewerRow] });
       sinon.stub(Project, 'findOne').resolves(project);
-      const updated = await ProjectService.setPinned(ORG_ID, OWNER_ID, project._id.toString(), true);
-      expect(updated.isPinned).to.equal(true);
+      const updateStub = sinon.stub(Project, 'findOneAndUpdate').resolves(project);
+
+      await ProjectService.setPinned(ORG_ID, MEMBER_ID, project._id.toString(), true);
+
+      const [, update] = updateStub.firstCall.args as any[];
+      expect(update.$addToSet.pinnedBy.toString()).to.equal(MEMBER_ID);
+      expect(update).to.not.have.property('$set');
+    });
+
+    it('clears the legacy project-wide pin when the owner unpins', async () => {
+      const project = makeProjectDoc({ isPinned: true });
+      sinon.stub(Project, 'findOne').resolves(project);
+      const updateStub = sinon.stub(Project, 'findOneAndUpdate').resolves(project);
+
+      await ProjectService.setPinned(ORG_ID, OWNER_ID, project._id.toString(), false);
+
+      const [, update] = updateStub.firstCall.args as any[];
+      expect(update.$pull.pinnedBy.toString()).to.equal(OWNER_ID);
+      expect(update.$set).to.deep.equal({ isPinned: false });
+    });
+
+    it('reads a legacy project-wide pin as the owner\'s pin only', () => {
+      const project = makeProjectDoc({ isPinned: true });
+      expect(ProjectService.isPinnedFor(project, OWNER_ID)).to.equal(true);
+      expect(ProjectService.isPinnedFor(project, MEMBER_ID)).to.equal(false);
+    });
+
+    it('refuses archive from an editor', async () => {
+      const project = makeProjectDoc({ members: [{ ...viewerRow, role: 'editor' }] });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.setArchived(ORG_ID, MEMBER_ID, project._id.toString(), true),
+        ForbiddenError,
+      );
+      expect(project.save.called).to.equal(false);
     });
 
     it('sets archivedBy on archive and clears it on unarchive', async () => {
@@ -618,7 +724,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
           },
         ],
@@ -691,7 +797,7 @@ describe('ProjectService', () => {
       await ProjectService.softDelete(ORG_ID, OWNER_ID, project._id.toString());
 
       expect(updateManyStub.calledBefore(project.save)).to.equal(true);
-      expect(updateManyStub.firstCall.args[0]).to.deep.equal({ projectId: project._id });
+      expect(updateManyStub.firstCall.args[0]).to.deep.equal({ projectId: new mongoose.Types.ObjectId(project._id) });
       expect(updateManyStub.firstCall.args[1]).to.deep.equal({
         $unset: { projectId: '', projectVisibility: '' },
       });
@@ -744,18 +850,30 @@ describe('ProjectService', () => {
     const members = [
       {
         principalType: 'user',
-        principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+        principalId: MEMBER_ID,
         role: 'viewer',
       },
     ];
 
-    it('returns the member list to the owner', async () => {
+    beforeEach(() => {
+      sinon.stub(Users, 'find').returns({
+        lean: () => ({
+          exec: sinon.stub().resolves([
+            { _id: new mongoose.Types.ObjectId(MEMBER_ID), fullName: 'Ada Member', email: 'ada@example.com' },
+          ]),
+        }),
+      } as any);
+    });
+
+    it('returns the member list to the owner with each user\'s name and email', async () => {
       const project = makeProjectDoc({ members });
       sinon.stub(Project, 'findOne').resolves(project);
 
-      expect(await ProjectService.listMembers(ORG_ID, OWNER_ID, project._id.toString())).to.equal(
-        project.members,
-      );
+      const listed = await ProjectService.listMembers(ORG_ID, OWNER_ID, project._id.toString());
+
+      expect(listed).to.deep.equal([
+        { ...members[0], name: 'Ada Member', email: 'ada@example.com' },
+      ]);
     });
 
     it('returns the member list to a plain viewer', async () => {
@@ -771,7 +889,7 @@ describe('ProjectService', () => {
       const teamId = new mongoose.Types.ObjectId().toString();
       const project = makeProjectDoc({
         members: [
-          { principalType: 'team', principalId: new mongoose.Types.ObjectId(teamId), role: 'viewer' },
+          { principalType: 'team', principalId: teamId, role: 'viewer' },
         ],
       });
       sinon.stub(Project, 'findOne').resolves(project);
@@ -811,12 +929,35 @@ describe('ProjectService', () => {
   });
 
   describe('upsertMembers', () => {
+    it('stores a team id as the graph id string, not an ObjectId', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const updated = await ProjectService.upsertMembers(ORG_ID, OWNER_ID, project._id.toString(), [
+        { principalId: 'a3e8fa11-0000-team', principalType: 'team', role: 'viewer' },
+      ]);
+
+      expect(updated.members[0]?.principalId).to.equal('a3e8fa11-0000-team');
+    });
+
+    it('refuses member changes while the project is archived', async () => {
+      const project = makeProjectDoc({ isArchived: true });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.upsertMembers(ORG_ID, OWNER_ID, project._id.toString(), [
+          { principalId: MEMBER_ID, role: 'viewer' },
+        ]),
+        ConflictError,
+      );
+    });
+
     it('throws ForbiddenError when the caller is not the owner', async () => {
       const project = makeProjectDoc({
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
           },
         ],
@@ -844,7 +985,7 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'viewer',
           },
         ],
@@ -870,7 +1011,7 @@ describe('ProjectService', () => {
       const sharedId = new mongoose.Types.ObjectId().toString();
       const project = makeProjectDoc({
         members: [
-          { principalType: 'user', principalId: new mongoose.Types.ObjectId(sharedId), role: 'viewer' },
+          { principalType: 'user', principalId: sharedId, role: 'viewer' },
         ],
       });
       sinon.stub(Project, 'findOne').resolves(project);
@@ -886,21 +1027,97 @@ describe('ProjectService', () => {
   });
 
   describe('removeMember', () => {
-    it('throws ForbiddenError for a non-owner caller', async () => {
+    it('throws ForbiddenError when a non-owner removes someone else', async () => {
       const project = makeProjectDoc({
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
+          },
+          {
+            principalType: 'user',
+            principalId: new mongoose.Types.ObjectId(OUTSIDER_ID),
+            role: 'viewer',
           },
         ],
       });
       sinon.stub(Project, 'findOne').resolves(project);
       await expectRejection(
-        ProjectService.removeMember(ORG_ID, MEMBER_ID, project._id.toString(), MEMBER_ID),
+        ProjectService.removeMember(ORG_ID, MEMBER_ID, project._id.toString(), OUTSIDER_ID),
         ForbiddenError,
       );
+    });
+
+    it('lets a member remove themselves to leave', async () => {
+      const project = makeProjectDoc({
+        members: [
+          { principalType: 'user', principalId: new mongoose.Types.ObjectId(MEMBER_ID), role: 'viewer' },
+        ],
+      });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const { project: updated, removed } = await ProjectService.removeMember(
+        ORG_ID,
+        MEMBER_ID,
+        project._id.toString(),
+        MEMBER_ID,
+      );
+
+      expect(removed).to.equal(true);
+      expect(updated.members).to.have.lengthOf(0);
+    });
+
+    it('runs beforeSave before saving, and saves nothing when it fails', async () => {
+      const project = makeProjectDoc({
+        members: [
+          { principalType: 'user', principalId: new mongoose.Types.ObjectId(MEMBER_ID), role: 'viewer' },
+        ],
+      });
+      sinon.stub(Project, 'findOne').resolves(project);
+      const beforeSave = sinon.stub().rejects(new Error('KB service unavailable'));
+
+      try {
+        await ProjectService.removeMember(
+          ORG_ID,
+          OWNER_ID,
+          project._id.toString(),
+          MEMBER_ID,
+          'user',
+          [],
+          beforeSave,
+        );
+        expect.fail('Expected rejection');
+      } catch (error: any) {
+        expect(error.message).to.equal('KB service unavailable');
+      }
+      expect(beforeSave.calledOnce).to.equal(true);
+      expect(project.save.called).to.equal(false);
+    });
+
+    it('skips beforeSave when nobody matched', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+      const beforeSave = sinon.stub().resolves();
+
+      await ProjectService.removeMember(ORG_ID, OWNER_ID, project._id.toString(), MEMBER_ID, 'user', [], beforeSave);
+
+      expect(beforeSave.called).to.equal(false);
+    });
+
+    it('reports removed=false without saving when nobody matched', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const { removed } = await ProjectService.removeMember(
+        ORG_ID,
+        OWNER_ID,
+        project._id.toString(),
+        MEMBER_ID,
+      );
+
+      expect(removed).to.equal(false);
+      expect(project.save.called).to.equal(false);
     });
 
     it('removes the matching member for the owner', async () => {
@@ -908,13 +1125,13 @@ describe('ProjectService', () => {
         members: [
           {
             principalType: 'user',
-            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            principalId: MEMBER_ID,
             role: 'editor',
           },
         ],
       });
       sinon.stub(Project, 'findOne').resolves(project);
-      const updated = await ProjectService.removeMember(
+      const { project: updated } = await ProjectService.removeMember(
         ORG_ID,
         OWNER_ID,
         project._id.toString(),
@@ -924,7 +1141,7 @@ describe('ProjectService', () => {
     });
 
     it('only removes the team row when principalType="team" is given, leaving a same-id user row intact', async () => {
-      const sharedId = new mongoose.Types.ObjectId(MEMBER_ID);
+      const sharedId = MEMBER_ID;
       const project = makeProjectDoc({
         members: [
           { principalType: 'user', principalId: sharedId, role: 'editor' },
@@ -932,7 +1149,7 @@ describe('ProjectService', () => {
         ],
       });
       sinon.stub(Project, 'findOne').resolves(project);
-      const updated = await ProjectService.removeMember(
+      const { project: updated } = await ProjectService.removeMember(
         ORG_ID,
         OWNER_ID,
         project._id.toString(),
@@ -946,11 +1163,11 @@ describe('ProjectService', () => {
     it('defaults to removing a "user" principalType when none is given', async () => {
       const project = makeProjectDoc({
         members: [
-          { principalType: 'user', principalId: new mongoose.Types.ObjectId(MEMBER_ID), role: 'editor' },
+          { principalType: 'user', principalId: MEMBER_ID, role: 'editor' },
         ],
       });
       sinon.stub(Project, 'findOne').resolves(project);
-      const updated = await ProjectService.removeMember(
+      const { project: updated } = await ProjectService.removeMember(
         ORG_ID,
         OWNER_ID,
         project._id.toString(),
@@ -965,7 +1182,7 @@ describe('ProjectService', () => {
       const linkedProject = makeProjectDoc({ linkedKnowledgeBaseId: 'kb-1' });
       const findStub = sinon.stub(Project, 'find').resolves([linkedProject] as any);
       const result = await ProjectService.findProjectsWithLinkedKbForUser(ORG_ID, MEMBER_ID);
-      expect(result).to.deep.equal([linkedProject]);
+      expect(result.map((p) => p._id)).to.deep.equal([linkedProject._id.toString()]);
       const findFilter = findStub.firstCall.args[0] as any;
       expect(findFilter.orgId.toString()).to.equal(ORG_ID);
       expect(findFilter.linkedKnowledgeBaseId).to.deep.equal({ $ne: null });
@@ -1001,9 +1218,23 @@ describe('ProjectService', () => {
       };
       const findStub = sinon.stub(Project, 'find').returns(chain);
       const result = await ProjectService.getAccessibleProjectIds(ORG_ID, OWNER_ID);
-      expect(result).to.deep.equal(ids);
+      expect(result).to.deep.equal(ids.map(String));
       const filter = findStub.firstCall.args[0] as any;
       expect(filter.$or).to.have.lengthOf(3);
+    });
+
+    it('includes projects shared with one of the caller\'s teams', async () => {
+      const findStub = sinon
+        .stub(Project, 'find')
+        .returns({ lean: sinon.stub().resolves([]) } as any);
+
+      await ProjectService.getAccessibleProjectIds(ORG_ID, OWNER_ID, ['team-1']);
+
+      const filter = findStub.firstCall.args[0] as any;
+      const teamClause = filter.$or.find(
+        (clause: any) => clause.members?.$elemMatch?.principalType === 'team',
+      );
+      expect(teamClause.members.$elemMatch.principalId).to.deep.equal({ $in: ['team-1'] });
     });
   });
 

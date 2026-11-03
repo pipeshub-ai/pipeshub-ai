@@ -20,9 +20,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from app.utils.not_indexed import is_not_indexed, not_indexed_note
+
 from .models import LookupMatch, LookupResult, NavigationView, NodeRef, NodeRow
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.utils.chat_helpers import RecordIdShortener
 
 _MAX_NAME_LEN = 80
@@ -34,6 +38,13 @@ _MAX_RESPONSE_BYTES = 25_000
 # so both paths offer the model the same number of records to read at once.
 _MAX_READ_HINT_IDS = 8
 _TRUNCATION_LINE = "... (output truncated — use page= to continue)"
+# Kept out of the system prompt: only a turn that lists records needs it. A real
+# id from the listing as the example is what gets a small model to cite at all.
+CITE_NOTE = (
+    "Cite a fact this listing states about a record (its name, dates, status, or a value it matched) with that "
+    "row's cite id, e.g. [source]({ref}). It backs only what the listing shows, never what "
+    "the record says: read the record first for that."
+)
 
 
 def _trunc(name: str, n: int = _MAX_NAME_LEN) -> str:
@@ -77,6 +88,7 @@ def _row_line(
     row: NodeRow,
     shortener: "RecordIdShortener | None" = None,
     indent: int = 0,
+    cite: str | None = None,
 ) -> str:
     """Render one listing row.
 
@@ -87,13 +99,15 @@ def _row_line(
     id_label = row.display_id_label.lower().replace(" ", "_")  # record_id or node_id
     parts = [f"[{row.node_type}/{row.sub_type or '?'}]", _trunc(row.name)]
     parts.append(f"| {id_label}={_short(row.id, shortener)}")
+    if cite:
+        parts.append(f"| cite={cite}")
     if row.level > 1:
         parts.append(f"| Level {row.level}")
     created_label = _compact_date(row.source_created_at)
     if created_label:
-        parts.append(f"| created: {created_label}")
+        parts.append(f"| {'uploaded' if row.upload_dated else 'created'}: {created_label}")
     modified_label = _compact_date(row.source_modified_at)
-    if modified_label and modified_label != created_label:
+    if modified_label and modified_label != created_label and not row.upload_dated:
         parts.append(f"| modified: {modified_label}")
     if row.detail:
         parts.append(f"| {row.detail}")
@@ -111,12 +125,54 @@ def _row_line(
 # ---------------------------------------------------------------------------
 
 
+def _name_line(block_lines: list[str]) -> int:
+    """Index of a `Record.to_llm_context()` block's `Name:` line, which follows
+    its `Record ID:` line: a node counts as shown once both were emitted."""
+    return min(1, len(block_lines) - 1)
+
+
+def _cap(lines: list[str], owners: list[tuple[int, str]], *, strip: bool = False) -> tuple[str, list[str]]:
+    """Join `lines`, cut at `_MAX_RESPONSE_BYTES`, and list the ids whose own
+    line (`owners`: line index, id) was emitted whole, in emission order.
+
+    Taken from the structure rather than parsed back out of the text, so a
+    name or summary that spells out another node's id cannot count for it.
+    """
+    joined = "\n".join(lines)
+    text = joined.strip() if strip else joined
+    lead = len(joined.encode("utf-8")) - len(joined.lstrip().encode("utf-8")) if strip else 0
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _MAX_RESPONSE_BYTES:
+        return text, list(dict.fromkeys(rid for _, rid in owners))
+    text = encoded[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="ignore") + "\n" + _TRUNCATION_LINE
+    kept: list[bool] = []
+    start = 0
+    for line in lines:
+        end = start + len(line.encode("utf-8"))
+        kept.append(end - lead <= _MAX_RESPONSE_BYTES)
+        start = end + 1
+    emitted = list(dict.fromkeys(rid for index, rid in owners if kept[index]))
+    return text, emitted
+
+
 def render_navigation_view(
     view: NavigationView,
     page: int,
     shortener: "RecordIdShortener | None" = None,
 ) -> str:
-    """Render a NavigationView to the flat-text format the agent sees.
+    """`render_navigation_view_with_ids` without the emitted ids."""
+    return render_navigation_view_with_ids(view, page, shortener)[0]
+
+
+def render_navigation_view_with_ids(
+    view: NavigationView,
+    page: int,
+    shortener: "RecordIdShortener | None" = None,
+    cite_refs: Mapping[str, str] | None = None,
+) -> tuple[str, list[str]]:
+    """Render a NavigationView to the flat-text format the agent sees, plus
+    the ids of the nodes whose own line made it past the byte cap, in the
+    order they were emitted (the viewed node first).
 
     page > 1 omits header / breadcrumbs / related to save tokens.
     Record nodes print their full `Record.to_llm_context()` block and a
@@ -128,8 +184,13 @@ def render_navigation_view(
     `RecordIdShortener`) replaces every id this function prints with a
     short `R<n>` label; `context_block` (pre-rendered `Record ID: <id>`
     text) is shortened via its regex-based text path instead.
+
+    `cite_refs` (Record ID -> Citation ID) marks the records an answer may
+    cite for what this listing states about them.
     """
+    cite_refs = cite_refs or {}
     lines: list[str] = []
+    owners: list[tuple[int, str]] = []
 
     if page == 1:
         # Breadcrumbs line
@@ -155,23 +216,41 @@ def render_navigation_view(
                 context_block = view.context_block
                 if shortener is not None:
                     context_block = shortener.shorten_record_ids_in_text(context_block)
-                lines.append(context_block)
-                if view.indexing_status and view.indexing_status != "COMPLETED":
-                    lines.append(f"Indexed: {view.indexing_status}")
+                block_lines = context_block.split("\n")
+                owners.append((len(lines) + _name_line(block_lines), cur.id))
+                lines.extend(block_lines)
+                if cur.id in cite_refs:
+                    lines.append(f"Citation ID: {cite_refs[cur.id]}")
+                if is_not_indexed(view.indexing_status):
+                    lines.extend(not_indexed_note(view.indexing_status).split("\n"))
             else:
                 lines.append(f"Node: {_trunc(cur.name)}")
                 type_str = f"{cur.node_type}/{cur.sub_type}" if cur.sub_type else cur.node_type
                 connector_str = f"Connector: {view.connector}" if view.connector else ""
-                indexed_str = f"Indexed: {view.indexing_status}" if view.indexing_status else ""
+                unindexed = is_not_indexed(view.indexing_status)
+                indexed_str = (
+                    f"Indexed: {view.indexing_status}"
+                    if view.indexing_status and not unindexed else ""
+                )
                 meta = " | ".join(filter(None, [f"Type: {type_str}", connector_str, indexed_str]))
                 if meta:
                     lines.append(meta)
+                owners.append((len(lines), cur.id))
                 lines.append(f"{cur.display_id_label}: {_short(cur.id, shortener)}")
                 if view.web_url:
                     lines.append(f"URL: {view.web_url}")
+                if cur.id in cite_refs:
+                    lines.append(f"Citation ID: {cite_refs[cur.id]}")
+                if unindexed:
+                    # Same note as with a context block: the read hint is
+                    # withheld below, so this is what explains why.
+                    lines.extend(not_indexed_note(view.indexing_status).split("\n"))
 
     # Children listing
     pag = view.pagination
+    cited_rows = [cite_refs[row.id] for row in (*view.rows, *view.related) if row.id in cite_refs]
+    if cited_rows:
+        lines.append("\n" + CITE_NOTE.format(ref=cited_rows[0]))
     if view.rows:
         if pag:
             shown_start = (pag.page - 1) * pag.limit + 1
@@ -181,7 +260,8 @@ def render_navigation_view(
         else:
             lines.append("\nChildren:")
         for row in view.rows:
-            lines.append(_row_line(row, shortener))
+            owners.append((len(lines), row.id))
+            lines.append(_row_line(row, shortener, cite=cite_refs.get(row.id)))
     elif view.current:
         lines.append("\n(no children)")
     else:
@@ -191,7 +271,8 @@ def render_navigation_view(
     if page == 1 and view.related:
         lines.append("\nRelated:")
         for row in view.related:
-            lines.append(_row_line(row, shortener))
+            owners.append((len(lines), row.id))
+            lines.append(_row_line(row, shortener, cite=cite_refs.get(row.id)))
 
     # Next-step hints
     hints: list[str] = []
@@ -203,7 +284,11 @@ def render_navigation_view(
     # is page 1 only (same record on every page); rows go on every page, since
     # each page shows different ones.
     readable: list[str] = []
-    if page == 1 and view.current and view.current.is_record and view.current.id:
+    if (
+        page == 1 and view.current and view.current.is_record and view.current.id
+        # Nothing to read yet; the header already says why.
+        and not is_not_indexed(view.indexing_status)
+    ):
         readable.append(view.current.id)
     for row in view.rows:
         if row.is_record and row.id and row.id not in readable:
@@ -234,11 +319,7 @@ def render_navigation_view(
     if hints:
         lines.append("\nNext: " + " | ".join(hints))
 
-    result = "\n".join(lines)
-    encoded = result.encode("utf-8")
-    if len(encoded) > _MAX_RESPONSE_BYTES:
-        result = encoded[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="ignore") + "\n" + _TRUNCATION_LINE
-    return result
+    return _cap(lines, owners)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +327,9 @@ def render_navigation_view(
 # ---------------------------------------------------------------------------
 
 
-def _render_match(m: LookupMatch, shortener: "RecordIdShortener | None" = None) -> list[str]:
+def _render_match(
+    m: LookupMatch, shortener: "RecordIdShortener | None" = None, cite: str | None = None,
+) -> list[str]:
     """Render one match: `context_block` (Record.to_llm_context() output —
     already includes Record ID, Name, External ID, Web URL, and any
     type-specific `* Status`/`* Priority`/`* Type`/`* Assignee` lines) when
@@ -270,17 +353,32 @@ def _render_match(m: LookupMatch, shortener: "RecordIdShortener | None" = None) 
             lines.append(f"External ID: {m.external_id}")
         if m.web_url:
             lines.append(f"URL: {m.web_url}")
-    if m.indexing_status and m.indexing_status != "COMPLETED":
-        lines.append(f"Indexed: {m.indexing_status}")
-    lines.append(
-        f'Next: navigate(node_id="{_short(m.id, shortener)}") to list children and linked records'
-        f" | {_read_hint([m.id], shortener)}"
-    )
+    if cite:
+        lines.append(f"Citation ID: {cite}")
+    next_hint = f'Next: navigate(node_id="{_short(m.id, shortener)}") to list children and linked records'
+    if is_not_indexed(m.indexing_status):
+        # The record exists; only its content is missing. Pointing at a read
+        # that cannot succeed sends the model to search instead, which cannot
+        # find it either, and "not found" then reads as "does not exist".
+        lines.append(not_indexed_note(m.indexing_status))
+        lines.append(next_hint)
+    else:
+        lines.append(f"{next_hint} | {_read_hint([m.id], shortener)}")
     return lines
 
 
 def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | None" = None) -> str:
-    """Render a LookupResult to flat text.
+    """`render_lookup_result_with_ids` without the emitted ids."""
+    return render_lookup_result_with_ids(result, shortener)[0]
+
+
+def render_lookup_result_with_ids(
+    result: LookupResult,
+    shortener: "RecordIdShortener | None" = None,
+    cite_refs: Mapping[str, str] | None = None,
+) -> tuple[str, list[str]]:
+    """Render a LookupResult to flat text, plus the ids of the matches whose
+    id line made it past the byte cap, in the order they were emitted.
 
     Found records are listed with their full `Record.to_llm_context()`
     block plus a self-teaching `Next:` hint (same pattern as
@@ -295,10 +393,17 @@ def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | N
     `render_navigation_view`.
     """
     lines: list[str] = []
+    owners: list[tuple[int, str]] = []
 
     if result.matches:
         for m in result.matches:
-            lines.extend(_render_match(m, shortener))
+            cite = (cite_refs or {}).get(m.id)
+            block = [part for entry in _render_match(m, shortener, cite) for part in entry.split("\n")]
+            id_line = _name_line(block) if m.context_block else next(
+                i for i, line in enumerate(block) if line.startswith("Record ID: ")
+            )
+            owners.append((len(lines) + id_line, m.id))
+            lines.extend(block)
             if len(result.matches) > 1:
                 lines.append(f"Matched by: {m.identifier_used}")
             lines.append("")
@@ -320,8 +425,4 @@ def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | N
             else:
                 lines.append(f"Not found (or no access): {ident}")
 
-    text = "\n".join(lines).strip()
-    encoded = text.encode("utf-8")
-    if len(encoded) > _MAX_RESPONSE_BYTES:
-        text = encoded[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="ignore") + "\n" + _TRUNCATION_LINE
-    return text
+    return _cap(lines, owners, strip=True)

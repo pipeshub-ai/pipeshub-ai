@@ -1,7 +1,21 @@
-import { Types } from 'mongoose';
-import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
-import { IProjectDocument } from '../../projects/types/project.interfaces';
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
+import { isValidId } from '../../../libs/repositories/ids';
+import { getProjectRepository } from '../../../libs/repositories/project';
+import { Logger } from '../../../libs/services/logger.service';
+import { AppConfig } from '../../tokens_manager/config/config';
+import { ProjectDto } from '../../projects/types/project.interfaces';
 import { ProjectService } from '../../projects/services/project.service';
+import { resolveCallerTeamIds } from '../../projects/utils/team-membership';
+import { ProjectsFeature } from '../../projects/utils/projects-feature';
+
+const logger = Logger.getInstance({ service: 'ProjectContext' });
 
 /** Sentinel accepted by `?projectId=` query params to mean "no project". */
 export const PROJECT_ID_UNASSIGNED = 'unassigned';
@@ -9,7 +23,59 @@ export const PROJECT_ID_UNASSIGNED = 'unassigned';
 export interface ResolvedProjectLink {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
-  project?: IProjectDocument;
+  project?: ProjectDto;
+}
+
+/** Who is asking, for the project access checks a chat makes. */
+export interface ProjectCaller {
+  /** Graph team ids, fetched only when a chat actually involves a project. */
+  resolveTeamIds: () => Promise<string[]>;
+  /** The scopes of an OAuth token or PAT; undefined for a session token, which is not scope-limited. */
+  oauthScopes?: string[];
+}
+
+type TokenFields = { isOAuth?: boolean; oauthScopes?: string[] };
+
+export function projectCallerFromRequest(
+  req: AuthenticatedUserRequest,
+  appConfig: AppConfig,
+): ProjectCaller {
+  const user = req.user as TokenFields | undefined;
+  return {
+    resolveTeamIds: () => resolveCallerTeamIds(req, appConfig),
+    oauthScopes: user?.isOAuth === true ? (user.oauthScopes ?? []) : undefined,
+  };
+}
+
+/**
+ * Projects whose shared chats the caller may read. Teams are resolved only
+ * when the org has a project shared with a team, so the common case adds no
+ * call to the connector service on every chat list.
+ */
+export async function accessibleProjectIdsFor(
+  orgId: string,
+  userId: string,
+  caller?: ProjectCaller,
+): Promise<string[]> {
+  const teamIds =
+    caller && (await ProjectService.orgHasTeamMembers(orgId))
+      ? await caller.resolveTeamIds()
+      : [];
+  return ProjectService.getAccessibleProjectIds(orgId, userId, teamIds);
+}
+
+/**
+ * A chat in a project reads the project's instructions, scope and files, so
+ * an OAuth token or PAT needs project:read for it, as for GET /projects/:id.
+ * conversation:chat alone used to reach all of it.
+ */
+function assertProjectReadScope(caller: ProjectCaller | undefined): void {
+  const scopes = caller?.oauthScopes;
+  if (scopes && !scopes.includes(OAuthScopeNames.PROJECT_READ)) {
+    throw new ForbiddenError(
+      `Insufficient scope. Required: ${OAuthScopeNames.PROJECT_READ}`,
+    );
+  }
 }
 
 /**
@@ -27,18 +93,23 @@ export async function resolveProjectLink(
   orgId: string,
   userId: string,
   body: Record<string, unknown>,
+  caller?: ProjectCaller,
 ): Promise<ResolvedProjectLink> {
   const projectId =
     typeof body.projectId === 'string' ? body.projectId : undefined;
   if (!projectId) {
     return {};
   }
+  await ProjectsFeature.assertEnabled();
+  assertProjectReadScope(caller);
   const { project } = await ProjectService.assertAccess(
     orgId,
     userId,
     projectId,
     'viewer',
+    caller ? await caller.resolveTeamIds() : [],
   );
+  ProjectService.assertNotArchived(project);
   const requestedVisibility = body.projectVisibility;
   const projectVisibility: 'private' | 'project' =
     requestedVisibility === 'project' || requestedVisibility === 'private'
@@ -62,11 +133,17 @@ function readIdArray(value: unknown): string[] | undefined {
  * state); a non-empty request list is intersected with the project set so
  * the caller can only deselect, never add beyond what the project allows.
  */
-function narrowToProjectScope(requested: string[] | undefined, projectSet: string[]): string[] {
+function narrowToProjectScope(
+  requested: string[] | undefined,
+  projectSet: string[],
+): string[] {
   if (!requested || requested.length === 0) return projectSet;
   const allowed = new Set(projectSet);
   return requested.filter((id) => allowed.has(id));
 }
+
+/** Filter keys that select below app level (record groups, folders, records). */
+const SELECTION_FILTER_KEYS = ['recordGroups', 'records', 'recordsExact'];
 
 /**
  * Enforces a project's *explicit* scope on an outgoing AI payload, in
@@ -83,6 +160,11 @@ function narrowToProjectScope(requested: string[] | undefined, projectSet: strin
  *    falling back to the *whole* project set when the request carried none
  *    for that dimension. `filters.kb` additionally always includes the
  *    project's own hidden linked Collection id, once it exists.
+ *  - `filters.recordGroups`/`filters.records` — what the request selected
+ *    below app level, or, for a request that selected nothing at all, what
+ *    the project itself lists there. Either way `allowedFilters` carries the
+ *    project's whole scope, because only Python can tell whether a selected
+ *    node lies inside it.
  *  - `strictScope: true` — tells `get_accessible_virtual_record_ids`
  *    (Python) to return *no* records for an empty effective scope instead
  *    of falling back to "search everything the user can access" (see
@@ -96,7 +178,7 @@ function narrowToProjectScope(requested: string[] | undefined, projectSet: strin
  */
 export function applyProjectScope(
   aiPayload: Record<string, unknown>,
-  project: IProjectDocument | undefined,
+  project: ProjectDto | undefined,
 ): void {
   if (!project) return;
   const context = ProjectService.buildContext(project);
@@ -112,21 +194,67 @@ export function applyProjectScope(
   delete requestedFilters.apps;
   delete requestedFilters.kb;
 
-  const effectiveApps = narrowToProjectScope(
-    readIdArray((aiPayload.filters as Record<string, unknown> | undefined)?.apps),
-    context.knowledgeScope?.apps ?? [],
+  const projectApps = context.knowledgeScope?.apps ?? [];
+  const projectKb = context.knowledgeScope?.kb ?? [];
+  const projectBelowApps = {
+    recordGroups: context.knowledgeScope?.recordGroups ?? [],
+    records: context.knowledgeScope?.records ?? [],
+  };
+  // A selection below app level is the whole scope of the turn: an empty
+  // apps/kb list then means none of them, not the whole project.
+  const hasSelection = SELECTION_FILTER_KEYS.some(
+    (key) => (readIdArray(requestedFilters[key])?.length ?? 0) > 0,
   );
-  const effectiveKb = narrowToProjectScope(
-    readIdArray((aiPayload.filters as Record<string, unknown> | undefined)?.kb),
-    context.knowledgeScope?.kb ?? [],
+  const narrow = (
+    requested: string[] | undefined,
+    projectSet: string[],
+  ): string[] =>
+    hasSelection
+      ? (requested ?? []).filter((id) => projectSet.includes(id))
+      : narrowToProjectScope(requested, projectSet);
+  const requested = aiPayload.filters as Record<string, unknown> | undefined;
+  const requestedApps = readIdArray(requested?.apps);
+  const requestedKb = readIdArray(requested?.kb);
+  // A collection may be sent under `apps` like any other app.
+  const collectionsUnderApps = (requestedApps ?? []).filter((id) =>
+    projectKb.includes(id),
+  );
+  const effectiveApps = narrow(requestedApps, projectApps);
+  const effectiveKb = narrow(
+    collectionsUnderApps.length > 0
+      ? [...(requestedKb ?? []), ...collectionsUnderApps]
+      : requestedKb,
+    projectKb,
   );
   const kbIds = new Set(effectiveKb);
   if (context.linkedKnowledgeBaseId) {
     kbIds.add(context.linkedKnowledgeBaseId);
   }
+  // A request that selected nothing is the whole project, including what the
+  // project lists below app level.
+  const requestedNothing =
+    !hasSelection && !requestedApps?.length && !requestedKb?.length;
+  const belowApps = requestedNothing
+    ? Object.fromEntries(
+        Object.entries(projectBelowApps).filter(([, ids]) => ids.length > 0),
+      )
+    : {};
+  if (hasSelection || Object.keys(belowApps).length > 0) {
+    aiPayload.allowedFilters = {
+      apps: [
+        ...projectApps,
+        ...projectKb,
+        ...(context.linkedKnowledgeBaseId
+          ? [context.linkedKnowledgeBaseId]
+          : []),
+      ],
+      ...projectBelowApps,
+    };
+  }
 
   aiPayload.filters = {
     ...requestedFilters,
+    ...belowApps,
     apps: effectiveApps,
     kb: Array.from(kbIds),
   };
@@ -155,25 +283,70 @@ export function bareToolFullName(key: string): string {
  * Returns undefined for a plain (non-project) session or if the linked
  * project was hard-deleted from under it — either way the chat should keep
  * working without project context rather than failing the turn.
+ *
+ * When the chat's owner has lost access to its project (removed as a
+ * member, or the project made private), the chat is unlinked from the
+ * project before the turn runs. Otherwise their new messages kept landing in
+ * a chat the project's members can still read.
  */
 export async function loadProjectForSession(
   orgId: string,
   userId: string,
-  projectId: Types.ObjectId | string | undefined,
-): Promise<IProjectDocument | undefined> {
+  projectId: { toString(): string } | string | undefined,
+  options: {
+    caller?: ProjectCaller;
+    conversationId?: { toString(): string } | string;
+  } = {},
+): Promise<ProjectDto | undefined> {
   if (!projectId) return undefined;
+  // With Projects off the chat carries on without project context; the link
+  // is kept, so turning Projects back on restores it.
+  if (!(await ProjectsFeature.isEnabled())) return undefined;
+  assertProjectReadScope(options.caller);
   try {
     const { project } = await ProjectService.assertAccess(
       orgId,
       userId,
       projectId.toString(),
       'viewer',
+      options.caller ? await options.caller.resolveTeamIds() : [],
     );
     return project;
   } catch (error) {
-    if (error instanceof NotFoundError || error instanceof ForbiddenError || error instanceof BadRequestError) {
+    if (
+      error instanceof NotFoundError ||
+      error instanceof ForbiddenError ||
+      error instanceof BadRequestError
+    ) {
+      if (options.conversationId && isValidId(projectId.toString())) {
+        await unlinkFromProject(orgId, options.conversationId, projectId);
+      }
       return undefined;
     }
     throw error;
   }
+}
+
+async function unlinkFromProject(
+  orgId: string,
+  conversationId: { toString(): string } | string,
+  projectId: { toString(): string } | string,
+): Promise<void> {
+  // A failed team lookup reads as "in no teams", which would wrongly unlink a
+  // chat whose owner has access through a team, so such projects are left alone.
+  // A deleted project already had its chats unlinked by its delete.
+  const stillRestricted = await getProjectRepository().isLiveWithoutTeamMembers(
+    projectId.toString(),
+  );
+  if (!stillRestricted) return;
+  // Guarded on the same projectId so a chat moved elsewhere meanwhile stays put.
+  await getConversationRepository().unlinkFromProject(
+    orgId,
+    conversationId.toString(),
+    projectId.toString(),
+  );
+  logger.info('Unlinked a chat from a project its owner can no longer access', {
+    conversationId: conversationId.toString(),
+    projectId: projectId.toString(),
+  });
 }

@@ -36,7 +36,7 @@ class TestOllamaMultimodalProvider:
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = {"embeddings": []}
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
+        with patch("app.services.embeddings.multimodal.ollama_provider.guarded_async_client") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -59,7 +59,7 @@ class TestOllamaMultimodalProvider:
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = {"embeddings": [[0.1, 0.2]]}
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
+        with patch("app.services.embeddings.multimodal.ollama_provider.guarded_async_client") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -77,7 +77,7 @@ class TestOllamaMultimodalProvider:
             base_url="http://localhost:11434", model_name="llava", logger=logger
         )
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
+        with patch("app.services.embeddings.multimodal.ollama_provider.guarded_async_client") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.post.side_effect = RuntimeError("connection refused")
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)

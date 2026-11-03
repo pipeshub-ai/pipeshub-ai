@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useState, useMemo } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -25,6 +25,9 @@ import {
   type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api';
+import { VectorDbMemoryWarning } from './vector-db-memory';
+import { getVectorDbMemoryReport, type VectorDbMemoryReport } from './api';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Service metadata
@@ -238,6 +241,9 @@ export default function ServicesPage() {
   const [localServiceNames, setLocalServiceNames] = useState<Record<string, string> | null>(null);
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
+  const [vectorDbMemory, setVectorDbMemory] = useState<VectorDbMemoryReport | null>(null);
+  // Each refresh starts a new memory request; only the latest may set the state.
+  const memoryRequest = useRef(0);
 
   const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
   const appServiceList = useMemo(() => buildAppServices(t, localApp), [t, localApp]);
@@ -248,7 +254,16 @@ export default function ServicesPage() {
     }
   }, [isProfileInitialized, isAdmin, router]);
 
+  // Advisory and slower than the health checks (it reads every collection), so
+  // it never holds up the status rows.
+  const fetchVectorDbMemory = useCallback(async () => {
+    const request = ++memoryRequest.current;
+    const report = await getVectorDbMemoryReport();
+    if (request === memoryRequest.current) setVectorDbMemory(report);
+  }, []);
+
   const fetchHealth = useCallback(async (showToast = false) => {
+    void fetchVectorDbMemory();
     try {
       const [infraResp, servicesResp] = await Promise.allSettled([
         apiClient.get('/api/v1/health', { suppressErrorToast: true }),
@@ -279,7 +294,7 @@ export default function ServicesPage() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [addToast, t]);
+  }, [addToast, t, fetchVectorDbMemory]);
 
   useEffect(() => {
     if (!isProfileInitialized || isAdmin === false) return;
@@ -309,11 +324,11 @@ export default function ServicesPage() {
 
   return (
     <Box style={{ height: '100%', overflowY: 'auto', background: 'linear-gradient(180deg, var(--olive-2) 0%, var(--olive-1) 100%)' }}>
-      <Box style={{ padding: '64px 100px 80px' }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
-          <Box>
-            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+        <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 24 }}>
+          <Box style={{ flex: '1 1 240px', minWidth: 0 }}>
+            <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.services.pageTitle')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
@@ -331,6 +346,7 @@ export default function ServicesPage() {
               variant="outline"
               color="gray"
               size="2"
+              className="touch-hit"
               onClick={handleRefresh}
               disabled={isRefreshing}
               style={{ cursor: isRefreshing ? 'wait' : 'pointer', flexShrink: 0, gap: 6 }}
@@ -375,12 +391,14 @@ export default function ServicesPage() {
           {/* Service rows */}
           <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
             {infraServiceList.map((meta) => (
-              <ServiceRow
-                key={meta.key}
-                meta={meta}
-                status={localInfra?.[meta.key as keyof typeof localInfra]}
-                displayName={localServiceNames?.[meta.key]}
-              />
+              <React.Fragment key={meta.key}>
+                <ServiceRow
+                  meta={meta}
+                  status={localInfra?.[meta.key as keyof typeof localInfra]}
+                  displayName={localServiceNames?.[meta.key]}
+                />
+                {meta.key === 'vectorDb' && <VectorDbMemoryWarning report={vectorDbMemory} />}
+              </React.Fragment>
             ))}
           </Flex>
         </Flex>
@@ -443,7 +461,7 @@ export default function ServicesPage() {
             </Text>
           </Flex>
         </Flex>
-      </Box>
+      </SettingsPageContainer>
     </Box>
   );
 }

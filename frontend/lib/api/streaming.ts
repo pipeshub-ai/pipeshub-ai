@@ -31,6 +31,7 @@ import { useAuthStore, logoutAndRedirect } from '@/config';
 import {
   CHAT_STREAM_ERROR_MESSAGES,
   STREAM_ERROR_MESSAGES,
+  StreamError,
   streamFailure,
   streamHttpError,
 } from './stream-errors';
@@ -276,37 +277,43 @@ function parseSSEBuffer(buffer: string): {
   let i = 0;
   let lastCompleteLineIndex = -1;
 
-  while (i < lines.length) {
-    const line = lines[i];
+  // The last split entry is incomplete until another newline arrives.
+  while (i < lines.length - 1) {
+    const rawLine = lines[i];
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
     // Empty line marks end of event
-    if (line.trim() === '') {
-      if (currentEvent.event && currentEvent.data) {
+    if (line === '') {
+      if (currentEvent.data) {
         try {
           complete.push({
-            event: currentEvent.event,
+            event: currentEvent.event || 'message',
             data: JSON.parse(currentEvent.data),
           });
-          lastCompleteLineIndex = i;
         } catch (e) {
           console.error('Failed to parse SSE data:', currentEvent.data, e);
         }
-        currentEvent = {};
       }
+      currentEvent = {};
+      lastCompleteLineIndex = i;
       i++;
       continue;
     }
 
-    // Parse event field
-    if (line.startsWith('event: ')) {
-      currentEvent.event = line.substring(7).trim();
+    const colonIndex = line.indexOf(':');
+    const field = colonIndex >= 0 ? line.substring(0, colonIndex) : line;
+    const rawValue = colonIndex >= 0 ? line.substring(colonIndex + 1) : '';
+    const value = rawValue.startsWith(' ') ? rawValue.substring(1) : rawValue;
+
+    if (field === 'event') {
+      currentEvent.event = value;
       i++;
       continue;
     }
 
-    // Parse data field
-    if (line.startsWith('data: ')) {
-      currentEvent.data = line.substring(6).trim();
+    if (field === 'data') {
+      // A frame may carry several data lines; the SSE format joins them with a newline.
+      currentEvent.data = currentEvent.data === undefined ? value : `${currentEvent.data}\n${value}`;
       i++;
       continue;
     }
@@ -436,6 +443,10 @@ export interface SSEGetOptions<T = unknown> {
 
 const DEFAULT_UPLOAD_IDLE_TIMEOUT_MS = 60_000;
 
+/** Shown per file in the upload tracker when the server goes quiet mid-stream. */
+export const UPLOAD_STALLED_MESSAGE =
+  'PipesHub stopped responding before this upload finished. Please upload these files again.';
+
 /**
  * POST a multipart upload and consume its Server-Sent Events response. The KB
  * upload endpoints stream a per-file outcome (`file:succeeded` / `file:failed`)
@@ -465,6 +476,16 @@ export async function streamSSEUpload<T = unknown>(
     else signal.addEventListener('abort', onExternalAbort, { once: true });
   }
 
+  let responseStarted = false;
+  let callbackFailed = false;
+  const dispatch = (event: SSEEvent) => {
+    try {
+      onEvent(event as SSEEvent<T>);
+    } catch (callbackError) {
+      callbackFailed = true;
+      throw callbackError;
+    }
+  };
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const resetIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -516,6 +537,7 @@ export async function streamSSEUpload<T = unknown>(
       throw await readUploadHttpError(response);
     }
 
+    responseStarted = true;
     const reader = response.body?.getReader();
     if (!reader) {
       throw new Error('No response body available for streaming');
@@ -537,7 +559,7 @@ export async function streamSSEUpload<T = unknown>(
       buffer += decoder.decode(value, { stream: true });
       const { complete, remaining } = parseSSEBuffer(buffer);
       for (const event of complete) {
-        onEvent(event as SSEEvent<T>);
+        dispatch(event);
       }
       buffer = remaining;
     }
@@ -545,9 +567,16 @@ export async function streamSSEUpload<T = unknown>(
     buffer += decoder.decode(undefined, { stream: false });
     const { complete: tailEvents } = parseSSEBuffer(buffer);
     for (const event of tailEvents) {
-      onEvent(event as SSEEvent<T>);
+      dispatch(event);
     }
   } catch (error) {
+    // The caller's own handler failed, not the connection: close the stream
+    // and hand that error back as it is.
+    if (callbackFailed) {
+      controller.abort();
+      onError(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     // A real HTTP error (rate limit, payload too large, 5xx) always takes
     // precedence over the idle watchdog — never report it as a timeout.
     if (error instanceof UploadHttpError) {
@@ -555,14 +584,16 @@ export async function streamSSEUpload<T = unknown>(
       return;
     }
     if (idleTimedOut) {
-      onError(new Error('Upload timed out (no response from server)'));
+      onError(new StreamError(UPLOAD_STALLED_MESSAGE));
       return;
     }
     // External (caller) abort — silent, like the other streamers.
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
-    onError(error instanceof Error ? error : new Error('Upload failed'));
+    // Each file's row shows this message, so never the browser's own
+    // "Failed to fetch" / "network error" text.
+    onError(streamFailure(error, responseStarted));
   } finally {
     clearIdle();
     if (signal) signal.removeEventListener('abort', onExternalAbort);

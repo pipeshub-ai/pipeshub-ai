@@ -17,6 +17,10 @@ from app.sources.external.common.atlassian import (
 from app.utils.oauth_config import fetch_toolset_oauth_config_by_id
 
 
+class JiraConfigUnavailableError(ValueError):
+    """The config store could not be read, as opposed to holding no usable Jira config."""
+
+
 class JiraRESTClientViaUsernamePassword(HTTPClient):
     """JIRA REST client via username and password (HTTP Basic).
 
@@ -382,13 +386,18 @@ class JiraClient(IClient):
         """
 
         try:
-            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
-            if not config:
-                raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")
-            return config
+            # Without raise_on_error a failed read comes back as None, like a missing key.
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_instance_id}/config", raise_on_error=True
+            )
         except Exception as e:
             logger.error(f"Failed to get Jira connector config: {e}")
+            raise JiraConfigUnavailableError(
+                f"Failed to get Jira connector configuration for instance {connector_instance_id}"
+            ) from e
+        if not config:
             raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")
+        return config
 
     # =========================================================================
     # TOOLSET-BASED CLIENT CREATION (New Architecture)
@@ -432,6 +441,7 @@ class JiraClient(IClient):
             raise ValueError("Toolset is not authenticated. Please complete authentication first.")
 
         auth_type = toolset_config.get("authType", "").upper()
+        jira_instance: Optional[dict[str, Any]] = None
 
         try:
             if auth_type == "OAUTH":
@@ -534,6 +544,11 @@ class JiraClient(IClient):
                     f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_TOKEN, BASIC_AUTH"
                 )
 
+            # A personal action's address is its owner's: connect only to the public one checked.
+            from app.agents.toolset_store import is_personal
+
+            if jira_instance is not None and is_personal(jira_instance):
+                client.require_public_addresses()
             logger.info(f"Created Jira client from toolset config (auth type: {auth_type})")
             return cls(client)
 

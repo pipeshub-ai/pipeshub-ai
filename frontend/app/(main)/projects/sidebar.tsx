@@ -10,7 +10,7 @@ import { SidebarBase, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
 import { ProjectApi } from '@/chat/project-api';
 import { ChatSidebarHeader } from '@/chat/sidebar/header';
-import { ChatSidebarFooter } from '@/chat/sidebar/footer';
+import { ChatSidebarFooter } from '@/config';
 import { ChatSectionHeader } from '@/chat/sidebar/chat-section-header';
 import { SidebarItem } from '@/chat/sidebar/sidebar-item';
 import { ChatItemSkeleton } from '@/chat/sidebar/chat-section-element';

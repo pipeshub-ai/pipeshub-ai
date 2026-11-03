@@ -15,7 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from neo4j.exceptions import ServiceUnavailable
 
-from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
+from app.services.graph_db.neo4j.neo4j_client import (
+    DEFAULT_LIVENESS_CHECK_TIMEOUT,
+    DEFAULT_MAX_CONNECTION_LIFETIME,
+    Neo4jClient,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -257,12 +261,49 @@ class TestDriverSettings:
     @pytest.mark.asyncio
     async def test_settings_reach_the_driver(self, ensure_db) -> None:
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=_driver([])) as ctor:
-            client = _client(max_connection_pool_size=7, connection_acquisition_timeout=3.0)
+            client = _client(
+                max_connection_pool_size=7,
+                connection_acquisition_timeout=3.0,
+                max_connection_lifetime=240.0,
+                liveness_check_timeout=0.0,
+            )
             await client.connect()
 
         kwargs = ctor.call_args.kwargs
         assert kwargs["max_connection_pool_size"] == 7
         assert kwargs["connection_acquisition_timeout"] == 3.0
+        assert kwargs["max_connection_lifetime"] == 240.0
+        # Zero is the driver's "check every time", not "off".
+        assert kwargs["liveness_check_timeout"] == 0.0
+
+    def test_default_lifetime_retires_connections_before_a_nat_idle_timeout(self) -> None:
+        # A NAT gateway drops a flow idle for 350s and resets the next packet
+        # on it; a pooled connection kept longer is reused after the drop.
+        assert DEFAULT_MAX_CONNECTION_LIFETIME < 350
+        assert DEFAULT_LIVENESS_CHECK_TIMEOUT < DEFAULT_MAX_CONNECTION_LIFETIME
+
+    # 0 retires every connection before reuse; inf never retires one.
+    @pytest.mark.parametrize("lifetime", [0, 0.0, -1.0, float("nan"), float("inf"), "abc", None])
+    def test_an_unusable_lifetime_falls_back(self, lifetime: object) -> None:
+        client = _client(max_connection_lifetime=lifetime)
+
+        assert client._max_connection_lifetime == DEFAULT_MAX_CONNECTION_LIFETIME
+        client.logger.warning.assert_called_once()
+
+    # The driver rejects a negative timeout; inf would never check a connection.
+    @pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf"), "abc", None])
+    def test_an_unusable_liveness_timeout_falls_back(self, timeout: object) -> None:
+        client = _client(liveness_check_timeout=timeout)
+
+        assert client._liveness_check_timeout == DEFAULT_LIVENESS_CHECK_TIMEOUT
+        client.logger.warning.assert_called_once()
+
+    def test_usable_timeouts_are_kept_without_a_warning(self) -> None:
+        client = _client(max_connection_lifetime=240, liveness_check_timeout=0)
+
+        assert client._max_connection_lifetime == 240.0
+        assert client._liveness_check_timeout == 0.0
+        client.logger.warning.assert_not_called()
 
 
 class TestExplicitTransactions:
@@ -273,7 +314,7 @@ class TestExplicitTransactions:
     async def test_flag_off_keeps_autocommit_sessions(self, ensure_db) -> None:
         driver = _driver([])
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
-            client = _client()
+            client = _client(explicit_transactions=False)
             await client.connect()
             txn = await client.begin_transaction([], [])
             await client.execute_query("MATCH (n) RETURN n", txn_id=txn)
@@ -284,6 +325,38 @@ class TestExplicitTransactions:
         assert session.ran == ["MATCH (n) RETURN n"]
         session.close.assert_awaited_once()
         assert not client.explicit_transactions
+
+    @pytest.mark.asyncio
+    async def test_one_call_can_ask_for_a_real_transaction_with_the_flag_off(self, ensure_db) -> None:
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(explicit_transactions=False, transaction_timeout=42.0)
+            await client.connect()
+            txn = await client.begin_transaction([], [], explicit=True)
+            await client.execute_query("CREATE (n)", txn_id=txn)
+            await client.commit_transaction(txn)
+            plain = await client.begin_transaction([], [])
+            await client.abort_transaction(plain)
+
+        asked, default = driver.sessions[-2], driver.sessions[-1]
+        assert asked.transactions[0].timeout == 42.0
+        assert asked.ran == []  # the statement ran inside the transaction, not on the session
+        default.begin_transaction.assert_not_awaited()
+        assert not client.explicit_transactions
+
+    def test_the_client_opens_real_transactions_by_default(self) -> None:
+        assert _client().explicit_transactions
+
+    @pytest.mark.asyncio
+    async def test_one_call_can_decline_the_transaction_with_the_flag_on(self, ensure_db) -> None:
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(explicit_transactions=True)
+            await client.connect()
+            txn = await client.begin_transaction([], [], explicit=False)
+            await client.abort_transaction(txn)
+
+        driver.sessions[-1].begin_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_queries_run_inside_the_open_transaction(self, ensure_db) -> None:
@@ -367,3 +440,68 @@ class TestExplicitTransactions:
         session = driver.sessions[-1]
         session.transactions[0].close.assert_awaited_once()
         session.close.assert_awaited_once()
+
+
+class TestServerTimeout:
+    @pytest.mark.asyncio
+    async def test_a_timeout_wraps_the_query_and_survives_a_retry(self, ensure_db) -> None:
+        from neo4j import Query
+
+        built: list = []
+
+        def factory(*a, **kw) -> MagicMock:
+            built.append(_driver([ServiceUnavailable("connection reset")]))
+            return built[-1]
+
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", side_effect=factory):
+            client = _client()
+            await client.connect()
+            await client.execute_query("RETURN 1", timeout=2.5)
+
+        ran = [q for session in built[0].sessions for q in session.ran]
+        assert len(ran) == 2
+        assert all(isinstance(q, Query) and q.timeout == 2.5 and q.text == "RETURN 1" for q in ran)
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_runs_the_plain_text(self, ensure_db) -> None:
+        built: list = []
+
+        def factory(*a, **kw) -> MagicMock:
+            built.append(_driver([]))
+            return built[-1]
+
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", side_effect=factory):
+            client = _client()
+            await client.connect()
+            await client.execute_query("RETURN 1")
+
+        assert built[0].sessions[0].ran == ["RETURN 1"]
+
+
+class TestServerTimeoutInASession:
+    @pytest.mark.asyncio
+    async def test_a_session_query_keeps_its_timeout(self, ensure_db) -> None:
+        """Without explicit transactions a "transaction" is a session whose
+        queries each auto-commit, so the requested limit must go with them."""
+        from neo4j import Query
+
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(explicit_transactions=False)
+            await client.connect()
+            txn = await client.begin_transaction([], [])
+            await client.execute_query("RETURN 1", txn_id=txn, timeout=2.5)
+
+        (ran,) = driver.sessions[-1].ran
+        assert isinstance(ran, Query) and ran.timeout == 2.5 and ran.text == "RETURN 1"
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_transaction_keeps_the_limit_it_began_with(self, ensure_db) -> None:
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(explicit_transactions=True)
+            await client.connect()
+            txn = await client.begin_transaction([], [])
+            await client.execute_query("RETURN 1", txn_id=txn, timeout=2.5)
+
+        assert driver.sessions[-1].transactions[0].ran == ["RETURN 1"]

@@ -11,7 +11,7 @@
 #   - persistence.storageClass             -> RWX class for the shared app PVC
 #   - persistence.accessModes              -> must include ReadWriteMany when replicaCount > 1
 #   - ingress.className + ingress.hosts    -> the public DNS names
-#   - secretKey + db passwords             -> via --set or external secrets
+#   - secretKey + db passwords + qdrant.apiKey -> via --set or external secrets
 #
 # Usage (use release name "pipeshub-ai" so the rendered Service is also
 # "pipeshub-ai" — otherwise the chart fullname becomes "<release>-pipeshub-ai"
@@ -33,6 +33,7 @@
 #     --set mongodb.auth.rootPassword="..." \
 #     --set redis.auth.password="..." \
 #     --set neo4j.auth.password="..." \
+#     --set qdrant.apiKey="$(openssl rand -hex 32)" \
 #     --set "mongodb.auth.usernames[0]=pipeshub" \
 #     --set "mongodb.auth.passwords[0]=..." \
 #     --set "mongodb.auth.databases[0]=pipeshub"
@@ -51,7 +52,7 @@
 #     so OAuth callbacks resolve correctly. Otherwise leave it unset.
 #
 # Provider-specific storage class hints:
-#   - EKS:  global.storageClass=gp3                persistence.storageClass=efs-sc        (EFS CSI)
+#   - EKS:  use values-eks.yaml (gp3 only, no NFS). Do not use this file on EKS.
 #   - GKE:  global.storageClass=standard-rwo       persistence.storageClass=filestore-csi (Filestore CSI)
 #   - AKS:  global.storageClass=managed-csi        persistence.storageClass=azurefile-csi (Azure Files CSI)
 #   - On-prem: any block class (Longhorn/Ceph)     persistence.storageClass=<rwx class>
@@ -211,6 +212,9 @@ zookeeper:
 # are inherited from values.yaml and apply unchanged.
 qdrant:
   replicaCount: 2
+  # Per pod. Search slows sharply once the index outgrows the memory limit; size
+  # it from docs/deployment/vector-db-sizing.md. The chart passes the limit to
+  # the app as QDRANT_MEMORY_LIMIT for the warning on the Services page.
   resources:
     requests:
       cpu: 1
@@ -238,10 +242,6 @@ neo4j:
     NEO4J_dbms_memory_heap_max__size: 4g
     NEO4J_dbms_memory_pagecache_size: 2g
 
-# ----- Monitoring + network policies are opt-in -----
-monitoring:
-  serviceMonitor:
-    enabled: false   # set true if Prometheus Operator CRDs are installed
-
+# ----- Network policies are opt-in -----
 networkPolicy:
   enabled: false     # set true after you've validated your ingress namespace selector

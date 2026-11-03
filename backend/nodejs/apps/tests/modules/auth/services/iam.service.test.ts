@@ -1012,16 +1012,27 @@ describe('IamService - additional coverage', () => {
       }
     })
 
-    it('should throw AxiosError on failure', async () => {
+    it('answers a deleted or unknown account (IAM 404) with statusCode 404, not an error', async () => {
       nock(IAM_BACKEND)
         .get('/api/v1/users/internal/u1')
         .reply(404, { message: 'User not found' })
+
+      const result = await iamService.getUserById('u1', 'token')
+
+      expect(result.statusCode).to.equal(404)
+    })
+
+    it('still throws on other IAM failures', async () => {
+      nock(IAM_BACKEND)
+        .get('/api/v1/users/internal/u1')
+        .reply(403, { message: 'Forbidden' })
 
       try {
         await iamService.getUserById('u1', 'token')
         expect.fail('Should have thrown')
       } catch (error: any) {
-        expect(error.message).to.equal('User not found')
+        expect(axios.isAxiosError(error)).to.be.true
+        expect(error.message).to.equal('Forbidden')
       }
     })
 

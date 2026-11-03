@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { TokenManagerContainer } from '../../../../src/modules/tokens_manager/container/token-manager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import { MongoService } from '../../../../src/libs/services/mongo.service'
+import * as docStoreModule from '../../../../src/libs/repositories/doc-store'
 import * as config from '../../../../src/modules/tokens_manager/config/config'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
@@ -60,7 +61,6 @@ describe('tokens_manager/container/token-manager.container', () => {
       const mockMongo = { isConnected: sinon.stub().returns(true), destroy: sinon.stub().resolves() }
       const mockRedis = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
       const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
-      const mockRecordsEventProducer = { stop: sinon.stub().resolves() }
       const mockSyncEventProducer = { stop: sinon.stub().resolves() }
 
       const mockContainer = {
@@ -69,7 +69,6 @@ describe('tokens_manager/container/token-manager.container', () => {
             'MongoService',
             'RedisService',
             'MessageProducer',
-            'RecordsEventProducer',
             'SyncEventProducer',
           ].includes(key),
         ),
@@ -77,7 +76,6 @@ describe('tokens_manager/container/token-manager.container', () => {
           if (key === 'MongoService') return mockMongo
           if (key === 'RedisService') return mockRedis
           if (key === 'MessageProducer') return mockMessageProducer
-          if (key === 'RecordsEventProducer') return mockRecordsEventProducer
           if (key === 'SyncEventProducer') return mockSyncEventProducer
           return null
         }),
@@ -86,7 +84,6 @@ describe('tokens_manager/container/token-manager.container', () => {
 
       await TokenManagerContainer.dispose()
 
-      expect(mockRecordsEventProducer.stop.calledOnce).to.be.true
       expect(mockSyncEventProducer.stop.calledOnce).to.be.true
       expect(mockRedis.disconnect.calledOnce).to.be.true
       expect(mockMessageProducer.disconnect.calledOnce).to.be.true
@@ -255,6 +252,38 @@ describe('TokenManagerContainer - coverage', () => {
       }
     })
 
+    it('does not contact MongoDB or bind MongoService under DOC_STORE=postgres', async () => {
+      const prev = process.env.DOC_STORE
+      process.env.DOC_STORE = 'postgres'
+      sinon.stub(config, 'loadAppConfig').resolves({
+        mongo: { uri: 'mongodb://localhost:27017/test' },
+        redis: { host: 'localhost', port: 6379, username: '', password: '', db: 0 },
+        jwtSecret: 'test-jwt-secret',
+        scopedJwtSecret: 'test-scoped-jwt-secret',
+        kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+      } as any)
+      sinon.stub(KeyValueStoreService, 'getInstance').returns({
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        isConnected: sinon.stub().returns(true),
+      } as any)
+      const mongoInit = sinon.stub(MongoService.prototype, 'initialize').resolves()
+      sinon.stub(docStoreModule, 'initDocStore').resolves()
+      const { TokenEventProducer } = require('../../../../src/modules/tokens_manager/services/token-event.producer')
+      sinon.stub(TokenEventProducer.prototype, 'start').resolves()
+      try {
+        const container = await TokenManagerContainer.initialize({
+          host: 'localhost', port: 2379, storeType: 'etcd' as const, algorithm: 'aes-256-cbc', secretKey: 'test-secret-key-32-chars-long!!',
+        } as any)
+        expect(mongoInit.called).to.be.false
+        expect(container.isBound('MongoService')).to.be.false
+        ;(TokenManagerContainer as any).instance = null
+      } finally {
+        if (prev === undefined) delete process.env.DOC_STORE
+        else process.env.DOC_STORE = prev
+      }
+    })
+
     it('should throw when loadAppConfig fails', async () => {
       sinon.stub(config, 'loadAppConfig').rejects(new Error('Config load failed'))
 
@@ -280,7 +309,6 @@ describe('TokenManagerContainer - coverage', () => {
       const mockMongo = { isConnected: sinon.stub().returns(true), destroy: sinon.stub().resolves() }
       const mockRedis = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
       const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
-      const mockRecordsEventProducer = { stop: sinon.stub().resolves() }
       const mockSyncEventProducer = { stop: sinon.stub().resolves() }
 
       const mockContainer = {
@@ -289,7 +317,6 @@ describe('TokenManagerContainer - coverage', () => {
             'MongoService',
             'RedisService',
             'MessageProducer',
-            'RecordsEventProducer',
             'SyncEventProducer',
           ].includes(key),
         ),
@@ -297,7 +324,6 @@ describe('TokenManagerContainer - coverage', () => {
           if (key === 'MongoService') return mockMongo
           if (key === 'RedisService') return mockRedis
           if (key === 'MessageProducer') return mockMessageProducer
-          if (key === 'RecordsEventProducer') return mockRecordsEventProducer
           if (key === 'SyncEventProducer') return mockSyncEventProducer
           return null
         }),
@@ -306,7 +332,6 @@ describe('TokenManagerContainer - coverage', () => {
       ;(TokenManagerContainer as any).instance = mockContainer
       await TokenManagerContainer.dispose()
 
-      expect(mockRecordsEventProducer.stop.calledOnce).to.be.true
       expect(mockSyncEventProducer.stop.calledOnce).to.be.true
       expect(mockMongo.destroy.calledOnce).to.be.true
       expect(mockRedis.disconnect.calledOnce).to.be.true

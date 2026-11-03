@@ -1,17 +1,31 @@
 import { apiClient } from '@/lib/api';
-import { streamSSEGet, type SSEEvent } from '@/lib/api/streaming';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { streamSSEGet, streamSSERequest, type SSEEvent, type SSEStreamingOptions } from '@/lib/api/streaming';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type {
   AllModelsResponse,
-  CapabilitiesResponse,
+  DiscoveryResponse,
   DownloadProgressPayload,
   ModelRoleAssignment,
   ModelRolesResponse,
   ModelsByTypeResponse,
-  ProviderSchemaResponse,
+  IdentityForwardingSettings,
+  IdentityPolicy,
+  IdentityPreview,
   RegistryResponse,
 } from './types';
 
 const BASE = '/api/v1/configurationManager';
+
+/** SWR keys of the AI-model reads. The registry is the server's provider catalog: no write changes it. */
+export const AI_MODEL_KEYS = {
+  registry: (capability?: string) => [SWR_NS.aiModelRegistry, capability ?? 'all'] as const,
+  all: [SWR_NS.aiModelConfig, 'all'] as const,
+  roles: [SWR_NS.aiModelConfig, 'roles'] as const,
+};
+
+/** Refreshes every cached view of the configured models (settings, chat model lists, speech). */
+const invalidateModelConfig = () => revalidateSwrNamespace(SWR_NS.aiModelConfig);
 
 export const AIModelsApi = {
   // Registry endpoints (proxied to Python backend)
@@ -22,18 +36,81 @@ export const AIModelsApi = {
     return data;
   },
 
-  getCapabilities: async () => {
-    const { data } = await apiClient.get<CapabilitiesResponse>(
-      `${BASE}/ai-models/registry/capabilities`
-    );
+  discoverModels: async (body: {
+    provider: string;
+    capability?: string;
+    configuration?: Record<string, unknown>;
+    modelKey?: string;
+    query?: string;
+  }, signal?: AbortSignal) => {
+    const { data } = await apiClient.post<DiscoveryResponse>(`${BASE}/ai-models/discover`, body, {
+      signal,
+    });
     return data;
   },
 
-  getProviderSchema: async (providerId: string, capability?: string) => {
-    const { data } = await apiClient.get<ProviderSchemaResponse>(
-      `${BASE}/ai-models/registry/${providerId}/schema`,
-      { params: capability ? { capability } : undefined }
+  batchAddModels: (
+    body: {
+      modelType: string;
+      provider: string;
+      configuration: Record<string, unknown>;
+      models: Array<{
+        model: string;
+        modelFriendlyName?: string;
+        isMultimodal: boolean;
+        isReasoning: boolean;
+        contextLength?: number | null;
+        configuration?: Record<string, unknown>;
+      }>;
+      defaultModel?: string;
+      connectionId?: string;
+    },
+    options: SSEStreamingOptions,
+    // Rows fail one by one through onError while others are saved, so refresh however it ends.
+  ) => streamSSERequest(`${BASE}/ai-models/providers/batch`, body, options).finally(invalidateModelConfig),
+
+  rotateConnectionCredentials: async (connectionId: string, configuration: Record<string, unknown>) => {
+    const { data } = await apiClient.put(
+      `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/credentials`,
+      { configuration },
     );
+    invalidateModelConfig();
+    return data;
+  },
+
+  setConnectionIdentityForwarding: async (
+    connectionId: string,
+    settings: IdentityForwardingSettings,
+  ) => {
+    const { data } = await apiClient.put(
+      `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/identity-forwarding`,
+      settings,
+    );
+    invalidateModelConfig();
+    return data;
+  },
+
+  getIdentityPolicy: async () => {
+    const { data } = await apiClient.get<{ policy: IdentityPolicy; damaged?: boolean }>(
+      `${BASE}/ai-models/identity-policy`,
+    );
+    return { policy: data.policy, damaged: data.damaged === true };
+  },
+
+  putIdentityPolicy: async (policy: IdentityPolicy) => {
+    const { data } = await apiClient.put<{ policy: IdentityPolicy }>(
+      `${BASE}/ai-models/identity-policy`,
+      policy,
+    );
+    return data.policy;
+  },
+
+  previewIdentity: async (body: {
+    connectionId?: string;
+    workload?: string;
+    configuration?: Record<string, unknown>;
+  }) => {
+    const { data } = await apiClient.post<IdentityPreview>(`${BASE}/ai-models/identity/preview`, body);
     return data;
   },
 
@@ -48,6 +125,16 @@ export const AIModelsApi = {
       `${BASE}/ai-models/${modelType}`
     );
     return data;
+  },
+
+  /** Stored configuration of one model, credentials included. Only where the deployment allows it. */
+  revealModelConfiguration: async (modelType: string, modelKey: string) => {
+    const { data } = await apiClient.get<ModelsByTypeResponse>(
+      `${BASE}/ai-models/${modelType}`,
+      { params: REVEAL_PARAMS }
+    );
+    const model = data?.models?.find((m) => m.modelKey === modelKey);
+    return (model?.configuration ?? {}) as Record<string, unknown>;
   },
 
   addProvider: async (payload: {
@@ -65,7 +152,12 @@ export const AIModelsApi = {
       payload.provider === 'default' && modelName
         ? { ...rest, configuration: { model: modelName } }
         : rest;
-    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body);
+    // The model dialog shows the check failure itself; the global toast would
+    // repeat it under a generic "Invalid Request" title.
+    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body, {
+      suppressErrorToast: true,
+    });
+    invalidateModelConfig();
     return data;
   },
 
@@ -83,8 +175,10 @@ export const AIModelsApi = {
   ) => {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/providers/${modelType}/${modelKey}`,
-      payload
+      payload,
+      { suppressErrorToast: true }
     );
+    invalidateModelConfig();
     return data;
   },
 
@@ -93,6 +187,7 @@ export const AIModelsApi = {
       `${BASE}/ai-models/providers/${modelType}/${modelKey}`,
       { suppressErrorToast: true }
     );
+    invalidateModelConfig();
     return data;
   },
 
@@ -100,6 +195,7 @@ export const AIModelsApi = {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/default/${modelType}/${modelKey}`
     );
+    invalidateModelConfig();
     return data;
   },
 

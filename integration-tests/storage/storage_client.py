@@ -1,5 +1,9 @@
 """
-StorageClient — thin HTTP wrapper for /api/v1/document routes.
+StorageClient — thin HTTP wrapper for the /api/v1/document/internal routes.
+
+Storage is service-to-service only (it scopes by org, not record ACLs), so the
+client authenticates with a storage scoped token minted from
+``SCOPED_JWT_SECRET`` — the same secret the deployment was started with.
 
 Import this in any storage integration test:
     from storage_client import StorageClient
@@ -8,6 +12,7 @@ Import this in any storage integration test:
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 from typing import Callable
@@ -23,7 +28,25 @@ for _p in (_ROOT_DIR, _HELPER_DIR):
 
 from pipeshub_client import PipeshubClient
 
-DOCUMENT_BASE = "/api/v1/document"
+DOCUMENT_BASE = "/api/v1/document/internal"
+STORAGE_TOKEN_SCOPE = "storage:token"
+
+
+def scoped_jwt_secret() -> str:
+    return os.getenv("SCOPED_JWT_SECRET", "").strip()
+
+
+def mint_storage_token(org_id: str, user_id: str | None = None) -> str:
+    """Storage service token, shaped like the one Node's createJwt issues."""
+    from app.utils.jwt import mint_service_token  # type: ignore[import-not-found]
+
+    secret = scoped_jwt_secret()
+    if not secret:
+        raise RuntimeError("SCOPED_JWT_SECRET is required to call the storage service")
+    claims: dict[str, object] = {"orgId": org_id, "scopes": [STORAGE_TOKEN_SCOPE]}
+    if user_id:
+        claims["userId"] = user_id
+    return mint_service_token(secret, claims)
 
 
 class StorageClient:
@@ -65,8 +88,9 @@ class StorageClient:
         return self._c.org_id
 
     def _auth_headers(self) -> dict[str, str]:
-        self._c._ensure_access_token()
-        return {"Authorization": f"Bearer {self._c._access_token}"}
+        # Minted per request: service tokens are short-lived.
+        token = mint_storage_token(self._c.org_id, self._c.acting_user_id)
+        return {"Authorization": f"Bearer {token}"}
 
     def _json_headers(self) -> dict[str, str]:
         return {**self._auth_headers(), "Content-Type": "application/json"}
@@ -320,6 +344,59 @@ class StorageClient:
     def is_modified(self, document_id: str) -> requests.Response:
         return requests.get(
             self._url(f"/{document_id}/isModified"),
+            headers=self._json_headers(),
+            timeout=self._c.timeout_seconds,
+        )
+
+    # Routes the indexer and the connector service use for processed records.
+
+    def move_tree(
+        self,
+        old_path: str,
+        new_path: str,
+        *,
+        virtual_record_id: str | None = None,
+        virtual_record_ids: list[str] | None = None,
+    ) -> requests.Response:
+        body: dict[str, object] = {"oldPath": old_path, "newPath": new_path}
+        if virtual_record_id is not None:
+            body["virtualRecordId"] = virtual_record_id
+        if virtual_record_ids is not None:
+            body["virtualRecordIds"] = virtual_record_ids
+        return requests.post(
+            self._url("/move-tree"),
+            headers=self._json_headers(),
+            json=body,
+            timeout=self._c.timeout_seconds,
+        )
+
+    def virtual_record_documents(self, virtual_record_id: str) -> requests.Response:
+        return requests.get(
+            self._url(f"/records/{virtual_record_id}/documents"),
+            headers=self._json_headers(),
+            timeout=self._c.timeout_seconds,
+        )
+
+    def flat_record_documents(self, *, after: str | None = None, limit: int | None = None) -> requests.Response:
+        params = {k: v for k, v in (("after", after), ("limit", limit)) if v is not None}
+        return requests.get(
+            self._url("/records/flat-documents"),
+            headers=self._json_headers(),
+            params=params,
+            timeout=self._c.timeout_seconds,
+        )
+
+    def delete_connector_storage(self, connector_id: str) -> requests.Response:
+        return requests.delete(
+            self._url(f"/connector/{connector_id}"),
+            headers=self._json_headers(),
+            timeout=self._c.timeout_seconds,
+        )
+
+    def purge_virtual_record(self, virtual_record_id: str) -> requests.Response:
+        """Remove every stored document of a virtual record, files included."""
+        return requests.delete(
+            self._url(f"/records/{virtual_record_id}/purge"),
             headers=self._json_headers(),
             timeout=self._c.timeout_seconds,
         )

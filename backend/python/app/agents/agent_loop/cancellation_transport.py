@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.responses import StructuredResponse
     from app.agent_loop_lib.core.streaming import StreamEvent
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +70,12 @@ class CancellationAwareTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse":
         return await self._inner.complete(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 
     async def complete_structured(
@@ -95,9 +98,12 @@ class CancellationAwareTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "AsyncIterator[StreamEvent]":
         stream_iter = self._inner.stream(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         ).__aiter__()
         # One task for the run of this call: `CancellationToken.wait()`
         # wraps an `asyncio.Event` that, once set, stays set -- reusing the

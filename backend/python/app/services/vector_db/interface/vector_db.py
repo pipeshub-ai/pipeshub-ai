@@ -8,10 +8,12 @@ from app.services.vector_db.models import (
     FilterValue,
     HybridSearchRequest,
     ScrollResult,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
+    VectorDBMemoryReport,
     VectorPoint,
 )
 
@@ -79,6 +81,26 @@ class IVectorDBService(ABC):
         """Perform a live health check and return a structured result."""
         raise NotImplementedError
 
+    async def memory_report(self) -> VectorDBMemoryReport | None:
+        """Estimate the memory search needs to stay fast, against what the store has.
+
+        None when the provider cannot estimate it. Concrete so providers that
+        manage their own memory (OpenSearch, Redis) need not implement it.
+        """
+        return None
+
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        """Whether ``error``, raised by this provider's client during a search,
+        is one a second attempt may get past: a timeout or the store being
+        briefly unreachable. None for everything else (a bad request, auth),
+        which a retry would only repeat.
+
+        Concrete so a provider with nothing client-specific to classify keeps
+        the builtin ``TimeoutError``/``ConnectionError`` handling of
+        ``search_retry`` and nothing more.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Collection management
     # ------------------------------------------------------------------
@@ -104,6 +126,20 @@ class IVectorDBService(ABC):
         """
         return None
 
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Bring an existing collection's keyword scoring in line with ``config``.
+
+        Unlike ``reconcile_storage_layout`` this must be cheap enough to run on
+        every startup: it may change how stored data is scored, never rewrite
+        it. Returns the setting that was changed, or None when nothing was.
+        Concrete for the same reason as ``reconcile_storage_layout``.
+        """
+        return None
+
     @abstractmethod
     async def get_collections(self) -> object:
         raise NotImplementedError
@@ -117,6 +153,29 @@ class IVectorDBService(ABC):
     async def get_collection_info(self, collection_name: str) -> VectorCollectionInfo:
         """Return normalised, provider-neutral collection metadata."""
         raise NotImplementedError
+
+    async def org_holds_points(self) -> bool:
+        """For providers with ``spaces_per_org``: whether the calling org holds any point (of any collection, deleted-but-kept rows
+        included). A read only; an org that holds none can change its embedding model."""
+        raise NotImplementedError
+
+    async def org_space_accepts(self, identity: str | None, dimension: int, current_identity: str | None = None) -> bool:
+        """For providers with ``spaces_per_org``: whether the calling org's active space already takes vectors of this model identity
+        (``provider:model:dimension``, None when unknown) and dimension, so changing to it changes nothing. ``current_identity`` is the one
+        configured now: a nameless space that holds points is read as named by it. A read only."""
+        raise NotImplementedError
+
+    async def get_collection_stamp(self, collection_name: str) -> str | None:
+        """The collection's stamp. Only for providers whose capabilities say ``stamps_in_catalog``."""
+        raise NotImplementedError
+
+    async def set_collection_stamp(self, collection_name: str, stamp: str) -> str:
+        """Sets the stamp unless the collection has one; answers the stamp in force. Only for ``stamps_in_catalog`` providers."""
+        raise NotImplementedError
+
+    async def orgs_of_virtual_records(self, virtual_record_ids: list[str]) -> dict[str, set[str]] | None:
+        """The orgs holding points of each virtual record (absent: none), or None when the provider cannot say without being told an org."""
+        return None
 
     @abstractmethod
     async def collection_exists(self, collection_name: str) -> bool:
@@ -181,6 +240,49 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
+    def scroll_offset_after_delete(
+        self, next_offset: Optional[str], deleted: int,
+    ) -> Optional[str]:
+        """``next_offset`` from ``scroll``, adjusted after the caller deleted
+        ``deleted`` of the points that page returned.
+
+        A key-based cursor (the next id, a ``search_after`` value) is
+        unaffected. A positional one must step back, or the next page skips
+        as many points as were deleted.
+        """
+        return next_offset
+
+    @abstractmethod
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        """Points by id, without vectors; ids with no point are omitted.
+
+        Unlike ``scroll``, this reads writes that are not yet searchable (an
+        OpenSearch index only refreshes every 30s), so a read-modify-write can
+        use it without losing an update made moments earlier.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        """Merge ``payload`` into the points with these ids, by id.
+
+        Unlike ``set_payload``, which finds its points with a search (an
+        OpenSearch ``update_by_query`` cannot see a document until the index
+        refreshes), this reaches a point the moment it was written. Ids with
+        no point are ignored.
+        """
+        raise NotImplementedError
+
+    # A search answered from less than the full search is reported with degraded_notice.note(reason) or SearchResult.degraded (see models).
     @abstractmethod
     async def query_nearest_points(
         self,

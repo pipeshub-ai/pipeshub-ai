@@ -16,15 +16,6 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
-from app.models.entities import (
-    AppUser,
-    FileRecord,
-    MailRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-)
 from app.models.permission import EntityType, Permission, PermissionType
 
 
@@ -182,39 +173,6 @@ class TestExtractBodyFromPayloadExtended:
 # ===========================================================================
 # _merge_history_changes - extended
 # ===========================================================================
-class TestMergeHistoryChangesExtended:
-    def test_empty_inputs(self):
-        connector = _make_connector()
-        result = connector._merge_history_changes({"history": []}, {"history": []})
-        assert result == {"history": []}
-
-    def test_dedup_by_id(self):
-        connector = _make_connector()
-        inbox = {"history": [{"id": "1", "type": "inbox"}, {"id": "2", "type": "inbox"}]}
-        sent = {"history": [{"id": "2", "type": "sent"}, {"id": "3", "type": "sent"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        assert len(result["history"]) == 3
-
-    def test_sorted_by_id(self):
-        connector = _make_connector()
-        inbox = {"history": [{"id": "3"}, {"id": "1"}]}
-        sent = {"history": [{"id": "2"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        ids = [h["id"] for h in result["history"]]
-        assert ids == ["1", "2", "3"]
-
-    def test_missing_history_key(self):
-        connector = _make_connector()
-        result = connector._merge_history_changes({}, {})
-        assert result == {"history": []}
-
-    def test_single_source(self):
-        connector = _make_connector()
-        inbox = {"history": [{"id": "10"}, {"id": "20"}]}
-        result = connector._merge_history_changes(inbox, {"history": []})
-        assert len(result["history"]) == 2
-
-
 # ===========================================================================
 # _parse_gmail_headers - extended
 # ===========================================================================

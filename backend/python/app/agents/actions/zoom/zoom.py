@@ -764,7 +764,7 @@ class Zoom:
             ToolParameter(name="occurrence_id", type=ParameterType.STRING, description="To delete a single occurrence of a recurring meeting, provide the occurrence_id. To delete the entire series, leave this blank.", required=False),
             ToolParameter(name="cancel_meeting_reminder", type=ParameterType.BOOLEAN, description="Send cancellation email to registrants.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def delete_meeting(
         self,

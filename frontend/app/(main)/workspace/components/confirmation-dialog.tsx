@@ -27,7 +27,7 @@ export interface ConfirmationDialogProps {
   cancelLabel?: string;
 
   /** Visual style of the confirm button */
-  confirmVariant?: 'danger' | 'primary';
+  confirmVariant?: 'danger' | 'primary' | 'success';
 
   /** Whether the confirm action is in-progress */
   isLoading?: boolean;
@@ -84,7 +84,6 @@ export function ConfirmationDialog({
         style={{
           maxWidth: '37.5rem',
           padding: 'var(--space-5)',
-          backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow:
@@ -119,7 +118,13 @@ export function ConfirmationDialog({
             <LoadingButton
               type="button"
               variant="solid"
-              color={confirmVariant === 'danger' ? 'red' : undefined}
+              color={
+                confirmVariant === 'danger'
+                  ? 'red'
+                  : confirmVariant === 'success'
+                    ? 'green'
+                    : undefined
+              }
               size="2"
               onClick={(e) => {
                 e.preventDefault();

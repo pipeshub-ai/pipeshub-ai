@@ -3,38 +3,29 @@ import { KeyValueStoreService } from '../../../../libs/services/keyValueStore.se
 import { CrawlingSchedulerService } from '../../../crawling_manager/services/crawling_service';
 import { AppConfig } from '../../../tokens_manager/config/config';
 import { configPaths } from '../../paths/paths';
-import { fetchConfigJwtGenerator } from '../../../../libs/utils/createJwt';
-import { executeConnectorCommand } from '../../../tokens_manager/utils/connector.utils';
-import { HttpMethod } from '../../../../libs/enums/http-methods.enum';
 import { getRedisProvider } from '../../../../libs/services/redis/connectionProviderFactory';
 import { redisConnectionConfigFromHostPort } from '../../../../libs/services/redis/connectionConfig';
 import {
-  ConnectorSyncBlock,
   buildCrawlingScheduleFromSync,
   isScheduledSyncStrategy,
 } from '../../../crawling_manager/utils/schedule_config_mapper';
-
-interface ScheduledConnectorRecord {
-  connectorId: string;
-  type: string;
-  orgId: string;
-  ownerUserId?: string | null;
-  isActive: boolean;
-  sync: ConnectorSyncBlock;
-}
+import { reconcileConnectorSchedule } from '../../../crawling_manager/services/connector_schedule_orchestrator';
+import {
+  SCHEDULED_CONNECTORS_MAX_PAGES,
+  SCHEDULED_CONNECTORS_PAGE_SIZE,
+  ScheduledConnectorRecord,
+  ScheduledConnectorsPage,
+  fetchScheduledConnectorsPage,
+} from '../../../crawling_manager/utils/scheduled_connectors_client';
 
 const MIGRATION_FLAG_DONE = 'true';
-
-/** Page size sent to the Python all-scheduled endpoint. */
-const BACKFILL_BATCH_SIZE = 50;
 
 /** Exponential-backoff constants for waiting on the connector service. */
 const BACKFILL_MAX_ATTEMPTS = 10;
 const BACKFILL_INITIAL_DELAY_MS = 2_000;
 const BACKFILL_MAX_DELAY_MS = 30_000;
 
-/** Safety cap — prevents an infinite loop if the server always returns hasMore:true. */
-const BACKFILL_MAX_PAGES = 1_000;
+const BACKFILL_MAX_PAGES = SCHEDULED_CONNECTORS_MAX_PAGES;
 
 /**
  * One-time backfill that schedules BullMQ crawling jobs for connectors
@@ -69,23 +60,36 @@ export class ScheduledJobsBackfillMigration {
     this.backoffInitialDelayMs = backoffOptions.initialDelayMs ?? BACKFILL_INITIAL_DELAY_MS;
   }
 
-  async run(): Promise<{ scheduled: number; skipped: number; errored: number }> {
+  /**
+   * `ignoreDoneFlag` makes this a repair pass rather than a migration: it recreates the job of any
+   * scheduled connector that lost it (a schedule write that failed after a save, a Redis flush),
+   * and leaves every connector that has one alone.
+   */
+  async run({
+    ignoreDoneFlag = false,
+  }: { ignoreDoneFlag?: boolean } = {}): Promise<{
+    scheduled: number;
+    skipped: number;
+    errored: number;
+  }> {
     // Guard: skip if a previous successful run already set the flag.
-    try {
-      const flag = await this.kvStore.get<string>(
-        configPaths.connectorSyncScheduledJobsMigrationV2,
-      );
-      if (flag === MIGRATION_FLAG_DONE) {
-        this.logger.info(
-          'Connector-sync scheduled-jobs migration already completed; skipping',
+    if (!ignoreDoneFlag) {
+      try {
+        const flag = await this.kvStore.get<string>(
+          configPaths.connectorSyncScheduledJobsMigrationV2,
         );
-        return { scheduled: 0, skipped: 0, errored: 0 };
+        if (flag === MIGRATION_FLAG_DONE) {
+          this.logger.info(
+            'Connector-sync scheduled-jobs migration already completed; skipping',
+          );
+          return { scheduled: 0, skipped: 0, errored: 0 };
+        }
+      } catch (error) {
+        this.logger.warn(
+          'Failed to read migration flag; proceeding with idempotent run',
+          { error: error instanceof Error ? error.message : 'Unknown error' },
+        );
       }
-    } catch (error) {
-      this.logger.warn(
-        'Failed to read migration flag; proceeding with idempotent run',
-        { error: error instanceof Error ? error.message : 'Unknown error' },
-      );
     }
 
     this.logger.info('Starting connector-sync scheduled-jobs backfill migration');
@@ -94,7 +98,7 @@ export class ScheduledJobsBackfillMigration {
     // more -- the queue and the worker both look under the hash-tagged prefix
     // now -- so leaving them behind means the old repeatable-job schedules sit
     // in Redis forever, invisible and un-removable through the BullMQ API.
-    await this.sweepLegacyQueueKeys();
+    if (!ignoreDoneFlag) await this.sweepLegacyQueueKeys();
 
     // Fetch the first batch with exponential backoff — the connector service
     // may still be starting up on the first boot.
@@ -109,14 +113,14 @@ export class ScheduledJobsBackfillMigration {
 
     let scheduled = 0;
     let skipped = 0;
-    let errored = 0;
+    let errored = await this.reconcilePending();
 
-    let { items, hasMore } = firstBatch;
+    let { items, hasMore, partial } = firstBatch;
     let page = 1;
 
     for (;;) {
       // Process each batch inline and discard it before fetching the next —
-      // peak memory stays proportional to BACKFILL_BATCH_SIZE regardless of
+      // peak memory stays proportional to SCHEDULED_CONNECTORS_PAGE_SIZE regardless of
       // how many connectors exist in total.
       for (const item of items) {
         const ctx = {
@@ -177,6 +181,14 @@ export class ScheduledJobsBackfillMigration {
         }
       }
 
+      if (partial) {
+        errored++;
+        this.logger.warn(
+          'Backfill page omitted connectors whose config could not be read; completion flag NOT set',
+          { page },
+        );
+      }
+
       if (!hasMore) break;
 
       page++;
@@ -197,6 +209,7 @@ export class ScheduledJobsBackfillMigration {
         const nextBatch = await this.fetchBatch(page);
         items = nextBatch.items;
         hasMore = nextBatch.hasMore;
+        partial = nextBatch.partial;
         this.logger.debug('Fetched backfill batch', {
           page,
           batchSize: items.length,
@@ -213,6 +226,21 @@ export class ScheduledJobsBackfillMigration {
         );
         break;
       }
+    }
+
+    if (ignoreDoneFlag) {
+      // A repair pass owns no flag; whatever failed is tried again by the next pass.
+      if (errored > 0) {
+        this.logger.warn(
+          'Connector schedule repair pass finished with errors',
+          {
+            scheduled,
+            skipped,
+            errored,
+          },
+        );
+      }
+      return { scheduled, skipped, errored };
     }
 
     if (errored > 0) {
@@ -316,56 +344,88 @@ export class ScheduledJobsBackfillMigration {
   }
 
   /**
-   * Fetch one page of connector records from the Python backend.
-   * `page` is 1-based. Throws on any HTTP or service error so callers can
-   * decide how to handle it.
+   * Applies the saves whose settings read failed, from each connector's own settings: the walk
+   * below leaves out a connector that is off, manual or unreadable alike, so its absence proves
+   * nothing. Returns how many failed; those stay pending for the next pass.
    */
-  private async fetchBatch(
-    page: number,
-  ): Promise<{ items: ScheduledConnectorRecord[]; hasMore: boolean }> {
-    const { connectorBackend, scopedJwtSecret } = this.appConfig;
-    if (!connectorBackend) {
-      throw new Error('connectorBackend URL is not configured');
-    }
-    if (!scopedJwtSecret) {
-      throw new Error('scopedJwtSecret is not configured');
-    }
-
-    let token: string;
+  private async reconcilePending(): Promise<number> {
+    // Marks a save sets after this are its own change, still owed after this pass.
+    const startedAt = Date.now();
+    let errored = 0;
+    let pending: { connectorId: string; orgId: string }[];
     try {
-      token = fetchConfigJwtGenerator('system', 'system', scopedJwtSecret);
+      pending = await this.scheduler.listReconcilesPending();
     } catch (error) {
-      throw new Error(
-        `Failed to mint scoped JWT: ${error instanceof Error ? error.message : 'Unknown'}`,
+      this.logger.error(
+        'Could not read the schedule changes owed by failed saves',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
       );
+      return 1;
     }
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-    };
-
-    const url =
-      `${connectorBackend}/api/v1/connectors/internal/all-scheduled` +
-      `?page=${page}&limit=${BACKFILL_BATCH_SIZE}`;
-
-    const resp = await executeConnectorCommand(url, HttpMethod.GET, headers);
-    const status = resp?.statusCode;
-
-    if (!status || status < 200 || status >= 300) {
-      throw new Error(
-        `Connector service returned non-2xx status ${status ?? '(no response)'}`,
-      );
+    const orgOf = new Map(pending.map((p) => [p.connectorId, p.orgId]));
+    for (let i = 0; i < pending.length; i += SCHEDULED_CONNECTORS_PAGE_SIZE) {
+      const ids = pending
+        .slice(i, i + SCHEDULED_CONNECTORS_PAGE_SIZE)
+        .map((p) => p.connectorId);
+      let items: ScheduledConnectorRecord[];
+      try {
+        ({ items } = await this.fetchBatch(1, ids));
+      } catch (error) {
+        this.logger.error(
+          'Could not read the settings of connectors owed a schedule change',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        errored++;
+        continue; // the next batch may still be readable
+      }
+      for (const item of items) {
+        if (item.unreadable) continue; // still owed; never read as "sync is off"
+        try {
+          if (item.missing) {
+            await this.scheduler.removeJobsForConnector(
+              item.connectorId,
+              orgOf.get(item.connectorId) ?? item.orgId,
+            );
+          } else {
+            await reconcileConnectorSchedule(this.scheduler, this.logger, {
+              connector: item.type,
+              connectorId: item.connectorId,
+              orgId: item.orgId,
+              userId:
+                (typeof item.ownerUserId === 'string' && item.ownerUserId) ||
+                'system',
+              isActive: item.isActive,
+              sync: item.sync,
+            });
+          }
+          await this.scheduler.clearReconcilePending(
+            item.connectorId,
+            startedAt,
+          );
+        } catch (error) {
+          errored++;
+          this.logger.error(
+            'Could not apply a schedule change owed by a failed save',
+            {
+              connectorId: item.connectorId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
     }
+    return errored;
+  }
 
-    const data = resp.data as {
-      items?: ScheduledConnectorRecord[];
-      hasMore?: boolean;
-    } | null;
-
-    return {
-      items: (data?.items ?? []) as ScheduledConnectorRecord[],
-      hasMore: data?.hasMore ?? false,
-    };
+  private fetchBatch(
+    page: number,
+    connectorIds?: string[],
+  ): Promise<ScheduledConnectorsPage> {
+    return fetchScheduledConnectorsPage(this.appConfig, page, connectorIds);
   }
 
   /**
@@ -375,7 +435,7 @@ export class ScheduledJobsBackfillMigration {
    */
   private async fetchBatchWithBackoff(
     page: number,
-  ): Promise<{ items: ScheduledConnectorRecord[]; hasMore: boolean } | null> {
+  ): Promise<ScheduledConnectorsPage | null> {
     let delay = this.backoffInitialDelayMs;
 
     for (let attempt = 1; attempt <= this.backoffMaxAttempts; attempt++) {

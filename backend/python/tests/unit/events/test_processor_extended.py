@@ -796,7 +796,7 @@ class TestProcessBlockgroupsEmpty:
         ):
             proc.parsers = {"md": MagicMock()}
             with pytest.raises(RuntimeError, match="parser failed"):
-                await proc._process_blockgroups(bc, "test.md")
+                await proc._process_blockgroups(bc, "test.md", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_no_blockgroups_to_process(self):
@@ -812,7 +812,7 @@ class TestProcessBlockgroupsEmpty:
         )
         bc = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups(bc, "test.md")
+        result = await proc._process_blockgroups(bc, "test.md", allow_remote_fetch=True)
         assert result is bc
 
 
@@ -846,6 +846,53 @@ class TestProcessDelimitedNonUnicodeError:
         # Should mark as empty and yield both events
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
+
+
+class TestProcessDelimitedDecoding:
+    """Excel on Windows saves CSV as Windows-1252: 0x80 is the euro sign, 0x93/0x94 curly quotes."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "expected_rows"),
+        [
+            pytest.param(
+                b"item,note\nWidget,\x80 5\nQuote,\x93best\x94\n",
+                [["item", "note"], ["Widget", "\u20ac 5"], ["Quote", "\u201cbest\u201d"]],
+                id="windows-1252",
+            ),
+            pytest.param(
+                b"name,note\ncaf\xe9,\x81 \x80\n",
+                [["name", "note"], ["caf\u00e9", "\ufffd \u20ac"]],
+                id="undefined-windows-1252-byte",
+            ),
+            pytest.param(
+                "name,city\nZoë,Zürich €\n".encode(),
+                [["name", "city"], ["Zoë", "Zürich €"]],
+                id="utf-8",
+            ),
+            pytest.param(
+                b"\xef\xbb\xbf" + "name,city\nZoë,Zürich €\n".encode(),
+                [["name", "city"], ["Zoë", "Zürich €"]],
+                id="utf-8-with-bom",
+            ),
+        ],
+    )
+    async def test_rows_are_decoded(self, raw: bytes, expected_rows: list) -> None:
+        from app.modules.parsers.csv.csv_parser import CSVParser
+
+        csv_parser = CSVParser(config_service=MagicMock())
+        csv_parser.find_tables_in_csv = MagicMock(return_value=[])
+        csv_parser.get_blocks_from_csv_with_multiple_tables = AsyncMock(return_value=MagicMock())
+        proc = _make_processor(parsers={"csv": csv_parser})
+        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="t.csv"))
+
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            mock_llm.return_value = (MagicMock(), {})
+            MockPipeline.return_value.apply = AsyncMock()
+            await _collect_events(proc.process_delimited_document("t.csv", "r1", raw, "vr1"))
+
+        csv_parser.find_tables_in_csv.assert_called_once_with(expected_rows)
 
 
 # ===================================================================
@@ -1166,7 +1213,7 @@ class TestProcessPptDocument:
     async def test_ppt_delegates_to_pptx(self):
         """PPT is converted to PPTX and delegated."""
         ppt_parser = MagicMock()
-        ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx_data")
+        ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx_data")
         proc = _make_processor(parsers={"ppt": ppt_parser})
 
         async def _fake_pptx(*args, **kwargs):
@@ -1181,7 +1228,7 @@ class TestProcessPptDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"ppt_data")
+        ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"ppt_data")
 
 
 # ===================================================================
@@ -1194,7 +1241,7 @@ class TestProcessXlsDocument:
     async def test_xls_delegates_to_excel(self):
         """XLS is converted to XLSX and delegated to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx_data")
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_data")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -1209,7 +1256,7 @@ class TestProcessXlsDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"xls_data")
+        xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"xls_data")
 
 
 # ===================================================================
@@ -1222,7 +1269,7 @@ class TestProcessDocDocument:
     async def test_doc_delegates_to_docx(self):
         """DOC is converted to DOCX and delegated to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx = MagicMock(return_value=b"docx_data")
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_data")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         async def _fake_docx(*args, **kwargs):
@@ -1237,7 +1284,7 @@ class TestProcessDocDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        doc_parser.convert_doc_to_docx.assert_called_once_with(b"doc_data")
+        doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"doc_data")
 
 
 # ===================================================================
@@ -1430,6 +1477,7 @@ class TestCreateTransformContextCalledByProcessMethods:
     async def test_process_excel_calls_create_transform_context(self):
         """process_excel_document uses _create_transform_context with event_type."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -1489,41 +1537,6 @@ class TestProcessorCoverageBranchesTo95:
 
         fname = mock_processor.parse_document.await_args.args[0]
         assert fname.lower().endswith(".pptx")
-
-    @pytest.mark.asyncio
-    async def test_process_delimited_read_raw_rows_raises_non_unicode_then_succeeds(self):
-        """generic Exception path in decode loop continues to next encoding."""
-        proc = _make_processor()
-        csv_parser = MagicMock()
-        csv_parser.read_raw_rows = MagicMock(
-            side_effect=[ValueError("bad csv"), [["h1", "h2"], ["a", "b"]]]
-        )
-        csv_parser.find_tables_in_csv.return_value = [MagicMock()]
-        csv_parser.get_blocks_from_csv_with_multiple_tables = AsyncMock(
-            return_value=MagicMock()
-        )
-
-        proc.parsers = {"csv": csv_parser}
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="t.csv")
-        )
-
-        data = "a,b\nc,d\n".encode("utf-8")
-
-        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
-            mock_llm.return_value = (MagicMock(), {})
-            MockPipeline.return_value.apply = AsyncMock()
-
-            events = await _collect_events(
-                proc.process_delimited_document(
-                    "t.csv", "r1", data, "vr1", extension="csv",
-                )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
-        assert csv_parser.read_raw_rows.call_count >= 2
 
     @pytest.mark.asyncio
     async def test_process_md_with_images_base64_mapping(self):
@@ -1589,7 +1602,7 @@ class TestProcessorCoverageBranchesTo95:
 
         proc.parsers = {"md": md_parser, "png": png_parser}
 
-        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3)
+        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3, allow_remote_fetch=True)
         assert mod_md == "text"
         assert cmap.get("cap1") == "data:x"
 

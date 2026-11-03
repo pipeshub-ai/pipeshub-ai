@@ -1,14 +1,17 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { WorkspaceRightPanel, WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components/destructive-typed-confirmation-dialog';
 import { toast } from '@/lib/store/toast-store';
+import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
@@ -27,6 +30,7 @@ export function BotConfigPanel() {
     editingBotId,
     slackBotConfigs,
     agents,
+    agentsComplete,
     closePanel,
     setPanelView,
     setConfigs,
@@ -108,6 +112,7 @@ export function BotConfigPanel() {
           <SlackBotFormView
             editingConfig={editingConfig}
             agents={agents}
+            agentsComplete={agentsComplete}
             onClose={closePanel}
             onSaved={handleSaved}
             onRequestDelete={() => setShowDeleteDialog(true)}
@@ -237,12 +242,13 @@ function BotTypeRow({ bot, onClick }: { bot: BotTypeInfo; onClick: () => void })
 interface SlackBotFormViewProps {
   editingConfig: SlackBotConfig | null;
   agents: { id: string; name: string }[];
+  agentsComplete: boolean;
   onClose: () => void;
   onSaved: () => void;
   onRequestDelete: () => void;
 }
 
-function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDelete }: SlackBotFormViewProps) {
+function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSaved, onRequestDelete }: SlackBotFormViewProps) {
   const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isEditMode = !!editingConfig;
@@ -270,19 +276,60 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
     }
   }, [editingConfig]);
 
+  // Resolved against the agent list as it stands, so a list that arrives or refreshes later never
+  // resets what the user typed. An agent missing from a complete list was deleted: the bot shows the
+  // default assistant. Missing from a partial list it is unknown, so it stays selected and is saved.
+  const linkedKnown = agentId === DEFAULT_ASSISTANT_ID || agents.some((agent) => agent.id === agentId);
+  const selectedAgentId = linkedKnown || !agentsComplete ? agentId : DEFAULT_ASSISTANT_ID;
+  const agentOptions = useMemo(
+    () => (linkedKnown || agentsComplete ? agents : [...agents, { id: agentId, name: agentId }]),
+    [agents, agentId, agentsComplete, linkedKnown],
+  );
+
   const isValid = name.trim().length > 0 && botToken.trim().length > 0 && signingSecret.trim().length > 0;
+
+  const revealAvailable = useSecretRevealAvailable(isEditMode);
+
+  const [isRevealing, setIsRevealing] = useState(false);
+  const canReveal =
+    revealAvailable &&
+    Boolean(editingConfig) &&
+    (botToken === CONFIG_SECRET_PLACEHOLDER || signingSecret === CONFIG_SECRET_PLACEHOLDER);
+  const beginReveal = useRevealScope(editingConfig?.id ?? '');
+
+  // Swaps placeholders for the stored values; a field the user already edited is left as typed.
+  const handleReveal = async () => {
+    if (!editingConfig) return;
+    const stillCurrent = beginReveal();
+    setIsRevealing(true);
+    try {
+      const stored = await BotsApi.revealSlackBotConfig(editingConfig.id);
+      if (stored && stillCurrent()) {
+        setBotToken((prev) => (prev === CONFIG_SECRET_PLACEHOLDER ? stored.botToken : prev));
+        setSigningSecret((prev) =>
+          prev === CONFIG_SECRET_PLACEHOLDER ? stored.signingSecret : prev,
+        );
+        setShowBotToken(true);
+        setShowSigningSecret(true);
+      }
+    } catch {
+      // The fields keep their placeholders, which still save correctly.
+    } finally {
+      setIsRevealing(false);
+    }
+  };
 
   const handleSubmit = useCallback(async () => {
     if (!isValid || isSaving) return;
 
     setIsSaving(true);
     try {
-      const isDefaultAssistant = agentId === DEFAULT_ASSISTANT_ID;
+      const isDefaultAssistant = selectedAgentId === DEFAULT_ASSISTANT_ID;
       const payload = {
         name: name.trim(),
         botToken: botToken.trim(),
         signingSecret: signingSecret.trim(),
-        ...(!isDefaultAssistant ? { agentId } : {}),
+        ...(!isDefaultAssistant ? { agentId: selectedAgentId } : {}),
       };
 
       if (isEditMode && editingConfig) {
@@ -305,7 +352,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
     } finally {
       setIsSaving(false);
     }
-  }, [isValid, isSaving, name, botToken, signingSecret, agentId, isEditMode, editingConfig, onSaved]);
+  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, isEditMode, editingConfig, onSaved]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -333,6 +380,15 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
           />
         </FormField>
 
+        {canReveal ? (
+          <Flex justify="end">
+            <ShowStoredValuesButton
+              loading={isRevealing}
+              onClick={() => void handleReveal()}
+            />
+          </Flex>
+        ) : null}
+
         <FormField label={t('workspace.bots.form.botToken')}>
           <TextField.Root
             size="2"
@@ -342,7 +398,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
             onChange={(e) => setBotToken(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -368,7 +424,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
             onChange={(e) => setSigningSecret(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -388,7 +444,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
         <FormField label={t('workspace.bots.form.agent')}>
           <Select.Root
             size="2"
-            value={agentId}
+            value={selectedAgentId}
             onValueChange={setAgentId}
           >
             <Select.Trigger style={{ width: '100%', height: 32 }} placeholder={t('workspace.bots.form.agentPlaceholder')} />
@@ -397,7 +453,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
               container={panelBodyPortal ?? undefined}
             >
               <Select.Item value={DEFAULT_ASSISTANT_ID}>{t('workspace.bots.defaultAssistant')}</Select.Item>
-              {agents.map((agent) => (
+              {agentOptions.map((agent) => (
                 <Select.Item key={agent.id} value={agent.id}>
                   {agent.name}
                 </Select.Item>

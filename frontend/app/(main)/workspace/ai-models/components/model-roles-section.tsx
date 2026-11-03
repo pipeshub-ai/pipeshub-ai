@@ -1,18 +1,22 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import useSWR from 'swr';
 import { Badge, Box, Flex, Select, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { toast } from '@/lib/store/toast-store';
-import { AIModelsApi } from '../api';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { SWR_POLICY } from '@/lib/api/swr-cache';
+import { AI_MODEL_KEYS, AIModelsApi } from '../api';
 import type { ConfiguredModel, ModelRoleAssignment } from '../types';
 import { MODEL_ROLE_NAMES } from '../types';
 
+const EMPTY_ROLES: Record<string, ModelRoleAssignment> = {};
+
 interface ModelRolesSectionProps {
   configuredModels: Record<string, ConfiguredModel[]>;
-  onRolesUpdated?: () => void;
   /**
    * 'settings' (default) — compact single-row card for the workspace settings page.
    * 'onboarding' — two-role side-by-side layout with context, shown during setup.
@@ -41,15 +45,19 @@ const INDEXING_ELIGIBLE_MODEL_TYPES = ['llm', 'slm', 'reasoning', 'multiModal'] 
 
 export function ModelRolesSection({
   configuredModels,
-  onRolesUpdated,
   variant = 'settings',
   highlighted = false,
   onAcknowledgedChange,
 }: ModelRolesSectionProps) {
   const { t } = useTranslation();
-  const [loading, setLoading] = useState(true);
+  const isMobile = useIsMobile();
+  const { data: rolesData, isLoading: loading, mutate: mutateRoles } = useSWR(
+    AI_MODEL_KEYS.roles,
+    () => AIModelsApi.getRoles(),
+    SWR_POLICY.sessionStable,
+  );
+  const roles = rolesData?.modelRoles ?? EMPTY_ROLES;
   const [saving, setSaving] = useState(false);
-  const [roles, setRoles] = useState<Record<string, ModelRoleAssignment>>({});
   /**
    * Whether the user has explicitly interacted with the dropdown.
    * In onboarding variant the dropdown starts with no value until acknowledged.
@@ -63,27 +71,14 @@ export function ModelRolesSection({
     }
   }, [acknowledged, onAcknowledgedChange]);
 
-  const loadRoles = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await AIModelsApi.getRoles();
-      setRoles(data.modelRoles ?? {});
-      // If an explicit assignment already exists from a previous session, treat it
-      // as acknowledged so we don't block the user needlessly.
-      if (data.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
-        setAcknowledged(true);
-        onAcknowledgedChange?.(true);
-      }
-    } catch {
-      // Non-fatal — falls back to default model
-    } finally {
-      setLoading(false);
-    }
-  }, [onAcknowledgedChange]);
-
+  // An assignment saved in an earlier session counts as acknowledged, so the user is not blocked.
+  // A failed roles read is non-fatal: the indexing role falls back to the default model.
   useEffect(() => {
-    void loadRoles();
-  }, [loadRoles]);
+    if (rolesData?.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
+      setAcknowledged(true);
+      onAcknowledgedChange?.(true);
+    }
+  }, [rolesData]);
 
   const indexingCandidates: ConfiguredModel[] = INDEXING_ELIGIBLE_MODEL_TYPES.flatMap(
     (mt) => (configuredModels[mt] ?? []).map((m) => ({ ...m, modelType: mt }))
@@ -121,16 +116,15 @@ export function ModelRolesSection({
       setSaving(true);
       try {
         await AIModelsApi.updateRoles(updatedRoles);
-        setRoles(updatedRoles);
+        await mutateRoles({ ...rolesData, modelRoles: updatedRoles }, { revalidate: false });
         toast.success(t('workspace.aiModels.roles.toastSaved'));
-        onRolesUpdated?.();
       } catch {
         toast.error(t('workspace.aiModels.roles.toastSaveError'));
       } finally {
         setSaving(false);
       }
     },
-    [roles, indexingCandidates, t, onRolesUpdated, acknowledge]
+    [roles, rolesData, mutateRoles, indexingCandidates, t, acknowledge]
   );
 
   // In onboarding variant the select has no value until the user acknowledges;
@@ -148,7 +142,7 @@ export function ModelRolesSection({
       size="2"
     >
       <Select.Trigger
-        style={{ minWidth: 190, maxWidth: '100%', cursor: 'pointer' }}
+        style={{ minWidth: isMobile ? 0 : 190, width: isMobile ? '100%' : undefined, maxWidth: '100%', cursor: 'pointer' }}
         placeholder={t('workspace.aiModels.roles.selectModel')}
       />
       <Select.Content>
@@ -325,13 +319,17 @@ export function ModelRolesSection({
           gap="2"
           style={{
             padding: '8px 16px',
-            background: highlighted ? 'var(--amber-3)' : 'var(--amber-2)',
-            borderTop: highlighted ? '1px solid var(--amber-6)' : '1px solid var(--amber-4)',
+            background: highlighted ? 'var(--amber-3)' : 'var(--gray-2)',
+            borderTop: highlighted ? '1px solid var(--amber-6)' : '1px solid var(--gray-4)',
             transition: 'background 0.2s',
           }}
         >
-          <MaterialIcon name="lightbulb" size={13} style={{ color: 'var(--amber-10)' }} />
-          <Text size="1" style={{ color: 'var(--amber-11)', lineHeight: '1.5' }}>
+          <MaterialIcon
+            name="lightbulb"
+            size={13}
+            style={{ color: highlighted ? 'var(--amber-10)' : 'var(--gray-10)' }}
+          />
+          <Text size="1" style={{ color: highlighted ? 'var(--amber-11)' : 'var(--gray-11)', lineHeight: '1.5' }}>
             {t('workspace.aiModels.roles.onboardingTip')}
           </Text>
         </Flex>
@@ -352,6 +350,7 @@ export function ModelRolesSection({
       <Flex
         align="center"
         gap="2"
+        wrap="wrap"
         style={{
           padding: '12px 20px',
           borderBottom: '1px solid var(--gray-4)',
@@ -369,9 +368,10 @@ export function ModelRolesSection({
 
       <Box style={{ padding: '0 20px' }}>
         <Flex
-          align="center"
+          direction={{ initial: 'column', sm: 'row' }}
+          align={{ initial: 'stretch', sm: 'center' }}
           justify="between"
-          gap="6"
+          gap={{ initial: '3', sm: '6' }}
           style={{ padding: '14px 0', minHeight: 60 }}
         >
           <Flex align="center" gap="3" style={{ flex: 1, minWidth: 0 }}>
@@ -399,7 +399,7 @@ export function ModelRolesSection({
                   lineHeight: '1.5',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: isMobile ? 'normal' : 'nowrap',
                 }}
               >
                 {t('workspace.aiModels.roles.indexingRoleDescription')}
@@ -407,7 +407,7 @@ export function ModelRolesSection({
             </Flex>
           </Flex>
 
-          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+          <Flex align="center" gap="2" style={{ flexShrink: 0, minWidth: 0 }}>
             {(loading || saving) && <Spinner size={14} />}
             {!loading && indexingSelect}
           </Flex>

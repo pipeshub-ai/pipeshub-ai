@@ -1,8 +1,11 @@
 'use client';
 
-import React, { useCallback, useContext, useEffect, useMemo } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Callout, Flex, Text, Select, Spinner, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
+import { SERVICE_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useTranslation } from 'react-i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
@@ -223,6 +226,63 @@ export function OAuthAppSelector() {
     [formAuth, oauthFieldNames, oauthCredentialBaseline, oauthCredentialBaselineKey]
   );
 
+  // Masked credentials round-trip the placeholder, which the save treats as "keep the stored value".
+  const revealAvailable = useSecretRevealAvailable(isAdmin === true);
+  const revealedOAuthAppId = useConnectorsStore((s) => s.revealedOAuthAppId);
+  const setRevealedOAuthAppId = useConnectorsStore((s) => s.setRevealedOAuthAppId);
+  const setOAuthCredentialBaseline = useConnectorsStore((s) => s.setOAuthCredentialBaseline);
+  const [isRevealing, setIsRevealing] = useState(false);
+  const beginReveal = useRevealScope(currentLinkedOAuthAppId);
+  // Picking another app reloads its masked values, so the earlier reveal no longer applies.
+  useEffect(() => {
+    if (revealedOAuthAppId && revealedOAuthAppId !== currentLinkedOAuthAppId) {
+      setRevealedOAuthAppId('');
+    }
+  }, [revealedOAuthAppId, currentLinkedOAuthAppId, setRevealedOAuthAppId]);
+  const canReveal =
+    revealAvailable &&
+    Boolean(currentLinkedOAuthAppId) &&
+    revealedOAuthAppId !== currentLinkedOAuthAppId &&
+    oauthFieldNames.some((name) => (formAuth as Record<string, unknown>)[name] === SERVICE_SECRET_PLACEHOLDER);
+
+  const handleReveal = async () => {
+    const appId = currentLinkedOAuthAppId;
+    if (!appId || !connectorType) return;
+    const requestedFor = { panelId: panelConnectorId, connectorType };
+    const stillCurrent = beginReveal();
+    setIsRevealing(true);
+    try {
+      const stored = oauthConfigPayload(
+        await ConnectorsApi.getOAuthConfig(connectorType, appId, { reveal: true })
+      );
+      const state = useConnectorsStore.getState();
+      // The panel may have closed and reopened on another connector while the request ran,
+      // which remounts this component and leaves the scope check above unaware.
+      const samePanel =
+        state.isPanelOpen &&
+        state.panelConnectorId === requestedFor.panelId &&
+        state.panelConnector?.type === requestedFor.connectorType &&
+        resolveLinkedOAuthAppId(state.formData.auth, state.connectorConfig) === appId;
+      if (!stillCurrent() || !samePanel) return;
+      const current = state.formData.auth as Record<string, unknown>;
+      const baseline = state.oauthCredentialBaseline;
+      const baselineValues = baseline ? { ...baseline.values } : null;
+      for (const name of oauthFieldNames) {
+        const value = stored[name];
+        if (current[name] !== SERVICE_SECRET_PLACEHOLDER || typeof value !== 'string') continue;
+        setAuthFormValue(name, value);
+        // Showing what is stored is not an edit: keep the reauth warning off.
+        if (baselineValues && baselineValues[name] === SERVICE_SECRET_PLACEHOLDER) baselineValues[name] = value;
+      }
+      if (baseline && baselineValues) setOAuthCredentialBaseline({ key: baseline.key, values: baselineValues });
+      setRevealedOAuthAppId(appId);
+    } catch {
+      // The fields keep their placeholders, which still save correctly.
+    } finally {
+      setIsRevealing(false);
+    }
+  };
+
   const showOAuthReauthWarning =
     isExistingConnector &&
     selectedAuthType === 'OAUTH' &&
@@ -404,6 +464,11 @@ export function OAuthAppSelector() {
             <Text size="1" color="red">
               {oauthConfigError}
             </Text>
+          ) : null}
+          {canReveal ? (
+            <Flex justify="end">
+              <ShowStoredValuesButton loading={isRevealing} onClick={() => void handleReveal()} />
+            </Flex>
           ) : null}
         </Flex>
       ) : null}

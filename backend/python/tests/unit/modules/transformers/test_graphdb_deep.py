@@ -20,7 +20,10 @@ from app.config.constants.arangodb import CollectionNames
 
 def _make_graph_provider():
     """Return a mock IGraphDBProvider."""
-    return AsyncMock()
+    provider = AsyncMock()
+    # A sync predicate: an AsyncMock answer would be a truthy coroutine.
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
 
 
 def _make_tx_store():
@@ -168,7 +171,7 @@ class TestSubcategoryChainThreeLevels:
 
         call_count = [0]
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             nonlocal call_count
             call_count[0] += 1
             if "SUBCATEGORIES1" in collection.upper() or collection == CollectionNames.SUBCATEGORIES1.value:
@@ -254,7 +257,7 @@ class TestMissingDepartmentHandling:
 
         call_count = [0]
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             nonlocal call_count
             call_count[0] += 1
             if collection == CollectionNames.DEPARTMENTS.value:
@@ -282,12 +285,12 @@ class TestMissingDepartmentHandling:
         assert any("NonExistent" in w for w in warning_calls)
 
     @pytest.mark.asyncio
-    async def test_department_error_continues_processing(self):
-        """Error during department resolution should not stop processing."""
+    async def test_department_error_fails_the_write(self):
+        """A failed department lookup fails the write instead of unlinking the department."""
         logger = MagicMock()
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             # Throw only when resolving the department; return empty otherwise
             if collection == CollectionNames.DEPARTMENTS.value:
                 raise Exception("dept lookup error")
@@ -301,11 +304,11 @@ class TestMissingDepartmentHandling:
             departments=["Engineering"],
             categories=["General"],
         )
-        # Should not raise - continues processing
-        await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+        with pytest.raises(Exception, match="dept lookup error"):
+            await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should log the error
         logger.error.assert_called()
+        tx_store.batch_delete_edges.assert_not_awaited()
 
 
 # ===================================================================
@@ -380,7 +383,7 @@ class TestEmptyListsHandling:
         """Multiple languages each get their own edge."""
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.LANGUAGES.value:
                 name = filters.get("name", "")
                 return [{"_key": f"lang-{name}", "name": name}]
@@ -410,7 +413,7 @@ class TestEmptyListsHandling:
         """Multiple topics each get their own edge."""
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.TOPICS.value:
                 name = filters.get("name", "")
                 return [{"_key": f"topic-{name}", "name": name}]
@@ -491,7 +494,7 @@ class TestTransactionErrorPropagation:
         ]
         cat_to = f"{CollectionNames.CATEGORIES.value}/cat-1"
 
-        async def edges_side_effect(record_from, edge_collection):
+        async def edges_side_effect(record_from, edge_collection, **_kwargs):
             if edge_collection == CollectionNames.BELONGS_TO_CATEGORY.value:
                 return [{"_to": cat_to, "name": "Tech"}]
             return []
@@ -516,7 +519,7 @@ class TestTransactionErrorPropagation:
         """Language node is created when it doesn't exist in DB."""
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.LANGUAGES.value:
                 return []  # Language doesn't exist
             return []
@@ -540,7 +543,7 @@ class TestTransactionErrorPropagation:
         """Topic node is created when it doesn't exist in DB."""
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.TOPICS.value:
                 return []  # Topic doesn't exist
             return []
@@ -564,7 +567,7 @@ class TestTransactionErrorPropagation:
         """When language edge already exists, reconciliation skips creation."""
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.LANGUAGES.value:
                 return [{"_key": "lang-en", "name": "English"}]
             return []
@@ -573,7 +576,7 @@ class TestTransactionErrorPropagation:
 
         lang_to = f"{CollectionNames.LANGUAGES.value}/lang-en"
 
-        async def edges_side_effect(record_from, edge_collection):
+        async def edges_side_effect(record_from, edge_collection, **_kwargs):
             if edge_collection == CollectionNames.BELONGS_TO_LANGUAGE.value:
                 return [{"_to": lang_to, "name": "English"}]
             return []

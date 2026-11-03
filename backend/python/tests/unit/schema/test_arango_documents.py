@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import app.schema.arango.documents as documents
 import pytest
-from jsonschema import Draft4Validator
+from jsonschema import Draft4Validator, ValidationError
 
 from app.config.constants.arangodb import CollectionNames
 from app.schema.node_schema_registry import adapt_schema
@@ -93,6 +93,8 @@ class TestDocumentSchemaInventory:
             "pull_request_record_schema",
             "sql_table_record_schema",
             "sql_view_record_schema",
+            "sql_column_record_schema",
+            "stage_state_schema",
             "product_record_schema",
             "deal_record_schema",
             "record_group_schema",
@@ -109,6 +111,10 @@ class TestDocumentSchemaInventory:
             "agent_skill_versions_schema",
             "agent_skill_candidates_schema",
             "code_file_record_schema",
+            "block_schema",
+            "named_entity_schema",
+            "value_mention_schema",
+            "named_entity_persist_retry_schema",
             "agent_skills_schema",
             "agent_skill_versions_schema",
             "agent_skill_candidates_schema",
@@ -185,6 +191,38 @@ class TestEmailFieldPolicy:
 
 
 # ---------------------------------------------------------------------------
+# A synced person's graph document (job title) against the strict user schema
+# ---------------------------------------------------------------------------
+class TestSyncedUserDocument:
+    TITLES = [None, "", " ", "Staff Engineer", "Ünïcødé 职位 🚀", "x" * 100_000, "a\nb\x00c"]
+
+    @staticmethod
+    def _doc(title: str | None, *, node: bool = False) -> dict:
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                       email="u@test.com", full_name="U", title=title)
+        doc = {**user.to_arango_base_user(), "orgId": "o", "isActive": False}
+        # The graph-node form keys the user by ``id``, the Arango form by ``_key``.
+        return {**{k: v for k, v in doc.items() if k != "_key"}, "id": user.id} if node else doc
+
+    @pytest.mark.parametrize("title", TITLES, ids=lambda t: f"title-{len(t) if t else t!r}")
+    def test_the_user_schema_accepts_the_document(self, title: str | None) -> None:
+        Draft4Validator(documents.user_schema["rule"]).validate(self._doc(title))
+
+    @pytest.mark.parametrize("title", TITLES, ids=lambda t: f"title-{len(t) if t else t!r}")
+    def test_the_node_validator_accepts_the_document(self, title: str | None) -> None:
+        from app.schema.node_validator import NodeSchemaValidator
+
+        NodeSchemaValidator().validate_node_update(CollectionNames.USERS.value, self._doc(title, node=True))
+
+    def test_a_null_designation_is_what_the_schema_rejects(self) -> None:
+        with pytest.raises(ValidationError):
+            Draft4Validator(documents.user_schema["rule"]).validate({**self._doc("T"), "designation": None})
+
+
+# ---------------------------------------------------------------------------
 # Required fields on key collections
 # ---------------------------------------------------------------------------
 class TestRequiredFields:
@@ -206,6 +244,30 @@ class TestRequiredFields:
     def test_user_schema_disallows_extra_properties(self):
         rule = documents.user_schema["rule"]
         assert rule.get("additionalProperties") is False
+
+
+def _valid_record_doc(**extra: object) -> dict[str, object]:
+    doc = {
+        "recordName": "upload.pdf",
+        "externalRecordId": "document-1",
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "createdAtTimestamp": 1,
+        "connectorId": "kb-1",
+    }
+    doc.update(extra)
+    return doc
+
+
+class TestRecordUploaderField:
+    def test_accepts_uploaded_by(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.record_schema))
+        validator.validate(_valid_record_doc(uploadedBy="user-1"))
+
+    def test_rejects_created_by(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.record_schema))
+        with pytest.raises(ValidationError):
+            validator.validate(_valid_record_doc(createdBy="user-1"))
 
 
 def _valid_app_doc(**extra):
@@ -315,6 +377,22 @@ class TestAppSchemaVectorMembership:
         validator = Draft4Validator(adapt_schema(documents.app_schema))
         with pytest.raises(Exception):
             validator.validate(_valid_app_doc(notARealAppField=True))
+
+
+class TestAppSchemaSyncQueue:
+    """Arango applies this schema server-side and strictly, so a field it does not
+    list is not merely unvalidated -- the whole write is rejected. The sync layer
+    records owed resyncs this way, and losing that write strands a connector."""
+
+    def test_accepts_the_payloads_the_sync_layer_writes(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        # _mark_queued / boot at capacity
+        validator.validate(
+            _valid_app_doc(status="QUEUED", pendingResync=True, pendingFullSync=True)
+        )
+        # _persist_pending_resync, then the re-issue and /sync/stop clearing it
+        validator.validate(_valid_app_doc(pendingResync=True))
+        validator.validate(_valid_app_doc(pendingResync=False, pendingFullSync=False))
 
 
 # ---------------------------------------------------------------------------

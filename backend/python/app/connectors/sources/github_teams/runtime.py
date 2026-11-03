@@ -4,7 +4,8 @@ Runtime utilities for the GitHub Teams connector.
 The data source is fully async (httpx), so there is no thread pool and no
 blocking-call machinery here — just the plumbing every call shares:
 - ``ds_call``: every data-source call goes through it — wall-clock budget,
-  one OAuth refresh on 401, jittered retries on transient statuses.
+  one OAuth refresh on 401, a bounded wait on a rate limit, jittered retries
+  on transient statuses.
 - A strictly-paced path for Search API calls (``search_call``) — GitHub's
   Search budget is 30 req/min and overruns 403 hard, unlike the core budget
   where a failed sync simply retries on the next schedule.
@@ -20,6 +21,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -34,9 +36,13 @@ from .constants import (
     _AUTH_ERROR_MARKERS,
     _GITHUB_MAX_RETRIES,
     _GITHUB_OP_DEFAULT_TIMEOUT_SECONDS,
+    _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS,
     _GITHUB_RETRY_BASE_DELAY_SECONDS,
     _GITHUB_RETRY_MAX_DELAY_SECONDS,
+    _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS,
+    _REPO_LOOKUP_TTL_SECONDS,
     _RETRYABLE_STATUS_CODES,
+    _RETRYABLE_TRANSPORT_ERRORS,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +69,10 @@ class RuntimeHelper:
         self._search_call_times: deque[float] = deque()
         self._search_lock = asyncio.Lock()
 
+        # repo id -> (when fetched, repository). See ``get_repo_by_id``.
+        self._repo_lookups: dict[int, tuple[float, object]] = {}
+        self._repo_lookup_locks: dict[int, asyncio.Lock] = {}
+
     # ------------------------------------------------------------------
     # Auth-error detection
     # ------------------------------------------------------------------
@@ -79,7 +89,7 @@ class RuntimeHelper:
 
     @staticmethod
     def _is_retryable_error(response: GitHubResponse | None) -> bool:
-        """True for transient failures (429/5xx) worth a backed-off retry."""
+        """True for transient failures (429/5xx, a dropped connection) worth a backed-off retry."""
         if response is None or response.success:
             return False
         # The 504 on a wall-clock timeout is stamped locally for status
@@ -87,7 +97,37 @@ class RuntimeHelper:
         # its full budget would multiply the stall by _GITHUB_MAX_RETRIES.
         if response.exception_type == asyncio.TimeoutError.__name__:
             return False
+        if response.status_code is None:
+            return response.exception_type in _RETRYABLE_TRANSPORT_ERRORS
         return response.status_code in _RETRYABLE_STATUS_CODES
+
+    @staticmethod
+    def _is_rate_limited(response: GitHubResponse | None) -> bool:
+        return response is not None and response.is_rate_limited is True
+
+    @staticmethod
+    def _rate_limit_wait_seconds(response: GitHubResponse) -> float | None:
+        """How long to wait out a rate limit in-process, or None if too long.
+
+        Bounded because a stream request is itself on the indexing service's
+        HTTP timeout; an hour-long primary reset has to be retried later.
+        """
+        seconds = response.retry_after_seconds
+        if seconds is None:
+            # GitHub's guidance for a secondary limit without Retry-After.
+            seconds = _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS
+        if seconds > _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS:
+            return None
+        # +1s covers the reset epoch's one-second resolution; jitter keeps
+        # concurrent workers from all resuming on the same tick.
+        return seconds + 1 + random.random() * min(5.0, seconds * 0.1)
+
+    @staticmethod
+    def _resets_at(response: GitHubResponse) -> str:
+        if response.retry_after_seconds is None:
+            return "an unknown time"
+        reset = datetime.now(timezone.utc) + timedelta(seconds=response.retry_after_seconds)
+        return reset.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # ------------------------------------------------------------------
     # Token refresh
@@ -226,6 +266,54 @@ class RuntimeHelper:
                 exception_type=type(e).__name__,
             )
 
+    async def get_repo_by_id(self, repo_id: int) -> GitHubResponse:
+        """``GET /repositories/{id}`` through ``ds_call``, remembered per repository.
+
+        Tickets, pull requests and code files name their repository only by
+        numeric id, and every one of them is streamed separately. Without this,
+        each paid a lookup before its real request: one extra call per PR or
+        issue, and half of what a code file costs. The answer is the same for
+        every record in the repository, so it is fetched once and kept for
+        ``_REPO_LOOKUP_TTL_SECONDS``.
+
+        Only a successful lookup is kept; a failure is returned as it was and
+        the next record asks again. Concurrent streams for the same repository
+        wait for one lookup rather than each making their own.
+        """
+        cached = self._fresh_repo_lookup(repo_id)
+        if cached is not None:
+            return GitHubResponse(success=True, data=cached)
+        lock = self._repo_lookup_locks.setdefault(repo_id, asyncio.Lock())
+        async with lock:
+            cached = self._fresh_repo_lookup(repo_id)
+            if cached is not None:
+                return GitHubResponse(success=True, data=cached)
+            response = await self.ds_call(self.c.data_source.get_repo_by_id, repo_id)
+            if response.success and response.data is not None:
+                self._repo_lookups[repo_id] = (time.monotonic(), response.data)
+            return response
+
+    async def forget_repo_lookup(self, repo_id: int) -> None:
+        """Drop the remembered lookup so the next ``get_repo_by_id`` asks GitHub.
+
+        For a caller whose request 404'd on what the lookup said, such as a
+        default branch renamed since it was fetched. Takes the lookup lock so a
+        lookup already in flight, which may predate the rename, finishes first
+        and is dropped rather than stored after this returns.
+        """
+        lock = self._repo_lookup_locks.setdefault(repo_id, asyncio.Lock())
+        async with lock:
+            self._repo_lookups.pop(repo_id, None)
+
+    def _fresh_repo_lookup(self, repo_id: int) -> object | None:
+        entry = self._repo_lookups.get(repo_id)
+        if entry is None:
+            return None
+        fetched_at, repo = entry
+        if time.monotonic() - fetched_at >= _REPO_LOOKUP_TTL_SECONDS:
+            return None
+        return repo
+
     async def ds_call(
         self,
         method: Callable[..., Awaitable[GitHubResponse]],
@@ -236,7 +324,8 @@ class RuntimeHelper:
     ) -> GitHubResponse:
         """Run a ``GitHubAsyncDataSource`` method, retrying on auth and transient failures.
 
-        The OAuth token is refreshed at most once; transient statuses get up to
+        The OAuth token is refreshed at most once; a rate limit that resets
+        soon is waited out, and transient statuses get up to
         ``_GITHUB_MAX_RETRIES`` attempts with jittered exponential backoff. The
         timeout budget applies per attempt, not to the retry chain as a whole.
         """
@@ -256,6 +345,30 @@ class RuntimeHelper:
                 self.logger.info("GitHub op %s returned auth error; refreshing OAuth token and retrying.", label)
                 if not await self.force_refresh_oauth_token():
                     return response
+            elif self._is_rate_limited(response):
+                wait = self._rate_limit_wait_seconds(response)
+                reason = response.api_message or response.exception_type
+                resets_at = self._resets_at(response)
+                # Returned as a 429, not waited out: a sync aborts with its
+                # checkpoint withheld, and a stream answers 429 so indexing retries.
+                if wait is None:
+                    self.logger.warning(
+                        "GitHub rate limit on %s (%s); resets at %s, later than this call waits. "
+                        "Leaving it to a later retry.",
+                        label, reason, resets_at,
+                    )
+                    return response
+                if attempt == _GITHUB_MAX_RETRIES:
+                    self.logger.warning(
+                        "GitHub rate limit on %s (%s) still in force after %s attempts; resets at %s.",
+                        label, reason, attempt, resets_at,
+                    )
+                    return response
+                self.logger.warning(
+                    "GitHub rate limit on %s (%s); waiting %.0fs, resets at %s (attempt %s/%s).",
+                    label, reason, wait, resets_at, attempt, _GITHUB_MAX_RETRIES,
+                )
+                await asyncio.sleep(wait)
             elif self._is_retryable_error(response):
                 if attempt == _GITHUB_MAX_RETRIES:
                     self.logger.warning(

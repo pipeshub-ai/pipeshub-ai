@@ -6,28 +6,30 @@ import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
-import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
 import {
-  SESSION_INVALIDATING_ACTIVITIES,
-  userActivitiesType,
-} from '../utils/userActivities.utils';
+  getActivityRepository,
+  type ActivityDto,
+} from '../repositories/activity';
+import { getUserRepository } from '../repositories/user';
+import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
-import { Users } from '../../modules/user_management/schema/users.schema';
-import { Org } from '../../modules/user_management/schema/org.schema';
-import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
+import { getOrgRepository } from '../repositories/org';
+import { getOAuthAppRepository } from '../repositories/oauth-app';
+import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
+import { setContextOrgId } from '../context/request-context';
+
+const CLIENT_NAME_HEADER = 'client-name';
+const WEB_CLIENT_NAME = 'pipeshub-ai';
+export const TOKEN_CLIENT_NAME = 'api';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
-const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
-const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
-
-function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
-  return role === 'admin' || role === 'member';
-}
 
 @injectable()
 export class AuthMiddleware {
@@ -39,10 +41,13 @@ export class AuthMiddleware {
     this.authenticate = this.authenticate.bind(this);
   }
 
-  private isOAuthToken(
-    decoded: Record<string, any> | null,
-  ): boolean {
-    return decoded !== null && decoded.tokenType === 'oauth' && typeof decoded.client_id === 'string' && typeof decoded.iss === 'string';
+  private isOAuthToken(decoded: Record<string, any> | null): boolean {
+    return (
+      decoded !== null &&
+      decoded.tokenType === 'oauth' &&
+      typeof decoded.client_id === 'string' &&
+      typeof decoded.iss === 'string'
+    );
   }
 
   async authenticate(
@@ -70,10 +75,41 @@ export class AuthMiddleware {
         await this.authenticateOAuthToken(token, req);
       }
 
-      next();
+      // Bind the verified token's org for the rest of the request (never a client field).
+      const orgId = req.user?.orgId as string | undefined;
+      if (orgId) {
+        runWithOrgContext(
+          makeOrgContext({
+            orgId,
+            userId: req.user?.userId ? String(req.user.userId) : null,
+            kind: 'user',
+            source: 'jwt',
+          }),
+          next,
+        );
+      } else {
+        next();
+      }
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * The token is verified, so its organisation and user are the ones the account reads that follow run as. (They are
+   * bound for the rest of the request once authentication has finished.)
+   */
+  private asVerified<T>(
+    orgId: string | undefined,
+    userId: string | undefined,
+    source: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (!orgId) return fn();
+    return runWithOrgContext(
+      makeOrgContext({ orgId, userId: userId || null, kind: 'user', source }),
+      fn,
+    );
   }
 
   /**
@@ -85,64 +121,12 @@ export class AuthMiddleware {
   ): Promise<void> {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
+    // Context middleware runs before auth, so this is the first point the org is known.
+    setContextOrgId(decoded.orgId);
 
-    // User session JWTs must carry role (admin|member). Legacy tokens without
-    // role are rejected so the client re-logins and receives a new token.
-    if (!hasValidJwtRole(decoded?.role)) {
-      throw new UnauthorizedError('Session expired, please login again');
-    }
-
-    // search for user activities for this user
-    const userId = decoded?.userId;
-    const orgId = decoded?.orgId;
-    const user = await Users.findOne({
-      _id: userId,
-      isDeleted: false,
-    }).lean()
-      .exec();
-    if (!user) {
-      throw new UnauthorizedError('User not found, please login again');
-    }
-
-    // Sessions already handed out have to be stopped too, not only the next
-    // sign-in. generateAuthToken refuses to issue one for a disabled account,
-    // but a session minted before it was disabled would otherwise keep working
-    // until it expired — which for the account an administrator has just
-    // switched off is the whole point of switching it off.
-    if (user.isDisabled) {
-      throw new UnauthorizedError('This account is disabled');
-    }
-
-    // A service account has no way to obtain a session in the first place, so
-    // one turning up here means something is wrong rather than merely stale.
-    if (user.kind === 'service') {
-      throw new UnauthorizedError('Service accounts cannot sign in');
-    }
-
-    if (userId && orgId) {
-      let userActivity: IUserActivity | null = null;
-      try {
-        userActivity = await UserActivities.findOne({
-          userId: userId,
-          orgId: orgId,
-          isDeleted: false,
-          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-        })
-          .sort({ createdAt: -1 }) // sort by most recent first
-          .lean()
-          .exec();
-
-      } catch (activityError) {
-        this.logger.error('Failed to fetch user activity', activityError);
-      }
-
-      if (userActivity) {
-        const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
-        const activityTimestamp = userActivity.createdAt?.getTime() || 0;
-        if (activityTimestamp > tokenIssuedAt + PASSWORD_CHANGE_TOKEN_DELAY_MS) {
-          throw new UnauthorizedError('Session expired, please login again');
-        }
-      }
+    const refusal = await findSessionRefusal(decoded, this.logger);
+    if (refusal) {
+      throw new UnauthorizedError(refusal);
     }
 
     this.logger.debug('User authenticated', decoded);
@@ -161,7 +145,10 @@ export class AuthMiddleware {
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
-    const tokenScopes = payload.scope.split(' ');
+    const tokenScopes = parseScopeString(payload.scope);
+    if (tokenScopes.length === 0) {
+      throw new UnauthorizedError('Token carries no scopes');
+    }
 
     let userId = payload.userId;
     const orgId = payload.orgId;
@@ -171,25 +158,24 @@ export class AuthMiddleware {
     // identity the token acts as.
     //
     // Read from the app record every time, rather than trusting the
-    // `createdBy` the token was minted with. An administrator can point an
-    // app at a service account, and that has to take effect for tokens
-    // already issued: the whole reason to do it is to stop those tokens
-    // acting as a person, and a change that waits for every outstanding token
-    // to be re-minted would not stop anything.
+    // `createdBy` the token was minted with: the record is the authority on
+    // whose documents these tokens reach.
+    //
+    // A token that disagrees with it is refused below rather than honoured
+    // under the identity it was minted with. It is not re-pointed at the
+    // current one — pointing an app at a different service account revokes
+    // the tokens it has already issued, so a disagreeing claim should not
+    // arrive at all.
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
       try {
-        const app = await OAuthApp.findOne({
-          clientId: payload.client_id,
-          isDeleted: false,
-        })
-          .select('createdBy tokenIdentityUserId')
-          .lean()
-          .exec();
+        const app = await getOAuthAppRepository().findLiveIdentity(
+          payload.client_id,
+        );
         if (app) {
           // Absent means the creator, which is how every app behaves until
           // someone points it at a service account.
-          const resolved = (app.tokenIdentityUserId ?? app.createdBy).toString();
+          const resolved = app.tokenIdentityUserId ?? app.createdBy;
 
           // The token carries the identity it was minted for. If the
           // application has been pointed somewhere else since, this token is
@@ -234,14 +220,9 @@ export class AuthMiddleware {
 
     let email: string | undefined;
     let role: 'admin' | 'member' | undefined;
-    const user = await Users.findOne({
-      _id: userId,
-      orgId: orgId,
-      isDeleted: false,
-    })
-      .select('email fullName role isDisabled kind')
-      .lean()
-      .exec();
+    const user = await this.asVerified(orgId, userId, 'oauth', () =>
+      getUserRepository().getAuthSnapshot(orgId, userId),
+    );
 
     // Unlike session auth, OAuth/PAT tokens can outlive the user by
     // months or years — a removed employee's token must stop working
@@ -256,6 +237,28 @@ export class AuthMiddleware {
     // is to be used by long-lived automation holding a long-lived token.
     if (user.isDisabled) {
       throw new UnauthorizedError('This account is disabled');
+    }
+
+    // A delegated token speaks as a person, and the rules that let it be
+    // issued have to keep holding for as long as it works — not only at the
+    // moment it was signed. Five minutes is plenty of time for a promotion or
+    // a switched-off service account to matter, and nothing else here would
+    // notice: every check below is about the person named in `userId`, who is
+    // a colleague in good standing.
+    //
+    // These refuse the token outright rather than downgrading it. Clamping
+    // `req.user.role` would fix Node and leave the Python services wrong,
+    // because they ask `GET /api/v1/users/me/role`, which re-reads the user
+    // document (`users.routes.ts:319`) instead of trusting the request. There
+    // is no value to clamp that both halves would agree on, so the only
+    // answer that fails closed is no token at all.
+    const delegatedBy = payload.act?.sub;
+    if (delegatedBy !== undefined) {
+      // The rules live in one place because OAuthAuthMiddleware needs the
+      // same ones for the OIDC endpoints; see delegation-guard.ts.
+      await this.asVerified(orgId, userId, 'oauth', () =>
+        assertDelegationStillHolds(delegatedBy, userId, orgId, user),
+      );
     }
 
     email = user.email;
@@ -275,13 +278,9 @@ export class AuthMiddleware {
 
     if (!accountType && isClientCredentials) {
       try {
-        const org = await Org.findOne({
-          _id: orgId,
-          isDeleted: false,
-        })
-          .select('accountType')
-          .lean()
-          .exec();
+        const org = await this.asVerified(orgId, userId, 'oauth', () =>
+          getOrgRepository().getAccountType(orgId),
+        );
         if (org) {
           accountType = org.accountType;
         }
@@ -302,6 +301,15 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
+    setContextOrgId(orgId);
+    // The web app's client name lets an agent run wait for a person to approve a tool call.
+    // An OAuth or personal access token is a program, not the web app, so it can't claim it.
+    if (
+      String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() ===
+      WEB_CLIENT_NAME
+    ) {
+      req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
+    }
 
     this.logger.debug('OAuth user authenticated', {
       userId,
@@ -326,25 +334,30 @@ export class AuthMiddleware {
 
         const decoded = await this.tokenService.verifyScopedToken(token, scope);
         req.tokenPayload = decoded;
+        req.verifiedToken = token;
 
-        const userId = decoded?.userId;
-        const orgId = decoded?.orgId;
+        const userId = decoded?.userId as string | undefined;
+        const orgId = decoded?.orgId as string | undefined;
+        setContextOrgId(orgId);
 
-        this.logger.debug(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
+        this.logger.debug(
+          `userId: ${userId}, orgId: ${orgId}, scope: ${scope}`,
+        );
 
-        if (userId && orgId && (scope === TokenScopes.PASSWORD_RESET || scope === TokenScopes.VALIDATE_EMAIL)) {
-          let userActivity: IUserActivity | null = null;
+        if (
+          userId &&
+          orgId &&
+          (scope === TokenScopes.PASSWORD_RESET ||
+            scope === TokenScopes.VALIDATE_EMAIL)
+        ) {
+          let userActivity: Pick<ActivityDto, 'createdAt'> | null = null;
           try {
-            userActivity = await UserActivities.findOne({
-              userId: userId,
-              orgId: orgId,
-              isDeleted: false,
-              activityType: PASSWORD_CHANGED,
-            })
-              .sort({ createdAt: -1 }) // sort by most recent first
-              .lean()
-              .exec();
-
+            userActivity = await this.asVerified(
+              orgId,
+              userId,
+              'scoped_jwt',
+              () => getActivityRepository().latestPasswordChange(userId, orgId),
+            );
           } catch (activityError) {
             this.logger.error('Failed to fetch user activity', activityError);
           }
@@ -353,13 +366,28 @@ export class AuthMiddleware {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt) {
-              throw new UnauthorizedError('Password reset link expired, please request for a new link');
+              throw new UnauthorizedError(
+                'Password reset link expired, please request for a new link',
+              );
             }
           }
         }
 
         this.logger.debug('User authenticated', decoded);
-        next();
+        // Pre-org flows (login lookups, mail) mint scoped tokens without an orgId; they stay unbound.
+        if (orgId) {
+          runWithOrgContext(
+            makeOrgContext({
+              orgId,
+              userId: userId || null,
+              kind: 'service',
+              source: 'scoped_jwt',
+            }),
+            next,
+          );
+        } else {
+          next();
+        }
       } catch (error) {
         next(error);
       }

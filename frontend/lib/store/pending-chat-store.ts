@@ -7,6 +7,14 @@ import type { AttachmentRef, ChatSettings } from '@/chat/types';
 // Types
 // ─────────────────────────────────────────────────────────
 
+/** A node of the knowledge hierarchy to scope the chat to. */
+export interface PendingChatNode {
+  id: string;
+  name: string;
+  nodeType: string;
+  connector: string;
+}
+
 /**
  * Page-specific context that the host page can attach to a pending chat.
  * Designed to be extensible — each page populates the fields it cares about.
@@ -14,6 +22,8 @@ import type { AttachmentRef, ChatSettings } from '@/chat/types';
 export interface ChatWidgetPageContext {
   /** Collections to scope the chat to (KB IDs + display names) */
   collections?: Array<{ id: string; name: string }>;
+  /** Rows ticked on the host page; they replace what the composer had selected. */
+  selectedNodes?: PendingChatNode[];
   /** Specific record IDs selected by the user */
   selectedRecordIds?: string[];
   /** Human-readable source label (e.g., "Engineering" collection) */
@@ -30,7 +40,7 @@ export interface ChatWidgetPageContext {
  * ready to be forwarded to the runtime.
  */
 export interface PendingChatContext {
-  /** The user's message text */
+  /** The user's message text; empty when the page hands over only a selection. */
   message: string;
   /** Server-assigned refs for attachments uploaded by the widget. */
   attachments?: AttachmentRef[];

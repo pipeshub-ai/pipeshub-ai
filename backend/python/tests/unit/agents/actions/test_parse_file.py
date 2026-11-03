@@ -580,12 +580,12 @@ class TestHandleDoc:
     async def test_converts_doc_to_docx(self):
         parser = _make_parser()
         stream = io.BytesIO(b"fake docx bytes")
-        parser._doc_parser.convert_doc_to_docx = MagicMock(return_value=stream)
+        parser._doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=stream)
         parser.handle_docx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_doc(b"raw", "file.doc")
-        parser._doc_parser.convert_doc_to_docx.assert_called_once_with(b"raw")
+        parser._doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"raw")
         parser.handle_docx.assert_called_once()
 
 
@@ -593,22 +593,22 @@ class TestHandlePptAndXls:
     @pytest.mark.asyncio
     async def test_ppt_converts_to_pptx(self):
         parser = _make_parser()
-        parser._ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx bytes")
+        parser._ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx bytes")
         parser.handle_pptx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_ppt(b"raw", "a.ppt")
-        parser._ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"raw")
+        parser._ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"raw")
 
     @pytest.mark.asyncio
     async def test_xls_converts_to_xlsx(self):
         parser = _make_parser()
-        parser._xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx bytes")
+        parser._xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx bytes")
         parser.handle_xlsx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_xls(b"raw", "a.xls")
-        parser._xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"raw")
+        parser._xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"raw")
 
 
 class TestHandleXlsx:
@@ -630,6 +630,25 @@ class TestHandleXlsx:
             assert result is expected
             instance.load_workbook_from_binary.assert_called_once_with(b"raw")
 
+    @pytest.mark.asyncio
+    async def test_the_workbook_is_loaded_off_the_event_loop(self) -> None:
+        import threading
+
+        parser = _make_parser()
+        loop_thread = threading.get_ident()
+        loaded_in: list[int] = []
+        with patch(
+            "app.agents.actions.util.parse_file.get_llm_for_role",
+            new_callable=AsyncMock,
+            return_value=("llm", None),
+        ), patch("app.agents.actions.util.parse_file.ExcelParser") as mock_cls:
+            instance = mock_cls.return_value
+            instance.load_workbook_from_binary = lambda _raw: loaded_in.append(threading.get_ident())
+            instance.create_blocks = AsyncMock(return_value=BlocksContainer(blocks=[], block_groups=[]))
+            await parser.handle_xlsx(b"raw", "book.xlsx")
+        assert loaded_in
+        assert loaded_in[0] != loop_thread
+
 
 class TestHandleCsvTsv:
     @pytest.mark.asyncio
@@ -641,13 +660,12 @@ class TestHandleCsvTsv:
         assert result.blocks == []
 
     @pytest.mark.asyncio
-    async def test_undecodable_returns_empty(self):
+    async def test_windows_1252_csv_is_decoded(self) -> None:
         parser = _make_parser()
-        parser._csv_parser.read_raw_rows = MagicMock(
-            side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad")
-        )
-        result = await parser.handle_csv(b"\xff\xfe", "bad.csv")
-        assert isinstance(result, BlocksContainer)
+        parser._csv_parser.read_raw_rows = MagicMock(return_value=[])
+        await parser.handle_csv(b"item,price\nWidget,\x80 5 \x93each\x94\n", "prices.csv")
+        stream = parser._csv_parser.read_raw_rows.call_args[0][0]
+        assert stream.getvalue() == "item,price\nWidget,\u20ac 5 \u201ceach\u201d\n"
 
     @pytest.mark.asyncio
     async def test_csv_successful_parse(self):
@@ -698,26 +716,13 @@ class TestHandleMd:
         assert "Heading" in call_args[0]
 
     @pytest.mark.asyncio
-    async def test_latin1_fallback(self):
-        """Bytes undecodable as utf-8 fall back to latin-1 which always succeeds."""
+    async def test_windows_1252_fallback(self) -> None:
         parser = _make_parser()
         expected = BlocksContainer(blocks=[], block_groups=[])
         parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
-        # Non-utf-8 bytes; latin-1/iso-8859-1 accepts anything
-        result = await parser.handle_md(b"\xff\xfecaf\xe9", "a.md")
+        result = await parser.handle_md(b"\x93caf\xe9\x94 \x80", "a.md")
         assert result is expected
-
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        raw = MagicMock()
-
-        def _decode(*_a, **_k):
-            raise UnicodeDecodeError("utf-8", b"", 0, 1, "x")
-
-        raw.decode = _decode
-        parser = _make_parser()
-        with pytest.raises(ValueError, match="Unable to decode Markdown"):
-            await parser.handle_md(raw, "a.md")
+        assert parser._markdown_string_to_blocks.call_args[0][0] == "\u201ccaf\u00e9\u201d \u20ac"
 
 
 class TestHandleTxt:
@@ -728,18 +733,6 @@ class TestHandleTxt:
         parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
         result = await parser.handle_txt(b"plain text", "notes.txt")
         assert result is expected
-
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        raw = MagicMock()
-
-        def _decode(*_a, **_k):
-            raise UnicodeDecodeError("utf-8", b"", 0, 1, "x")
-
-        raw.decode = _decode
-        parser = _make_parser()
-        with pytest.raises(ValueError, match="Unable to decode text file"):
-            await parser.handle_txt(raw, "notes.txt")
 
 
 class TestHandleMdx:
@@ -810,7 +803,7 @@ class TestHandleHtml:
         result = await parser.handle_html(b"<html></html>", "page.html")
         assert result is expected
         parser._image_parser.urls_to_base64.assert_awaited_once_with(
-            ["https://example.com/pic.png"]
+            ["https://example.com/pic.png"], allow_remote_fetch=True
         )
         parser._html_parser.parse_to_blocks.assert_awaited_once_with(
             cleaned,

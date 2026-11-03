@@ -5,13 +5,15 @@ import { Theme } from '@radix-ui/themes';
 import { DestructiveTypedConfirmationDialog } from '../destructive-typed-confirmation-dialog';
 
 /**
- * Regression coverage for the drawer-stacking bug: this dialog's overlay is
- * a plain (non-Radix-portaled) `<Box>` — without an explicit `container`,
- * it rendered wherever the component sat in the tree, so opening it from
- * inside `WorkspaceRightPanel` (a `document.body` portal at a higher
- * z-index) put the overlay + `Dialog.Content` behind the drawer. See
- * `SkillEditorPanel`'s `DangerZone`, which now passes `nestedHost` from
- * `useWorkspaceDrawerNestedModalHost` as `container`.
+ * Regression coverage for two bugs:
+ *
+ * 1. Drawer stacking: without an explicit `container`, opening this dialog from
+ *    inside `WorkspaceRightPanel` (a `document.body` portal at a higher z-index)
+ *    put it behind the drawer. See `SkillEditorPanel`'s `DangerZone`, which
+ *    passes `nestedHost` from `useWorkspaceDrawerNestedModalHost` as `container`.
+ * 2. Double dimming: a hand-rolled overlay (z-index 999) used to paint on top
+ *    of Radix's own overlay, which also contains `Dialog.Content`, so the
+ *    dialog itself looked dull. Radix's overlay must be the only backdrop.
  */
 
 afterEach(cleanup);
@@ -35,20 +37,19 @@ function renderDialog(container: HTMLElement | null | undefined) {
 }
 
 describe('DestructiveTypedConfirmationDialog', () => {
-  it('portals both the overlay and Dialog.Content into the given container', () => {
+  it('portals Radix overlay and Dialog.Content into the given container', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
 
     renderDialog(host);
 
-    expect(host.querySelector('[data-testid="destructive-dialog-overlay"]')).not.toBeNull();
-    // `Dialog.Content` renders the heading text — also expected inside `host`.
+    expect(host.querySelector('.rt-DialogOverlay')).not.toBeNull();
     expect(host.textContent).toContain('Delete "pdf-extractor"?');
 
     host.remove();
   });
 
-  it('does not leak the overlay into an unrelated container element', () => {
+  it('does not leak dialog content into an unrelated container element', () => {
     const host = document.createElement('div');
     const other = document.createElement('div');
     document.body.appendChild(host);
@@ -56,7 +57,8 @@ describe('DestructiveTypedConfirmationDialog', () => {
 
     renderDialog(host);
 
-    expect(other.querySelector('[data-testid="destructive-dialog-overlay"]')).toBeNull();
+    expect(other.querySelector('.rt-DialogOverlay')).toBeNull();
+    expect(other.textContent).not.toContain('Delete "pdf-extractor"?');
 
     host.remove();
     other.remove();
@@ -64,6 +66,13 @@ describe('DestructiveTypedConfirmationDialog', () => {
 
   it('falls back to document.body when no container is given', () => {
     renderDialog(undefined);
-    expect(document.body.querySelector('[data-testid="destructive-dialog-overlay"]')).not.toBeNull();
+    expect(document.body.querySelector('.rt-DialogOverlay')).not.toBeNull();
+    expect(document.body.textContent).toContain('Delete "pdf-extractor"?');
+  });
+
+  it('renders no custom backdrop on top of the Radix overlay', () => {
+    renderDialog(undefined);
+    expect(document.body.querySelector('[data-testid="destructive-dialog-overlay"]')).toBeNull();
+    expect(document.body.querySelectorAll('.rt-DialogOverlay')).toHaveLength(1);
   });
 });

@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { publicAuthClient } from '@/lib/api/public-auth-client';
 import type { SignInResponse } from '@/lib/api/auth-public-types';
 import {
@@ -10,8 +11,7 @@ import type {
   UpdateAuthMethodPayload,
   GoogleConfig,
   MicrosoftConfig,
-  SamlConfig,
-  OAuthConfig,
+  SignInRemovalStatus,
 } from './types';
 
 // ============================================================
@@ -46,6 +46,18 @@ export const AuthMethodsApi = {
   async updateAuthMethods(payload: UpdateAuthMethodPayload): Promise<void> {
     await apiClient.post(`${AUTH_METHODS_URL}/updateAuthMethod`, payload);
   },
+
+  /**
+   * GET /api/v1/orgAuthConfig/signInRemoval
+   * Sign-in methods the 1.0 upgrade turned off for this workspace, and the
+   * people who have signed in but have no password yet.
+   */
+  async getSignInRemovalStatus(): Promise<SignInRemovalStatus> {
+    const { data } = await apiClient.get<SignInRemovalStatus>(
+      `${AUTH_METHODS_URL}/signInRemoval`,
+    );
+    return data;
+  },
 };
 
 // ============================================================
@@ -53,6 +65,16 @@ export const AuthMethodsApi = {
 // ============================================================
 
 export const AuthConfigApi = {
+  /** A provider's stored config with real values instead of placeholders. Only where the deployment allows it. */
+  async revealProviderConfig(
+    method: 'google' | 'microsoft',
+  ): Promise<Record<string, unknown>> {
+    const { data } = await apiClient.get<Record<string, unknown>>(`${CONFIG_BASE}/${method}`, {
+      params: REVEAL_PARAMS,
+    });
+    return data ?? {};
+  },
+
   // ── Google ────────────────────────────────────────────────
 
   /** GET /api/v1/configurationManager/authConfig/google */
@@ -86,40 +108,6 @@ export const AuthConfigApi = {
   async saveMicrosoftConfig(payload: MicrosoftConfig): Promise<void> {
     await apiClient.post(`${CONFIG_BASE}/microsoft`, payload);
   },
-
-  // ── SAML SSO ──────────────────────────────────────────────
-
-  /** GET /api/v1/configurationManager/authConfig/sso */
-  async getSamlConfig(): Promise<SamlConfig | null> {
-    try {
-      const { data } = await apiClient.get<SamlConfig>(`${CONFIG_BASE}/sso`);
-      return data;
-    } catch {
-      return null;
-    }
-  },
-
-  /** POST /api/v1/configurationManager/authConfig/sso */
-  async saveSamlConfig(payload: SamlConfig): Promise<void> {
-    await apiClient.post(`${CONFIG_BASE}/sso`, payload);
-  },
-
-  // ── OAuth ─────────────────────────────────────────────────
-
-  /** GET /api/v1/configurationManager/authConfig/oauth */
-  async getOAuthConfig(): Promise<OAuthConfig | null> {
-    try {
-      const { data } = await apiClient.get<OAuthConfig>(`${CONFIG_BASE}/oauth`);
-      return data;
-    } catch {
-      return null;
-    }
-  },
-
-  /** POST /api/v1/configurationManager/authConfig/oauth */
-  async saveOAuthConfig(payload: OAuthConfig): Promise<void> {
-    await apiClient.post(`${CONFIG_BASE}/oauth`, payload);
-  },
 };
 
 // ============================================================
@@ -146,7 +134,7 @@ export const SmtpApi = {
 };
 
 // ============================================================
-// Frontend URL (used to construct OAuth redirect URIs)
+// Frontend URL (used to construct sign-in redirect URIs)
 // ============================================================
 
 export const FrontendUrlApi = {

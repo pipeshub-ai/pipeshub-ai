@@ -1,0 +1,19 @@
+# relok8s image hints file
+# This file makes this Helm Chart relocatable by relok8s
+# More info here https://github.com/vmware-tanzu/asset-relocation-tool-for-kubernetes
+#
+# mongodb chart
+
+# mongodb image
+- "{{.image.registry}}/{{.image.repository}}:{{.image.tag}}"
+# kubectl image
+- "{{.externalAccess.autoDiscovery.image.registry}}/{{.externalAccess.autoDiscovery.image.repository}}:{{.externalAccess.autoDiscovery.image.tag}}"
+# mongodb-exporter image
+- "{{.metrics.image.registry}}/{{.metrics.image.repository}}:{{.metrics.image.tag}}"
+# nginx image
+- "{{.tls.image.registry}}/{{.tls.image.repository}}:{{.tls.image.tag}}"
+# os-shell image
+- "{{.externalAccess.dnsCheck.image.registry}}/{{.externalAccess.dnsCheck.image.repository}}:{{.externalAccess.dnsCheck.image.tag}}"
+# os-shell image
+- "{{.volumePermissions.image.registry}}/{{.volumePermissions.image.repository}}:{{.volumePermissions.image.tag}}"
+

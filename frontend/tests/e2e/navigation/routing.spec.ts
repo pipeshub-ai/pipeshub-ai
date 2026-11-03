@@ -4,6 +4,7 @@ test.describe('Route Access', () => {
   const authenticatedRoutes = [
     '/chat/',
     '/knowledge-base/',
+    '/artifacts/',
     '/workspace/general/',
     '/workspace/profile/',
     '/workspace/users/',

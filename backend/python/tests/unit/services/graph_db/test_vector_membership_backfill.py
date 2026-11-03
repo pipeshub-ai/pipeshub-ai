@@ -107,7 +107,10 @@ class TestArangoVectorMembershipBackfillProvider:
         rows = await provider.page_records_for_vector_membership_backfill(
             "conn-1", "r1", 50
         )
-        assert rows == [{"_key": "r2", "virtualRecordId": "v2"}]
+        assert rows == [{
+            "_key": "r2", "virtualRecordId": "v2",
+            "orgId": None, "indexingStatus": None, "isDeleted": None,
+        }]
         query = provider.http_client.execute_aql.await_args.args[0]
         bind_vars = provider.http_client.execute_aql.await_args.kwargs["bind_vars"]
         assert "record._key > @after_key" in query
@@ -176,7 +179,10 @@ class TestNeo4jVectorMembershipBackfillProvider:
         rows = await provider.page_records_for_vector_membership_backfill(
             "conn-1", "r1", 50
         )
-        assert rows == [{"_key": "r2", "virtualRecordId": "v2"}]
+        assert rows == [{
+            "_key": "r2", "virtualRecordId": "v2",
+            "orgId": None, "indexingStatus": None, "isDeleted": None,
+        }]
         params = provider.client.execute_query.await_args.kwargs["parameters"]
         query = provider.client.execute_query.await_args.args[0]
         assert params["connector_id"] == "conn-1"
@@ -196,3 +202,31 @@ class TestNeo4jVectorMembershipBackfillProvider:
         provider.client.execute_query = AsyncMock(side_effect=RuntimeError("cypher down"))
         with pytest.raises(RuntimeError, match="cypher down"):
             await provider.get_app_needing_vector_membership_backfill()
+
+
+class TestPageRowsCarryWhatTheStoredContentHealSkipsOn:
+    ROW = {
+        "_key": "r1", "virtualRecordId": "v1", "orgId": "o1",
+        "indexingStatus": "COMPLETED", "isDeleted": False,
+    }
+
+    def test_both_queries_return_org_status_and_deletion(self):
+        aql = build_page_records_for_vector_membership_backfill_aql(has_after_key=False)
+        cypher = build_page_records_for_vector_membership_backfill_cypher(has_after_key=False)
+        for field in ("orgId", "indexingStatus", "isDeleted"):
+            assert f"{field}: record.{field}" in aql
+            assert f"r.{field} AS {field}" in cypher
+
+    @pytest.mark.asyncio
+    async def test_arango_rows_pass_the_fields_through(self):
+        provider = ArangoHTTPProvider(MagicMock(), AsyncMock())
+        provider.http_client = AsyncMock()
+        provider.http_client.execute_aql = AsyncMock(return_value=[dict(self.ROW)])
+        assert await provider.page_records_for_vector_membership_backfill("c", None, 5) == [self.ROW]
+
+    @pytest.mark.asyncio
+    async def test_neo4j_rows_pass_the_fields_through(self):
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        provider.client = AsyncMock()
+        provider.client.execute_query = AsyncMock(return_value=[dict(self.ROW)])
+        assert await provider.page_records_for_vector_membership_backfill("c", None, 5) == [self.ROW]

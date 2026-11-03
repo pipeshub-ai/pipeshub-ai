@@ -7,15 +7,23 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from app.agents.toolset_store import (
+    AddressNotAllowedError,
+    assert_public_addresses,
+    find_personal_instance,
+)
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.redaction import (
+    OAUTH_CLIENT_SECRET_FIELDS,
+    REDACTED_PLACEHOLDER,
+    hide_secrets_by_default,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
-
-REDACTED_PLACEHOLDER: str | None = None
 
 
 def _oauth_config_path(toolset_type: str) -> str:
@@ -74,6 +82,12 @@ async def get_oauth_credentials_for_toolset(
                         logger.info(
                             f"Retrieved oauthConfigId from instance {instance_id}"
                         )
+            if not oauth_config_id:
+                # A personal instance signs in with the client its owner entered on it.
+                personal = await find_personal_instance(config_service, toolset_config.get("orgId"), instance_id)
+                own_app = (personal or {}).get("auth") or {}
+                if own_app.get("clientId") and own_app.get("clientSecret"):
+                    return dict(own_app)
         except Exception as e:
             if logger:
                 logger.warning(f"Could not fetch instance to get oauthConfigId: {e}")
@@ -146,7 +160,8 @@ async def get_toolset_by_id(
     config_service: ConfigurationService,
     org_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Fetch a toolset instance by ID, optionally scoped to an org."""
+    """Fetch a toolset instance by ID, optionally scoped to an org: an org instance, or any user's
+    personal one (tool clients read their settings through this, without the owner at hand)."""
     try:
         instances = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[])
         if isinstance(instances, list):
@@ -155,7 +170,16 @@ async def get_toolset_by_id(
                     if org_id is not None and inst.get("orgId") != org_id:
                         return None
                     return inst
-        return None
+        personal = await find_personal_instance(config_service, org_id, instance_id)
+        if personal is None:
+            return None
+        try:
+            # Checked again on every use, not only when saved: a name can start resolving elsewhere.
+            await assert_public_addresses(personal.get("auth") or {})
+        except AddressNotAllowedError as e:
+            logger.warning(f"Not using personal toolset instance {instance_id}: {e}")
+            return None
+        return personal
     except Exception as e:
         logger.error(f"Failed to fetch toolset instance '{instance_id}': {e}", exc_info=True)
         return None
@@ -196,16 +220,17 @@ def mask_oauth_secrets(
     cfg_data: dict[str, Any],
     *,
     is_inherited: bool = False,
+    reveal: bool = False,
 ) -> dict[str, Any]:
-    """Return config unchanged."""
+    """Redact secret fields under HIDE_SECRET_CONFIG unless revealed; OSS has no org inheritance."""
     del is_inherited
-    return dict(cfg_data)
+    if reveal or not hide_secrets_by_default():
+        return dict(cfg_data)
+    return {k: (REDACTED_PLACEHOLDER if k in OAUTH_CLIENT_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 
 
 def is_redacted_placeholder(value: Any) -> bool:
-    """Never redacts."""
-    del value
-    return False
+    return value == REDACTED_PLACEHOLDER
 
 
 async def load_instances_for_mutation(

@@ -200,6 +200,26 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // Toolsets
+  'toolset:read': {
+    name: 'toolset:read',
+    description: 'Read toolsets and their authentication status',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:write': {
+    name: 'toolset:write',
+    description: 'Add, configure and authenticate toolsets',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:delete': {
+    name: 'toolset:delete',
+    description: 'Remove toolsets and their credentials',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+
   // Projects
   'project:read': {
     name: 'project:read',
@@ -209,7 +229,8 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
   'project:write': {
     name: 'project:write',
-    description: 'Create, update and share projects',
+    description:
+      'Create, update and share projects. Adding files to a project also needs kb:write',
     category: 'Projects',
     requiresUserConsent: true,
   },
@@ -243,6 +264,14 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     name: 'connector:delete',
     description: 'Delete connectors',
     category: 'Connectors',
+    requiresUserConsent: true,
+  },
+
+  // Code graph
+  'code:read': {
+    name: 'code:read',
+    description: 'Read indexed code repositories and their code graph',
+    category: 'Code',
     requiresUserConsent: true,
   },
 
@@ -327,22 +356,33 @@ export const DefaultMcpScopes = [
   'profile',
   'email',
   'offline_access',
+  'semantic:read',
   'semantic:write',
   'conversation:write',
   'conversation:chat',
   'kb:read',
+  'kb:write',
+  'kb:upload',
   'team:read',
   'user:read',
+  'usergroup:read',
   'config:read',
   'agent:read',
   'agent:execute',
   'connector:read',
+  'connector:write',
+  'connector:sync',
+  'code:read',
+  'project:read',
+  'project:write',
+  'project:delete',
 ];
 
 /**
- * Scopes the CLI/agent preset mints. The first-party device app
- * (`pipeshub-agent`) and Dynamic Client Registration default to this set
- * (intersected with instance MCP_SCOPES). Never grant
+ * Scopes the CLI/agent preset mints. Dynamic Client Registration defaults
+ * to this set, and the first-party device app (`pipeshub-agent`) to this set
+ * plus `offline_access` (`DEVICE_APP_SCOPES`, so device logins get a refresh
+ * token), both intersected with instance MCP_SCOPES. Never grant
  * `client_credentials` to the first-party device app: the grant carries no
  * identity of its own, so AuthMiddleware resolves its tokens to the app's
  * `createdBy` and they run as that person. DCR needs no such care — it
@@ -353,9 +393,52 @@ export const AgentMcpScopes = [
   'conversation:chat',
   'semantic:write',
   'kb:read',
+  // Lets an agent fill an empty workspace: create a collection and upload into
+  // it. Delete stays out of the preset.
+  'kb:write',
+  'kb:upload',
   'user:read',
   'connector:read',
+  // Lets an agent add a web source (pipeshub_add_web_source): create the
+  // connector, save its start URL and start the crawl.
+  'connector:write',
+  'connector:sync',
+  'code:read',
 ] as const;
+
+/**
+ * The scopes the `/mcp` tools use: the scope each route they call requires,
+ * both in Node and in the Python service it forwards to, plus `offline_access`
+ * so MCP clients get a refresh token. Clients such as Claude Code request
+ * every scope in `scopes_supported`, so discovery advertises only these.
+ * MCP_SCOPES stays the cap on what any token may hold.
+ */
+export const McpToolScopes = [
+  'offline_access',
+  // pipeshub_search: Node accepts semantic:read too, but the Python search
+  // route it forwards to requires semantic:write.
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+  'kb:read',
+  'kb:write',
+  'kb:upload',
+  'connector:read',
+  'connector:write',
+  'connector:sync',
+  'config:read',
+  'user:read',
+  'team:read',
+  'usergroup:read',
+  'code:read',
+] as const;
+
+/** The MCP_SCOPES the `/mcp` tools use, in MCP_SCOPES order. */
+export function mcpDiscoveryScopes(mcpScopes: readonly string[]): string[] {
+  const used = new Set<string>(McpToolScopes);
+  return mcpScopes.filter((scope) => used.has(scope));
+}
 
 export const ScopeCategories = [
   'Identity',
@@ -369,8 +452,10 @@ export const ScopeCategories = [
   'Conversations',
   'Agents',
   'MCP Servers',
+  'Toolsets',
   'Projects',
   'Connectors',
+  'Code',
   'Configuration',
   'Crawling',
 ];

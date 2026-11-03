@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from app.connectors.core.base.error.stream_errors import (
+    SOURCE_REFUSAL_HEADER,
     connector_not_ready,
     extract_source_status,
     map_source_status,
@@ -55,11 +56,11 @@ class TestMapSourceStatus:
 
     def test_rate_limit_forwards_retry_after(self) -> None:
         assert map_source_status(429, connector="Slack", retry_after="30").headers == {
-            "Retry-After": "30"
+            SOURCE_REFUSAL_HEADER: "1", "Retry-After": "30"
         }
 
     def test_retry_after_ignored_for_other_statuses(self) -> None:
-        assert not map_source_status(404, connector="Slack", retry_after="30").headers
+        assert "Retry-After" not in map_source_status(404, connector="Slack", retry_after="30").headers
 
     @pytest.mark.parametrize("status", [None, "403", object(), True])
     def test_unusable_status_falls_back_to_500(self, status: object) -> None:
@@ -94,6 +95,19 @@ class TestRaiseForStreamFetch:
                 status=403,
             )
         assert exc_info.value.status_code == 403
+
+    @pytest.mark.parametrize("retry_after", [1800, "1800"])
+    def test_rate_limit_carries_retry_after(self, retry_after: int | str) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector="GitHub",
+                status=429,
+                retry_after=retry_after,
+            )
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers == {SOURCE_REFUSAL_HEADER: "1", "Retry-After": "1800"}
 
     def test_failure_without_status_raises_runtime_error(self) -> None:
         """No proven status must not invent a 404 — to_stream_error maps this to 500."""
@@ -133,6 +147,31 @@ class TestToStreamError:
     def test_existing_http_exception_passes_through(self) -> None:
         original = HTTPException(status_code=418, detail="teapot")
         assert to_stream_error(original) is original
+
+    @pytest.mark.parametrize(
+        ("headers", "retry_after"),
+        [({"X-RateLimit-Remaining": "0"}, None), ({"Retry-After": "60"}, "60")],
+    )
+    def test_github_style_rate_limited_403_is_429(self, headers: dict, retry_after: str | None) -> None:
+        """GitHub rate-limits with 403; read as 403 it fails the record as "access denied"."""
+        import httpx
+
+        request = httpx.Request("GET", "https://github.com/user-attachments/files/1/a.pdf")
+        response = httpx.Response(403, headers=headers, request=request)
+        exc = httpx.HTTPStatusError("403", request=request, response=response)
+
+        err = to_stream_error(exc, connector="GitHub")
+        assert err.status_code == 429
+        assert (err.headers or {}).get("Retry-After") == retry_after
+
+    def test_plain_403_stays_forbidden(self) -> None:
+        import httpx
+
+        request = httpx.Request("GET", "https://github.com/user-attachments/files/1/a.pdf")
+        response = httpx.Response(403, headers={"X-RateLimit-Remaining": "4999"}, request=request)
+        exc = httpx.HTTPStatusError("403", request=request, response=response)
+
+        assert to_stream_error(exc, connector="GitHub").status_code == 403
 
     def test_unknown_error_does_not_leak_the_message(self) -> None:
         """Exception text can carry tokens, signed URLs and internal hostnames."""
@@ -340,6 +379,29 @@ class TestSdkShapes:
         )
         assert mapped.status_code == 429
         assert mapped.headers["Retry-After"] == "30"
+
+    def test_retry_after_is_read_off_a_box_style_response_info(self) -> None:
+        class _Info:
+            status_code = 429
+            headers = {"retry-after": "45"}
+
+        class _BoxApiError(Exception):
+            response_info = _Info()
+
+        mapped = to_stream_error(_BoxApiError("429"), connector="Box")
+        assert mapped.status_code == 429
+        assert mapped.headers["Retry-After"] == "45"
+
+    def test_response_headers_still_win_over_response_info(self) -> None:
+        class _Headers:
+            headers = {"Retry-After": "10"}
+
+        class _Exc(Exception):
+            status_code = 429
+            response = _Headers()
+            response_info = type("_Info", (), {"headers": {"Retry-After": "99"}})()
+
+        assert to_stream_error(_Exc("429"), connector="X").headers["Retry-After"] == "10"
 
 
 class TestInternalServiceError:

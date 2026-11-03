@@ -1,32 +1,29 @@
-import { Router, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   createAIModelsConfig,
   createGoogleWorkspaceCredentials,
   createSmtpConfig,
+  deleteSmtpConfig,
+  setSmtpConfigEnabled,
   createStorageConfig,
   getAIModelsConfig,
   getInternalAIModelsConfig,
-  getAzureAdAuthConfig,
   getGoogleAuthConfig,
   getGoogleWorkspaceOauthConfig,
   getGoogleWorkspaceCredentials,
   getMicrosoftAuthConfig,
-  getOAuthConfig,
   getSmtpConfig,
   getSmtpConfigStatus,
-  getSsoAuthConfig,
   getStorageConfig,
-  setAzureAdAuthConfig,
   setGoogleAuthConfig,
   setMicrosoftAuthConfig,
-  setOAuthConfig,
-  setSsoAuthConfig,
   setGoogleWorkspaceOauthConfig,
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -54,6 +51,7 @@ import {
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
   getEffectivePlatformFeatureFlags,
+  getSecretRevealStatus,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
   getWebSearchProviders,
@@ -63,6 +61,7 @@ import {
   deleteWebSearchProvider,
   updateDefaultWebSearchProvider,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -72,16 +71,26 @@ import {
   getModelRoles,
   updateModelRoles,
 } from '../controller/cm_controller';
+import {
+  batchAddAIModels,
+  discoverAIModels,
+  rotateConnectionCredentials,
+} from '../controller/ai_models_batch.controller';
+import {
+  getIdentityPolicy,
+  previewIdentityForwarding,
+  putIdentityPolicy,
+  setConnectionIdentityForwarding,
+} from '../controller/ai_gateway_identity.controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   smtpConfigSchema,
+  smtpEnabledSchema,
   aiModelsConfigSchema,
   storageValidationSchema,
   azureAdConfigSchema,
   googleAuthConfigSchema,
-  oauthConfigSchema,
-  ssoConfigSchema,
   googleWorkspaceConfigSchema,
   platformSettingsSchema,
   urlSchema,
@@ -92,6 +101,12 @@ import {
   updateDefaultModelSchema,
   deleteProviderSchema,
   addProviderRequestSchema,
+  batchAddModelsRequestSchema,
+  discoverModelsRequestSchema,
+  rotateConnectionCredentialsSchema,
+  connectionIdentityForwardingSchema,
+  identityPolicySchema,
+  identityPreviewSchema,
   updateProviderRequestSchema,
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
@@ -123,10 +138,17 @@ import {
   AiConfigEventProducer,
   SyncEventProducer,
 } from '../services/kafka_events.service';
-import { SamlController } from '../../auth/controller/saml.controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
+  // Settings answers depend on who is asking and can carry secrets, so no
+  // browser or proxy cache may keep a copy to hand to the next user.
+  router.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+  guardPathParams(router, 'providerId');
   const keyValueStoreService = container.get<KeyValueStoreService>(
     'KeyValueStoreService',
   );
@@ -136,7 +158,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   const aiConfigEventService = container.get<AiConfigEventProducer>(
     'AiConfigEventProducer',
   );
-  const samlController = container.get<SamlController>('SamlController');
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   // storage config routes
@@ -352,10 +373,45 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getSmtpConfig(keyValueStoreService),
   );
 
+  /**
+   * DELETE /smtpConfig
+   * Removes the SMTP configuration. Admin only.
+   */
+  router.delete(
+    '/smtpConfig',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    deleteSmtpConfig(
+      keyValueStoreService,
+      appConfig.communicationBackend,
+      appConfig.scopedJwtSecret,
+    ),
+  );
+
+  /**
+   * PUT /smtpConfig/enabled
+   * Turns email sending off or back on, keeping the settings. Admin only.
+   */
+  router.put(
+    '/smtpConfig/enabled',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(smtpEnabledSchema),
+    setSmtpConfigEnabled(
+      keyValueStoreService,
+      appConfig.communicationBackend,
+      appConfig.scopedJwtSecret,
+    ),
+  );
+
   router.get(
     '/internal/smtpConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSmtpConfig(keyValueStoreService),
+    getSmtpConfig(keyValueStoreService, false),
   );
 
   /**
@@ -372,28 +428,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   // auth config routes
-  router.get(
-    '/authConfig/azureAd',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_READ),
-    userAdminCheck,
-    getAzureAdAuthConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/internal/authConfig/azureAd',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getAzureAdAuthConfig(keyValueStoreService),
-  );
-
-  router.post(
-    '/authConfig/azureAd',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    ValidationMiddleware.validate(azureAdConfigSchema),
-    setAzureAdAuthConfig(keyValueStoreService),
-  );
 
   router.get(
     '/authConfig/microsoft',
@@ -405,7 +439,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/microsoft',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getMicrosoftAuthConfig(keyValueStoreService),
+    getMicrosoftAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -428,7 +462,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/google',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getGoogleAuthConfig(keyValueStoreService),
+    getGoogleAuthConfig(keyValueStoreService, false),
   );
   router.post(
     '/authConfig/google',
@@ -437,51 +471,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     ValidationMiddleware.validate(googleAuthConfigSchema),
     setGoogleAuthConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/authConfig/sso',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_READ),
-    userAdminCheck,
-    getSsoAuthConfig(keyValueStoreService),
-  );
-  router.get(
-    '/internal/authConfig/sso',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSsoAuthConfig(keyValueStoreService),
-  );
-  router.post(
-    '/authConfig/sso',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    ValidationMiddleware.validate(ssoConfigSchema),
-    setSsoAuthConfig(keyValueStoreService, samlController),
-  );
-
-  // OAuth config routes
-  router.get(
-    '/authConfig/oauth',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_READ),
-    userAdminCheck,
-    getOAuthConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/internal/authConfig/oauth',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getOAuthConfig(keyValueStoreService),
-  );
-
-  router.post(
-    '/authConfig/oauth',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    ValidationMiddleware.validate(oauthConfigSchema),
-    setOAuthConfig(keyValueStoreService),
   );
 
   // Platform settings
@@ -518,6 +507,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getEffectivePlatformFeatureFlags(keyValueStoreService),
   );
 
+  router.get(
+    '/secretReveal',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getSecretRevealStatus,
+  );
+
   // Slack Bot configuration
   router.get(
     '/slack-bot',
@@ -527,8 +524,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   router.get(
     '/internal/slack-bot',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSlackBotConfigs(keyValueStoreService),
+    authMiddleware.scopedTokenValidator(TokenScopes.SLACK_BOT_VERIFY),
+    getInternalSlackBotConfigs(keyValueStoreService),
   );
 
   router.post(
@@ -571,7 +568,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     setCustomSystemPrompt(keyValueStoreService),
   );
-
 
   // Google Workspace Config Routes
   /**
@@ -873,6 +869,78 @@ export function createConfigurationManagerRouter(container: Container): Router {
     streamEmbeddingDownloadProgress(),
   );
 
+  // Literal paths before /ai-models/:modelType. Express matches the param
+  // route first otherwise, and the enum validator rejects the literal segment.
+  router.post(
+    '/ai-models/discover',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(discoverModelsRequestSchema),
+    discoverAIModels(keyValueStoreService, appConfig),
+  );
+
+  router.post(
+    '/ai-models/providers/batch',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(batchAddModelsRequestSchema),
+    batchAddAIModels(keyValueStoreService, aiConfigEventService, appConfig),
+  );
+
+  router.put(
+    '/ai-models/connections/:connectionId/credentials',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(rotateConnectionCredentialsSchema),
+    rotateConnectionCredentials(keyValueStoreService, appConfig),
+  );
+
+  // AuthMiddleware binds `authenticate` in its constructor, so passing the
+  // reference is safe; the route guard test also needs that exact reference.
+  /* eslint-disable @typescript-eslint/unbound-method */
+  router.put(
+    '/ai-models/connections/:connectionId/identity-forwarding',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(connectionIdentityForwardingSchema),
+    setConnectionIdentityForwarding(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+    ),
+  );
+
+  router.get(
+    '/ai-models/identity-policy',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getIdentityPolicy(keyValueStoreService),
+  );
+
+  router.put(
+    '/ai-models/identity-policy',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(identityPolicySchema),
+    putIdentityPolicy(keyValueStoreService),
+  );
+
+  router.post(
+    '/ai-models/identity/preview',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    ValidationMiddleware.validate(identityPreviewSchema),
+    previewIdentityForwarding(keyValueStoreService, appConfig),
+  );
+  /* eslint-enable @typescript-eslint/unbound-method */
+
   /**
    * @route GET /api/v1/configurationManager/ai-models/:modelType
    * @desc Get all AI models of a specific type
@@ -903,11 +971,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getAvailableModelsByType(keyValueStoreService),
   );
 
-  /**
-   * @route POST /api/v1/configurationManager/ai-models/providers
-   * @desc Add a new AI model provider
-   * @access Private (admin)
-   */
   router.post(
     '/ai-models/providers',
     authMiddleware.authenticate,
@@ -1066,6 +1129,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     getFrontendUrl(keyValueStoreService),
+  );
+
+  // The only unauthenticated route in this router: the desktop app calls it
+  // from the sign-in screen before any session exists. Do not put router-wide
+  // auth in front of it.
+  router.get(
+    '/public/desktopFrontendUrl',
+    getDesktopFrontendUrl(keyValueStoreService),
   );
 
   router.post(

@@ -26,7 +26,9 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agents.agent_loop.artifact_store import RegistryBackedStore
 from app.services.artifact_registry.models import Actor, ArtifactMetadata
+from app.services.artifact_registry.registry import ArtifactRegistryService
 from app.models.entities import ArtifactType, LifecycleStatus
+from tests.unit.services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
 
 
 def _mock_registry(artifact_id: str = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"):
@@ -276,3 +278,18 @@ class TestConversationTurnArtifactReconstruction:
         tool_msg = messages[1]
         assert "Found 25 Jira issues" in tool_msg.content
         assert "raw preview" not in tool_msg.content
+
+
+class TestDeletedToolResult:
+    async def test_a_later_turn_replaying_a_deleted_tool_result_gets_none(self) -> None:
+        """Deleting a chat removes its tool-result artifacts; a turn that still
+        holds one's id must carry on without it, not fail."""
+        graph = FakeGraphProvider()
+        graph.add_user("user-1")
+        actor = Actor(org_id="org-1", user_id="user-1")
+        registry = ArtifactRegistryService(graph, FakeBlobStore())
+        artifact_id = await RegistryBackedStore(registry, actor, "conv-1").store('{"rows": 1}', tool_name="sql")
+
+        await registry.delete_for_conversation(actor=actor, conversation_id="conv-1")
+
+        assert await RegistryBackedStore(registry, actor, "conv-1").get(artifact_id) is None

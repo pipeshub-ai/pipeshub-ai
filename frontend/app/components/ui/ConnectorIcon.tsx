@@ -43,10 +43,13 @@ export type ConnectorType =
   | 'local-fs'
   | 'localfs'
   | 'nextcloud'
+  | 'smb'
+  | 'cifs'
   // Document & Knowledge
   | 'notion'
   | 'confluence'
   | 'bookstack'
+  | 'drupal-wiki'
   /** PipesHub Collections / KB — backend `Connectors.KNOWLEDGE_BASE` = `"KB"` */
   | 'kb'
   | 'knowledge-base'
@@ -55,6 +58,7 @@ export type ConnectorType =
   | 'google-slides'
   | 'google-forms'
   | 'ms-onenote'
+  | 'microsoft-learn'
   // Project & Issue Tracking
   | 'jira'
   | 'linear'
@@ -85,12 +89,19 @@ export type ConnectorType =
   | 'lumos'
   // MCP / AI tools
   | 'exa'
+  | 'context7'
+  | 'huggingface'
   | 'atlassian'
   | 'discord'
   | 'posthog'
   | 'brave'
+  | 'stripe'
+  | 'vercel'
+  | 'docusign'
+  | 'okta'
   // Generic / Fallback
   | 'web'
+  | 'api'
   | 'generic';
 
 interface ConnectorIconProps {
@@ -136,15 +147,19 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'local-fs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'localfs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'nextcloud': { svg: svg('nextcloud'), fallback: 'cloud' },
+  'smb': { svg: svg('smb'), fallback: 'folder_shared' },
+  'cifs': { svg: svg('cifs'), fallback: 'folder_shared' },
   // Document & Knowledge
   'notion': { svg: svg('notion'), fallback: 'description' },
   'confluence': { svg: svg('confluence'), fallback: 'article' },
   'bookstack': { svg: svg('bookstack'), fallback: 'menu_book' },
+  'drupal-wiki': { svg: svg('drupalwiki'), fallback: 'menu_book' },
   'google-docs': { svg: svg('docs'), fallback: 'description' },
   'google-sheets': { svg: svg('sheets'), fallback: 'table_chart' },
   'google-slides': { svg: svg('slides'), fallback: 'slideshow' },
   'google-forms': { svg: svg('forms'), fallback: 'quiz' },
   'ms-onenote': { svg: svg('ms-onenote'), fallback: 'note' },
+  'microsoft-learn': { svg: svg('microsoft-learn'), fallback: 'menu_book' },
   'kb': { svg: svg('kb'), fallback: 'folder' },
   'knowledge-base': { svg: svg('kb'), fallback: 'folder' },
   // Project & Issue Tracking (keys sorted A–Z)
@@ -177,12 +192,20 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'lumos': { svg: svg('lumos'), fallback: 'manage_accounts' },
   // MCP / AI tools
   'exa': { svg: svg('exa'), fallback: 'travel_explore' },
+  'context7': { svg: svg('context7'), fallback: 'menu_book' },
+  'huggingface': { svg: svg('huggingface'), fallback: 'smart_toy' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: null, fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
+  'stripe': { svg: svg('stripe'), fallback: 'payments' },
+  'vercel': { svg: svg('vercel'), fallback: 'code' },
+  'docusign': { svg: svg('docusign'), fallback: 'draw' },
+  'okta': { svg: svg('okta'), fallback: 'badge' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
+  // API toolsets (admin-uploaded OpenAPI specs)
+  'api': { svg: null, fallback: 'api' },
   'generic': { svg: svg('default'), fallback: 'extension' },
 };
 
@@ -192,6 +215,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
  * Patterns are matched via .includes() against normalized input.
  */
 const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
+  // Chat groups of API actions (`api_action:<instanceId>`).
+  ['api-action:', 'api'],
   // Google suite — specific first (google-cloud-storage before google-cloud)
   ['google-cloud-storage', 'gcs'],
   ['google-drive', 'google-drive'], ['gdrive', 'google-drive'],
@@ -218,6 +243,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
+  ['network-drive', 'smb'], ['smb3', 'smb'], ['smb2', 'smb'], ['smb', 'smb'],
+  ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
   ['jira', 'jira'], ['confluence', 'confluence'],
@@ -229,14 +256,21 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['mariadb', 'mariadb'], ['airtable', 'airtable'],
   // Document & Knowledge
   ['notion', 'notion'], ['bookstack', 'bookstack'],
+  ['drupal', 'drupal-wiki'],
   // Media & Other
   ['youtube', 'youtube'], ['rss', 'rss'],
   ['seek', 'seek'], ['frame', 'frame'], ['vector', 'vector'],
   // MCP / AI tools
   ['atlassian', 'atlassian'], ['rovo', 'atlassian'],
   ['exa', 'exa'], ['discord', 'discord'], ['posthog', 'posthog'],
+  ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
   ['brave', 'brave'],
+  ['stripe', 'stripe'],
+  ['vercel', 'vercel'],
+  ['docusign', 'docusign'], ['okta', 'okta'],
   // Broad fallbacks (last — only match if nothing specific matched)
+  // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
+  ['docs', 'google-docs'], ['sheets', 'google-sheets'],
   ['google', 'google-drive'], ['microsoft', 'sharepoint'], ['365', 'sharepoint'],
   ['azure', 'azure-blob'], ['drive', 'google-drive'],
   ['calendar', 'google-calendar'],

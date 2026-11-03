@@ -8,6 +8,7 @@ in which `fields` mask they request. Both are parameters here.
 """
 
 import asyncio
+from collections.abc import Iterable
 from logging import Logger
 from typing import (
     AsyncGenerator,
@@ -27,10 +28,19 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleDriveError,
+)
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_FOLDER_EXPANSION_GET_FIELDS,
     DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
 )
+from app.connectors.sources.google.drive.utils.drive_shortcuts import (
+    MAX_SHORTCUT_DEPTH,
+    is_shortcut_mime,
+    shortcut_target,
+)
+from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk
 from app.models.entities import Record
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
@@ -49,22 +59,219 @@ ANCESTOR_FETCH_CONCURRENCY = 5
 # something is wrong.
 PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 
-# Drive surfaces rate limiting as HTTP 403 with one of these reasons, not a distinct
-# status code, so a blanket "403 = permanently inaccessible" check on shared-folder
-# expansion would wrongly discard a folder subtree that just needs to be retried.
-RETRYABLE_403_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
+# 403 reasons that mean this user genuinely may not see the item. Anything else,
+# including a 403 with no reason or one not listed here, must not be read as
+# "invisible": that would drop a subtree from scope while the checkpoint advances.
+PERMISSION_DENIED_403_REASONS = {
+    "insufficientFilePermissions",
+    "appNotAuthorizedToFile",
+    "domainPolicy",
+    "teamDriveMembershipRequired",
+}
+
+
+# 403 reasons Drive uses for quota and rate limits. These clear as the quota refills,
+# so they are retried on every run and never count toward MAX_UNRECOGNISED_403_RUNS.
+QUOTA_403_REASONS = {
+    "dailyLimitExceeded",
+    "dailyLimitExceededUnreg",
+    "quotaExceeded",
+    "rateLimitExceeded",
+    "sharingRateLimitExceeded",
+    "userRateLimitExceeded",
+}
+
+# The Admin Directory's reason when the caller is not authorized to read a resource,
+# such as a group outside its reach. It does not clear by retrying; a 403 with no
+# reason, or with one not listed here, might.
+DIRECTORY_REFUSAL_403_REASONS = {"forbidden"}
+
+# Runs in a row one folder may fail on an unrecognised 403 before it is skipped, so a
+# folder Drive keeps refusing without a reason we recognise cannot fail every run for good.
+MAX_UNRECOGNISED_403_RUNS = 5
+
+# Sync-point fields for those runs: selected folders the folder filter could not
+# resolve, and shared folders a full sync could not walk (then the ones it gave up on).
+HELD_FILTER_FOLDERS = "heldFilterFolders"
+HELD_SHARED_FOLDERS = "heldSharedFolders"
+SKIPPED_SHARED_FOLDERS = "skippedSharedFolders"
+# And files whose removed change in a user's changes feed keeps failing the same way.
+HELD_REMOVED_CHANGES = "heldRemovedChanges"
+
+
+# google.rpc.ErrorInfo reasons Google's API front end sends for the same limits.
+QUOTA_403_REASONS |= {"RATE_LIMIT_EXCEEDED", "RESOURCE_EXHAUSTED"}
+
+
+def drive_error_reasons(error: HttpError) -> set:
+    """Every reason a Google error states.
+
+    googleapiclient fills ``error_details`` from the body's ``details`` when it has one and only otherwise
+    from ``errors``, so a quota error that carries both names its limit as RATE_LIMIT_EXCEEDED there and as
+    rateLimitExceeded only in ``errors``. Both are read.
+    """
+    import json
+
+    reasons: set = set()
+    details = getattr(error, "error_details", None) or []
+    if isinstance(details, list):
+        reasons |= {d.get("reason") for d in details if isinstance(d, dict) and d.get("reason")}
+    try:
+        body = json.loads((getattr(error, "content", b"") or b"").decode("utf-8"))
+        for entry in (body.get("error") or {}).get("errors") or []:
+            if isinstance(entry, dict) and entry.get("reason"):
+                reasons.add(entry["reason"])
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return reasons
+
+
+def _403_reasons(error: HttpError) -> set:
+    if error.resp.status != HttpStatusCode.FORBIDDEN.value:
+        return set()
+    return drive_error_reasons(error)
 
 
 def is_retryable_403(error: HttpError) -> bool:
-    """True if `error` is Drive-side rate limiting rather than a permission loss.
+    """True for any 403 that is not a known, permanent permission refusal.
 
-    Both surface as HTTP 403; only the `reason` in `error_details` tells them apart.
+    Drive reports quota and rate limits as 403 too, and callers skip a folder for good
+    when this is False, so the default must be "retry": quota and rate-limit reasons, a
+    403 with no reason, details that are not a list of reasons, and reasons Drive adds
+    later are all retryable.
     """
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return False
-    error_details = getattr(error, "error_details", None) or []
-    reasons = {d.get("reason") for d in error_details if isinstance(d, dict)}
-    return bool(reasons & RETRYABLE_403_REASONS)
+    return not is_permission_denied_403(error)
+
+
+def is_permission_denied_403(error: HttpError) -> bool:
+    """True only for a 403 whose every reported reason is a known, permanent denial.
+
+    Google can report several reasons at once; a refusal alongside a quota or
+    unknown reason is not permanent, so it must be retried rather than skipped.
+    """
+    reasons = _403_reasons(error)
+    return bool(reasons) and reasons <= PERMISSION_DENIED_403_REASONS
+
+
+def is_directory_refusal_403(error: HttpError) -> bool:
+    """True only for an Admin Directory 403 whose every reported reason is "forbidden"."""
+    reasons = _403_reasons(error)
+    return bool(reasons) and reasons <= DIRECTORY_REFUSAL_403_REASONS
+
+
+def is_unrecognised_403(error: HttpError) -> bool:
+    """True for a 403 that is neither a known permission refusal nor a quota or rate limit."""
+    if error.resp.status != HttpStatusCode.FORBIDDEN.value:
+        return False
+    if _403_reasons(error) & QUOTA_403_REASONS:
+        return False
+    return not is_permission_denied_403(error)
+
+
+class FolderFailureRuns:
+    """How many runs in a row each folder (or file) has failed on an unrecognised 403.
+
+    Kept in a sync point as a list of "folderId:runs" strings. Sync-point writes merge:
+    Arango merges a nested object key by key and Neo4j cannot store one at all, while a
+    list is replaced whole on both, so writing the list always states the full set.
+    Drive ids never contain ":".
+    """
+
+    def __init__(self, stored: object = None) -> None:
+        self._runs: dict[str, int] = {}
+        for entry in stored if isinstance(stored, list) else []:
+            folder_id, _, runs = str(entry).rpartition(":")
+            if folder_id and runs.isdigit():
+                self._runs[folder_id] = int(runs)
+        self._loaded = self.to_stored()
+
+    def runs(self, folder_id: str) -> int:
+        return self._runs.get(folder_id, 0)
+
+    def record_failure(self, folder_id: str) -> int:
+        """Count this run's failure and return the runs so far, capped at the limit."""
+        runs = min(self.runs(folder_id) + 1, MAX_UNRECOGNISED_403_RUNS)
+        self._runs[folder_id] = runs
+        return runs
+
+    def clear(self, folder_id: str) -> None:
+        self._runs.pop(folder_id, None)
+
+    def keep_only(self, folder_ids: set) -> None:
+        self._runs = {f: n for f, n in self._runs.items() if f in folder_ids}
+
+    def folder_ids(self) -> set:
+        return set(self._runs)
+
+    @property
+    def changed(self) -> bool:
+        return self.to_stored() != self._loaded
+
+    def saved(self) -> None:
+        """Take the current counts as the stored ones."""
+        self._loaded = self.to_stored()
+
+    def to_stored(self) -> list[str]:
+        return [f"{folder_id}:{runs}" for folder_id, runs in sorted(self._runs.items())]
+
+
+class SharedFolderWalkHolds:
+    """Shared folders whose walk keeps failing on an unrecognised 403, for one full sync.
+
+    Every such folder in a walk is counted, and the walk fails at the end if any is
+    still under MAX_UNRECOGNISED_403_RUNS, so folders refused together use their runs
+    together. A folder at the limit keeps that count until the checkpoint is saved, so
+    a run that fails on another folder does not start it over; it is then skipped and
+    listed under SKIPPED_SHARED_FOLDERS.
+    """
+
+    def __init__(self, stored: dict | None = None) -> None:
+        stored = stored if isinstance(stored, dict) else {}
+        self.runs = FolderFailureRuns(stored.get(HELD_SHARED_FOLDERS))
+        skipped = stored.get(SKIPPED_SHARED_FOLDERS)
+        self.skipped: set = {str(f) for f in skipped} if isinstance(skipped, list) else set()
+        self._skipped_loaded = sorted(self.skipped)
+        self.retry_error: Exception | None = None
+
+    def walked(self, folder_id: str) -> None:
+        self.runs.clear(folder_id)
+        self.skipped.discard(folder_id)
+
+    def give_up(self, folder_id: str, error: Exception) -> bool:
+        """Count this run's failure; True once the folder has used every run and is skipped.
+
+        Under the limit, the error is kept for ``raise_if_retrying`` so the rest of the
+        walk still runs and counts its own failures this run.
+        """
+        if self.runs.record_failure(folder_id) < MAX_UNRECOGNISED_403_RUNS:
+            self.retry_error = self.retry_error or error
+            return False
+        self.skipped.add(folder_id)
+        return True
+
+    def raise_if_retrying(self) -> None:
+        if self.retry_error is not None:
+            raise self.retry_error
+
+    def checkpoint_changes(self) -> dict:
+        """The fields to write with the saved checkpoint.
+
+        Every count is cleared there, so a later full sync gives each folder a fresh set
+        of runs; SKIPPED_SHARED_FOLDERS keeps the record of what this one left out.
+        """
+        self.runs.keep_only(set())
+        return self.changes()
+
+    def changes(self) -> dict:
+        """The sync-point fields to write, written whole so a merge cannot keep stale entries."""
+        changes: dict = {}
+        if self.runs.changed:
+            changes[HELD_SHARED_FOLDERS] = self.runs.to_stored()
+        if sorted(self.skipped) != self._skipped_loaded:
+            changes[SKIPPED_SHARED_FOLDERS] = sorted(self.skipped)
+        return changes
 
 
 class FolderScopeExpansion(NamedTuple):
@@ -80,6 +287,8 @@ class FolderListProbe(NamedTuple):
 
     can_list_children: bool
     drive_id: Optional[str] = None  # set when the folder lives on a shared drive
+    # The folder actually probed: the target when the probed id was a shortcut.
+    folder_id: str | None = None
 
 
 def static_data_source_provider(
@@ -253,30 +462,113 @@ async def probe_can_list_children(
     Returns None when the folder is invisible to this user, which files_list
     cannot distinguish from an empty folder — both come back with zero children.
     On success also returns driveId when the folder lives on a shared drive.
-    """
-    try:
-        data_source = await get_data_source()
-        response = await data_source.files_get(
-            fileId=folder_id,
-            fields=DRIVE_FOLDER_EXPANSION_GET_FIELDS,
-            supportsAllDrives=True,
-        )
-    except HttpError as e:
-        logger.debug(
-            f"Folder {folder_id} is not visible to this user (HTTP {e.resp.status})"
-        )
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to probe folder {folder_id}: {e}")
-        return None
 
-    response = response or {}
-    return FolderListProbe(
-        can_list_children=bool(
-            (response.get("capabilities") or {}).get("canListChildren")
-        ),
-        drive_id=response.get("driveId") or None,
-    )
+    Only a 404 or a 403 with a known permission-denial reason means invisible.
+    Any other failure (a quota or rate-limit 403, a 403 with an unknown reason, a
+    5xx, a network error) is raised: reading it as "invisible" would drop the
+    folder's subtree from this run's scope while the sync still saves its
+    checkpoint, so files under it would be skipped for good.
+
+    A shortcut is followed to its target (the folder picker offers shortcuts, and a
+    shortcut itself can never list children); ``folder_id`` on the result names the
+    folder actually probed. A broken, circular or over-deep shortcut chain is invisible.
+    """
+    probe_id = folder_id
+    followed: set[str] = set()
+    while True:
+        try:
+            data_source = await get_data_source()
+            response = await data_source.files_get(
+                fileId=probe_id,
+                fields=DRIVE_FOLDER_EXPANSION_GET_FIELDS,
+                supportsAllDrives=True,
+            )
+        except HttpError as e:
+            status = e.resp.status
+            if status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                logger.debug(
+                    f"Folder {probe_id} is not visible to this user (HTTP {status})"
+                )
+                return None
+            logger.warning(f"Failed to probe folder {probe_id} (HTTP {status}): {e}")
+            raise
+
+        response = response or {}
+        if not is_shortcut_mime(response.get("mimeType")):
+            return FolderListProbe(
+                can_list_children=bool(
+                    (response.get("capabilities") or {}).get("canListChildren")
+                ),
+                drive_id=response.get("driveId") or None,
+                folder_id=probe_id,
+            )
+
+        followed.add(probe_id)
+        target_id, _ = shortcut_target(response)
+        if not target_id or target_id in followed or len(followed) > MAX_SHORTCUT_DEPTH:
+            logger.warning(
+                f"Selected folder {folder_id} is a shortcut that does not lead to a folder "
+                f"(stopped at {probe_id})"
+            )
+            return None
+        logger.info(f"Selected folder {probe_id} is a shortcut; following it to {target_id}")
+        probe_id = target_id
+
+
+async def seeds_with_new_parent(
+    seed_ids: Iterable[str],
+    processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    get_data_source: DriveDataSourceProvider,
+    fields: str,
+    logger: Logger,
+) -> list[dict]:
+    """Metadata of selected folders stored without a parent that Drive now reports one for.
+
+    Drive omits a parent the user cannot open, so a folder shared on its own is stored at
+    the top. Sharing the parent later only changes the parent, which is outside the folder
+    filter, and nothing re-reads the selected folder, so it would never be linked. A drive
+    root is not a parent here (it is stored as the record group). A folder that cannot be
+    read now is left for the next run.
+    """
+    found: list[dict] = []
+    for seed_id in sorted(seed_ids):
+        record = await processor.get_record_by_external_id(connector_id, seed_id)
+        if record is None or record.parent_external_record_id:
+            continue
+        try:
+            data_source = await get_data_source()
+            metadata = await data_source.files_get(
+                fileId=seed_id, fields=fields, supportsAllDrives=True
+            )
+        except HttpError as e:
+            logger.info(f"Could not re-read selected folder {seed_id} for a new parent: {e}")
+            continue
+        parent_id = ((metadata or {}).get("parents") or [None])[0]
+        if parent_id and parent_id not in (record.external_record_group_id, metadata.get("driveId")):
+            logger.info(f"Selected folder {seed_id} now has a visible parent {parent_id}; relinking it")
+            found.append(metadata)
+    return found
+
+
+def adopt_shortcut_seed_target(
+    probed_id: str,
+    probe: FolderListProbe,
+    *folder_sets: set,
+) -> str:
+    """Make a selected folder that is a shortcut stand for its target from here on.
+
+    Records in scope have the target as their parent, never the shortcut, so every
+    scope set has to hold the target id. Returns the id the caller should continue with.
+    """
+    target_id = probe.folder_id
+    if not target_id or target_id == probed_id:
+        return probed_id
+    for ids in folder_sets:
+        if probed_id in ids:
+            ids.discard(probed_id)
+            ids.add(target_id)
+    return target_id
 
 
 async def build_tracked_folder_ids(
@@ -324,6 +616,12 @@ async def build_tracked_folder_ids(
 
             data_source = await get_data_source()
             response = await data_source.files_list(**list_params) or {}
+            # A subfolder a partial page leaves out is never listed, so its files would
+            # look deleted to a full sync that otherwise finished.
+            if not isinstance(response, dict) or response.get("incompleteSearch") is True:
+                raise GoogleDriveError(
+                    "Google Drive could not list every subfolder of the selected folders"
+                )
 
             for subfolder in response.get("files", []):
                 subfolder_id = subfolder.get("id")
@@ -362,10 +660,17 @@ async def fetch_folder_children(
     *,
     fields: str,
     drive_scoped: bool = True,
+    folder_drive_id: Optional[str] = None,
+    walk: Optional[DrivePageWalk] = None,
 ) -> AsyncGenerator[List[dict], None]:
     """
     Recursively fetch all descendants (files and folders) of a folder that
     just entered the tracked scope, yielding them in batches.
+
+    With `walk`, a page Drive answers with incompleteSearch, or with something
+    that is not an object, marks the walk incomplete; the second also ends it.
+    Without one, either raises GoogleDriveError: such callers have no other way
+    to keep their checkpoint from moving past children that were never listed.
 
     Unlike `build_tracked_folder_ids`, this fetches every child item, not
     just folders, but only recurses into children that are themselves
@@ -376,11 +681,12 @@ async def fetch_folder_children(
     `drive_scoped=False` skips resolving driveId, leaving the query on the default
     user corpus. Callers walking a shared drive they are not a member of need that:
     corpora=drive requires membership, while the user corpus still resolves children
-    of a folder the caller holds an individual grant on.
+    of a folder the caller holds an individual grant on. `folder_drive_id` names the
+    folder's shared drive when the caller already knows it, so no lookup is made.
     """
     # Resolve driveId once so shared-drive subtrees use corpora=drive.
-    root_drive_id: Optional[str] = None
-    if drive_scoped:
+    root_drive_id: Optional[str] = folder_drive_id
+    if drive_scoped and root_drive_id is None:
         try:
             data_source = await get_data_source()
             probe = await data_source.files_get(
@@ -389,8 +695,14 @@ async def fetch_folder_children(
                 supportsAllDrives=True,
             )
             root_drive_id = (probe or {}).get("driveId") or None
-        except Exception:
-            root_drive_id = None
+        except HttpError as e:
+            # Only a folder that is gone or refused for good may fall back to the user
+            # corpus; for a shared-drive folder that corpus can return part of its
+            # children with no incompleteSearch to say so.
+            if not (
+                e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e)
+            ):
+                raise
 
     queue: List[str] = [folder_id]
     drive_ids: Dict[str, Optional[str]] = {folder_id: root_drive_id}
@@ -408,6 +720,14 @@ async def fetch_folder_children(
 
             data_source = await get_data_source()
             response = await data_source.files_list(**list_params) or {}
+            if not isinstance(response, dict) or response.get("incompleteSearch") is True:
+                if walk is None:
+                    raise GoogleDriveError(
+                        f"Google Drive could not list every child of folder {folder_id}"
+                    )
+                walk.incomplete = True
+                if not isinstance(response, dict):
+                    return
 
             children_batch = []
             for child in response.get("files", []):

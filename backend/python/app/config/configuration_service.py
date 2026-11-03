@@ -3,9 +3,10 @@ import asyncio
 import hashlib
 import os
 import threading
+import time
 
 import dotenv
-from cachetools import LRUCache
+from cachetools import LRUCache, TTLCache
 
 from app.config.constants.service import (
     RedisDefaults,
@@ -16,7 +17,7 @@ from app.config.key_value_store import KeyValueStore
 from app.services.messaging.config import RedisConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
-_ = dotenv.load_dotenv()
+_ = dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
 
 # Upper bound on how long close() waits for the watch thread to hand over the
 # Pub/Sub state lock before giving up and cancelling anyway.
@@ -46,7 +47,17 @@ class ConfigurationService:
         self.logger.debug("🔐 Initialized EncryptionService")
 
         # Initialize LRU cache
-        self.cache = LRUCache(maxsize=1000)
+        # On the PostgreSQL key-value store a change made by another process arrives by NOTIFY. A notification can be lost (a dropped
+        # connection, a pooler with no direct address), so the cache also expires: a stale value lives at most this long.
+        if os.getenv("KV_STORE_TYPE", "").lower() == "postgres":
+            self.cache = TTLCache(maxsize=1000, ttl=float(os.getenv("CONFIG_CACHE_TTL_SECONDS", "60")))
+        else:
+            self.cache = LRUCache(maxsize=1000)
+        # LRUCache is not thread-safe (even a read reorders it), and it is used from every
+        # event loop's thread plus the watch thread. Never hold this across an await.
+        self._cache_lock = threading.Lock()
+        # When each cached value was stored (monotonic seconds), for ``max_age_seconds``.
+        self._cached_at: dict[str, float] = {}
         self.logger.debug("📦 Initialized LRU cache with max size 1000")
 
         self.store = key_value_store
@@ -74,7 +85,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False, *, raise_on_error: bool = False) -> str | int | float | bool | dict | list | None:
+    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False, *, raise_on_error: bool = False, keep_in_cache: bool = True, max_age_seconds: float | None = None) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback.
 
         `use_cache=True` is safe for org-level config: writes from any process
@@ -87,12 +98,27 @@ class ConfigurationService:
         `default`. By default "could not read the store" and "the key is not
         set" give the same answer, which is wrong for a caller that acts on
         absence -- a delete that reads an empty list as "nothing to delete".
+
+        `keep_in_cache=False` leaves the LRU alone, for keys that are many, large or
+        short-lived (MCP tool catalogs) and would push org config out of it.
+
+        `max_age_seconds` bounds how stale a cache hit may be: an older entry is
+        read from the store again. Invalidations still drop entries at once; the
+        bound covers the case where the subscription that delivers them died, for
+        a key that is acted on (the artifact flags).
         """
         try:
             # Check cache first
-            if use_cache and key in self.cache:
-                self.logger.debug("📦 Cache hit for key: %s", key)
-                return self.cache[key]
+            if use_cache:
+                with self._cache_lock:
+                    fresh = max_age_seconds is None or (
+                        time.monotonic() - self._cached_at.get(key, float("-inf")) <= max_age_seconds
+                    )
+                    if key in self.cache and fresh:
+                        # Not the key: cached entries hold credentials, and nothing derived
+                        # from them belongs in a log line.
+                        self.logger.debug("📦 Config cache hit")
+                        return self.cache[key]
 
             # Only passed when set, so the default call is unchanged for every
             # store and test double; the encrypted stores swallow a failed read
@@ -104,25 +130,36 @@ class ConfigurationService:
             if value is None:
                 # Try environment variable fallback for specific services
                 env_fallback = self._get_env_fallback(key)
+                # No key in these two lines either, for the same reason as the
+                # cache hit above.
                 if env_fallback is not None:
-                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
-                    self.cache[key] = env_fallback
+                    self.logger.debug("📦 Using environment variable fallback for a config key")
+                    with self._cache_lock:
+                        self._remember(key, env_fallback)
                     return env_fallback
 
-                self.logger.debug("📦 Cache miss for key: %s", key)
+                self.logger.debug("📦 Config cache miss")
                 return default
-            self.cache[key] = value
+            if keep_in_cache:
+                with self._cache_lock:
+                    self._remember(key, value)
             return value
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             # Try environment variable fallback on error
             env_fallback = self._get_env_fallback(key)
             if env_fallback is not None:
-                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                # The error line above already names the key.
+                self.logger.debug("📦 Using environment variable fallback after the error")
                 return env_fallback
             return default
+
+    def _remember(self, key: str, value: object) -> None:
+        """Cache *value*; the caller holds ``_cache_lock``."""
+        self.cache[key] = value
+        self._cached_at[key] = time.monotonic()
 
     def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
@@ -188,7 +225,7 @@ class ConfigurationService:
                 return {
                     "host": qdrant_host,
                     "port": int(os.getenv("QDRANT_PORT", "6333")),
-                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6334")),
+                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT") or "6334"),
                     "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
                 }
         elif key == config_node_constants.OPENSEARCH.value:
@@ -303,7 +340,8 @@ class ConfigurationService:
                 self.clear_cache()
                 self._log_safe("📦 Entire cache cleared via change notification")
             else:
-                self.cache.pop(key, None)
+                with self._cache_lock:
+                    self.cache.pop(key, None)
                 self._log_safe("📦 Cache invalidated for key: %s" % key, level="debug")
         except Exception as e:
             self._log_safe("❌ Error in cache invalidation callback: %s" % str(e), level="error")
@@ -324,26 +362,37 @@ class ConfigurationService:
         all services pick up the new configuration values.
         """
         try:
-            self.cache.clear()
+            with self._cache_lock:
+                self.cache.clear()
+                self._cached_at.clear()
             self._log_safe("📦 In-memory configuration cache cleared")
         except Exception as e:
             self._log_safe("❌ Failed to clear cache: %s" % str(e), level="error")
 
-    async def set_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
-        """Set configuration value with optional encryption"""
+    async def set_config(
+        self, key: str, value: str | int | float | bool | dict | list, *, ttl_seconds: int | None = None,
+        keep_in_cache: bool = True,
+    ) -> bool:
+        """Set configuration value with optional encryption. ``ttl_seconds`` makes the store
+        expire the key, overwritten or new (Redis ``EX``, an etcd lease). ``keep_in_cache``:
+        see `get_config`."""
         try:
             self.logger.info("📝 set_config called for key: %s (store type: %s)", key, type(self.store).__name__)
 
             # Store in KV store
             try:
-                success = await self.store.create_key(key, value, overwrite=True)
+                expiry = {"ttl": ttl_seconds} if ttl_seconds else {}
+                success = await self.store.create_key(key, value, overwrite=True, **expiry)
             except Exception as store_error:
                 self.logger.error("❌ Failed to create key in store: %s", str(store_error))
                 success = False
 
             if success:
-                # Update cache with value
-                self.cache[key] = value
+                with self._cache_lock:
+                    if keep_in_cache:
+                        self._remember(key, value)
+                    else:
+                        self.cache.pop(key, None)
                 self.logger.info("✅ Successfully set config for key: %s, now publishing cache invalidation", key)
 
                 # Publish cache invalidation for other processes (Redis only)
@@ -358,7 +407,7 @@ class ConfigurationService:
             return False
 
     async def create_config_if_absent(
-        self, key: str, value: str | int | float | bool | dict | list
+        self, key: str, value: str | int | float | bool | dict | list, *, ttl_seconds: int | None = None,
     ) -> bool:
         """Atomically create ``key`` only if it does not already exist.
 
@@ -368,16 +417,21 @@ class ConfigurationService:
         apart from "the store did not answer", and collapsing those two into one
         ``False`` is what makes a transient outage look like a fresh install —
         and overwrite a deployment-critical setting with a default.
+
+        ``ttl_seconds`` makes the store expire the key (Redis ``EX``, an etcd
+        lease), which is what lets it serve as a lock a crashed holder can't keep.
         """
-        created = await self.store.create_key(key, value, overwrite=False)
+        created = await self.store.create_key(key, value, overwrite=False, ttl=ttl_seconds)
         if created:
-            self.cache[key] = value
+            with self._cache_lock:
+                self._remember(key, value)
             self.logger.info("✅ Created config key %s (was absent)", key)
             await self._publish_cache_invalidation(key)
         else:
             # Someone else owns the value; drop any cached guess so the caller's
             # read-back sees theirs rather than ours.
-            self.cache.pop(key, None)
+            with self._cache_lock:
+                self.cache.pop(key, None)
             self.logger.debug("Config key %s already exists; leaving it untouched", key)
         return created
 
@@ -400,7 +454,8 @@ class ConfigurationService:
 
             if success:
                 # Update cache with value
-                self.cache[key] = value
+                with self._cache_lock:
+                    self._remember(key, value)
                 self.logger.debug("✅ Successfully updated config for key: %s", key)
 
                 # Publish cache invalidation for other processes (Redis only)
@@ -421,7 +476,8 @@ class ConfigurationService:
 
             if success:
                 # Remove from cache
-                self.cache.pop(key, None)
+                with self._cache_lock:
+                    self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
 
                 # Publish cache invalidation for other processes (Redis only)
@@ -509,11 +565,12 @@ class ConfigurationService:
     async def get_redis_config(self) -> RedisConfig:
         """Get typed Redis connection configuration."""
         raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        # A stored value of null (an install with no Redis writes its Redis entry from unset variables) reads as absent
         return RedisConfig(
-            host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
-            port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            host=raw.get("host") or os.getenv(RedisEnv.HOST, RedisDefaults.HOST),
+            port=int(raw.get("port") or os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
             password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
-            db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
+            db=int(raw.get("db") or os.getenv(RedisEnv.DB, RedisDefaults.DB)),
             tls=bool(raw.get("tls", False)),
         )
 

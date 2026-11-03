@@ -40,12 +40,14 @@ into a `FunctionTool`.
 
 from __future__ import annotations
 
+import functools
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dc_field
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import Tag, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.agent_loop_lib.tools.summarizer import ArgsFormatter, ResultFormatter
 
 if TYPE_CHECKING:
@@ -84,7 +86,12 @@ def _default_terminal_outcome(
     from app.agent_loop_lib.tools.builtin.planning.task_complete import (
         TaskCompletionOutcome,
     )
-    return TaskCompletionOutcome(task_done=True, final_output=fallback_text or "")
+    needs_input = None
+    if "ask_user_question" in (getattr(call, "name", None) or ""):
+        needs_input = "Waiting for user answers"
+    return TaskCompletionOutcome(
+        task_done=True, final_output=fallback_text or "", needs_input=needs_input,
+    )
 
 ToolFunction = Callable[..., Awaitable[ToolOutput]]
 
@@ -179,6 +186,10 @@ class FunctionTool(Tool):
         return self.get_tool_name()
 
     @property
+    def app_name(self) -> str:
+        return self._app_name
+
+    @property
     def short_description(self) -> str:
         return self._short_description
 
@@ -266,6 +277,42 @@ class ToolMeta:
 # ---------------------------------------------------------------------------
 
 
+def accepted_argument_names(fn: Callable[..., Any]) -> frozenset[str] | None:
+    """Keyword names ``fn`` accepts, or None when it takes ``**kwargs``.
+
+    Read from the signature, not the advertised parameters: hooks inject
+    arguments a tool never advertises (attachment ids, output budgets).
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return None
+    return frozenset(
+        p.name
+        for p in params
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    )
+
+
+def reject_unknown_arguments(accepted: frozenset[str] | None, kwargs: dict[str, Any]) -> None:
+    """Raise `ToolValidationError` naming arguments the tool cannot take.
+
+    Without it the call dies on a bare ``TypeError``; dropping them instead
+    would let the model believe a filter it invented (a date range on a
+    listing) was applied.
+    """
+    if accepted is None:
+        return
+    unknown = sorted(set(kwargs) - accepted)
+    if unknown:
+        raise ToolValidationError(
+            f"Unknown argument(s): {', '.join(unknown)}. This tool does not take them, "
+            "so nothing was run; call it again without them."
+        )
+
+
 def _normalize_legacy_output(result: Any) -> ToolOutput:
     """Convert legacy ``(bool, str)`` returns to `ToolOutput`.
 
@@ -291,9 +338,9 @@ class BoundMethodTool(Tool):
     """Wraps a bound async method (with ``self`` already captured) as a `Tool`.
 
     Created by `ToolsetBuilder` from ``@tool``-decorated methods on a class
-    instance. Validation is intentionally permissive (no-op) because
-    connector tools do their own input normalization internally (e.g.
-    Pydantic model validators that handle LLM input variations).
+    instance. Validation rejects argument names the method does not take and
+    is otherwise permissive: connector tools normalize loosely typed values
+    themselves (e.g. Pydantic model validators that handle LLM input variations).
     """
 
     def __init__(
@@ -309,6 +356,10 @@ class BoundMethodTool(Tool):
     @property
     def name(self) -> str:
         return f"{self._app_name}__{self._short_name}"
+
+    @property
+    def app_name(self) -> str:
+        return self._app_name
 
     @property
     def short_description(self) -> str:
@@ -339,9 +390,14 @@ class BoundMethodTool(Tool):
         return self._meta.result_schema
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        """Connector tools handle their own input normalization; skip strict
-        validation to preserve the same lenient behavior the legacy adapter
-        provided (see ``tool_adapter._PermissiveValidationMixin``)."""
+        """Only unknown argument names are rejected: connector tools normalize
+        loosely typed values themselves (e.g. Pydantic validators that handle
+        LLM input variations)."""
+        reject_unknown_arguments(self._accepted_args, kwargs)
+
+    @functools.cached_property
+    def _accepted_args(self) -> frozenset[str] | None:
+        return accepted_argument_names(self._bound_method)
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
         result = await self._bound_method(**kwargs)

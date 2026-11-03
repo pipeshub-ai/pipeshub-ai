@@ -57,6 +57,44 @@ pytest --cov=app --cov-report=html
 pytest -n auto
 ```
 
+## How CI runs these
+
+`.github/workflows/unit-test.yml` splits `tests/unit` into shards, one job each,
+and every shard runs its tests across 4 pytest-xdist workers
+(`-n logical --dist loadfile`). A later job combines the shards' coverage and
+applies the `--fail-under` gate; `python-unit-tests` is the one check that
+passes only when everything did.
+
+- **Which shard runs a test**: `scripts/unit_shards.py` maps directories to
+  shards. A new directory needs no entry: anything no other shard claims runs
+  in `core`. `scripts/test_unit_shards.py` fails if a file would run in no
+  shard or in two.
+- **Run one shard locally** (from `backend/python`):
+
+  ```bash
+  pytest $(python3 ../../scripts/unit_shards.py args agents) -n logical --dist loadfile
+  ```
+
+- **Tests must not depend on the order files run in.** A worker runs any
+  subset of a shard's files, in any order, in one process. Two ways this has
+  broken:
+  - Parametrizing over a `set`: its order changes per process, the workers
+    collect different test IDs, and xdist refuses to run. Use `sorted(...)`.
+  - Replacing module-level state (a singleton, a registry, a module constant)
+    without putting it back: every later file on that worker sees it. Use
+    `monkeypatch`, or a fixture that restores the original.
+- **Time limits**: CI passes `--timeout=60`, not `pytest.ini`'s 30s, because
+  4 workers share 2 physical cores. For a performance check (a linear-time
+  guard, say), compare against a control input timed in the same test rather
+  than a fixed number of milliseconds: coverage slows Python code ~3x and a
+  shared core slows it again. `@pytest.mark.no_cover` does not help here, as
+  it does not stop coverage inside xdist workers. See
+  `TestAdversarialInput` in `tests/unit/utils/test_url_redaction.py`.
+- **Keeping shards even**: the run takes as long as the slowest shard.
+  `scripts/unit_shard_durations.json` holds measured minutes per test file,
+  and `scripts/test_unit_shards.py` fails when one shard grows far past the
+  average. See `scripts/unit_shards.py` for how to refresh and rebalance.
+
 ## Directory Structure
 
 ```

@@ -22,6 +22,8 @@ export interface AvailableFlag {
   label: string;
   description: string;
   defaultEnabled: boolean;
+  /** Labs shows these only after "Show advanced feature flags" is opened. */
+  advanced?: boolean;
 }
 
 export interface AvailableFlagsResponse {

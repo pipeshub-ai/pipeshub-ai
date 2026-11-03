@@ -6,6 +6,7 @@
 - update_oauth_config (1190-1219)
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -207,6 +208,14 @@ class TestHandleOAuthCallbackCallerMismatch:
         assert result["error"] == "caller_mismatch"
 
 
+@pytest.fixture
+def _instance_in_callers_org() -> Iterator[None]:
+    """The handler under test looks the instance up (org-scoped); this one exists."""
+    with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1"})):
+        yield
+
+
+@pytest.mark.usefixtures("_instance_in_callers_org")
 class TestHandleOAuthCallbackClientConfigChanged:
     @pytest.mark.asyncio
     async def test_client_secret_resolution_fails(self):
@@ -219,6 +228,7 @@ class TestHandleOAuthCallbackClientConfigChanged:
             "initiatedBy": "u1",
             "instanceId": "inst-1",
             "userId": "u1",
+            "orgId": "o1",
             "clientId": "cid",
             "tokenUrl": "https://example.com/token",
             "redirectUri": "https://app.example.com/callback",
@@ -244,6 +254,7 @@ class TestHandleOAuthCallbackClientConfigChanged:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("_instance_in_callers_org")
 class TestRefreshOAuthToken:
     @pytest.mark.asyncio
     async def test_success(self):
@@ -288,7 +299,7 @@ class TestRefreshOAuthToken:
             assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_refresh_token_invalid_marks_unauthenticated_and_raises_401(self):
+    async def test_refresh_token_invalid_marks_unauthenticated_and_raises_409(self) -> None:
         from app.agents.mcp.oauth_client import MCPRefreshTokenInvalidError
         from app.api.routes.mcp_servers import refresh_oauth_token
 
@@ -314,7 +325,7 @@ class TestRefreshOAuthToken:
 
             with pytest.raises(HTTPException) as exc_info:
                 await refresh_oauth_token(request, "inst-1")
-            assert exc_info.value.status_code == 401
+            assert exc_info.value.status_code == 409
 
         mock_config.set_config.assert_awaited_once()
         saved_record = mock_config.set_config.call_args[0][1]
@@ -347,7 +358,7 @@ class TestRefreshOAuthToken:
 
             with pytest.raises(HTTPException) as exc_info:
                 await refresh_oauth_token(request, "inst-1")
-            assert exc_info.value.status_code == 401
+            assert exc_info.value.status_code == 409
 
         mock_config.set_config.assert_not_awaited()
 
@@ -383,6 +394,7 @@ class TestRefreshOAuthToken:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("_instance_in_callers_org")
 class TestGetOAuthConfig:
     @pytest.mark.asyncio
     async def test_non_admin_raises_403(self):
@@ -418,7 +430,8 @@ class TestGetOAuthConfig:
              patch(f"{MODULE}.resolve_instance_owner_config_service", new_callable=AsyncMock, return_value=None):
             result = await get_oauth_config(request, "inst-1")
 
-        assert result == {"configured": False}
+        assert result["configured"] is False
+        assert result["redirectUri"].endswith("/mcp-servers/oauth/callback/")
 
     @pytest.mark.asyncio
     async def test_configured_returns_masked_secrets(self):
@@ -464,9 +477,11 @@ class TestUpdateOAuthConfig:
             user={"userId": "u1", "orgId": "o1"},
             app_state={"config_service": mock_config},
         )
+        org_instance = {"_id": "inst-1", "orgId": "o1", "createdBy": "admin-1"}
 
         with patch(f"{MODULE}._get_config_service", return_value=mock_config), \
              patch(f"{MODULE}._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch(f"{MODULE}._get_org_instance", new_callable=AsyncMock, return_value=org_instance), \
              patch(f"{MODULE}._check_user_is_admin", new_callable=AsyncMock, return_value=False):
             with pytest.raises(HTTPException) as exc_info:
                 await update_oauth_config(request, "inst-1", self._payload())

@@ -1,6 +1,7 @@
 """``resolve_virtual_record_state`` against a real Neo4j and a real ArangoDB.
 
-Requires: docker compose -f tests/integration/compose/graph-db.yml up -d
+Requires: docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml up -d
+(from the repository root). The backend-matrix workflow runs it in its Neo4j job.
 Run: pytest tests/integration/graph_db/ -m integration
 
 A record can belong to more than one record group at once. Drive team and Box
@@ -32,8 +33,8 @@ async def neo4j_provider():
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_TEST_URI", "bolt://localhost:7699")
-    password = os.environ.get("NEO4J_TEST_PASSWORD", "testpassword")
+    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+    password = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
     logger = _log()
     client = Neo4jClient(
         uri=uri, username="neo4j", password=password, database="neo4j", logger=logger

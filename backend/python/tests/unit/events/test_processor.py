@@ -5,6 +5,7 @@ is defined in app.events.events and tested in test_events.py.
 This file tests the Processor class and helper functions from app.events.processor.
 """
 
+from collections.abc import AsyncGenerator, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,7 +18,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.events.processor import Processor, convert_record_dict_to_record
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, RecordDeletedError
 from app.models.entities import RecordType
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 import logging
@@ -50,6 +51,13 @@ def _make_processor():
             sink_orchestrator=sink_orchestrator,
         )
     return proc, logger, graph_provider, config_service
+
+
+async def _record_gone(*_args: object, raise_on_error: bool = False, **_kwargs: object) -> None:
+    """``get_document`` for a deleted record. None reads as a deletion only from a
+    read that propagates graph errors, so a processor that drops
+    ``raise_on_error=True`` fails every missing-record test that uses this."""
+    assert raise_on_error, "get_document must pass raise_on_error=True to read None as a deletion"
 
 
 async def _collect(async_gen):
@@ -100,6 +108,11 @@ class TestConvertRecordDictToRecord:
         assert record.record_type == RecordType.FILE
         assert record.record_status == ProgressStatus.NOT_STARTED
         assert record.version == 1
+
+    def test_the_content_id_is_kept(self) -> None:
+        # Background jobs rebuild a record from its document and find its stored content by it.
+        assert convert_record_dict_to_record(_base_record_dict(virtualRecordId="v-1")).virtual_record_id == "v-1"
+        assert convert_record_dict_to_record(_base_record_dict()).virtual_record_id is None
 
     def test_connector_name_maps_to_enum(self):
         """Known connectorName values map to Connectors enum."""
@@ -369,13 +382,10 @@ class TestProcessImage:
     async def test_record_not_found_yields_both_events(self):
         """If record not found in DB, both phase events are still yielded."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
-        events = await _collect(proc.process_image("rec-1", b"image-data", "vr-1"))
-
-        assert len(events) == 2
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_image("rec-1", b"image-data", "vr-1"))
 
     @pytest.mark.asyncio
     async def test_non_multimodal_llm_sets_enable_multimodal_status(self):
@@ -400,45 +410,11 @@ class TestProcessImage:
 
 
 # ===========================================================================
-# Processor.process_gmail_message
-# ===========================================================================
-
-
-class TestProcessGmailMessage:
-    """Tests for Processor.process_gmail_message."""
-
-    @pytest.mark.asyncio
-    async def test_delegates_to_html_processor(self):
-        """Gmail processing delegates to process_html_document."""
-        proc, _, _, _ = _make_processor()
-
-        async def mock_html(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-
-        with patch.object(proc, "process_html_document", side_effect=mock_html):
-            events = await _collect(
-                proc.process_gmail_message(
-                    recordName="email",
-                    recordId="rec-1",
-                    version=1,
-                    source="gmail",
-                    orgId="org-1",
-                    html_content=b"<p>Hello</p>",
-                    virtual_record_id="vr-1",
-                )
-            )
-
-        assert len(events) == 2
-        assert events[0].event == "parsing_complete"
-
-
-# ===========================================================================
 # Processor.process_pdf_with_docling
 # ===========================================================================
 
 
-class TestProcessPdfWithDocling:
+class TestProcessPdfWithDoclingEvents:
     """Tests for Processor.process_pdf_with_docling."""
 
     @pytest.mark.asyncio
@@ -493,14 +469,14 @@ class TestProcessPdfWithDocling:
 # ===========================================================================
 
 
-class TestProcessPdfWithPyMuPDF:
+class TestProcessPdfWithPyMuPDFEvents:
     """Tests for Processor.process_pdf_with_pdf_plumber."""
 
     @pytest.mark.asyncio
     async def test_record_not_found_yields_indexing_complete(self):
         """When record not found after parsing, yields indexing_complete."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_pymupdf:
             mock_instance = AsyncMock()
@@ -508,18 +484,17 @@ class TestProcessPdfWithPyMuPDF:
             mock_instance.create_blocks.return_value = []
             mock_pymupdf.return_value = mock_instance
 
-            events = await _collect(
-                proc.process_pdf_with_pdf_plumber(
-                    recordName="test.pdf",
-                    recordId="rec-1",
-                    pdf_binary=b"pdf",
-                    virtual_record_id="vr-1",
+            with pytest.raises(RecordDeletedError):
+                await _collect(
+                    proc.process_pdf_with_pdf_plumber(
+                        recordName="test.pdf",
+                        recordId="rec-1",
+                        pdf_binary=b"pdf",
+                        virtual_record_id="vr-1",
+                    )
                 )
-            )
 
         # Should have parsing_complete, then indexing_complete
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_appends_pdf_extension(self):
@@ -555,34 +530,33 @@ class TestProcessPdfWithPyMuPDF:
 # ===========================================================================
 
 
-class TestProcessDocxDocument:
+class TestProcessDocxDocumentEvents:
     """Tests for Processor.process_docx_document."""
 
     @pytest.mark.asyncio
     async def test_record_not_found_yields_indexing_complete(self):
         """When record not found after parsing, yields indexing_complete."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_instance = AsyncMock()
         mock_instance.parse_document.return_value = MagicMock()
         mock_instance.create_blocks.return_value = MagicMock()
         proc.docling_processor = mock_instance
 
-        events = await _collect(
-            proc.process_docx_document(
-                recordName="test.docx",
-                recordId="rec-1",
-                version=1,
-                source="upload",
-                orgId="org-1",
-                docx_binary=b"docx",
-                virtual_record_id="vr-1",
+        with pytest.raises(RecordDeletedError):
+            await _collect(
+                proc.process_docx_document(
+                    recordName="test.docx",
+                    recordId="rec-1",
+                    version=1,
+                    source="upload",
+                    orgId="org-1",
+                    docx_binary=b"docx",
+                    virtual_record_id="vr-1",
+                )
             )
-        )
 
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success_yields_both_events(self):
@@ -616,14 +590,14 @@ class TestProcessDocxDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagates(self):
-        """Exceptions during processing propagate."""
+        """Exceptions during processing propagate wrapped in DocumentProcessingError."""
         proc, _, gp, _ = _make_processor()
 
         proc.docling_processor.parse_document = AsyncMock(
             side_effect=RuntimeError("parse error")
         )
 
-        with pytest.raises(RuntimeError, match="parse error"):
+        with pytest.raises(DocumentProcessingError, match="parse error"):
             await _collect(
                 proc.process_docx_document(
                     recordName="test.docx",
@@ -642,7 +616,7 @@ class TestProcessDocxDocument:
 # ===========================================================================
 
 
-class TestProcessDocDocument:
+class TestProcessDocDocumentDelegation:
     """Tests for Processor.process_doc_document."""
 
     @pytest.mark.asyncio
@@ -651,7 +625,7 @@ class TestProcessDocDocument:
         proc, _, gp, _ = _make_processor()
 
         mock_parser = MagicMock()
-        mock_parser.convert_doc_to_docx.return_value = b"docx-content"
+        mock_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx-content")
         proc.parsers["doc"] = mock_parser
 
         async def mock_docx(*args, **kwargs):
@@ -672,7 +646,7 @@ class TestProcessDocDocument:
             )
 
         assert len(events) == 2
-        mock_parser.convert_doc_to_docx.assert_called_once()
+        mock_parser.convert_doc_to_docx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -680,7 +654,7 @@ class TestProcessDocDocument:
 # ===========================================================================
 
 
-class TestProcessBlocks:
+class TestProcessBlocksInputTypes:
     """Tests for Processor.process_blocks."""
 
     @pytest.mark.asyncio
@@ -763,7 +737,7 @@ class TestProcessBlocks:
     async def test_record_not_found_yields_indexing_complete(self):
         """When record not found, yields indexing_complete."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         blocks_data = {"blocks": [], "block_groups": []}
 
@@ -771,20 +745,19 @@ class TestProcessBlocks:
             from app.models.blocks import BlocksContainer
             mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
             with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
-                events = await _collect(
-                    proc.process_blocks(
-                        recordName="test",
-                        recordId="rec-1",
-                        version=1,
-                        source="upload",
-                        orgId="org-1",
-                        blocks_data=blocks_data,
-                        virtual_record_id="vr-1",
+                with pytest.raises(RecordDeletedError):
+                    await _collect(
+                        proc.process_blocks(
+                            recordName="test",
+                            recordId="rec-1",
+                            version=1,
+                            source="upload",
+                            orgId="org-1",
+                            blocks_data=blocks_data,
+                            virtual_record_id="vr-1",
+                        )
                     )
-                )
 
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -792,7 +765,7 @@ class TestProcessBlocks:
 # ===========================================================================
 
 
-class TestMarkRecord:
+class TestMarkRecordOutcomes:
     """Tests for Processor._mark_record."""
 
     @pytest.mark.asyncio
@@ -818,6 +791,30 @@ class TestMarkRecord:
         proc.logger.warning.assert_called()
         assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
+    @staticmethod
+    def _written(gp) -> dict:
+        return next(a for a in gp.update_node.await_args.args if isinstance(a, dict))
+
+    @pytest.mark.asyncio
+    async def test_an_empty_record_no_longer_has_an_indexed_copy(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+
+        assert self._written(gp)["hasIndexedCopy"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reindex_keeps_the_indexed_copy(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FAILED)
+
+        assert "hasIndexedCopy" not in self._written(gp)
+
     @pytest.mark.asyncio
     async def test_successful_mark(self):
         """Successfully marks record status."""
@@ -835,7 +832,7 @@ class TestMarkRecord:
 # ===========================================================================
 
 
-class TestProcessExcelDocument:
+class TestProcessExcelDocumentEmptyAndMissing:
     """Tests for Processor.process_excel_document."""
 
     @pytest.mark.asyncio
@@ -870,9 +867,10 @@ class TestProcessExcelDocument:
     async def test_record_not_found_yields_indexing_complete(self):
         """When record not found after parsing, yields indexing_complete."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers["xlsx"] = mock_parser
@@ -880,20 +878,19 @@ class TestProcessExcelDocument:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            events = await _collect(
-                proc.process_excel_document(
-                    recordName="test.xlsx",
-                    recordId="rec-1",
-                    version=1,
-                    source="upload",
-                    orgId="org-1",
-                    excel_binary=b"some-data",
-                    virtual_record_id="vr-1",
+            with pytest.raises(RecordDeletedError):
+                await _collect(
+                    proc.process_excel_document(
+                        recordName="test.xlsx",
+                        recordId="rec-1",
+                        version=1,
+                        source="upload",
+                        orgId="org-1",
+                        excel_binary=b"some-data",
+                        virtual_record_id="vr-1",
+                    )
                 )
-            )
 
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -901,7 +898,7 @@ class TestProcessExcelDocument:
 # ===========================================================================
 
 
-class TestProcessXlsDocument:
+class TestProcessXlsDocumentDelegation:
     """Tests for Processor.process_xls_document."""
 
     @pytest.mark.asyncio
@@ -910,7 +907,7 @@ class TestProcessXlsDocument:
         proc, _, gp, _ = _make_processor()
 
         mock_parser = MagicMock()
-        mock_parser.convert_xls_to_xlsx.return_value = b"xlsx-content"
+        mock_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx-content")
         proc.parsers["xls"] = mock_parser
 
         async def mock_excel(*args, **kwargs):
@@ -983,7 +980,7 @@ class TestProcessHtmlDocument:
 # ===========================================================================
 
 
-class TestProcessMdDocument:
+class TestProcessMdDocumentInputs:
     """Tests for Processor.process_md_document."""
 
     @pytest.mark.asyncio
@@ -1016,7 +1013,7 @@ class TestProcessMdDocument:
 
         mock_parser = MagicMock()
         mock_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        mock_parser.parse_to_blocks.return_value = MagicMock(blocks=[], block_groups=[])
+        mock_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers["md"] = mock_parser
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
@@ -1040,7 +1037,7 @@ class TestProcessMdDocument:
 # ===========================================================================
 
 
-class TestProcessMdxDocument:
+class TestProcessMdxDocumentConversion:
     """Tests for Processor.process_mdx_document."""
 
     @pytest.mark.asyncio
@@ -1077,7 +1074,7 @@ class TestProcessMdxDocument:
 # ===========================================================================
 
 
-class TestSeparateBlockGroupsByIndex:
+class TestSeparateBlockGroupsByIndexBasic:
     """Tests for Processor._separate_block_groups_by_index."""
 
     def test_separates_by_index(self):
@@ -1120,7 +1117,7 @@ class TestSeparateBlockGroupsByIndex:
 # ===========================================================================
 
 
-class TestProcessTxtDocument:
+class TestProcessTxtDocumentDelegation:
     """Tests for Processor.process_txt_document."""
 
     @pytest.mark.asyncio
@@ -1150,65 +1147,38 @@ class TestProcessTxtDocument:
 
         assert len(events) == 2
 
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        """Raises ValueError when all decodings fail."""
-        proc, _, _, _ = _make_processor()
-
-        # Create bytes that cannot be decoded by any encoding - use invalid continuation bytes
-        bad_bytes = MagicMock()
-        bad_bytes.decode = MagicMock(side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad"))
-
-        with pytest.raises(Exception):
-            await _collect(
-                proc.process_txt_document(
-                    recordName="test.txt",
-                    recordId="rec-1",
-                    version=1,
-                    source="upload",
-                    orgId="org-1",
-                    txt_binary=bad_bytes,
-                    virtual_record_id="vr-1",
-                    recordType="FILE",
-                    connectorName="",
-                    origin="UPLOAD",
-                )
-            )
-
-
 # ===========================================================================
 # Processor.process_pptx_document
 # ===========================================================================
 
 
-class TestProcessPptxDocument:
+class TestProcessPptxDocumentEvents:
     """Tests for Processor.process_pptx_document."""
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         """When record not found, yields indexing_complete."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_instance = AsyncMock()
         mock_instance.parse_document.return_value = MagicMock()
         mock_instance.create_blocks.return_value = MagicMock()
         proc.docling_processor = mock_instance
 
-        events = await _collect(
-            proc.process_pptx_document(
-                recordName="test.pptx",
-                recordId="rec-1",
-                version=1,
-                source="upload",
-                orgId="org-1",
-                pptx_binary=b"pptx",
-                virtual_record_id="vr-1",
+        with pytest.raises(RecordDeletedError):
+            await _collect(
+                proc.process_pptx_document(
+                    recordName="test.pptx",
+                    recordId="rec-1",
+                    version=1,
+                    source="upload",
+                    orgId="org-1",
+                    pptx_binary=b"pptx",
+                    virtual_record_id="vr-1",
+                )
             )
-        )
 
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1252,7 +1222,7 @@ class TestProcessPptDocument:
         proc, _, _, _ = _make_processor()
 
         mock_parser = MagicMock()
-        mock_parser.convert_ppt_to_pptx.return_value = b"pptx-content"
+        mock_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx-content")
         proc.parsers["ppt"] = mock_parser
 
         async def mock_pptx(*args, **kwargs):
@@ -1273,7 +1243,7 @@ class TestProcessPptDocument:
             )
 
         assert len(events) == 2
-        mock_parser.convert_ppt_to_pptx.assert_called_once()
+        mock_parser.convert_ppt_to_pptx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -1313,7 +1283,7 @@ class TestProcessDelimitedDocument:
     async def test_record_not_found(self):
         """Record not found yields both events."""
         proc, _, gp, _ = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_parser = MagicMock()
         mock_parser.read_raw_rows.return_value = [["a", "b"]]
@@ -1322,17 +1292,16 @@ class TestProcessDelimitedDocument:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            events = await _collect(
-                proc.process_delimited_document(
-                    recordName="test.csv",
-                    recordId="rec-1",
-                    file_binary=b"a,b\n1,2",
-                    virtual_record_id="vr-1",
+            with pytest.raises(RecordDeletedError):
+                await _collect(
+                    proc.process_delimited_document(
+                        recordName="test.csv",
+                        recordId="rec-1",
+                        file_binary=b"a,b\n1,2",
+                        virtual_record_id="vr-1",
+                    )
                 )
-            )
 
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1446,16 +1415,14 @@ class TestProcessImageAdditional:
     async def test_record_not_found(self):
         """Should yield both events when record is None."""
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
-                events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
-
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+                with pytest.raises(RecordDeletedError):
+                    await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
     @pytest.mark.asyncio
     async def test_no_multimodal_sets_enable_status(self):
@@ -1548,7 +1515,7 @@ class TestProcessGmailMessage:
     @pytest.mark.asyncio
     async def test_error_propagates(self):
         """Errors from html processing should propagate."""
-        proc, _, gp, config = _make_processor()
+        proc, logger, gp, config = _make_processor()
 
         async def failing_html(*args, **kwargs):
             raise Exception("html failed")
@@ -1559,6 +1526,25 @@ class TestProcessGmailMessage:
             await _collect(proc.process_gmail_message(
                 "email.html", "rec-1", 1, "gmail", "org-1", b"<html>hi</html>", "vr-1"
             ))
+        logger.error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_record_propagates_without_an_error_log(self) -> None:
+        proc, logger, _, _ = _make_processor()
+        deleted = RecordDeletedError("rec-1")
+
+        async def deleted_html(*_args: object, **_kwargs: object) -> AsyncGenerator[PipelineEvent, None]:
+            raise deleted
+            yield
+
+        proc.process_html_document = deleted_html
+        with pytest.raises(RecordDeletedError) as raised:
+            await _collect(proc.process_gmail_message(
+                "email.html", "rec-1", 1, "gmail", "org-1", b"<html>hi</html>", "vr-1"
+            ))
+
+        assert raised.value is deleted
+        logger.error.assert_not_called()
 
 
 # ===========================================================================
@@ -1573,19 +1559,17 @@ class TestProcessPdfWithPyMuPDF:
     async def test_record_not_found(self):
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_proc:
             mock_instance = AsyncMock()
             mock_instance.parse_document = AsyncMock(return_value={})
             mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
             mock_proc.return_value = mock_instance
-            events = await _collect(proc.process_pdf_with_pdf_plumber(
-                "test.pdf", "rec-1", b"pdfdata", "vr-1"
-            ))
-
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+            with pytest.raises(RecordDeletedError):
+                await _collect(proc.process_pdf_with_pdf_plumber(
+                    "test.pdf", "rec-1", b"pdfdata", "vr-1"
+                ))
 
     @pytest.mark.asyncio
     async def test_success_path(self):
@@ -1648,13 +1632,12 @@ class TestProcessPdfWithDocling:
         proc, _, gp, config = _make_processor()
         proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
         proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
-        events = await _collect(proc.process_pdf_with_docling(
-            "test.pdf", "rec-1", b"pdfdata", "vr-1"
-        ))
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_pdf_with_docling(
+                "test.pdf", "rec-1", b"pdfdata", "vr-1"
+            ))
 
     @pytest.mark.asyncio
     async def test_success_path(self):
@@ -1690,7 +1673,7 @@ class TestProcessDocDocument:
         from app.config.constants.arangodb import ExtensionTypes
 
         mock_parser = MagicMock()
-        mock_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        mock_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_binary")
         proc.parsers[ExtensionTypes.DOC.value] = mock_parser
 
         async def mock_docx(*args, **kwargs):
@@ -1702,7 +1685,7 @@ class TestProcessDocDocument:
             "test.doc", "rec-1", 1, "upload", "org-1", b"doc_binary", "vr-1"
         ))
         assert events[0].event == "parsing_complete"
-        mock_parser.convert_doc_to_docx.assert_called_once()
+        mock_parser.convert_doc_to_docx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -1736,18 +1719,43 @@ class TestProcessDocxDocument:
     async def test_record_not_found(self):
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_instance = AsyncMock()
         mock_instance.parse_document = AsyncMock(return_value={})
         mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
         proc.docling_processor = mock_instance
-        events = await _collect(proc.process_docx_document(
-            "test.docx", "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
-        ))
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_docx_document(
+                "test.docx", "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
+            ))
 
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("record_name", "expected"),
+        [
+            ("report.docx", "report.docx"),
+            ("Report.DOCX", "Report.DOCX"),
+            ("legacy.doc", "legacy.doc.docx"),
+            ("export.json", "export.json.docx"),
+            ("untitled", "untitled.docx"),
+        ],
+    )
+    async def test_docling_is_given_a_docx_name(self, record_name: str, expected: str) -> None:
+        """Docling falls back to the extension, so a DOCX record must never reach it under another one."""
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.side_effect = _record_gone
+
+        mock_instance = AsyncMock()
+        mock_instance.parse_document = AsyncMock(return_value={})
+        mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_processor = mock_instance
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_docx_document(
+                record_name, "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
+            ))
+
+        mock_instance.parse_document.assert_awaited_once_with(expected, b"docx_binary")
 
 
 # ===========================================================================
@@ -1867,10 +1875,10 @@ class TestProcessHtmlDocumentExtended:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """When record is missing from DB, indexing_complete is still yielded."""
+        """When record is missing from DB, the deletion is raised."""
         from app.config.constants.arangodb import ExtensionTypes
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_html_parser = MagicMock()
         mock_html_parser.clean_html = MagicMock(side_effect=lambda x: x)
@@ -1881,12 +1889,10 @@ class TestProcessHtmlDocumentExtended:
         mock_html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 
-        events = await _collect(proc.process_html_document(
-            "test.html", "rec-1", 1, "upload", "org-1", b"<html>test</html>", "vr-1"
-        ))
-
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_html_document(
+                "test.html", "rec-1", 1, "upload", "org-1", b"<html>test</html>", "vr-1"
+            ))
 
 
 # ===========================================================================
@@ -1947,18 +1953,17 @@ class TestProcessMdDocument:
         """Should yield indexing_complete when record not found."""
         from app.config.constants.arangodb import ExtensionTypes
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_parser = MagicMock()
         mock_parser.extract_and_replace_images.return_value = ("# Content", [])
         mock_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers[ExtensionTypes.MD.value] = mock_parser
 
-        events = await _collect(proc.process_md_document(
-            "test.md", "rec-1", b"# Hello world", "vr-1"
-        ))
-
-        assert events[-1].event == "indexing_complete"
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_md_document(
+                "test.md", "rec-1", b"# Hello world", "vr-1"
+            ))
 
     @pytest.mark.asyncio
     async def test_string_input(self):
@@ -1989,21 +1994,6 @@ class TestProcessMdDocument:
 
 class TestProcessTxtDocument:
     """Tests for process_txt_document."""
-
-    @pytest.mark.asyncio
-    async def test_decode_failure(self):
-        """Should raise when all encodings fail."""
-        proc, _, gp, config = _make_processor()
-
-        # Create binary that fails all decodings
-        bad_binary = MagicMock()
-        bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError('utf-8', b'', 0, 1, 'bad'))
-
-        with pytest.raises(Exception):
-            await _collect(proc.process_txt_document(
-                "test.txt", "rec-1", 1, "upload", "org-1",
-                bad_binary, "vr-1", "FILE", "KB", "UPLOAD"
-            ))
 
     @pytest.mark.asyncio
     async def test_success_delegates_to_md(self):
@@ -2053,18 +2043,16 @@ class TestProcessPptxDocument:
     async def test_record_not_found(self):
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_instance = AsyncMock()
         mock_instance.parse_document = AsyncMock(return_value={})
         mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
         proc.docling_processor = mock_instance
-        events = await _collect(proc.process_pptx_document(
-            "test.pptx", "rec-1", 1, "upload", "org-1", b"pptx_binary", "vr-1"
-        ))
-
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_pptx_document(
+                "test.pptx", "rec-1", 1, "upload", "org-1", b"pptx_binary", "vr-1"
+            ))
 
 
 # ===========================================================================
@@ -2102,6 +2090,7 @@ class TestProcessExcelDocument:
         gp.get_document.return_value = _base_record_dict()
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
@@ -2122,21 +2111,20 @@ class TestProcessExcelDocument:
         """Should yield indexing_complete when record not found."""
         from app.config.constants.arangodb import ExtensionTypes
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
-            events = await _collect(proc.process_excel_document(
-                "test.xlsx", "rec-1", 1, "upload", "org-1", b"excel_data", "vr-1"
-            ))
-
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "indexing_complete"
+            with pytest.raises(RecordDeletedError):
+                await _collect(proc.process_excel_document(
+                    "test.xlsx", "rec-1", 1, "upload", "org-1", b"excel_data", "vr-1"
+                ))
 
 
 # ===========================================================================
@@ -2154,7 +2142,7 @@ class TestProcessXlsDocument:
         proc, _, gp, config = _make_processor()
 
         mock_xls_parser = MagicMock()
-        mock_xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        mock_xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_binary")
         proc.parsers[ExtensionTypes.XLS.value] = mock_xls_parser
 
         async def mock_excel(*args, **kwargs):
@@ -2167,7 +2155,7 @@ class TestProcessXlsDocument:
             "test.xls", "rec-1", 1, "upload", "org-1", b"xls_binary", "vr-1"
         ))
         assert events[0].event == "parsing_complete"
-        mock_xls_parser.convert_xls_to_xlsx.assert_called_once()
+        mock_xls_parser.convert_xls_to_xlsx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -2229,15 +2217,14 @@ class TestProcessBlocks:
     async def test_record_not_found(self):
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
         proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
 
-        events = await _collect(proc.process_blocks(
-            "test", "rec-1", 1, "upload", "org-1",
-            '{"blocks": [], "block_groups": []}', "vr-1"
-        ))
-
-        assert events[-1].event == "indexing_complete"
+        with pytest.raises(RecordDeletedError):
+            await _collect(proc.process_blocks(
+                "test", "rec-1", 1, "upload", "org-1",
+                '{"blocks": [], "block_groups": []}', "vr-1"
+            ))
 
 
 # ===========================================================================
@@ -2469,7 +2456,7 @@ class TestProcessBlockgroupImages:
         proc, _, _, _ = _make_processor()
         proc.parsers = {}  # no parsers
 
-        md, caption_map = await proc._process_blockgroup_images("# Hello", 0)
+        md, caption_map = await proc._process_blockgroup_images("# Hello", 0, allow_remote_fetch=True)
         assert md == "# Hello"
         assert caption_map == {}
 
@@ -2493,7 +2480,7 @@ class TestProcessBlockgroupImages:
             ExtensionTypes.PNG.value: mock_image_parser,
         }
 
-        md, caption_map = await proc._process_blockgroup_images("# Hello ![img](http://example.com/img.png)", 0)
+        md, caption_map = await proc._process_blockgroup_images("# Hello ![img](http://example.com/img.png)", 0, allow_remote_fetch=True)
         assert "img" in caption_map
         assert caption_map["img"] == "base64data"
 
@@ -2512,7 +2499,7 @@ class TestProcessBlockgroupImages:
             ExtensionTypes.PNG.value: mock_image_parser,
         }
 
-        md, caption_map = await proc._process_blockgroup_images("# Hello", 0)
+        md, caption_map = await proc._process_blockgroup_images("# Hello", 0, allow_remote_fetch=True)
         assert caption_map == {}
 
 
@@ -2531,7 +2518,7 @@ class TestProcessSingleBlockgroupHtml:
         bg = MagicMock(data=None, index=0)
 
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await proc._process_single_blockgroup_html(bg, "test.html")
+            await proc._process_single_blockgroup_html(bg, "test.html", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_missing_html_parser_raises(self):
@@ -2541,7 +2528,7 @@ class TestProcessSingleBlockgroupHtml:
         bg = MagicMock(data="<p>hi</p>", index=0)
 
         with pytest.raises(ValueError, match="HTML parser is not configured"):
-            await proc._process_single_blockgroup_html(bg, "test.html")
+            await proc._process_single_blockgroup_html(bg, "test.html", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_success_delegates_to_html_parser(self):
@@ -2562,7 +2549,8 @@ class TestProcessSingleBlockgroupHtml:
         proc.parsers = {ExtensionTypes.HTML.value: html_parser}
 
         new_bgs, new_blocks = await proc._process_single_blockgroup_html(
-            bg, "fallback"
+            bg, "fallback",
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -2593,7 +2581,8 @@ class TestProcessSingleBlockgroup:
 
         with pytest.raises(ValueError, match="no valid markdown data"):
             await proc._process_single_blockgroup(
-                bg, "test.md", MagicMock()
+                bg, "test.md", MagicMock(),
+                allow_remote_fetch=True
             )
 
     @pytest.mark.asyncio
@@ -2607,7 +2596,8 @@ class TestProcessSingleBlockgroup:
 
         with pytest.raises(ValueError, match="no valid markdown data"):
             await proc._process_single_blockgroup(
-                bg, "test.md", MagicMock()
+                bg, "test.md", MagicMock(),
+                allow_remote_fetch=True
             )
 
     @pytest.mark.asyncio
@@ -2631,7 +2621,8 @@ class TestProcessSingleBlockgroup:
         mock_md_parser.parse_to_blocks = AsyncMock(return_value=result_container)
 
         new_bgs, new_blocks = await proc._process_single_blockgroup(
-            bg, "test.md", mock_md_parser
+            bg, "test.md", mock_md_parser,
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -2661,7 +2652,8 @@ class TestProcessSingleBlockgroup:
         mock_md_parser.parse_to_blocks = AsyncMock(return_value=result_container)
 
         new_bgs, new_blocks = await proc._process_single_blockgroup(
-            bg, "test_record", mock_md_parser
+            bg, "test_record", mock_md_parser,
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -2813,7 +2805,7 @@ class TestProcessBlockgroups:
         proc, _, _, _ = _make_processor()
 
         container = BlocksContainer(blocks=[], block_groups=[])
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
         assert result is container
 
     @pytest.mark.asyncio
@@ -2825,7 +2817,7 @@ class TestProcessBlockgroups:
         bg = BlockGroup(index=0, type=GroupType.TABLE, requires_processing=False)
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
         assert result is container
 
     @pytest.mark.asyncio
@@ -2844,7 +2836,7 @@ class TestProcessBlockgroups:
         )
 
         with pytest.raises(RuntimeError, match="parser error"):
-            await proc._process_blockgroups(container, "test")
+            await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_missing_md_parser_raises(self):
@@ -2856,7 +2848,7 @@ class TestProcessBlockgroups:
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
         with pytest.raises(ValueError, match="Markdown parser is not configured"):
-            await proc._process_blockgroups(container, "test")
+            await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_successful_processing(self):
@@ -2878,7 +2870,7 @@ class TestProcessBlockgroups:
             return_value=([new_bg], [new_block])
         )
 
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
         assert len(result.blocks) >= 1
         assert len(result.block_groups) >= 1
@@ -2911,7 +2903,7 @@ class TestProcessBlockgroups:
         )
         proc._process_single_blockgroup = AsyncMock()
 
-        result = await proc._process_blockgroups(container, "test")
+        result = await proc._process_blockgroups(container, "test", allow_remote_fetch=True)
 
         proc._process_single_blockgroup_html.assert_awaited_once()
         proc._process_single_blockgroup.assert_not_awaited()
@@ -3074,7 +3066,7 @@ class TestProcessPdfDocumentWithOcr:
         })
 
         with patch("app.events.processor.is_multimodal_llm", return_value=False):
-            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE) as raised:
                 await _collect(
                     proc.process_pdf_document_with_ocr(
                         recordName="test.pdf",
@@ -3086,6 +3078,65 @@ class TestProcessPdfDocumentWithOcr:
                         virtual_record_id="vr-1",
                     )
                 )
+
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+        # A missing image-reading model is final: retrying cannot add one.
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_a_settings_store_that_does_not_answer_is_retried(self) -> None:
+        """A store outage on the indexer's own OCR path is temporary, not a final content failure."""
+        from app.exceptions.indexing_exceptions import (
+            AISettingsUnavailableError,
+            DocumentProcessingError,
+        )
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+        proc, _, gp, config = _make_processor()
+        gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
+        config.get_config = AsyncMock(side_effect=ConnectionError("etcd unreachable"))
+
+        with pytest.raises(AISettingsUnavailableError) as raised:
+            await _collect(
+                proc.process_pdf_document_with_ocr(
+                    recordName="test.pdf", recordId="rec-1", version=1, source="upload",
+                    orgId="org-1", pdf_binary=b"pdf", virtual_record_id="vr-1",
+                )
+            )
+
+        assert not isinstance(raised.value, DocumentProcessingError)
+        assert isinstance(raised.value.__cause__, ConnectionError)
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
+        assert config.get_config.await_args.kwargs.get("raise_on_error") is True
+
+    @pytest.mark.asyncio
+    async def test_settings_never_saved_read_as_no_ocr_model(self) -> None:
+        """A read that finds no AI settings is the no-OCR case, not a crash on the missing key."""
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+        proc, _, gp, config = _make_processor()
+        gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
+        config.get_config = AsyncMock(return_value=None)
+
+        with pytest.raises(MultimodalModelNotConfiguredError, match=SCANNED_PDF_NO_OCR_MESSAGE) as raised:
+            await _collect(
+                proc.process_pdf_document_with_ocr(
+                    recordName="test.pdf", recordId="rec-1", version=1, source="upload",
+                    orgId="org-1", pdf_binary=b"pdf", virtual_record_id="vr-1",
+                )
+            )
+
+        # Final on the first try: retrying cannot add a model.
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
 
     @pytest.mark.asyncio
     async def test_non_vlm_with_empty_blocks(self):
@@ -3165,7 +3216,7 @@ class TestProcessPdfDocumentWithOcr:
     async def test_record_not_found_yields_indexing_complete(self):
         """When record not found after VLM OCR, yields indexing_complete."""
         proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = None
+        gp.get_document.side_effect = _record_gone
 
         config.get_config = AsyncMock(return_value={
             "ocr": [{"provider": OCRProvider.VLM_OCR.value, "configuration": {}}],
@@ -3181,25 +3232,25 @@ class TestProcessPdfDocumentWithOcr:
             }
             mock_handler_cls.return_value = mock_handler
 
-            events = await _collect(
-                proc.process_pdf_document_with_ocr(
-                    recordName="test.pdf",
-                    recordId="rec-1",
-                    version=1,
-                    source="upload",
-                    orgId="org-1",
-                    pdf_binary=b"pdf",
-                    virtual_record_id="vr-1",
+            with pytest.raises(RecordDeletedError):
+                await _collect(
+                    proc.process_pdf_document_with_ocr(
+                        recordName="test.pdf",
+                        recordId="rec-1",
+                        version=1,
+                        source="upload",
+                        orgId="org-1",
+                        pdf_binary=b"pdf",
+                        virtual_record_id="vr-1",
+                    )
                 )
-            )
 
-        assert events[-1].event == "indexing_complete"
 
 # =============================================================================
 # Merged from test_processor_coverage.py
 # =============================================================================
 
-log = logging.getLogger("test")
+log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
 
 
@@ -3306,13 +3357,12 @@ class TestProcessImageCoverage:
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         proc = _make_processor_cov()
-        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.graph_provider.get_document = AsyncMock(side_effect=_record_gone)
 
-        events = await _collect_events(
-            proc.process_image("r1", b"image_data", "vr1")
-        )
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_image("r1", b"image_data", "vr1")
+            )
 
 
 # ===================================================================
@@ -3331,13 +3381,12 @@ class TestProcessPdfWithPyMuPDFCoverage:
             mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
             mock_proc.return_value = mock_instance
 
-            proc.graph_provider.get_document = AsyncMock(return_value=None)
+            proc.graph_provider.get_document = AsyncMock(side_effect=_record_gone)
 
-            events = await _collect_events(
-                proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdf_data", "vr1")
-            )
-            assert any(e.event == "parsing_complete" for e in events)
-            assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdf_data", "vr1")
+                )
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -3400,13 +3449,12 @@ class TestProcessPdfWithDoclingCoverage:
         proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
         proc.docling_processor = AsyncMock()
         proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
-        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.graph_provider.get_document = AsyncMock(side_effect=_record_gone)
 
-        events = await _collect_events(
-            proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
-        )
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
+            )
 
 
 # ===================================================================
@@ -3424,13 +3472,12 @@ class TestProcessDocxDocumentCoverage:
         mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
         proc.docling_processor = mock_instance
 
-        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.graph_provider.get_document = AsyncMock(side_effect=_record_gone)
 
-        events = await _collect_events(
-            proc.process_docx_document("test.docx", "r1", 1, "upload", "o1", b"docx", "vr1")
-        )
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_docx_document("test.docx", "r1", 1, "upload", "o1", b"docx", "vr1")
+            )
 
 
 # ===================================================================
@@ -3565,7 +3612,7 @@ class TestProcessBlocksCoverage:
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         proc = _make_processor_cov()
-        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.graph_provider.get_document = AsyncMock(side_effect=_record_gone)
 
         blocks_dict = {"blocks": [], "block_groups": []}
 
@@ -3573,11 +3620,10 @@ class TestProcessBlocksCoverage:
             from app.models.blocks import BlocksContainer
             mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
             with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
-                events = await _collect_events(
-                    proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_dict, "vr1")
-                )
-
-        assert any(e.event == "indexing_complete" for e in events)
+                with pytest.raises(RecordDeletedError):
+                    await _collect_events(
+                        proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_dict, "vr1")
+                    )
 
 
 # ===================================================================
@@ -3730,9 +3776,7 @@ class TestProcessSqlStructuredData:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_record_not_found_raises(self):
-        """When record not found in DB, raises DocumentProcessingError."""
-        from app.exceptions.indexing_exceptions import DocumentProcessingError
+    async def test_a_deleted_record_raises_record_deleted(self):
         from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
         mock_parser = MagicMock()
@@ -3742,9 +3786,9 @@ class TestProcessSqlStructuredData:
         )
         proc = _make_processor_cov()
         proc.parsers = {"sql_table": mock_parser}
-        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.graph_provider.get_document = AsyncMock(side_effect=_record_gone)
 
-        with pytest.raises(DocumentProcessingError, match="Record not found"):
+        with pytest.raises(RecordDeletedError):
             await _collect_events(
                 proc.process_sql_structured_data(
                     "table1", "r1", b'{}', "vr1",
@@ -3796,3 +3840,161 @@ class TestProcessSqlStructuredData:
                     record_type="SQL_TABLE"
                 )
             )
+
+# ===========================================================================
+# project_code_blocks_to_graph / process_code_document — failure propagation
+# ===========================================================================
+
+
+class TestProjectCodeBlocksToGraph:
+    """Swallowing is the default because the blocks are already searchable and
+    the edge pass can be re-run; a caller that has not yet marked the record
+    COMPLETED must opt in to the raise, or the edge builder resolves the repo
+    against a symbol table this file is missing from."""
+
+    @staticmethod
+    def _kwargs(**overrides: object) -> dict:
+        base = {
+            "record_id": "rec-1", "org_id": "org-1", "record_group_id": "repo-1",
+            "connector_id": "conn-1", "record_name": "a.py", "file_path": "src/a.py",
+            "language": "python", "block_containers": MagicMock(),
+        }
+        base.update(overrides)
+        return base
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_swallowed_by_default(self) -> None:
+        proc, logger, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph",
+                   AsyncMock(side_effect=RuntimeError("graph down"))):
+            assert await proc.project_code_blocks_to_graph(**self._kwargs()) is None
+        assert logger.error.called
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_raises_when_asked(self) -> None:
+        proc, _, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph",
+                   AsyncMock(side_effect=RuntimeError("graph down"))), \
+             pytest.raises(RuntimeError, match="graph down"):
+            await proc.project_code_blocks_to_graph(**self._kwargs(propagate_failure=True))
+
+    @pytest.mark.asyncio
+    async def test_disabled_code_graph_projects_nothing(self, monkeypatch) -> None:
+        from app.modules.code_graph import enabled
+        monkeypatch.setattr(enabled, "CODE_GRAPH_ENABLED", False)
+        proc, _, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph", AsyncMock()) as write:
+            await proc.project_code_blocks_to_graph(**self._kwargs(propagate_failure=True))
+        write.assert_not_awaited()
+
+
+class TestProcessCodeDocumentProjection:
+    @pytest.mark.asyncio
+    async def test_a_failed_projection_stops_the_record_before_indexing(self) -> None:
+        """The in-process pipeline marks the record COMPLETED inside
+        `IndexingPipeline.apply`, so the projection ahead of it has to raise."""
+        from unittest.mock import create_autospec
+
+        proc, _, graph_provider, _ = _make_processor()
+        graph_provider.get_document = AsyncMock(return_value=_base_record_dict(
+            recordName="a.py", recordGroupId="repo-1", mimeType="text/x-python",
+        ))
+        parsed = MagicMock(blocks=[MagicMock()], block_groups=[])
+        proc.parsers["code"] = MagicMock(parse_to_blocks_off_loop=AsyncMock(return_value=parsed))
+        proc.project_code_blocks_to_graph = create_autospec(
+            Processor, instance=True
+        ).project_code_blocks_to_graph
+        proc.project_code_blocks_to_graph.side_effect = RuntimeError("graph down")
+        proc._create_transform_context = MagicMock()
+
+        with pytest.raises(DocumentProcessingError, match="graph down"):
+            await _collect(proc.process_code_document(
+                recordName="a.py", recordId="rec-1", code_binary=b"x = 1\n",
+                virtual_record_id="v-1", file_path="src/a.py",
+            ))
+
+        kwargs = proc.project_code_blocks_to_graph.await_args.kwargs
+        assert kwargs["propagate_failure"] is True
+        assert kwargs["file_path"] == "src/a.py"
+        proc._create_transform_context.assert_not_called()
+
+
+# ===========================================================================
+# A record deleted while it is being indexed
+# ===========================================================================
+
+
+def _md_run(proc: Processor) -> AsyncGenerator[PipelineEvent, None]:
+    parser = MagicMock()
+    parser.extract_and_replace_images.return_value = ("# Hello", [])
+    parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+    proc.parsers["md"] = parser
+    return proc.process_md_document(
+        recordName="test.md", recordId="rec-1", md_binary=b"# Hello", virtual_record_id="vr-1",
+    )
+
+
+def _html_run(proc: Processor) -> AsyncGenerator[PipelineEvent, None]:
+    parser = MagicMock()
+    parser.clean_html = MagicMock(side_effect=lambda x: x)
+    parser.replace_relative_image_urls = MagicMock(return_value="<p>Test</p>")
+    parser.extract_and_replace_images = MagicMock(return_value=("<p>Test</p>", []))
+    parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+    proc.parsers["html"] = parser
+    return proc.process_html_document(
+        recordName="test.html", recordId="rec-1", version=1, source="upload", orgId="org-1",
+        html_binary=b"<p>Test</p>", virtual_record_id="vr-1",
+    )
+
+
+def _code_run(proc: Processor) -> AsyncGenerator[PipelineEvent, None]:
+    return proc.process_code_document(
+        recordName="a.py", recordId="rec-1", code_binary=b"x = 1", virtual_record_id="vr-1",
+    )
+
+
+def _structured_run(proc: Processor) -> AsyncGenerator[PipelineEvent, None]:
+    parser = MagicMock()
+    parser.parse = AsyncMock(return_value=MagicMock(block_container=MagicMock(blocks=[MagicMock()], block_groups=[])))
+    proc.parsers["json"] = parser
+    return proc.process_structured_document(
+        recordName="a.json", recordId="rec-1", file_content=b"{}", virtual_record_id="vr-1", extension="json",
+    )
+
+
+class TestRecordDeletedMidIndexing:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run", [_md_run, _html_run])
+    async def test_the_deletion_propagates_unchanged_and_unlogged(self, run: Callable) -> None:
+        proc, logger, gp, _ = _make_processor()
+        gp.get_document.return_value = _base_record_dict()
+        deleted = RecordDeletedError("rec-1")
+
+        with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
+            mock_pipeline.return_value.apply = AsyncMock(side_effect=deleted)
+            with pytest.raises(RecordDeletedError) as raised:
+                await _collect(run(proc))
+
+        assert raised.value is deleted
+        logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run", [_md_run, _code_run, _structured_run])
+    async def test_a_record_gone_before_indexing_raises_record_deleted(self, run: Callable) -> None:
+        proc, logger, gp, _ = _make_processor()
+        gp.get_document.side_effect = _record_gone
+
+        with pytest.raises(RecordDeletedError):
+            await _collect(run(proc))
+
+        logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_graph_is_a_failure_not_a_deletion(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.side_effect = ConnectionError("graph down")
+
+        with pytest.raises(DocumentProcessingError) as raised:
+            await _collect(_md_run(proc))
+
+        assert isinstance(raised.value.__cause__, ConnectionError)

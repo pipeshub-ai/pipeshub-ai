@@ -18,3 +18,6 @@ export type { RolesPermissionsSectionProps } from './roles-permissions-section';
 
 export { PasswordSecuritySection } from './password-security-section';
 export type { PasswordSecuritySectionProps } from './password-security-section';
+
+export { DemoDataSection } from './demo-data-section';
+export type { DemoDataSectionProps } from './demo-data-section';

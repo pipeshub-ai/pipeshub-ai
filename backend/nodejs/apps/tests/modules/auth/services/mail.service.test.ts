@@ -187,77 +187,109 @@ describe('MailService', () => {
   });
 
   describe('sendMail - successful call', () => {
-    it('should call axios with correct config', async () => {
-      const axiosStub = sinon.stub(axios, 'request').resolves({
-        data: { messageId: 'msg-1' },
-      } as any);
+    // sendMail calls axios(config), not axios.request, so only an adapter keeps
+    // these off the network. Stubbing axios.request left them sending a real
+    // request to comm-backend, which timed out whenever the lookup was slow.
+    let origAdapter: typeof axios.defaults.adapter;
+    let sent: any;
 
-      try {
-        await mailService.sendMail({
-          emailTemplateType: 'loginWithOTP',
-          initiator: { jwtAuthToken: 'token123' },
-          usersMails: ['test@example.com'],
-          subject: 'Test Subject',
-          templateData: { otp: '123456' },
-        });
-      } catch {
-        // May fail due to how axios is stubbed, but validates input handling
-      }
+    beforeEach(() => {
+      origAdapter = axios.defaults.adapter;
+      sent = undefined;
+      axios.defaults.adapter = async (config) => {
+        sent = config;
+        return {
+          data: { messageId: 'msg-1' },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        };
+      };
+    });
+
+    afterEach(() => {
+      axios.defaults.adapter = origAdapter;
+    });
+
+    const body = () => JSON.parse(sent.data);
+
+    it('should call axios with correct config', async () => {
+      const result = await mailService.sendMail({
+        emailTemplateType: 'loginWithOTP',
+        initiator: { jwtAuthToken: 'token123' },
+        usersMails: ['test@example.com'],
+        subject: 'Test Subject',
+        templateData: { otp: '123456' },
+      });
+
+      expect(result).to.deep.equal({
+        statusCode: 200,
+        data: { messageId: 'msg-1' },
+      });
+      expect(sent.method).to.equal('post');
+      expect(sent.url).to.equal(
+        'http://comm-backend:4000/api/v1/mail/emails/sendEmail',
+      );
+      expect(sent.headers.Authorization).to.equal('Bearer token123');
+      expect(sent.timeout).to.equal(30_000);
+      expect(body()).to.include({
+        emailTemplateType: 'loginWithOTP',
+        subject: 'Test Subject',
+        isAutoEmail: false,
+      });
+      expect(body().sendEmailTo).to.deep.equal(['test@example.com']);
+      expect(body().templateData).to.deep.equal({ otp: '123456' });
+      expect(body()).to.not.have.any.keys('attachments', 'sendCcTo', 'orgId');
     });
 
     it('should include attachments when provided', async () => {
-      try {
-        await mailService.sendMail({
-          emailTemplateType: 'welcome',
-          initiator: { jwtAuthToken: 'token123' },
-          usersMails: ['test@example.com'],
-          subject: 'Welcome',
-          attachedDocuments: [{ filename: 'doc.pdf', content: 'base64' }] as any,
-        });
-      } catch {
-        // Expected
-      }
+      await mailService.sendMail({
+        emailTemplateType: 'welcome',
+        initiator: { jwtAuthToken: 'token123' },
+        usersMails: ['test@example.com'],
+        subject: 'Welcome',
+        attachedDocuments: [{ filename: 'doc.pdf', content: 'base64' }] as any,
+      });
+
+      expect(body().attachments).to.deep.equal([
+        { filename: 'doc.pdf', content: 'base64' },
+      ]);
     });
 
     it('should include ccEmails when provided', async () => {
-      try {
-        await mailService.sendMail({
-          emailTemplateType: 'invite',
-          initiator: { jwtAuthToken: 'token123' },
-          usersMails: ['test@example.com'],
-          subject: 'Invite',
-          ccEmails: ['cc@example.com'],
-        } as any);
-      } catch {
-        // Expected
-      }
+      await mailService.sendMail({
+        emailTemplateType: 'invite',
+        initiator: { jwtAuthToken: 'token123' },
+        usersMails: ['test@example.com'],
+        subject: 'Invite',
+        ccEmails: ['cc@example.com'],
+      } as any);
+
+      expect(body().sendCcTo).to.deep.equal(['cc@example.com']);
     });
 
     it('should use default fromEmailDomain when not provided', async () => {
-      try {
-        await mailService.sendMail({
-          emailTemplateType: 'loginWithOTP',
-          initiator: { jwtAuthToken: 'token123' },
-          usersMails: ['test@example.com'],
-          subject: 'Test',
-        });
-      } catch {
-        // Expected
-      }
+      await mailService.sendMail({
+        emailTemplateType: 'loginWithOTP',
+        initiator: { jwtAuthToken: 'token123' },
+        usersMails: ['test@example.com'],
+        subject: 'Test',
+      });
+
+      expect(body().fromEmailDomain).to.equal('noreply@contextualml.com');
     });
 
     it('should use custom fromEmailDomain when provided', async () => {
-      try {
-        await mailService.sendMail({
-          emailTemplateType: 'loginWithOTP',
-          initiator: { jwtAuthToken: 'token123' },
-          usersMails: ['test@example.com'],
-          subject: 'Test',
-          fromEmailDomain: 'custom@domain.com',
-        });
-      } catch {
-        // Expected
-      }
+      await mailService.sendMail({
+        emailTemplateType: 'loginWithOTP',
+        initiator: { jwtAuthToken: 'token123' },
+        usersMails: ['test@example.com'],
+        subject: 'Test',
+        fromEmailDomain: 'custom@domain.com',
+      });
+
+      expect(body().fromEmailDomain).to.equal('custom@domain.com');
     });
   });
 

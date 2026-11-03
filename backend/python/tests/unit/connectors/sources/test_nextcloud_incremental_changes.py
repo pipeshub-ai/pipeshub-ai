@@ -104,14 +104,15 @@ class TestMergedActivities:
         connector.data_source.get_activities = AsyncMock(return_value=_response({"ocs": {"data": [
             _activity(110, "file_created", {"59": "/Handbook", "60": "/Handbook/leave.txt"}),
         ]}}))
-        connector._process_modified_files = AsyncMock()
+        connector._process_modified_files = AsyncMock(return_value={})
 
         await connector._run_incremental_sync_internal()
 
         paths = connector._process_modified_files.await_args.args[0]
         assert sorted(paths) == ["/Handbook", "/Handbook/leave.txt"]
         connector.activity_sync_point.update_sync_point.assert_awaited_once_with(
-            "activity_cursor", {"cursor": "110"}
+            "activity_cursor",
+            {"cursor": "110", "held_attempts": 0, "pending_deletes": [], "pending_delete_paths": []}
         )
 
     @pytest.mark.asyncio
@@ -119,7 +120,7 @@ class TestMergedActivities:
         connector.data_source.get_activities = AsyncMock(return_value=_response({"ocs": {"data": [
             _activity(113, "file_deleted", {"61": "/a.txt", "62": "/b.txt"}),
         ]}}))
-        connector._process_deletions = AsyncMock()
+        connector._process_deletions = AsyncMock(return_value={})
 
         await connector._run_incremental_sync_internal()
 
@@ -132,7 +133,7 @@ class TestMergedActivities:
         connector.data_source.get_activities = AsyncMock(
             return_value=_response({"ocs": {"data": [activity]}})
         )
-        connector._process_modified_files = AsyncMock()
+        connector._process_modified_files = AsyncMock(return_value={})
 
         await connector._run_incremental_sync_internal()
 
@@ -146,7 +147,7 @@ class TestNewFolders:
     async def test_missing_folders_are_created_under_their_real_parents(self, connector):
         folders = {"/Projects": "80", "/Projects/Apollo": "81"}
         connector.data_source.list_directory = AsyncMock(
-            side_effect=lambda user_id, path, depth: _response(
+            side_effect=lambda user_id, path, depth, **_: _response(
                 _propfind(path, folders[path]) if path in folders
                 else _propfind(path, "82", folder=False)
             )
@@ -167,7 +168,7 @@ class TestNewFolders:
     @pytest.mark.asyncio
     async def test_a_folder_already_indexed_is_not_created_again(self, connector):
         connector.data_source.list_directory = AsyncMock(
-            side_effect=lambda user_id, path, depth: _response(
+            side_effect=lambda user_id, path, depth, **_: _response(
                 _propfind(path, "80") if path == "/Projects" else _propfind(path, "82", folder=False)
             )
         )
@@ -215,7 +216,7 @@ class TestUnchangedRecords:
             "etag": '"etag-82"',
         }
         connector.sync_filters = MagicMock(get=MagicMock(return_value=None))
-        connector._cached_date_filters = (None, None, None, None)
+        connector._cached_date_filters = (None, None)
 
         update = await connector._process_nextcloud_entry(
             entry, "alice", "alice@example.com", "alice", ROOT, {}

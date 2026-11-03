@@ -65,6 +65,8 @@ def _manager(*, registry=None, **state_kw) -> tuple[ArtifactManager, MagicMock]:
     state.update(state_kw)
     mgr = ArtifactManager(state)
     mock_reg = registry if registry is not None else MagicMock()
+    if not isinstance(mock_reg.resolve, AsyncMock):
+        mock_reg.resolve = AsyncMock(return_value=_meta())
     mgr._registry = lambda: mock_reg
     return mgr, mock_reg
 

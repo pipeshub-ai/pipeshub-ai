@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Flex, Box } from '@radix-ui/themes';
+import { Flex, Box, Grid } from '@radix-ui/themes';
 
 const SHIMMER: CSSProperties = {
   animation: 'shimmer-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
@@ -52,21 +52,21 @@ function StatCardShimmer() {
 export function OverviewStatsGridShimmer() {
   return (
     <Flex direction="column" gap="2" style={{ width: '100%' }} aria-hidden>
-      <Flex gap="2" style={{ width: '100%' }}>
+      <Grid columns="2" gap="2" width="100%">
         <StatCardShimmer />
         <StatCardShimmer />
-      </Flex>
-      <Flex gap="2" style={{ width: '100%' }}>
-        <StatCardShimmer />
-        <StatCardShimmer />
-        <StatCardShimmer />
-        <StatCardShimmer />
-      </Flex>
-      <Flex gap="2" style={{ width: '100%' }}>
+      </Grid>
+      <Grid columns={{ initial: '2', sm: '4' }} gap="2" width="100%">
         <StatCardShimmer />
         <StatCardShimmer />
         <StatCardShimmer />
-      </Flex>
+        <StatCardShimmer />
+      </Grid>
+      <Grid columns={{ initial: '2', sm: '3' }} gap="2" width="100%">
+        <StatCardShimmer />
+        <StatCardShimmer />
+        <StatCardShimmer />
+      </Grid>
     </Flex>
   );
 }

@@ -23,6 +23,7 @@ from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop import langchain_transport as transport_module
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,
@@ -166,6 +167,22 @@ class TestComplete:
         assert model.bind_tools_called_with is not None
         assert len(model.bind_tools_called_with) == 1
 
+    async def test_openai_family_tools_are_not_strict(self) -> None:
+        # Named like LangChain's class: the transport recognises the family by class name.
+        class AzureChatOpenAI(_FakeModel):
+            pass
+
+        model = AzureChatOpenAI()
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+        await LangChainTransport(model).complete([UserMessage(content="hi")], tools=[schema])
+        assert model.bind_tools_called_with[0]["function"]["strict"] is False
+
+    async def test_other_providers_tools_carry_no_strict_key(self) -> None:
+        model = _FakeModel()
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+        await LangChainTransport(model).complete([UserMessage(content="hi")], tools=[schema])
+        assert "strict" not in model.bind_tools_called_with[0]["function"]
+
     async def test_no_tools_does_not_bind(self) -> None:
         model = _FakeModel()
         transport = LangChainTransport(model)
@@ -238,6 +255,13 @@ class TestComplete:
         with pytest.raises(TransportError) as exc_info:
             await transport.complete([UserMessage(content="hi")])
         assert exc_info.value.retryable is True
+
+    async def test_empty_message_error_keeps_its_class_name(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=TimeoutError()))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert "TimeoutError" in str(exc_info.value)
+        assert classify_error(f"LLM call failed: {exc_info.value}")[0] == "timeout"
 
     async def test_unrelated_exception_with_no_status_code_is_not_retryable(self) -> None:
         transport = LangChainTransport(_FakeModel(raise_on_invoke=ValueError("bad input")))
@@ -476,6 +500,17 @@ def _requesty_conflict_error() -> RuntimeError:
     return exc
 
 
+def _azure_tools_conflict_error() -> RuntimeError:
+    """Azure OpenAI's wording, for gpt-6 models sent tools on Chat Completions."""
+    exc = RuntimeError(
+        "Error code: 400 - {'error': {'message': \"Function tools with reasoning_effort are "
+        "not supported for this model in /v1/chat/completions. To use function tools, use "
+        "/v1/responses or set reasoning_effort to 'none'.\", 'type': 'invalid_request_error'}}"
+    )
+    exc.status_code = 400
+    return exc
+
+
 def _tool_choice_conflict_error() -> RuntimeError:
     exc = RuntimeError("Invalid parameter: 'tool_choice.function' is not supported here.")
     exc.status_code = 400
@@ -545,6 +580,34 @@ class TestApiShapeFallbackComplete:
         assert pinned.reasoning_effort is None
         assert store.recorded == [
             ("model-key-2", "some-model", LLMApiMode.RESPONSES.value),
+        ]
+
+    async def test_azure_wording_moves_an_unticked_model_to_responses_api(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A gpt-6 model added with Reasoning unticked carries no reasoning
+        setting, yet Azure still refuses its tools on Chat Completions. The
+        retry goes to the Responses API with the model's own default effort."""
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeApiShapeModel(
+            use_responses_api=None,
+            fail_when_responses_api=False, error=_azure_tools_conflict_error(),
+            response=AIMessage(content="worked via responses api"),
+        )
+        transport = LangChainTransport(model, model_name="gpt-6.1-sol", model_key="model-key-3")
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+
+        response = await transport.complete([UserMessage(content="hi")], tools=[schema])
+
+        assert response.message.text == "worked via responses api"
+        pinned = transport._llm
+        assert pinned.use_responses_api is True
+        assert pinned.reasoning is None
+        assert pinned.reasoning_effort is None
+        assert store.recorded == [
+            ("model-key-3", "gpt-6.1-sol", LLMApiMode.RESPONSES.value),
         ]
 
     async def test_unrelated_500_does_not_trigger_fallback(
@@ -990,6 +1053,24 @@ class TestSupportsMultipartToolResult:
 
         assert _supports_multipart_tool_result(AzureChatOpenAI()) is True
 
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        (
+            ("us.openai.gpt-6-luna", False),
+            ("global.openai.gpt-5.6-luna", False),
+            ("openai.gpt-oss-120b-1:0", True),
+            ("us.anthropic.claude-sonnet-5", True),
+        ),
+    )
+    def test_bedrock_converse_openai_gpt_rejects_tool_images(self, model_id: str, expected: bool) -> None:
+        """GPT-5.x / GPT-6 on Converse reject an image inside a toolResult."""
+        class ChatBedrockConverse(_FakeModel):
+            pass
+
+        model = ChatBedrockConverse()
+        model.model_id = model_id
+        assert _supports_multipart_tool_result(model) is expected
+
     async def test_complete_keeps_multipart_content_for_non_ollama(self) -> None:
         class ChatCapture(_FakeModel):
             def __init__(self, *a, **kw) -> None:
@@ -1374,13 +1455,20 @@ class TestToolImageRelocationRespectsTheCap:
     def _transport(self, cap):
         return LangChainTransport(_FakeModel(), model_name="m", max_images_per_request=cap)
 
+    @staticmethod
+    def _retry(transport, exc, messages) -> list | None:
+        """What the relocation retry sends, or None when there is no retry."""
+        if not transport._relocates_tool_images(exc, messages):
+            return None
+        return transport._request(messages, ("", ""), relocate=True)[0]
+
     @pytest.mark.parametrize("cap", [1, 2, 5, 10, None])
     def test_the_retry_carries_what_the_first_attempt_carried(self, cap) -> None:
         t = self._transport(cap)
         messages = self._messages()
 
         first = t._to_langchain(messages, None)
-        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), messages, None)
+        retry = self._retry(t, RuntimeError(self.CONFLICT), messages)
 
         assert retry is not None
         assert self._image_count(retry) == self._image_count(first)
@@ -1389,7 +1477,7 @@ class TestToolImageRelocationRespectsTheCap:
         """The concrete regression: five tool images, a model that takes two."""
         t = self._transport(2)
 
-        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None)
+        retry = self._retry(t, RuntimeError(self.CONFLICT), self._messages())
 
         assert self._image_count(retry) == 2
 
@@ -1398,14 +1486,13 @@ class TestToolImageRelocationRespectsTheCap:
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import ToolMessage as LCToolMessage
 
-        from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
+        from app.agent_loop_lib.transport.tool_images import RELOCATED_IMAGES_NOTE
 
-        retry = self._transport(2)._tool_image_fallback(
-            RuntimeError(self.CONFLICT), self._messages(), None
-        )
+        retry = self._retry(self._transport(2), RuntimeError(self.CONFLICT), self._messages())
 
         assert isinstance(retry[-1], HumanMessage)
-        assert retry[-1].content[0] == {"type": "text", "text": _RELOCATED_IMAGES_PREFIX}
+        assert retry[-1].content[0]["type"] == "text"
+        assert RELOCATED_IMAGES_NOTE in retry[-1].content[0]["text"]
         assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
 
     def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:
@@ -1419,23 +1506,19 @@ class TestToolImageRelocationRespectsTheCap:
             ]),
         ]
 
-        retry = self._transport(1)._tool_image_fallback(
-            RuntimeError(self.CONFLICT), messages, None
-        )
+        retry = self._retry(self._transport(1), RuntimeError(self.CONFLICT), messages)
 
         assert retry is None
 
     def test_an_unrelated_error_is_not_a_relocation(self) -> None:
-        assert self._transport(2)._tool_image_fallback(
-            RuntimeError("429 rate limit exceeded"), self._messages(), None
-        ) is None
+        assert self._retry(self._transport(2), RuntimeError("429 rate limit exceeded"), self._messages()) is None
 
     def test_once_pinned_the_shape_is_not_rediscovered(self) -> None:
         """`_to_langchain` relocates on its own from then on — and caps."""
         t = self._transport(2)
         t._tool_images_relocated = True
 
-        assert t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None) is None
+        assert self._retry(t, RuntimeError(self.CONFLICT), self._messages()) is None
         assert self._image_count(t._to_langchain(self._messages(), None)) == 2
 
 
@@ -1499,13 +1582,105 @@ class TestTransientStreamDisconnectIsRetryable:
         assert exc_info.value.retryable is True
 
 
+class TestInStreamProviderErrorIsRetryable:
+    """A provider can fail a request inside a stream that opened with HTTP 200: OpenAI/Azure send an `error` event
+    ("The server had an error processing your request ... You can retry your request"), raised as `openai.APIError`
+    with no status code; Anthropic sends `overloaded_error`, raised as `APIStatusError` with the stream's 200. Both
+    read as permanent, so on Azure gpt-6.1-sol 3 of 411 benchmark answers failed outright. The error body's type
+    says whether it is transient."""
+
+    def _openai_server_error(self) -> Exception:
+        import httpx
+        import openai
+
+        return openai.APIError(
+            "The server had an error processing your request. Sorry about that! You can retry your request.",
+            httpx.Request("POST", "https://example.openai.azure.com/openai/v1/responses"),
+            body={"message": "The server had an error processing your request.", "type": "server_error",
+                  "param": None, "code": None},
+        )
+
+    def _anthropic_overloaded(self) -> Exception:
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        return anthropic.APIStatusError(
+            "{'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'Overloaded'}}",
+            response=httpx.Response(200, request=request),
+            body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+    async def test_an_openai_server_error_event_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._openai_server_error()))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+
+    async def test_an_anthropic_overloaded_event_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._anthropic_overloaded()))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+        assert exc_info.value.status_code is None, "the stream's opening 200 is not the failure's status"
+
+    async def test_an_anthropic_overloaded_event_gets_a_second_attempt(self) -> None:
+        """The retry wrapper trusts `retryable` only without a status code; the stream's 200 must not reach it."""
+        from app.agent_loop_lib.transport.base import RetryConfig
+        from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+
+        class _Sink:
+            async def write(self, event: dict) -> bool:
+                return True
+
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._anthropic_overloaded()))
+        calls = {"n": 0}
+
+        async def _next() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                async for _ in transport.stream([UserMessage(content="hi")]):
+                    pass
+            return "ok"
+
+        middleware = retry_with_status(_Sink(), RetryConfig(initial_delay=0.001, backoff_factor=1.0, max_delay=0.001))
+        assert await middleware(_next) == "ok"
+        assert calls["n"] == 2
+
+    async def test_an_invalid_request_error_event_is_not_retryable(self) -> None:
+        import httpx
+        import openai
+
+        exc = openai.APIError(
+            "Invalid prompt", httpx.Request("POST", "https://example.openai.azure.com/openai/v1/responses"),
+            body={"message": "Invalid prompt", "type": "invalid_request_error", "param": None, "code": None},
+        )
+        transport = LangChainTransport(_FakeModel(raise_on_stream=exc))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is False
+
+    async def test_a_server_error_after_output_is_retried_only_once_discarded(self) -> None:
+        transport = LangChainTransport(_FailsMidStreamModel(self._openai_server_error(), emit_before_failing=2))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.partial_output is True and exc_info.value.retryable is False
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is True
+
+
 class TestPartialStreamIsNeverReplayed:
     """`stream()` already refuses to retry internally once chunks have been
     emitted, but the retry decision the OUTER `retry_model_call` middleware
     reads is `TransportError.retryable`, which was computed from the
     exception type alone. A retryable-looking error arriving mid-stream
     therefore let the middleware re-run the whole call and stream the same
-    text to the user twice.
+    text to the user twice. It is now flagged `partial_output` and held back
+    until the caller retracts that output.
     """
 
     async def test_mid_stream_failure_is_marked_non_retryable(self) -> None:
@@ -1526,6 +1701,34 @@ class TestPartialStreamIsNeverReplayed:
         assert exc_info.value.retryable is False, (
             "retrying after partial output would replay it to the user"
         )
+        assert exc_info.value.partial_output is True
+
+    async def test_a_drop_mid_stream_becomes_retryable_once_the_output_is_discarded(self) -> None:
+        """`Agent.step()` retracts what the client was shown, then retries."""
+        import httpx
+
+        model = _FailsMidStreamModel(
+            httpx.RemoteProtocolError("incomplete chunked read"), emit_before_failing=2,
+        )
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is True
+
+    async def test_a_non_transient_failure_mid_stream_stays_non_retryable_after_discard(self) -> None:
+        exc = RuntimeError("Bad request")
+        exc.status_code = 400
+        transport = LangChainTransport(_FailsMidStreamModel(exc, emit_before_failing=1))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        assert exc_info.value.partial_output is True
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is False
 
     async def test_a_timeout_mid_stream_is_also_not_replayed(self) -> None:
         """`readtimeout` IS in the network hints, so this is the case that
@@ -1592,7 +1795,9 @@ class TestRetryabilityFollowsWhatTheClientSaw:
         model = _EmitsThenFailsModel(
             self._protocol_error(), [AIMessageChunk(content="")],
         )
-        assert (await self._stream_error(model)).retryable is True
+        error = await self._stream_error(model)
+        assert error.retryable is True
+        assert error.partial_output is False
 
     async def test_several_empty_chunks_then_disconnect_is_retryable(self) -> None:
         model = _EmitsThenFailsModel(
@@ -1799,3 +2004,56 @@ class TestStreamCancellationDuringProviderStall:
             pass
 
         assert model.aclose_called is True
+
+
+_KEY_SENTINEL = "AIzaSyLOGSENTINEL0123456789abcdefghijkl"
+_BEARER_SENTINEL = "BEARERSENTINEL-4d1c"
+
+
+def _conflict_error_echoing_credentials() -> RuntimeError:
+    """A provider conflict whose text echoes the request URL, as an httpx
+    `HTTPStatusError` does, with the API key in the query string, and the
+    request's Authorization header."""
+    exc = _requesty_conflict_error()
+    exc.args = (
+        f"{exc.args[0]} (POST https://generativelanguage.googleapis.com/v1beta/models:generate"
+        f"?key={_KEY_SENTINEL}; headers: Authorization: Bearer {_BEARER_SENTINEL})",
+    )
+    return exc
+
+
+class TestProviderErrorLogsAreRedacted:
+    """The retry warnings log the provider's error text; a credential it
+    echoes must not reach the log."""
+
+    async def test_complete_conflict_warning(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: _FakeApiModeStore())
+        model = _FakeApiShapeModel(
+            use_responses_api=True, reasoning={"effort": "high"},
+            fail_when_responses_api=True, error=_conflict_error_echoing_credentials(),
+            response=AIMessage(content="ok"),
+        )
+        transport = LangChainTransport(model, model_name="gemini-x", model_key="k")
+
+        with caplog.at_level("WARNING", logger=transport_module.logger.name):
+            await transport.complete([UserMessage(content="hi")])
+
+        assert "provider conflict" in caplog.text
+        assert _KEY_SENTINEL not in caplog.text
+        assert _BEARER_SENTINEL not in caplog.text
+
+    async def test_stream_conflict_warning(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: _FakeApiModeStore())
+        model = _FakeApiShapeModel(
+            use_responses_api=True, reasoning={"effort": "high"},
+            fail_when_responses_api=True, error=_conflict_error_echoing_credentials(),
+            stream_chunks=[AIMessageChunk(content="ok")],
+        )
+        transport = LangChainTransport(model, model_name="gemini-x", model_key="k")
+
+        with caplog.at_level("WARNING", logger=transport_module.logger.name):
+            _ = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        assert "provider conflict" in caplog.text
+        assert _KEY_SENTINEL not in caplog.text
+        assert _BEARER_SENTINEL not in caplog.text

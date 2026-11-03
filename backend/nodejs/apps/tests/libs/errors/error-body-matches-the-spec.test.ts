@@ -54,7 +54,11 @@ function errorPayloadSchemas(): Array<{ where: string; schema: ErrorSchema }> {
       node.additionalProperties === false &&
       isRecord(properties) &&
       'code' in properties &&
-      'message' in properties
+      'message' in properties &&
+      // A body that says whether the call worked is a route's own result, not the
+      // error envelope: the bulk restore reports each item's `success`, its HTTP
+      // status as an integer `code`, and a `message`. No error envelope declares it.
+      !('success' in properties)
     ) {
       found.push({ where: path, schema: node as ErrorSchema })
     }

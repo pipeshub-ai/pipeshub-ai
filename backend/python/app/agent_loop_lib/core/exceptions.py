@@ -51,6 +51,10 @@ class TransportError(AgentLoopError):
     retryable: whether the RetryHook should retry this call. Transports should
     set this explicitly based on the underlying SDK exception type — network
     timeouts and 429/5xx are typically retryable, 4xx client errors are not.
+    partial_output: part of the response had already been streamed to the
+    caller when the call failed. Re-running the call would show that part a
+    second time, so `retryable` is False until the caller retracts what it
+    passed on and says so with `discard_partial_output()`.
     """
 
     def __init__(
@@ -59,7 +63,16 @@ class TransportError(AgentLoopError):
         *,
         status_code: int | None = None,
         retryable: bool = False,
+        partial_output: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
-        self.retryable = retryable
+        self.partial_output = partial_output
+        self._transient = retryable
+        self.retryable = retryable and not partial_output
+
+    def discard_partial_output(self) -> None:
+        """The caller has retracted everything this call streamed, so the
+        failure is as retryable as it would have been before any output."""
+        self.partial_output = False
+        self.retryable = self._transient

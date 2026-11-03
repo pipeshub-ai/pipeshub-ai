@@ -2,7 +2,7 @@ import asyncio
 import io
 import json
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple, cast
 
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
@@ -11,14 +11,17 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     OriginTypes,
     ProgressStatus,
+    RecordTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     DocumentProcessingError,
     IndexingError,
+    MultimodalModelNotConfiguredError,
+    RecordDeletedError,
     RecordStatusUpdateError,
 )
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -32,28 +35,61 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
-from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD
+from app.modules.code_graph import enabled as code_graph_switch
+from app.modules.code_graph.block_projection import (
+    BlockProjectionContext,
+    drop_code_file_blocks,
+    write_code_file_blocks_to_graph,
+)
+from app.modules.parsers import parse_pool
+from app.modules.parsers.code_parser import engine as code_parser_engine
+from app.modules.parsers.code_parser.lang_config import detect_language
+from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
+from app.modules.parsers.markdown.image_references import extract_and_replace_images
+from app.modules.parsers.csv.csv_parser import CSVParser
+from app.modules.parsers.excel.excel_parser import ExcelParser
+from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.push_origin import (
+    assert_images_inline,
+    content_is_push_origin,
+    record_is_push_origin,
+)
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.modules.parsers.text_decoding import decode_text
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.services.parsing.interface import ParseError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 from app.utils.aimodels import is_multimodal_llm
-from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
-from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
+from app.utils.cpu_offload import offload_if_large
+from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
+from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
+from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR, text_file_too_large
+
+if TYPE_CHECKING:
+    from app.modules.pipeline.ingress import StageIngress
 
 
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
 
 
-def convert_record_dict_to_record(record_dict: dict) -> Record:
+def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
     conn_name_value = record_dict.get("connectorName")
     try:
         connector_name = (
@@ -69,15 +105,18 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType")
+    mime_type = cast(str, record_dict.get("mimeType"))
 
+    # Record validates the required string fields; a document missing one fails there.
     return Record(
-        id=record_dict.get("_key") or record_dict.get("id"),
-        org_id=record_dict.get("orgId"),
-        record_name=record_dict.get("recordName"),
+        id=cast(str, record_dict.get("_key") or record_dict.get("id")),
+        org_id=cast(str, record_dict.get("orgId")),
+        record_name=cast(str, record_dict.get("recordName")),
         record_type=RecordType(record_dict.get("recordType", "FILE")),
         record_status=ProgressStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
-        external_record_id=record_dict.get("externalRecordId"),
+        indexing_status=record_dict.get("indexingStatus", ProgressStatus.QUEUED.value),
+        extraction_status=record_dict.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+        external_record_id=cast(str, record_dict.get("externalRecordId")),
         version=record_dict.get("version", 1),
         origin=origin,
         summary_document_id=record_dict.get("summaryDocumentId"),
@@ -93,15 +132,20 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         ),
         source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
         source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
+        source_timestamp_origin=record_dict.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
         weburl=record_dict.get("webUrl"),
         mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
-        connector_id=record_dict.get("connectorId"),
+        connector_id=cast(str, record_dict.get("connectorId")),
         md5_hash=record_dict.get("md5Checksum"),
         record_group_id=record_dict.get("recordGroupId"),
         external_record_group_id=record_dict.get("externalGroupId"),
+        # A named-entity persist retry rebuilds the record from its document and finds the
+        # stored extraction by this.
+        virtual_record_id=record_dict.get("virtualRecordId"),
+        push_origin=record_dict.get(PUSH_ORIGIN_FIELD) is True,
     )
 
 class Processor:
@@ -114,6 +158,7 @@ class Processor:
         parsers,
         document_extractor,
         sink_orchestrator,
+        stage_ingress: "StageIngress | None" = None,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
@@ -123,6 +168,7 @@ class Processor:
         self.config_service = config_service
         self.document_extraction = document_extractor
         self.sink_orchestrator = sink_orchestrator
+        self.stage_ingress = stage_ingress
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
@@ -135,6 +181,13 @@ class Processor:
         """Resolve LLM for a role."""
         return await get_llm_for_role(
             self.config_service, role, reasoning_effort=reasoning_effort
+        )
+
+    def _pipeline(self) -> IndexingPipeline:
+        return IndexingPipeline(
+            document_extraction=self.document_extraction,
+            sink_orchestrator=self.sink_orchestrator,
+            stage_ingress=self.stage_ingress,
         )
 
     def _convert_record(self, record_dict: dict) -> Record:
@@ -163,14 +216,10 @@ class Processor:
                 raise Exception("No image data provided")
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                # Must yield both events to release semaphores properly
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                return
+                raise RecordDeletedError(record_id)
 
             _ , config = await self._get_llm_for_role("indexing", reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
@@ -225,7 +274,7 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -274,6 +323,8 @@ class Processor:
 
             self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
 
+        except RecordDeletedError:
+            raise  # an expected outcome, logged once by the record handler
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
@@ -293,28 +344,28 @@ class Processor:
 
             # Phase 1: Parse PDF layout (no LLM calls)
             parsed_data = await processor.parse_document(record_name, pdf_binary)
+            pdf_binary = None
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(parsed_data)
+            parsed_data = processor = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -342,6 +393,8 @@ class Processor:
 
             # Phase 1: Parse PDF via the external Docling service (no LLM calls)
             doc = await self.docling_client.parse_pdf_batched(record_name, pdf_binary)
+            # Nothing reads the file again; the caller drops its copy on PARSING_COMPLETE.
+            pdf_binary = None
             if doc is None:
                 self.logger.error(f"❌ External Docling service failed to parse {recordName}")
                 yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
@@ -351,22 +404,22 @@ class Processor:
 
             # Phase 2: Create blocks locally (involves LLM calls for tables)
             block_containers = await self.docling_processor.create_blocks(doc)
+            # The parsed document is not needed once its blocks exist, so it does not live through embedding.
+            doc = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -390,11 +443,22 @@ class Processor:
 
         try:
             self.logger.debug("📄 Processing PDF binary content")
-            # Get OCR configurations
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-            ocr_configs = ai_models["ocr"]
+            # Get OCR configurations. A store that does not answer is an outage,
+            # retried: AISettingsUnavailableError is an IndexingError, which the
+            # handler below re-raises as it is. Settings never saved read as none.
+            try:
+                ai_models = await self.config_service.get_config(
+                    config_node_constants.AI_MODELS.value, raise_on_error=True
+                )
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    record_id=recordId,
+                    details={"error": str(e)},
+                ) from e
+            if not isinstance(ai_models, dict):
+                ai_models = {}
+            ocr_configs = ai_models.get("ocr") or []
 
             # Configure OCR handler
             self.logger.debug("🛠️ Configuring OCR handler")
@@ -435,11 +499,13 @@ class Processor:
                     provider = OCRProvider.VLM_OCR.value
                 else:
                     self.logger.warning("⚠️ Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
-                    raise IndexingError(SCANNED_PDF_NO_OCR_MESSAGE, record_id=recordId)
+                    # Final on the first try: retrying cannot add a model.
+                    raise MultimodalModelNotConfiguredError(SCANNED_PDF_NO_OCR_MESSAGE, doc_id=recordId)
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
             ocr_result = await handler.process_document(pdf_binary)
+            pdf_binary = handler = None
 
             self.logger.debug("✅ OCR processing completed")
 
@@ -517,6 +583,9 @@ class Processor:
                 for page_block_containers in page_block_results:
                     if page_block_containers:
                         combined_block_containers.extend(page_block_containers)
+                # The OCR pages and their parsed documents are not needed once the blocks exist.
+                ocr_result = pages = all_conv_results = page_build_tasks = page_block_results = page_block_containers = None
+                processor = None
 
                 self.logger.info(
                     f"📦 Combined {len(combined_block_containers.blocks)} blocks and "
@@ -524,11 +593,9 @@ class Processor:
                 )
 
                 # Get record and run indexing pipeline
-                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
+                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value, raise_on_error=True)
                 if record is None:
-                    self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                    return
+                    raise RecordDeletedError(recordId)
 
                 record = self._convert_record(record)
                 record.block_containers = combined_block_containers
@@ -536,10 +603,7 @@ class Processor:
                 record.is_vlm_ocr_processed = True
 
                 ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-                pipeline = IndexingPipeline(
-                    document_extraction=self.document_extraction,
-                    sink_orchestrator=self.sink_orchestrator
-                )
+                pipeline = self._pipeline()
                 await pipeline.apply(ctx)
 
                 # Signal indexing complete
@@ -593,6 +657,7 @@ class Processor:
                             index += 1
 
             block_groups = ocr_result.get("tables", [])
+            ocr_result = blocks_from_ocr = None
             for block_group in block_groups:
                 # Convert list of BlockContainerIndex to BlockGroupChildren
                 block_container_indices = table_rows.get(block_group.index, [])
@@ -602,18 +667,16 @@ class Processor:
                 else:
                     block_group.children = None
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -641,7 +704,7 @@ class Processor:
         )
         # Convert DOC to DOCX and delegate
         parser = self.parsers[ExtensionTypes.DOC.value]
-        doc_result = parser.convert_doc_to_docx(doc_binary)
+        doc_result = await parser.convert_doc_to_docx_async(doc_binary)
         async for event in self.process_docx_document(
             recordName, recordId, version, source, orgId, doc_result, virtual_record_id, event_type, prev_virtual_record_id
         ):
@@ -672,30 +735,31 @@ class Processor:
             processor = self.docling_processor
 
             # Phase 1: Parse document with Docling (no LLM calls)
-            conv_res = await processor.parse_document(recordName, docx_binary)
+            # Docling falls back to the extension when it cannot tell the format from
+            # the bytes, so the name must say DOCX, as it does for PPTX below.
+            doc_name = recordName if recordName.lower().endswith(".docx") else f"{recordName}.docx"
+            conv_res = await processor.parse_document(doc_name, docx_binary)
+            docx_binary = None
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
-
+            conv_res = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -750,27 +814,30 @@ class Processor:
             # Convert dict to BlocksContainer
             block_containers = BlocksContainer(**blocks_dict)
 
+            # Read before the groups are processed: the record's own push marker
+            # decides whether a remote image may be fetched. A failed read raises,
+            # so it is retried and never indexes the images away.
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+
+            if record is None:
+                raise RecordDeletedError(recordId)
+
+            push_origin = content_is_push_origin(blocks_dict) or record_is_push_origin(record)
+
             # Process BlockGroups with requires_processing=True via markdown parser
             block_containers = await self._process_blockgroups(
-                block_containers, recordName
+                block_containers, recordName, allow_remote_fetch=not push_origin
             )
+            if push_origin:
+                assert_images_inline(block_containers)
 
             # Signal parsing complete after blocks are processed
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Enhance TABLE BlockGroups with LLM summaries and row descriptions
             await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
-
-            # Get record from database
-            record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
-            )
-
-            if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
 
             # Convert to Record entity and attach blocks
             record = self._convert_record(record)
@@ -779,10 +846,7 @@ class Processor:
 
             # Apply indexing pipeline
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction,
-                sink_orchestrator=self.sink_orchestrator
-            )
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -790,6 +854,8 @@ class Processor:
 
             self.logger.info("✅ Blocks Container processing completed successfully")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
             raise
@@ -817,8 +883,18 @@ class Processor:
 
         return block_groups_with_index, block_groups_without_index
 
+    def _group_parsers(self, *, allow_remote_fetch: bool) -> tuple[Any, Any]:
+        """The markdown and HTML parsers for block-group content.
+
+        Pushed content always takes the lightweight classes, so a Docling backend
+        never sees it.
+        """
+        if allow_remote_fetch:
+            return self.parsers.get(ExtensionTypes.MD.value), self.parsers.get(ExtensionTypes.HTML.value)
+        return lightweight_group_parsers(logger=self.logger, config_service=self.config_service)
+
     async def _process_blockgroup_images(
-        self, markdown_data: str, block_group_index: int
+        self, markdown_data: str, block_group_index: int, *, allow_remote_fetch: bool
     ) -> Tuple[str, Dict[str, str]]:
         """
         Extract images from markdown and convert URLs to base64.
@@ -833,18 +909,22 @@ class Processor:
         caption_map: Dict[str, str] = {}
         modified_markdown = markdown_data
 
-        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         image_parser = self.parsers.get(ExtensionTypes.PNG.value)
 
         if md_parser and image_parser:
-            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+            modified_markdown, images = await offload_if_large(
+                md_parser.extract_and_replace_images, markdown_data
+            )
 
             if images:
                 # Collect all image URLs
                 urls_to_convert = [image["url"] for image in images]
 
                 # Convert URLs to base64
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
@@ -863,6 +943,8 @@ class Processor:
         block_group: BlockGroup,
         record_name: str,
         md_parser: MarkdownParser,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's markdown into blocks.
@@ -887,7 +969,7 @@ class Processor:
 
         # Extract and replace images from markdown, then convert URLs to base64
         modified_markdown, caption_map = await self._process_blockgroup_images(
-            markdown_data, block_group.index
+            markdown_data, block_group.index, allow_remote_fetch=allow_remote_fetch
         )
 
         self.logger.debug(
@@ -911,6 +993,8 @@ class Processor:
         self,
         block_group: BlockGroup,
         record_name: str,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's HTML data into blocks.
@@ -925,19 +1009,23 @@ class Processor:
                 f"BlockGroup {block_group.index} has no valid HTML data"
             )
 
-        html_parser = self.parsers.get(ExtensionTypes.HTML.value)
+        _, html_parser = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if not html_parser:
             raise ValueError("HTML parser is not configured")
         html_content = html_parser.clean_html(html_data)
 
         caption_map: Dict[str, str] = {}
-        modified_html, images = html_parser.extract_and_replace_images(html_content)
+        modified_html, images = await offload_if_large(
+            html_parser.extract_and_replace_images, html_content
+        )
 
         if images:
             image_parser = self.parsers.get(ExtensionTypes.PNG.value)
             if image_parser:
                 urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
                 for i, image in enumerate(images):
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
@@ -1193,7 +1281,7 @@ class Processor:
         )
 
     async def _process_blockgroups(
-        self, block_containers: BlocksContainer, record_name: str
+        self, block_containers: BlocksContainer, record_name: str, *, allow_remote_fetch: bool
     ) -> BlocksContainer:
         """
         Process BlockGroups with requires_processing=True via the markdown parser.
@@ -1206,6 +1294,7 @@ class Processor:
         Args:
             block_containers: BlocksContainer to process
             record_name: Name of the record (for parser context)
+            allow_remote_fetch: False for pushed content: a remote image is left out, never fetched
 
         Returns:
             BlocksContainer with processed blocks merged in
@@ -1237,7 +1326,7 @@ class Processor:
         processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
         initial_block_count = len(block_containers.blocks)
 
-        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if md_parser is None:
             raise ValueError("Markdown parser is not configured")
 
@@ -1245,11 +1334,11 @@ class Processor:
             try:
                 if block_group.format == DataFormat.HTML:
                     new_block_groups, new_blocks = await self._process_single_blockgroup_html(
-                        block_group, record_name
+                        block_group, record_name, allow_remote_fetch=allow_remote_fetch
                     )
                 else:
                     new_block_groups, new_blocks = await self._process_single_blockgroup(
-                        block_group, record_name, md_parser
+                        block_group, record_name, md_parser, allow_remote_fetch=allow_remote_fetch
                     )
 
                 # Store results for later merging
@@ -1301,7 +1390,7 @@ class Processor:
         try:
             self.logger.debug("📊 Processing Excel content")
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
-            parser = self.parsers[ExtensionTypes.XLSX.value]
+            parser = cast(ExcelParser, self.parsers[ExtensionTypes.XLSX.value])
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
@@ -1309,29 +1398,30 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
-            # Phase 1: Load workbook (no LLM calls)
-            parser.load_workbook_from_binary(excel_binary)
+            # Phase 1: Load workbook (no LLM calls), on a parser of its own —
+            # self.parsers is shared by concurrent records.
+            document_parser: ExcelParser = parser.new_document_parser()
+            await asyncio.to_thread(document_parser.load_workbook_from_binary, excel_binary)
+            excel_binary = None
 
             # Signal parsing complete after workbook is loaded
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for summaries)
-            blocks_containers = await parser.create_blocks(llm)
+            blocks_containers = await document_parser.create_blocks(llm)
+            document_parser = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1359,7 +1449,7 @@ class Processor:
         try:
             # Convert XLS to XLSX binary
             xls_parser = self.parsers[ExtensionTypes.XLS.value]
-            xlsx_binary = xls_parser.convert_xls_to_xlsx(xls_binary)
+            xlsx_binary = await xls_parser.convert_xls_to_xlsx_async(xls_binary)
 
             # Process the converted XLSX using the Excel parser
             async for event in self.process_excel_document(
@@ -1398,44 +1488,31 @@ class Processor:
             # Initialize parser
             self.logger.debug("📊 Processing delimited file content")
             if extension is None:
-                parser = self.parsers[ExtensionTypes.CSV.value]
+                parser = cast(CSVParser, self.parsers[ExtensionTypes.CSV.value])
             else:
-                parser = self.parsers[extension]
+                parser = cast(CSVParser, self.parsers[extension])
 
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
 
-            # Try different encodings to decode binary data
-            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-            all_rows = None
-            for encoding in encodings:
+            # A large file is read, and its tables found, in a parse worker
+            # process: both steps hold the GIL, so a thread would not free the loop.
+            in_worker = parse_pool.should_offload(len(file_binary))
+            if in_worker:
+                tables = await parser.read_tables_in_worker(file_binary, recordName)
+                has_rows = tables is not None
+            else:
                 try:
-                    self.logger.debug(
-                        f"Attempting to decode delimited file with {encoding} encoding"
+                    all_rows = await offload_if_large(
+                        parser.read_raw_rows, io.StringIO(decode_text(file_binary)), sized_arg=file_binary
                     )
-                    # Decode binary data to string
-                    csv_text = file_binary.decode(encoding)
-
-                    # Create string stream from decoded text
-                    csv_stream = io.StringIO(csv_text)
-
-                    # Read raw rows for table detection
-                    all_rows = parser.read_raw_rows(csv_stream)
-
-
-                    self.logger.info(
-                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(all_rows)}"
-                    )
-                    break
-                except UnicodeDecodeError:
-                    self.logger.debug(f"Failed to decode with {encoding} encoding")
-                    continue
+                    self.logger.info(f"✅ Successfully parsed delimited file. Rows: {len(all_rows)}")
                 except Exception as e:
-                    self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
-                    continue
+                    self.logger.warning(f"Failed to read rows from delimited file {recordName}: {str(e)}")
+                    all_rows = None
+                has_rows = bool(all_rows)
 
-
-            if all_rows is None or not all_rows:
-                self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
+            if not has_rows:
+                self.logger.info(f"Delimited file could not be read or is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1446,17 +1523,17 @@ class Processor:
             self.logger.debug("📑 Delimited file result processed")
 
             # Detect multiple tables
-            tables = parser.find_tables_in_csv(all_rows)
+            if not in_worker:
+                tables = await offload_if_large(
+                    parser.find_tables_in_csv, all_rows, sized_arg=file_binary
+                )
             self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.virtual_record_id = virtual_record_id
 
@@ -1470,7 +1547,7 @@ class Processor:
             record.block_containers = block_containers
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1488,7 +1565,9 @@ class Processor:
                 details={"error": str(e)},
             ) from e
 
-    async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
+    async def _mark_record(
+        self, record_id, indexing_status: ProgressStatus, reason: str | None = None
+    ) -> None:
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
@@ -1500,6 +1579,7 @@ class Processor:
         timestamp = get_epoch_timestamp_in_ms()
         status_update: dict[str, Any] = {
             "indexingStatus": indexing_status.value,
+            **indexed_copy_fields(indexing_status),
             "processingStartedAt": None,
             "isDirty": False,
             "lastIndexTimestamp": timestamp,
@@ -1508,6 +1588,13 @@ class Processor:
         }
         if indexing_status == ProgressStatus.EMPTY:
             status_update["reason"] = ""
+        elif reason is not None:
+            status_update["reason"] = reason
+        # The parsing-service path writes parsingStatus=IN_PROGRESS before it
+        # dispatches. Left there with processingStartedAt cleared, the record
+        # reads as a crashed parse and stale recovery republishes it for ever.
+        if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+            status_update["parsingStatus"] = indexing_status.value
 
         success = await self.graph_provider.update_node(
             record_id,
@@ -1556,18 +1643,22 @@ class Processor:
 
             # Use the unified HTML parser interface
             self.logger.debug("📄 Processing HTML content")
+            html_content = await asyncio.to_thread(fit_inline_images, html_content)
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.clean_html(html_content)
             html_content = html_parser.replace_relative_image_urls(html_content)
 
             # Extract image URLs and convert to base64 (mirrors the Markdown flow)
             caption_map: Dict[str, str] = {}
-            modified_html, images = html_parser.extract_and_replace_images(html_content)
+            modified_html, images = await offload_if_large(
+                html_parser.extract_and_replace_images, html_content
+            )
 
             if images:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
                 urls_to_convert = [image["url"] for image in images]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                # An HTML file a connector synced: never a pushed blocks document.
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
 
                 for i, image in enumerate(images):
                     if base64_urls[i]:
@@ -1583,24 +1674,24 @@ class Processor:
                 caption_map=caption_map if caption_map else None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the page.
+            del html_content, modified_html, images, caption_map
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1617,6 +1708,31 @@ class Processor:
                 doc_id=recordId,
                 details={"error": str(e)},
             ) from e
+
+    async def process_epub_document(
+        self,
+        recordName: str,
+        recordId: str,
+        version: int,
+        source: str,
+        orgId: str,
+        epub_binary: bytes,
+        virtual_record_id: str,
+        event_type: str | None = None,
+        prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Process an EPUB book as the HTML document its chapters make up."""
+        self.logger.info(f"🚀 Starting EPUB document processing for record: {recordName}")
+        try:
+            book = await asyncio.to_thread(read_epub, epub_binary)
+        except ParseError as e:
+            # DocumentProcessingError is what marks a file failure as final;
+            # a bare ParseError would be retried as if it were an outage.
+            raise DocumentProcessingError(e.message, doc_id=recordId, details=e.details) from e
+        async for event in self.process_html_document(
+            recordName, recordId, version, source, orgId, book.to_html(), virtual_record_id, event_type, prev_virtual_record_id
+        ):
+            yield event
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1680,9 +1796,19 @@ class Processor:
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
+            markdown = await asyncio.to_thread(fit_inline_images, markdown)
             parser = self.parsers[ExtensionTypes.MD.value]
 
-            modified_markdown, images = parser.extract_and_replace_images(markdown)
+            # Each regex pass over a large document is one C call that holds
+            # the GIL, so a thread would not keep the event loop turning.
+            if parse_pool.should_offload(len(markdown)):
+                modified_markdown, images = await parse_pool.submit(
+                    extract_and_replace_images, markdown, label=recordName, size=len(markdown)
+                )
+            else:
+                modified_markdown, images = await offload_if_large(
+                    parser.extract_and_replace_images, markdown
+                )
             caption_map = {}
 
             # Collect all image URLs
@@ -1691,7 +1817,8 @@ class Processor:
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                # A markdown file a connector synced: never a pushed blocks document.
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
 
                 # Create caption map with base64 URLs
                 for i, image in enumerate(images):
@@ -1703,24 +1830,23 @@ class Processor:
                 caption_map=caption_map or None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the document.
+            del md_content, markdown, modified_markdown, images, caption_map
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1749,12 +1875,135 @@ class Processor:
             self.logger.warning(f"Could not read filePath for {record_id}: {e}")
             return None
 
+    async def _skip_code_file(
+        self, record_name: str, record_id: str, size_bytes: int, cause: str, reason: str | None,
+        *, org_id: str, virtual_record_id: str | None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """Mark a repository file as not indexed, with the reason people see."""
+        self.logger.info(
+            f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
+        )
+        await self._drop_code_blocks(record_id)
+        await self._release_skipped_content(org_id, record_id, virtual_record_id)
+        await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+
+    async def _release_skipped_content(
+        self, org_id: str, record_id: str, virtual_record_id: str | None
+    ) -> None:
+        """Remove the vectors and stored content a now-skipped file had indexed.
+
+        Its last version (possibly unredacted) stayed searchable. Detached
+        first: both purges keep whatever a record still references, so a twin
+        sharing the VRID keeps its content. Raises, like the block drop.
+        """
+        if not virtual_record_id:
+            return
+        if not await self.graph_provider.update_node(
+            record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
+        ):
+            raise DocumentProcessingError(
+                "Failed to detach the virtual record of a skipped file", doc_id=record_id
+            )
+        await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
+        await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
+            org_id, virtual_record_id
+        )
+
+    async def _drop_code_blocks(self, record_id: str) -> None:
+        """Remove a code file's previous blocks when it no longer has any.
+
+        A file emptied, made unparseable or skipped kept the blocks of its last
+        version, and the edge builder went on resolving calls into code that no
+        longer exists. Raises, like the projection: the status written next
+        would otherwise claim a state the graph does not have.
+        """
+        await drop_code_file_blocks(self.graph_provider, record_id, self.logger)
+
+    async def project_code_blocks_to_graph(
+        self,
+        *,
+        record_id: str,
+        org_id: str,
+        record_group_id: str | None,
+        connector_id: str | None,
+        record_name: str,
+        file_path: str | None = None,
+        language: str | None = None,
+        content: bytes | None = None,
+        block_containers: BlocksContainer | None = None,
+        propagate_failure: bool = False,
+    ) -> None:
+        """Write a code file's blocks to the graph, carrying their unresolved
+        cross-file references for the corpus edge pass to resolve later.
+
+        Every indexing path has to reach this. The blob and the vectors are keyed
+        by virtualRecordId and dedupe safely; these nodes are keyed by record and
+        do not, so any path that skips this leaves the file searchable but absent
+        from the code graph.
+
+        Callers holding a parsed container pass it; the duplicate path passes raw
+        ``content`` and pays for a parse instead.
+
+        Swallows failures by default -- the blocks are already searchable and the
+        edge pass can be re-run. Callers that run this *before* the record is
+        marked COMPLETED pass ``propagate_failure=True``: there, silently losing
+        the blocks would let the edge builder resolve the repo against a symbol
+        table the file is missing from, which yields wrong edges rather than
+        absent ones.
+        """
+        if not code_graph_switch.CODE_GRAPH_ENABLED:
+            return
+        try:
+            if not file_path:
+                file_path = await self._lookup_code_file_path(record_id)
+            file_path = file_path or record_name
+            language = language or detect_language(record_name) or detect_language(file_path)
+            if not language:
+                return
+
+            if block_containers is None:
+                if not content:
+                    return
+                block_containers = await self.parsers[
+                    ExtensionTypes.CODE.value
+                ].parse_to_blocks_off_loop(content, record_name, file_path, language)
+            if block_containers is None:
+                return
+
+            await write_code_file_blocks_to_graph(
+                graph_provider=self.graph_provider,
+                context=BlockProjectionContext(
+                    org_id=org_id,
+                    record_id=record_id,
+                    record_group_id=record_group_id,
+                    connector_id=connector_id,
+                    language=language,
+                    file_path=file_path,
+                ),
+                block_containers=block_containers,
+                logger=self.logger,
+            )
+        except Exception as projection_error:
+            self.logger.error(
+                f"❌ Failed to project code blocks to graph for {record_id}: {projection_error}"
+            )
+            if propagate_failure:
+                raise
+
     async def process_code_document(
         self, recordName, recordId, code_binary, virtual_record_id, extension=None,
         file_path: Optional[str] = None,
         event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process a source file into code blocks, yielding phase events."""
+        """Process a source file, or any file from a code repository.
+
+        Source with a grammar becomes code blocks and a data file goes to the
+        parser for its format. Anything else is read as text; for a repository
+        file that is capped at the code size limit, and generated files are
+        skipped (see ``plan_code_file``).
+        """
         self.logger.info(f"🚀 Starting code document processing for record: {recordName}")
 
         try:
@@ -1762,13 +2011,11 @@ class Processor:
                 code_binary = code_binary.encode("utf-8")
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
+            repository_file = record.get("recordType") == RecordTypes.CODE_FILE.value
             record = convert_record_dict_to_record(record)
 
             # Preserve the repo-relative path so block metadata remains unique
@@ -1776,19 +2023,47 @@ class Processor:
             if not file_path:
                 file_path = await self._lookup_code_file_path(recordId)
             file_path = file_path or recordName
-            language = detect_language(recordName) or detect_language(file_path)
-            if not language and extension:
-                cfg = config_for_extension(extension)
-                if cfg:
-                    language = cfg.name
-            if not language:
+
+            plan = plan_code_file(
+                recordName, file_path, extension, code_binary, repository_file=repository_file
+            )
+
+            if plan.route is CodeFileRoute.SKIP:
+                async for event in self._skip_code_file(
+                    recordName, recordId, len(code_binary), plan.skip_cause.value, plan.skip_reason,
+                    org_id=record.org_id, virtual_record_id=virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if plan.route is CodeFileRoute.DELIMITED:
+                self.logger.info(f"{recordName} is a data file; reading it as {plan.parser.upper()}")
+                async for event in self.process_delimited_document(
+                    recordName, recordId, code_binary, virtual_record_id,
+                    extension=plan.parser,
+                    event_type=event_type, prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if plan.route is CodeFileRoute.STRUCTURED:
+                self.logger.info(f"{recordName} is a data file; reading it as {plan.parser.upper()}")
+                async for event in self.process_structured_document(
+                    recordName, recordId, code_binary, virtual_record_id,
+                    extension=plan.parser,
+                    event_type=event_type, prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if plan.route is CodeFileRoute.TEXT:
                 self.logger.info(
                     f"No code grammar for {recordName}; falling back to text parsing"
                 )
                 async for event in self.process_md_document(
                     recordName=recordName,
                     recordId=recordId,
-                    md_binary=code_binary.decode("utf-8", errors="replace"),
+                    md_binary=decode_text(code_binary),
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
@@ -1797,20 +2072,43 @@ class Processor:
                 return
 
             parser = self.parsers[ExtensionTypes.CODE.value]
-            block_containers = parser.parse_to_blocks(
-                code_binary, recordName, file_path, language
+            block_containers = await parser.parse_to_blocks_off_loop(
+                code_binary, recordName, file_path, plan.parser
             )
 
+            if block_containers is None and len(code_binary) > code_parser_engine.MAX_FILE_SIZE_BYTES:
+                async for event in self._skip_code_file(
+                    recordName, recordId, len(code_binary), "too_large",
+                    text_file_too_large(
+                        len(code_binary),
+                        code_parser_engine.MAX_FILE_SIZE_BYTES,
+                        repository_file=repository_file,
+                    ),
+                    org_id=record.org_id, virtual_record_id=virtual_record_id,
+                ):
+                    yield event
+                return
+
             if block_containers is None:
+                # Too many definitions for the code graph (or no grammar build):
+                # still searchable, just not as graph nodes.
                 self.logger.info(
-                    f"Code parser skipped {recordName} (oversized); marking as not supported"
+                    f"{recordName} has too many definitions for the code graph; indexing it as text"
                 )
-                await self._mark_record(recordId, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                await self._drop_code_blocks(recordId)
+                async for event in self.process_md_document(
+                    recordName=recordName,
+                    recordId=recordId,
+                    md_binary=decode_text(code_binary),
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
                 return
 
             if not block_containers.blocks and not block_containers.block_groups:
+                await self._drop_code_blocks(recordId)
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1818,11 +2116,29 @@ class Processor:
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
+            # Before the pipeline, which marks the record COMPLETED. That status
+            # is what tells the edge builder the repo has drained, so a file
+            # carrying it while its blocks are still missing gets the whole repo
+            # resolved against a symbol table it does not appear in -- wrong
+            # edges, not missing ones. Everything between the two used to run in
+            # that gap: extraction, re-upload, re-embed, graph enrichment.
+            await self.project_code_blocks_to_graph(
+                record_id=recordId,
+                org_id=record.org_id,
+                record_group_id=record.record_group_id,
+                connector_id=record.connector_id,
+                record_name=recordName,
+                file_path=file_path,
+                language=plan.parser,
+                block_containers=block_containers,
+                propagate_failure=True,
+            )
+
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1847,29 +2163,10 @@ class Processor:
         )
 
         try:
-            # Try different encodings to decode the binary content
-            encodings = ["utf-8", "utf-8-sig", "latin-1", "iso-8859-1"]
-            text_content = None
-
-            for encoding in encodings:
-                try:
-                    text_content = txt_binary.decode(encoding)
-                    self.logger.debug(
-                        f"Successfully decoded text with {encoding} encoding"
-                    )
-                    break
-                except UnicodeDecodeError:
-                    continue
-
-            if text_content is None:
-                raise ValueError(
-                    "Unable to decode text file with any supported encoding"
-                )
-
             async for event in self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
-                md_binary=text_content,
+                md_binary=decode_text(txt_binary),
                 virtual_record_id=virtual_record_id,
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
@@ -1914,26 +2211,26 @@ class Processor:
             if not recordName.lower().endswith(".pptx"):
                 recordName = f"{recordName}.pptx"
             conv_res = await processor.parse_document(recordName, pptx_binary)
+            pptx_binary = None
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
+            conv_res = None
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1968,7 +2265,7 @@ class Processor:
             f"🚀 Starting PPT document processing for record: {recordName}"
         )
         parser = self.parsers[ExtensionTypes.PPT.value]
-        ppt_result = parser.convert_ppt_to_pptx(ppt_binary)
+        ppt_result = await parser.convert_ppt_to_pptx_async(ppt_binary)
         async for event in self.process_pptx_document(
             recordName, recordId, version, source, orgId, ppt_result, virtual_record_id, event_type, prev_virtual_record_id
         ):
@@ -2037,20 +2334,17 @@ class Processor:
             
             # Get record from database
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise DocumentProcessingError(
-                    "Record not found in database", doc_id=recordId
-                )
+                raise RecordDeletedError(recordId)
             
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
             
             # Signal indexing complete
@@ -2111,20 +2405,17 @@ class Processor:
             )
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise DocumentProcessingError(
-                    "Record not found in database", doc_id=recordId
-                )
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))

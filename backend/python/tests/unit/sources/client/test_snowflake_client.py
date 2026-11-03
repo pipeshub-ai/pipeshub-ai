@@ -3,6 +3,7 @@
 import json
 import logging
 import sys
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,20 +19,21 @@ sys.modules.setdefault("snowflake", _mock_snowflake_pkg)
 sys.modules["snowflake.connector"] = _mock_snowflake_connector
 
 from app.sources.client.snowflake.snowflake import (  # noqa: E402
-    AuthConfig,
+    DEFAULT_TIMEOUT_S,
     AuthType,
-    CredentialsConfig,
     SnowflakeClient,
-    SnowflakeConnectorConfig,
     SnowflakeOAuthConfig,
     SnowflakePATConfig,
     SnowflakeResponse,
     SnowflakeRESTClientViaOAuth,
     SnowflakeRESTClientViaPAT,
     SnowflakeSDKClient,
+    parse_connection_settings,
 )
 
 import app.sources.client.snowflake.snowflake as _sf_mod  # noqa: E402
+
+from app.utils.logger import RedactingFormatter  # noqa: E402
 
 _sf_mod.snowflake_connector = _mock_snowflake_connector
 
@@ -203,7 +205,7 @@ class TestSnowflakeOAuthConfig:
             account_identifier="myacct", oauth_token="tok"
         )
         assert cfg.account_identifier == "myacct"
-        assert cfg.timeout == 30.0
+        assert cfg.timeout == DEFAULT_TIMEOUT_S
 
     def test_missing_fields(self):
         with pytest.raises(ValidationError):
@@ -232,7 +234,7 @@ class TestSnowflakePATConfig:
             account_identifier="myacct", pat_token="tok"
         )
         assert cfg.account_identifier == "myacct"
-        assert cfg.timeout == 30.0
+        assert cfg.timeout == DEFAULT_TIMEOUT_S
 
     def test_missing_fields(self):
         with pytest.raises(ValidationError):
@@ -256,74 +258,94 @@ class TestSnowflakePATConfig:
 
 
 # ---------------------------------------------------------------------------
-# AuthConfig / CredentialsConfig / SnowflakeConnectorConfig
+# parse_connection_settings
 # ---------------------------------------------------------------------------
 
-
-class TestAuthConfig:
-    def test_defaults(self):
-        cfg = AuthConfig()
-        assert cfg.authType == AuthType.PAT
-        assert cfg.patToken is None
-
-    def test_oauth_type(self):
-        cfg = AuthConfig(authType=AuthType.OAUTH)
-        assert cfg.authType == AuthType.OAUTH
-
-    def test_pat_token(self):
-        cfg = AuthConfig(authType=AuthType.PAT, patToken="pat-xyz")
-        assert cfg.patToken == "pat-xyz"
+STORED = {"auth": {"accountIdentifier": " acct ", "warehouse": " WH ", "patToken": " pat-tok "}}
 
 
-class TestCredentialsConfig:
-    def test_defaults(self):
-        cfg = CredentialsConfig()
-        assert cfg.access_token is None
+class TestSqlApiBaseUrl:
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "acct",
+            "acct.snowflakecomputing.com",
+            "https://acct.snowflakecomputing.com",
+            "https://acct.snowflakecomputing.com/",
+            "https://acct.snowflakecomputing.com/console/login",
+        ],
+    )
+    def test_every_form_gives_the_api_url(self, identifier) -> None:
+        from app.sources.client.snowflake.snowflake import sql_api_base_url
 
-    def test_access_token(self):
-        cfg = CredentialsConfig(access_token="tok")
-        assert cfg.access_token == "tok"
+        assert sql_api_base_url(identifier) == "https://acct.snowflakecomputing.com/api/v2"
+
+    def test_an_org_account_identifier_keeps_its_dash(self) -> None:
+        from app.sources.client.snowflake.snowflake import sql_api_base_url
+
+        assert sql_api_base_url("myorg-acct") == "https://myorg-acct.snowflakecomputing.com/api/v2"
 
 
-class TestSnowflakeConnectorConfig:
-    def test_from_dict(self):
-        cfg = SnowflakeConnectorConfig.model_validate({
-            "accountIdentifier": "acct",
-            "auth": {"authType": "PAT", "patToken": "tok"},
-            "timeout": 60.0,
+class TestParseConnectionSettings:
+    def test_reads_the_stored_shape_and_trims(self) -> None:
+        settings = parse_connection_settings(STORED)
+        assert settings.account_identifier == "acct"
+        assert settings.warehouse == "WH"
+        assert settings.auth_type == AuthType.PAT
+        assert settings.token.get_secret_value() == "pat-tok"
+        assert "pat-tok" not in repr(settings)
+
+    @pytest.mark.parametrize(
+        ("missing", "message"),
+        [
+            ("accountIdentifier", "account identifier"),
+            ("warehouse", "warehouse"),
+            ("patToken", "personal access token"),
+        ],
+    )
+    def test_a_missing_field_says_which(self, missing, message) -> None:
+        auth = {k: v for k, v in STORED["auth"].items() if k != missing}
+        with pytest.raises(ValueError, match=message):
+            parse_connection_settings({"auth": auth})
+
+    def test_no_auth_section(self) -> None:
+        with pytest.raises(ValueError):
+            parse_connection_settings({})
+
+    def test_creates_a_pat_client(self) -> None:
+        client = parse_connection_settings(STORED).create_client()
+        inner = client.get_client()
+        assert isinstance(inner, SnowflakeRESTClientViaPAT)
+        assert inner.pat_token == "pat-tok"
+        assert inner.timeout == DEFAULT_TIMEOUT_S
+
+
+class TestDefaultTimeout:
+    def test_is_above_the_sql_api_synchronous_wait(self) -> None:
+        assert DEFAULT_TIMEOUT_S > 45
+
+    def test_every_client_and_config_defaults_to_it(self) -> None:
+        assert SnowflakeRESTClientViaPAT("a", "t").timeout == DEFAULT_TIMEOUT_S
+        assert SnowflakeRESTClientViaOAuth("a", "t").timeout == DEFAULT_TIMEOUT_S
+        assert SnowflakePATConfig(account_identifier="a", pat_token="t").timeout == DEFAULT_TIMEOUT_S
+        assert SnowflakeOAuthConfig(account_identifier="a", oauth_token="t").timeout == DEFAULT_TIMEOUT_S
+
+
+class TestSecretsStayOutOfLogs:
+    def test_pat_client_logs_no_token_or_header(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG)
+        SnowflakeRESTClientViaPAT(account_identifier="acct", pat_token="super-secret-token")
+        assert "super-secret" not in caplog.text
+        assert "Authorization" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_logs_no_config(self, cs, caplog) -> None:
+        caplog.set_level(logging.DEBUG)
+        cs.get_config = AsyncMock(return_value={
+            "auth": {"accountIdentifier": "acct", "warehouse": "WH", "patToken": "super-secret-token"},
         })
-        assert cfg.accountIdentifier == "acct"
-        assert cfg.auth.authType == AuthType.PAT
-        assert cfg.auth.patToken == "tok"
-        assert cfg.timeout == 60.0
-
-    def test_defaults(self):
-        cfg = SnowflakeConnectorConfig.model_validate({
-            "accountIdentifier": "acct",
-        })
-        assert cfg.auth.authType == AuthType.PAT
-        assert cfg.auth.patToken is None
-        assert cfg.credentials is None
-        assert cfg.timeout == 30.0
-
-    def test_oauth_with_credentials(self):
-        cfg = SnowflakeConnectorConfig.model_validate({
-            "accountIdentifier": "acct",
-            "auth": {"authType": "OAUTH"},
-            "credentials": {"access_token": "tok"},
-        })
-        assert cfg.auth.authType == AuthType.OAUTH
-        assert cfg.credentials.access_token == "tok"
-
-    def test_missing_account_identifier(self):
-        with pytest.raises(ValidationError):
-            SnowflakeConnectorConfig.model_validate({})
-
-    def test_invalid_timeout(self):
-        with pytest.raises(ValidationError):
-            SnowflakeConnectorConfig.model_validate({
-                "accountIdentifier": "acct", "timeout": 0,
-            })
+        await SnowflakeClient.build_from_services(logging.getLogger("t"), cs, "inst-1")
+        assert "super-secret" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -368,56 +390,20 @@ class TestSnowflakeClient:
         assert isinstance(client.get_client(), SnowflakeRESTClientViaOAuth)
 
     @pytest.mark.asyncio
-    async def test_build_from_services_pat(self, log, cs):
+    async def test_build_from_services_reads_the_stored_shape(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={
-            "accountIdentifier": "acct",
-            "auth": {"authType": "PAT", "patToken": "pat-tok"},
-            "timeout": 30.0,
+            "auth": {"accountIdentifier": "acct", "warehouse": "WH", "patToken": "pat-tok"},
         })
         client = await SnowflakeClient.build_from_services(log, cs, "inst-1")
-        assert isinstance(client, SnowflakeClient)
         inner = client.get_client()
         assert isinstance(inner, SnowflakeRESTClientViaPAT)
         assert inner.pat_token == "pat-tok"
+        cs.get_config.assert_awaited_once_with("/services/connectors/inst-1/config")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_oauth(self, log, cs):
-        cs.get_config = AsyncMock(return_value={
-            "accountIdentifier": "acct",
-            "auth": {"authType": "OAUTH"},
-            "credentials": {"access_token": "oauth-tok"},
-        })
-        client = await SnowflakeClient.build_from_services(log, cs, "inst-1")
-        inner = client.get_client()
-        assert isinstance(inner, SnowflakeRESTClientViaOAuth)
-        assert inner.oauth_token == "oauth-tok"
-
-    @pytest.mark.asyncio
-    async def test_build_from_services_pat_missing_token(self, log, cs):
-        cs.get_config = AsyncMock(return_value={
-            "accountIdentifier": "acct",
-            "auth": {"authType": "PAT"},
-        })
-        with pytest.raises(ValueError, match="PAT token required"):
-            await SnowflakeClient.build_from_services(log, cs, "inst-1")
-
-    @pytest.mark.asyncio
-    async def test_build_from_services_oauth_missing_credentials(self, log, cs):
-        cs.get_config = AsyncMock(return_value={
-            "accountIdentifier": "acct",
-            "auth": {"authType": "OAUTH"},
-        })
-        with pytest.raises(ValueError, match="OAuth access token required"):
-            await SnowflakeClient.build_from_services(log, cs, "inst-1")
-
-    @pytest.mark.asyncio
-    async def test_build_from_services_oauth_empty_access_token(self, log, cs):
-        cs.get_config = AsyncMock(return_value={
-            "accountIdentifier": "acct",
-            "auth": {"authType": "OAUTH"},
-            "credentials": {"access_token": None},
-        })
-        with pytest.raises(ValueError, match="OAuth access token required"):
+    async def test_build_from_services_missing_token_raises(self, log, cs) -> None:
+        cs.get_config = AsyncMock(return_value={"auth": {"accountIdentifier": "acct", "warehouse": "WH"}})
+        with pytest.raises(ValueError, match="personal access token"):
             await SnowflakeClient.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
@@ -430,13 +416,6 @@ class TestSnowflakeClient:
     async def test_build_from_services_not_dict_raises(self, log, cs):
         cs.get_config = AsyncMock(return_value="not a dict")
         with pytest.raises(ValueError):
-            await SnowflakeClient.build_from_services(log, cs, "inst-1")
-
-    @pytest.mark.asyncio
-    async def test_build_from_services_validation_error(self, log, cs):
-        # Truthy dict but missing required accountIdentifier → Pydantic fails
-        cs.get_config = AsyncMock(return_value={"auth": {"authType": "PAT"}})
-        with pytest.raises(ValueError, match="Invalid Snowflake"):
             await SnowflakeClient.build_from_services(log, cs, "inst-1")
 
 
@@ -461,7 +440,7 @@ class TestSnowflakeGetConnectorConfig:
     @pytest.mark.asyncio
     async def test_not_dict_raises(self, log, cs):
         cs.get_config = AsyncMock(return_value="string value")
-        with pytest.raises(ValueError, match="Failed to get Snowflake"):
+        with pytest.raises(ValueError, match="Snowflake connector configuration"):
             await SnowflakeClient._get_connector_config(log, cs, "inst-1")
 
     @pytest.mark.asyncio
@@ -907,3 +886,80 @@ class TestSnowflakeSDKClientExecuteMany:
         c = self._make_connected(cursor)
         with pytest.raises(RuntimeError, match="Query execution failed"):
             c.execute_many("BAD SQL", [(1,)])
+
+
+class TestSnowflakeBuildFromServicesLogging:
+    """The decrypted connector config must never reach a log line, even at DEBUG."""
+
+    SENTINEL = "SENTINEL-SNOWFLAKE-7f3a"
+    # The PAT client used to log the token's first 10 characters, so the
+    # check looks for that prefix as well as the whole value.
+    PAT = "PATSENTNL9-0123456789abcdef"
+
+    @pytest.fixture
+    def captured(self) -> Iterator[tuple[logging.Logger, list[logging.LogRecord]]]:
+        records: list[logging.LogRecord] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _ListHandler(level=logging.DEBUG)
+        lg = logging.getLogger("test_snowflake_client.debug")
+        # The REST client classes log through the module logger, not the one
+        # passed to build_from_services.
+        module_lg = logging.getLogger(_sf_mod.__name__)
+        saved = [(x, x.level, x.propagate) for x in (lg, module_lg)]
+        for x in (lg, module_lg):
+            x.setLevel(logging.DEBUG)
+            x.propagate = False
+            x.addHandler(handler)
+        yield lg, records
+        for x, level, propagate in saved:
+            x.removeHandler(handler)
+            x.setLevel(level)
+            x.propagate = propagate
+
+    def _assert_clean(self, records: list[logging.LogRecord]) -> None:
+        formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
+        for text in (
+            "\n".join(r.getMessage() for r in records),
+            "\n".join(formatter.format(r) for r in records),
+        ):
+            assert self.SENTINEL not in text
+            assert self.PAT[:10] not in text
+
+    @pytest.mark.asyncio
+    async def test_config_values_are_not_logged(self, captured, cs) -> None:
+        lg, records = captured
+        cs.get_config = AsyncMock(return_value={
+            "auth": {
+                "authType": "ACCESS_KEY",
+                "accountIdentifier": "acct",
+                "warehouse": "WH",
+                "patToken": self.PAT,
+                "password": f"{self.SENTINEL}-password",
+                "privateKey": f"{self.SENTINEL}-key",
+            },
+            "credentials": {"access_token": f"{self.SENTINEL}-access"},
+        })
+        client = await SnowflakeClient.build_from_services(lg, cs, "inst-1")
+        assert isinstance(client.get_client(), SnowflakeRESTClientViaPAT)
+        self._assert_clean(records)
+
+    def test_pat_client_construction_does_not_log_the_token(self, captured) -> None:
+        _, records = captured
+        SnowflakeRESTClientViaPAT(account_identifier="acct", pat_token=self.PAT)
+        self._assert_clean(records)
+
+    @pytest.mark.asyncio
+    async def test_validation_error_does_not_log_the_rejected_input(self, captured, cs) -> None:
+        lg, records = captured
+        cs.get_config = AsyncMock(return_value={
+            "accountIdentifier": "acct",
+            "auth": f"{self.SENTINEL}-not-a-dict",
+        })
+        with pytest.raises(ValueError, match="no auth settings") as raised:
+            await SnowflakeClient.build_from_services(lg, cs, "inst-1")
+        assert self.SENTINEL not in str(raised.value)
+        self._assert_clean(records)

@@ -16,7 +16,11 @@ import pytest
 
 from app.config.constants.ai_models import OCRProvider
 from app.config.constants.arangodb import ProgressStatus
-from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    IndexingError,
+    RecordDeletedError,
+)
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -154,6 +158,7 @@ class TestIndexingErrorReraise:
 
         proc = _make_processor()
         parser = MagicMock()
+        parser.new_document_parser.return_value = parser
         parser.load_workbook_from_binary = MagicMock()
         parser.create_blocks = AsyncMock(
             side_effect=IndexingError("xlsx fail", record_id="r1")
@@ -175,7 +180,7 @@ class TestIndexingErrorReraise:
 
         proc = _make_processor()
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(
             side_effect=IndexingError("xls fail", record_id="r1")
         )
         proc.parsers = {ExtensionTypes.XLS.value: xls_parser}
@@ -809,7 +814,7 @@ class TestBlockGroupHtmlAndImages:
             ExtensionTypes.PNG.value: image_parser,
         }
 
-        modified, caption_map = await proc._process_blockgroup_images("# hi", 0)
+        modified, caption_map = await proc._process_blockgroup_images("# hi", 0, allow_remote_fetch=True)
         assert modified == "md"
         assert caption_map == {}
 
@@ -818,7 +823,7 @@ class TestBlockGroupHtmlAndImages:
         proc = _make_processor()
         bg = BlockGroup(index=0, type=GroupType.TEXT_SECTION, data=None, format=DataFormat.HTML)
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await proc._process_single_blockgroup_html(bg, "rec")
+            await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_process_single_blockgroup_html_missing_parser(self):
@@ -828,7 +833,7 @@ class TestBlockGroupHtmlAndImages:
             index=0, type=GroupType.TEXT_SECTION, data="<p>x</p>", format=DataFormat.HTML
         )
         with pytest.raises(ValueError, match="HTML parser is not configured"):
-            await proc._process_single_blockgroup_html(bg, "rec")
+            await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_process_single_blockgroup_html_images_and_parse(self):
@@ -868,7 +873,7 @@ class TestBlockGroupHtmlAndImages:
             name="bg",
         )
 
-        new_bgs, new_blocks = await proc._process_single_blockgroup_html(bg, "rec")
+        new_bgs, new_blocks = await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
         assert len(new_blocks) == 1
         html_parser.parse_to_blocks.assert_awaited_once()
         call_kwargs = html_parser.parse_to_blocks.await_args.kwargs
@@ -896,7 +901,7 @@ class TestBlockGroupHtmlAndImages:
         ) as mock_html, patch.object(
             proc, "_process_single_blockgroup", new_callable=AsyncMock
         ) as mock_md:
-            result = await proc._process_blockgroups(container, "rec")
+            result = await proc._process_blockgroups(container, "rec", allow_remote_fetch=True)
 
         mock_html.assert_awaited_once()
         mock_md.assert_not_awaited()
@@ -1192,7 +1197,7 @@ class TestProcessStructuredDocument:
         assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio
-    async def test_record_missing_raises_dpe(self):
+    async def test_a_deleted_record_raises_record_deleted(self):
         proc = _make_processor()
         parser = MagicMock()
         parser.parse = AsyncMock(
@@ -1213,7 +1218,7 @@ class TestProcessStructuredDocument:
         proc.parsers = {"json": parser}
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with pytest.raises(DocumentProcessingError, match="Record not found"):
+        with pytest.raises(RecordDeletedError):
             await _collect(
                 proc.process_structured_document("a.json", "r1", b"{}", "vr1", "json")
             )

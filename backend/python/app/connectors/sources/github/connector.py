@@ -50,6 +50,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType, OAuthScopeConfig
+from app.connectors.core.registry.code_indexing_flags import (
+    branch_filter_field,
+    exclude_paths_filter_field,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -70,6 +74,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.github.common.apps import GithubApp
 from app.connectors.sources.github_teams.connector import AUTHORIZE_URL, TOKEN_URL, GitHubTeamsConnector
+from app.connectors.sources.github_teams.common.utils import updated_since_filter_field
 from app.connectors.sources.github_teams.projects import ProjectsSync
 from app.models.permission import Permission
 
@@ -87,14 +92,8 @@ class GitHubPersonalProjectsSync(ProjectsSync):
     async def _sync_repo_members(
         self, owner: str, repo: str, repo_obj: GhObject | None = None,
     ) -> list[Permission]:
-        """Route all repo access through the ConnectorGroup — no collaborator/team fetch.
-
-        ``repo_obj`` (used by the team connector to bind individual-repo
-        collaborators) is deliberately ignored: personal access is the
-        ConnectorGroup, never GitHub's ACL.
-        """
-        permission = self.c.creator_user_permission()
-        return [permission] if permission is not None else []
+        """A personal repo inherits the app. No collaborator or ConnectorGroup grant."""
+        return []
 
     def _visibility_permissions(self, repo: GhObject) -> list[Permission]:
         """No visibility-derived grants on a personal connector.
@@ -114,7 +113,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
         """
         return []
 
-    async def _resolve_repos_with_filters(self) -> list[GhObject]:
+    async def resolve_repo_scope(self) -> tuple[list[GhObject], bool]:
         """Personal repo discovery: every repo the authenticated account reaches.
 
         ``type="all"`` is owner + organization_member + collaborator, matching
@@ -130,6 +129,9 @@ class GitHubPersonalProjectsSync(ProjectsSync):
         account*. On the explicit path both connectors behave identically —
         ``get_repo`` succeeding is the access check, so any readable repo,
         public ones included, is in scope.
+
+        Returns ``(repos, complete)``; ``complete`` is False when a lookup failed
+        with anything but a definite 404, so nothing is removed on that answer.
         """
         c = self.c
         sf = c.sync_filters
@@ -141,6 +143,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
 
         if repo_in:
             by_id: dict[int, GhObject] = {}
+            complete = True
             for full_name in repo_in:
                 if "/" not in full_name:
                     self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
@@ -148,20 +151,21 @@ class GitHubPersonalProjectsSync(ProjectsSync):
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
+                    complete = complete and res.status_code == 404
                     self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
                     continue
                 by_id[int(res.data.id)] = res.data
-            return list(by_id.values())
+            return list(by_id.values()), complete
 
         res = await c.runtime.ds_call(c.data_source.list_user_repos, None, "all")
         if not res.success:
             self.logger.error("list_user_repos failed: %s", res.error)
-            return []
+            return [], False
         candidates = list(res.data or [])
         if repo_not_in:
             excluded = set(repo_not_in)
             candidates = [r for r in candidates if getattr(r, "full_name", None) not in excluded]
-        return candidates
+        return candidates, True
 
 
 
@@ -179,7 +183,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
                 authorize_url=AUTHORIZE_URL,
                 token_url=TOKEN_URL,
                 redirect_uri=AUTH_REDIRECT_URI,
-                scopes=OAuthScopeConfig(personal_sync=["user", "repo"], team_sync=[], agent=[]),
+                scopes=OAuthScopeConfig(personal_sync=["read:user", "repo"], team_sync=[], agent=[]),
                 fields=[
                     AuthField(
                         name="clientId",
@@ -218,6 +222,8 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,
         ))
+        .add_filter_field(branch_filter_field())
+        .add_filter_field(updated_since_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
             display_name="Index Issues",
@@ -228,10 +234,16 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             display_name="Index Pull Requests",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
+        .add_filter_field(exclude_paths_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.CODE_FILES.value,
             display_name="Index Code Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.TEST_FILES.value,
+            display_name="Index Test Files",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=False,
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_agent_support(False)
@@ -293,6 +305,7 @@ class GithubConnector(GitHubTeamsConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "github", self.connector_id, self.logger
             )
+            self._require_scope_filter()
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
             # reusing a stale cached permission.
@@ -308,11 +321,15 @@ class GithubConnector(GitHubTeamsConnector):
                     self.connector_id,
                 )
             else:
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of GitHub repositories")
             await self.projects.sync_all_repos()
             self.repos.timestamps.schedule()
+            if self.projects.failures:
+                raise RuntimeError(
+                    "GitHub Personal sync did not complete: " + "; ".join(self.projects.failures[:10])
+                )
         except Exception as e:
             self.logger.error("Error in GitHub Personal sync: %s", e, exc_info=True)
             raise

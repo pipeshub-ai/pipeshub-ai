@@ -17,6 +17,7 @@ const CAPABILITY_LABEL_FALLBACK: Record<string, string> = {
   reasoning: 'Reasoning',
   video: 'Video',
   ocr: 'OCR',
+  decision: 'Decision',
 };
 
 const CAPABILITY_BADGE_FALLBACK: Record<string, string> = {
@@ -28,6 +29,7 @@ const CAPABILITY_BADGE_FALLBACK: Record<string, string> = {
   reasoning: 'Reasoning',
   video: 'Video',
   ocr: 'OCR',
+  decision: 'Decision',
 };
 
 export function aiModelsCapabilityLabel(t: TFunction, cap: string): string {

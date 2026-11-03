@@ -1,12 +1,14 @@
-import { DocumentModel } from '../schema/document.schema';
+import { getDocumentRepository } from '../../../libs/repositories/document';
+import { isValidId } from '../../../libs/repositories/ids';
 import { NextFunction, Response } from 'express';
 import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  PreconditionFailedError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
-import mongoose from 'mongoose';
+import { localEtagOf, normalizeEtag } from './storage-fingerprint';
 import { Logger } from '../../../libs/services/logger.service';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
@@ -62,24 +64,10 @@ export async function writeToStorage(
 }
 
 // Interface for document storage info response
+// A plain row. Writes go through the document repository, never the row.
 export interface DocumentInfoResponse {
-  document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel;
+  document: Document;
 }
-
-/**
- * Read-only callers can ask for a plain object instead of a hydrated model.
- *
- * Mongoose hydration -- schema defaults, casting, getters, change tracking --
- * measured ~20% of gateway CPU under load, and the download path reads a
- * handful of fields and never saves. Opt-in rather than default because other
- * callers of getDocumentInfo do mutate and save the document.
- */
-// `Document` here is the plain data interface from storage.service.types.
-// NOT DocumentModel: that is declared `extends IDocument, MongooseDocument`, so
-// it carries save()/markModified()/etc and a lean object typed as it would
-// still compile against the hydrated-only API -- exactly the runtime crash the
-// lean path is meant to make impossible.
-export type LeanDocumentInfoResponse = { document: Document };
 
 export function encodeRFC5987(str: string): string {
   return encodeURIComponent(str)
@@ -91,34 +79,24 @@ export function encodeRFC5987(str: string): string {
 
 async function getDocumentInfoFromDb(
   documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean: true,
-): Promise<LeanDocumentInfoResponse | undefined>;
-async function getDocumentInfoFromDb(
-  documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean?: false,
-): Promise<DocumentInfoResponse | undefined>;
-async function getDocumentInfoFromDb(
-  documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean = false,
-): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
+  orgId: string,
+  lean: boolean,
+): Promise<DocumentInfoResponse | undefined> {
   try {
     // Validate documentId is a valid ObjectId
-    if (!mongoose.isValidObjectId(documentId)) {
+    if (!isValidId(documentId)) {
       throw new NotFoundError('Invalid document ID');
     }
 
-    // Fetch the document from MongoDB
-    const query = DocumentModel.findOne({
-      _id: documentId,
+    const document = await getDocumentRepository().getLive(
       orgId,
-      isDeleted: false,
-    });
-    const document = lean ? await query.lean<Document>().exec() : await query;
+      documentId,
+      lean,
+    );
 
     if (!document) {
+      // Callers probe for documents that may be gone (deduplicated content
+      // removed with another connector); that is not a server fault.
       throw new NotFoundError('Document not found');
     }
     return { document };
@@ -141,34 +119,25 @@ async function getDocumentInfoFromDb(
   }
 }
 
-export async function getDocumentInfo(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  next: NextFunction,
-  lean: true,
-): Promise<LeanDocumentInfoResponse | undefined>;
-export async function getDocumentInfo(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  next: NextFunction,
-  lean?: false,
-): Promise<DocumentInfoResponse | undefined>;
+/**
+ * `lean` is for read-only callers: building the full model (schema defaults,
+ * casting, change tracking) measured ~20% of gateway CPU under load, and the
+ * download path reads a handful of fields and never writes. Callers that
+ * compute a write from the row (counters, version lists) need the defaults.
+ */
 export async function getDocumentInfo(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
   lean = false,
-): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
+): Promise<DocumentInfoResponse | undefined> {
   try {
-    const orgId = extractOrgId(req);
+    const orgId = requireId(extractOrgId(req), 'organization');
     const documentId = req.params.documentId;
 
-    const orgID = new mongoose.Types.ObjectId(orgId);
     if (!documentId) {
       throw new NotFoundError('Document ID is required');
     }
-    // Branch rather than pass the boolean through: the overloads are what stop
-    // a lean object being handed to a caller expecting a hydrated document.
-    const documentInfo = lean
-      ? await getDocumentInfoFromDb(documentId, orgID, true)
-      : await getDocumentInfoFromDb(documentId, orgID, false);
+    const documentInfo = await getDocumentInfoFromDb(documentId, orgId, lean);
     if (!documentInfo) {
       throw new NotFoundError('Document not found');
     }
@@ -242,6 +211,33 @@ export function getFullDocumentPath(
 }
 
 /**
+ * The folder holding a virtual record's content revisions.
+ * e.g. 'org1/PipesHub/record-revisions/vr-1'
+ *
+ * Not under `records/`: older records are filed flat at `records/{id}`, and a
+ * move of one of them into its folder path (move-tree) would carry or collide
+ * with revisions stored beneath the same folder.
+ */
+export function getArtifactSetFolder(
+  orgId: string,
+  virtualRecordId: string,
+): string {
+  return getFullDocumentPath(orgId, `record-revisions/${virtualRecordId}`);
+}
+
+/**
+ * Where one content revision of a virtual record keeps its files.
+ * e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd'
+ */
+export function getArtifactSetRoot(
+  orgId: string,
+  virtualRecordId: string,
+  rev: string,
+): string {
+  return `${getArtifactSetFolder(orgId, virtualRecordId)}/${rev}`;
+}
+
+/**
  * Returns the versioned snapshot path for a specific version number.
  * e.g. 'org1/PipesHub/Finance/doc1/versions/v3.pdf'
  */
@@ -268,6 +264,41 @@ export function getCurrentFilePath(
   return isVersioned
     ? `${rootPath}/current/${documentName}${ext}`
     : `${rootPath}/${documentName}${ext}`;
+}
+
+/**
+ * Every file a document keeps in storage: the current one and one per version,
+ * each as a document-shaped value a storage adapter can delete. Versions that
+ * point at the same place as another copy are listed once.
+ */
+export function storedCopies(document: Document): Document[] {
+  const base: Document =
+    typeof (document as { toObject?: () => Document }).toObject === 'function'
+      ? (document as unknown as { toObject: () => Document }).toObject()
+      : document;
+  const locations = [
+    { s3: base.s3, azureBlob: base.azureBlob, local: base.local },
+    ...(base.versionHistory ?? []).map((version) => ({
+      s3: version.s3,
+      azureBlob: version.azureBlob,
+      local: version.local,
+    })),
+  ];
+  const seen = new Set<string>();
+  const copies: Document[] = [];
+  for (const location of locations) {
+    const key =
+      location.s3?.url ??
+      location.azureBlob?.url ??
+      location.local?.localPath ??
+      location.local?.url;
+    if (key === undefined || key === '' || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    copies.push({ ...base, ...location });
+  }
+  return copies;
 }
 
 /**
@@ -378,17 +409,17 @@ export async function createPlaceholderDocument(
       documentName,
       documentPath: fullDocumentPath,
       alternateDocumentName,
-      orgId: new mongoose.Types.ObjectId(orgId),
+      orgId: requireId(orgId, 'organization'),
       isVersionedFile: isVersionedFile,
       permissions: permissions,
-      initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
+      initiatorUserId: userId ? requireId(userId, 'user') : null,
       customMetadata,
       sizeInBytes: size,
       storageVendor: storageVendor ?? StorageVendor.S3,
       extension: normalizeExtension(extension),
     };
 
-    const savedDocument = await DocumentModel.create(documentInfo);
+    const savedDocument = await getDocumentRepository().create(documentInfo);
     return { document: savedDocument };
   } catch (error) {
     next(error);
@@ -447,7 +478,12 @@ export function getStorageVendor(storageType: string): StorageVendor {
   }
 }
 
-export function serveFileFromLocalStorage(document: Document, res: Response, version?: number) {
+/**
+ * Streams a local file. The file is opened once and its identity (the synthetic ETag, `dev:ino:size:mtimeNs`) is taken from the OPEN
+ * descriptor, which is the same file the bytes come from: with `ifMatch` a download of any other identity answers 412 before a byte
+ * is sent, and the response always carries `ETag`.
+ */
+export function serveFileFromLocalStorage(document: Document, res: Response, version?: number, ifMatch?: string) {
   try {
     const localFilePath = version !== undefined
       ? (document.versionHistory?.[version]?.local?.localPath ||
@@ -488,9 +524,10 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
       filePath = localFilePath;
     }
 
-    // Check if file exists using synchronous access
+    // Open the file once: its identity and its bytes then come from the same descriptor.
+    let fd: number;
     try {
-      fs.accessSync(filePath, fs.constants.R_OK);
+      fd = fs.openSync(filePath, fs.constants.O_RDONLY);
     } catch (err) {
       logger.error('File not accessible:', {
         filePath,
@@ -503,6 +540,20 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
         `File not found or not accessible: ${document.documentName}${document.extension}`,
       );
     }
+    let etag: string;
+    try {
+      etag = localEtagOf(fs.fstatSync(fd, { bigint: true }));
+    } catch (err) {
+      fs.closeSync(fd);
+      throw err;
+    }
+    if (ifMatch !== undefined && normalizeEtag(ifMatch) !== etag) {
+      fs.closeSync(fd);
+      throw new PreconditionFailedError(
+        'The file is not the one that was verified; read the document again',
+      );
+    }
+    res.setHeader('ETag', `"${etag}"`);
 
     // Get mime type from extension
     const mimeType = getMimeType(document.extension);
@@ -519,7 +570,7 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
     );
 
     // Stream the file
-    const fileStream = createReadStream(filePath);
+    const fileStream = createReadStream(filePath, { fd });
     fileStream.pipe(res);
 
     // Handle streaming errors
@@ -539,6 +590,24 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
     logger.error('Error serving local file:', error);
     throw error;
   }
+}
+
+/**
+ * The org and user ids come from the caller's token. A malformed one would
+ * otherwise reach the store as a driver error and the client as a 500.
+ * A bare number is refused too: the store's id parser turns it into a
+ * made-up timestamp id that matches nothing.
+ */
+export const isHexId = (id: unknown): id is string =>
+  typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+
+export function requireId(id: unknown, kind: 'organization' | 'user'): string {
+  if (!isHexId(id)) {
+    throw new BadRequestError(
+      `The ${kind} id in the storage token isn't valid. Issue the token with the 24-character id of an existing ${kind}, then try again.`,
+    );
+  }
+  return id;
 }
 
 export function extractOrgId(

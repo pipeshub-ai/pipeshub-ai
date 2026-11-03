@@ -263,7 +263,7 @@ class ArangoQueryHelper(QueryHelper):
             CollectionNames.USER_APP_RELATION.value,
             CollectionNames.BELONGS_TO_RECORD_GROUP.value,
             CollectionNames.PERMISSION.value,
-            CollectionNames.RECORD_RELATIONS.value,
+            CollectionNames.NODE_RELATIONS.value,
             CollectionNames.IS_OF_TYPE.value,
             CollectionNames.INHERIT_PERMISSIONS.value,
             CollectionNames.BELONGS_TO_DEPARTMENT.value,
@@ -634,7 +634,7 @@ def _build_connector_data(connector_id: str, connector_label: str) -> Dict[str, 
         ]
     )
 
-    # recordRelations: parent-child (rec1->rec2, rec3->rec4)
+    # nodeRelations: parent-child (rec1->rec2, rec3->rec4)
     for parent, child in [(record_ids[0], record_ids[1]), (record_ids[2], record_ids[3])]:
         edges.append({
             "edge": {
@@ -644,7 +644,7 @@ def _build_connector_data(connector_id: str, connector_label: str) -> Dict[str, 
                 "to_id": child, "to_collection": CollectionNames.RECORDS.value,
                 "relationType": "PARENT_CHILD", "createdAtTimestamp": ts,
             },
-            "collection": CollectionNames.RECORD_RELATIONS.value,
+            "collection": CollectionNames.NODE_RELATIONS.value,
         })
 
     # isOfType: record -> type node

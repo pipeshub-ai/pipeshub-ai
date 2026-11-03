@@ -19,6 +19,7 @@ import pytest
 from app.agent_loop_lib.transport.opik_tracing import OpikTracingTransport
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.agents.agent_loop.output_cap_transport import OutputCappedTransport
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
 
@@ -72,6 +73,13 @@ def _no_real_opik_network_calls():
         yield
 
 
+def _under_output_cap(transport: object) -> type:
+    """Type of the transport inside the per-turn output cap every agent
+    transport carries. Opik tracing, when on, wraps the cap from outside."""
+    assert type(transport) is OutputCappedTransport
+    return type(transport._inner)
+
+
 class TestFactoryOpikWiring:
     async def test_factory_wraps_transport_when_opik_configured(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -111,7 +119,7 @@ class TestFactoryOpikWiring:
         )
 
         transport = runtime.transport_registry.resolve("langchain")
-        assert type(transport) is LangChainTransport
+        assert _under_output_cap(transport) is LangChainTransport
         assert runtime.opik_enabled is False
         assert runtime.opik_project_name is None
 
@@ -176,4 +184,4 @@ class TestFactoryOpikWiring:
         )
 
         transport = runtime.transport_registry.resolve("langchain")
-        assert type(transport) is LangChainTransport
+        assert _under_output_cap(transport) is LangChainTransport

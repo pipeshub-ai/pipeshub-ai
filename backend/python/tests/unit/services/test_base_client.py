@@ -1,21 +1,26 @@
+
 """Tests for BaseServiceClient shared retry / timeout logic."""
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
+import jwt
+import pytest
 
+from app.config.constants.service import TokenScopes
 from app.services.base_client import (
     BaseServiceClient,
     CircuitBreaker,
     CircuitState,
+    ServiceAuthRefusedError,
     ServiceCallError,
     ServiceUnavailableError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -351,3 +356,113 @@ async def test_health_check_returns_false_for_connection_error() -> None:
         result = await client.health_check()
 
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Service tokens
+# ---------------------------------------------------------------------------
+
+SCOPED_SECRET = "scoped-secret-for-tests"
+
+
+class _SecretsConfigService:
+    async def get_config(self, key, **kwargs):
+        return {"scopedJwtSecret": SCOPED_SECRET}
+
+
+def _recording_httpx(response: httpx.Response) -> AsyncMock:
+    mock_httpx = AsyncMock()
+    mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+    mock_httpx.__aexit__ = AsyncMock(return_value=False)
+    mock_httpx.request = AsyncMock(return_value=response)
+    return mock_httpx
+
+
+def _sent_claims(mock_httpx: AsyncMock) -> dict:
+    authorization = mock_httpx.request.await_args.kwargs["headers"]["Authorization"]
+    assert authorization.startswith("Bearer ")
+    return jwt.decode(authorization[len("Bearer "):], SCOPED_SECRET, algorithms=["HS256"])
+
+
+@pytest.mark.asyncio
+async def test_scoped_client_sends_bearer_with_scope_org_and_expiry() -> None:
+    client = _ConcreteClient(
+        config_service=_SecretsConfigService(), service_scope=TokenScopes.DOCUMENT_PARSE
+    )
+    mock_httpx = _recording_httpx(_make_response(200))
+
+    with patch.object(client, "_make_client", return_value=mock_httpx):
+        await client._post_json("/test", {}, org_id="org-1")
+
+    claims = _sent_claims(mock_httpx)
+    assert claims["scopes"] == ["document:parse"]
+    assert claims["orgId"] == "org-1"
+    assert time.time() < claims["exp"] <= time.time() + 3600
+
+
+@pytest.mark.asyncio
+async def test_orgless_call_omits_org_claim() -> None:
+    client = _ConcreteClient(
+        config_service=_SecretsConfigService(), service_scope=TokenScopes.DOCUMENT_PARSE
+    )
+    mock_httpx = _recording_httpx(_make_response(200))
+
+    with patch.object(client, "_make_client", return_value=mock_httpx):
+        await client._get_json("/test")
+
+    claims = _sent_claims(mock_httpx)
+    assert claims["scopes"] == ["document:parse"]
+    assert "orgId" not in claims
+
+
+@pytest.mark.asyncio
+async def test_scoped_client_without_config_service_raises_before_any_request() -> None:
+    client = _ConcreteClient(service_scope=TokenScopes.DOCUMENT_PARSE)
+    mock_httpx = _recording_httpx(_make_response(200))
+
+    with patch.object(client, "_make_client", return_value=mock_httpx):
+        with pytest.raises(ServiceCallError, match="no config service"):
+            await client._post_multipart("/test", files={}, data={}, org_id="org-1")
+
+    mock_httpx.request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "detail"),
+    [(401, "Could not validate credentials"), (403, "This route requires a service token")],
+)
+async def test_refused_token_raises_auth_refused_with_detail_and_leaves_breaker_closed(
+    status_code: int, detail: str
+) -> None:
+    client = _ConcreteClient(max_retries=3, retry_delay=0.0, circuit_breaker_threshold=1)
+    mock_httpx = _recording_httpx(_make_response(status_code, {"detail": detail}))
+
+    with patch.object(client, "_make_client", return_value=mock_httpx):
+        with pytest.raises(ServiceAuthRefusedError) as exc_info:
+            await client._post_json("/test", {})
+
+    assert exc_info.value.status_code == status_code
+    assert detail in str(exc_info.value)
+    assert mock_httpx.request.await_count == 1
+    assert not client.circuit_open
+    assert client.circuit_breaker._consecutive_failures == 0
+
+
+def test_only_one_thread_claims_the_half_open_probe() -> None:
+    """The indexing worker loop and the server loop call the breaker from different threads."""
+    breaker = CircuitBreaker("svc", failure_threshold=1, cooldown_seconds=0.0)
+    breaker.record_failure()
+    barrier = threading.Barrier(16)
+    claims: list[bool] = []
+
+    def claim() -> None:
+        barrier.wait()
+        claims.append(breaker.should_attempt_probe())
+
+    threads = [threading.Thread(target=claim) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert claims.count(True) == 1

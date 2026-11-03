@@ -13,6 +13,12 @@ export interface User {
   email?: string;
   /** Whether the user has ever logged in (from with-groups API) */
   hasLoggedIn: boolean;
+  /**
+   * What sort of principal this is. `service` marks a machine identity, which
+   * the group and team pickers show only when they ask for it and label when
+   * they do, so it cannot pass for a colleague.
+   */
+  kind?: 'human' | 'service';
   /** Whether the user is currently active */
   isActive: boolean;
   /** Unix timestamp in milliseconds (absent for pending users) */

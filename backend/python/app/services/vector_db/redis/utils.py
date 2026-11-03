@@ -58,6 +58,24 @@ def escape_redisearch_text(query: str) -> str:
     return "".join(f"\\{c}" if c in _TEXT_QUERY_ESCAPE_CHARS else c for c in query)
 
 
+def redisearch_any_term_query(query: str) -> str:
+    """A free-text query that matches documents containing *any* of its words.
+
+    RediSearch intersects space-separated terms, so a keyword query only
+    matched documents holding every word — an agent's five-to-ten keyword
+    search almost never did, and the lexical leg returned nothing. As a union
+    the documents matching more, and rarer, terms still rank first under BM25,
+    as they do on the other providers. Parenthesised so a filter appended to
+    it narrows the whole union rather than its last term.
+    """
+    terms = [escape_redisearch_text(term) for term in query.split()]
+    if not terms:
+        return ""
+    if len(terms) == 1:
+        return terms[0]
+    return f"({' | '.join(terms)})"
+
+
 def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
     """Convert a list of FieldCondition objects to a Redis FT query fragment."""
     parts: List[str] = []

@@ -12,13 +12,18 @@ import {
   type TimeGroupKey,
 } from '@/lib/utils/group-by-time';
 import { getConversationLastActivityMs } from '@/lib/utils/conversation-activity';
+import { splitPinned } from '@/chat/utils/pinned-conversations';
 import type { Conversation } from '@/chat/types';
 
 // Re-export for consumers that still import from here
 export { TIME_GROUP_KEYS, type TimeGroupKey };
 
-/** Maps the fixed TimeGroupKey to its i18n translation key */
-const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
+/** A time bucket, or the owner's pinned chats shown above all of them. */
+export type SidebarGroupKey = TimeGroupKey | 'Pinned';
+
+/** Maps the fixed group keys to their i18n translation key */
+const TIME_GROUP_I18N: Record<SidebarGroupKey, string> = {
+  'Pinned': 'chat.pinned',
   'Today': 'timeGroup.today',
   'Yesterday': 'timeGroup.yesterday',
   'Previous 7 Days': 'timeGroup.previous7Days',
@@ -44,12 +49,25 @@ export function getNonEmptyGroups(
   return getNonEmptyGroupsGeneric(groups, getConversationLastActivityMs);
 }
 
+/**
+ * The owner's sidebar groups: a "Pinned" group first (when anything is
+ * pinned), then the rest by time. A pinned chat appears only under "Pinned",
+ * not again under the day it was last active.
+ */
+export function groupConversationsWithPinned(
+  conversations: Conversation[]
+): Array<[SidebarGroupKey, Conversation[]]> {
+  const { pinned, rest } = splitPinned(conversations);
+  const timed = getNonEmptyGroups(groupConversationsByTime(rest));
+  return pinned.length > 0 ? [['Pinned', pinned], ...timed] : timed;
+}
+
 // ========================================
 // Components
 // ========================================
 
 interface TimeGroupProps {
-  label: TimeGroupKey;
+  label: SidebarGroupKey;
   conversations: Conversation[];
   currentConversationId: string | null;
   onSelectConversation: (id: string) => void;

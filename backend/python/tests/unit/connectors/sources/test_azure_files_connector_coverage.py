@@ -1,10 +1,8 @@
 """Extended coverage tests for Azure Files connector."""
 
 import logging
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import quote
 
 import pytest
 
@@ -13,7 +11,6 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    MultiselectOperator,
     SyncFilterKey,
 )
 from app.connectors.sources.azure_files.connector import (
@@ -24,8 +21,7 @@ from app.connectors.sources.azure_files.connector import (
     get_mimetype_for_azure_files,
     get_parent_path,
 )
-from app.models.entities import FileRecord, RecordType, User
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.entities import User
 
 
 # ---------------------------------------------------------------------------
@@ -99,11 +95,12 @@ def connector(mock_logger, mock_data_entities_processor,
     return c
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, error_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.error_code = error_code
     return r
 
 
@@ -473,7 +470,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -484,7 +481,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):
@@ -538,7 +535,8 @@ class TestAzureFilesRunSync:
     async def test_run_sync_with_share_filter(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector._sync_share = AsyncMock()
+        connector.data_source.get_share_properties = AsyncMock(return_value=_make_response(True, {}))
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
         # Set share filter
         share_filter = MagicMock()
@@ -561,7 +559,7 @@ class TestAzureFilesRunSync:
         connector.data_source.list_shares = AsyncMock(
             return_value=_make_response(True, [{"name": "s1"}, {"name": "s2"}])
         )
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
         await connector.run_sync()
         assert connector._sync_share.await_count == 2
@@ -578,7 +576,9 @@ class TestAzureFilesRunSync:
         connector.data_source.list_shares = AsyncMock(
             return_value=_make_response(False, error="Forbidden")
         )
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
-        await connector.run_sync()
+        # A run that read nothing must fail, not finish as a success (PP-360).
+        with pytest.raises(ConnectionError):
+            await connector.run_sync()
         connector._sync_share.assert_not_awaited()

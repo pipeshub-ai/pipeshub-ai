@@ -8,7 +8,7 @@ import {
   WorkspaceRightPanelBodyPortalContext,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
-import { STRATEGY_LABELS, INTERVAL_OPTIONS } from '../../constants';
+import { STRATEGY_LABEL_KEYS, INTERVAL_OPTIONS } from '../../constants';
 import type { SyncStrategy } from '../../types';
 
 // ========================================
@@ -73,7 +73,7 @@ export function SyncSettingsSection({
           >
             {supportedStrategies.map((strategy) => (
               <Select.Item key={strategy} value={strategy}>
-                {STRATEGY_LABELS[strategy] ?? strategy}
+                {STRATEGY_LABEL_KEYS[strategy] ? t(STRATEGY_LABEL_KEYS[strategy]) : strategy}
               </Select.Item>
             ))}
           </Select.Content>
@@ -102,7 +102,7 @@ export function SyncSettingsSection({
             >
               {INTERVAL_OPTIONS.map((opt) => (
                 <Select.Item key={opt.value} value={String(opt.value)}>
-                  {opt.label}
+                  {t(opt.labelKey)}
                 </Select.Item>
               ))}
             </Select.Content>

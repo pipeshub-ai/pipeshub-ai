@@ -13,9 +13,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.airtable.airtable import AirtableClient
 from app.sources.external.airtable.airtable import AirtableDataSource
@@ -90,7 +90,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("Airtable")\
     .in_group("Database")\
     .with_description("Airtable integration for database and record management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Airtable",

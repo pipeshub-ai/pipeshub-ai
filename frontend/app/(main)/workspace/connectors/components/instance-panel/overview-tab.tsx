@@ -1,15 +1,19 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box } from '@radix-ui/themes';
+import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
-import { runConnectorResync } from '../../utils/connector-sync-actions';
+import { runConnectorResync, stopConnectorSync } from '../../utils/connector-sync-actions';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
+import { isSyncRunning } from '../instance-card/primitives';
+import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType, localFsDesktopToast } from '../../utils/local-fs-helpers';
 import { getElectronLocalSyncStatus } from '../../utils/electron-local-sync';
@@ -21,6 +25,9 @@ import type {
   LocalSyncStatus,
 } from '../../types';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
+import { CodeGraphStatus } from './code-graph-status';
+import { LastRunSummary } from './last-run-summary';
+import { ActionItemsCallout } from './action-items-callout';
 
 // ========================================
 // Props
@@ -36,6 +43,8 @@ interface OverviewTabProps {
   connectorConfig?: ConnectorConfig;
   /** Local sync runtime status from Electron watcher manager */
   localSyncStatus?: LocalSyncStatus;
+  /** Portal host from the drawer, so dialogs stack above it rather than behind. */
+  nestedModalHost?: HTMLElement | null;
 }
 
 // ========================================
@@ -48,10 +57,13 @@ export function OverviewTab({
   statsLoading = false,
   connectorConfig,
   localSyncStatus,
+  nestedModalHost,
 }: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
+  const openPanel = useConnectorsStore((s) => s.openPanel);
+  const setPanelActiveTab = useConnectorsStore((s) => s.setPanelActiveTab);
   const instanceConfigs = useConnectorsStore((s) => s.instanceConfigs);
   const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
@@ -60,6 +72,19 @@ export function OverviewTab({
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
+  const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
+  const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
+  const [isStopBusy, setIsStopBusy] = useState(false);
+
+  // The panel outlives the run, so a stop the backend could not complete
+  // synchronously would otherwise leave this stuck and block the next stop.
+  useEffect(() => {
+    if (!isSyncRunning(instance.status)) setIsStopBusy(false);
+  }, [instance.status]);
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const isFullSyncRunning =
+    (instance.status ?? '').toUpperCase() === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING;
+  const [panelRefreshKey, bumpPanelRefresh] = useReducer((n: number) => n + 1, 0);
   const configForDerive =
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
@@ -92,6 +117,7 @@ export function OverviewTab({
     try {
       setIsRefreshStatsBusy(true);
       await fetchInstanceStats(connectorId, { force: true });
+      bumpPanelRefresh();
       addToast({
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
@@ -151,6 +177,29 @@ export function OverviewTab({
     }
   }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
 
+  const handleConfirmStopSync = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId) return;
+    setIsStopBusy(true);
+    try {
+      const { stopped } = await stopConnectorSync(connectorId);
+      addToast(
+        stopped
+          ? { variant: 'success', title: 'Sync stopped' }
+          : { variant: 'info', title: 'Stopping sync — it will finish shortly' }
+      );
+      // Left busy while the backend still reports SYNCING: the run is winding
+      // down, and offering Sync again here would only be declined.
+      if (stopped) setIsStopBusy(false);
+    } catch (error) {
+      setIsStopBusy(false);
+      console.error('Failed to stop sync', { connectorId, error });
+      addToast({ variant: 'error', title: 'Failed to stop sync' });
+    } finally {
+      setStopConfirmOpen(false);
+    }
+  }, [instance._key, addToast]);
+
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isReindexFailedBusy) return;
@@ -182,6 +231,57 @@ export function OverviewTab({
       setIsManualIndexBusy(false);
     }
   }, [instance._key, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
+
+  // The retry is already queued here: a stats refresh that fails must not read
+  // as a failed retry, or the user repeats a request that went through.
+  const refreshStatsAfterQueuedRetry = useCallback(
+    async (connectorId: string) => {
+      try {
+        await fetchInstanceStats(connectorId, { force: true });
+      } catch (error) {
+        console.warn('Retry queued; refreshing the connector stats failed', { connectorId, error });
+      }
+    },
+    [fetchInstanceStats],
+  );
+
+  const handleRetryFailedClassification = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isRetryClassificationBusy) return;
+    setIsRetryClassificationBusy(true);
+    try {
+      try {
+        await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['classify']);
+      } catch (error) {
+        console.error('Failed to retry classification', { connectorId, error });
+        addToast({ variant: 'error', title: t('workspace.connectors.overview.retryClassificationError') });
+        return;
+      }
+      addToast({ variant: 'success', title: t('workspace.connectors.overview.retryClassificationSuccess') });
+      await refreshStatsAfterQueuedRetry(connectorId);
+    } finally {
+      setIsRetryClassificationBusy(false);
+    }
+  }, [instance._key, instance.isActive, isRetryClassificationBusy, addToast, refreshStatsAfterQueuedRetry, t]);
+
+  const handleRetryFailedEntities = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isRetryEntitiesBusy) return;
+    setIsRetryEntitiesBusy(true);
+    try {
+      try {
+        await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['entities']);
+      } catch (error) {
+        console.error('Failed to retry entity extraction', { connectorId, error });
+        addToast({ variant: 'error', title: t('workspace.connectors.overview.retryEntitiesError') });
+        return;
+      }
+      addToast({ variant: 'success', title: t('workspace.connectors.overview.retryEntitiesSuccess') });
+      await refreshStatsAfterQueuedRetry(connectorId);
+    } finally {
+      setIsRetryEntitiesBusy(false);
+    }
+  }, [instance._key, instance.isActive, isRetryEntitiesBusy, addToast, refreshStatsAfterQueuedRetry, t]);
 
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;
@@ -234,6 +334,21 @@ export function OverviewTab({
         </Flex>
       )}
 
+      <ActionItemsCallout
+        instance={instance}
+        onOpenAuthentication={() => {
+          closeInstancePanel();
+          openPanel(instance, instance._key, instance.scope === 'personal' ? 'personal' : 'team');
+          // openPanel picks Configure for an authenticated connector; the fix is on Authenticate.
+          setPanelActiveTab('authenticate');
+        }}
+      />
+
+      {stats?.byRecordType?.some((t) => t.recordType === 'CODE_FILE' && t.total > 0) && (
+        <CodeGraphStatus connectorId={instance._key} />
+      )}
+      <LastRunSummary instance={instance} />
+
       {/* Shared stats panel */}
       <IndexingStatsPanel
         stats={stats}
@@ -241,14 +356,68 @@ export function OverviewTab({
         onRefresh={handleOverviewRefreshStats}
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
+        onRetryFailedClassification={handleRetryFailedClassification}
+        onRetryFailedEntities={handleRetryFailedEntities}
         onNavigateToRecords={navigateToRecords}
-        onSync={instance.isActive ? handleOverviewResync : undefined}
+        onSync={
+          instance.isActive && !isSyncRunning(instance.status)
+            ? handleOverviewResync
+            : undefined
+        }
+        onStop={
+          instance.isActive && isSyncRunning(instance.status)
+            ? async () => setStopConfirmOpen(true)
+            : undefined
+        }
         showSyncActions={instance.isActive}
         isRefreshBusy={isRefreshStatsBusy}
         isSyncBusy={isHeaderSyncBusy}
+        isStopBusy={isStopBusy}
+        stopLabel={
+          isFullSyncRunning
+            ? t('workspace.connectors.stopSync.labelFull', {
+                defaultValue: 'Stop full sync',
+              })
+            : t('workspace.connectors.stopSync.label', { defaultValue: 'Stop sync' })
+        }
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+        isRetryClassificationBusy={isRetryClassificationBusy}
+        isRetryEntitiesBusy={isRetryEntitiesBusy}
       />
+
+      <ConfirmationDialog
+        container={nestedModalHost}
+        open={stopConfirmOpen}
+        onOpenChange={setStopConfirmOpen}
+        title={
+          isFullSyncRunning
+            ? t('workspace.connectors.stopSyncConfirm.titleFull', {
+                defaultValue: 'Stop the running full sync?',
+              })
+            : t('workspace.connectors.stopSyncConfirm.title', {
+                defaultValue: 'Stop the running sync?',
+              })
+        }
+        message={t('workspace.connectors.stopSyncConfirm.message', {
+          defaultValue:
+            'Records already synced are kept, but the rest of this run is abandoned. The sync may take a moment to wind down. You can start it again afterwards.',
+        })}
+        confirmLabel={
+          isFullSyncRunning
+            ? t('workspace.connectors.stopSyncConfirm.confirmFull', {
+                defaultValue: 'Stop full sync',
+              })
+            : t('workspace.connectors.stopSyncConfirm.confirm', {
+                defaultValue: 'Stop sync',
+              })
+        }
+        cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+        confirmVariant="danger"
+        isLoading={isStopBusy}
+        onConfirm={() => void handleConfirmStopSync()}
+      />
+      <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>
   );
 }

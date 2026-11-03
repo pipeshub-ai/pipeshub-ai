@@ -16,6 +16,8 @@ interface ChatInputExpansionPanelProps {
   height?: string;
   /** Override the minimum panel height. Default: none */
   minHeight?: string;
+  /** Cap for a content-sized panel (`height="auto"`). Default: none */
+  maxHeight?: string;
 }
 
 /**
@@ -38,6 +40,7 @@ export function ChatInputExpansionPanel({
   header,
   height = '380px',
   minHeight,
+  maxHeight,
 }: ChatInputExpansionPanelProps) {
   // Close on Escape
   useEffect(() => {
@@ -54,7 +57,16 @@ export function ChatInputExpansionPanel({
   if (!open) return null;
 
   return (
-    <Flex direction="column" gap="2" style={{ height, minHeight, overflow: 'hidden' }}>
+    <Flex
+      direction="column"
+      gap="2"
+      style={{
+        height,
+        minHeight,
+        maxHeight,
+        overflow: 'hidden',
+      }}
+    >
       {header}
       <Flex direction="column" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {children}

@@ -99,7 +99,7 @@ def make_collection_registry(collection_name: str = "records") -> MagicMock:
     registry.ensure_collection = AsyncMock(return_value=collection_name)
     registry.resolve_for_query = AsyncMock(return_value=[collection_name])
     registry.delete_collection = AsyncMock()
-    registry.recreate_all_collections = AsyncMock(return_value=[collection_name])
+    registry.recreate_records_collections = AsyncMock(return_value=[collection_name])
     registry.list_managed_collections = AsyncMock(
         return_value=[
             ManagedCollection(
@@ -111,7 +111,7 @@ def make_collection_registry(collection_name: str = "records") -> MagicMock:
         ]
     )
     registry.build_collection_config = MagicMock(
-        side_effect=lambda size, sparse_idf=False: CollectionConfig(embedding_size=size)
+        side_effect=lambda size: CollectionConfig(embedding_size=size)
     )
     registry.invalidate = MagicMock()
     return registry

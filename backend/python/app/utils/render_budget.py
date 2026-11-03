@@ -18,13 +18,27 @@ answers three questions the fetch path needs: how much room is left overall
 (the cap across records), how much this record may still use, and where each
 record stopped so the model can continue it. `ImageAdmission` composes
 `ImageBudget` the same way.
+
+A call that names several records splits the room with `fair_shares` instead
+of letting the first record take it all: a record left with nothing renders
+as an empty shell the model reads as "not in the document".
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
-from app.utils.env_utils import env_int
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
+from app.utils.env_utils import enabled_unless_off, env_int
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+logger = logging.getLogger(__name__)
 
 # Share of the model's context window one fetch may spend. The rest has to
 # hold the system prompt, the conversation so far, the other tool results and
@@ -36,9 +50,20 @@ _CHARS_PER_TOKEN = 4
 # A model whose configuration reports an optimistic context window -- unknown
 # and local models routinely claim 128k -- must not be handed 128k of document.
 MIN_RENDER_CHARS = 40_000
-# Beyond this, a single tool result is unusable regardless of window size: the
-# model stops attending to the middle long before it runs out of room.
-MAX_RENDER_CHARS = 240_000
+# Room left under the tool-result cap for what a fetch adds after its records:
+# the citation instruction and the unavailable-ids note.
+FETCH_RESULT_RESERVE = 6_000
+# Every tool result is capped at DEFAULT_MAX_RESULT_CHARS by cutting out its
+# middle, so a fetch sized past it loses blocks it reported as shown.
+MAX_RENDER_CHARS = DEFAULT_MAX_RESULT_CHARS - FETCH_RESULT_RESERVE
+
+# Sizing by characters (FETCH_SIZE_BY_CHARS, on unless turned off): fetch
+# gets its own tool-result cap, so it may take its share of the window up to
+# this ceiling. Past it, a single result is more than a model reads well.
+FETCH_SIZE_BY_CHARS_ENV_VAR = "FETCH_SIZE_BY_CHARS"
+FETCH_MAX_CHARS = 140_000
+# A bound on the walk, not on size: characters decide how much is read.
+FETCH_SAFETY_MAX_BLOCKS = 5_000
 
 DEFAULT_CONTEXT_LENGTH = 128_000
 
@@ -47,6 +72,11 @@ MAX_CHARS_ENV_VAR = "PIPESHUB_FULL_RECORD_MAX_CHARS"
 # Marker left in place of the characters a block lost when it alone exceeded
 # the whole budget.
 TRUNCATION_MARKER = "\n[…block truncated to fit the context budget]\n"
+
+# What cut a record short, for the fetch telemetry: the characters (the call's
+# or the record's share), a block limit, relevance selection, no room at all,
+# or an offset past the record's last block.
+TruncatedBy = Literal["chars", "blocks", "selection", "not_read", "past_end"]
 
 
 @dataclass(frozen=True)
@@ -69,18 +99,43 @@ class RecordRenderOutcome:
     blocks_rendered: int = 0
     chars_rendered: int = 0
     table_truncation: TableTruncation | None = None
+    # Indices of the blocks the model can read in full: top-level blocks,
+    # table rows and group children. A unit counts once however many blocks
+    # it holds, and a selection renders a non-contiguous set, so only these
+    # say which blocks were read. A clipped block is not among them.
+    shown_blocks: frozenset[int] = frozenset()
+    clipped: bool = False
+    stop_reason: TruncatedBy | None = None
+    # A block with content that the render could not show, without a stop.
+    unshown: bool = False
 
     @property
     def complete(self) -> bool:
-        return self.stopped_at_block is None and self.table_truncation is None
+        return (
+            self.stopped_at_block is None
+            and self.table_truncation is None
+            and not self.clipped
+            and not self.unshown
+        )
 
 
 @dataclass
 class _RecordState:
     blocks_rendered: int = 0
     chars_rendered: int = 0
+    # Everything charged while this record was current, framing included.
+    spent: int = 0
+    # This record's share of the call; `None` means only the call's cap applies.
+    limit: int | None = None
+    # This record's block limit; `None` means the budget's `max_blocks`.
+    max_blocks: int | None = None
+    unbounded_blocks: bool = False
     stopped_at_block: int | None = None
+    stop_reason: TruncatedBy | None = None
     table_truncation: TableTruncation | None = None
+    shown: set[int] = field(default_factory=set)
+    clipped: bool = False
+    unshown: bool = False
 
 
 @dataclass
@@ -97,6 +152,9 @@ class RenderBudget:
     max_blocks: int | None = None
     chars_used: int = 0
     blocks_used: int = 0
+    # Framing (record headers, gap markers, hints) counts against the size but
+    # is not content, so it must not stop the first block rendering a prefix.
+    framing_chars: int = 0
     _records: dict[str, _RecordState] = field(default_factory=dict)
     _current: str | None = None
 
@@ -108,6 +166,21 @@ class RenderBudget:
         self._records.setdefault(record_id, _RecordState())
         self._current = record_id
 
+    def allot(
+        self,
+        record_id: str,
+        limit: int | None = None,
+        *,
+        max_blocks: int | None = None,
+        unbounded_blocks: bool = False,
+    ) -> None:
+        """Cap what `record_id` may spend, framing included, and set its own
+        block limit. Set before its render; `begin_record` keeps it."""
+        state = self._records.setdefault(record_id, _RecordState())
+        state.limit = None if limit is None else max(0, limit)
+        state.max_blocks = max_blocks
+        state.unbounded_blocks = unbounded_blocks
+
     def outcome(self, record_id: str) -> RecordRenderOutcome:
         state = self._records.get(record_id) or _RecordState()
         return RecordRenderOutcome(
@@ -116,13 +189,29 @@ class RenderBudget:
             blocks_rendered=state.blocks_rendered,
             chars_rendered=state.chars_rendered,
             table_truncation=state.table_truncation,
+            shown_blocks=frozenset(state.shown),
+            clipped=state.clipped,
+            stop_reason=state.stop_reason,
+            unshown=state.unshown,
         )
 
     # -- spending -----------------------------------------------------------
 
     @property
-    def chars_remaining(self) -> int:
+    def call_chars_remaining(self) -> int:
+        """Room left in the whole call, whatever the current record's share."""
         return max(0, self.max_chars - self.chars_used)
+
+    @property
+    def chars_remaining(self) -> int:
+        remaining = self.call_chars_remaining
+        state = self._current_state()
+        if state is not None and state.limit is not None:
+            remaining = min(remaining, max(0, state.limit - state.spent))
+        return remaining
+
+    def _current_state(self) -> _RecordState | None:
+        return self._records.get(self._current) if self._current is not None else None
 
     @property
     def exhausted(self) -> bool:
@@ -130,17 +219,56 @@ class RenderBudget:
 
     @property
     def blocks_exhausted(self) -> bool:
-        return self.max_blocks is not None and self.blocks_used >= self.max_blocks
+        """The block limit is per record, as the fetch tool describes it; the
+        character allowance is what bounds the call as a whole."""
+        state = self._current_state()
+        if state is None:
+            return self.max_blocks is not None and self.blocks_used >= self.max_blocks
+        if state.unbounded_blocks:
+            return False
+        limit = state.max_blocks if state.max_blocks is not None else self.max_blocks
+        return limit is not None and state.blocks_rendered >= limit
 
     def can_afford(self, text: str) -> bool:
-        return len(text) <= self.chars_remaining
+        return self.can_afford_chars(len(text))
+
+    def can_afford_chars(self, chars: int) -> bool:
+        return chars <= self.chars_remaining
 
     def charge(self, text: str) -> None:
         """Record characters spent. Callers that build a block's text in
         pieces (a table's rows) charge as they go."""
-        self.chars_used += len(text)
-        if self._current is not None:
-            self._records[self._current].chars_rendered += len(text)
+        self.charge_chars(len(text))
+
+    def charge_chars(self, chars: int) -> None:
+        """`charge` for text whose exact form is decided later (a template
+        render, an image marker chosen after admission): the caller charges
+        an upper bound now."""
+        self.chars_used += chars
+        state = self._current_state()
+        if state is not None:
+            state.chars_rendered += chars
+            state.spent += chars
+
+    def charge_framing(self, text: str) -> None:
+        """Characters spent around the blocks: headers, gap markers, hints."""
+        self.charge_framing_chars(len(text))
+
+    def charge_framing_chars(self, chars: int) -> None:
+        self.chars_used += chars
+        self.framing_chars += chars
+        state = self._current_state()
+        if state is not None:
+            state.spent += chars
+
+    def refund_framing_chars(self, chars: int) -> None:
+        """Take back framing that was charged but is not printed after all
+        (a gap marker whose block did not render)."""
+        self.chars_used -= chars
+        self.framing_chars -= chars
+        state = self._current_state()
+        if state is not None:
+            state.spent -= chars
 
     def take(self, text: str) -> str | None:
         """The text to emit, or None when there is no room left.
@@ -155,13 +283,33 @@ class RenderBudget:
         if self.can_afford(text):
             self.charge(text)
             return text
-        if self.chars_used == 0:
-            # Nothing rendered at all yet: emit what fits.
-            room = max(0, self.max_chars - len(TRUNCATION_MARKER))
+        if self._has_no_content_yet():
+            # No content rendered yet for this record: emit what fits.
+            room = max(0, self.chars_remaining - len(TRUNCATION_MARKER))
             clipped = text[:room] + TRUNCATION_MARKER
             self.charge(clipped)
+            if self._current is not None:
+                self._records[self._current].clipped = True
             return clipped
         return None
+
+    def _has_no_content_yet(self) -> bool:
+        # Per record, so each record of a call gets its own prefix rather than
+        # only the first one.
+        state = self._current_state()
+        if state is None:
+            return self.chars_used == self.framing_chars
+        return state.chars_rendered == 0
+
+    def note_shown(self, block_indices: Iterable[int]) -> None:
+        """Record blocks of the current record the model can now read in
+        full. A clip leaves only a prefix and uses up the budget, so nothing
+        is recorded for the record after one."""
+        if self._current is None:
+            return
+        state = self._records[self._current]
+        if not state.clipped:
+            state.shown.update(block_indices)
 
     def count_block(self) -> None:
         """One renderable unit was emitted -- a top-level block, or a whole
@@ -172,7 +320,7 @@ class RenderBudget:
 
     # -- stopping -----------------------------------------------------------
 
-    def stop_at(self, block_index: int) -> None:
+    def stop_at(self, block_index: int, reason: TruncatedBy = "chars") -> None:
         """Record the first block index that was NOT rendered. The first call
         wins: the earliest unrendered block is where continuation resumes."""
         if self._current is None:
@@ -180,6 +328,23 @@ class RenderBudget:
         state = self._records[self._current]
         if state.stopped_at_block is None:
             state.stopped_at_block = block_index
+            state.stop_reason = reason
+
+    def note_unshown(self) -> None:
+        """The current record has a block with content this render could not
+        show, though nothing stopped it: it is not read in full."""
+        if self._current is not None:
+            self._records[self._current].unshown = True
+
+    def note_selection(self, first_unshown: int) -> None:
+        """The current record was shown by relevance and left blocks out. A
+        selection is never complete, whatever stopped its walk."""
+        if self._current is None:
+            return
+        state = self._records[self._current]
+        if state.stopped_at_block is None:
+            state.stopped_at_block = first_unshown
+        state.stop_reason = "selection"
 
     def note_table_truncation(self, group_index: int, shown: int, total: int) -> None:
         if self._current is None:
@@ -187,6 +352,31 @@ class RenderBudget:
         state = self._records[self._current]
         if state.table_truncation is None:
             state.table_truncation = TableTruncation(group_index, shown, total)
+
+
+def fair_shares(sizes: Sequence[int], total: int) -> list[int]:
+    """Split `total` across records of the given sizes, max-min fair.
+
+    A record that needs less than an equal split gets exactly what it needs,
+    and what it leaves over is divided among the larger ones. Shares follow
+    the input order and never sum past `total`.
+    """
+    shares = [0] * len(sizes)
+    remaining = max(0, total)
+    pending = sorted(range(len(sizes)), key=lambda i: max(0, sizes[i]))
+    while pending:
+        equal = remaining // len(pending)
+        index = pending[0]
+        need = max(0, sizes[index])
+        if need <= equal:
+            shares[index] = need
+            remaining -= need
+            pending.pop(0)
+            continue
+        for index in pending:
+            shares[index] = equal
+        break
+    return shares
 
 
 def resolve_render_budget(
@@ -202,17 +392,55 @@ def resolve_render_budget(
     """
     window = context_length if context_length and context_length > 0 else DEFAULT_CONTEXT_LENGTH
     derived = int(window * _CONTEXT_SHARE * _CHARS_PER_TOKEN)
-    max_chars = max(MIN_RENDER_CHARS, min(MAX_RENDER_CHARS, derived))
+    if fetch_size_by_chars_enabled():
+        # Its own result cap lets fetch take its share of the window. The
+        # floor is min(MIN_RENDER_CHARS, share), never above the share, so a
+        # small model gets a read in proportion to its window.
+        ceiling = FETCH_MAX_CHARS
+        max_chars = max(min(MIN_RENDER_CHARS, derived), min(derived, ceiling))
+    else:
+        ceiling = MAX_RENDER_CHARS
+        max_chars = max(MIN_RENDER_CHARS, min(MAX_RENDER_CHARS, derived))
 
-    override = env_int(MAX_CHARS_ENV_VAR, default=None, lo=1_000, hi=2_000_000)
+    override = env_int(MAX_CHARS_ENV_VAR, default=None, lo=1_000)
     if override is not None:
-        max_chars = override
+        if override > ceiling:
+            logger.warning(
+                "%s=%d exceeds what fits under the tool-result cap; using %d",
+                MAX_CHARS_ENV_VAR, override, ceiling,
+            )
+        max_chars = min(override, ceiling)
 
     return RenderBudget(max_chars=max_chars, max_blocks=max_blocks)
 
 
+def fetch_size_by_chars_enabled() -> bool:
+    """Fetch sized by characters alone: on unless the deployment sets
+    FETCH_SIZE_BY_CHARS=false. Read per call, but set per deployment, so the
+    tool schema it changes is the same for every request."""
+    return enabled_unless_off(FETCH_SIZE_BY_CHARS_ENV_VAR)
+
+
+def fetch_result_cap(context_length: int | None) -> int | None:
+    """The tool-result cap for `knowledgegraph__fetch_record` when it is sized
+    by characters: its budget plus what follows the records, so the shared
+    cap never cuts a fetch in the middle. Never below the shared cap, which
+    a fetch sized for a small window does not reach. None keeps the shared
+    cap."""
+    if not fetch_size_by_chars_enabled():
+        return None
+    return max(
+        DEFAULT_MAX_RESULT_CHARS,
+        resolve_render_budget(context_length).max_chars + FETCH_RESULT_RESERVE,
+    )
+
+
 __all__ = [
     "DEFAULT_CONTEXT_LENGTH",
+    "FETCH_MAX_CHARS",
+    "FETCH_RESULT_RESERVE",
+    "FETCH_SAFETY_MAX_BLOCKS",
+    "FETCH_SIZE_BY_CHARS_ENV_VAR",
     "MAX_CHARS_ENV_VAR",
     "MAX_RENDER_CHARS",
     "MIN_RENDER_CHARS",
@@ -220,5 +448,9 @@ __all__ = [
     "RecordRenderOutcome",
     "RenderBudget",
     "TableTruncation",
+    "TruncatedBy",
+    "fair_shares",
+    "fetch_result_cap",
+    "fetch_size_by_chars_enabled",
     "resolve_render_budget",
 ]

@@ -16,6 +16,8 @@ export interface SmtpConfig {
   username?: string;
   password?: string;
   fromEmail: string;
+  /** Absent means on; only an explicit `false` turns sending off. */
+  enabled?: boolean;
 }
 
 export const SIGNING_SECRET_BYTES = 32;
@@ -24,6 +26,11 @@ const SIGNING_SECRETS_CAS_MAX_RETRIES = 5;
 
 export const randomKeyGenerator = (): string =>
   randomBytes(SIGNING_SECRET_BYTES).toString('hex');
+
+export const resolveFrontendPublicUrl = (storedEndpoint = ''): string =>
+  normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
+  normalizeUrl(storedEndpoint) ||
+  `http://localhost:${process.env.PORT ?? 3000}`;
 
 export interface KafkaConfig {
   brokers: string[];
@@ -153,7 +160,11 @@ export class ConfigService {
       configPaths.smtp,
     );
     if (encryptedConfig) {
-      return JSON.parse(this.encryptionService.decrypt(encryptedConfig));
+      const config = JSON.parse(
+        this.encryptionService.decrypt(encryptedConfig),
+      ) as SmtpConfig;
+      // An admin turned email off: the mail service must behave as if none is set.
+      return config.enabled === false ? null : config;
     }
     return null;
   }
@@ -511,10 +522,9 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.frontend = {
       ...parsedUrl.frontend,
-      publicEndpoint:
-        normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
-        normalizeUrl(parsedUrl.frontend?.publicEndpoint) ||
-        `http://localhost:${process.env.PORT ?? 3000}`,
+      publicEndpoint: resolveFrontendPublicUrl(
+        parsedUrl.frontend?.publicEndpoint,
+      ),
     };
 
     // Save the updated object back to configPaths.endpoint

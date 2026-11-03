@@ -1,18 +1,21 @@
 import base64
 import hashlib
+import json
 import os
-import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote_plus, urlencode
 
 from aiohttp import ClientSession
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.oauth_errors import is_permanent_grant_rejection, oauth_error_code
+from app.utils.url_fetcher import private_addresses_blocked
 
 
 class GrantType(Enum):
@@ -34,33 +37,41 @@ class RefreshTokenInvalidError(Exception):
     revoked). Retrying cannot succeed — the user must re-authenticate."""
 
 
-_PERMANENT_REFRESH_ERROR_MARKERS = (
-    "invalid_grant",
-    "refresh_token is invalid",
-    "refresh token is invalid",
-    "refresh token has expired",
-    "invalid_refresh_token",
-    "bad_refresh_token",
-)
+class OAuthTokenRequestError(Exception):
+    """The token endpoint refused a request. `error_code` is the RFC 6749 `error` it sent, if any."""
+
+    def __init__(self, message: str, *, status: int, error_code: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_code = error_code
 
 
-def _is_permanent_refresh_rejection(error_str: str) -> bool:
-    lowered = error_str.lower()
-    return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
+def _body_error_code(text: str) -> Optional[str]:
+    """The RFC 6749 `error` of a JSON or form-encoded (GitHub's default) token endpoint body."""
+    try:
+        return oauth_error_code(json.loads(text))
+    except (ValueError, RecursionError):
+        return oauth_error_code({k: v[0] for k, v in parse_qs(text).items()})
 
 
 _SERVICENOW_TOKEN_ENDPOINT = "oauth_token.do"
 
 # servicenow specific check for refresh token rejection
-def _is_servicenow_refresh_rejection(error_str: str, token_url: str) -> bool:
+def _is_servicenow_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
     """ServiceNow reports a dead refresh token as 401 server_error/access_denied"""
     if _SERVICENOW_TOKEN_ENDPOINT not in token_url.lower():
         return False
-    status_match = re.search(r"status (\d+)", error_str)
-    if not status_match or int(status_match.group(1)) != HttpStatusCode.UNAUTHORIZED.value:
+    if error.status != HttpStatusCode.UNAUTHORIZED.value:
         return False
-    lowered = error_str.lower()
+    lowered = str(error).lower()
     return "server_error" in lowered and "access_denied" in lowered
+
+
+def _is_permanent_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
+    return (
+        is_permanent_grant_rejection(str(error), error.error_code, status=error.status)
+        or _is_servicenow_refresh_rejection(error, token_url)
+    )
 
 
 @dataclass
@@ -80,6 +91,8 @@ class OAuthConfig:
     token_access_type: Optional[str] = None
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
+    # RFC 8414 name for how the token endpoint takes client credentials; set by get_oauth_config.
+    token_endpoint_auth_method: str = "client_secret_post"
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -142,6 +155,7 @@ class OAuthToken:
     uid: Optional[str] = None   # used for dropbox
     account_id: Optional[str] = None
     team_id: Optional[str] = None
+    id: Optional[str] = None  # Salesforce identity URL, ending in /<orgId>/<userId>
 
     @property
     def is_expired(self) -> bool:
@@ -171,7 +185,8 @@ class OAuthToken:
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
             "account_id": self.account_id,
-            "team_id": self.team_id
+            "team_id": self.team_id,
+            "id": self.id,
         }
 
     @classmethod
@@ -206,7 +221,13 @@ class OAuthProvider:
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            self._session = ClientSession()
+            # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
+            # aiohttp refuses any header over 8190 bytes by default.
+            # The token URL is configured by an administrator: the deployment's rule for such
+            # hosts applies (this server, link-local and cloud metadata never).
+            self._session = ClientSession(
+                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=not private_addresses_blocked()),
+            )
         return self._session
 
     async def close(self) -> None:
@@ -240,24 +261,36 @@ class OAuthProvider:
         params.update(self.config.additional_params)
         params.update(kwargs)
 
+        # urlencode writes None as the text "None", so an unset optional parameter
+        # (token_access_type is Dropbox's, unset for every other provider) is left out.
+        params = {key: value for key, value in params.items() if value is not None}
+
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
     async def _make_token_request(self, data: dict) -> dict:
         """Helper to make a token request, handling different auth methods."""
-        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
+        use_basic_auth = (
+            self.config.token_endpoint_auth_method == "client_secret_basic"
+            or self.config.additional_params.get("use_basic_auth", False)
+        )
         use_json_body = self.config.additional_params.get("use_json_body", False)
 
-        # Notion and some other providers use Basic Auth header instead of body params
         if not use_basic_auth:
             data["client_id"] = self.config.client_id
             data["client_secret"] = self.config.client_secret
+        elif not self.config.client_secret:
+            # A public PKCE client has no secret to put in a Basic header; Airtable
+            # forbids the header then and requires client_id in the body instead.
+            data["client_id"] = self.config.client_id
 
         session = await self.session
         headers = {}
 
-        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
-        if use_basic_auth:
-            credentials = f"{self.config.client_id}:{self.config.client_secret}"
+        if use_basic_auth and self.config.client_secret:
+            # RFC 6749 section 2.3.1: form-encode each part, so a ":" in the id can't move the split.
+            client_id = quote_plus(self.config.client_id, safe="")
+            client_secret = quote_plus(self.config.client_secret, safe="")
+            credentials = f"{client_id}:{client_secret}"
             encoded_credentials = base64.b64encode(credentials.encode()).decode()
             headers["Authorization"] = f"Basic {encoded_credentials}"
 
@@ -289,18 +322,36 @@ class OAuthProvider:
                     f"Client ID (masked): {masked_client_id}, "
                     f"Response: {error_text}"
                 )
-                raise Exception(error_msg)
+                raise OAuthTokenRequestError(
+                    error_msg, status=response.status, error_code=_body_error_code(error_text),
+                )
 
             response.raise_for_status()
             # Handle both JSON and form-encoded responses
             content_type = response.headers.get('Content-Type', '').lower()
             if 'application/json' in content_type:
                 token_data = await response.json()
+                # Slack answers a rejected grant with HTTP 200 and ok=false, so the
+                # status check above never sees it.
+                if isinstance(token_data, dict) and token_data.get("ok") is False:
+                    raise OAuthTokenRequestError(
+                        f"OAuth token request was rejected by {self.config.token_url}: "
+                        f"{token_data.get('error') or 'unknown_error'}",
+                        status=response.status,
+                        error_code=oauth_error_code(token_data),
+                    )
                 return token_data
             elif 'application/x-www-form-urlencoded' in content_type or 'text/plain' in content_type:
                 text_response = await response.text()
                 parsed_data = parse_qs(text_response, keep_blank_values=True)
                 token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
+                # GitHub answers a refused grant with HTTP 200 and a form-encoded `error`.
+                if error_code := oauth_error_code(token_data):
+                    raise OAuthTokenRequestError(
+                        f"OAuth token request was rejected by {self.config.token_url}: {error_code}",
+                        status=response.status,
+                        error_code=error_code,
+                    )
                 # Convert string numbers to integers for expires_in if present
                 if 'expires_in' in token_data and token_data['expires_in']:
                     try:
@@ -345,13 +396,13 @@ class OAuthProvider:
 
         try:
             token_data = await self._make_token_request(data)
-        except Exception as e:
+        except OAuthTokenRequestError as e:
             error_str = str(e)
-            if _is_permanent_refresh_rejection(error_str) or _is_servicenow_refresh_rejection(error_str, self.config.token_url):
-                raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required. {error_str}") from e
-            status_match = re.search(r"status (\d+)", error_str)
+            if _is_permanent_refresh_rejection(e, self.config.token_url):
+                code = f" ({e.error_code})" if e.error_code else ""
+                raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required{code}. {error_str}") from e
             # Bare 403 stays transient — may be a WAF block, not a dead token
-            if status_match and int(status_match.group(1)) == HttpStatusCode.FORBIDDEN.value:
+            if e.status == HttpStatusCode.FORBIDDEN.value:
                 raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}") from e
             raise
 
@@ -375,9 +426,11 @@ class OAuthProvider:
         if not isinstance(config, dict):
             config = {}
 
-        # Store the new token (which includes the new refresh_token if provided)
-        config['credentials'] = token.to_dict()
-        await self.configuration_service.set_config(self.credentials_path, config)
+        # Best effort: callers verify the write and retry it. A copy, because
+        # get_config hands back the cached dict and a failed write must not change it.
+        await self.configuration_service.set_config(
+            self.credentials_path, {**config, 'credentials': token.to_dict()}
+        )
 
         return token
 

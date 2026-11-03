@@ -1,5 +1,8 @@
+import type { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { Container } from 'inversify';
 import { AppConfig, loadAppConfig } from '../config/config';
+import { initDocStore } from '../../../libs/repositories/doc-store';
+import { usesMongo } from '../../../libs/repositories/store-select';
 import { MongoService } from '../../../libs/services/mongo.service';
 import {
   RedisService,
@@ -16,7 +19,6 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import {
   resolveMessageBrokerConfig,
@@ -59,11 +61,15 @@ export class TokenManagerContainer {
     config: AppConfig,
   ): Promise<void> {
     try {
-      const mongoService = new MongoService(config.mongo);
-      await mongoService.initialize();
-      container
-        .bind<MongoService>('MongoService')
-        .toConstantValue(mongoService);
+      // Under DOC_STORE=postgres no MongoDB is contacted at all (unless DOC_STORE_MONGO_REPOS keeps a repository on it).
+      if (usesMongo()) {
+        const mongoService = new MongoService(config.mongo);
+        await mongoService.initialize();
+        container
+          .bind<MongoService>('MongoService')
+          .toConstantValue(mongoService);
+      }
+      await initDocStore(process.env.APP_VERSION ?? 'dev');
 
       // Shared across containers (R11): the auth and token-manager containers
       // both need cache access, and two instances means two connections --
@@ -73,7 +79,7 @@ export class TokenManagerContainer {
         container.get('Logger'),
       );
       container
-        .bind<RedisService>('RedisService')
+        .bind<ICacheService>('RedisService')
         .toConstantValue(redisService);
 
       // Same fingerprint `RedisService` just resolved internally (Phase 5,
@@ -135,15 +141,6 @@ export class TokenManagerContainer {
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
 
-      const recordsEventProducer = new RecordsEventProducer(
-        messageProducer,
-        container.get('Logger'),
-      );
-      await recordsEventProducer.start();
-      container
-        .bind<RecordsEventProducer>('RecordsEventProducer')
-        .toConstantValue(recordsEventProducer);
-
       const syncEventProducer = new SyncEventProducer(
         messageProducer,
         container.get('Logger'),
@@ -202,19 +199,10 @@ export class TokenManagerContainer {
           ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
 
-        const recordsEventProducer = this.instance.isBound(
-          'RecordsEventProducer',
-        )
-          ? this.instance.get<RecordsEventProducer>('RecordsEventProducer')
-          : null;
-
         const syncEventProducer = this.instance.isBound('SyncEventProducer')
           ? this.instance.get<SyncEventProducer>('SyncEventProducer')
           : null;
 
-        if (recordsEventProducer) {
-          await recordsEventProducer.stop();
-        }
         if (syncEventProducer) {
           await syncEventProducer.stop();
         }

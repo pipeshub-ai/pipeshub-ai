@@ -246,8 +246,8 @@ async def get_object_direct(
     
     try:
         # Read the body content
-        # With aioboto3, StreamingBody.read() is typically sync but blocks
-        # Some versions might have async read(), so we handle both
+        # aiobotocore's StreamingBody.read() is a coroutine; a sync body reads
+        # directly, so we handle both
         
         # First, call read() to see what we get
         read_result = body.read()

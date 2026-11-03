@@ -310,6 +310,10 @@ else
 fi
 check "wizard port scan skips this project's own port" "$inner" 'port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"'
 check "reconfigure seeds port from existing .env" "$inner" 'get_existing_val APP_PORT "$DEFAULT_APP_PORT"'
+check "reconfigure keeps the private-address switch" "$inner" 'get_existing_val PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
+check "the private-address switch is written to .env" "$inner" 'optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
+check "reconfigure keeps Qdrant's memory limit" "$inner" 'get_existing_val QDRANT_MEMORY_LIMIT'
+check "Qdrant's memory limit is written to .env" "$inner" 'optional_env_line QDRANT_MEMORY_LIMIT'
 if [[ "$compose" == *"container_name:"* ]]; then
   fail "compose must not pin container_name (blocks a second project)"
 else
@@ -504,7 +508,20 @@ check "PIPESHUB_NO_PULL=true skips the refresh" "$(should_pull_image false false
 check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false yes)" "false"
 # Pinning a tag still refreshes (fetch that exact tag). should_pull_image has no
 # tag argument, so assert the launch path builds _APP_IMAGE from IMAGE_TAG.
-check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"'
+check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="${APP_IMAGE_REPO}:${IMAGE_TAG:-latest}"'
+
+# Downstream builds: image repository and extra compose files.
+check "app image repository defaults to pipeshubai/pipeshub-ai" "$inner" 'APP_IMAGE_REPO="${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}"'
+check "compose app image follows PIPESHUB_IMAGE" "$(cat "$REPO_ROOT/deployment/docker-compose/docker-compose.yml")" 'image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}'
+check "extra compose files are read from PIPESHUB_COMPOSE_OVERRIDES" "$inner" 'read -r -a _compose_overrides <<< "$PIPESHUB_COMPOSE_OVERRIDES"'
+check "image and overrides are saved in .env" "$inner" 'printf '"'"'PIPESHUB_COMPOSE_OVERRIDES=%s\n'"'"' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"'
+check "later runs read the saved image" "$inner" 'PIPESHUB_IMAGE="${PIPESHUB_IMAGE:-$(_saved_env_val PIPESHUB_IMAGE)}"'
+check "an extra env file may not repeat an installer key" "$inner" 'which the installer already writes'
+if grep -Eq -- 'docker compose .*-f "\$COMPOSE_FILE"|^ *-f "\$COMPOSE_FILE" \\$' "$INNER_INSTALLER"; then
+  fail "every compose call passes the override files too"
+else
+  pass "every compose call passes the override files too"
+fi
 # Launch-path guards.
 check "refreshes app image via compose pull" "$inner" 'pull "${_PULL_SERVICES[@]}"'
 check "eval skips sandbox image pull" "$inner" 'DEPLOY_TYPE:-}" != "eval"'
@@ -516,6 +533,34 @@ check "pull fallback inspects sandbox image" "$inner" 'docker image inspect "$_S
 check "air-gapped guidance present" "$inner" "air-gapped host, preload the image"
 # Must not have reverted to a blanket pull of every service image on the hot path.
 if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi
+
+echo "== In-tree installer: build info for a local build (real function) =="
+# A built image has no git history, so --build reads the tag and the commit on
+# the host and hands them to the Dockerfile as build args.
+eval "$(extract_fn export_build_info "$INNER_INSTALLER")"
+BI_REPO="$TMP_ROOT/build-info-repo"
+mkdir -p "$BI_REPO"
+(
+  cd "$BI_REPO" && git init -q . \
+    && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m one \
+    && git tag v1.2.3 \
+    && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+)
+BI_HEAD="$(git -C "$BI_REPO" rev-parse HEAD)"
+check "version is the newest release tag, without the v" \
+  "$(unset APP_VERSION GIT_COMMIT; export_build_info "$BI_REPO"; echo "[$APP_VERSION]")" "[1.2.3]"
+check "commit is the full HEAD SHA" \
+  "$(unset APP_VERSION GIT_COMMIT; export_build_info "$BI_REPO"; echo "[$GIT_COMMIT]")" "[$BI_HEAD]"
+check "values already in the environment win" \
+  "$(APP_VERSION=9.9.9 GIT_COMMIT=abc; export_build_info "$BI_REPO"; echo "[$APP_VERSION $GIT_COMMIT]")" "[9.9.9 abc]"
+check "a directory without git leaves version and commit empty" \
+  "$(unset APP_VERSION GIT_COMMIT; export_build_info "$TMP_ROOT"; echo "[$APP_VERSION|$GIT_COMMIT]")" "[|]"
+check "local build exports the build info before compose up" "$inner" 'export_build_info "$(cd "${SCRIPT_DIR}/../../" && pwd)"'
+for f in docker-compose.yml docker-compose.build.neo4j.yml \
+  docker-compose.integration.arango.yml docker-compose.integration.neo4j.yml \
+  beta/docker-compose.build.neo4j.slim.yml beta/docker-compose.build.opensearch.neo4j.yml; do
+  check "$f passes the build info as build args" "$(cat "$COMPOSE_DIR/$f")" 'GIT_COMMIT: ${GIT_COMMIT:-}'
+done
 
 echo "== In-tree installer: compose progress mode (real function) =="
 # Mapping must be tied to the TTY flag. Grepping for both "tty" and "plain"

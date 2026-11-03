@@ -1,29 +1,22 @@
 import asyncio
-import io
 import json
 import logging
-import os
 import re
+import zipfile
 from datetime import datetime, time
 from typing import Any
 
-from app.services.parsing.interface import ParseResult
-from app.utils.llm import get_llm_for_role
-from app.config.configuration_service import ConfigurationService
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
-from openpyxl import load_workbook
+from lxml import etree
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-)
 
+from app.config.configuration_service import ConfigurationService
+from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -33,6 +26,13 @@ from app.models.blocks import (
     DataFormat,
     GroupType,
     TableMetadata,
+)
+from app.modules.parsers import parse_pool
+from app.modules.parsers.excel.limits import (
+    CELL_DICT_BYTES,
+    OUTPUT_BUDGET_FACTOR,
+    excel_load_max_seconds,
+    excel_max_text_bytes,
 )
 from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
@@ -44,12 +44,33 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.modules.parsers.excel.workbook_model import (
+    LoaderFailure,
+    ModelMergedCell,
+    SheetModel,
+    WorkbookRefused,
+    _utf8_len,
+    get_cell_background_color,
+    get_cell_font_color,
+    load_workbook_model,
+)
+from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.concurrency import max_table_rows_for_llm
+from app.utils.env_config import env_int, env_positive_int
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.llm import get_llm_for_role
+from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
+from app.utils.table_enrichment import fallback_table_summary
+from app.utils.user_errors import EXCEL_TOO_LARGE, UNREADABLE_FILE
+
+__all__ = ["ExcelParser", "get_cell_background_color", "get_cell_font_color"]
+
 
 # Module-level constants for Excel processing (mirror CSV parser)
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
@@ -57,9 +78,129 @@ MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header gene
 MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
 MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
-EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, int(os.getenv("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", "500")))
-EXCEL_MAX_TABLE_ROWS_TO_INDEX = max(1, int(os.getenv("EXCEL_MAX_TABLE_ROWS_TO_INDEX", "20000")))
+EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, env_int("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", 500))
+EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX", 20000)
 
+# The load runs in a worker process that may grow by this much (see
+# workbook_model.load_workbook_model); a workbook that needs more is refused.
+# 1536 MB holds the heaviest workbooks measured to load within the ~2.3 GB
+# per-process target (3.5 M cells at ~430 B, or 2 M formula cells at ~370 B),
+# and the parent only receives the compact model.
+EXCEL_LOAD_MAX_MB = env_positive_int("EXCEL_LOAD_MAX_MB", 1536)
+EXCEL_LOAD_MAX_BYTES = EXCEL_LOAD_MAX_MB * 1024 * 1024
+# Seconds the load may run (see limits.DEFAULT_LOAD_MAX_SECONDS): the pool's job timeout, and the
+# worker's own CPU limit just above it. Past it the workbook is refused as too large.
+EXCEL_LOAD_MAX_SECONDS = excel_load_max_seconds()
+# Backstop on the XML decompressed, all parts together (checked in the worker).
+EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
+# What the parent builds from the model is bounded twice, from one number (the name says characters
+# for historical reasons; it is UTF-8 bytes of text). The worker refuses, before anything is built, a
+# workbook whose cells would put more than this into blocks (a shared string counted per use, the
+# header row once per row): an estimate from the input. The real bound is the running
+# ``_OutputBudget`` of three times this (1.4 GB by default) in parent memory, charged by every
+# block-building path for the text it produces (x2: string, block copy and serialised form) and for
+# every cell dict, row dict, block and group at its measured size, and released when a sheet's cell
+# dicts are freed. It raises EXCEL_TOO_LARGE as soon as it is spent. 1.4 GB plus the ~0.8 GB import
+# floor and the model keeps the parent near 2.3 GB.
+EXCEL_MAX_TEXT_CHARS = excel_max_text_bytes()
+
+
+# Parent memory per structure built, measured (tracemalloc and RSS deltas, openpyxl 3.1.5 values from
+# the compact model): one cell dict from `_process_cell` / `_process_sheet` with its style dicts,
+# one TABLE_ROW block with its data dict, a block group, and a `{header: value}` row dict.
+_CELL_DICT_BYTES = CELL_DICT_BYTES  # defined with the merged-range cap that derives from it
+_BLOCK_BYTES = 2100
+_GROUP_BYTES = 4000
+# A row dict (64) plus the processed-row dict that holds it (3 keys, 184) and its slot in the rows list.
+_ROW_DICT_BASE_BYTES = 256
+_ROW_DICT_CELL_BYTES = 48
+# Fixed per-object overhead, measured with tracemalloc over 20 000 objects (CPython 3.12): a table's
+# dict of 8 keys with its headers list, data list and range tuple (about 520 B with no rows), a row
+# list (56 B + 8 B a cell, rounded up by append), a processed table (dict of 4 keys, location dict,
+# rows list: about 550-780 B). Rounded up with margin. Without them a sheet of many small tables
+# held 1.12x (tracemalloc) to 1.31x (RSS) what it was charged.
+_TABLE_BYTES = 2048
+_TABLE_ROW_LIST_BYTES = 96
+_TABLE_LIST_SLOT_BYTES = 8
+_PROCESSED_TABLE_BYTES = 2048
+# Memory held per byte of text: the string, its copy in the block, and the serialised form.
+_TEXT_WEIGHT = 2
+# A cell value put into an LLM prompt is cut to this many characters. Prompt builders copy their
+# input several times (repr, f-string, json, message formatting), so an uncut value of hundreds of MB
+# would cost several times the output budget before anything is charged. The header and summary
+# prompts only need the shape of a value; the row-text prompt keeps long prose in full.
+_PROMPT_SAMPLE_CHARS = 2000
+_PROMPT_ROW_VALUE_CHARS = 20000
+# Copies of a row-text prompt's text alive at once: cut values, json, numbered rows, joined text, messages.
+_PROMPT_COPIES = 5
+
+
+def _cut_for_prompt(value: object, limit: int) -> object:
+    """``value`` with a string cut to ``limit`` characters (a slice copies only the kept part)."""
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "...[cut]"
+    return value
+
+
+class _OutputBudget:
+    """Running estimate of the parent memory the parser has built, in bytes.
+
+    Charged as each thing is created: text (UTF-8 bytes x ``_TEXT_WEIGHT``), cell dicts, row dicts,
+    blocks and groups at their measured sizes. What is freed again (the cell dicts of a sheet once
+    its blocks exist) is released, so the figure follows what is live. When it is spent the load is
+    refused as EXCEL_TOO_LARGE. The limit is three times ``EXCEL_MAX_TEXT_CHARS``: 1.4 GB by default,
+    which with the import floor and the model keeps the parent near 2.3 GB.
+    """
+
+    __slots__ = ("left",)
+
+    def __init__(self, limit: int) -> None:
+        self.left = limit
+
+    def charge(self, nbytes: int) -> None:
+        self.left -= nbytes
+        if self.left < 0:
+            raise _too_large("the parser would hold more than the output budget")
+
+    def release(self, nbytes: int) -> None:
+        self.left += nbytes
+
+    def charge_text(self, *texts: object) -> None:
+        self.charge(_TEXT_WEIGHT * sum(_utf8_len(t) for t in texts if isinstance(t, str)))
+
+    def charge_cells(self, count: int) -> None:
+        self.charge(count * _CELL_DICT_BYTES)
+
+    def release_cells(self, count: int) -> None:
+        self.release(count * _CELL_DICT_BYTES)
+
+    def table_row_bytes(self, columns: int) -> int:
+        """What the list that holds one table row's cells costs (its cells are charged apart)."""
+        return _TABLE_ROW_LIST_BYTES + _TABLE_LIST_SLOT_BYTES * columns
+
+
+def _too_large(detail: str = "") -> ParseError:
+    return ParseError(
+        ParseErrorCode.INVALID_INPUT,
+        EXCEL_TOO_LARGE,
+        details={"max_load_mb": EXCEL_LOAD_MAX_MB, "reason": detail},
+    )
+
+
+def _loader_error(failure: LoaderFailure) -> Exception:
+    """The error the loader raised in the worker, rebuilt where it cannot be pickled."""
+    if (failure.module, failure.name) == ("lxml.etree", "XMLSyntaxError"):
+        return etree.XMLSyntaxError(failure.message, 0, 0, 0)
+    return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
+
+
+def _refusal(refused: WorkbookRefused) -> ParseError:
+    if refused.reason == "too_large":
+        return _too_large(refused.detail)
+    return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
+
+
+MAX_NUMBER_FORMAT_CHARS = 255
 
 # Built-in Excel date format codes mapping
 BUILTIN_DATE_FORMATS = {
@@ -331,6 +472,10 @@ def format_excel_datetime(dt_value: datetime | time | str | int | float | None, 
     if not number_format or number_format == "General":
         return dt_value.isoformat()
 
+    # Excel never writes a format longer than 255 characters; openpyxl does not enforce it, and a
+    # long quoted literal would be rendered into every date cell.
+    number_format = number_format[:MAX_NUMBER_FORMAT_CHARS]
+
     try:
         # Step 1: Resolve built-in format codes (14-22) to format strings
         format_str = _resolve_builtin_format(number_format)
@@ -361,6 +506,7 @@ class ExcelParser:
         self.config_service = config_service
         self.workbook = None
         self.file_binary = None
+        self._output = _OutputBudget(OUTPUT_BUDGET_FACTOR * EXCEL_MAX_TEXT_CHARS)
 
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
@@ -378,27 +524,72 @@ class ExcelParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
+            document_parser = self.new_document_parser()
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
-            await asyncio.to_thread(self.load_workbook_from_binary, content)
-            blocks_containers = await self.create_blocks(llm)
+            await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
+            blocks_containers = await document_parser.create_blocks(llm)
 
             return ParseResult(
                 block_container=blocks_containers,
                 metadata={"record_name": record_name},
             )
 
+    def new_document_parser(self) -> "ExcelParser":
+        """A parser for one document.
+
+        The loaded workbook is instance state, and callers hold one shared
+        ExcelParser while block creation awaits LLM calls; parsing on the shared
+        instance lets a concurrent document replace the workbook mid-parse.
+        """
+        return ExcelParser(self.logger, self.config_service)
+
     def load_workbook_from_binary(self, file_binary: bytes) -> None:
         """Load workbook from binary (no LLM calls).
 
         This is the first phase of Excel processing - pure parsing without LLM calls.
+        Blocks the calling thread (every caller runs it off the event loop). The
+        openpyxl load happens in a memory-limited worker process; ``self.workbook``
+        becomes the compact model it sends back, never an openpyxl workbook.
+        A workbook the worker cannot hold raises ``ParseError(EXCEL_TOO_LARGE)``.
         """
         self.logger.info("Loading workbook from binary data")
         self.file_binary = file_binary
-        if self.file_binary:
-            self.workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
-            self.logger.info(f"Workbook loaded successfully with {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
+        self._output = _OutputBudget(OUTPUT_BUDGET_FACTOR * EXCEL_MAX_TEXT_CHARS)
+        if not self.file_binary:
+            return
+        try:
+            model = parse_pool.run_blocking(
+                load_workbook_model,
+                file_binary,
+                EXCEL_LOAD_MAX_BYTES,
+                EXCEL_MAX_SHEET_XML_BYTES,
+                EXCEL_MAX_TEXT_CHARS,
+                EXCEL_LOAD_MAX_SECONDS,
+                label="xlsx workbook",
+                size=len(file_binary),
+                timeout=EXCEL_LOAD_MAX_SECONDS,
+            )
+        except WorkbookRefused as refused:
+            raise _refusal(refused) from None
+        except parse_pool.ParseWorkerError as error:
+            if error.cause == "timed_out":
+                # the pool stopped the worker: a workbook that takes this long is refused, not retried
+                raise _too_large(f"the load ran past {EXCEL_LOAD_MAX_SECONDS} s") from None
+            raise
+        except LoaderFailure as failure:
+            raise _loader_error(failure) from None
+        except zipfile.BadZipFile:
+            # A damaged file, or another format named .xlsx, which the worker hands back as is.
+            # As a 500 the indexer retried it as an outage, and every copy of the same bytes
+            # waited for the one before it to give up.
+            raise ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE) from None
+        self.workbook = model
+        self.logger.info(
+            "Workbook loaded with %d sheets: %s (worker peak %d MB)",
+            len(model.sheetnames), model.sheetnames, model.worker_peak_kb // 1024,
+        )
 
     async def create_blocks(self, llm: BaseChatModel) -> BlocksContainer:
         """Create blocks from loaded workbook (involves LLM calls).
@@ -422,7 +613,7 @@ class ExcelParser:
         Produces a basic SHEET → TABLE → TABLE_ROW block hierarchy using
         ``generate_simple_row_text`` for row descriptions instead of LLM calls.
         """
-        self.load_workbook_from_binary(content)
+        await asyncio.to_thread(self.load_workbook_from_binary, content)
         try:
             return self._build_basic_block_container()
         finally:
@@ -465,14 +656,20 @@ class ExcelParser:
             sheet_data = self._process_sheet(self.workbook[sheet_name], max_data_rows=remaining)
             headers: list = sheet_data.get("headers") or []
             rows: list = sheet_data.get("data") or []
+            held_cells = len(headers) + sum(len(r) for r in rows)
 
             if not rows:
+                del sheet_data, headers, rows
+                self._output.release_cells(held_cells)
                 continue
 
             col_names = [
                 str(h) if h is not None else f"col_{i}"
                 for i, h in enumerate(headers)
             ]
+            # the sheet name is written into the sheet group, the table group and every block
+            self._output.charge_text(sheet_name, sheet_name, *col_names)
+            self._output.charge(2 * _GROUP_BYTES)
 
             # SHEET group
             sg_idx = len(block_groups)
@@ -521,6 +718,9 @@ class ExcelParser:
                     for ci, cell in enumerate(row)
                 }
                 bi = len(blocks)
+                row_text = generate_simple_row_text(row_data)
+                self._output.charge_text(row_text, sheet_name)
+                self._output.charge(_BLOCK_BYTES)
                 row_num = row[0].get("row", ri + 2) if row else ri + 2
                 blocks.append(
                     Block(
@@ -528,7 +728,7 @@ class ExcelParser:
                         type=BlockType.TABLE_ROW,
                         format=DataFormat.JSON,
                         data={
-                            "row_natural_language_text": generate_simple_row_text(row_data),
+                            "row_natural_language_text": row_text,
                             "row_number": int(row_num),
                             "row_end_number": int(row_num),
                             "row_count": 1,
@@ -547,6 +747,9 @@ class ExcelParser:
                 block_group_indices=[tg_idx]
             )
             rows_emitted += len(rows)
+            # this sheet's cell dicts are freed before the next sheet's are built
+            del sheet_data, headers, rows
+            self._output.release_cells(held_cells)
 
         self.logger.info(
             "Basic (no-LLM) workbook parsing complete: %d blocks, %d block groups",
@@ -579,14 +782,16 @@ class ExcelParser:
             self.logger.info(f"Extracted {len(sheet_data['headers'])} headers from first row")
 
             # Start from second row
+            self._output.charge_cells(len(sheet_data["headers"]))
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2), 2):
                 if max_data_rows is not None and len(sheet_data["data"]) >= max_data_rows:
                     break
+                self._output.charge_cells(len(row))
                 row_data = []
 
                 for col_idx, cell in enumerate(row, 1):
                     # Handle merged cells
-                    if isinstance(cell, MergedCell):
+                    if isinstance(cell, (MergedCell, ModelMergedCell)):
                         cell_data = {
                             "value": None,  # Merged cells don't contain values
                             "header": (
@@ -620,16 +825,10 @@ class ExcelParser:
                                     "bold": cell.font.bold,
                                     "italic": cell.font.italic,
                                     "size": cell.font.size,
-                                    "color": (
-                                        cell.font.color.rgb if cell.font.color else None
-                                    ),
+                                    "color": get_cell_font_color(cell),
                                 },
                                 "fill": {
-                                    "background_color": (
-                                        cell.fill.start_color.rgb
-                                        if cell.fill.start_color
-                                        else None
-                                    )
+                                    "background_color": get_cell_background_color(cell),
                                 },
                                 "alignment": {
                                     "horizontal": cell.alignment.horizontal,
@@ -669,25 +868,31 @@ class ExcelParser:
             # openpyxl==3.1.5). It may change or be removed in future versions. The
             # getattr fallback below ensures graceful degradation to iter_rows() if the
             # attribute no longer exists.
-            _raw_cells = getattr(sheet, '_cells', None)
-            if _raw_cells is not None:
-                non_empty_positions: set[tuple[int, int]] = {
-                    (r, c) for (r, c), _cell in _raw_cells.items() if _cell.value is not None
-                }
+            if isinstance(sheet, SheetModel):
+                # Compact model: the extent is known without building a set of positions.
+                non_empty_positions = sheet.value_positions()
+                effective_max_row: int = non_empty_positions.max_row
+                effective_max_col: int = non_empty_positions.max_col
             else:
-                non_empty_positions = {
-                    (cell.row, cell.column)
-                    for _row in sheet.iter_rows()
-                    for cell in _row
-                    if cell.value is not None
-                }
+                _raw_cells = getattr(sheet, '_cells', None)
+                if _raw_cells is not None:
+                    non_empty_positions = {
+                        (r, c) for (r, c), _cell in _raw_cells.items() if _cell.value is not None
+                    }
+                else:
+                    non_empty_positions = {
+                        (cell.row, cell.column)
+                        for _row in sheet.iter_rows()
+                        for cell in _row
+                        if cell.value is not None
+                    }
+                if non_empty_positions:
+                    effective_max_row = max(r for r, _ in non_empty_positions)
+                    effective_max_col = max(c for _, c in non_empty_positions)
 
             if not non_empty_positions:
                 self.logger.info(f"Sheet '{sheet.title}' has no data, skipping")
                 return []
-
-            effective_max_row: int = max(r for r, _ in non_empty_positions)
-            effective_max_col: int = max(c for _, c in non_empty_positions)
 
             if effective_max_row < sheet.max_row or effective_max_col < sheet.max_column:
                 self.logger.info(
@@ -753,6 +958,8 @@ class ExcelParser:
                         cell_data = self._process_cell(cell, None, row_idx, col)
                         row_values.append(cell_data["value"])
                     first_rows.append(row_values)
+                # only the values are kept; the cell dicts are garbage
+                self._output.release_cells(len(first_rows) * column_count)
 
                 # Step 3: Detect headers with LLM
                 detection = await self.detect_excel_headers_with_llm(first_rows, llm)
@@ -792,6 +999,7 @@ class ExcelParser:
                             cell_data = self._process_cell(cell, None, row_idx, col)
                             row_values.append(cell_data["value"])
                         all_rows.append(row_values)
+                    self._output.release_cells(len(all_rows) * column_count)
 
                     # Select representative sample rows
                     sample_rows = self._select_representative_sample_rows(all_rows, MAX_HEADER_GENERATION_ROWS)
@@ -842,8 +1050,10 @@ class ExcelParser:
                         f"Limiting indexed rows to first {EXCEL_MAX_TABLE_ROWS_TO_INDEX}."
                     )
 
+                self._output.charge(_TABLE_BYTES + _TABLE_LIST_SLOT_BYTES * column_count)
                 table_data = []
                 for row_idx in range(data_start_row, processed_end_row + 1):
+                    self._output.charge(self._output.table_row_bytes(column_count))
                     row_data = []
                     for col_idx, col in enumerate(range(start_col, max_col + 1)):
                         cell = sheet.cell(row=row_idx, column=col)
@@ -865,7 +1075,11 @@ class ExcelParser:
 
             # Find all tables in the sheet while skipping previously claimed ranges.
             row = 1
+            populated_rows: set[int] | None = getattr(non_empty_positions, "rows", None)
             while row <= effective_max_row:
+                if populated_rows is not None and row not in populated_rows:
+                    row += 1  # no position of an empty row can start a table
+                    continue
                 col = 1
                 while col <= effective_max_col:
                     visited_range = get_visited_range(row, col)
@@ -911,24 +1125,33 @@ class ExcelParser:
             raise
 
     def _process_cell(self, cell: Cell | MergedCell, header: str | None, row: int, col: int) -> dict[str, Any]:
-        """Process a single cell and return its data with denormalized merged cell values."""
+        """Process a single cell and return its data with denormalized merged cell values.
+
+        The cell dict is charged to the output budget; callers that drop it release it."""
+        self._output.charge_cells(1)
         try:
             # Check if the cell is a merged cell
-            if isinstance(cell, MergedCell):
+            if isinstance(cell, (MergedCell, ModelMergedCell)):
                 # Look for the merged range that contains this cell.
                 merged_value = None
 
-                for merged_range in cell.parent.merged_cells.ranges:
-                    if cell.coordinate in merged_range:
-                        # Get the top-left cell of the merged range
-                        top_left_cell = cell.parent.cell(
-                            row=merged_range.min_row, column=merged_range.min_col
-                        )
-                        merged_value = top_left_cell.value
-                        # Apply datetime/time formatting if applicable
-                        if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
-                            merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
-                        break
+                if isinstance(cell, ModelMergedCell):
+                    top_left_cell = cell.anchor_cell()
+                    merged_value = top_left_cell.value
+                    if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
+                        merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
+                else:
+                    for merged_range in cell.parent.merged_cells.ranges:
+                        if cell.coordinate in merged_range:
+                            # Get the top-left cell of the merged range
+                            top_left_cell = cell.parent.cell(
+                                row=merged_range.min_row, column=merged_range.min_col
+                            )
+                            merged_value = top_left_cell.value
+                            # Apply datetime/time formatting if applicable
+                            if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
+                                merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
+                            break
 
                 return {
                     "value": merged_value,  # Use the top-left cell's value (formatted if datetime)
@@ -946,6 +1169,7 @@ class ExcelParser:
             cell_value = cell.value
             if isinstance(cell_value, (datetime, time)) and hasattr(cell, 'number_format'):
                 cell_value = format_excel_datetime(cell_value, cell.number_format)
+                self._output.charge_text(cell_value)
 
             return {
                 "value": cell_value,  # Now contains formatted string for datetime values
@@ -960,12 +1184,10 @@ class ExcelParser:
                         "bold": cell.font.bold,
                         "italic": cell.font.italic,
                         "size": cell.font.size,
-                        "color": cell.font.color.rgb if cell.font.color else None,
+                        "color": get_cell_font_color(cell),
                     },
                     "fill": {
-                        "background_color": (
-                            cell.fill.start_color.rgb if cell.fill.start_color else None
-                        )
+                        "background_color": get_cell_background_color(cell),
                     },
                     "alignment": {
                         "horizontal": cell.alignment.horizontal,
@@ -1072,7 +1294,9 @@ class ExcelParser:
             # Build dynamic row text based on actual available rows
             rows_text_lines = []
             for i, row in enumerate(first_rows[:4], start=1):  # Show up to 4 rows
-                row_str = [str(v) if v is not None else "" for v in row]
+                row_str = [
+                    str(_cut_for_prompt(v, _PROMPT_SAMPLE_CHARS)) if v is not None else "" for v in row
+                ]
                 rows_text_lines.append(f"Row {i}: {row_str}")
 
             rows_text = "\n".join(rows_text_lines)
@@ -1111,6 +1335,8 @@ class ExcelParser:
                 reasoning="LLM call failed, defaulting to no headers"
             )
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.warning(f"Error in Excel header detection: {e}, defaulting to no headers")
             return ExcelHeaderDetection(
@@ -1144,7 +1370,9 @@ class ExcelParser:
             # Format sample data for display
             formatted_samples = []
             for _idx, row, _empty_count in sample_rows[:MAX_HEADER_GENERATION_ROWS]:
-                formatted_row = [str(v) if v is not None else "" for v in row]
+                formatted_row = [
+                    str(_cut_for_prompt(v, _PROMPT_SAMPLE_CHARS)) if v is not None else "" for v in row
+                ]
                 formatted_samples.append(formatted_row)
 
             # Format as JSON string for prompt
@@ -1227,6 +1455,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.warning(f"Using generic fallback headers for {column_count} columns")
             return [f"Column_{i}" for i in range(1, column_count + 1)]
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.error(f"Error in Excel header generation: {e}", exc_info=True)
             self.logger.warning(f"Using generic fallback headers for {column_count} columns")
@@ -1271,16 +1501,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         return consolidated
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
-            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
-        ),
-    )
     async def _call_llm(self, messages: list[Any]) -> AIMessage:
-        """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)  # type: ignore[return-value]
+        """Through the LLM gateway: its cap, the provider's breaker and its 429 retries."""
+        return await get_llm_gateway().invoke(  # type: ignore[no-any-return]
+            self.llm,
+            messages,
+            provider=provider_key(self.llm),
+            call_site="table_summary",
+            config=get_llm_invoke_config(self.llm),
+        )
 
     async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
@@ -1318,10 +1547,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             # Prepare sample data
             sample_data = [
                 {
-                    cell["header"]: (
+                    _cut_for_prompt(cell["header"], _PROMPT_SAMPLE_CHARS): (
                         cell["value"].isoformat()
                         if isinstance(cell["value"], (datetime, time))
-                        else cell["value"]
+                        else _cut_for_prompt(cell["value"], _PROMPT_SAMPLE_CHARS)
                     )
                     for cell in row
                 }
@@ -1330,7 +1559,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
+                headers=[_cut_for_prompt(h, _PROMPT_SAMPLE_CHARS) for h in table["headers"]], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
             response = await self._call_llm(messages)
             # Gemini and similar return content as a list of blocks, not a string.
@@ -1340,9 +1569,11 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.info("Table summary generated")
             return summary
 
-        except Exception as e:
-            self.logger.error(f"Error getting table summary: {e}", exc_info=True)
+        except NonRetryableError:
             raise
+        except Exception as e:
+            self.logger.warning("Table summary unavailable (%s); using a plain one", e)
+            return fallback_table_summary(table["headers"], len(table["data"]))
 
     async def get_rows_text(
         self, rows: list[list[dict[str, Any]]], table_summary: str
@@ -1365,25 +1596,43 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get natural language text from LLM with count validation
             # Use CSV prompt which includes explicit row count validation
-            messages = row_text_prompt_for_csv.format_messages(
-                table_summary=table_summary,
-                numbered_rows_data=format_rows_with_index(rows_data),
-                row_count=len(rows_data)
+            # The prompt is built and copied several times (cut values, json, numbered text, messages):
+            # charge it before it is built, give it back once the call is made.
+            prompt_chars = sum(
+                min(len(v), _PROMPT_ROW_VALUE_CHARS) for row in rows_data for v in row.values() if isinstance(v, str)
             )
+            prompt_charge = _PROMPT_COPIES * prompt_chars
+            self._output.charge(prompt_charge)
+            try:
+                prompt_rows = [
+                    {
+                        k: _cut_for_prompt(v, _PROMPT_ROW_VALUE_CHARS) if isinstance(v, str) else v
+                        for k, v in row.items()
+                    }
+                    for row in rows_data
+                ]
+                messages = row_text_prompt_for_csv.format_messages(
+                    table_summary=table_summary,
+                    numbered_rows_data=format_rows_with_index(prompt_rows),
+                    row_count=len(rows_data)
+                )
+                del prompt_rows
 
-            # Default to simple text representations of rows
-            descriptions = [generate_simple_row_text(row) for row in rows_data]
-
-            # Use centralized utility with reflection and count validation
-            parsed_response = await invoke_with_row_descriptions_and_reflection(
-                self.llm, messages, expected_count=len(rows_data)
-            )
+                # Use centralized utility with reflection and count validation
+                parsed_response = await invoke_with_row_descriptions_and_reflection(
+                    self.llm, messages, expected_count=len(rows_data)
+                )
+                del messages
+            finally:
+                self._output.release(prompt_charge)
 
             if parsed_response is not None and parsed_response.descriptions:
                 descriptions = parsed_response.descriptions
                 self.logger.info(f"Successfully generated natural language descriptions for {len(descriptions)} rows")
             else:
                 self.logger.warning(f"LLM failed to generate descriptions, using fallback for {len(rows_data)} rows")
+                # simple text representations of rows, built only when the LLM gave none
+                descriptions = [generate_simple_row_text(row) for row in rows_data]
 
             return descriptions
         except Exception as e:
@@ -1411,11 +1660,19 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             return None
 
         # Get threshold from environment variable (default: 1000)
-        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
+        threshold = max_table_rows_for_llm()
         self.logger.info(f"Using LLM threshold for row processing: {threshold} (cumulative count: {cumulative_row_count[0]})")
 
         # Get tables in the sheet
         tables = await self.get_tables_in_sheet(sheet_name, llm)
+        # the tables' cell dicts live until this sheet is processed; only the row dicts and texts go on
+        table_cells = sum(len(row) for table in tables for row in table["data"])
+        table_structures = sum(
+            _TABLE_BYTES
+            + _TABLE_LIST_SLOT_BYTES * len(table["headers"])
+            + sum(self._output.table_row_bytes(len(row)) for row in table["data"])
+            for table in tables
+        )
 
         # Process each table
         processed_tables = []
@@ -1452,16 +1709,25 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                 async def limited_get_rows_text(batch: list[Any], _sem: asyncio.Semaphore = semaphore, _ts: str = table_summary) -> list[str]:
                     async with _sem:
-                        return await self.get_rows_text(batch, _ts)
+                        texts = await self.get_rows_text(batch, _ts)
+                    # charged as the batch arrives, before the other batches' texts are gathered
+                    self._output.charge_text(*texts)
+                    return texts
 
                 # Create throttled tasks for all batches
                 batch_tasks = []
                 for start_idx, batch in batches:
-                    task = limited_get_rows_text(batch)
+                    task = spawn_in_request(limited_get_rows_text(batch))
                     batch_tasks.append((start_idx, batch, task))
 
-                # Wait for all batches to complete (max 10 running concurrently)
-                task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                # Wait for all batches to complete (max 10 running concurrently). A refusal by the
+                # output budget (or any failure) stops the batches still running.
+                try:
+                    task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                except BaseException:
+                    for _, _, task in batch_tasks:
+                        task.cancel()
+                    raise
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
 
                 # Combine results with their metadata and process
@@ -1471,6 +1737,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     # Add processed rows to results
                     for row, row_text in zip(batch, row_texts):
                         if row:
+                            self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                             processed_rows.append(
                                 {
                                     "raw_data": {cell["header"]: cell["value"] for cell in row},
@@ -1485,6 +1752,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     if row:
                         row_data = {cell["header"]: cell["value"] for cell in row}
                         row_text = generate_simple_row_text(row_data)
+                        self._output.charge_text(row_text)
+                        self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                         processed_rows.append(
                             {
                                 "raw_data": row_data,
@@ -1493,6 +1762,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             }
                         )
 
+            self._output.charge_text(table_summary, *table["headers"])
+            self._output.charge(_PROCESSED_TABLE_BYTES)
             processed_tables.append(
                 {
                     "headers": table["headers"],
@@ -1508,6 +1779,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             )
             self.logger.info(f"Completed processing table {table_idx} with {len(processed_rows)} rows")
 
+        self._output.release_cells(table_cells)
+        self._output.release(table_structures)
         self.logger.info(f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables")
         return {"sheet_name": sheet_name, "tables": processed_tables}
 
@@ -1550,9 +1823,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             )
             block_groups.append(sheet_group)
 
+            # the sheet name is written into the sheet group, every table group and every block
+            self._output.charge_text(sheet_name, sheet_name)
+            self._output.charge(_GROUP_BYTES)
+
             # Add TABLE groups under this sheet
             for table in sheet_result["tables"]:
                 table_group_index = len(block_groups)
+                self._output.charge_text(sheet_name)
+                self._output.charge(_GROUP_BYTES)
 
                 headers = table.get("headers", [])
                 rows = table.get("rows", [])
@@ -1588,6 +1867,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
                     block_index = len(blocks)
+                    self._output.charge_text(sheet_name)
+                    self._output.charge(_BLOCK_BYTES)
                     blocks.append(
                         Block(
                             index=block_index,

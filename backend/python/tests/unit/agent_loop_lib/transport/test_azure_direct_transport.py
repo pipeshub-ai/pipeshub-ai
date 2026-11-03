@@ -98,6 +98,26 @@ class TestClientConstruction:
         assert t.provider == "azure_direct"
         assert t.model_name == "gpt-5.6-luna"
 
+    def test_only_the_api_key_is_unwrapped_from_secretstr(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        def _init(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        monkeypatch.setattr(AzureOpenAITransport, "__init__", _init)
+        llm = MagicMock()
+        llm.azure_endpoint = "https://example.openai.azure.com"
+        llm.deployment_name = "gpt-5.6-luna"
+        llm.openai_api_key = SecretStr("sk-secret")
+        llm.openai_api_version = "2024-10-01-preview"
+
+        AzureOpenAITransport.from_langchain_model(llm)
+
+        assert captured["api_key"] == "sk-secret"
+        assert captured["azure_endpoint"] == "https://example.openai.azure.com"
+        assert captured["deployment"] == "gpt-5.6-luna"
+        assert captured["api_version"] == "2024-10-01-preview"
+
     def test_non_azure_model_is_rejected_loudly(self) -> None:
         """Silently falling back would hide a misconfiguration behind LangChain."""
         llm = MagicMock()
@@ -243,6 +263,39 @@ class TestRequestShapeFallbacks:
         assert len(resp_calls) == 1, "retry must go to the Responses API"
         assert resp_calls[0].get("reasoning") == {"effort": "low"}
         assert t._defaults.use_responses_api is True, "the working shape is pinned"
+
+    @pytest.mark.asyncio
+    async def test_azure_tools_refusal_without_reasoning_switches_endpoint(self) -> None:
+        """A gpt-6 model with Reasoning unticked sends no effort, but Azure
+        still refuses its tools on Chat Completions, in its own wording. The
+        retry goes to the Responses API without a reasoning setting."""
+        t = _transport()
+        t._defaults = RequestDefaults(temperature=1, model="gpt-6.1-sol")
+        chat_calls: list = []
+        resp_calls: list = []
+
+        async def _chat(**kwargs: object) -> None:
+            chat_calls.append(kwargs)
+            raise RuntimeError(
+                "Function tools with reasoning_effort are not supported for this model in "
+                "/v1/chat/completions. To use function tools, use /v1/responses or set "
+                "reasoning_effort to 'none'."
+            )
+
+        def _resp(**kwargs: object) -> _FakeStreamingResponse:
+            resp_calls.append(kwargs)
+            return _FakeStreamingResponse([_DONE])
+
+        t._client = MagicMock()
+        t._client.chat.completions.create = AsyncMock(side_effect=_chat)
+        t._client.responses.with_streaming_response.create = MagicMock(side_effect=_resp)
+
+        [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+
+        assert len(chat_calls) == 1
+        assert len(resp_calls) == 1, "retry must go to the Responses API"
+        assert "reasoning" not in resp_calls[0]
+        assert t._defaults.use_responses_api is True
 
     @pytest.mark.asyncio
     async def test_reasoning_mandatory_conflict_bumps_off_a_disabled_value(self) -> None:
@@ -510,6 +563,16 @@ class _FakeStreamingResponse:
     async def iter_bytes(self):
         for c in self._chunks:
             yield c
+
+
+def test_gpt6_responses_request_keeps_temperature_one() -> None:
+    """gpt-6 on the Responses API keeps temperature=1 alongside reasoning.
+    Azure accepts that for gpt-6-luna and gpt-6.1-sol, so only gpt-5.x has
+    temperature dropped here, as langchain-openai does."""
+    for model in ("gpt-6-luna", "gpt-6.1-sol"):
+        defaults = RequestDefaults(temperature=1, reasoning={"effort": "high"},
+                                   use_responses_api=True, model=model)
+        assert defaults.request_kwargs() == {"temperature": 1, "reasoning": {"effort": "high"}}
 
 
 def _responses_transport(chunks: list[bytes]) -> AzureOpenAITransport:

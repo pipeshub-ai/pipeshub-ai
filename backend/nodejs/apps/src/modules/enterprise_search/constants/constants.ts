@@ -15,9 +15,8 @@ export const CONVERSATION_STATUS = {
   FAILED: 'Failed' as const,
   INPROGRESS: 'Inprogress' as const,
   NONE: 'None' as const,
-  /** Cooperatively cancelled (Phase 3) or ended by a passive disconnect
-   * before completion (Phase 2) — the persisted message carries whatever
-   * partial answer the user had already seen. */
+  /** Cooperatively cancelled by the user, or abandoned after the detached-run
+   * cap — the persisted message carries whatever partial answer had streamed. */
   STOPPED: 'Stopped' as const,
 } as const;
 

@@ -17,6 +17,7 @@ import { IRedisConnectionProvider } from '../../src/libs/services/redis/connecti
 
 const DEFAULT_STUBBED_COMMANDS = [
   'get',
+  'mget',
   'set',
   'del',
   'getBuffer',
@@ -39,7 +40,9 @@ const DEFAULT_STUBBED_COMMANDS = [
   'xautoclaim',
   'type',
   'script',
+  'evalsha',
   'keys',
+  'getdel',
 ] as const;
 
 type StubbedCommand = (typeof DEFAULT_STUBBED_COMMANDS)[number];
@@ -52,6 +55,7 @@ export interface FakeRedisClient extends EventEmitter {
   multi: sinon.SinonStub;
   pipeline: sinon.SinonStub;
   get: sinon.SinonStub;
+  mget: sinon.SinonStub;
   set: sinon.SinonStub;
   del: sinon.SinonStub;
   getBuffer: sinon.SinonStub;
@@ -74,7 +78,9 @@ export interface FakeRedisClient extends EventEmitter {
   xautoclaim: sinon.SinonStub;
   type: sinon.SinonStub;
   script: sinon.SinonStub;
+  evalsha: sinon.SinonStub;
   keys: sinon.SinonStub;
+  getdel: sinon.SinonStub;
 }
 
 export function makeFakeRedisClient(

@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.s3.base_connector import (
@@ -78,6 +79,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     u = User(
         email="user@test.com",
@@ -314,11 +317,10 @@ class TestCreateRecordGroupsForBuckets:
     async def test_personal_scope_user_lookup_fails(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
-        # Make user lookup fail
-        provider = _make_mock_data_store_provider(user=None)
-        s3_connector.data_store_provider = provider
+        s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
-        # Should still create record groups with fallback permissions
+        # Buckets carry no permission edges, so the creator is never looked up here.
+        s3_connector.data_entities_processor.get_user_by_user_id.assert_not_awaited()
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
 
@@ -331,14 +333,8 @@ class TestDateFiltersExtended:
         obj = {"Key": "file.txt", "LastModified": now}
         past_ms = int((now.timestamp() - 3600) * 1000)
         future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, past_ms, future_ms, None, None) is True
+        assert s3_connector._pass_date_filters(obj, past_ms, future_ms) is True
 
-    def test_pass_date_filters_all_filters_pass(self, s3_connector):
-        now = datetime.now(timezone.utc)
-        obj = {"Key": "file.txt", "LastModified": now}
-        past_ms = int((now.timestamp() - 3600) * 1000)
-        future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, past_ms, future_ms, past_ms, future_ms) is True
 
 
 # ===========================================================================
@@ -467,18 +463,22 @@ class TestProcessS3Object:
         record, perms = await s3_connector._process_s3_object(obj, "mybucket")
         assert record is not None
         assert record.id == "existing-id"
-        assert record.version == 2
+        # The processor bumps the stored version, and only when the revision changed.
+        assert record.version == 0
 
     @pytest.mark.asyncio
     async def test_move_detected(self, s3_connector):
         existing = MagicMock()
         existing.id = "moved-id"
+        existing.external_record_group_id = "mybucket"
         existing.external_record_id = "mybucket/old/path/file.txt"
         existing.external_revision_id = "mybucket/same_etag"
         existing.version = 0
         existing.source_created_at = 1700000000000
         s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         s3_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        # The old key is gone from the bucket, so equal content at the new key is a move.
+        s3_connector.data_source = MagicMock(head_object=AsyncMock(return_value=MagicMock(success=False, status_code=404, error="404: Not Found")))
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -531,24 +531,21 @@ class TestCreateS3Permissions:
     async def test_team_scope(self, s3_connector):
         s3_connector.scope = ConnectorScope.TEAM.value
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
 
 # ===========================================================================
@@ -565,7 +562,7 @@ class TestTestConnectionAndAccess:
     async def test_success(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(
-            return_value=_make_response(True)
+            return_value=_make_response(True, {"Buckets": []})
         )
         result = await s3_connector.test_connection_and_access()
         assert result is True
@@ -576,15 +573,19 @@ class TestTestConnectionAndAccess:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="Access denied")
         )
-        result = await s3_connector.test_connection_and_access()
-        assert result is False
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
+
+        with pytest.raises(ConnectorInitError, match="Access denied"):
+            await s3_connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(side_effect=Exception("err"))
-        result = await s3_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="err"):
+            await s3_connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -729,7 +730,8 @@ class TestRunSyncExtended:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="err")
         )
-        await s3_connector.run_sync()
+        with pytest.raises(ConnectionError, match="err"):
+            await s3_connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -751,8 +753,9 @@ class TestRunSyncExtended:
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         s3_connector._create_record_groups_for_buckets = AsyncMock()
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("sync error"))
-        # Should not raise
-        await s3_connector.run_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await s3_connector.run_sync()
 
 
 # ===========================================================================
@@ -925,7 +928,7 @@ class TestGetFilterOptions:
     async def test_no_buckets(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(
-            return_value=_make_response(True, {})
+            return_value=_make_response(True, {"Buckets": []})
         )
         result = await s3_connector.get_filter_options("buckets")
         assert result.success is True
@@ -1085,7 +1088,8 @@ class TestCheckAndFetchUpdatedRecord:
         result = await s3_connector._check_and_fetch_updated_record("org-1", record)
         assert result is not None
         updated_record, perms = result
-        assert updated_record.version == 2
+        # The processor bumps the stored version, and only when the revision changed.
+        assert updated_record.version == 0
 
     @pytest.mark.asyncio
     async def test_exception(self, s3_connector):
@@ -1165,7 +1169,9 @@ class TestRunIncrementalSync:
         s3_connector.bucket_name = "mybucket"
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("sync error"))
-        await s3_connector.run_incremental_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await s3_connector.run_incremental_sync()
 
 
 # ===========================================================================
@@ -1227,13 +1233,11 @@ class TestCreateS3PermissionsEdgeCases:
             side_effect=Exception("DB error")
         )
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
-    async def test_exception_fallback(self, s3_connector):
+    async def test_unknown_scope_never_grants_the_org(self, s3_connector) -> None:
         s3_connector.scope = "INVALID"
-        # Force an exception in permissions logic
-        s3_connector.data_entities_processor.org_id = "org-1"
+        s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) >= 1
+        assert perms == []

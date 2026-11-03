@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import Image from 'next/image';
 import { Box, Flex, Text, Button } from '@radix-ui/themes';
+import { BrandMark } from '@/config';
+import { useBrand } from '@/lib/branding';
 import {
   PASSWORD_RESET_FAILURE_VARIANT,
   PASSWORD_RESET_FAILURE_MESSAGE_KEYS,
@@ -20,16 +22,22 @@ export default function PasswordResetFailure({
 }: PasswordResetFailureProps) {
   const router = useRouter();
   const { t } = useTranslation();
+  const brand = useBrand();
   const message = t(PASSWORD_RESET_FAILURE_MESSAGE_KEYS[variant]);
 
   return (
     <Box style={{ width: '100%', maxWidth: '440px' }}>
       <Box style={{ marginBottom: '24px' }}>
-        <Image
-          src="/login-page-assets/pipeshub/white-square.svg"
-          alt="Pipeshub"
-          width={48}
-          height={48}
+        <BrandMark
+          size={48}
+          fallback={
+            <Image
+              src="/login-page-assets/pipeshub/white-square.svg"
+              alt={brand.productName}
+              width={48}
+              height={48}
+            />
+          }
         />
       </Box>
 

@@ -1,0 +1,401 @@
+"""``search_by_entities``: passages from the records that mention the named
+entities an agent names, linked by ``app.modules.named_entities.linking``.
+
+The agent passes names (several at once, a kind each if it knows one). Each is
+linked to stored entities: an exact readable match settles it, anything else
+goes through one model check that may say none of the look-alikes is the same
+thing. The readable records that mention the linked entities, all of them
+together for ``match="all"``, are then searched with the query (the names when
+none is given) through ``execute_search``, which renders and cites them as any
+search does. A resolution header opens the result.
+
+Offered only when the deployment turns it on (``agent_loop/entity_search_tool``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import TYPE_CHECKING, Any
+
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    NAMED_ENTITIES_DISABLED_MSG,
+    _named_entities_enabled,
+)
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
+    load_entity_access_context,
+)
+from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
+from app.agents.actions.knowledge_graph.ops.search import execute_search
+from app.agents.actions.knowledge_graph.views import _short, _trunc
+from app.agents.agent_loop.protocol.run_usage import (
+    ENTITY_LINKING_SOURCE,
+    llm_usage_reporter,
+)
+from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.config import load_named_entity_config
+from app.modules.named_entities.domain.kinds import kind_family
+from app.modules.named_entities.linking.candidates import (
+    MAX_CANDIDATES,
+    CandidateFinder,
+    CandidateSource,
+)
+from app.modules.named_entities.linking.mentions import parse_mentions
+from app.modules.named_entities.linking.records import (
+    NEARBY,
+    NEARBY_BLOCKS,
+    readable_records,
+)
+from app.modules.named_entities.linking.service import (
+    EntityLinker,
+    LinkStatus,
+    record_count_label,
+)
+from app.modules.named_entities.linking.verifier import LlmMentionVerifier
+from app.modules.retrieval.entity_permissions import (
+    EntityAccessError,
+    search_entities_for_user,
+)
+from app.modules.retrieval.provenance import note_retrieved_by
+from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agent_loop_lib.core.messages import Part
+    from app.modules.agents.qna.chat_state import ChatState
+    from app.modules.named_entities.linking.candidates import Candidate, DenseSearch
+    from app.modules.named_entities.linking.records import RecordScope
+    from app.modules.named_entities.linking.service import Linking, LinkResult
+    from app.modules.retrieval.entity_permissions import EntityAccessContext, EntityHit
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+    from app.utils.chat_helpers import RecordIdShortener
+
+logger = logging.getLogger(__name__)
+
+NAMED_ENTITY = "named_entity"
+DEADLINE_SECONDS = 20.0
+TOGETHER_SHOWN = 3
+VERIFIER_LLM_ROLE = "query"
+# Inside the verifier's own deadline; a stalled config read must not use it up.
+VERIFIER_LLM_LOOKUP_SECONDS = 3.0
+NO_NAMES_MSG = (
+    "Pass the names to look up as mentions=[{\"name\": \"Contoso\", \"kind\": \"organization\"}, ...]."
+)
+TOO_SLOW_MSG = "The entity lookup took too long — try again with fewer names."
+# Records indexed before extraction was turned on have no entities until they
+# are indexed again, so a miss here is not evidence of absence.
+COUNT_NOTE = (
+    "counts are records linked to these entities; a record that spells a name differently may not be "
+    "linked, so a count is a minimum."
+)
+COVERAGE_NOTE = (
+    "Only records indexed while named-entity extraction was on are linked to names, so a name "
+    "not found here may still be written in older records; search the text before concluding "
+    "it is absent."
+)
+
+
+async def execute_search_by_entities(
+    state: ChatState,
+    *,
+    mentions: Any = None,  # noqa: ANN401 - tool argument, any JSON shape
+    match: str | None = None,
+    query: str | None = None,
+) -> tuple[bool, str] | str | list[Part]:
+    if not state:
+        return False, LOOKUP_FAILED_MSG
+    if not await _named_entities_enabled(state):
+        return False, NAMED_ENTITIES_DISABLED_MSG
+    parsed = parse_mentions(mentions)
+    notes = list(parsed.notes)
+    if not parsed.mentions:
+        return False, " ".join([*notes, NO_NAMES_MSG])
+    match_text = match.strip().casefold() if isinstance(match, str) and match.strip() else "any"
+    if match_text not in {"any", "all"}:
+        notes.append(f"match '{match}' is not 'any' or 'all'; used 'any'.")
+        match_text = "any"
+    match_all = match_text == "all" and len(parsed.mentions) > 1
+
+    graph = state.get("graph_provider")
+    if graph is None:
+        return False, LOOKUP_FAILED_MSG
+    started = time.monotonic()
+    try:
+        context, config = await asyncio.gather(
+            load_entity_access_context(state), load_named_entity_config(state.get("config_service")),
+        )
+        linker = build_linker(state, graph, context, aliases=config.link_aliases)
+        linking = await asyncio.wait_for(
+            linker.link(parsed.mentions, question=str(state.get("query") or "")), timeout=DEADLINE_SECONDS,
+        )
+        scope = await asyncio.wait_for(
+            readable_records(graph, context, linking.results, match_all=match_all),
+            timeout=max(1.0, DEADLINE_SECONDS - (time.monotonic() - started)),
+        )
+    except TimeoutError:
+        logger.warning("search_by_entities: deadline after %dms", int((time.monotonic() - started) * 1000))
+        return False, TOO_SLOW_MSG
+    except EntityAccessError:
+        logger.warning("search_by_entities: access check failed", exc_info=True)
+        return False, LOOKUP_FAILED_MSG
+    except Exception:
+        # A failed lookup must read as a failure, never as "no records".
+        logger.exception("search_by_entities: lookup failed")
+        return False, LOOKUP_FAILED_MSG
+
+    shortener = get_record_id_shortener_if_enabled(state)
+    together = _together_records(scope)
+    remember_record_ids(state, together, names={key: scope.record_names.get(key, "") for key in together})
+    preamble = render_preamble(linking, scope, match_all=match_all, notes=notes, shortener=shortener)
+    _log(linking, scope, started)
+
+    if not scope.virtual_record_ids:
+        return True, " ".join(filter(None, (
+            preamble + _nothing_to_search(linking, match_all=match_all), limited_scope_note(context),
+        )))
+
+    # Every name asked, linked or not: an unlinked one may still be in the text.
+    names = [result.mention.name for result in linking.results]
+    shown_before = set(state.get("virtual_record_id_to_result") or {})
+    result = await execute_search(
+        state, (query or "").strip() or " ".join(names),
+        scope_virtual_record_ids=scope.virtual_record_ids, preamble=preamble,
+    )
+    in_scope = set(scope.virtual_record_ids)
+    shown = state.get("virtual_record_id_to_result") or {}
+    note_retrieved_by(state, "entity", [
+        (vrid, record.get("id"), record.get("record_name"))
+        for vrid, record in shown.items()
+        if vrid not in shown_before and vrid in in_scope and isinstance(record, dict)
+    ])
+    return result
+
+
+def build_linker(
+    state: ChatState, graph: IGraphDBProvider, context: EntityAccessContext, *, aliases: bool,
+) -> EntityLinker:
+    """The name linker this tool uses; ``find_records_by_value`` links its ``name`` with it too.
+    ``aliases`` is the org's link-aliases setting (``NamedEntityConfig.link_aliases``)."""
+    return EntityLinker(
+        CandidateFinder(graph, context, dense=_dense_search(state, graph, context), aliases=aliases),
+        _verifier(state),
+        graph,
+        context.org_id,
+    )
+
+
+def accepted_caveats(result: LinkResult, names: dict[str, str]) -> str:
+    """What an accepted name may have left out: namesakes, longer names not included or not
+    checked, look-alikes that are not the same. Empty when there is nothing to add."""
+    mention = result.mention
+    line = ""
+    if result.namesakes:
+        line += (
+            f" Several people are named \"{_trunc(mention.name)}\": {_counted(result.namesakes, names)}. "
+            f"The name alone may mean any of them: say which one is meant, or call again with the full name."
+        )
+    if result.left_out:
+        line += (
+            f" Other names that start with it, not included: {_entities(result.left_out, names)}; "
+            "call again with the full name to include one."
+        )
+    if result.rejected:
+        line += f" Not the same: {_entities(result.rejected, names)}."
+    if result.unchecked:
+        line += (
+            f" Longer names that may be the same could not be checked and were not used: "
+            f"{_entities(result.unchecked, names)}; call again with the full name to include one."
+        )
+    if result.more_longer_names:
+        line += " Many more readable names start with it; call again with the full name to include one."
+    return line + _more_related(result)
+
+
+def unlinked_line(result: LinkResult, names: dict[str, str]) -> str:
+    """Why a name linked to no entity, with what to call instead."""
+    return _line(result, names, "0")
+
+
+def _dense_search(state: ChatState, graph: IGraphDBProvider, context: EntityAccessContext) -> DenseSearch | None:
+    store = state.get("entity_vector_store")
+    if store is None:
+        return None
+
+    async def _search(name: str, kinds: list[str]) -> list[EntityHit]:
+        return await search_entities_for_user(
+            store, graph, context, name, entity_types=[NAMED_ENTITY], kinds=kinds, top_k=MAX_CANDIDATES,
+        )
+
+    return _search
+
+
+def _verifier(state: ChatState) -> LlmMentionVerifier:
+    from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+
+    async def _model() -> tuple[BaseChatModel | None, str]:
+        return await verifier_model(state)
+
+    return LlmMentionVerifier(
+        _model,
+        on_llm_usage=llm_usage_reporter(state, ENTITY_LINKING_SOURCE),
+        callbacks=build_langchain_opik_callbacks(),
+    )
+
+
+async def verifier_model(state: ChatState) -> tuple[BaseChatModel | None, str]:
+    """The ``query``-role model at low effort (the default model when the role
+    is unassigned), as grep-command generation uses; the chat's own model when
+    none can be built, so a deployment without roles still checks names."""
+    from app.utils.llm import get_llm_for_role
+
+    config_service = state.get("config_service")
+    if config_service is not None:
+        try:
+            llm, config = await asyncio.wait_for(
+                get_llm_for_role(config_service, VERIFIER_LLM_ROLE, reasoning_effort="low"),
+                timeout=VERIFIER_LLM_LOOKUP_SECONDS,
+            )
+            configuration = (config or {}).get("configuration") or {}
+            return llm, str(configuration.get("model") or (config or {}).get("modelKey") or "")
+        except Exception as exc:  # the chat's model below keeps the check running
+            logger.info("search_by_entities: no low-effort model for the name check, using the chat's: %r", exc)
+    return state.get("llm"), ""
+
+
+def _together_records(scope: RecordScope) -> list[str]:
+    nearby = [key for key in scope.record_ids if scope.together.get(key, (NEARBY + 1, -1))[0] <= NEARBY]
+    return nearby[:TOGETHER_SHOWN]
+
+
+def render_preamble(
+    linking: Linking,
+    scope: RecordScope,
+    *,
+    match_all: bool,
+    notes: list[str],
+    shortener: RecordIdShortener | None = None,
+) -> str:
+    counts = {name.mention: name.count_label for name in scope.per_name}
+    lines = ["Entities:"]
+    lines.extend(_line(result, linking.names, counts.get(result.mention.name, "0")) for result in linking.results)
+    if match_all and scope.virtual_record_ids:
+        lines.append(_together_line(scope, shortener))
+    if linking.timed_out:
+        lines.append("Note: access checks were cut short for this call, so results may be incomplete; retry.")
+    if scope.note:
+        lines.append(f"Note: {scope.note.strip()}")
+    lines.extend(f"Note: {note}" for note in notes)
+    if any(result.accepted or result.namesakes for result in linking.results):
+        lines.append(f"Note: {COUNT_NOTE}")
+    # Namesakes were found: the name is ambiguous, not absent.
+    unresolved = [result for result in linking.results if not result.accepted and not result.namesakes]
+    if unresolved or (not scope.virtual_record_ids and not any(result.namesakes for result in linking.results)):
+        lines.append(f"Note: {COVERAGE_NOTE}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
+    mention = result.mention
+    asked = f'"{_trunc(mention.name)}"' + (f" ({mention.kind_hint.value})" if mention.kind_hint else "")
+    if result.status in (LinkStatus.MATCHED, LinkStatus.CHECKED):
+        how = "exact match" if result.status is LinkStatus.MATCHED else "checked"
+        entities = ", ".join(_entity(c, names) for c in result.accepted)
+        line = f"- {asked}: {entities}; {how}; mentioned in {count} readable record{'' if count == '1' else 's'}."
+        line += accepted_caveats(result, names)
+        # The passages below are a ranked sample; the listing names every readable record.
+        return line + " Every record: " + "; ".join(
+            f'knowledgegraph__find_records_by_entity(entity_id="{c.entity_id}", entity_type="named_entity")'
+            for c in result.accepted
+        ) + "."
+    if result.status is LinkStatus.AMBIGUOUS:
+        if result.namesakes:
+            line = (
+                f"- {asked}: several readable people have this first name: {_counted(result.namesakes, names)}. "
+                "Call again with the full name of the one you mean."
+            )
+            if result.rejected:
+                line += f" Not the same: {_entities(result.rejected, names)}."
+            return line
+        return f"- {asked}: too many readable entities start with this name; give the full name."
+    if result.status is LinkStatus.UNVERIFIED:
+        line = (
+            f"- {asked}: possible matches could not be checked and were not used: "
+            f"{_entities(result.unchecked, names)}. Call again with the exact name of the one you mean."
+        )
+        if result.namesakes:
+            line += f" Several readable people also have this first name: {_counted(result.namesakes, names)}."
+        return line + _more_related(result)
+    line = f"- {asked}: no readable entity by this name."
+    if result.rejected:
+        line += f" Not the same: {_entities(result.rejected, names)}."
+    return line + _more_related(result)
+
+
+def _more_related(result: LinkResult) -> str:
+    """Names under a related kind the candidate cap kept from the check."""
+    hint = result.mention.kind_hint
+    if not result.more_related_names or hint is None:
+        return ""
+    kinds = " or ".join(k.value for k in kind_family(hint) if not result.mention.settles(k))
+    return (
+        f" More readable names filed as {kinds} start with it and were not checked; "
+        f"call again with that kind or the full name to include them."
+    )
+
+
+def _entity(candidate: Candidate, names: dict[str, str]) -> str:
+    # A learned short form or full form of the name asked: the same thing written another way.
+    alias = ", same entity by a learned alias" if candidate.source is CandidateSource.ALIAS else ""
+    return f"{_trunc(names.get(candidate.entity_id, candidate.name))} ({candidate.kind or 'entity'}{alias})"
+
+
+def _entities(candidates: list[Candidate], names: dict[str, str]) -> str:
+    return ", ".join(_entity(c, names) for c in candidates)
+
+
+def _counted(candidates: list[Candidate], names: dict[str, str]) -> str:
+    return ", ".join(
+        f"{_trunc(names.get(c.entity_id, c.name))} ({c.kind or 'entity'}, {record_count_label(c)})" for c in candidates
+    )
+
+
+def _together_line(scope: RecordScope, shortener: RecordIdShortener | None) -> str:
+    nearby = _together_records(scope)
+    line = f"Together: {len(scope.record_ids)} readable record(s) searched"
+    if not nearby:
+        return line + "."
+    shown = "; ".join(
+        f"{_trunc(scope.record_names.get(key) or key)} (block {scope.together[key][1]}): "
+        f"knowledgegraph__fetch_record(record_ids=[\"{_short(key, shortener)}\"], "
+        f"start_block={max(0, scope.together[key][1] - NEARBY_BLOCKS)})"
+        for key in nearby
+    )
+    return f"{line}; within {NEARBY_BLOCKS} blocks of each other in: {shown}."
+
+
+def _nothing_to_search(linking: Linking, *, match_all: bool) -> str:
+    if not any(result.accepted for result in linking.results):
+        if any(result.namesakes for result in linking.results):
+            return "No name resolved to one entity; call again with the full name of the person meant, listed above."
+        return "No readable record mentions these names as entities."
+    if match_all:
+        return "No readable record mentions all of them; try match=\"any\" or fewer names."
+    return "No readable record mentions them."
+
+
+def _log(linking: Linking, scope: RecordScope, started: float) -> None:
+    statuses: dict[str, int] = {}
+    for result in linking.results:
+        statuses[result.status.value] = statuses.get(result.status.value, 0) + 1
+    logger.info(
+        "search_by_entities names=%d statuses=%s namesakes=%d verifier=%s timed_out=%s scope=%d nearby=%d latency_ms=%d",
+        len(linking.results), statuses, sum(bool(r.namesakes) for r in linking.results),
+        linking.verifier_called, linking.timed_out,
+        len(scope.virtual_record_ids), len(_together_records(scope)), int((time.monotonic() - started) * 1000),
+    )
+
+
+__all__ = ["execute_search_by_entities", "render_preamble", "verifier_model"]

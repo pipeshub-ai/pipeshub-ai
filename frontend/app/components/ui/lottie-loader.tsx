@@ -3,17 +3,13 @@
 import React from 'react';
 import dynamic from 'next/dynamic';
 import { Flex, Text } from '@radix-ui/themes';
+import { BrandMark } from '@/config';
 
 // Lightweight fallback rendered when the Lottie chunk hasn't loaded yet
 // or when it fails to load (e.g. navigation interrupts the download).
 function LogoFallback(props: { style?: React.CSSProperties }) {
-  return (
-    <img
-      src="/logo/pipes-hub.svg"
-      alt=""
-      style={{ width: 48, height: 48, ...props.style }}
-    />
-  );
+  const style = { width: 48, height: 48, ...props.style };
+  return <BrandMark size={48} style={style} fallback={<img src="/logo/pipes-hub.svg" alt="" style={style} />} />;
 }
 
 // @lottiefiles/dotlottie-react accesses `document` at module init — must be
@@ -69,6 +65,42 @@ const LOTTIE_MAP: Record<LottieVariant, string> = {
   still: '/lottie-files/Still.lottie',
 };
 
+// The player fetches `src` itself and aborts that fetch when it unmounts, then
+// logs the AbortError with console.error. Loaders mount and unmount quickly
+// while a chat streams, so each file is fetched once, outside any component,
+// and the player gets the bytes.
+const lottieDataCache = new Map<string, Promise<ArrayBuffer | null>>();
+
+function loadLottieData(src: string): Promise<ArrayBuffer | null> {
+  let pending = lottieDataCache.get(src);
+  if (!pending) {
+    pending = fetch(src)
+      .then((res) => (res.ok ? res.arrayBuffer() : null))
+      .catch(() => null)
+      .then((data) => {
+        if (!data) lottieDataCache.delete(src);
+        return data;
+      });
+    lottieDataCache.set(src, pending);
+  }
+  return pending;
+}
+
+function useLottieData(src: string): ArrayBuffer | null | undefined {
+  const [data, setData] = React.useState<ArrayBuffer | null | undefined>(undefined);
+  React.useEffect(() => {
+    let alive = true;
+    setData(undefined);
+    void loadLottieData(src).then((loaded) => {
+      if (alive) setData(loaded);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [src]);
+  return data;
+}
+
 export function LottieLoader({
   variant = 'loader',
   size = 32,
@@ -78,10 +110,13 @@ export function LottieLoader({
   showLabel = false,
   label = 'Loading...',
 }: LottieLoaderProps) {
-  const lottie = (
+  const data = useLottieData(LOTTIE_MAP[variant]);
+  const lottie = !data ? (
+    <LogoFallback style={{ width: size, height: size, ...style }} />
+  ) : (
     <LottieErrorBoundary fallbackSize={size}>
       <DotLottieReact
-        src={LOTTIE_MAP[variant]}
+        data={data}
         loop={loop}
         autoplay={autoplay}
         style={{

@@ -3,6 +3,8 @@
 import React from 'react';
 import Image from 'next/image';
 import { Box, Flex, Text } from '@radix-ui/themes';
+import { BrandMark, BrandWordmark } from '@/config';
+import { useBrand } from '@/lib/branding';
 
 // ─── Connector icons (order matches Figma layout, left to right) ─────────────
 
@@ -42,14 +44,15 @@ export interface AuthHeroProps {
  * Mirrors the Figma "Login Frame" (node 5005:4512) at 826×1024 reference size.
  */
 export default function AuthHero({ splitLayout }: AuthHeroProps) {
+  const brand = useBrand();
   if (!splitLayout) return null;
 
   return (
     <Box
+      className="viewport-height"
       style={{
         position: 'relative',
         flex: '0 0 57%',
-        height: '100vh',
         overflow: 'hidden',
         backgroundColor: '#0a0a0c',
       }}
@@ -97,7 +100,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
           fontFamily: 'ClashGrotesk, sans-serif',
         }}
       >
-        Explainable Enterprise Search for modern enterprises.
+        {brand.tagline}
       </Text>
 
       {/* ── Search pill ──────────────────────────────────────────── */}
@@ -107,7 +110,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
           left: '50%',
           top: '42.3%',
           transform: 'translateX(-50%)',
-          width: '559px',
+          width: 'min(559px, 90%)',
           height: '74px',
           backgroundColor: 'rgba(31, 31, 31, 0.8)',
           backdropFilter: 'blur(5px)',
@@ -128,13 +131,19 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
             gap: '14px',
           }}
         >
-          {/* Pipeshub logo mark */}
-          <Image
-            src="/login-page-assets/pipeshub/white-square.svg"
+          <BrandMark
+            size={33}
             alt=""
-            width={33}
-            height={33}
-            style={{ flexShrink: 0, opacity: 0.9 }}
+            style={{ opacity: 0.9 }}
+            fallback={
+              <Image
+                src="/login-page-assets/pipeshub/white-square.svg"
+                alt=""
+                width={33}
+                height={33}
+                style={{ flexShrink: 0, opacity: 0.9 }}
+              />
+            }
           />
 
           {/* Search text */}
@@ -217,13 +226,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
           zIndex: 1,
         }}
       >
-        <Image
-          src="/login-page-assets/pipeshub/white-horizontal.svg"
-          alt="Pipeshub"
-          width={170}
-          height={45}
-          style={{ opacity: 0.95 }}
-        />
+        <BrandWordmark />
       </Box>
     </Box>
   );

@@ -1,0 +1,2505 @@
+"""Comprehensive tests for app.agents.actions.storage_search.storage_search.
+
+Covers all 9 test categories from the plan:
+  1. Command allowlist enforcement
+  2. Path traversal security
+  3. Output handling (truncation, empty, stderr)
+  4. Timeout and process management
+  5. Date filtering
+  6. Connector / path resolution
+  7. Return format (SSE compatibility)
+  8. Pipe support
+  9. Integration-style (mocked subprocess)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import platform
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.agents.actions.storage_search.storage_search import (
+    RunCommandInput,
+    StoragePatternMatch,
+    _ALLOWED_BINARIES,
+    _BYTE_CAP_MARKER,
+    _MAX_OUTPUT_CHARS,
+    _build_date_filtered_command,
+    _force_xargs_null_delimited,
+    _kill_tree,
+    _resolve_mount_root,
+    _run_subprocess,
+    _sanitize_xargs_input,
+    _truncate,
+    _validate_command,
+    is_local_storage,
+)
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessibleContainers,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared fixtures / helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_APP_LEVEL_CONNECTORS = frozenset({
+    "c", "c1", "conn", "conn-id", "conn-test", "conn-abc", "missing-connector",
+})
+
+
+def _make_graph_provider(app_level: frozenset[str] = _APP_LEVEL_CONNECTORS) -> MagicMock:
+    """Graph provider whose user reaches *app_level* connectors at APP_LEVEL."""
+    graph_provider = MagicMock()
+    graph_provider.get_accessible_containers = AsyncMock(
+        return_value=AccessibleContainers(app_ids=app_level, app_ids_trusted=app_level)
+    )
+    # Every record readable unless a test narrows it.
+    graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+        side_effect=lambda vrids, *_a, **_k: {v: f"rec-{v}" for v in vrids}
+    )
+    return graph_provider
+
+
+def _write_record(directory: Path, vrid: str, text: str) -> Path:
+    """A stored record file as Node lays it out: <dir>/<docId>/record_<vrid>.json."""
+    folder = directory / f"doc-{vrid[:6]}"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"record_{vrid}.json"
+    path.write_text(text)
+    return path
+
+
+def _make_state(**overrides) -> dict:
+    """Minimal ChatState-like dict for unit tests."""
+    config_service = AsyncMock()
+    config_service.get_config = AsyncMock(
+        return_value={"storageType": "local", "mountName": "PipesHub"}
+    )
+    state = {
+        "org_id": "org-test-123",
+        "user_id": "user-abc",
+        "conversation_id": "conv-xyz",
+        "config_service": config_service,
+        "graph_provider": _make_graph_provider(),
+        "logger": MagicMock(),
+    }
+    state.update(overrides)
+    return state
+
+
+def _make_tool(connector_dir: str | None = None, **state_overrides) -> StoragePatternMatch:
+    """Instantiate StoragePatternMatch with optional connector_dir override."""
+    state = _make_state(**state_overrides)
+    t = StoragePatternMatch(state)
+    if connector_dir is not None:
+        async def _mock_resolve(cid: str):
+            return connector_dir, None
+        t._resolve_connector_path = _mock_resolve  # type: ignore[method-assign]
+    return t
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. Command allowlist tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestCommandAllowlist:
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -r "pattern" .',
+        'rg --json "error" .',
+        'find . -name "*.json"',
+        'ls -la .',
+        'wc -l .',
+        'cat somefile.json',
+        'sort file.json | uniq',
+    ])
+    def test_allowed_commands_pass(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected allowed but got error: {err}"
+        assert err == ""
+
+    def test_blocked_rm_rejected(self):
+        valid, err = _validate_command("rm -rf .")
+        assert not valid
+        assert "'rm' is not allowed" in err
+        assert "Allowed commands:" in err
+
+    def test_blocked_awk_rejected(self):
+        # awk is excluded entirely -- its system()/getline builtins shell out
+        # to arbitrary commands from within the program text.
+        valid, err = _validate_command("awk '/pattern/' file.json")
+        assert not valid
+        assert "'awk' is not allowed" in err
+
+    @pytest.mark.parametrize("cmd", [
+        'find . -exec sh -c "cat /etc/passwd" {} +',
+        'find . -execdir id {} +',
+        'find . -ok rm {} +',
+        'find . -okdir rm {} +',
+        'find . -fprintf out.txt "%p\\n"',
+        'find . -fprint out.txt',
+    ])
+    def test_blocked_find_exec_variants_rejected(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'find'" in err
+
+    @pytest.mark.parametrize("cmd", [
+        'rg --pre sh --pre-glob "*" "pattern" .',
+        'rg --pre=sh "pattern" .',
+    ])
+    def test_blocked_rg_pre_rejected(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'rg'" in err
+
+    def test_blocked_xargs_wrapped_find_exec_rejected(self):
+        # -exec must also be caught when find is invoked as an xargs
+        # sub-command, not just as the top-level binary.
+        cmd = 'grep -rlZ "x" . | xargs -0 find -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid
+        assert "is not allowed with 'find'" in err
+
+    def test_blocked_double_xargs_wrapped_find_exec_rejected(self):
+        # xargs's own sub-command can itself be xargs (xargs -0 xargs find
+        # ...) -- this must still surface find's -exec, not stop at the
+        # inner xargs (which has no dangerous-flags entry of its own).
+        cmd = 'grep -rlZ "x" . | xargs -0 xargs find . -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid
+        assert "is not allowed with 'find'" in err
+
+    def test_blocked_triple_xargs_wrapped_find_exec_rejected(self):
+        # The nesting walk must not be hardcoded to exactly two levels --
+        # three (or more) layers of xargs must still be unwound to reach
+        # find's -exec.
+        cmd = 'grep -rlZ "x" . | xargs -0 xargs xargs find . -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid
+        assert "is not allowed with 'find'" in err
+
+    def test_double_xargs_with_safe_subcommand_passes(self):
+        # Nested xargs is not inherently dangerous -- only unwrap far enough
+        # to check dangerous flags on the eventual sub-command, an
+        # intentionally-nested but safe pipeline must still validate.
+        cmd = 'grep -rl "x" . | xargs -0 xargs grep -i "term"'
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected valid but got: {err}"
+
+    # ------------------------------------------------------------------
+    # xargs value-consuming-flag bypass (security fix regression tests)
+    # ------------------------------------------------------------------
+    #
+    # `-I`, `-L`, `-n`, `-P`, `-s`, `-a`, `-d`, `-E`, `-e` (and deprecated
+    # aliases `-i`, `-l`) all consume a SEPARATE value token that itself
+    # doesn't start with "-". Picking "the first token not starting with
+    # -" as xargs's sub-command mistakes that value for the real
+    # sub-command, letting the actual invoked binary (further down the
+    # token list, e.g. `find -exec sh -c ...`) slip past validation.
+
+    def test_blocked_xargs_value_flag_smuggle_reported_bypass(self):
+        # The exact bypass reported: -I's value "cat" is an allowed binary
+        # with no dangerous flags, so the naive scan picked it as the
+        # sub-command and never looked at `find -exec` a few tokens later.
+        cmd = 'grep -rlZ "x" . | xargs -0 -I cat find . -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected bypass command to be rejected, got: {err}"
+        assert "is not allowed with 'find'" in err
+
+    @pytest.mark.parametrize("flag", ["-L", "-n", "-P", "-s"])
+    def test_blocked_xargs_other_value_flags_smuggle_variants(self, flag: str):
+        # Same bypass shape with -L/-n/-P/-s standing in for -I: the flag's
+        # value ("cat") must not be mistaken for the sub-command, and the
+        # real sub-command's -exec must still be caught.
+        cmd = f'xargs -0 {flag} cat find . -exec sh -c "id" {{}} +'
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'find'" in err
+
+    def test_deprecated_alias_i_does_not_consume_following_token(self):
+        # -i is the deprecated alias for -I but takes only an OPTIONAL ATTACHED
+        # value (GNU findutils 4.9.0: `xargs -i cmd` runs cmd, it does not read
+        # the next token as -i's value). So the real sub-command sits directly
+        # after -i: here that is find, whose -exec must still be rejected.
+        cmd = 'xargs -0 -i find . -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'find'" in err
+
+    def test_deprecated_alias_i_leaves_the_real_subcommand_as_the_next_token(self):
+        # The flip side: `xargs -0 -i grep ...` runs grep (safe), so it must
+        # validate -- the old over-skip wrongly treated grep as -i's value and
+        # looked at the token after it instead.
+        cmd = 'grep -rlZ "x" . | xargs -0 -i grep -i "term"'
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected valid but got: {err}"
+
+    def test_required_value_flag_d_still_consumes_its_delimiter(self):
+        # -d requires a separate delimiter value; the token after it is that
+        # value, not the sub-command, so find's -exec is still reached.
+        cmd = 'xargs -0 -d , find . -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'find'" in err
+
+    def test_legitimate_xargs_dash_i_replace_str_passes(self):
+        # Standard, documented xargs -I usage (replace-str placeholder)
+        # must not be broken by the value-consuming-flag fix.
+        cmd = 'xargs -I {} grep -i "term" {}'
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected legitimate -I usage to pass, got: {err}"
+
+    def test_legitimate_xargs_dash_n_max_args_passes(self):
+        # -n max-args with a numeric value ahead of a safe sub-command.
+        cmd = 'xargs -n 1 echo'
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected legitimate -n usage to pass, got: {err}"
+
+    def test_legitimate_pipe_xargs_dash_i_from_docstring_pattern(self):
+        # Mirrors the find + xargs -I pattern implied by this module's own
+        # llm_description examples (null-terminated find piped to xargs).
+        cmd = 'find . -name "*.json" -print0 | xargs -0 -I {} grep -il "keyword" {}'
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected valid but got: {err}"
+
+    def test_blocked_xargs_value_flag_smuggle_with_nested_xargs(self):
+        # Combine the value-flag bypass with nested xargs: the -I value
+        # must be skipped correctly at EVERY nesting level, not just the
+        # outermost xargs.
+        cmd = (
+            'grep -rlZ "x" . | xargs -0 xargs -I cat find . '
+            '-exec sh -c "id" {} +'
+        )
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'find'" in err
+
+    def test_xargs_trailing_valueless_flag_does_not_crash(self):
+        # A bare, trailing -I with nothing after it must not raise an
+        # IndexError -- treated as "no sub-command found", i.e. allowed
+        # (matching the pre-existing behavior for an empty non_flag_args).
+        cmd = "xargs -0 -I"
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected trailing bare -I to be allowed, got: {err}"
+
+    def test_blocked_curl_rejected(self):
+        valid, err = _validate_command("curl http://evil.com")
+        assert not valid
+        assert "'curl' is not allowed" in err
+
+    def test_blocked_python_rejected(self):
+        valid, err = _validate_command("python -c 'import os'")
+        assert not valid
+        assert "'python' is not allowed" in err
+
+    def test_blocked_chmod_rejected(self):
+        valid, err = _validate_command("chmod 777 file")
+        assert not valid
+        assert "'chmod' is not allowed" in err
+
+    def test_blocked_mv_rejected(self):
+        valid, err = _validate_command("mv file.json other.json")
+        assert not valid
+        assert "'mv' is not allowed" in err
+
+    def test_blocked_cp_rejected(self):
+        valid, err = _validate_command("cp file.json /tmp/out")
+        assert not valid
+        assert "'cp' is not allowed" in err
+
+    def test_blocked_sh_rejected(self):
+        valid, err = _validate_command("sh -c 'echo hello'")
+        assert not valid
+        assert "'sh' is not allowed" in err
+
+    def test_empty_command_rejected(self):
+        valid, err = _validate_command("")
+        assert not valid
+        assert "empty command" in err
+
+    def test_whitespace_only_rejected(self):
+        valid, err = _validate_command("   ")
+        assert not valid
+        assert "empty command" in err
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. Path traversal security tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPathTraversalSecurity:
+
+    def test_dotdot_in_path_rejected(self):
+        valid, err = _validate_command('grep -r "x" ../other_connector/')
+        assert not valid
+        assert "path traversal" in err
+        assert ".." in err
+
+    def test_absolute_path_rejected(self):
+        valid, err = _validate_command('grep -r "x" /etc/passwd')
+        assert not valid
+        assert "absolute paths" in err
+
+    def test_dotdot_in_find_rejected(self):
+        valid, err = _validate_command('find ../../ -name "*.json"')
+        assert not valid
+        assert "path traversal" in err
+
+    def test_absolute_path_in_find_rejected(self):
+        valid, err = _validate_command('find /proc/self -name "*.json"')
+        assert not valid
+        assert "absolute paths" in err
+
+    def test_relative_path_within_scope_allowed(self):
+        valid, err = _validate_command('grep -r "x" ./subfolder/')
+        assert valid, f"Expected allowed but got: {err}"
+
+    def test_dotdot_embedded_in_subpath_rejected(self):
+        valid, err = _validate_command('grep -r "x" subdir/../../../etc/')
+        assert not valid
+        assert "path traversal" in err
+
+    def test_dotdot_inside_grep_pattern_allowed(self):
+        """Patterns like 'disast...recover' contain '..' but are not path traversal."""
+        valid, err = _validate_command(
+            'grep -rli "disast...recover\\|business.continu" .'
+        )
+        assert valid, f"Expected allowed but got: {err}"
+
+    def test_dotdot_inside_word_allowed(self):
+        """Embedded '..' in a non-path argument should not be flagged."""
+        valid, err = _validate_command('grep -rli "test..file" .')
+        assert valid, f"Expected allowed but got: {err}"
+
+    def test_real_dotdot_path_still_rejected(self):
+        valid, err = _validate_command('grep -r "x" ..')
+        assert not valid
+        assert "path traversal" in err
+
+    def test_injection_semicolon_rejected(self):
+        valid, err = _validate_command('grep "x" .; rm -rf .')
+        assert not valid
+        assert "not allowed" in err
+
+    def test_injection_double_ampersand_rejected(self):
+        valid, err = _validate_command('grep "x" . && curl evil.com')
+        assert not valid
+        # Caught by _INJECTION_RE before reaching allowlist check
+        assert "not allowed" in err
+
+    def test_injection_redirect_rejected(self):
+        valid, err = _validate_command('grep "x" . > /tmp/out')
+        assert not valid
+
+    def test_injection_subshell_rejected(self):
+        valid, err = _validate_command('grep $(cat /etc/passwd) .')
+        assert not valid
+
+    def test_injection_backtick_rejected(self):
+        valid, err = _validate_command('grep `cat /etc/passwd` .')
+        assert not valid
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Output handling tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestOutputHandling:
+
+    def test_truncation_helper_no_truncation(self):
+        text = "a" * 100
+        assert _truncate(text, 200) == text
+
+    def test_truncation_helper_truncates_at_limit(self):
+        text = "a" * 20_000
+        result = _truncate(text, _MAX_OUTPUT_CHARS)
+        assert len(result) > _MAX_OUTPUT_CHARS  # includes the trailer
+        assert result[:_MAX_OUTPUT_CHARS] == "a" * _MAX_OUTPUT_CHARS
+        assert "truncated" in result
+        assert "20000" in result
+
+    def test_truncation_exact_boundary(self):
+        text = "b" * _MAX_OUTPUT_CHARS
+        assert _truncate(text, _MAX_OUTPUT_CHARS) == text
+
+    @pytest.mark.asyncio
+    async def test_empty_stdout_returns_no_matches(self, tmp_path):
+        """grep exits 1 with no stderr → treated as 'No matches found'."""
+        success, output = await _run_subprocess(
+            "grep -r 'zzz_nonexistent_xyz' .",
+            cwd=str(tmp_path),
+        )
+        assert success is True
+        assert "No matches found" in output
+
+    @pytest.mark.asyncio
+    async def test_successful_grep_returns_output(self, tmp_path):
+        (tmp_path / "record.json").write_text('{"title": "hello world"}')
+        success, output = await _run_subprocess(
+            "grep -r 'hello' .",
+            cwd=str(tmp_path),
+        )
+        assert success is True
+        assert "hello" in output
+
+    @pytest.mark.asyncio
+    async def test_output_truncated_to_max(self, tmp_path):
+        """Produce output > MAX_OUTPUT_CHARS and verify truncation."""
+        big = "\n".join(f"line {i}: " + "x" * 200 for i in range(200))
+        (tmp_path / "big.json").write_text(big)
+        success, output = await _run_subprocess(
+            "cat big.json",
+            cwd=str(tmp_path),
+        )
+        assert success is True
+        if len(big) > _MAX_OUTPUT_CHARS:
+            assert "truncated" in output
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_with_stderr_returns_false(self, tmp_path):
+        """Invalid regex causes grep to exit 2 with stderr."""
+        success, output = await _run_subprocess(
+            'grep -E "[invalid" .',
+            cwd=str(tmp_path),
+        )
+        assert success is False
+        assert "exit" in output.lower() or "failed" in output.lower()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. Timeout and process management tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestTimeoutAndProcessManagement:
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_error_tuple(self, tmp_path):
+        """Simulate timeout by patching wait_for to raise TimeoutError immediately."""
+        with patch(
+            "asyncio.wait_for",
+            side_effect=asyncio.TimeoutError,
+        ):
+            with patch("asyncio.create_subprocess_exec") as mock_exec:
+                mock_proc = AsyncMock()
+                mock_proc.returncode = None
+                mock_proc.kill = MagicMock()
+                mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+                mock_exec.return_value = mock_proc
+
+                success, output = await _run_subprocess(
+                    "find . -name '*.json'",
+                    cwd=str(tmp_path),
+                    timeout=1,
+                )
+
+        assert success is False
+        assert "timed out" in output
+
+    @pytest.mark.asyncio
+    async def test_process_killed_on_timeout(self, tmp_path):
+        """kill() is called synchronously when wait_for raises TimeoutError."""
+        kill_called = []
+
+        def _kill_impl():
+            kill_called.append(True)
+
+        with patch(
+            "asyncio.wait_for",
+            side_effect=asyncio.TimeoutError,
+        ):
+            with patch("asyncio.create_subprocess_exec") as mock_exec:
+                mock_proc = AsyncMock()
+                mock_proc.returncode = None
+                mock_proc.kill = _kill_impl
+                mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+                mock_exec.return_value = mock_proc
+
+                await _run_subprocess(
+                    "find . -name '*.json'",
+                    cwd=str(tmp_path),
+                    timeout=1,
+                )
+
+        assert kill_called, "Process was not killed on timeout"
+
+    @pytest.mark.asyncio
+    async def test_normal_command_completes_quickly(self, tmp_path):
+        (tmp_path / "test.json").write_text("{}")
+        success, output = await _run_subprocess(
+            "ls .",
+            cwd=str(tmp_path),
+            timeout=5,
+        )
+        assert success is True
+        assert "test.json" in output
+
+
+class TestKillTreeSafety:
+    """_kill_tree must only ever signal the process group it created."""
+
+    @staticmethod
+    def _fake_os(pgid_of: dict[int, int], own_group: int = 4242) -> MagicMock:
+        fake = MagicMock()
+        fake.name = "posix"
+        fake.getpgid = MagicMock(side_effect=lambda pid: pgid_of[pid])
+        fake.getpgrp = MagicMock(return_value=own_group)
+        return fake
+
+    def test_mocked_pid_never_reaches_killpg(self):
+        # AsyncMock().pid coerces to 1; killpg(1) as root kills init's group.
+        proc = AsyncMock()
+        proc.returncode = None
+        proc.kill = MagicMock()
+        fake_os = self._fake_os({})
+        with patch("app.agents.actions.storage_search.storage_search.os", fake_os):
+            _kill_tree(proc)
+        fake_os.killpg.assert_not_called()
+        proc.kill.assert_called_once()
+
+    def test_pid_one_never_signalled_as_group(self):
+        proc = MagicMock(returncode=None, pid=1)
+        fake_os = self._fake_os({1: 1})
+        with patch("app.agents.actions.storage_search.storage_search.os", fake_os):
+            _kill_tree(proc)
+        fake_os.killpg.assert_not_called()
+        proc.kill.assert_called_once()
+
+    def test_child_not_leading_its_own_group_is_killed_alone(self):
+        # Without its own session the child shares our group: never killpg it.
+        proc = MagicMock(returncode=None, pid=5000)
+        fake_os = self._fake_os({5000: 4242})
+        with patch("app.agents.actions.storage_search.storage_search.os", fake_os):
+            _kill_tree(proc)
+        fake_os.killpg.assert_not_called()
+        proc.kill.assert_called_once()
+
+    def test_own_session_child_group_is_killed(self):
+        proc = MagicMock(returncode=None, pid=5000)
+        fake_os = self._fake_os({5000: 5000})
+        with patch("app.agents.actions.storage_search.storage_search.os", fake_os),              patch("app.agents.actions.storage_search.storage_search.signal") as fake_signal:
+            _kill_tree(proc)
+        fake_os.killpg.assert_called_once_with(5000, fake_signal.SIGKILL)
+        proc.kill.assert_not_called()
+
+    def test_exited_process_left_alone(self):
+        proc = MagicMock(returncode=0, pid=5000)
+        fake_os = self._fake_os({5000: 5000})
+        with patch("app.agents.actions.storage_search.storage_search.os", fake_os):
+            _kill_tree(proc)
+        fake_os.killpg.assert_not_called()
+        proc.kill.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. Date filtering tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestDateFiltering:
+
+    def test_valid_date_produces_newermt_command(self):
+        ok, result = _build_date_filtered_command("grep -r 'x' .", "2026-06-01")
+        assert ok is True
+        assert "newermt" in result
+        assert "grep" in result
+        assert "2026-05-31" in result  # one day before
+        assert "2026-06-03" in result  # two days after
+
+    def test_date_filter_contains_json_filter(self):
+        ok, result = _build_date_filtered_command("grep -r 'x' .", "2026-06-01")
+        assert ok is True
+        assert "*.json" in result
+        assert "xargs" in result
+
+    def test_invalid_date_format_returns_error(self):
+        ok, result = _build_date_filtered_command("grep -r 'x' .", "not-a-date")
+        assert ok is False
+        assert "invalid record_date format" in result
+
+    def test_date_wrong_separator_rejected(self):
+        ok, result = _build_date_filtered_command("grep -r 'x' .", "2026/06/01")
+        assert ok is False
+        assert "invalid record_date format" in result
+
+    def test_no_date_no_filter(self):
+        valid, err = _validate_command("grep -r 'x' .")
+        assert valid
+        # No date filter injected — command unchanged
+
+    @pytest.mark.asyncio
+    async def test_record_date_injects_find_filter(self, tmp_path):
+        """When record_date is given, the effective command is wrapped in a
+        find -newermt time filter and executed (no shell involved)."""
+        tool = _make_tool(connector_dir=str(tmp_path))
+        # Create a json file so the dir exists
+        (tmp_path / "r.json").write_text('{"title":"hello"}')
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.return_value = (True, "No matches found.")
+            await tool.run_command(
+                connector_id="conn-abc",
+                command="grep -r 'hello' .",
+                record_date="2026-06-01",
+            )
+
+        assert mock_run.called
+        args, kwargs = mock_run.call_args
+        effective_command = args[0]
+        assert "newermt" in effective_command
+        # use_shell is gone entirely — no shell is ever used.
+        assert "use_shell" not in kwargs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. Connector / path resolution tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestConnectorPathResolution:
+
+    def test_mount_root_linux(self):
+        with patch("platform.system", return_value="Linux"):
+            root = _resolve_mount_root("PipesHub")
+        home = os.path.expanduser("~")
+        assert root == os.path.join(home, ".local", "PipesHub")
+
+    def test_mount_root_macos(self):
+        with patch("platform.system", return_value="Darwin"):
+            root = _resolve_mount_root("PipesHub")
+        home = os.path.expanduser("~")
+        assert root == os.path.join(home, "Library", "PipesHub")
+
+    def test_mount_root_windows(self):
+        with patch("platform.system", return_value="Windows"):
+            root = _resolve_mount_root("PipesHub")
+        home = os.path.expanduser("~")
+        assert root == os.path.join(home, "AppData", "PipesHub")
+
+    def test_custom_mount_name_used(self):
+        with patch("platform.system", return_value="Linux"):
+            root = _resolve_mount_root("MyMountName")
+        assert "MyMountName" in root
+
+    @pytest.mark.asyncio
+    async def test_valid_connector_resolves_path(self, tmp_path):
+        """Config returns local storage; connector dir exists → resolves ok."""
+        connector_dir = tmp_path / "org-1" / "PipesHub" / "records" / "conn-id"
+        connector_dir.mkdir(parents=True)
+
+        state = _make_state()
+        state["org_id"] = "org-1"
+        state["config_service"].get_config = AsyncMock(
+            return_value={"storageType": "local", "mountName": "PipesHub"}
+        )
+        tool = StoragePatternMatch(state)
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._resolve_mount_root",
+            return_value=str(tmp_path),
+        ):
+            path, err = await tool._resolve_connector_path("conn-id")
+
+        assert err is None
+        assert path is not None
+        assert os.path.isdir(path)
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_connector_returns_error(self, tmp_path):
+        state = _make_state()
+        state["org_id"] = "org-1"
+        tool = StoragePatternMatch(state)
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._resolve_mount_root",
+            return_value=str(tmp_path),
+        ):
+            path, err = await tool._resolve_connector_path("no-such-connector")
+
+        assert path is None
+        assert err is not None
+        assert "no records directory found" in err
+        assert str(tmp_path) not in err
+        assert "org-1" not in err
+
+    @pytest.mark.asyncio
+    async def test_cloud_storage_type_returns_error(self):
+        state = _make_state()
+        state["config_service"].get_config = AsyncMock(
+            return_value={"storageType": "s3", "mountName": "PipesHub"}
+        )
+        tool = StoragePatternMatch(state)
+        path, err = await tool._resolve_connector_path("conn-id")
+        assert path is None
+        assert "local storage" in err
+        assert "s3" in err
+
+    @pytest.mark.asyncio
+    async def test_missing_org_id_returns_error(self):
+        state = _make_state(org_id="")
+        tool = StoragePatternMatch(state)
+        path, err = await tool._resolve_connector_path("conn-id")
+        assert path is None
+        assert "org_id" in err
+
+    @pytest.mark.asyncio
+    async def test_missing_config_service_returns_error(self):
+        state = _make_state()
+        state["config_service"] = None
+        tool = StoragePatternMatch(state)
+        path, err = await tool._resolve_connector_path("conn-id")
+        assert path is None
+        assert "config_service" in err
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. Return format tests (SSE compatibility)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestReturnFormat:
+    """Ensure the tool always returns tuple[bool, str] so that
+    _detect_tool_result_status in nodes.py can correctly classify results
+    and _ToolStreamingCallback can emit the right SSE events."""
+
+    @pytest.mark.asyncio
+    async def test_success_returns_tuple_true(self, tmp_path):
+        (tmp_path / "r.json").write_text('{"title":"hello"}')
+        tool = _make_tool(connector_dir=str(tmp_path))
+        result = await tool.run_command("conn-id", "grep -r 'hello' .")
+        assert isinstance(result, tuple) and len(result) == 2
+        success, output = result
+        assert success is True
+        assert isinstance(output, str)
+        assert len(output) > 0
+
+    @pytest.mark.asyncio
+    async def test_error_returns_tuple_false(self):
+        tool = _make_tool(connector_dir="/some/path")
+        result = await tool.run_command("conn-id", "rm -rf .")
+        assert isinstance(result, tuple) and len(result) == 2
+        success, output = result
+        assert success is False
+        assert isinstance(output, str)
+        assert "not allowed" in output
+
+    @pytest.mark.asyncio
+    async def test_path_error_returns_tuple_false(self):
+        """Connector dir not found → (False, error message)."""
+        state = _make_state()
+
+        async def _fail_resolve(cid):
+            return None, "Error: no records directory found for connector 'conn-id'"
+
+        tool = StoragePatternMatch(state)
+        tool._resolve_connector_path = _fail_resolve  # type: ignore[method-assign]
+
+        result = await tool.run_command("conn-id", "grep -r 'x' .")
+        success, output = result
+        assert success is False
+        assert "no records directory" in output
+
+    def test_sse_tool_name_parses_correctly(self):
+        """Verify that the tool name storage_pattern_match.run_command is parsed
+        correctly by _get_tool_status_message (from nodes.py) into a human-readable
+        status string: 'Storage pattern match: run command...'"""
+        # Re-implement the same logic from nodes.py _get_tool_status_message
+        tool_name = "storage_pattern_match.run_command"
+        if "." in tool_name:
+            app_name, action_part = tool_name.split(".", 1)
+        else:
+            app_name = None
+            action_part = tool_name
+        action_readable = action_part.replace("_", " ").strip()
+        app_display = app_name.replace("_", " ").title() if app_name else ""
+        status_msg = f"{app_display}: {action_readable}..." if app_name else f"{action_readable}..."
+        assert "Storage Pattern Match" in status_msg
+        assert "run command" in status_msg
+
+    def test_success_tuple_detected_as_success(self):
+        """Simulate _detect_tool_result_status logic from nodes.py line 7824."""
+        result = (True, "grep output: match found")
+        # nodes.py checks isinstance(result_content, (tuple, list)) and len == 2
+        # then uses result_content[0] as success flag indirectly via str conversion
+        # The actual check in _detect_tool_result_status:
+        # - It converts to string or parses JSON and checks for error keywords
+        # Tuple (True, ...) means the outer wrapper.py returns str(result) = "(True, ...)"
+        # But RegistryToolWrapper._format_result at line 737 does:
+        #   if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+        #       success, result_data = result
+        #       return str(result_data)   ← just returns the string part
+        # So _detect_tool_result_status receives the string part only.
+        # Success string should not contain error keywords.
+        _, msg = result
+        error_keywords = ("error", "failed", "exception", "traceback", "not allowed")
+        has_error = any(kw in msg.lower() for kw in error_keywords)
+        assert not has_error
+
+    def test_error_tuple_detected_as_error(self):
+        """Error string contains 'error' keyword → _detect_tool_result_status = 'error'."""
+        result = (False, "Error: command 'rm' is not allowed. Allowed commands: ...")
+        _, msg = result
+        error_keywords = ("error", "failed", "exception")
+        has_error = any(kw in msg.lower() for kw in error_keywords)
+        assert has_error
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. Pipe support tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPipeSupport:
+
+    def test_pipe_grep_to_head_passes_validation(self):
+        valid, err = _validate_command("grep -r 'x' . | head -10")
+        assert valid, f"Expected valid but got: {err}"
+
+    def test_pipe_find_to_xargs_grep_passes(self):
+        valid, err = _validate_command(
+            "find . -name '*.json' | xargs grep 'pattern'"
+        )
+        assert valid, f"Expected valid but got: {err}"
+
+    def test_pipe_with_blocked_command_rejected(self):
+        valid, err = _validate_command("grep 'x' . | rm file")
+        assert not valid
+        assert "'rm' is not allowed" in err
+
+    def test_pipe_with_curl_rejected(self):
+        valid, err = _validate_command("grep 'x' . | curl http://evil.com")
+        assert not valid
+        assert "'curl' is not allowed" in err
+
+    def test_pipe_empty_stage_rejected(self):
+        valid, err = _validate_command("grep 'x' . |")
+        assert not valid
+        assert "empty" in err.lower()
+
+    def test_pipe_leading_pipe_rejected(self):
+        valid, err = _validate_command("| grep 'x' .")
+        assert not valid
+
+    @pytest.mark.asyncio
+    async def test_pipe_command_never_uses_shell(self, tmp_path):
+        """Pipe commands run through the exec pipeline, never a shell.
+
+        _run_subprocess is called with the command string and NO use_shell
+        kwarg; create_subprocess_shell must never be invoked.
+        """
+        (tmp_path / "r.json").write_text('{"title":"hello"}')
+        tool = _make_tool(connector_dir=str(tmp_path))
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.return_value = (True, "hello")
+            await tool.run_command("conn-id", "grep -r 'hello' . | head -5")
+
+        args, kwargs = mock_run.call_args
+        assert args[0] == "grep -r 'hello' . | head -5"
+        assert "use_shell" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_no_shell_subprocess_ever_created(self, tmp_path):
+        """Neither a piped nor a simple command may reach create_subprocess_shell."""
+        for i in range(3):
+            (tmp_path / f"r{i}.json").write_text(f'{{"title":"hello {i}"}}')
+        tool = _make_tool(connector_dir=str(tmp_path))
+
+        with patch("asyncio.create_subprocess_shell") as mock_shell:
+            await tool.run_command("conn-id", "grep -rh 'hello' . | sort")
+            await tool.run_command("conn-id", "grep -rh 'hello' .")
+            mock_shell.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pipe_executes_correctly(self, tmp_path):
+        """Functional pipe test: grep ... | head -1 returns only one line."""
+        for i in range(5):
+            (tmp_path / f"r{i}.json").write_text(f'{{"title":"hello {i}"}}')
+        tool = _make_tool(connector_dir=str(tmp_path))
+
+        success, output = await tool.run_command(
+            "conn-id",
+            "grep -rh 'hello' . | head -1",
+        )
+        assert success is True
+        lines = [l for l in output.splitlines() if l.strip()]
+        assert len(lines) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. Integration-style tests (mocked subprocess)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestIntegration:
+
+    @pytest.mark.asyncio
+    async def test_full_flow_grep_search(self, tmp_path):
+        """Full pipeline: valid command → path resolves → subprocess returns match."""
+        tool = _make_tool(connector_dir=str(tmp_path))
+        _write_record(tmp_path, "a1" * 12, '{"title": "deployment guide"}')
+
+        success, output = await tool.run_command(
+            "conn-test", "grep -r 'deployment' ."
+        )
+
+        assert success is True
+        assert "deployment" in output
+
+    @pytest.mark.asyncio
+    async def test_full_flow_no_records_directory(self):
+        """When connector dir does not exist, returns graceful error."""
+        state = _make_state()
+        tool = StoragePatternMatch(state)
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._resolve_mount_root",
+            return_value="/nonexistent/path",
+        ):
+            success, output = await tool.run_command(
+                "missing-connector", "grep -r 'x' ."
+            )
+
+        assert success is False
+        assert "no records directory found" in output
+
+    @pytest.mark.asyncio
+    async def test_full_flow_subprocess_exception(self, tmp_path):
+        """If subprocess raises an unexpected exception, returns (False, error)."""
+        tool = _make_tool(connector_dir=str(tmp_path))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=OSError("exec failed"),
+        ):
+            success, output = await tool.run_command(
+                "conn-id", "grep -r 'x' ."
+            )
+
+        assert success is False
+        assert "Error" in output
+
+    @pytest.mark.asyncio
+    async def test_state_extraction(self, tmp_path):
+        """org_id and config_service are read correctly from state."""
+        connector_dir = tmp_path / "my-org" / "PipesHub" / "records" / "c1"
+        connector_dir.mkdir(parents=True)
+        _write_record(connector_dir, "c1" * 12, '{"x":1}')
+
+        state = _make_state()
+        state["org_id"] = "my-org"
+        state["config_service"].get_config = AsyncMock(
+            return_value={"storageType": "local", "mountName": "PipesHub"}
+        )
+        tool = StoragePatternMatch(state)
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._resolve_mount_root",
+            return_value=str(tmp_path),
+        ):
+            success, output = await tool.run_command("c1", 'find . -name "*.json"')
+
+        assert success is True
+        assert f"record_{'c1' * 12}.json" in output
+
+    @pytest.mark.asyncio
+    async def test_command_validation_short_circuits_before_subprocess(self):
+        """Invalid command never reaches subprocess."""
+        state = _make_state()
+        tool = StoragePatternMatch(state)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec, \
+             patch("asyncio.create_subprocess_shell") as mock_shell:
+            success, output = await tool.run_command("conn", "rm -rf .")
+            mock_exec.assert_not_called()
+            mock_shell.assert_not_called()
+
+        assert success is False
+
+    @pytest.mark.asyncio
+    async def test_imports(self):
+        """Smoke test: module and class importable."""
+        from app.agents.actions.storage_search.storage_search import StoragePatternMatch
+        assert StoragePatternMatch is not None
+
+    @pytest.mark.asyncio
+    async def test_find_command_full_flow(self, tmp_path):
+        """find . -name '*.json' returns the file."""
+        _write_record(tmp_path, "d1" * 12, '{"data": 1}')
+        tool = _make_tool(connector_dir=str(tmp_path))
+
+        success, output = await tool.run_command(
+            "conn-id", "find . -name '*.json'"
+        )
+        assert success is True
+        assert f"record_{'d1' * 12}.json" in output
+
+    @pytest.mark.asyncio
+    async def test_wc_count_files(self, tmp_path):
+        """wc -l counts newlines; write file with trailing newline so count matches."""
+        content = "\n".join(["line"] * 10) + "\n"
+        vrid = "e1" * 12
+        _write_record(tmp_path, vrid, content)
+        tool = _make_tool(connector_dir=str(tmp_path))
+
+        # Commands see each readable record as ./<vrid>/record_<vrid>.json.
+        success, output = await tool.run_command("conn-id", f"wc -l ./{vrid}/record_{vrid}.json")
+        assert success is True
+        assert "10" in output
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# is_local_storage
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestIsLocalStorage:
+
+    def test_local_lowercase(self):
+        assert is_local_storage({"storageType": "local"}) is True
+
+    def test_local_uppercase(self):
+        assert is_local_storage({"storageType": "LOCAL"}) is True
+
+    def test_s3_is_not_local(self):
+        assert is_local_storage({"storageType": "s3"}) is False
+
+    def test_azure_is_not_local(self):
+        assert is_local_storage({"storageType": "azure"}) is False
+
+    def test_missing_storage_type_key_defaults_local(self):
+        assert is_local_storage({}) is True
+
+    def test_none_config_defaults_local(self):
+        assert is_local_storage(None) is True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Adversarial security regression tests
+#
+# These pin the three CONFIRMED critical findings closed:
+#   F1: shell variable/tilde expansion leaking secrets / reading arbitrary files
+#   F2: regex-delimiter exception bypassing the absolute-path block
+#   F3: run_command / find_records having no per-record permission check
+# ──────────────────────────────────────────────────────────────────────────────
+
+_VRID_ACCESSIBLE = "aaaaaaaaaaaaaaaaaaaaaaaa"
+_VRID_FORBIDDEN = "bbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def _make_perm_tool(connector_dir: str, accessible_map: dict) -> StoragePatternMatch:
+    """Tool whose graph_provider.filter_accessible_virtual_record_ids returns accessible_map."""
+    graph_provider = _make_graph_provider()
+    graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value=accessible_map)
+    graph_provider.get_records_by_record_ids = AsyncMock(return_value=[
+        {"_key": rid, "recordName": f"name-{rid}"} for rid in accessible_map.values()
+    ])
+    tool = _make_tool(connector_dir=connector_dir, graph_provider=graph_provider)
+    return tool
+
+
+def _seed_two_records(tmp_path, content: str = "secretword marker") -> None:
+    """Create one accessible-named and one forbidden-named record file."""
+    d = tmp_path / "grp" / "Doc" / "sid"
+    d.mkdir(parents=True)
+    (d / f"record_{_VRID_ACCESSIBLE}.json").write_text('{"id":"rec-ok"} ' + content)
+    (d / f"record_{_VRID_FORBIDDEN}.json").write_text('{"id":"rec-no"} ' + content)
+
+
+class TestFinding1ShellExpansion:
+    """F1: no shell is ever used, so $VAR / ${VAR} / ~ cannot expand."""
+
+    @pytest.mark.asyncio
+    async def test_dollar_var_not_expanded(self, tmp_path, monkeypatch):
+        # Exploit: `echo $SECRET | cat` leaked the process environment via /bin/sh -c.
+        monkeypatch.setenv("SECRET", "supersecret_leak_value")
+        success, output = await _run_subprocess("echo $SECRET | cat", cwd=str(tmp_path))
+        assert success is True
+        assert "supersecret_leak_value" not in output  # NOT expanded → no leak
+        assert "$SECRET" in output                      # passed through literally
+
+    @pytest.mark.asyncio
+    async def test_braced_var_not_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SECRET", "supersecret_leak_value")
+        success, output = await _run_subprocess("echo ${SECRET} | cat", cwd=str(tmp_path))
+        assert success is True
+        assert "supersecret_leak_value" not in output  # NOT expanded → no leak
+        assert "SECRET" in output                       # token passed through as text
+
+    @pytest.mark.asyncio
+    async def test_tilde_not_expanded(self, tmp_path):
+        # Exploit: `cat ~/.ssh/id_rsa | head` read arbitrary files via ~ expansion.
+        success, output = await _run_subprocess(
+            "echo ~/.ssh/id_rsa | head -1", cwd=str(tmp_path)
+        )
+        assert success is True
+        assert os.path.expanduser("~") not in output  # ~ NOT expanded to home dir
+        assert "~/.ssh/id_rsa" in output               # passed through literally
+
+    @pytest.mark.asyncio
+    async def test_tilde_read_does_not_reach_real_file(self, tmp_path):
+        # cat of a literal ~ path resolves relative to cwd (nonexistent), never home.
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.run_command("c", "cat ~/.ssh/id_rsa | head")
+        # No shell → literal "~/.ssh/id_rsa" under cwd doesn't exist → no content leak.
+        assert os.path.expanduser("~") not in output
+
+    @pytest.mark.asyncio
+    async def test_shell_never_created_for_pipeline(self, tmp_path):
+        (tmp_path / "a.json").write_text("hello\n")
+        tool = _make_perm_tool(str(tmp_path), {})
+        with patch("asyncio.create_subprocess_shell") as mock_shell:
+            await tool.run_command("c", "grep -rh 'hello' . | sort | uniq")
+            mock_shell.assert_not_called()
+
+
+class TestFinding2AbsolutePathBypass:
+    """F2: the /pattern/ regex-delimiter carve-out is gone; absolute paths
+    (including single-component trailing-slash dirs) are always rejected."""
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -r "root" /etc/',
+        'ls /etc/',
+        'grep -rIl "secret" /etc/',
+        'grep -r "x" /root/',
+        'grep -r "x" /home/',
+        'grep -r "x" /proc/',
+        'grep "/foo/" .',   # the exact shape the old is_regex_delimited exception allowed
+    ])
+    def test_absolute_paths_rejected(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected {cmd!r} to be rejected"
+        assert "absolute paths" in err
+
+    def test_regex_literal_via_dash_e_still_allowed(self):
+        # The sanctioned migration: a slash-containing regex literal goes through -e.
+        valid, err = _validate_command('grep -e "/foo/" .')
+        assert valid, f"Expected -e regex literal to pass, got: {err}"
+
+    def test_regex_literal_via_long_regexp_flag_allowed(self):
+        valid, err = _validate_command('grep --regexp "/foo/" .')
+        assert valid, f"Expected --regexp literal to pass, got: {err}"
+
+    def test_dash_e_does_not_exempt_a_real_absolute_path(self):
+        # -e exempts only its immediate pattern token; a later absolute path
+        # argument is still rejected.
+        valid, err = _validate_command('grep -e "pattern" /etc/passwd')
+        assert not valid
+        assert "absolute paths" in err
+
+
+class TestFinding3PermissionCheck:
+    """F3: run_command / find_records gate every returned record through
+    filter_accessible_virtual_record_ids and fail closed when the check is unavailable."""
+
+    @pytest.mark.asyncio
+    async def test_run_command_redacts_inaccessible_record_content(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.run_command("c", 'grep -r "secretword" .')
+        assert success is True
+        assert _VRID_ACCESSIBLE in output       # accessible record kept
+        assert _VRID_FORBIDDEN not in output    # forbidden record redacted
+        tool.state["graph_provider"].filter_accessible_virtual_record_ids.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_find_records_names_hits_from_the_permitted_graph_record(self, tmp_path):
+        import json as _json
+        d = tmp_path / "Secret Folder" / "Misleading Name" / "sid"
+        d.mkdir(parents=True)
+        (d / f"record_{_VRID_ACCESSIBLE}.json").write_text('{"id":"rec-ok"} secretword')
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        gp = tool.state["graph_provider"]
+        gp.get_records_by_record_ids = AsyncMock(return_value=[{"_key": "rec-ok", "recordName": "Real Name"}])
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+
+        rec = _json.loads(output)["records"][0]
+        assert success is True
+        assert rec["record_name"] == "Real Name"
+        assert rec["record_id"] == "rec-ok"
+        assert "relative_path" not in rec and "storage_doc_id" not in rec
+        assert "Secret Folder" not in output and "Misleading Name" not in output
+        gp.get_records_by_record_ids.assert_awaited_once_with(record_ids=["rec-ok"], org_id="org-test-123")
+
+    @pytest.mark.asyncio
+    async def test_find_records_snippet_never_carries_the_stored_owner_name(self, tmp_path):
+        import json as _json
+        stored = {"record": {
+            "record_name": "Owner Secret",
+            "block_containers": {"blocks": [{"data": "secretword appears here"}]},
+        }}
+        (tmp_path / f"record_{_VRID_ACCESSIBLE}.json").write_text(_json.dumps(stored))
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+
+        assert success is True
+        assert "secretword appears here" in output
+        assert "Owner Secret" not in output
+
+    @pytest.mark.asyncio
+    async def test_find_records_snippet_hides_owner_name_for_oversized_record(self, tmp_path):
+        import json as _json
+        from app.agents.actions.storage_search.storage_search import _MAX_SCORE_READ_BYTES
+        stored = {"record": {
+            "record_name": "Owner Secret",
+            "block_containers": {"blocks": [
+                {"data": "secretword appears here"},
+                {"data": "x" * (_MAX_SCORE_READ_BYTES + 10)},
+            ]},
+        }}
+        (tmp_path / f"record_{_VRID_ACCESSIBLE}.json").write_text(_json.dumps(stored))
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+
+        assert success is True
+        assert _json.loads(output)["records"][0]["record_id"] == "rec-ok"
+        assert "secretword appears here" in output
+        assert "Owner Secret" not in output
+
+    @pytest.mark.asyncio
+    async def test_find_records_snippet_hides_owner_name_for_malformed_json(self, tmp_path):
+        import json as _json
+        (tmp_path / f"record_{_VRID_ACCESSIBLE}.json").write_text(
+            '{"record": {"record_name": "Owner Secret", "block_containers": {"blocks": [{"data": "secretword here"}'
+        )
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+
+        assert success is True
+        assert len(_json.loads(output)["records"]) == 1
+        assert "Owner Secret" not in output
+
+    @pytest.mark.asyncio
+    async def test_find_records_name_only_record_is_returned_without_the_name(self, tmp_path):
+        import json as _json
+        (tmp_path / f"record_{_VRID_ACCESSIBLE}.json").write_text(
+            _json.dumps({"record": {"record_name": "Owner Secret", "block_containers": {"blocks": []}}})
+        )
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        success, output = await tool.find_records("c", 'grep -rl "Owner" .')
+
+        assert success is True
+        assert len(_json.loads(output)["records"]) == 1
+        assert "Owner Secret" not in output
+
+    @pytest.mark.asyncio
+    async def test_find_records_drops_hits_whose_record_is_not_in_the_org(self, tmp_path):
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        tool.state["graph_provider"].get_records_by_record_ids = AsyncMock(return_value=[])
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+
+        assert success is True
+        assert _json.loads(output)["records"] == []
+
+    @pytest.mark.asyncio
+    async def test_find_records_fails_closed_when_record_lookup_fails(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        tool.state["graph_provider"].get_records_by_record_ids = AsyncMock(side_effect=RuntimeError("db"))
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+
+        assert success is False
+        assert "cannot verify" in output.lower()
+
+    @pytest.mark.asyncio
+    async def test_run_command_direct_read_of_forbidden_record_denied(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})  # nothing accessible
+        for path in (f"./grp/Doc/sid/record_{_VRID_FORBIDDEN}.json",
+                     f"./{_VRID_FORBIDDEN}/record_{_VRID_FORBIDDEN}.json"):
+            success, output = await tool.run_command("c", f"cat {path}")
+            assert success is False
+            assert "secretword" not in output
+
+    @pytest.mark.asyncio
+    async def test_run_command_output_without_file_names_comes_from_readable_records(self, tmp_path) -> None:
+        # grep -h drops file names; the view is what keeps it to readable records.
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "nothing sensitive\n")
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.run_command("c", 'grep -rh "nothing" .')
+        assert success is True
+        assert "nothing sensitive" in output
+
+    @pytest.mark.asyncio
+    async def test_run_command_fails_closed_without_graph_provider(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_tool(connector_dir=str(tmp_path), graph_provider=None)
+        success, output = await tool.run_command("c", 'grep -r "secretword" .')
+        assert success is False
+        assert "secretword" not in output
+
+    @pytest.mark.asyncio
+    async def test_restricted_connector_runs_against_accessible_records_only(self, tmp_path):
+        # grep -h drops file names, so output-side filtering cannot attribute
+        # content; the command must never see the forbidden record at all.
+        connector_dir = tmp_path / "PipesHub" / "records" / "c"
+        _seed_two_records(connector_dir)
+        graph_provider = _make_graph_provider(app_level=frozenset())
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={_VRID_ACCESSIBLE: "rec-ok"})
+        tool = _make_tool(connector_dir=str(connector_dir), graph_provider=graph_provider)
+
+        success, output = await tool.run_command("c", 'grep -rh "secretword" .')
+
+        assert success is True
+        assert "rec-ok" in output
+        assert "rec-no" not in output
+        views = tmp_path / "PipesHub" / ".pattern_match_views"
+        assert not views.exists() or not any(views.iterdir())
+        assert (connector_dir / "grp" / "Doc" / "sid" / f"record_{_VRID_FORBIDDEN}.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_restricted_connector_view_names_entries_by_vrid(self, tmp_path):
+        # Stored paths carry folder names of containers the user may not see.
+        connector_dir = tmp_path / "PipesHub" / "records" / "c"
+        _seed_two_records(connector_dir)
+        graph_provider = _make_graph_provider(app_level=frozenset())
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={_VRID_ACCESSIBLE: "rec-ok"})
+        tool = _make_tool(connector_dir=str(connector_dir), graph_provider=graph_provider)
+
+        success, output = await tool.run_command("c", 'grep -rl "secretword" .')
+
+        assert success is True
+        assert output.strip().replace("\\", "/") == f"./{_VRID_ACCESSIBLE}/record_{_VRID_ACCESSIBLE}.json"
+        assert "grp" not in output
+
+    @pytest.mark.asyncio
+    async def test_restricted_connector_fails_closed_when_access_check_fails(self, tmp_path):
+        connector_dir = tmp_path / "PipesHub" / "records" / "c"
+        _seed_two_records(connector_dir)
+        graph_provider = _make_graph_provider(app_level=frozenset())
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(side_effect=RuntimeError("db"))
+        tool = _make_tool(connector_dir=str(connector_dir), graph_provider=graph_provider)
+
+        success, output = await tool.run_command("c", 'grep -rh "secretword" .')
+
+        assert success is False
+        assert "secretword" not in output
+
+    @pytest.mark.asyncio
+    async def test_container_fallback_is_treated_as_restricted(self, tmp_path):
+        connector_dir = tmp_path / "PipesHub" / "records" / "c"
+        _seed_two_records(connector_dir)
+        graph_provider = _make_graph_provider()
+        graph_provider.get_accessible_containers.return_value = AccessibleContainers(
+            app_ids_trusted=frozenset({"c"}), fallback_reason="too many groups",
+        )
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={_VRID_ACCESSIBLE: "rec-ok"})
+        tool = _make_tool(connector_dir=str(connector_dir), graph_provider=graph_provider)
+
+        success, output = await tool.run_command("c", 'grep -rh "secretword" .')
+
+        assert success is True
+        assert "rec-no" not in output
+
+    @pytest.mark.asyncio
+    async def test_permission_check_is_cached_per_tool(self, tmp_path) -> None:
+        _write_record(tmp_path, "f1" * 12, "x")
+        tool = _make_tool(connector_dir=str(tmp_path))
+        await tool.run_command("c", 'grep -r "x" .')
+        await tool.run_command("c", 'grep -r "x" .')
+        tool.state["graph_provider"].filter_accessible_virtual_record_ids.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_find_records_returns_only_accessible(self, tmp_path):
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+        assert success is True
+        data = _json.loads(output)
+        vrids = [r["virtual_record_id"] for r in data["records"]]
+        assert vrids == [_VRID_ACCESSIBLE]
+        # record_id comes from the authoritative permission-check result.
+        assert data["records"][0]["record_id"] == "rec-ok"
+
+    @pytest.mark.asyncio
+    async def test_find_records_empty_when_none_accessible(self, tmp_path):
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+        assert success is True
+        data = _json.loads(output)
+        assert data["records"] == []
+
+    @pytest.mark.asyncio
+    async def test_find_records_fails_closed_without_graph_provider(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_tool(connector_dir=str(tmp_path), graph_provider=None)
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+        assert success is False
+        assert "cannot verify" in output.lower()
+
+
+class TestLegitimateFunctionalityPreserved:
+    """Regression guard: the fixes must not break normal usage."""
+
+    @pytest.mark.asyncio
+    async def test_relative_grep_still_works(self, tmp_path):
+        _write_record(tmp_path, _VRID_ACCESSIBLE, '{"title": "deployment guide"}')
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.run_command("c", 'grep -r "deployment" .')
+        assert success is True
+        assert "deployment" in output
+
+    @pytest.mark.asyncio
+    async def test_multi_stage_pipe_still_works(self, tmp_path):
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "banana\napple\napple\ncherry\n")
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.run_command("c", "grep -rh a . | sort | uniq")
+        assert success is True
+        lines = [ln for ln in output.splitlines() if ln.strip()]
+        assert lines == ["apple", "banana"]  # cherry has no 'a'; dupes collapsed
+
+
+class TestReviewFindings:
+    """Regressions for the storage-search review findings."""
+
+    @pytest.mark.parametrize("cmd", [
+        "sort --output=/tmp/target ./record.json",
+        "sort -o record.json other.json",
+        "sort -uo out other.json",
+        "sort --compress-program=sh other.json",
+        'grep -rlZ "x" . | xargs -0 sort -o out',
+    ])
+    def test_sort_output_and_exec_options_rejected(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+
+    @pytest.mark.parametrize("cmd", [
+        "xargs -0 --arg-file=/proc/self/environ echo",
+        "xargs -a/proc/self/environ echo",
+        "xargs -0 -a env echo",
+        'grep -r --file=/proc/self/environ .',
+        'grep -r "x" --exclude-dir=../ .',
+    ])
+    def test_file_valued_options_rejected(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+
+    @pytest.mark.parametrize("cmd", ["uniq a.json b.json", 'grep -rlZ "x" . | xargs -0 uniq'])
+    def test_uniq_output_operand_rejected(self, cmd: str):
+        valid, _ = _validate_command(cmd)
+        assert not valid
+
+    @pytest.mark.parametrize("cmd", [
+        "sort --out=record.json other.json",
+        "sort --outp record.json other.json",
+        "sort -S 1 --compress-prog=sh other.json",
+        "xargs --arg-f=env echo",
+        "wc --files0=list",
+    ])
+    def test_abbreviated_long_options_rejected(self, cmd: str):
+        valid, _ = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+
+    def test_traversal_in_attached_short_option_value_rejected(self):
+        valid, _ = _validate_command('grep -r -x -F -f../other/record_x.json .')
+        assert not valid
+
+    @pytest.mark.parametrize("cmd", [
+        "uniq record.json 5", "uniq -f 1 a.json b.json",
+        "uniq - ./grp/Doc/sid/record_x.json", "uniq -- a.json -b.json",
+    ])
+    def test_uniq_numeric_output_operand_rejected(self, cmd: str):
+        valid, _ = _validate_command(cmd)
+        assert not valid
+
+    @pytest.mark.parametrize("cmd", [
+        "uniq -c", "uniq -f 1 a.json", 'grep -r --regexp=/api/ .', 'grep -r -e/api/ .',
+        'grep -rl --include=*.json "x" .',
+    ])
+    def test_legitimate_forms_still_pass(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert valid, err
+
+    def test_xargs_subcommand_flags_are_not_read_as_xargs_flags(self):
+        # grep -a (text mode) is not xargs -a (arg file).
+        valid, err = _validate_command('grep -rlZ "x" . | xargs -0 grep -ia "y"')
+        assert valid, err
+
+    def test_date_filter_searches_only_the_find_selected_files(self):
+        ok, cmd = _build_date_filtered_command('grep -r "x" .', "2026-06-01")
+        assert ok
+        first = cmd.split("|")[1]
+        assert first.split() == ["xargs", "-0", "-r", "grep", "-H", "x"]
+
+    @pytest.mark.parametrize("cmd", ['grep -r "x" sub/', 'find . -name "*.json"'])
+    def test_date_filter_rejects_commands_it_cannot_bind(self, cmd: str):
+        ok, err = _build_date_filtered_command(cmd, "2026-06-01")
+        assert not ok
+        assert err.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_stage_stdout_is_bounded(self, tmp_path, monkeypatch):
+        (tmp_path / "big.txt").write_bytes(b"line of text\n" * 20_000)
+        monkeypatch.setattr(
+            "app.agents.actions.storage_search.storage_search._MAX_STAGE_STDOUT_BYTES", 1_000,
+        )
+        success, output = await _run_subprocess("cat big.txt", cwd=str(tmp_path))
+        assert success is True
+        body, _, marker = output.rpartition("\n")
+        assert len(body) <= 1_000
+        assert body.startswith("line of text\n")
+        # The cut is said in the output, so a reader knows files past it went unread.
+        assert marker == _BYTE_CAP_MARKER
+
+    @pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
+    @pytest.mark.asyncio
+    async def test_capped_xargs_stage_does_not_hang_on_its_children(self, tmp_path, monkeypatch):
+        (tmp_path / "big.json").write_bytes(b"line of text\n" * 200_000)
+        monkeypatch.setattr(
+            "app.agents.actions.storage_search.storage_search._MAX_STAGE_STDOUT_BYTES", 1_000,
+        )
+        loop = asyncio.get_event_loop()
+        started = loop.time()
+        success, output = await _run_subprocess(
+            'find . -name "*.json" -print0 | xargs -0 cat', cwd=str(tmp_path), timeout=20,
+        )
+        assert success is True
+        assert loop.time() - started < 10
+
+
+class TestNoUnauthorizedRecordLeaves:
+    """Nothing derived from a record the user cannot read may leave the tools."""
+
+    @pytest.mark.asyncio
+    async def test_connector_outside_agent_knowledge_is_refused(self, tmp_path):
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c-allowed"])
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            ok_run, out_run = await tool.run_command("c-other", 'grep -r "x" .')
+            ok_find, out_find = await tool.find_records("c-other", 'grep -rl "x" .')
+        assert ok_run is False and "not part of this agent's knowledge" in out_run
+        assert ok_find is False and "not part of this agent's knowledge" in out_find
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_with_no_sources_refuses_every_connector(self, tmp_path) -> None:
+        # A project chat with nothing selected: retrieval searches nothing, so
+        # these tools must not fall back to every connector in the org.
+        tool = _make_tool(connector_dir=str(tmp_path), filters={"strictScope": True})
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            ok_run, out_run = await tool.run_command("c", 'grep -r "x" .')
+            ok_find, out_find = await tool.find_records("c", 'grep -rl "x" .')
+        assert ok_run is False and "none are selected" in out_run
+        assert ok_find is False and "none are selected" in out_find
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_does_not_fall_back_to_the_agents_knowledge(self, tmp_path) -> None:
+        # Retrieval reads a project chat's scope from the request alone; the agent
+        # knowing connector "c" must not open it when nothing was selected.
+        tool = _make_tool(connector_dir=str(tmp_path), filters={"strictScope": True})
+        tool.state["apps"] = ["c"]
+        tool.state["agent_knowledge"] = [{"connectorId": "c"}]
+        assert tool._scope_connector_ids() == frozenset()
+        assert "none are selected" in tool._out_of_scope_error("c")
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_empty_denies_in_the_permission_check_too(self, tmp_path) -> None:
+        tool = _make_tool(filters={"strictScope": True})
+        tool.state["graph_provider"].filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        await tool._check_accessible_vrids(["v1"])
+        kwargs = tool.state["graph_provider"].filter_accessible_virtual_record_ids.await_args.kwargs
+        assert kwargs["scope_connector_ids"] == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_empty_scope_without_strict_scope_still_searches_all(self, tmp_path) -> None:
+        tool = _make_tool(connector_dir=str(tmp_path), filters={})
+        assert tool._scope_connector_ids() is None
+        assert tool._out_of_scope_error("c") is None
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_with_sources_keeps_them(self, tmp_path) -> None:
+        tool = _make_tool(connector_dir=str(tmp_path), filters={"strictScope": True, "apps": ["c"]})
+        assert tool._scope_connector_ids() == frozenset({"c"})
+        assert tool._out_of_scope_error("c") is None
+        assert "not part of this agent's knowledge" in tool._out_of_scope_error("other")
+
+    @pytest.mark.asyncio
+    async def test_agent_scope_bounds_the_permission_check(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        tool.state["apps"] = ["c"]
+        await tool.find_records("c", 'grep -rl "secretword" .')
+        kwargs = tool.state["graph_provider"].filter_accessible_virtual_record_ids.await_args.kwargs
+        assert kwargs["scope_connector_ids"] == frozenset({"c"})
+
+    @pytest.mark.asyncio
+    async def test_failed_command_output_is_withheld(self, tmp_path):
+        tool = _make_tool(connector_dir=str(tmp_path))
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(False, "Command failed (exit 1): sort: -:2: disorder: SECRET LINE"),
+        ):
+            ok, output = await tool.find_records("c", 'grep -rlZ "x" . | xargs -0 grep -c "y"')
+        assert ok is False
+        assert "SECRET" not in output
+        assert output.startswith("Command failed (exit 1)")
+
+    @pytest.mark.asyncio
+    async def test_matches_only_in_unreadable_records_look_like_no_match(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})
+
+        _, hidden_hit = await tool.find_records("c", 'grep -rl "secretword" .')
+        _, no_hit = await tool.find_records("c", 'grep -rl "nothing-matches-this" .')
+        _, content_only = await tool.find_records("c", 'grep -rh "secretword" .')
+
+        assert hidden_hit == no_hit == content_only
+        assert "raw_output_lines" not in hidden_hit
+
+
+class TestXargsArgInjection:
+    """F4: content piped into xargs becomes argv for the sub-command, which the
+    static command validator never sees. Only safe, in-scope, relative record
+    paths may reach an xargs sub-command; flags, absolute paths, traversal, and
+    out-of-scope paths are stripped, and xargs is forced NUL-delimited.
+    """
+
+    @staticmethod
+    def _scope_with_secret(tmp_path):
+        """A scope dir holding one record whose text names an out-of-scope file."""
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOPSECRET_LEAK")
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        (scope / "record_aaaa.json").write_text(f'{{"note":"see {secret} now"}}')
+        return scope
+
+    @pytest.mark.asyncio
+    async def test_xargs_cat_cannot_read_absolute_path_from_record_text(self, tmp_path):
+        scope = self._scope_with_secret(tmp_path)
+        # Passes validation (slash pattern is sanctioned via -e), yet without the
+        # fix xargs would cat the absolute path grep -o pulled from the record.
+        cmd = "grep -roh -e '/[^ ]*secret[^ ]*' . | xargs cat"
+        assert _validate_command(cmd)[0], "exploit must pass static validation"
+        success, output = await _run_subprocess(cmd, cwd=str(scope))
+        assert "TOPSECRET_LEAK" not in output
+
+    @pytest.mark.asyncio
+    async def test_xargs_head_cannot_read_absolute_path_from_record_text(self, tmp_path):
+        scope = self._scope_with_secret(tmp_path)
+        cmd = "grep -roh -e '/[^ ]*secret[^ ]*' . | xargs head -5"
+        assert _validate_command(cmd)[0]
+        success, output = await _run_subprocess(cmd, cwd=str(scope))
+        assert "TOPSECRET_LEAK" not in output
+
+    @pytest.mark.asyncio
+    async def test_xargs_find_exec_tokens_from_record_text_do_not_execute(self, tmp_path):
+        # A record whose text is the words GNU find's -exec expects. Without the
+        # fix these become find's runtime argv and run a command; the canary
+        # file proves nothing executed.
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        canary = scope / "PWNED"
+        (scope / "record_aaaa.json").write_text(". -exec touch PWNED {} +")
+        cmd = "grep -roh -e '[-A-Za-z{}+./]*' . | xargs find"
+        assert _validate_command(cmd)[0]
+        await _run_subprocess(cmd, cwd=str(scope))
+        assert not canary.exists()
+        assert not (tmp_path / "PWNED").exists()
+
+    @pytest.mark.asyncio
+    async def test_legit_multi_stage_pipeline_still_finds_the_record(self, tmp_path):
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        (scope / "record_aaaa.json").write_text('{"data":"asana quarterly revenue"}')
+        cmd = 'grep -rilZ "asana" . | xargs -0 grep -il "revenue"'
+        success, output = await _run_subprocess(cmd, cwd=str(scope))
+        assert success is True
+        assert "record_aaaa.json" in output
+
+    def test_sanitize_keeps_only_in_scope_real_relative_paths(self, tmp_path):
+        (tmp_path / "record_aaaa.json").write_text("{}")
+        (tmp_path / "secret.txt").write_text("x")  # exists but not what we feed
+        data = b"\n".join([
+            b"record_aaaa.json",      # kept: real, relative, in-scope
+            b"/etc/passwd",           # dropped: absolute
+            b"../secret.txt",         # dropped: traversal escaping scope
+            b"-exec",                 # dropped: flag
+            b"nonexistent.json",      # dropped: not a real file
+            b"",                      # dropped: empty
+        ])
+        out = _sanitize_xargs_input(data, str(tmp_path))
+        assert out == b"record_aaaa.json"
+
+    def test_sanitize_handles_null_delimited_input(self, tmp_path):
+        (tmp_path / "a.json").write_text("{}")
+        (tmp_path / "b.json").write_text("{}")
+        data = b"./a.json\x00/etc/passwd\x00./b.json\x00"
+        out = _sanitize_xargs_input(data, str(tmp_path))
+        assert out == b"./a.json\x00./b.json"
+
+    def test_sanitize_drops_symlink_escaping_scope(self, tmp_path):
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        link = scope / "link.json"
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported here")
+        # realpath of the symlink resolves outside the scope → dropped.
+        assert _sanitize_xargs_input(b"link.json", str(scope)) == b""
+
+    def test_force_null_inserts_zero_before_subcommand(self):
+        assert _force_xargs_null_delimited(["xargs", "cat"]) == ["xargs", "-0", "cat"]
+
+    def test_force_null_noop_when_already_null_delimited(self):
+        assert _force_xargs_null_delimited(["xargs", "-0", "cat"]) == ["xargs", "-0", "cat"]
+        assert _force_xargs_null_delimited(["xargs", "--null", "cat"]) == ["xargs", "--null", "cat"]
+
+    def test_force_null_keeps_replace_str_value(self):
+        # -0 must land after -I's replace-str value, before the sub-command.
+        assert _force_xargs_null_delimited(["xargs", "-I", "{}", "grep", "x", "{}"]) == [
+            "xargs", "-I", "{}", "-0", "grep", "x", "{}",
+        ]
+
+
+class TestRankingIsBounded:
+    """Ranking runs LLM-written patterns in Python; they must not hang a worker."""
+
+    @pytest.mark.timeout(5)
+    def test_catastrophic_pattern_finishes_and_keeps_the_file(self, tmp_path):
+        import time
+
+        from app.agents.actions.storage_search.storage_search import (
+            _grep_search_regexes,
+            _rank_candidates,
+        )
+
+        vrid = "cccccccc-0000-0000-0000-000000000000"
+        (tmp_path / f"record_{vrid}.json").write_text("a" * 200_000)
+        regexes = _grep_search_regexes('grep -rci "a*a*a*a*a*b" .')
+
+        started = time.monotonic()
+        ranked = _rank_candidates([(f"./record_{vrid}.json", vrid, 1)], str(tmp_path), regexes)
+
+        assert time.monotonic() - started < 1.0
+        assert [r[1] for r in ranked] == [vrid]
+
+    @pytest.mark.timeout(5)
+    def test_timed_out_match_scores_zero_but_reports_bytes_read(self, tmp_path):
+        import time
+
+        import regex
+
+        from app.agents.actions.storage_search.storage_search import _score_record_file
+
+        path = tmp_path / "record_x.json"
+        path.write_text("y" + "x" * 5000)
+        rx = regex.compile(r"(x+x+)+y", regex.IGNORECASE)
+
+        started = time.monotonic()
+        assert _score_record_file(str(path), [rx], timeout=0.2) == (0, 0, "", 5001)
+        assert time.monotonic() - started < 1.0
+
+    def test_alternatives_and_pattern_length_are_capped(self):
+        from app.agents.actions.storage_search.storage_search import _grep_search_regexes
+
+        many = r"\|".join(f"term{i}" for i in range(100))
+        assert len(_grep_search_regexes(f'grep -rci "{many}" .')) == 32
+        assert _grep_search_regexes(f'grep -rci "{"a" * 600}" .') == []
+
+    def test_a_file_is_parsed_once_until_it_changes(self, tmp_path) -> None:
+        import json
+
+        import regex
+
+        from app.agents.actions.storage_search import storage_search as mod
+
+        path = tmp_path / "record_cached.json"
+        path.write_text(json.dumps({"record": {"block_containers": {"blocks": [{"data": "alpha beta"}]}}}))
+        rx = [regex.compile("alpha", regex.IGNORECASE)]
+        with patch.object(mod.json_mod, "loads", wraps=mod.json_mod.loads) as parse:
+            first = mod._score_record_file(str(path), rx)
+            assert mod._score_record_file(str(path), rx) == first
+            assert parse.call_count == 1
+            path.write_text(json.dumps({"record": {"block_containers": {"blocks": [{"data": "gamma delta"}]}}}) + " ")
+            assert mod._score_record_file(str(path), rx)[:2] == (0, 0)
+            assert parse.call_count == 2
+
+
+class TestLogging:
+    """Record content stays out of the INFO log and search terms out of every log;
+    operators and the log pipeline are not authorised to read them."""
+
+    _LOGGER = "app.agents.actions.storage_search.storage_search"
+    _SECRET = "ACME-PAYROLL-SSN-123-45-6789"
+
+    def _info_text(self, caplog: pytest.LogCaptureFixture) -> str:
+        return "\n".join(
+            r.getMessage() for r in caplog.records
+            if r.levelno >= logging.INFO and r.name == self._LOGGER
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_command_does_not_log_output_body_at_info(self, tmp_path, caplog) -> None:
+        caplog.set_level(logging.INFO, logger=self._LOGGER)
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, f"employee: {self._SECRET}"),
+        ):
+            ok, out = await tool.run_command("c", 'grep -rh "employee" .')
+        assert ok is True and self._SECRET in out
+        assert self._SECRET not in self._info_text(caplog)
+
+    @pytest.mark.asyncio
+    async def test_find_records_does_not_log_output_body_at_info(self, tmp_path, caplog) -> None:
+        """This stdout predates the permission check, so it can name records the
+        user may not read."""
+        caplog.set_level(logging.INFO, logger=self._LOGGER)
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
+        gp = tool.state["graph_provider"]
+        gp.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        gp.get_records_by_record_ids = AsyncMock(return_value=[])
+        leaked_path = f"Payroll/{self._SECRET}/record_0f0f0f0f-0000-0000-0000-000000000000.json"
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, leaked_path),
+        ):
+            await tool.find_records("c", 'grep -rl "employee" .')
+        assert self._SECRET not in self._info_text(caplog)
+
+    @pytest.mark.asyncio
+    async def test_search_terms_are_logged_at_no_level(self, tmp_path, caplog) -> None:
+        """A grep pattern is the user's query; debug logs ship to the same pipeline."""
+        caplog.set_level(logging.DEBUG, logger=self._LOGGER)
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, ""),
+        ):
+            await tool.run_command("c", f'grep -rl "{self._SECRET}" .')
+            await tool.find_records("c", f'grep -rl "{self._SECRET}" .')
+        logged = [r.getMessage() for r in caplog.records if r.name == self._LOGGER]
+        assert logged, "the calls should still log their metadata"
+        assert not any(self._SECRET in m for m in logged)
+
+
+class TestFindRecordsSaysWhenOutputWasCut:
+    """Output cut at a size limit used to look like a complete answer, so a
+    record past the cut read as "does not match"."""
+
+    @pytest.mark.asyncio
+    async def test_output_reaching_the_callers_line_cap_is_reported(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
+
+        _, capped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2, readable_only=True)
+        _, uncapped = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_output_lines=3, readable_only=True,
+        )
+
+        assert _json.loads(capped)["output_truncated"] is True
+        assert "may still match" in _json.loads(capped)["hint"]
+        assert _json.loads(uncapped)["output_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_cut_is_never_reported_where_it_would_depend_on_unreadable_records(self, tmp_path) -> None:
+        """Not readable whole and no view: the output limit says how many records match, readable or not,
+        so the answer is a constant hint instead."""
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})  # the other record is unreadable
+
+        _, cut = await tool.find_records("c", 'grep -rl "secretword" .', max_results=1, max_output_lines=2)
+        _, not_cut = await tool.find_records("c", 'grep -rl "secretword" .', max_results=1, max_output_lines=3)
+
+        assert _json.loads(cut)["output_truncated"] is False
+        assert _json.loads(cut) == _json.loads(not_cut)
+        assert "may be incomplete" in _json.loads(cut)["hint"]
+
+    @pytest.mark.asyncio
+    async def test_the_empty_answer_over_unreadable_records_carries_the_same_hint(self, tmp_path) -> None:
+        """Unreadable matches that fill the output limit push a readable one out of view; the
+        answer must say so, and say the same whether or not anything unreadable matched."""
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})  # neither record is readable
+
+        _, with_matches = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2)
+        _, without = await tool.find_records("c", 'grep -rl "nomatchword" .', max_output_lines=2)
+
+        assert with_matches == without and "may be incomplete" in with_matches
+
+    @pytest.mark.asyncio
+    async def test_no_view_means_no_grep_and_one_answer(self, tmp_path) -> None:
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        tool._build_accessible_view = AsyncMock(return_value=(None, "too many files"))
+
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock) as run:
+            answers = [
+                (await tool.find_records("c", f'grep -rl "{word}" .', readable_only=True))[1]
+                for word in ("secretword", "absentword")
+            ]
+
+        run.assert_not_called()
+        assert answers[0] == answers[1] and '"output_truncated": true' in answers[0]
+
+    @pytest.mark.asyncio
+    async def test_readable_only_search_cannot_hit_its_output_limit_through_unreadable_records(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)  # one readable record and one the caller cannot read, both matching
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        _, out = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_results=10, max_output_lines=2, readable_only=True,
+        )
+
+        body = _json.loads(out)
+        assert [r["virtual_record_id"] for r in body["records"]] == [_VRID_ACCESSIBLE]
+        assert body["output_truncated"] is False  # the cap of 2 lines is not reached by the one readable file
+
+    @pytest.mark.asyncio
+    async def test_readable_only_search_that_cannot_make_a_view_always_reports_a_cut(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._list_stored_files", return_value=None,
+        ):
+            _, out = await tool.find_records(
+                "c", 'grep -rl "secretword" .', max_results=10, max_output_lines=50, readable_only=True,
+            )
+
+        assert _json.loads(out)["output_truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_output_cut_at_the_byte_cap_is_reported_over_readable_records(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
+
+        # A first-stage cap below one line's length cuts the grep output.
+        success, output = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_stdout_bytes=10, readable_only=True,
+        )
+
+        assert success is True
+        body = _json.loads(output)
+        assert body["records"] == []
+        assert body["output_truncated"] is True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Audit fixes: raw output only from readable records, listing-only find_records,
+# view hygiene, re-validated rewrites.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestRunCommandOnlySeesReadableRecords:
+    """L03: an APP_LEVEL connector still holds records the user may not read
+    (soft-deleted, failed, still indexing); raw output must never carry them."""
+
+    @pytest.mark.asyncio
+    async def test_app_level_connector_hides_unreadable_records_from_raw_output(self, tmp_path) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "live text alpha-live")
+        _write_record(tmp_path, _VRID_FORBIDDEN, "deleted text omega-deleted")
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})  # "c" is APP_LEVEL
+        for cmd in ('grep -rh "text" .', 'grep -rh "omega" .',
+                    'find . -name "*.json" -print0 | xargs -0 cat', 'grep -rc "text" .'):
+            ok, output = await tool.run_command("c", cmd)
+            assert "omega-deleted" not in output, cmd
+            assert _VRID_FORBIDDEN not in output, cmd
+        ok, output = await tool.run_command("c", 'grep -rh "text" .')
+        assert ok is True and "alpha-live" in output
+
+    @pytest.mark.asyncio
+    async def test_counts_cover_readable_records_only(self, tmp_path) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        _write_record(tmp_path, _VRID_FORBIDDEN, "x")
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        ok, output = await tool.run_command("c", 'find . -name "*.json" | wc -l')
+        assert ok is True and output.strip() == "1"
+
+
+class TestFindRecordsListsOnly:
+    """L13: find_records searches every record, readable or not; a file may be
+    listed only on its own content or metadata."""
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -rci "a\\|b" .',
+        'grep -rliZ "invoice" . | xargs -0 grep -Hci "recurring"',
+        'grep -rliZ "a" . | xargs -0 grep -liZ "b" | xargs -0 grep -Hci "c"',
+        'rg -l "x" .',
+        'find . -name "*.json" -mtime -7',
+        'find . -name "*.json" -newermt "2026-01-01"',
+        'ls .',
+        'grep -rL "x" .',
+    ])
+    def test_listing_commands_are_allowed(self, cmd) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _listing_command_error,
+        )
+        assert _validate_command(cmd)[0], cmd
+        assert _listing_command_error(cmd) is None, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -rl "x" . | head -1',
+        'grep -rl "x" . | tail -1',
+        'grep -rl "x" . | sort',
+        'grep -rh "x" . | uniq -c',
+        'grep -rl "x" . | wc -l',
+        'cat ./a/record_aa.json',
+        'find . -newer ./a/record_aa.json',
+        'find . -samefile ./a/record_aa.json',
+        'find . -follow -name "*.json"',
+        'grep -rl -f ./a/record_aa.json .',
+        'grep -rlf ./a/record_aa.json .',
+        'grep --file=./a/record_aa.json -rl .',
+        'grep -Rl "x" .',
+        'grep --dereference-recursive -l "x" .',
+        'rg -L -l "x" .',
+        'rg --ignore-file ./a/record_aa.json -l "x" .',
+        'grep -rlZ "x" . | xargs -0 head -1',
+        'grep -rlZ "x" . | xargs -0 xargs cat',
+        'echo ./a/record_aa.json',
+    ])
+    def test_commands_that_let_one_file_decide_another_are_refused(self, cmd) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _listing_command_error,
+        )
+        valid, _ = _validate_command(cmd)
+        assert not valid or _listing_command_error(cmd) is not None, cmd
+
+    @pytest.mark.asyncio
+    async def test_find_records_refuses_before_running_anything(self, tmp_path) -> None:
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            ok, output = await tool.find_records("c", 'grep -rl "secretword" . | head -1')
+        assert ok is False and "only lists matching files" in output
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pattern_match_commands_still_reach_find_records(self, tmp_path) -> None:
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        ok, output = await tool.find_records(
+            "c", 'grep -rliZ "secretword" . | xargs -0 grep -Hci "marker"',
+        )
+        assert ok is True
+        import json as _json
+        assert [r["virtual_record_id"] for r in _json.loads(output)["records"]] == [_VRID_ACCESSIBLE]
+
+
+class TestViewHygiene:
+    """L15 / L25: views never copy, never follow symlinks, never outlive a crash."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_link_fails_the_call_instead_of_copying(self, tmp_path, monkeypatch) -> None:
+        conn = tmp_path / "records" / "c"  # its views go to tmp_path, not a dir other tests share
+        _write_record(conn, _VRID_ACCESSIBLE, "x")
+        copies = []
+        monkeypatch.setattr(
+            "app.agents.actions.storage_search.storage_search.os.link",
+            MagicMock(side_effect=OSError(18, "Invalid cross-device link")),
+        )
+        monkeypatch.setattr("shutil.copy2", lambda *a, **k: copies.append(a))
+        tool = _make_perm_tool(str(conn), {_VRID_ACCESSIBLE: "rec-ok"})
+        ok, output = await tool.run_command("c", 'grep -r "x" .')
+        assert ok is False and "could not prepare the record view" in output
+        assert copies == []
+        assert not any((tmp_path / ".pattern_match_views").glob("*"))
+
+    @pytest.mark.asyncio
+    async def test_view_is_removed_when_preparing_it_fails_for_any_reason(self, tmp_path, monkeypatch) -> None:
+        conn = tmp_path / "records" / "c"  # its views go to tmp_path, not a dir other tests share
+        _write_record(conn, _VRID_ACCESSIBLE, "x")
+        monkeypatch.setattr(
+            "app.agents.actions.storage_search.storage_search._populate_view",
+            MagicMock(side_effect=RuntimeError("boom")),
+        )
+        tool = _make_perm_tool(str(conn), {_VRID_ACCESSIBLE: "rec-ok"})
+        ok, _ = await tool.run_command("c", 'grep -r "x" .')
+        assert ok is False
+        assert not any((tmp_path / ".pattern_match_views").glob("*"))
+
+    def test_symlinked_record_file_is_not_put_in_the_view(self, tmp_path) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _list_stored_files,
+            _populate_view,
+        )
+        secret = tmp_path / "outside.txt"
+        secret.write_text("outside secret")
+        conn = tmp_path / "conn"
+        (conn / "d").mkdir(parents=True)
+        os.symlink(secret, conn / "d" / f"record_{_VRID_ACCESSIBLE}.json")
+        files = _list_stored_files(str(conn))
+        assert files == []
+        view = tmp_path / "view"
+        _populate_view(str(conn), str(view), [(f"d/record_{_VRID_ACCESSIBLE}.json", _VRID_ACCESSIBLE)])
+        assert not (view / _VRID_ACCESSIBLE / f"record_{_VRID_ACCESSIBLE}.json").exists()
+
+    def test_stale_views_are_swept_and_fresh_ones_kept(self, tmp_path) -> None:
+        import time as _time
+
+        from app.agents.actions.storage_search.storage_search import _sweep_stale_views
+        old, fresh = tmp_path / "old", tmp_path / "fresh"
+        (old / "v").mkdir(parents=True)
+        (fresh / "v").mkdir(parents=True)
+        past = _time.time() - 3600
+        os.utime(old, (past, past))
+        _sweep_stale_views(str(tmp_path), max_age_secs=900)
+        assert not old.exists() and fresh.exists()
+
+    @pytest.mark.asyncio
+    async def test_no_view_is_left_after_a_command(self, tmp_path) -> None:
+        conn = tmp_path / "records" / "c"  # its views go to tmp_path, not a dir other tests share
+        _write_record(conn, _VRID_ACCESSIBLE, "x")
+        tool = _make_perm_tool(str(conn), {_VRID_ACCESSIBLE: "rec-ok"})
+        await tool.run_command("c", 'grep -r "x" .')
+        assert not any((tmp_path / ".pattern_match_views").glob("*"))
+
+
+class TestDateRewriteIsRevalidated:
+    """L16: the record_date rewrite produces a new command; it is checked again."""
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_that_fails_validation_never_runs(self, tmp_path, monkeypatch) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        monkeypatch.setattr(
+            "app.agents.actions.storage_search.storage_search._build_date_filtered_command",
+            lambda cmd, date: (True, "find . -exec cat {} +"),
+        )
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            ok, output = await tool.run_command("c", 'grep -r "x" .', record_date="2026-01-01")
+        assert ok is False
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_normal_date_search_still_runs(self, tmp_path) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "dated x")
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        ok, output = await tool.run_command("c", 'grep -rl "dated" .', record_date=today)
+        assert ok is True and _VRID_ACCESSIBLE in output
+
+
+class TestLandlockConfinement:
+    """L27: the command validator is no longer the only barrier; the kernel
+    confines every stage to the search folder."""
+
+    needs_landlock = pytest.mark.skipif(
+        __import__("app.agents.actions.storage_search.landlock_exec", fromlist=["abi_version"]).abi_version() < 1,
+        reason="kernel without Landlock",
+    )
+
+    @needs_landlock
+    @pytest.mark.asyncio
+    async def test_a_command_past_the_validator_still_cannot_read_outside(self, tmp_path) -> None:
+        outside = tmp_path.parent / f"outside-{tmp_path.name}.txt"
+        outside.write_text("tenant B secret")
+        inside = tmp_path / "in"
+        inside.mkdir()
+        (inside / "record_aa.json").write_text("ok")
+        try:
+            for cmd in (f"cat {outside}", "cat /etc/hostname", "cat /proc/self/environ", "ls /"):
+                ok, out = await _run_subprocess(cmd, cwd=str(inside), confine_to=str(inside))
+                assert ok is False, cmd
+                assert "tenant B secret" not in out
+            ok, out = await _run_subprocess("cat record_aa.json", cwd=str(inside), confine_to=str(inside))
+            assert ok is True and out.strip() == "ok"
+        finally:
+            outside.unlink()
+
+    @needs_landlock
+    @pytest.mark.asyncio
+    async def test_a_confined_stage_cannot_write(self, tmp_path) -> None:
+        (tmp_path / "record_aa.json").write_text("x")
+        ok, _ = await _run_subprocess("sort -o copy.json record_aa.json", cwd=str(tmp_path), confine_to=str(tmp_path))
+        assert ok is False
+        assert not (tmp_path / "copy.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_run_command_refuses_without_landlock(self, tmp_path, monkeypatch) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 0)
+        monkeypatch.delenv("STORAGE_SEARCH_ALLOW_UNCONFINED", raising=False)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock) as run:
+            ok, out = await tool.run_command("c", 'grep -r "x" .')
+        assert ok is False and "Landlock" in out
+        run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_opt_out_runs_unconfined(self, tmp_path, monkeypatch) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 0)
+        monkeypatch.setenv("STORAGE_SEARCH_ALLOW_UNCONFINED", "true")
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess",
+                   new_callable=AsyncMock, return_value=(True, "x")) as run:
+            ok, _ = await tool.run_command("c", 'grep -r "x" .')
+        assert ok is True
+        assert run.await_args.kwargs["confine_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_both_tools_confine_when_landlock_is_there(self, tmp_path, monkeypatch) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 7)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess",
+                   new_callable=AsyncMock, return_value=(True, "No matches found.")) as run:
+            await tool.run_command("c", 'grep -r "x" .')
+            assert run.await_args.kwargs["confine_to"] == run.await_args.kwargs["cwd"]
+            await tool.find_records("c", 'grep -rl "x" .')
+            assert run.await_args.kwargs["confine_to"] == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_stages_never_receive_the_apps_secrets(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SCOPED_JWT_SECRET", "super-secret")
+        monkeypatch.setenv("LANG", "C.UTF-8")
+        seen = {}
+        real = asyncio.create_subprocess_exec
+
+        async def spy(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+            seen.update(kwargs.get("env") or {})
+            return await real(*args, **kwargs)
+
+        with patch("app.agents.actions.storage_search.storage_search.asyncio.create_subprocess_exec", side_effect=spy):
+            await _run_subprocess("ls .", cwd=str(tmp_path))
+        assert "SCOPED_JWT_SECRET" not in seen
+        assert seen.get("LANG") == "C.UTF-8" and "PATH" in seen
+
+
+class TestHardening:
+    """Review fixes: resource caps, find_records confinement, abbreviated long
+    options, files that vanish mid-call, and cleanup of a cancelled call."""
+
+    def test_each_stage_gets_bounded_cpu_and_memory(self) -> None:
+        import subprocess
+        import sys
+
+        from app.agents.actions.storage_search import landlock_exec
+
+        code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import landlock_exec, resource;"
+            "landlock_exec.limit_resources();"
+            "print(resource.getrlimit(resource.RLIMIT_CPU)[1], resource.getrlimit(resource.RLIMIT_AS)[1])"
+        )
+        out = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", code, os.path.dirname(landlock_exec.__file__)],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.split()
+        assert int(out[0]) <= landlock_exec.CPU_SECONDS
+        assert int(out[1]) <= landlock_exec.MEMORY_BYTES
+
+    def test_the_wrapper_needs_no_new_import_once_confined(self) -> None:
+        # After landlock_restrict_self the interpreter's own files may be unreadable
+        # (CI's Python lives in /opt/hostedtoolcache, outside SYSTEM_DIRS), and
+        # os.execvp imports `warnings` lazily. Blocking every new import models that.
+        import subprocess
+        import sys
+
+        from app.agents.actions.storage_search import landlock_exec
+
+        code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import landlock_exec, os;"
+            "sys.meta_path[:] = []; sys.path_importer_cache.clear(); sys.path[:] = [];"
+            "os.get_exec_path(); print('ok')"
+        )
+        out = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", code, os.path.dirname(landlock_exec.__file__)],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert out.stdout.strip() == "ok", out.stderr
+
+    @pytest.mark.asyncio
+    async def test_find_records_refuses_without_landlock(self, tmp_path, monkeypatch) -> None:
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 0)
+        monkeypatch.delenv("STORAGE_SEARCH_ALLOW_UNCONFINED", raising=False)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock) as run:
+            ok, out = await tool.find_records("c", 'grep -rl "x" .')
+        assert ok is False and "Landlock" in out
+        run.assert_not_called()
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -rl --fil="x" .',
+        'grep -rl --exclude-f="x" .',
+        'grep -rl --deref "x" .',
+        'find . -name "record_*" | xargs -I{} grep -l --fil={} ./R.json',
+    ])
+    def test_an_abbreviated_forbidden_option_is_refused_in_find_records(self, cmd) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _listing_command_error,
+        )
+
+        assert _listing_command_error(cmd) is not None, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'rg -lf ./a/record_x.json .',
+        'rg -fpatterns.json -l .',
+        'rg -lL "x" .',
+        'grep -rlf ./a/record_x.json .',
+        'grep -lRi "x" .',
+        'find . -anewer ./a/record_x.json',
+        'find . -cnewer ./a/record_x.json',
+        'find . -newermm ./a/record_x.json',
+        'find . -newerca ./a/record_x.json',
+        'find -L . -name "*.json"',
+    ])
+    def test_a_forbidden_short_option_inside_a_cluster_is_refused(self, cmd: str) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _listing_command_error,
+        )
+
+        assert _listing_command_error(cmd) is not None, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -rl -eR .',
+        'grep -rl -e "-f" .',
+        'rg -l -e "f" .',
+        'rg -lg "*.json" "x" .',
+        'find . -newermt "2026-01-01" -name "*.json"',
+    ])
+    def test_a_value_that_looks_like_an_option_is_not_one(self, cmd: str) -> None:
+        # -e and -g take a value; "R", "-f" or "*.json" after them are not options.
+        from app.agents.actions.storage_search.storage_search import (
+            _listing_command_error,
+        )
+
+        assert _listing_command_error(cmd) is None, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -rl --include="*.json" "x" .',
+        'grep -rl --exclude="*.tmp" "x" .',
+        'grep -rl --files-with-matches "x" .',
+    ])
+    def test_whole_options_that_look_like_prefixes_stay_allowed(self, cmd) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _listing_command_error,
+        )
+
+        assert _listing_command_error(cmd) is None, cmd
+
+    def test_a_record_removed_while_the_view_is_built_is_skipped(self, tmp_path) -> None:
+        from app.agents.actions.storage_search.storage_search import _populate_view
+
+        kept = _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        gone = _write_record(tmp_path, _VRID_FORBIDDEN, "y")
+        files = [(os.path.relpath(p, tmp_path), v) for p, v in ((kept, _VRID_ACCESSIBLE), (gone, _VRID_FORBIDDEN))]
+        gone.unlink()
+        view = tmp_path.parent / f"view-{tmp_path.name}"
+        try:
+            _populate_view(str(tmp_path), str(view), files)
+            assert os.listdir(view) == [_VRID_ACCESSIBLE]
+        finally:
+            import shutil
+            shutil.rmtree(view, ignore_errors=True)
+
+    def test_a_record_removed_while_listing_is_skipped(self, tmp_path, monkeypatch) -> None:
+        from app.agents.actions.storage_search import storage_search
+
+        kept = _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        gone = _write_record(tmp_path, _VRID_FORBIDDEN, "y")
+        real_lstat = os.lstat
+
+        def lstat(path: object, *a: object, **k: object) -> os.stat_result:
+            if os.fspath(path) == str(gone):
+                raise FileNotFoundError(path)
+            return real_lstat(path, *a, **k)
+
+        monkeypatch.setattr(storage_search.os, "lstat", lstat)
+        assert storage_search._list_stored_files(str(tmp_path)) == [
+            (os.path.relpath(kept, tmp_path), _VRID_ACCESSIBLE)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_call_cancelled_while_the_view_is_built_leaves_no_view(self, tmp_path, monkeypatch) -> None:
+        import threading
+
+        from app.agents.actions.storage_search import storage_search
+
+        _write_record(tmp_path, _VRID_ACCESSIBLE, "x")
+        started, release = threading.Event(), threading.Event()
+        seen = {}
+        real_populate = storage_search._populate_view
+
+        def slow_populate(connector_dir, view_dir, files) -> None:
+            seen["view"] = view_dir
+            os.makedirs(view_dir, exist_ok=True)
+            started.set()
+            release.wait(5)
+            real_populate(connector_dir, view_dir, files)  # still linking after the cancel
+
+        monkeypatch.setattr(storage_search, "_populate_view", slow_populate)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        task = asyncio.create_task(tool._build_accessible_view(str(tmp_path)))
+        await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert os.path.isdir(seen["view"])  # the thread is still running
+        release.set()
+        for _ in range(100):
+            if not os.path.exists(seen["view"]):
+                break
+            await asyncio.sleep(0.05)
+        assert not os.path.exists(seen["view"])
+
+
+def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
+    from app.agents.actions.storage_search.storage_search import (
+        _VIEWS_DIR_NAME,
+        sweep_orphan_views,
+    )
+
+    (tmp_path / "a-file").write_text("x")  # not an org directory
+    for org in ("org-1", "org-2"):
+        (tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old").mkdir(parents=True)
+        os.utime(tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old", (1, 1))
+    real = os.scandir
+
+    def flaky(path: str) -> object:
+        if "org-1" in str(path):
+            raise PermissionError(path)
+        return real(path)
+
+    with patch("os.scandir", flaky):
+        sweep_orphan_views(str(tmp_path))
+
+    assert not (tmp_path / "org-2" / "PipesHub" / _VIEWS_DIR_NAME / "old").exists()

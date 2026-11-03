@@ -21,7 +21,7 @@ from app.agents.tools.factories.registry import ClientFactoryRegistry
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
 
-__all__ = ["ToolInstanceCreator"]
+__all__ = ["ToolInstanceCreator", "configured_name_matches"]
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,21 @@ _TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
 )
 
 _MAX_CLIENT_CREATION_ATTEMPTS = 3
+
+
+def configured_name_matches(app_name: str, configured_name: str) -> bool:
+    """Whether a configured toolset name (already normalized) belongs to `app_name`.
+
+    Suffix matching bridges short registry names to the graph's longer ones
+    ("drive" -> "googledrive"), but a name that is itself a different
+    connector ("onedrive") must not be claimed by "drive", or one connector's
+    credentials end up building another connector's client."""
+    if configured_name == app_name:
+        return True
+    if not app_name or not configured_name.endswith(app_name):
+        return False
+    other = ClientFactoryRegistry.get_factory(configured_name)
+    return other is None or other is ClientFactoryRegistry.get_factory(app_name)
 
 
 class ToolInstanceCreator:
@@ -141,7 +156,7 @@ class ToolInstanceCreator:
                     raise ValueError(
                         f"{app_name.capitalize()} toolset is not authenticated. "
                         "Please complete the OAuth flow first. "
-                        f"Go to Settings > Toolsets to authenticate your {app_name.capitalize()} account."
+                        f"Authenticate your {app_name.capitalize()} account under Your actions."
                     ) from e
                 raise RuntimeError(
                     f"Failed to create {app_name} client: {e}"
@@ -220,20 +235,42 @@ class ToolInstanceCreator:
         Handles the naming gap between the toolset registry (e.g. ``"drive"``)
         and the graph DB toolset names (e.g. ``"Google Drive"`` → ``"googledrive"``).
         """
+        ts = self._toolset_for_app(app_name)
+        if ts is None:
+            return None, None
+        instance_id = ts["instanceId"]
+        self._log.debug("Resolved config for app %s via agent_toolsets (instanceId=%s)", app_name, instance_id)
+        return self._toolset_configs[instance_id], instance_id
+
+    def instance_for_app(self, app_name: str) -> tuple[str, str] | None:
+        """The toolset instance an app's tools run on (the one its credentials come from): its id
+        and name, for the approval gate."""
+        ts = self._toolset_for_app(app_name)
+        if ts is None:
+            return None
+        return ts["instanceId"], ts.get("instanceName") or ts.get("displayName") or ts.get("name") or app_name
+
+    def instance_is_personal(self, instance_id: str) -> bool:
+        """Whether the instance is a personal one, as the server marked the person's sign-in to it
+        (`toolsets.py` writes the mark; nothing the person sends can set it)."""
+        config = self._toolset_configs.get(instance_id)
+        return isinstance(config, dict) and config.get("scope") == "personal"
+
+    def _toolset_for_app(self, app_name: str) -> dict | None:
+        """The agent's configured toolset for an app, when its config is loaded."""
         normalized = app_name.lower().replace(" ", "").replace("_", "")
-        for ts in self._agent_toolsets:
-            name = (ts.get("name") or "").lower().replace(" ", "").replace("_", "")
-            if name == normalized or name.endswith(normalized):
+        named = [
+            ((ts.get("name") or "").lower().replace(" ", "").replace("_", ""), ts)
+            for ts in self._agent_toolsets
+        ]
+        # An exact name beats a suffix match regardless of list order.
+        named.sort(key=lambda pair: pair[0] != normalized)
+        for name, ts in named:
+            if configured_name_matches(normalized, name):
                 instance_id = ts.get("instanceId")
-                if instance_id:
-                    config = self._toolset_configs.get(instance_id)
-                    if config is not None:
-                        self._log.debug(
-                            "Resolved config for app %s via agent_toolsets (instanceId=%s)",
-                            app_name, instance_id,
-                        )
-                        return config, instance_id
-        return None, None
+                if instance_id and self._toolset_configs.get(instance_id) is not None:
+                    return ts
+        return None
 
     def _get_toolset_config(self, tool_full_name: str) -> dict | None:
         """Resolve toolset config for a tool from the context's maps."""

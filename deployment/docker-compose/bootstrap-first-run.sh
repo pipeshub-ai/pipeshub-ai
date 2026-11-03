@@ -187,6 +187,19 @@ if [[ "$DEMO_PERSONAS" == "1" ]]; then
   [[ "$ACCOUNT_TYPE" == "business" ]] \
     || die "PIPESHUB_DEMO_PERSONAS=1 needs PIPESHUB_ACCOUNT_TYPE=business (individual accounts are single-user)"
   [[ -n "$DEMO_PASSWORD" ]] || die "PIPESHUB_DEMO_PASSWORD is required with PIPESHUB_DEMO_PERSONAS=1"
+  # The server's own rule (passwordValidator), checked before any request. The
+  # personas are created last, after the org, the model and the token, so a
+  # password refused there would leave a half-set-up instance that this script
+  # refuses to run against again.
+  DEMO_PASSWORD="$DEMO_PASSWORD" python3 - <<'PY' \
+    || die "PIPESHUB_DEMO_PASSWORD needs 8+ characters with an uppercase letter, a lowercase letter, a number and one of #?!@\$%^&*-, and at most 72 bytes"
+import os, re, sys
+p = os.environ["DEMO_PASSWORD"]
+# JavaScript's "." (the server's regex) stops at line and paragraph separators.
+c = r"[^\n\r\u2028\u2029]"
+rule = rf"(?={c}*?[A-Z])(?={c}*?[a-z])(?={c}*?[0-9])(?={c}*?[#?!@$%^&*-]){c}{{8,}}"
+sys.exit(0 if len(p.encode("utf-8")) <= 72 and re.fullmatch(rule, p) else 1)
+PY
 fi
 [[ -n "$LLM_PROVIDER" ]] || die "PIPESHUB_LLM_PROVIDER is required"
 [[ -n "$LLM_MODEL" ]] || die "PIPESHUB_LLM_MODEL is required"
@@ -242,9 +255,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Five-scope agent preset (stock MCP_SCOPES). Do not omit `scopes` on create —
-# the API then grants the full mcpScopes set.
-AGENT_SCOPES='["conversation:chat","semantic:write","kb:read","user:read","connector:read"]'
+# The agent preset (AgentMcpScopes, all in the stock MCP_SCOPES). Do not omit
+# `scopes` on create — the API then grants the full mcpScopes set.
+AGENT_SCOPES='["conversation:chat","semantic:write","kb:read","kb:write","kb:upload","user:read","connector:read","connector:write","connector:sync","code:read"]'
 
 json_escape() {
   # Value through the environment, not argv — /proc/<pid>/cmdline is world-readable.

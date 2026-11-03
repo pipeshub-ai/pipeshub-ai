@@ -95,10 +95,12 @@ describe('knowledge_base/constants/record.constants', () => {
       expect(INDEXING_STATUS.EMPTY).to.equal('EMPTY')
       expect(INDEXING_STATUS.ENABLE_MULTIMODAL_MODELS).to.equal('ENABLE_MULTIMODAL_MODELS')
       expect(INDEXING_STATUS.QUEUED).to.equal('QUEUED')
+      expect(INDEXING_STATUS.SKIPPED).to.equal('SKIPPED')
+      expect(INDEXING_STATUS.PASSWORD_PROTECTED).to.equal('PASSWORD_PROTECTED')
     })
 
-    it('should have exactly 10 statuses', () => {
-      expect(Object.keys(INDEXING_STATUS)).to.have.lengthOf(10)
+    it('should have exactly 12 statuses', () => {
+      expect(Object.keys(INDEXING_STATUS)).to.have.lengthOf(12)
     })
   })
 
@@ -119,7 +121,7 @@ describe('knowledge_base/constants/record.constants', () => {
     })
 
     it('should have edge collections', () => {
-      expect(COLLECTIONS.RECORD_TO_RECORD).to.equal('recordRelations')
+      expect(COLLECTIONS.RECORD_TO_RECORD).to.equal('nodeRelations')
       expect(COLLECTIONS.IS_OF_TYPE).to.equal('isOfType')
       expect(COLLECTIONS.PERMISSIONS).to.equal('permissions')
       expect(COLLECTIONS.BELONGS_TO).to.equal('belongsTo')

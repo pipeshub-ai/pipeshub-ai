@@ -1,5 +1,10 @@
 import { injectable } from 'inversify';
 import mongoose, { Connection, ConnectOptions } from 'mongoose';
+import {
+  APP_MONGO_DEFAULT_OPTIONS,
+  fenceClientOptions,
+  installMongoFence,
+} from '../repositories/fence';
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
 import { Logger } from './logger.service';
@@ -65,20 +70,17 @@ export class MongoService {
 
     try {
       const { uri, db, options } = this.config;
-      const defaultOptions = {
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-        family: 4,
-        maxPoolSize: 10,
-      };
+      const defaultOptions = APP_MONGO_DEFAULT_OPTIONS;
       // Configure connection options
       const connectOptions: ConnectOptions = {
         dbName: db,
         ...(options ?? defaultOptions),
+        ...fenceClientOptions(),
         autoCreate: true,
         autoIndex: true,
       };
 
+      installMongoFence(mongoose.mongo.Collection);
       // Connect to MongoDB
       await mongoose.connect(uri, connectOptions);
       this.connection = mongoose.connection;
@@ -114,9 +116,8 @@ export class MongoService {
       logger.error('Mongoose connection error:', error);
     });
 
-    // Handle process termination
-    process.on('SIGINT', this.gracefulShutdown.bind(this));
-    process.on('SIGTERM', this.gracefulShutdown.bind(this));
+    // No signal handlers here: `Application.stop()` owns shutdown order and
+    // disconnects via `destroy()` only after in-flight requests have drained.
   }
 
   /**
@@ -126,7 +127,9 @@ export class MongoService {
    */
   private async ensureCollections(): Promise<void> {
     if (!this.connection?.db) {
-      logger.warn('Cannot ensure collections: database connection not available');
+      logger.warn(
+        'Cannot ensure collections: database connection not available',
+      );
       return;
     }
 
@@ -157,15 +160,6 @@ export class MongoService {
         error instanceof Error ? error : new Error('Unknown error occurred');
       logger.error('Failed to ensure collections:', err.message);
       // Don't throw - allow app to continue, collections might already exist
-    }
-  }
-
-  private async gracefulShutdown(): Promise<void> {
-    try {
-      await this.destroy();
-    } catch (error) {
-      logger.error('Error during graceful shutdown:', error);
-      process.exit(1);
     }
   }
 

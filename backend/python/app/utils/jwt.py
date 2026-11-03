@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import jwt  # type: ignore
+import jwt
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
@@ -42,8 +42,8 @@ def is_jwt_expired(token: str) -> bool:
     if 'exp' not in payload_data:
         return True
 
-    # Get current timestamp
-    current_time = datetime.utcnow().timestamp()
+    # Get current timestamp (timezone-aware UTC)
+    current_time = datetime.now(timezone.utc).timestamp()
 
     # Check if token is expired
     return payload_data['exp'] < current_time
@@ -67,18 +67,19 @@ def mint_service_token(
     return jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
 
 
-async def generate_jwt(config_service: ConfigurationService, token_payload: dict) -> str:
+async def generate_jwt(config_service: ConfigurationService, token_payload: dict, ttl: timedelta | None = None) -> str:
     """
     Mint a service token signed with the scoped JWT secret from configuration.
 
     Args:
         token_payload (dict): The claims to include in the JWT
+        ttl: Lifetime of the token; the service default (one hour) when None
 
     Returns:
         str: The generated JWT token
     """
     secret_keys = await config_service.get_config(
-        config_node_constants.SECRET_KEYS.value
+        config_node_constants.SECRET_KEYS.value, use_cache=True
     )
     if not secret_keys:
         raise ValueError("SECRET_KEYS environment variable is not set")
@@ -86,4 +87,6 @@ async def generate_jwt(config_service: ConfigurationService, token_payload: dict
     if not scoped_jwt_secret:
         raise ValueError("SCOPED_JWT_SECRET environment variable is not set")
 
-    return mint_service_token(scoped_jwt_secret, token_payload)
+    if ttl is None:
+        return mint_service_token(scoped_jwt_secret, token_payload)
+    return mint_service_token(scoped_jwt_secret, token_payload, ttl)

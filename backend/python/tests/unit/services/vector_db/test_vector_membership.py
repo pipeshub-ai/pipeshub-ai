@@ -375,11 +375,14 @@ class TestDeletedRecordPayloadIncludesConnectorId:
                 "version": 2,
                 "virtualRecordId": "v1",
                 "connectorId": "conn-9",
+                "recordType": "TICKET",
             },
             None,
         )
         assert result["connectorId"] == "conn-9"
         assert result["virtualRecordId"] == "v1"
+        # A deleted issue must not request a code edge build (O-8).
+        assert result["recordType"] == "TICKET"
 
     @pytest.mark.asyncio
     async def test_neo4j_payload_has_connector_id(self):
@@ -394,10 +397,12 @@ class TestDeletedRecordPayloadIncludesConnectorId:
                 "version": 2,
                 "virtualRecordId": "v1",
                 "connectorId": "conn-9",
+                "recordType": "TICKET",
             },
             None,
         )
         assert result["connectorId"] == "conn-9"
+        assert result["recordType"] == "TICKET"
         assert result["virtualRecordId"] == "v1"
 
 
@@ -1349,7 +1354,7 @@ class TestStorageReconcileIsOptIn:
 
         with _patch.dict(os.environ, {}, clear=False):
             os.environ.pop("VECTOR_STORAGE_RECONCILE_ENABLED", None)
-            await vs._reconcile_storage_layout("records", 1024, False)
+            await vs._reconcile_storage_layout("records", 1024)
 
         vdb.reconcile_storage_layout.assert_not_awaited()
 
@@ -1373,7 +1378,7 @@ class TestStorageReconcileIsOptIn:
         )
 
         with _patch.dict(os.environ, {"VECTOR_STORAGE_RECONCILE_ENABLED": "true"}):
-            await vs._reconcile_storage_layout("records", 1024, False)
+            await vs._reconcile_storage_layout("records", 1024)
 
         vdb.reconcile_storage_layout.assert_awaited_once()
 

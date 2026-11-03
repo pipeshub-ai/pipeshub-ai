@@ -15,5 +15,8 @@ export function useInitializeOrgProfile() {
     useOrgStore.getState().setInitialized(true);
   }, []);
 
-  return { isHydrated, isAuthenticated, accessToken, initialize, clearOrg };
+  // One org per install here, so the active org never changes under the profile.
+  const currentOrgId: string | null = null;
+
+  return { isHydrated, isAuthenticated, accessToken, currentOrgId, initialize, clearOrg };
 }

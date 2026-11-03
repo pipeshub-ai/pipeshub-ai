@@ -16,9 +16,16 @@ from typing import TYPE_CHECKING, override
 from pydantic import JsonValue
 
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.messaging.lanes.assignment_policy import ConnectorClass
+from app.services.messaging.lanes.interface import LaneHint
 
 if TYPE_CHECKING:
     from app.services.messaging.lanes.interface import LaneConfig, LaneRouter
+
+# Knowledge-base uploads carry this origin; it is the only class an event
+# says for itself. Anything else is placed as a large connector, which is
+# the safe mistake: it can only give a small connector a lane of its own.
+_UPLOAD_ORIGIN = "UPLOAD"
 
 __all__ = ["LaneAwareProducer"]
 
@@ -82,12 +89,31 @@ class LaneAwareProducer(IMessagingProducer):
             message.get("eventType"),
         )
 
-    def _route(
+    @staticmethod
+    def _hint(message: dict[str, JsonValue]) -> LaneHint:
+        payload = message.get("payload")
+        fields = payload if isinstance(payload, dict) else message
+
+        def text(name: str) -> str | None:
+            value = fields.get(name)
+            return str(value) if value not in (None, "") else None
+
+        return LaneHint(
+            org_id=text("orgId"),
+            connector_class=(
+                ConnectorClass.KB.value if text("origin") == _UPLOAD_ORIGIN else None
+            ),
+            connector_type=text("connectorName"),
+        )
+
+    async def _route(
         self, topic: str, message: dict[str, JsonValue], key: str | None
     ) -> tuple[str, str | None]:
         if topic not in self._laned:
             return topic, key
-        return self._router.route(topic, self._lane_key(message))
+        return await self._router.place(
+            topic, self._lane_key(message), self._hint(message)
+        )
 
     @override
     async def initialize(self) -> None:
@@ -112,7 +138,7 @@ class LaneAwareProducer(IMessagingProducer):
         message: dict[str, JsonValue],
         key: str | None = None,
     ) -> bool:
-        routed_topic, routed_key = self._route(topic, message, key)
+        routed_topic, routed_key = await self._route(topic, message, key)
         return await self._inner.send_message(routed_topic, message, key=routed_key)
 
     @override
@@ -124,7 +150,7 @@ class LaneAwareProducer(IMessagingProducer):
         key: str | None = None,
     ) -> bool:
         envelope: dict[str, JsonValue] = {"eventType": event_type, "payload": payload}
-        routed_topic, routed_key = self._route(topic, envelope, key)
+        routed_topic, routed_key = await self._route(topic, envelope, key)
         return await self._inner.send_event(
             topic=routed_topic,
             event_type=event_type,
@@ -152,7 +178,7 @@ class LaneAwareProducer(IMessagingProducer):
 
         grouped: dict[str, list[tuple[int, str | None, dict[str, JsonValue]]]] = {}
         for index, (key, message) in enumerate(messages):
-            routed_topic, routed_key = self._route(topic, message, key)
+            routed_topic, routed_key = await self._route(topic, message, key)
             grouped.setdefault(routed_topic, []).append((index, routed_key, message))
 
         results: list[bool] = [False] * len(messages)

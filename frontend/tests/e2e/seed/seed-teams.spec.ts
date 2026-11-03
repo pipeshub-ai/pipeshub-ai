@@ -20,7 +20,7 @@ test.describe.serial('Seed Teams', () => {
         await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 10_000 });
       }
 
-      // Click the "Create Team" CTA
+      // Click the "Create team" CTA
       const ctaButton = page.locator('button').filter({ hasText: /Create/ });
       await ctaButton.first().click();
 
@@ -38,8 +38,8 @@ test.describe.serial('Seed Teams', () => {
         await textarea.first().fill(`E2E test team #${i}`);
       }
 
-      // Click "Create Team" inside the dialog
-      await dialog.getByRole('button', { name: 'Create Team' }).click();
+      // Click "Create team" inside the dialog
+      await dialog.getByRole('button', { name: 'Create team' }).click();
 
       // Wait for dialog to close before next iteration
       await dialog.waitFor({ state: 'detached', timeout: 10_000 });

@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+import { ForbiddenError } from '../../../../src/libs/errors/http.errors';
 
 function stubUserRole(role: 'admin' | 'member' | null) {
   // null => existing user with unset role (not admin)
@@ -54,8 +55,11 @@ describe('userAdminCheck Middleware', () => {
 
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
-    expect(error).to.be.an('error');
-    expect(error.message).to.equal('Admin access required');
+    expect(error).to.be.instanceOf(ForbiddenError);
+    expect(error.statusCode).to.equal(403);
+    expect(error.message).to.equal(
+      'You need admin access to do this. Ask an admin in your organisation.',
+    );
   });
 
   it('should deny access when role is unset (no admin-group fallback)', async () => {
@@ -65,8 +69,11 @@ describe('userAdminCheck Middleware', () => {
 
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
-    expect(error).to.be.an('error');
-    expect(error.message).to.equal('Admin access required');
+    expect(error).to.be.instanceOf(ForbiddenError);
+    expect(error.statusCode).to.equal(403);
+    expect(error.message).to.equal(
+      'You need admin access to do this. Ask an admin in your organisation.',
+    );
   });
 
   it('should call next with NotFoundError when userId is missing', async () => {

@@ -4,6 +4,8 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { Box, Flex, Text, Button } from '@radix-ui/themes';
+import { BrandMark } from '@/config';
+import { useBrand } from '@/lib/branding';
 
 /**
  * PasswordResetSuccess — shown after the user successfully sets a new password.
@@ -11,15 +13,21 @@ import { Box, Flex, Text, Button } from '@radix-ui/themes';
  */
 export default function PasswordResetSuccess() {
   const router = useRouter();
+  const brand = useBrand();
 
   return (
     <Box style={{ width: '100%', maxWidth: '440px' }}>
       <Box style={{ marginBottom: '24px' }}>
-        <Image
-          src="/login-page-assets/pipeshub/white-square.svg"
-          alt="Pipeshub"
-          width={48}
-          height={48}
+        <BrandMark
+          size={48}
+          fallback={
+            <Image
+              src="/login-page-assets/pipeshub/white-square.svg"
+              alt={brand.productName}
+              width={48}
+              height={48}
+            />
+          }
         />
       </Box>
 
@@ -36,7 +44,7 @@ export default function PasswordResetSuccess() {
           Your password has been changed!
         </Text>
         <Text style={{ color: 'var(--gray-11)', fontSize: '14px', lineHeight: '20px' }}>
-          Your password has been successfully updated. You can now sign in to your Pipeshub
+          Your password has been successfully updated. You can now sign in to your {brand.productName}{' '}
           workspace with your new password.
         </Text>
       </Flex>

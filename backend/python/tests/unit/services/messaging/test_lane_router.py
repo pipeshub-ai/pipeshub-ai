@@ -37,15 +37,11 @@ class TestStableLane:
         digest = sha256(b"connector-42").digest()[:8]
         assert stable_lane("connector-42", 16) == int.from_bytes(digest, "big") % 16
 
-    def test_lane_matches_the_node_producer(self):
-        """Pinned vectors shared with the Node lane utils. Node publishes
-        record events too, so if the two disagree a connector lands on
-        different lanes depending on which service produced the event, and
-        the consumer's per-lane view stops meaning anything.
-
-        These exact pairs are asserted in
-        backend/nodejs/apps/tests/libs/utils/lane.utils.test.ts.
-        """
+    def test_the_hash_lane_never_changes_between_releases(self):
+        """Pinned vectors. A connector's hash lane is where events published
+        before the lane map, or during a lookup fallback, are waiting, and the
+        stranded-record sweep counts it; if it moved between releases the
+        sweep would look in the wrong place and re-send records early."""
         assert stable_lane("conn-1", 8) == 5
         assert stable_lane("connector-42", 8) == 4
         assert stable_lane("org-1", 8) == 4

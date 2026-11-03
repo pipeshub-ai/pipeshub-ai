@@ -6,7 +6,6 @@ import type { Router } from 'express';
 import { createKnowledgeBaseRouter } from '../../../../src/modules/knowledge_base/routes/kb.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
-import { RecordsEventProducer } from '../../../../src/modules/knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service';
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
 import { KB_UPLOAD_LIMITS } from '../../../../src/modules/knowledge_base/constants/kb.constants';
@@ -18,7 +17,6 @@ describe('Knowledge Base Routes', () => {
   let router: Router;
   let mockAuthMiddleware: any;
   let mockAppConfig: any;
-  let mockRecordsEventProducer: any;
   let mockSyncEventProducer: any;
   let mockKeyValueStore: any;
 
@@ -76,12 +74,6 @@ describe('Knowledge Base Routes', () => {
       cmBackend: 'http://localhost:3001',
     };
 
-    mockRecordsEventProducer = {
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-      stop: sinon.stub().resolves(),
-    };
-
     mockSyncEventProducer = {
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -101,9 +93,6 @@ describe('Knowledge Base Routes', () => {
     container
       .bind<AppConfig>('AppConfig')
       .toConstantValue(mockAppConfig as any);
-    container
-      .bind<RecordsEventProducer>('RecordsEventProducer')
-      .toConstantValue(mockRecordsEventProducer);
     container
       .bind<SyncEventProducer>('SyncEventProducer')
       .toConstantValue(mockSyncEventProducer);
@@ -196,7 +185,24 @@ describe('Knowledge Base Routes', () => {
       const handlers = findRouteStack('/:kbId/folder', 'post');
 
       expect(handlers).to.have.lengthOf(4);
-      expect(handlers[2]).to.be.a('function');
+      expect(handlers[0]).to.be.a('function'); // authenticate
+      expect(handlers[1]).to.be.a('function'); // scope middleware
+      expect(handlers[2]).to.be.a('function'); // validation
+      expect(handlers[3]).to.be.a('function');
+    });
+
+    it('should register subfolder create route', () => {
+      const routes = getRegisteredRoutes();
+      const subfolderRoute = routes.find(
+        (route) => route.path === '/:kbId/folder/:folderId/subfolder' && route.methods.post,
+      );
+      expect(subfolderRoute).to.exist;
+
+      const handlers = findRouteStack('/:kbId/folder/:folderId/subfolder', 'post');
+      expect(handlers).to.have.lengthOf(4);
+      expect(handlers[0]).to.be.a('function'); // authenticate
+      expect(handlers[1]).to.be.a('function'); // scope middleware
+      expect(handlers[2]).to.be.a('function'); // validation
       expect(handlers[3]).to.be.a('function');
     });
 
@@ -216,7 +222,6 @@ describe('Knowledge Base Routes', () => {
       expect(paths).to.not.include('/records');
       expect(paths).to.not.include('/:kbId/records');
       expect(paths).to.not.include('/:kbId/children');
-      expect(paths).to.not.include('/:kbId/folder/:folderId/subfolder');
       expect(paths).to.not.include('/:kbId/folder/:folderId/children');
     });
   });

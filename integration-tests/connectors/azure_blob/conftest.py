@@ -16,6 +16,10 @@ from helper.source_credentials import source_unavailable
 from connectors.azure_blob.azure_blob_storage_helper import AzureBlobStorageHelper
 
 
+def azure_blob_connector_config() -> dict[str, Any]:
+    return {"auth": {"azureBlobConnectionString": os.getenv("AZURE_BLOB_CONNECTION_STRING")}}
+
+
 @pytest.fixture(scope="session")
 def azure_blob_storage():
     conn_str = os.getenv("AZURE_BLOB_CONNECTION_STRING")
@@ -34,8 +38,7 @@ async def azure_blob_connector(
     graph_provider: GraphProviderProtocol,
     sample_data_root,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    conn_str = os.getenv("AZURE_BLOB_CONNECTION_STRING")
-    config = {"auth": {"azureBlobConnectionString": conn_str}}
+    config = azure_blob_connector_config()
 
     state = await constructor(
         azure_blob_storage,

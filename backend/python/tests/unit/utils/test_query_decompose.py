@@ -18,9 +18,6 @@ from app.utils.query_decompose import (
     MIN_DECOMPOSE_AND_EXPAND_QUERIES,
     QueryDecompositionExpansionService,
 )
-from app.utils.query_decompose import (
-    QueryDecompositionExpansionService,
-)
 
 log = logging.getLogger("test_query_decompose")
 log.setLevel(logging.CRITICAL)

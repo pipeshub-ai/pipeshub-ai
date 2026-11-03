@@ -406,28 +406,23 @@ class TestHandleResponse:
         assert ok is True
         assert json.loads(payload)["data"] == {}
 
-    def test_error_with_errorMessages_list_sets_error(self):
-        """When errorMessages is a list, the ternary in _handle_response
-        returns errorMessages[0] as the structured error message (non-obvious
-        operator-precedence behaviour)."""
+    def test_server_error_is_temporary_and_keeps_jiras_text_in_details(self) -> None:
         jira = _build_jira()
         resp = _mock_response(500, {"errorMessages": ["first msg"]})
         ok, payload = jira._handle_response(resp, "ignored", include_guidance=False)
         data = json.loads(payload)
         assert ok is False
-        assert data["error"] == "first msg"
+        assert data["error"] == "Jira is having a temporary problem. Try again in a moment."
+        assert "first msg" in data["details"]
         assert data["status_code"] == 500
 
     def test_error_with_error_key_but_no_errorMessages_list_falls_back(self):
-        """Current behaviour: when errorMessages is not a list, the whole
-        ternary evaluates to None and error_message is never set, so the
-        error string falls back to ``HTTP <status>``."""
         jira = _build_jira()
         resp = _mock_response(500, {"error": "boom", "errors": {"field": "bad"}})
         ok, payload = jira._handle_response(resp, "ignored", include_guidance=False)
         data = json.loads(payload)
         assert ok is False
-        assert data["error"] == "HTTP 500"
+        assert "temporary problem" in data["error"]
         assert data["status_code"] == 500
 
     def test_error_guidance_attached_for_known_status(self):
@@ -443,7 +438,7 @@ class TestHandleResponse:
         ok, payload = jira._handle_response(resp, "x")
         data = json.loads(payload)
         assert ok is False
-        assert data["error"] == "Bad JQL"
+        assert data["error"] == "Jira rejected the request. Jira said: Bad JQL. Correct it and try again."
 
     def test_error_non_dict_json_body(self):
         jira = _build_jira()
@@ -451,7 +446,7 @@ class TestHandleResponse:
         ok, payload = jira._handle_response(resp, "x")
         data = json.loads(payload)
         assert ok is False
-        assert "HTTP 500" in data["error"]
+        assert "temporary problem" in data["error"]
 
     def test_error_non_json_response(self):
         jira = _build_jira()
@@ -460,7 +455,7 @@ class TestHandleResponse:
         ok, payload = jira._handle_response(resp, "x")
         data = json.loads(payload)
         assert ok is False
-        assert "HTTP 500" in data["error"]
+        assert "temporary problem" in data["error"]
 
     def test_error_parsing_exception_fallback(self):
         jira = _build_jira()
@@ -613,6 +608,56 @@ class TestNormalizeIssuesInResponse:
         assert "sp" not in out["fields"]
 
 
+    @pytest.mark.asyncio
+    async def test_custom_field_appears_once_under_readable_name(self) -> None:
+        field_schema = {"customfield_10063": {"name": "Story Points", "normalized": "story_points"}}
+        data = {"issues": [{"fields": {"customfield_10063": 5}}]}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert out["issues"][0]["fields"] == {"story_points": 5}
+
+    @pytest.mark.asyncio
+    async def test_single_issue_custom_field_id_is_not_repeated(self) -> None:
+        field_schema = {"customfield_10063": {"name": "Story Points", "normalized": "story_points"}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_10063": 3}}, field_schema)
+        assert out["fields"] == {"story_points": 3}
+
+    @pytest.mark.asyncio
+    async def test_custom_field_keeps_id_when_readable_name_is_taken(self) -> None:
+        field_schema = {
+            "customfield_1": {"name": "Sprint", "normalized": "sprint"},
+            "customfield_2": {"name": "Sprint", "normalized": "sprint"},
+        }
+        data = {"fields": {"customfield_1": "A", "customfield_2": "B"}}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert sorted(map(str, out["fields"].values())) == ["A", "B"]
+        assert len(out["fields"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_custom_field_keeps_id_when_readable_name_is_empty(self) -> None:
+        field_schema = {"customfield_1": {"name": "???", "normalized": ""}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_1": 1}}, field_schema)
+        assert out["fields"] == {"customfield_1": 1}
+
+    @pytest.mark.asyncio
+    async def test_custom_field_named_like_a_system_field_keeps_its_id(self) -> None:
+        # The custom field comes first, so it would take "issue_type" before issuetype's alias.
+        field_schema = {
+            "customfield_1": {"name": "Issue Type", "normalized": "issue_type"},
+            "issuetype": {"name": "Issue Type", "normalized": "issue_type"},
+        }
+        data = {"fields": {"customfield_1": "Platform", "issuetype": {"name": "Bug"}}}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert out["fields"]["customfield_1"] == "Platform"
+        assert out["fields"]["issue_type"] == {"name": "Bug"}
+
+    @pytest.mark.asyncio
+    async def test_custom_description_field_is_not_replaced_by_the_issue_description(self) -> None:
+        # get_issue strips "description" before this runs and writes the issue's own back after.
+        field_schema = {"customfield_1": {"name": "Description", "normalized": "description"}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_1": "custom"}}, field_schema)
+        assert out["fields"] == {"customfield_1": "custom"}
+
+
 # ===========================================================================
 # _add_urls_to_issue_references
 # ===========================================================================
@@ -659,42 +704,35 @@ class TestAddUrlsToIssueReferences:
 
 class TestResolveUserToAccountId:
     @pytest.mark.asyncio
-    async def test_assignable_user_found_first(self):
+    async def test_single_assignable_user_is_found(self) -> None:
         client = MagicMock()
         client.find_assignable_users = AsyncMock(
-            return_value=_mock_response(200, [{"accountId": "a1"}]),
+            return_value=_mock_response(200, [{"accountId": "a1", "displayName": "Alice"}]),
         )
         jira = _build_jira()
         jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") == "a1"
+        assert await jira._resolve_user_to_account_id("P", "alice") == ("a1", None)
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_global_search(self):
+    async def test_no_match_is_an_error_not_a_global_guess(self) -> None:
         client = MagicMock()
         client.find_assignable_users = AsyncMock(return_value=_mock_response(200, []))
-        client.find_users_by_query = AsyncMock(
-            return_value=_mock_response(200, [{"accountId": "g1"}]),
-        )
+        client.find_users_by_query = AsyncMock(return_value=_mock_response(200, [{"accountId": "g1"}]))
         jira = _build_jira()
         jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") == "g1"
+        account_id, error = await jira._resolve_user_to_account_id("P", "alice")
+        assert account_id is None and "matches 'alice'" in error
+        client.find_users_by_query.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_none_when_no_match(self):
-        client = MagicMock()
-        client.find_assignable_users = AsyncMock(return_value=_mock_response(200, []))
-        client.find_users_by_query = AsyncMock(return_value=_mock_response(200, []))
-        jira = _build_jira()
-        jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") is None
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_is_an_error(self) -> None:
         client = MagicMock()
         client.find_assignable_users = AsyncMock(side_effect=RuntimeError("boom"))
         jira = _build_jira()
         jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") is None
+        account_id, error = await jira._resolve_user_to_account_id("P", "alice", "reporter")
+        assert account_id is None
+        assert "could not look up 'alice'" in error and "reporter_account_id" in error and "boom" not in error
 
 
 # ===========================================================================
@@ -781,7 +819,8 @@ class TestValidateConnection:
         jira.client.get_current_user = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await jira.validate_connection()
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert "Something unexpected went wrong" in json.loads(payload)["error"]
+        assert "boom" not in json.loads(payload)["error"]
 
 
 # ===========================================================================
@@ -812,7 +851,8 @@ class TestGetCurrentUser:
         jira.client.get_current_user = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await jira.get_current_user()
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert "Something unexpected went wrong" in json.loads(payload)["error"]
+        assert "boom" not in json.loads(payload)["error"]
 
 
 # ===========================================================================
@@ -833,7 +873,8 @@ class TestConvertTextToAdfTool:
         with patch.object(jira, "_convert_text_to_adf", side_effect=RuntimeError("boom")):
             ok, payload = await jira.convert_text_to_adf("hi")
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert "Something unexpected went wrong" in json.loads(payload)["error"]
+        assert "boom" not in json.loads(payload)["error"]
 
 
 # ===========================================================================
@@ -855,7 +896,7 @@ class TestCreateIssue:
     async def test_resolves_assignee_query(self):
         jira = _build_jira()
         jira.client.create_issue = AsyncMock(return_value=_mock_response(201, {"key": "P-1"}))
-        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value="aid")), \
+        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value=("aid", None))), \
              patch.object(jira, "_get_site_url", AsyncMock(return_value=None)):
             ok, _ = await jira.create_issue("P", "s", "Task", assignee_query="alice")
         assert ok is True
@@ -930,7 +971,8 @@ class TestCreateIssue:
         jira.client.create_issue = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await jira.create_issue("P", "s", "Task")
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert "Something unexpected went wrong" in json.loads(payload)["error"]
+        assert "boom" not in json.loads(payload)["error"]
 
 
 # ===========================================================================
@@ -1045,7 +1087,7 @@ class TestUpdateIssue:
             _mock_response(200, {"key": "P-1"}),                         # final fetch
         ])
         jira.client.edit_issue = AsyncMock(return_value=_mock_response(204))
-        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value="aid")), \
+        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value=("aid", None))), \
              patch.object(jira, "_get_site_url", AsyncMock(return_value=None)):
             ok, _ = await jira.update_issue("P-1", assignee_query="alice")
         assert ok is True
@@ -1057,7 +1099,8 @@ class TestUpdateIssue:
         jira.client.edit_issue = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await jira.update_issue("P-1", summary="x")
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert "Something unexpected went wrong" in json.loads(payload)["error"]
+        assert "boom" not in json.loads(payload)["error"]
 
 
 # ===========================================================================
@@ -1449,13 +1492,32 @@ class TestParseAllowedValues:
         ])
         assert result == [{"id": "1", "name": "High"}, {"name": "Low"}]
 
-    def test_caps_at_twenty_entries(self):
-        jira = _build_jira()
+    def test_returns_every_entry(self) -> None:
         raw = [{"id": str(i), "name": f"Opt{i}"} for i in range(25)]
-        assert len(jira._parse_allowed_values(raw)) == 20
+        assert len(_build_jira()._parse_allowed_values(raw)) == 25
 
 
 class TestFetchCreateFields:
+    @pytest.mark.asyncio
+    async def test_lists_twenty_options_and_counts_the_rest(self) -> None:
+        jira = _build_jira()
+        jira.client.get_create_issue_meta_issue_types = AsyncMock(
+            return_value=_mock_response(200, {"issueTypes": [{"id": "10001", "name": "Bug"}]}),
+        )
+        options = [{"id": str(i), "value": f"Team {i}"} for i in range(25)]
+        jira.client.get_create_issue_meta_issue_type_id = AsyncMock(
+            return_value=_mock_response(200, {
+                "fields": [{"fieldId": "customfield_100", "name": "Team", "required": True,
+                            "schema": {"type": "array", "items": "option"}, "allowedValues": options}],
+                "total": 1,
+            }),
+        )
+        fields, err = await jira._fetch_create_fields("PROJ", "Bug")
+        assert err is None
+        assert len(fields[0]["allowed_values"]) == 20
+        assert fields[0]["allowed_values_omitted"] == 5
+        assert fields[0]["schema_items"] == "option"
+
     @pytest.mark.asyncio
     async def test_cache_hit_skips_api(self):
         jira = _build_jira()
@@ -1533,10 +1595,10 @@ class TestFetchCreateFields:
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
         assert fields == []
-        assert "not found" in err
+        assert "could not list the issue types" in err
 
     @pytest.mark.asyncio
-    async def test_fields_http_error_returns_partial(self):
+    async def test_fields_http_error_is_an_error_not_a_short_list(self) -> None:
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1545,8 +1607,9 @@ class TestFetchCreateFields:
             return_value=_mock_response(500, {}),
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
+        assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
     async def test_fields_json_parse_failure(self):
@@ -1558,8 +1621,9 @@ class TestFetchCreateFields:
         bad.json = MagicMock(side_effect=ValueError("bad json"))
         jira.client.get_create_issue_meta_issue_type_id = AsyncMock(return_value=bad)
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
+        assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
     async def test_skips_fields_without_id(self):
@@ -1626,7 +1690,54 @@ class TestGetCreateIssueFields:
         jira._fetch_create_fields = AsyncMock(side_effect=RuntimeError("boom"))
         ok, payload = await jira.get_create_issue_fields("PROJ", "Bug")
         assert ok is False
-        assert "boom" in json.loads(payload)["error"]
+        assert "Something unexpected went wrong" in json.loads(payload)["error"]
+        assert "boom" not in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_says_how_many_options_are_not_listed(self) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {"field_id": "customfield_100", "name": "Team", "required": True,
+             "schema_type": "option", "allowed_values": [{"id": "1", "name": "Alpha"}],
+             "allowed_values_omitted": 30, "has_default_value": False},
+        ], None))
+        ok, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        field = json.loads(payload)["required_fields"][0]
+        assert ok is True
+        assert field["more_values"].startswith("30 more options are not listed")
+        assert "{'value': '<label>'}" in field["more_values"]
+
+    @pytest.mark.asyncio
+    async def test_no_note_when_every_option_is_listed(self) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {"field_id": "customfield_100", "name": "Team", "required": True,
+             "schema_type": "option", "allowed_values": [{"id": "1", "name": "Alpha"}],
+             "allowed_values_omitted": 0, "has_default_value": False},
+        ], None))
+        _, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        assert "more_values" not in json.loads(payload)["required_fields"][0]
+
+    @pytest.mark.parametrize(
+        ("field", "shape"),
+        [
+            ({"field_id": "customfield_1", "schema_type": "option"}, "as {'value': '<label>'}"),
+            ({"field_id": "customfield_2", "schema_type": "array", "schema_items": "option"}, "as [{'value': '<label>'}]"),
+            ({"field_id": "customfield_3", "schema_type": "array", "schema_items": "version"}, "as [{'name': '<label>'}]"),
+            ({"field_id": "customfield_5", "schema_type": "array", "schema_items": "group"}, "as [{'name': '<label>'}]"),
+            ({"field_id": "priority", "schema_type": "priority"}, "pass its name to the named parameter"),
+            ({"field_id": "components", "schema_type": "array", "schema_items": "component"}, "pass its name to the named parameter"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unlisted_option_hint_matches_the_field_shape(self, field: dict, shape: str) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {**field, "name": "F", "required": True, "allowed_values": [{"id": "1", "name": "A"}],
+             "allowed_values_omitted": 3, "has_default_value": False},
+        ], None))
+        _, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        assert shape in json.loads(payload)["required_fields"][0]["more_values"]
 
 
 # ===========================================================================
@@ -1813,7 +1924,7 @@ class TestSearchIssuesExtended:
 
 class TestFetchCreateFieldsExtended:
     @pytest.mark.asyncio
-    async def test_fields_fetch_exception_breaks_pagination(self):
+    async def test_fields_fetch_exception_is_an_error(self) -> None:
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1822,11 +1933,12 @@ class TestFetchCreateFieldsExtended:
             side_effect=RuntimeError("network"),
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
+        assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
-    async def test_non_list_fields_payload_stops_pagination(self):
+    async def test_non_list_fields_payload_is_an_unreadable_page(self):
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1835,8 +1947,8 @@ class TestFetchCreateFieldsExtended:
             return_value=_mock_response(200, {"fields": "bad", "total": 0}),
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
 
 
 class TestCleanIssueFieldsExtended:

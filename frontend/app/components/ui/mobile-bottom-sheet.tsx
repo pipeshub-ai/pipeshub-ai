@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
@@ -31,6 +33,7 @@ export function MobileBottomSheet({
   onBack,
   children,
 }: MobileBottomSheetProps) {
+  const { t } = useTranslation();
   const sheetRef = useRef<HTMLDivElement>(null);
   const [portalTarget, setPortalTarget] = useState<Element | null>(null);
 
@@ -104,9 +107,10 @@ export function MobileBottomSheet({
           zIndex: 9991,
           display: 'flex',
           flexDirection: 'column',
-          backdropFilter: 'blur(8px)',
-          WebkitBackdropFilter: 'blur(8px)',
-          backgroundColor: 'var(--effects-translucent)',
+          // A sheet is a panel: same frost as the side panels
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
+          backgroundColor: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderBottom: 'none',
           borderTopLeftRadius: 'var(--radius-1)',
@@ -133,7 +137,7 @@ export function MobileBottomSheet({
                 color="gray"
                 size="2"
                 onClick={onBack}
-                aria-label="Go back"
+                aria-label={t('common.back')}
                 style={{ margin: 0, flexShrink: 0 }}
               >
                 <MaterialIcon name="chevron_left" size={20} color="var(--gray-11)" />
@@ -158,7 +162,7 @@ export function MobileBottomSheet({
             color="gray"
             size="2"
             onClick={() => onOpenChange(false)}
-            aria-label="Close"
+            aria-label={t('common.close')}
             style={{ margin: 0, flexShrink: 0 }}
           >
             <MaterialIcon name="close" size={18} color="var(--gray-11)" />

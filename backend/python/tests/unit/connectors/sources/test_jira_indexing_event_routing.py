@@ -62,7 +62,7 @@ def _connector_with_real_processor(existing_by_external_id):
     )
 
     @asynccontextmanager
-    async def _transaction():
+    async def _transaction(explicit=None):
         yield tx_store
 
     store_provider = MagicMock()

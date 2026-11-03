@@ -5,6 +5,8 @@ import { Container } from 'inversify';
 import mongoose from 'mongoose';
 import { createServiceAccountsRouter } from '../../../../src/modules/user_management/routes/service-accounts.routes';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+import type { Logger } from '../../../../src/libs/services/logger.service';
+import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 
 interface RouteLayer {
   route?: {
@@ -14,7 +16,7 @@ interface RouteLayer {
   };
 }
 
-function buildRouter() {
+function buildRouter(maxRequestsPerMinute = 10_000) {
   const container = new Container();
   const controller = {
     list: sinon.stub(),
@@ -31,6 +33,22 @@ function buildRouter() {
     // the request as carrying whatever credential the test is about.
     authenticate: (_req: any, _res: any, next: any) => next(),
   } as any);
+  // Typed to the members the router asks for, rather than widened, so a
+  // change in either shape shows up here.
+  const logger: Pick<Logger, 'info' | 'warn' | 'error' | 'debug'> = {
+    info: sinon.stub(),
+    warn: sinon.stub(),
+    error: sinon.stub(),
+    debug: sinon.stub(),
+  };
+  const config: Pick<AppConfig, 'maxOAuthClientRequestsPerMinute'> = {
+    maxOAuthClientRequestsPerMinute: maxRequestsPerMinute,
+  };
+  container.bind('Logger').toConstantValue(logger);
+  // Rate limited as the token and personal access token routers are. The
+  // default ceiling is high enough never to trip, which keeps the other cases
+  // about the gates they are named for.
+  container.bind('AppConfig').toConstantValue(config);
   return { router: createServiceAccountsRouter(container), controller };
 }
 
@@ -191,5 +209,126 @@ describe('service account routes are gated for machine credentials too', () => {
 
     expect(outcome.error).to.exist;
     expect(controller.create.called).to.equal(false);
+  });
+});
+
+/**
+ * Runs the router's own middleware — the layers registered with `router.use`,
+ * which is where the limiter sits. `runChain` above walks a matched route's
+ * stack and so never reaches it.
+ */
+/** The request members the limiter reads: who is calling, and from where. */
+interface LimiterRequest {
+  user?: { userId: string; orgId: string };
+  ip: string;
+  headers: Record<string, string>;
+  method: string;
+  url: string;
+}
+
+/** The response members it writes when it refuses one. */
+interface LimiterResponse {
+  status: (code: number) => LimiterResponse;
+  json: () => LimiterResponse;
+  send: () => LimiterResponse;
+  end: () => LimiterResponse;
+  setHeader: () => LimiterResponse;
+  getHeader: () => undefined;
+  removeHeader: () => LimiterResponse;
+  headersSent: boolean;
+}
+
+type MiddlewareLayer = {
+  route?: unknown;
+  handle: (
+    req: LimiterRequest,
+    res: LimiterResponse,
+    next: () => void,
+  ) => unknown;
+};
+
+async function runRouterMiddleware(
+  router: ReturnType<typeof createServiceAccountsRouter>,
+  req: LimiterRequest,
+): Promise<{ status?: number }> {
+  const recorded: { status?: number } = {};
+  const res: LimiterResponse = {
+    status: (code: number) => {
+      recorded.status = code;
+      return res;
+    },
+    json: () => res,
+    send: () => res,
+    end: () => res,
+    setHeader: () => res,
+    getHeader: () => undefined,
+    removeHeader: () => res,
+    headersSent: false,
+  };
+
+  const layers = (
+    router as unknown as { stack: MiddlewareLayer[] }
+  ).stack.filter((layer) => layer.route === undefined);
+
+  for (const layer of layers) {
+    let passed = false;
+    await new Promise<void>((resolve) => {
+      const next = () => {
+        passed = true;
+        resolve();
+      };
+      const maybe = layer.handle(req, res, next);
+      if (maybe instanceof Promise) void maybe.finally(() => resolve());
+      else if (!passed) setImmediate(resolve);
+    });
+    if (recorded.status !== undefined) break;
+  }
+
+  return recorded;
+}
+
+describe('service account routes are rate limited', () => {
+  it('puts a ceiling in front of the routes, as the token routes have', () => {
+    // Every route here is admin-only, so this is not about untrusted callers:
+    // it bounds what a stolen admin credential can do in one burst, since each
+    // created account is a principal with its own view of the organisation and
+    // an address that is taken for good. Identified by the limiter's own
+    // `resetKey`/`getKey` rather than by a function name, which is empty.
+    const { router } = buildRouter();
+    type MaybeLimiter = ((...args: unknown[]) => unknown) & {
+      resetKey?: unknown;
+      getKey?: unknown;
+    };
+    const stack = (router as unknown as { stack: { handle: unknown }[] }).stack;
+    const limiters = stack.filter((layer) => {
+      if (typeof layer.handle !== 'function') return false;
+      const handle = layer.handle as MaybeLimiter;
+      return (
+        typeof handle.resetKey === 'function' &&
+        typeof handle.getKey === 'function'
+      );
+    });
+
+    expect(limiters.length).to.equal(1);
+  });
+
+  it('refuses a second request from the same administrator once the ceiling is one', async () => {
+    // Registered is not the same as enforced, so this drives the middleware
+    // rather than inspecting it.
+    const { router } = buildRouter(1);
+    const userId = new mongoose.Types.ObjectId().toString();
+    const req = () => ({
+      user: { userId, orgId: new mongoose.Types.ObjectId().toString() },
+      ip: '203.0.113.7',
+      headers: {},
+      method: 'GET',
+      url: '/',
+    });
+
+    const first = await runRouterMiddleware(router, req());
+    const second = await runRouterMiddleware(router, req());
+
+    expect(first.status).to.equal(undefined);
+    expect(second.status).to.equal(429);
   });
 });

@@ -21,13 +21,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent import Agent
-    from app.agent_loop_lib.core.types import AgentResult, Goal
+    from app.agent_loop_lib.core.types import AgentResult, AgentTurn, Goal
 
-__all__ = ["PhaseDriver", "PhaseOutcome"]
+__all__ = ["PhaseDriver", "PhaseOutcome", "tool_result_in_turn"]
+
+
+def tool_result_in_turn(turn: "AgentTurn | None", name: str) -> Any:
+    """The `.content` of the last `name` result in `turn`, or `None`.
+
+    Gate checks must use this rather than `Agent.last_tool_result`, which
+    searches the whole run: a verdict from an earlier turn would otherwise be
+    counted again on every later turn that never called the gate tool."""
+    if turn is None:
+        return None
+    for tr in reversed(turn.tool_results):
+        if tr.name == name:
+            return tr.content
+    return None
 
 
 @dataclass
@@ -89,7 +103,7 @@ class PhaseDriver:
             turn_index += 1
             if outcome.status == "stop":
                 return PhaseOutcome(stopped=True, turn_index=turn_index, result=outcome.result)
-            verdict = agent.last_tool_result(gate_tool_name)
+            verdict = tool_result_in_turn(outcome.turn, gate_tool_name)
             if verdict is not None:
                 rounds += 1
                 if isinstance(verdict, dict) and verdict.get("passed"):
@@ -134,7 +148,7 @@ class PhaseDriver:
             turn_index += 1
             if outcome.status == "stop":
                 return PhaseOutcome(stopped=True, turn_index=turn_index, result=outcome.result)
-            verdict = agent.last_tool_result(gate_tool_name)
+            verdict = tool_result_in_turn(outcome.turn, gate_tool_name)
             if verdict is not None:
                 passed = bool(isinstance(verdict, dict) and verdict.get("passed"))
                 if not passed:

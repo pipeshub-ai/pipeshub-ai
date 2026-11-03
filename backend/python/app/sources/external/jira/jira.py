@@ -475,6 +475,48 @@ class JiraDataSource:
             async for chunk in response.aiter_bytes(chunk_size=chunk_size):
                 yield chunk
 
+    async def upload_issue_attachment(
+        self,
+        issue_id_or_key: str,
+        filename: str,
+        content: bytes,
+        mime_type: str,
+        api_version: str = "3",
+    ) -> HTTPResponse:
+        """Attach one file to an issue: POST /rest/api/{2|3}/issue/{issueIdOrKey}/attachments.
+
+        Multipart with the file in a part named ``file``. Jira rejects the upload as an XSRF
+        attempt without ``X-Atlassian-Token: no-check``. ``api_version="2"`` serves Data Center,
+        where the endpoint is the same but only exists under ``/rest/api/2``.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _check_api_version(api_version)
+        url = (
+            f'{self.base_url}/rest/api/{api_version}/issue/'
+            f'{quote(str(issue_id_or_key), safe="")}/attachments'
+        )
+        req = HTTPRequest(
+            method='POST',
+            url=url,
+            headers={'X-Atlassian-Token': 'no-check', 'Accept': 'application/json'},
+            files=[('file', (filename, content, mime_type))],
+        )
+        return await self._client.execute(
+            req, timeout=httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=30.0),
+        )
+
+    async def get_attachment_settings(self, api_version: str = "3") -> HTTPResponse:
+        """GET /rest/api/{2|3}/attachment/meta — ``{enabled, uploadLimit}`` for the site."""
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _check_api_version(api_version)
+        req = HTTPRequest(
+            method='GET',
+            url=f'{self.base_url}/rest/api/{api_version}/attachment/meta',
+        )
+        return await self._client.execute(req)
+
     async def get_attachment_meta(
         self,
         headers: Optional[Dict[str, Any]] = None
@@ -20609,6 +20651,108 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
+        return await self._client.execute(req)
+
+    async def get_project_issue_security_scheme_v2(
+        self,
+        projectKeyOrId: str,
+        headers: Optional[dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project/{projectKeyOrId}/issuesecuritylevelscheme (Data Center / Server).
+
+        Same resource Cloud documents at ``/rest/api/3/.../issuesecuritylevelscheme``.
+        A 200 body with ``id`` is a scheme. 404 is not "no scheme".
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: dict[str, Any] = dict(headers or {})
+        _path: dict[str, Any] = {'projectKeyOrId': projectKeyOrId}
+        _query: dict[str, Any] = {}
+        _body = None
+        rel_path = '/rest/api/2/project/{projectKeyOrId}/issuesecuritylevelscheme'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        return await self._client.execute(req)
+
+    async def search_projects_using_security_schemes_v2(
+        self,
+        startAt: Optional[str] = None,
+        maxResults: Optional[str] = None,
+        projectId: Optional[str] = None,
+        headers: Optional[dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/issuesecurityschemes/project (Data Center / Server).
+
+        Classic projects that use an issue security scheme. A completed 200 page
+        that omits ``projectId`` is the positive "no scheme" result. Older
+        servers that do not have this route answer 404, which is not "no scheme".
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: dict[str, Any] = dict(headers or {})
+        _path: dict[str, Any] = {}
+        _query: dict[str, Any] = {}
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if projectId is not None:
+            _query['projectId'] = projectId
+        _body = None
+        rel_path = '/rest/api/2/issuesecurityschemes/project'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        return await self._client.execute(req)
+
+    async def get_issue_security_level_members_v2(
+        self,
+        issueSecuritySchemeId: int | str,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        expand: Optional[str] = None,
+        headers: Optional[dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/issuesecurityschemes/{id}/members (Data Center / Server).
+
+        Cloud documents this under ``/rest/api/3``. A server that does not
+        expose it returns 404; that is not an empty member list.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: dict[str, Any] = dict(headers or {})
+        _path: dict[str, Any] = {'issueSecuritySchemeId': str(issueSecuritySchemeId)}
+        _query: dict[str, Any] = {}
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if expand is not None:
+            _query['expand'] = expand
+        _body = None
+        rel_path = '/rest/api/2/issuesecurityschemes/{issueSecuritySchemeId}/members'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
         resp = await self._client.execute(req)
         return resp
 
@@ -21362,6 +21506,10 @@ class JiraDataSource:
         return resp
 
 # ---- Helpers used by generated methods ----
+def _check_api_version(api_version: str) -> None:
+    if api_version not in ("2", "3"):
+        raise ValueError(f"Unsupported Jira REST API version: {api_version!r}")
+
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:
     class _SafeDict(dict):
         def __missing__(self, key: str) -> str:

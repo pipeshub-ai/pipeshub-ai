@@ -1,6 +1,7 @@
 import {
   ConnectorServiceCommand,
   ConnectorServiceCommandOptions,
+  ConnectorServiceResponse,
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
@@ -43,12 +44,13 @@ export const handleBackendError = (error: unknown, operation: string): Error =>
   mapBackendError(error, operation);
 
 // Helper function to execute connector service commands
-export const executeConnectorCommand = async (
+export const executeConnectorCommand = async <T = unknown>(
   uri: string,
   method: HttpMethod,
   headers: Record<string, string>,
   body?: any,
-) => {
+  options: Pick<ConnectorServiceCommandOptions, 'timeoutMs' | 'retries'> = {},
+): Promise<ConnectorServiceResponse<T>> => {
   const connectorCommandOptions: ConnectorServiceCommandOptions = {
     uri,
     method,
@@ -59,8 +61,11 @@ export const executeConnectorCommand = async (
       'content-type': 'application/json',
     },
     ...(body && { body }),
+    ...options,
   };
-  const connectorCommand = new ConnectorServiceCommand(connectorCommandOptions);
+  const connectorCommand = new ConnectorServiceCommand<T>(
+    connectorCommandOptions,
+  );
   return await connectorCommand.execute();
 };
 
@@ -95,22 +100,30 @@ export interface ConnectorInstanceSummary {
   ownerDeviceName?: string | null;
 }
 
-/** Throws when Python answers non-200 or without a `connector` body. */
+/**
+ * Throws what Python answered when it refuses the read (a 404 for a connector
+ * the caller cannot open stays a 404), and a 500 only for a 200 with no
+ * `connector` body.
+ */
 export const fetchConnectorInstanceSummary = async (
   connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<ConnectorInstanceSummary> => {
   const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
     HttpMethod.GET,
     headers,
   );
 
+  if (!(response.statusCode >= 200 && response.statusCode < 300)) {
+    throw handleBackendError(response, 'getting connector');
+  }
+
   const data = response.data as
     | { connector?: ConnectorInstanceSummary }
     | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
+  if (!data?.connector) {
     throw new InternalServerError(
       `Failed to fetch connector ${connectorId} state`,
     );

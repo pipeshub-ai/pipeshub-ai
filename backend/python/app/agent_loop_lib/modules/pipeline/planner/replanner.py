@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.types import Goal, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.modules.pipeline.planner.base import Plan, Planner
 
 if TYPE_CHECKING:
@@ -44,5 +45,6 @@ class Replanner(Planner):
             f"Produce a revised plan for remaining work."
         )
         msg = UserMessage(content=prompt)
-        response = await self._model.complete(messages=[msg], system=_REPLAN_SYSTEM)
+        with llm_usage_source("replanner"):
+            response = await self._model.complete(messages=[msg], system=_REPLAN_SYSTEM)
         return Plan(goal=goal, text=response.message.text)

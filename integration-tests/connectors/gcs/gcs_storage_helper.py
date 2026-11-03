@@ -86,6 +86,9 @@ class GCSStorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
+    def delete_blob(self, bucket: str, key: str) -> None:
+        self._client.bucket(bucket).blob(key).delete()
+
     def clear_objects(self, bucket: str, prefix: str) -> None:
         """Delete everything under this run's folder, and nothing else."""
         prefix = require_run_folder(prefix)

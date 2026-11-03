@@ -1,8 +1,16 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import http from 'http'
+import type { AddressInfo } from 'net'
+import axios from 'axios'
 import { Container } from 'inversify'
-import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import {
+  createConnectorRouter,
+  requireVectorStoreRebuild,
+  reindexConnectorSchema,
+} from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import { ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
@@ -30,6 +38,7 @@ describe('Connector Routes', () => {
       scopedJwtSecret: 'test-secret',
       cmBackend: 'http://localhost:3004',
       connectorBackend: 'http://localhost:8088',
+      aiBackend: 'http://localhost:8000',
       storage: { endpoint: 'http://localhost:3003' },
     }
 
@@ -43,6 +52,8 @@ describe('Connector Routes', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     mockCrawlingContainer = {
@@ -52,10 +63,6 @@ describe('Connector Routes', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
-    container.bind<any>('RecordsEventProducer').toConstantValue({
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-    })
     container.bind<any>('SyncEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -980,6 +987,30 @@ describe('Connector Routes', () => {
       expect(reindexAllIdx).to.be.lessThan(paramReindexIdx)
     })
 
+    it('guards both vector-store rebuild routes with the availability check', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer)
+      for (const path of ['/vector-store/cleanup', '/vector-store/reindex']) {
+        const layer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === path && l.route.methods.post,
+        )
+        const names = layer.route.stack.map((h: any) => h.name)
+        expect(names, path).to.include('vectorStoreRebuildGuard')
+      }
+    })
+
+    it('lets a rebuild request through when this deployment offers it', () => {
+      const next = sinon.stub()
+      requireVectorStoreRebuild(true)({}, {} as any, next)
+      expect(next.calledOnceWithExactly()).to.equal(true)
+    })
+
+    it('refuses a rebuild request with 403 when this deployment does not offer it', () => {
+      const next = sinon.stub()
+      requireVectorStoreRebuild(false)({}, {} as any, next)
+      expect(next.calledOnce).to.equal(true)
+      expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError)
+    })
+
     it('allows a token scoped only "connector:sync" (non-KB reindex, e.g. Google Drive) to pass', () => {
       const router = createConnectorRouter(container, mockCrawlingContainer)
       const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
@@ -1017,6 +1048,43 @@ describe('Connector Routes', () => {
       expect(next.firstCall.args[0]).to.be.instanceOf(Error)
     })
   })
+
+  describe('reindexConnectorSchema stages', () => {
+    const params = { connectorId: 'conn-1' }
+
+    it('accepts stages: ["classify"] and keeps it in the parsed body', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['classify'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['classify'])
+    })
+
+    it('accepts stages: ["entities"], which has no record status of its own', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['entities'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['entities'])
+    })
+
+    it('accepts a body without stages', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { statusFilters: ['FAILED'] } })
+      expect(result.success).to.be.true
+    })
+
+    it('rejects an unknown stage name', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: ['embed'] } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an empty stages array', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: [] } })
+      expect(result.success).to.be.false
+    })
+  })
 })
 
 describe('Connector Routes - handler coverage', () => {
@@ -1038,6 +1106,7 @@ describe('Connector Routes - handler coverage', () => {
       scopedJwtSecret: 'test-secret',
       cmBackend: 'http://localhost:3004',
       connectorBackend: 'http://localhost:8088',
+      aiBackend: 'http://localhost:8000',
       storage: { endpoint: 'http://localhost:3003' },
     }
 
@@ -1052,6 +1121,8 @@ describe('Connector Routes - handler coverage', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     const mockCrawlingContainer = {
@@ -1066,10 +1137,6 @@ describe('Connector Routes - handler coverage', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
-    container.bind<any>('RecordsEventProducer').toConstantValue({
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-    })
     container.bind<any>('SyncEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -1724,5 +1791,146 @@ describe('Connector Routes - handler coverage', () => {
       expect(headers).to.not.have.property('X-Is-Admin')
       expect(headers).to.not.have.property('cookie')
     })
+
+    describe('GET /record/:recordId/content', () => {
+      async function readContent(query: any) {
+        const req: any = {
+          user: { userId: 'u1', orgId: 'o1' },
+          query,
+          params: { recordId: 'rec-1' },
+          body: {},
+          headers: {},
+        }
+        const errors: any[] = []
+        const next = sinon.stub().callsFake((err?: any) => {
+          if (err) errors.push(err)
+        })
+        for (const handler of findAllHandlers('/record/:recordId/content', 'get')) {
+          await Promise.resolve(handler(req, mockRes(), next))
+          if (errors.length > 0) break
+        }
+        return errors.length > 0 ? errors[0] : null
+      }
+
+      it('returns the whole record from the connector service when no part is asked for', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        const error = await readContent({})
+
+        expect(error).to.be.null
+        expect(exec.firstCall.args[0]).to.equal(
+          'http://localhost:8088/api/v1/records/rec-1/content',
+        )
+      })
+
+      it('sends a budgeted read to the query service under the names Python declares', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        const error = await readContent({
+          query: 'when was it rolled back',
+          startBlock: '40',
+          maxChars: '20000',
+        })
+
+        expect(error).to.be.null
+        const url: string = exec.firstCall.args[0]
+        expect(url.startsWith('http://localhost:8000/api/v1/records/rec-1/read?')).to.be.true
+        expect(url).to.include('start_block=40')
+        expect(url).to.include('max_chars=20000')
+        expect(url).to.include('query=when+was+it+rolled+back')
+        expect(url).to.not.include('startBlock=')
+      })
+
+      it('sends a thread read to the query service', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ mode: 'thread', startRecord: '3', startBlock: '5' })
+
+        const url: string = exec.firstCall.args[0]
+        expect(url).to.include('/api/v1/records/rec-1/read?')
+        expect(url).to.include('mode=thread')
+        expect(url).to.include('start_record=3')
+        expect(url).to.include('start_block=5')
+      })
+
+      it('sends an extract request on to the query service', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ query: 'how many sponsors', extract: 'true' })
+
+        const url: string = exec.firstCall.args[0]
+        expect(url).to.include('/api/v1/records/rec-1/read?')
+        expect(url).to.include('extract=true')
+      })
+
+      it('keeps a startBlock of 0, which means "read in order from the top"', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ startBlock: '0' })
+
+        expect(exec.firstCall.args[0]).to.include('start_block=0')
+      })
+
+      const invalid: Array<[string, Record<string, string>]> = [
+        ['a budget below 2000 characters', { maxChars: '100' }],
+        ['a budget above 140000 characters', { maxChars: '500000' }],
+        ['a negative startBlock', { startBlock: '-1' }],
+        ['an unknown mode', { mode: 'channel' }],
+        ['an extract that is not true or false', { query: 'x', extract: 'yes' }],
+      ]
+      for (const [name, query] of invalid) {
+        it(`rejects ${name} without reaching a backend`, async () => {
+          const exec = sinon
+            .stub(connectorUtils, 'executeConnectorCommand')
+            .resolves({ statusCode: 200, data: {} })
+
+          const error = await readContent(query)
+
+          expect(isValidationError(error)).to.be.true
+          expect(exec.called).to.be.false
+        })
+      }
+    })
+  })
+})
+
+// Loading the routes module sets the retry policy of the process-wide axios client.
+describe('axios retry policy set by the connector routes', () => {
+  const countRequests = async (headers: Record<string, string>): Promise<number> => {
+    let count = 0
+    const server = http.createServer((_req, res) => {
+      count += 1
+      res.writeHead(429, headers).end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = server.address() as AddressInfo
+      const status = await axios.get(`http://127.0.0.1:${port}/`).then(
+        () => 200,
+        (e) => e.response?.status,
+      )
+      expect(status).to.equal(429)
+      return count
+    } finally {
+      server.close()
+    }
+  }
+
+  it('passes a 429 with a long Retry-After straight back', async () => {
+    expect(await countRequests({ 'Retry-After': '2351' })).to.equal(1)
+  })
+
+  it('still retries a 429 with no Retry-After', async () => {
+    expect(await countRequests({})).to.equal(4)
   })
 })

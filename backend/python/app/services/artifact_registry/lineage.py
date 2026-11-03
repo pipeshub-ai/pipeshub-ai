@@ -1,5 +1,5 @@
 """`LineageTracker` — auto-captures `DERIVED_FROM` edges over the existing
-`recordRelations` edge collection. There is deliberately NO public method
+`nodeRelations` edge collection. There is deliberately NO public method
 that takes lineage asserted by a caller-supplied arbitrary pair without
 version numbers pinned by the harness itself — see module docstring in the
 plan: lineage is an observable fact of "this code run produced these
@@ -10,7 +10,7 @@ Backend-agnostic by construction: only `batch_create_edges`/
 `get_edges_from_node`/`get_edges_to_node` (generic `IGraphDBProvider`
 methods) are used, so this works unchanged against ArangoDB and Neo4j — see
 `config/constants/neo4j.py`'s `EDGE_COLLECTION_TO_RELATIONSHIP` mapping for
-`recordRelations` -> `RECORD_RELATION`, with `DERIVED_FROM` carried as the
+`nodeRelations` -> `NODE_RELATION`, with `DERIVED_FROM` carried as the
 `relationshipType` property exactly like every other `RecordRelations`
 value already is.
 """
@@ -30,7 +30,16 @@ logger = logging.getLogger(__name__)
 __all__ = ["LineageTracker"]
 
 _RECORDS = CollectionNames.RECORDS.value
-_RELATIONS = CollectionNames.RECORD_RELATIONS.value
+_RELATIONS = CollectionNames.NODE_RELATIONS.value
+
+
+def _endpoint(edge: dict, side: str) -> str:
+    """The key at one end of an edge: Neo4j returns `from_id`/`to_id`, while
+    ArangoDB returns raw `_from`/`_to` handles (`records/<key>`)."""
+    key = edge.get(f"{side}_id")
+    if key:
+        return str(key)
+    return str(edge.get(f"_{side}") or "").split("/", 1)[-1]
 
 
 class LineageTracker:
@@ -84,7 +93,7 @@ class LineageTracker:
         latest = max(derived, key=lambda e: e.get("createdAtTimestamp") or 0)
         return ArtifactLineage(
             output_artifact_id=output_artifact_id,
-            code_artifact_id=str(latest.get("to_id")),
+            code_artifact_id=_endpoint(latest, "to"),
             code_version=int(latest.get("sourceVersion") or 1),
             output_version=int(latest.get("derivedVersion") or 1),
         )
@@ -96,7 +105,7 @@ class LineageTracker:
         derived = [e for e in edges if e.get("relationshipType") == RecordRelations.DERIVED_FROM.value]
         return [
             ArtifactLineage(
-                output_artifact_id=str(e.get("from_id")),
+                output_artifact_id=_endpoint(e, "from"),
                 code_artifact_id=code_artifact_id,
                 code_version=int(e.get("sourceVersion") or 1),
                 output_version=int(e.get("derivedVersion") or 1),

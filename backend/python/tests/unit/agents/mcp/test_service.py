@@ -1,10 +1,13 @@
 """Unit tests for app.agents.mcp.service."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.mcp import service as mcp_service
 from app.agents.mcp.models import MCPAuthMode
 from app.agents.mcp.service import (
+    belongs_to_org,
     credentials_to_discovery_dict,
     get_authenticated_mcp_servers,
     get_instance,
@@ -12,7 +15,6 @@ from app.agents.mcp.service import (
     is_effective_auth_authenticated,
     is_mcp_enabled,
     load_org_instances,
-    match_enabled_tools_for_mcp_server,
     resolve_effective_user_auth,
 )
 
@@ -41,7 +43,7 @@ class TestLoadOrgInstances:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=["/services/mcp/instances/inst-1"])
         cfg.get_config = AsyncMock(return_value=_instance())
-        result = await load_org_instances(cfg)
+        result = await load_org_instances(cfg, "org-1")
         assert len(result) == 1
         assert result[0]["_id"] == "inst-1"
 
@@ -50,14 +52,14 @@ class TestLoadOrgInstances:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=["/a", "/b"])
         cfg.get_config = AsyncMock(side_effect=[None, _instance()])
-        result = await load_org_instances(cfg)
+        result = await load_org_instances(cfg, "org-1")
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_list_failure_returns_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd down"))
-        result = await load_org_instances(cfg)
+        result = await load_org_instances(cfg, "org-1")
         assert result == []
 
     @pytest.mark.asyncio
@@ -65,24 +67,67 @@ class TestLoadOrgInstances:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=["/a", "/b"])
         cfg.get_config = AsyncMock(side_effect=[RuntimeError("corrupt key"), _instance()])
-        result = await load_org_instances(cfg)
+        result = await load_org_instances(cfg, "org-1")
         assert len(result) == 1
         assert result[0]["_id"] == "inst-1"
 
 
+class TestBelongsToOrg:
+    def test_same_org(self) -> None:
+        assert belongs_to_org(_instance(), "org-1") is True
+
+    def test_other_org(self) -> None:
+        assert belongs_to_org(_instance(), "org-2") is False
+
+    def test_record_without_org_fails_closed(self) -> None:
+        assert belongs_to_org(_instance(orgId=None), "org-1") is False
+
+    def test_empty_caller_org_fails_closed(self) -> None:
+        assert belongs_to_org(_instance(), "") is False
+
+
+class TestLoadOrgInstancesScoping:
+    @pytest.mark.asyncio
+    async def test_returns_only_the_callers_org(self) -> None:
+        records = {
+            "/services/mcp/instances/mine": _instance(_id="mine"),
+            "/services/mcp/instances/theirs": _instance(_id="theirs", orgId="org-2"),
+            "/services/mcp/instances/orphan": _instance(_id="orphan", orgId=None),
+        }
+        cfg = MagicMock()
+        cfg.list_keys_in_directory = AsyncMock(return_value=list(records))
+        cfg.get_config = AsyncMock(side_effect=lambda key, **_: records[key])
+
+        result = await load_org_instances(cfg, "org-1")
+
+        assert [r["_id"] for r in result] == ["mine"]
+
+
 class TestGetInstance:
+    @pytest.mark.asyncio
+    async def test_another_orgs_instance_is_not_found(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value=_instance(orgId="org-2"))
+        assert await get_instance("inst-1", cfg, "org-1") is None
+
+    @pytest.mark.asyncio
+    async def test_instance_without_org_is_not_found(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value=_instance(orgId=None))
+        assert await get_instance("inst-1", cfg, "org-1") is None
+
     @pytest.mark.asyncio
     async def test_returns_dict(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value=_instance())
-        result = await get_instance("inst-1", cfg)
+        result = await get_instance("inst-1", cfg, "org-1")
         assert result["_id"] == "inst-1"
 
     @pytest.mark.asyncio
     async def test_missing_returns_none(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value=None)
-        assert await get_instance("inst-1", cfg) is None
+        assert await get_instance("inst-1", cfg, "org-1") is None
 
 
 class TestResolveEffectiveUserAuth:
@@ -95,13 +140,13 @@ class TestResolveEffectiveUserAuth:
         cfg.get_config.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_admin_auth_resolves_creator_record(self) -> None:
+    async def test_admin_auth_resolves_the_shared_slot_not_the_creator(self) -> None:
         instance = _instance(useAdminAuth=True, createdBy="admin-1")
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value={"isAuthenticated": True})
         await resolve_effective_user_auth(instance, "user-2", cfg)
         called_path = cfg.get_config.await_args.args[0]
-        assert called_path.endswith("/inst-1/admin-1")
+        assert called_path.endswith("/inst-1/_shared")
 
     @pytest.mark.asyncio
     async def test_oauth_ignores_admin_auth_flag(self) -> None:
@@ -174,11 +219,13 @@ class TestGetAuthenticatedMcpServers:
             return None
 
         cfg.get_config = AsyncMock(side_effect=_get_config_side_effect)
-        result = await get_authenticated_mcp_servers("user-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
         assert [r["instanceId"] for r in result] == ["inst-1"]
 
     @pytest.mark.asyncio
-    async def test_dedupes_by_type_key_keeping_first(self) -> None:
+    async def test_two_instances_of_one_type_are_both_returned(self) -> None:
+        """Tool names stay unique per request (`MCPToolProvider` tags the newer instance),
+        so the assistant no longer hides a second instance of a type."""
         first = _instance(_id="inst-1", typeId="brave_search", name="Brave A")
         second = _instance(_id="inst-2", typeId="brave_search", name="Brave B")
         cfg = MagicMock()
@@ -186,7 +233,7 @@ class TestGetAuthenticatedMcpServers:
             return_value=["/services/mcp/instances/inst-1", "/services/mcp/instances/inst-2"]
         )
 
-        async def _get_config_side_effect(path, default=None, use_cache=False):
+        async def _get_config_side_effect(path: str, default: object = None, use_cache: bool = False) -> object:
             if path.endswith("/inst-1"):
                 return first
             if path.endswith("/inst-2"):
@@ -196,22 +243,47 @@ class TestGetAuthenticatedMcpServers:
             return None
 
         cfg.get_config = AsyncMock(side_effect=_get_config_side_effect)
+        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
+        assert [r["instanceId"] for r in result] == ["inst-1", "inst-2"]
+
+    @pytest.mark.asyncio
+    async def test_without_instances_or_org_returns_empty_without_reading(self) -> None:
+        cfg = MagicMock()
+        cfg.list_keys_in_directory = AsyncMock(return_value=["/services/mcp/instances/inst-1"])
         result = await get_authenticated_mcp_servers("user-1", cfg)
-        assert len(result) == 1
-        assert result[0]["instanceId"] == "inst-1"
+        assert result == []
+        cfg.list_keys_in_directory.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_loads_only_the_callers_org(self) -> None:
+        records = {
+            "/services/mcp/instances/mine": _instance(_id="mine"),
+            "/services/mcp/instances/theirs": _instance(_id="theirs", orgId="org-2", typeId="exa"),
+        }
+        cfg = MagicMock()
+        cfg.list_keys_in_directory = AsyncMock(return_value=list(records))
+
+        async def _get_config(path: str, default: object = None, use_cache: bool = False) -> object:
+            if path in records:
+                return records[path]
+            return {"isAuthenticated": True}
+
+        cfg.get_config = AsyncMock(side_effect=_get_config)
+        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
+        assert [r["instanceId"] for r in result] == ["mine"]
 
     @pytest.mark.asyncio
     async def test_no_instances_returns_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(return_value=[])
-        result = await get_authenticated_mcp_servers("user-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_load_failure_returns_empty(self) -> None:
         cfg = MagicMock()
         cfg.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await get_authenticated_mcp_servers("user-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
         assert result == []
 
     @pytest.mark.asyncio
@@ -221,7 +293,7 @@ class TestGetAuthenticatedMcpServers:
             raise RuntimeError("unexpected")
 
         monkeypatch.setattr("app.agents.mcp.service.load_org_instances", _raise)
-        result = await get_authenticated_mcp_servers("user-1", MagicMock())
+        result = await get_authenticated_mcp_servers("user-1", MagicMock(), org_id="org-1")
         assert result == []
 
     @pytest.mark.asyncio
@@ -245,53 +317,32 @@ class TestGetAuthenticatedMcpServers:
             return None
 
         cfg.get_config = AsyncMock(side_effect=_get_config_side_effect)
-        result = await get_authenticated_mcp_servers("user-1", cfg)
+        result = await get_authenticated_mcp_servers("user-1", cfg, org_id="org-1")
         assert [r["instanceId"] for r in result] == ["inst-1"]
 
 
-class TestMatchEnabledToolsForMcpServer:
-    def test_matches_tools_by_type_prefix(self) -> None:
-        server = {"instanceId": "inst-1", "name": "Jira", "typeId": "jira"}
-        enabled = {
-            "mcp_jira_atlassianUserInfo",
-            "mcp_jira_getIssue",
-            "mcp_exa_search",
-            "slack.send_message",
-        }
-        matched = match_enabled_tools_for_mcp_server(server, enabled)
-        assert {(m["name"], m["fullName"]) for m in matched} == {
-            ("atlassianUserInfo", "mcp_jira_atlassianUserInfo"),
-            ("getIssue", "mcp_jira_getIssue"),
-        }
+class _FailingSettingsStore:
+    """Mirrors `ConfigurationService.get_config`: a failed read answers `default`
+    (so "store down" looks like "key absent") unless `raise_on_error` is passed."""
 
-    def test_returns_empty_when_no_tools_for_server(self) -> None:
-        server = {"instanceId": "inst-2", "name": "Exa", "typeId": "exa"}
-        enabled = {"mcp_jira_getIssue", "mcp_notion_search"}
-        assert match_enabled_tools_for_mcp_server(server, enabled) == []
+    def __init__(self, settings: dict[str, object] | None = None, *, fail: bool = False) -> None:
+        self._settings = settings
+        self._fail = fail
 
-    def test_normalizes_hyphenated_type_id(self) -> None:
-        server = {"instanceId": "inst-3", "name": "Brave", "typeId": "brave-search"}
-        enabled = {"mcp_brave_search_web_search"}
-        matched = match_enabled_tools_for_mcp_server(server, enabled)
-        assert matched == [
-            {"name": "web_search", "fullName": "mcp_brave_search_web_search"},
-        ]
-
-    def test_returns_empty_when_type_key_blank(self) -> None:
-        server = {"instanceId": None, "name": None, "typeId": None, "_id": None}
-        assert match_enabled_tools_for_mcp_server(server, {"mcp_jira_getIssue"}) == []
-
-    def test_skips_prefix_only_full_names(self) -> None:
-        server = {"instanceId": "inst-1", "name": "Jira", "typeId": "jira"}
-        enabled = {"mcp_jira_", "mcp_jira_getIssue"}
-        matched = match_enabled_tools_for_mcp_server(server, enabled)
-        assert matched == [{"name": "getIssue", "fullName": "mcp_jira_getIssue"}]
+    async def get_config(
+        self, key: str, default: object = None, use_cache: bool = False, *, raise_on_error: bool = False,
+    ) -> object:
+        if self._fail:
+            if raise_on_error:
+                raise RuntimeError("store unreachable")
+            return default
+        return self._settings if self._settings is not None else default
 
 
 class TestIsMcpEnabled:
     """No env override exists anymore — resolution is `config_service` (via
     the shared `read_platform_feature_flag` helper) -> `FeatureFlagService`
-    fallback -> default False."""
+    fallback. An absent flag is on; a saved value that cannot be read is off."""
 
     @pytest.mark.asyncio
     async def test_reads_platform_settings_flag(self) -> None:
@@ -302,16 +353,44 @@ class TestIsMcpEnabled:
         assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
-    async def test_platform_settings_flag_absent_defaults_false(self) -> None:
+    async def test_stored_false_disables(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_MCP": False}}
+        )
+        assert await is_mcp_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_flag_absent_defaults_true(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
-        assert await is_mcp_enabled(cfg) is False
+        assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
     async def test_platform_settings_read_failure_disables(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         assert await is_mcp_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_store_outage_does_not_undo_a_saved_opt_out(self) -> None:
+        """The store answers `default` for a failed read unless asked to raise, so a
+        helper that does not ask would read the outage as "flag absent" -> on."""
+        store = _FailingSettingsStore({"featureFlags": {"ENABLE_MCP": False}}, fail=True)
+        assert await is_mcp_enabled(store) is False  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_store_outage_with_no_saved_value_disables(self) -> None:
+        assert await is_mcp_enabled(_FailingSettingsStore(fail=True)) is False  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_healthy_store_without_settings_is_enabled(self) -> None:
+        assert await is_mcp_enabled(_FailingSettingsStore()) is True  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_healthy_store_with_saved_opt_out_is_disabled(self) -> None:
+        store = _FailingSettingsStore({"featureFlags": {"ENABLE_MCP": False}})
+        assert await is_mcp_enabled(store) is False  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_falls_back_to_feature_flag_service(self) -> None:
@@ -324,9 +403,31 @@ class TestIsMcpEnabled:
             assert await is_mcp_enabled(None) is True
 
     @pytest.mark.asyncio
-    async def test_feature_flag_service_unavailable_defaults_false(self) -> None:
+    async def test_feature_flag_service_unavailable_disables(self) -> None:
         with patch(
             "app.services.featureflag.featureflag.FeatureFlagService.get_service",
             side_effect=RuntimeError("unwired"),
         ):
             assert await is_mcp_enabled(None) is False
+
+
+class TestPrefixReadsAreBounded:
+    async def test_no_more_than_the_limit_are_read_at_once(self) -> None:
+        in_flight = peak = 0
+
+        class _SlowStore:
+            async def list_keys_in_directory(self, prefix: str) -> list[str]:
+                return [f"{prefix}inst-{i}" for i in range(40)]
+
+            async def get_config(self, key: str, default: object = None, use_cache: bool = False) -> object:
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0)
+                in_flight -= 1
+                return {"_id": key.rsplit("/", 1)[-1]}
+
+        records = await mcp_service._load_prefix(_SlowStore(), "/services/mcp/instances/")
+
+        assert len(records) == 40
+        assert 1 < peak <= mcp_service._PREFIX_READ_CONCURRENCY

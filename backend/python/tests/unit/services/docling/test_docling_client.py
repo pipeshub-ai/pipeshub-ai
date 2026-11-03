@@ -11,13 +11,24 @@ behaviour:
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from app.services.base_client import ServiceUnavailableError
-from app.services.docling.client import DoclingClient
+from app.exceptions.indexing_exceptions import IndexingError
+from app.services.base_client import ServiceCallError, ServiceUnavailableError
+from app.services.docling.client import (
+    MAX_PDF_BYTES,
+    DoclingClient,
+    DoclingUnavailableError,
+    within_docling_size_limit,
+)
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 
 # ===========================================================================
 # Fixtures
@@ -185,19 +196,20 @@ class TestParsePdfBatched:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_retries_exhausted_returns_none(self, client, small_pdf):
-        """When BaseServiceClient exhausts retries, the ServiceCallError is
-        caught and translated to None rather than propagating."""
+    async def test_an_unreachable_service_is_raised_so_the_record_is_retried(self, client, small_pdf) -> None:
+        """Read as a failed parse, an outage sent every PDF to the per-page OCR fallback."""
         with (
             patch("app.services.docling.client.get_pdf_page_count", return_value=1),
             patch.object(
                 client, "_post_multipart",
                 new=AsyncMock(side_effect=ServiceUnavailableError("down", service_name="DoclingService")),
             ),
+            pytest.raises(DoclingUnavailableError) as raised,
         ):
-            result = await client.parse_pdf_batched("doc.pdf", small_pdf)
+            await client.parse_pdf_batched("doc.pdf", small_pdf)
 
-        assert result is None
+        assert isinstance(raised.value, IndexingError)
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
 
 # ===========================================================================
@@ -242,10 +254,7 @@ class TestParsePdf:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_backpressure_exhausted_returns_none(self, client, small_pdf):
-        """A ServiceBackpressureError (base client gave up honouring
-        Retry-After) is a ServiceCallError subclass and must map to None,
-        matching every other failure mode of this Optional-returning API."""
+    async def test_a_service_shedding_load_is_raised_so_the_record_is_retried(self, client, small_pdf) -> None:
         from app.services.base_client import ServiceBackpressureError
 
         with patch.object(
@@ -255,10 +264,41 @@ class TestParsePdf:
                     "backpressured", retry_after=5.0, service_name="DoclingService",
                 )
             ),
-        ):
-            result = await client.parse_pdf("doc.pdf", small_pdf)
+        ), pytest.raises(DoclingUnavailableError):
+            await client.parse_pdf("doc.pdf", small_pdf)
 
-        assert result is None
+    @pytest.mark.asyncio
+    async def test_a_refused_service_token_is_raised_so_the_record_is_retried(self, client, small_pdf) -> None:
+        from app.services.base_client import ServiceAuthRefusedError
+
+        with patch.object(
+            client, "_post_multipart",
+            new=AsyncMock(side_effect=ServiceAuthRefusedError("refused", status_code=401)),
+        ), pytest.raises(DoclingUnavailableError):
+            await client.parse_pdf("doc.pdf", small_pdf)
+
+    @pytest.mark.parametrize("status", [502, 503, 504])
+    @pytest.mark.asyncio
+    async def test_a_gateway_or_unavailable_status_is_raised(self, client, small_pdf, status: int) -> None:
+        with patch.object(
+            client, "_post_multipart",
+            new=AsyncMock(side_effect=ServiceCallError("failed", status_code=status)),
+        ), pytest.raises(DoclingUnavailableError):
+            await client.parse_pdf("doc.pdf", small_pdf)
+
+    @pytest.mark.parametrize("status", [400, 413, 422, 500])
+    @pytest.mark.asyncio
+    async def test_a_failure_on_this_file_returns_none(self, client, small_pdf, status: int) -> None:
+        """Docling answered and could not parse it: the caller reads it another way."""
+        with patch.object(
+            client, "_post_multipart",
+            new=AsyncMock(side_effect=ServiceCallError("failed", status_code=status)),
+        ):
+            assert await client.parse_pdf("doc.pdf", small_pdf) is None
+
+    def test_the_size_limit_is_inclusive(self) -> None:
+        assert within_docling_size_limit(MAX_PDF_BYTES) is True
+        assert within_docling_size_limit(MAX_PDF_BYTES + 1) is False
 
     @pytest.mark.asyncio
     async def test_parse_with_page_range(self, client, small_pdf):
@@ -307,3 +347,20 @@ class TestHealthCheck:
             result = await client.health_check()
 
         assert result is False
+
+
+class TestDoclingMaxPages:
+    def test_a_negative_limit_falls_back_to_30_and_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from app.services.docling import client
+
+        monkeypatch.setattr(client, "_warned_negative_max_pages", set())
+        monkeypatch.setenv(client.MAX_PAGES_ENV, "-1")
+
+        with caplog.at_level(logging.WARNING, logger=client.__name__):
+            assert client.docling_max_pages() == 30
+            assert client.docling_max_pages() == 30
+
+        warnings = [r for r in caplog.records if "PDF_DOCLING_MAX_PAGES" in r.getMessage()]
+        assert len(warnings) == 1

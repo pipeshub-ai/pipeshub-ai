@@ -6,6 +6,7 @@ import {
   AICommandOptions,
 } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 describe('AIServiceCommand', () => {
   let fetchStub: sinon.SinonStub
@@ -57,6 +58,28 @@ describe('AIServiceCommand', () => {
   })
 
   describe('execute', () => {
+    it('keeps the retry-after header of a response, and no other header', async () => {
+      const response = makeFetchResponse(503, { detail: 'down' }, 'Service Unavailable')
+      ;(response.headers as Headers).set('retry-after', '5')
+      ;(response.headers as Headers).set('set-cookie', 'session=abc')
+      fetchStub.resolves(response)
+
+      const cmd = new AIServiceCommand({ uri: 'http://ai.local/query', method: HttpMethod.GET, headers: {}, maxAttempts: 1 })
+      const result = await cmd.execute()
+
+      expect(result.statusCode).to.equal(503)
+      expect(result.headers).to.deep.equal({ 'retry-after': '5' })
+    })
+
+    it('adds no headers when the response has no retry-after', async () => {
+      fetchStub.resolves(makeFetchResponse(200, { ok: true }))
+
+      const cmd = new AIServiceCommand({ uri: 'http://ai.local/query', method: HttpMethod.GET, headers: {} })
+      const result = await cmd.execute()
+
+      expect(result).to.not.have.property('headers')
+    })
+
     it('should return AIServiceResponse with statusCode, data, and msg on success', async () => {
       const responseData = { answer: 'Hello, world!' }
       fetchStub.resolves(makeFetchResponse(200, responseData, 'OK'))
@@ -159,6 +182,27 @@ describe('AIServiceCommand', () => {
       } catch (err: any) {
         expect(err.message).to.equal('ai unavailable')
       }
+    })
+
+    it('should not retry when maxAttempts is 1', async () => {
+      fetchStub.rejects(new Error('ai unavailable'))
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/query',
+        method: HttpMethod.POST,
+        headers: {},
+        body: {},
+        timeoutMs: 50,
+        maxAttempts: 1,
+      })
+
+      try {
+        await cmd.execute()
+        expect.fail('Should have thrown')
+      } catch (err: any) {
+        expect(err.message).to.equal('ai unavailable')
+      }
+      expect(fetchStub.calledOnce).to.be.true
     })
 
     it('should handle non-200 status codes without throwing', async () => {
@@ -272,6 +316,58 @@ describe('AIServiceCommand', () => {
         expect(err.status).to.equal(503)
         expect(err.response.status).to.equal(503)
       }
+    })
+
+    it('reads the message of a detail sent as an object, and leaves the log to the caller', async () => {
+      const message = 'Payment required by the upstream service'
+      const detail = { code: 'PAYMENT_REQUIRED', message }
+      fetchStub.resolves({
+        ok: false,
+        status: 402,
+        statusText: 'Payment Required',
+        headers: new Headers(),
+        body: null,
+        json: sinon.stub().resolves({}),
+        text: sinon.stub().resolves(JSON.stringify({ detail })),
+      } as unknown as Response)
+      const logged = sinon.stub(Logger.prototype, 'error')
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/stream',
+        method: HttpMethod.POST,
+        headers: { 'content-type': 'application/json' },
+        body: { prompt: 'payment required' },
+      })
+
+      try {
+        await cmd.executeStream()
+        expect.fail('Should have thrown')
+      } catch (err: any) {
+        expect(err.message).to.equal(message)
+        expect(err.response.data).to.deep.equal({ detail })
+      }
+      expect(logged.called).to.equal(false)
+    })
+
+    it('logs a stream request that got no answer at all', async () => {
+      fetchStub.rejects(new Error('stream network error'))
+      const logged = sinon.stub(Logger.prototype, 'error')
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/stream',
+        method: HttpMethod.POST,
+        headers: { 'content-type': 'application/json' },
+        body: { prompt: 'network fail' },
+        maxAttempts: 1,
+      })
+
+      try {
+        await cmd.executeStream()
+        expect.fail('Should have thrown')
+      } catch {
+        // expected
+      }
+      expect(logged.calledWith('AI service streaming command failed')).to.equal(true)
     })
 
     it('should throw an error with message field from JSON error response', async () => {

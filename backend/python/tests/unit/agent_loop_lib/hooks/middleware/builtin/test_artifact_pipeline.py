@@ -54,7 +54,7 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
     RetrieveArtifactContentTool,
 )
-
+from app.services.artifact_registry.models import Actor
 
 # ─── Helpers ───
 
@@ -463,6 +463,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -487,6 +488,9 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
+            tool_state: dict = field(default_factory=dict)
+            previous_conversations: list = field(default_factory=list)
 
         ctx = FakeContext()
         fake_id = "00000000-0000-0000-0000-000000000099"
@@ -508,6 +512,9 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
+            tool_state: dict = field(default_factory=dict)
+            previous_conversations: list = field(default_factory=list)
 
         fake_missing = "00000000-0000-0000-0000-missing00000"
         ctx = FakeContext()
@@ -529,6 +536,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -550,6 +558,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -573,6 +582,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -698,7 +708,7 @@ class TestLoopCompactionArtifactIndex:
             AssistantMessage(content="recent response 3"),
         ]
         shaper = shape_loop_compaction(
-            compact_every_n_turns=5, keep_recent=6, trigger_ratio=0.0
+            keep_recent=6, trigger_ratio=0.0
         )
         result = await _run_pre_model(shaper, messages, _budget(3_000), turn_index=5)
 
@@ -739,25 +749,27 @@ class TestRetrieveArtifactContentTool:
         assert "not found" in output.error.lower()
 
     @pytest.mark.asyncio
-    async def test_max_lines_limit(self):
+    async def test_limit_returns_a_page_with_a_footer(self):
         store = InMemoryArtifactStore()
         aid = await store.store("line1\nline2\nline3\nline4\nline5", tool_name="t")
 
         tool = RetrieveArtifactContentTool(store=store)
-        output = await tool.execute(artifact_id=aid, max_lines=2)
+        output = await tool.execute(artifact_id=aid, limit=12)
         assert output.success is True
-        assert output.data.count("\n") <= 2
+        assert output.data.startswith("line1\nline2\n")
+        assert "line3" not in output.data
+        assert f'retrieve_artifact_content(artifact_id="{aid}", offset=12)' in output.data
 
     @pytest.mark.asyncio
-    async def test_truncation_hint(self):
+    async def test_a_large_artifact_is_paged_under_the_result_cap(self):
         store = InMemoryArtifactStore()
         aid = await store.store("x" * 200_000, tool_name="t")
 
-        tool = RetrieveArtifactContentTool(store=store, max_content_tokens=100)
+        tool = RetrieveArtifactContentTool(store=store, max_result_chars=1_000)
         output = await tool.execute(artifact_id=aid)
         assert output.success is True
-        assert "truncated" in output.data
-        assert "Filter and curate" in output.data
+        assert len(output.data) <= 1_000
+        assert "of 200,000" in output.data
 
 
 # ═══════════════════════════════════════════════════════
@@ -841,6 +853,7 @@ class TestEndToEndArtifactFlow:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         fake_ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -911,6 +924,26 @@ class TestBudgetReductionRespectsItsCap:
 
         capped = next(m for m in result if isinstance(m, ToolMessage))
         assert self._text_len(capped) <= self.MAX
+
+    @pytest.mark.asyncio
+    async def test_a_multipart_result_keeps_the_last_parts_tail(self) -> None:
+        """The cut keeps both ends of the result's whole text, as it does for a
+        string: an oversized first part used to spend the allowance, and the
+        closing instructions in the last part were emptied."""
+        from app.agent_loop_lib.core.messages import ImagePart, TextPart
+
+        msg = self._parts_msg("HEAD" + "a" * 100_000, "CALL-ME-BACK", with_image=True)
+        shaper = shape_budget_reduction(max_result_chars=self.MAX)
+
+        result = await _run_pre_model(shaper, [SystemMessage(content="sys"), msg])
+
+        capped = next(m for m in result if isinstance(m, ToolMessage))
+        texts = [p.text for p in capped.content if isinstance(p, TextPart)]
+        assert texts[0].startswith("HEAD")
+        assert texts[-1] == "CALL-ME-BACK"
+        assert "truncated" in texts[0]
+        assert self._text_len(capped) <= self.MAX
+        assert isinstance(capped.content[-1], ImagePart)
 
     @pytest.mark.asyncio
     async def test_a_single_string_result_stays_within_the_allowance(self) -> None:

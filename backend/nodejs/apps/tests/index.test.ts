@@ -2,6 +2,10 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { Logger } from '../src/libs/services/logger.service';
+// Imported here, not inside a test: modules take their logger when they load,
+// and the tests below stub Logger.getInstance, so a load inside one would leave
+// every module of the app holding the mock for later files in this worker.
+import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
 
 /**
@@ -51,6 +55,75 @@ describe('index.ts - Application Bootstrap', () => {
     it('should be possible to load dotenv config', () => {
       const { config } = require('dotenv');
       expect(config).to.be.a('function');
+    });
+
+    // dotenv >= 17 prints an "injected env" banner on every config() call,
+    // even when no .env exists. That line lands in the structured log stream
+    // of every service start, so each call site must pass `quiet: true`.
+    it('every dotenv config() call in src passes quiet: true', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const files = [
+        'src/index.ts',
+        'src/integrations/slack-bot/src/index.ts',
+        'src/integrations/slack-bot/src/utils/db.ts',
+      ];
+      for (const rel of files) {
+        const text: string = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+        // Any call, indented or not, but not a method such as app.config().
+        const calls = text.match(/(?<![.\w])config\(\s*[^)]*\)/g) ?? [];
+        expect(calls.length, `${rel} should call config()`).to.be.greaterThan(0);
+        for (const call of calls) {
+          expect(call, `${rel}: ${call}`).to.include('quiet: true');
+        }
+      }
+    });
+
+    // dotenv 18 writes its banner to stderr, so the check runs dotenv in a child
+    // process and reads both streams rather than stubbing console methods.
+    describe('dotenv output in a child process', () => {
+      const { spawnSync } = require('child_process');
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const BANNER = /injected env|dotenv@|\[dotenv/;
+
+      const loadEnv = (options: string, envFile: string | null) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dotenv-'));
+        try {
+          if (envFile !== null) fs.writeFileSync(path.join(dir, '.env'), envFile);
+          const script =
+            `require(${JSON.stringify(require.resolve('dotenv'))}).config(${options});` +
+            "process.stdout.write('loaded=' + (process.env.DOTENV_PROBE || ''));";
+          const child = spawnSync(process.execPath, ['-e', script], {
+            cwd: dir,
+            encoding: 'utf8',
+            env: { PATH: process.env.PATH },
+            timeout: 5000,
+          });
+          return { stdout: child.stdout as string, stderr: child.stderr as string };
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      };
+
+      it('prints a banner without quiet, so the checks below can see one', () => {
+        const { stdout, stderr } = loadEnv('', 'DOTENV_PROBE=x\n');
+        expect(stdout + stderr).to.match(BANNER);
+      });
+
+      it('loads .env with quiet: true and dotenv writes nothing to stdout or stderr', () => {
+        const secret = `dummy-${Date.now()}`;
+        const { stdout, stderr } = loadEnv('{ quiet: true }', `DOTENV_PROBE=${secret}\n`);
+        expect(stdout).to.equal(`loaded=${secret}`);
+        expect(stderr).to.equal('');
+      });
+
+      it('writes nothing with quiet: true when there is no .env', () => {
+        const { stdout, stderr } = loadEnv('{ quiet: true }', null);
+        expect(stdout).to.equal('loaded=');
+        expect(stderr).to.equal('');
+      });
     });
   });
 
@@ -539,24 +612,17 @@ describe('index.ts - Application Bootstrap', () => {
   // =========================================================================
   // Application class import
   // =========================================================================
-  describe('Application class availability', function () {
-    // Importing ../src/app pulls the full module graph; under parallel CI this
-    // can exceed Mocha's default 10s timeout on cold starts.
-    this.timeout(120000);
-
+  describe('Application class availability', () => {
     it('should be importable from app module', () => {
-      const { Application } = require('../src/app');
       expect(Application).to.be.a('function');
     });
 
     it('should be constructable', () => {
-      const { Application } = require('../src/app');
       const app = new Application();
       expect(app).to.be.instanceOf(Application);
     });
 
     it('should expose initialize, start, stop, runMigration, preInitMigration methods', () => {
-      const { Application } = require('../src/app');
       const app = new Application();
       expect(app.initialize).to.be.a('function');
       expect(app.start).to.be.a('function');

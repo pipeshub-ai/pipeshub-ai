@@ -1,6 +1,13 @@
 name: record_group
 description: RecordGroup from graph (matches RecordGroup.model_dump mode=json).
 fields:
+  access_rule:
+    required: false
+    type: string
+    enum:
+      - OPEN
+      - STRICT
+      - RESTRICTED
   connector_id:
     required: true
     type: string
@@ -26,6 +33,9 @@ fields:
     required: false
     type: string
   inherit_permissions:
+    required: false
+    type: boolean
+  is_deleted_at_source:
     required: false
     type: boolean
   is_internal:

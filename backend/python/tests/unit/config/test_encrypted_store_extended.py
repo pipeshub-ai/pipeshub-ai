@@ -3,7 +3,6 @@ Extended tests for app.config.providers.encrypted_store covering missing lines:
 - _DatetimeSafeEncoder (lines 27-29)
 - serialize/deserialize helper closures (lines 82-99)
 - _create_redis_store (lines 106-138 - tested indirectly)
-- list_keys_in_directory with encrypted keys and decryption (lines 340-356)
 - cancel_watch delegation (line 365)
 - publish_cache_invalidation with and without method (lines 380-383)
 - subscribe_cache_invalidation with and without method (lines 400-409)
@@ -68,59 +67,6 @@ class TestDatetimeSafeEncoder:
         from app.config.providers.encrypted_store import _DatetimeSafeEncoder
         with pytest.raises(TypeError):
             json.dumps({"val": set([1, 2])}, cls=_DatetimeSafeEncoder)
-
-
-# ============================================================================
-# list_keys_in_directory with decryption
-# ============================================================================
-
-
-class TestListKeysInDirectoryDecryption:
-    @pytest.mark.asyncio
-    async def test_encrypted_key_decryption(self):
-        ekv, mock_store, mock_encryption = _build_encrypted_store()
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "iv:ciphertext:authTag",
-            "/services/endpoints/test",
-        ])
-        mock_encryption.decrypt.side_effect = lambda v: "/services/connectors/test"
-
-        result = await ekv.list_keys_in_directory("/services")
-        assert "/services/connectors/test" in result
-        assert "/services/endpoints/test" in result
-
-    @pytest.mark.asyncio
-    async def test_encrypted_key_decryption_failure_uses_raw(self):
-        ekv, mock_store, mock_encryption = _build_encrypted_store()
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "iv:ciphertext:authTag",
-        ])
-        mock_encryption.decrypt.side_effect = Exception("decrypt failed")
-
-        result = await ekv.list_keys_in_directory("/")
-        # Falls back to raw key
-        assert "iv:ciphertext:authTag" in result
-
-    @pytest.mark.asyncio
-    async def test_non_encrypted_format_key(self):
-        ekv, mock_store, _ = _build_encrypted_store()
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "/plain/key/no/colons",
-        ])
-
-        result = await ekv.list_keys_in_directory("/plain")
-        assert "/plain/key/no/colons" in result
-
-    @pytest.mark.asyncio
-    async def test_key_error_skipped(self):
-        ekv, mock_store, _ = _build_encrypted_store()
-        # Simulate a key processing error
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "/services/endpoints/test",
-        ])
-
-        result = await ekv.list_keys_in_directory("/services")
-        assert len(result) == 1
 
 
 # ============================================================================
@@ -244,39 +190,34 @@ class TestWatchKeyDelegation:
 
     @pytest.mark.asyncio
     async def test_watch_key_delegates(self):
-        """watch_key delegates to underlying store (line 300)."""
+        """The inner store gets a callback that decrypts before the caller sees it."""
         ekv, mock_store, _ = _build_encrypted_store()
         callback = MagicMock()
         error_callback = MagicMock()
-        mock_store.watch_key = AsyncMock()
+        mock_store.watch_key = AsyncMock(return_value="w1")
 
-        await ekv.watch_key("/test/key", callback, error_callback)
-        mock_store.watch_key.assert_awaited_once_with("/test/key", callback, error_callback)
+        assert await ekv.watch_key("/test/key", callback, error_callback) == "w1"
+        key, on_change, forwarded_error_callback = mock_store.watch_key.await_args.args
+        assert key == "/test/key"
+        assert forwarded_error_callback is error_callback
 
-
-# ============================================================================
-# list_keys_in_directory error path (lines 354-356)
-# ============================================================================
-
-
-class TestListKeysErrorPath:
-    """Test list_keys_in_directory error handling."""
+        on_change('enc:{"v": 1}')
+        callback.assert_called_once_with({"v": 1})
 
     @pytest.mark.asyncio
-    async def test_key_processing_error_skipped(self):
-        """Error processing individual key is skipped (lines 354-356)."""
-        ekv, mock_store, mock_encryption = _build_encrypted_store()
+    async def test_an_undecodable_value_without_error_callback_is_raised(self) -> None:
+        """With nowhere to deliver it, the error goes back to the inner store,
+        which logs it, rather than reaching the watcher as a value."""
+        ekv, mock_store, _ = _build_encrypted_store()
+        callback = MagicMock()
+        mock_store.watch_key = AsyncMock()
 
-        # First key causes error, second key is fine
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "bad:key:format",
-            "/services/good_key",
-        ])
-        # Make decrypt raise for the first key
-        mock_encryption.decrypt.side_effect = [Exception("bad key"), "/services/good_key"]
+        await ekv.watch_key("/test/key", callback)
+        on_change = mock_store.watch_key.await_args.args[1]
 
-        result = await ekv.list_keys_in_directory("/services")
-        assert "/services/good_key" in result
+        with pytest.raises(json.JSONDecodeError):
+            on_change("enc:not json")
+        callback.assert_not_called()
 
 
 # ============================================================================

@@ -12,7 +12,7 @@ What is pinned:
      `search_internal_knowledge`.
   D. Scope-narrowing logic: `_get_scoping` never widens when the caller
      supplies a `connector_ids` subset.
-  E. Dedup logic: `_dedupe_append_final_results` is idempotent.
+  E. Dedup logic: `dedupe_append_final_results` is idempotent.
 """
 from __future__ import annotations
 
@@ -255,8 +255,10 @@ class TestGetScopingNarrowing:
 
 class TestDedupeAppendFinalResults:
     def _dedupe(self, existing, new):
-        from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
-        return _dedupe_append_final_results(existing, new)
+        from app.agents.actions.knowledge_graph.ops.results import (
+            dedupe_append_final_results,
+        )
+        return dedupe_append_final_results(existing, new)
 
     def _block(self, vrid, idx):
         return {"virtual_record_id": vrid, "block_index": idx, "content": "x"}

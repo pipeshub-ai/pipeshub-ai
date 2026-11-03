@@ -1,6 +1,4 @@
-import mongoose from 'mongoose';
 import { Response } from 'express';
-import { Users } from '../schema/users.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -8,24 +6,72 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
-import { groupTypes, UserGroups } from '../schema/userGroup.schema';
-import { UserDisplayPicture } from '../schema/userDp.schema';
+import {
+  GROUP_TYPES,
+  getGroupRepository,
+  type GroupType,
+} from '../../../libs/repositories/group';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getPictureRepository } from '../../../libs/repositories/picture';
+import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
-import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
+import { isUserOrgAdmin } from '../services/user-admin.service';
+
+const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
+const GROUP_EXISTS_MESSAGE = 'Group already exists';
+
+// Two requests can both pass the name check; the unique index on
+// (orgId, name) then rejects the second write.
+async function saveGroupName<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (
+      error instanceof UniqueConstraintError &&
+      String(error.metadata?.key ?? '').includes('name')
+    ) {
+      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+    }
+    throw error;
+  }
+}
 
 @injectable()
 export class UserGroupController {
   constructor() {}
 
+  // safeParsePagination throws a plain Error for an out-of-range page or limit,
+  // which the error middleware reports as a 500. A bad query string is a 400.
+  private parsePagination(req: AuthenticatedUserRequest): {
+    page: number;
+    limit: number;
+    skip: number;
+  } {
+    try {
+      return safeParsePagination(
+        req.query.page as string,
+        req.query.limit as string,
+        1,
+        25,
+        100,
+      );
+    } catch (error) {
+      throw new BadRequestError(
+        error instanceof Error
+          ? error.message
+          : 'Invalid pagination parameters',
+      );
+    }
+  }
+
   async getAllUsers(
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const users = await Users.find({
-      orgId: req.user?.orgId,
-      isDeleted: false,
-    });
+    const users = await getUserRepository().listAllLive(
+      req.user?.orgId as string,
+    );
     res.json(users);
   }
 
@@ -41,32 +87,38 @@ export class UserGroupController {
     if (!type) {
       throw new BadRequestError('type(Type of the Group) is required');
     }
-    const reserved = ['admin', 'everyone', 'standard']
-    if (reserved.includes(name) || reserved.includes(type)) {
-      throw new BadRequestError('Group name or type "admin", "everyone", or "standard" cannot be created');
+    // The route schema already forces strings. Checked again so a query
+    // operator ({ "$ne": null }) can never reach the lookup below.
+    if (typeof name !== 'string') {
+      throw new BadRequestError('name must be a string');
+    }
+    if (typeof type !== 'string') {
+      throw new BadRequestError('type must be a string');
+    }
+    if (
+      RESERVED_GROUP_NAMES.includes(name) ||
+      RESERVED_GROUP_NAMES.includes(type)
+    ) {
+      throw new BadRequestError(
+        'Group name or type "admin", "everyone", or "standard" cannot be created',
+      );
     }
 
-    if (!groupTypes.find((groupType) => groupType === type)) {
+    if (!GROUP_TYPES.find((groupType) => groupType === type)) {
       throw new BadRequestError('type(Type of the Group) unknown');
     }
 
-    const groupWithSameName = await UserGroups.findOne({
-      name,
-      isDeleted: false,
-    });
-
-    if (groupWithSameName) {
-      throw new BadRequestError('Group already exists');
+    const groups = getGroupRepository();
+    if (await groups.nameTaken(req.user?.orgId as string, name)) {
+      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
     }
 
-    const newGroup = new UserGroups({
-      name: name,
-      type: type,
-      orgId: req.user?.orgId,
-      users: [],
-    });
-
-    const group = await newGroup.save();
+    const group = await saveGroupName(() =>
+      groups.create(req.user?.orgId as string, {
+        name: name,
+        type: type as GroupType,
+      }),
+    );
 
     res.status(201).json(group);
   }
@@ -75,45 +127,23 @@ export class UserGroupController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const orgId = req.user?.orgId;
-    const { page, limit, skip } = safeParsePagination(
-      req.query.page as string,
-      req.query.limit as string,
-      1,
-      25,
-      100,
-    );
+    const orgId = req.user?.orgId as string;
+    const { page, limit, skip } = this.parsePagination(req);
     const search = (req.query.search as string)?.trim();
     const createdAfter = (req.query.createdAfter as string)?.trim();
     const createdBefore = (req.query.createdBefore as string)?.trim();
 
-    const filter: UserGroupFilter = { orgId, isDeleted: false };
-    if (search) {
-      filter.name = { $regex: search, $options: 'i' };
-    }
-    if (createdAfter || createdBefore) {
-      const dateFilter: Record<string, Date> = {};
-      if (createdAfter) dateFilter.$gte = new Date(createdAfter);
-      if (createdBefore) {
-        const beforeDate = new Date(createdBefore);
-        beforeDate.setHours(23, 59, 59, 999);
-        dateFilter.$lte = beforeDate;
-      }
-      (filter as any).createdAt = dateFilter;
-    }
-
-    const [groups, totalCount] = await Promise.all([
-      UserGroups.find(filter)
-        .skip(skip)
-        .limit(limit)
-        .lean()
-        .exec(),
-      UserGroups.countDocuments(filter),
-    ]);
+    const { rows: groups, total: totalCount } = await getGroupRepository().list(
+      orgId,
+      { skip, limit, search, createdAfter, createdBefore },
+    );
 
     // Return userCount instead of the full users array
     const result = groups.map((group) => {
-      const timestamps = group as typeof group & { createdAt?: string; updatedAt?: string };
+      const timestamps = group as typeof group & {
+        createdAt?: string;
+        updatedAt?: string;
+      };
       return {
         _id: group._id,
         name: group.name,
@@ -137,30 +167,61 @@ export class UserGroupController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const groupId = req.params.groupId;
-    const orgId = req.user?.orgId;
+    const groupId = req.params.groupId as string;
+    const orgId = req.user?.orgId as string;
 
-    const userGroup = await UserGroups.findOne({
-      _id: groupId,
-      orgId,
-    })
-      .lean()
-      .exec();
+    const userGroup = await getGroupRepository().get(orgId, groupId);
 
     if (!userGroup) {
       throw new NotFoundError('UserGroup not found');
     }
 
+    // `users` is a list of Mongo ids, and a service account's is the value an
+    // agent stores when it is bound to that account. Every service account is
+    // put in the everyone group when it is created, so without this the group
+    // every member can read hands out all of them. The ids of colleagues stay,
+    // because they are already the member's to see.
+    if (Array.isArray(userGroup.users)) {
+      userGroup.users = await this.visibleMembers(req, orgId, userGroup.users);
+    }
     res.json(userGroup);
+  }
+
+  /**
+   * ``ids`` without the service accounts among them, unless the caller
+   * administers the organisation. The lookup only runs when one is actually in
+   * the list, so an ordinary group costs nothing.
+   */
+  private async visibleMembers(
+    req: AuthenticatedUserRequest,
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<string[]> {
+    const members = [...ids];
+    if (members.length === 0) return members;
+
+    const accounts = await getUserRepository().serviceAccountIdsAmong(
+      orgId,
+      members,
+    );
+    if (accounts.length === 0) return members;
+
+    const isAdmin =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), orgId));
+    if (isAdmin) return members;
+
+    const hidden = new Set(accounts);
+    return members.filter((id) => !hidden.has(id));
   }
 
   async updateGroup(
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const { groupId } = req.params;
-    const { name } = req.body;
-    const orgId = req.user?.orgId;
+    const groupId = req.params.groupId as string;
+    const { name } = req.body as { name?: string };
+    const orgId = req.user?.orgId as string;
 
     if (!name) {
       throw new BadRequestError('New name is required');
@@ -172,11 +233,8 @@ export class UserGroupController {
       throw new BadRequestError('New name is required');
     }
 
-    const group = await UserGroups.findOne({
-      _id: groupId,
-      orgId,
-      isDeleted: false,
-    });
+    const groups = getGroupRepository();
+    const group = await groups.getLive(orgId, groupId);
 
     if (!group) {
       throw new NotFoundError('User group not found');
@@ -186,26 +244,37 @@ export class UserGroupController {
       throw new ForbiddenError('Not Allowed');
     }
 
-    group.name = normalizedName;
+    if (normalizedName !== group.name) {
+      if (RESERVED_GROUP_NAMES.includes(normalizedName)) {
+        throw new BadRequestError(
+          'Group name "admin", "everyone", or "standard" cannot be used',
+        );
+      }
+      if (await groups.nameTaken(orgId, normalizedName, groupId)) {
+        throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+      }
+    }
 
-    await group.save();
+    const renamed = await saveGroupName(() =>
+      groups.rename(orgId, groupId, normalizedName),
+    );
+    if (!renamed) {
+      throw new NotFoundError('User group not found');
+    }
 
-    res.status(200).json(group);
+    res.status(200).json(renamed);
   }
 
   async deleteGroup(
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const { groupId } = req.params;
-    const orgId = req.user?.orgId;
+    const groupId = req.params.groupId as string;
+    const orgId = req.user?.orgId as string;
     const userId = req.user?.userId;
 
-    const group = await UserGroups.findOne({
-      _id: groupId,
-      orgId,
-      isDeleted: false,
-    }).exec();
+    const groups = getGroupRepository();
+    const group = await groups.getLive(orgId, groupId);
 
     if (!group) {
       throw new NotFoundError('User group not found');
@@ -215,12 +284,9 @@ export class UserGroupController {
       throw new ForbiddenError('Only custom groups can be deleted');
     }
 
-    group.isDeleted = true;
-    group.deletedBy = userId;
+    const deleted = await groups.softDelete(orgId, groupId, userId as string);
 
-    await group.save();
-
-    res.status(200).json(group);
+    res.status(200).json(deleted);
   }
 
   async addUsersToGroups(
@@ -228,7 +294,7 @@ export class UserGroupController {
     res: Response,
   ): Promise<void> {
     const { userIds, groupIds } = req.body;
-    const orgId = req.user?.orgId;
+    const orgId = req.user?.orgId as string;
 
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
       throw new BadRequestError('userIds array is required');
@@ -238,13 +304,13 @@ export class UserGroupController {
       throw new BadRequestError('groupIds array is required');
     }
 
-    const updatedGroups = await UserGroups.updateMany(
-      { _id: { $in: groupIds }, orgId, isDeleted: false },
-      { $addToSet: { users: { $each: userIds } } },
-      { new: true },
+    const modified = await getGroupRepository().addMembers(
+      orgId,
+      groupIds as string[],
+      userIds as string[],
     );
 
-    if (updatedGroups.modifiedCount === 0) {
+    if (modified === 0) {
       throw new BadRequestError('No groups found or updated');
     }
 
@@ -256,7 +322,7 @@ export class UserGroupController {
     res: Response,
   ): Promise<void> {
     const { userIds, groupIds } = req.body;
-    const orgId = req.user?.orgId;
+    const orgId = req.user?.orgId as string;
 
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
       throw new BadRequestError('User IDs are required');
@@ -266,13 +332,13 @@ export class UserGroupController {
       throw new BadRequestError('Group IDs are required');
     }
 
-    const updatedGroups = await UserGroups.updateMany(
-      { _id: { $in: groupIds }, orgId, isDeleted: false },
-      { $pullAll: { users: userIds } },
-      { new: true },
+    const modified = await getGroupRepository().removeMembers(
+      orgId,
+      groupIds as string[],
+      userIds as string[],
     );
 
-    if (updatedGroups.modifiedCount === 0) {
+    if (modified === 0) {
       throw new BadRequestError('No groups found or updated');
     }
 
@@ -283,71 +349,53 @@ export class UserGroupController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const { groupId } = req.params;
-    const orgId = req.user?.orgId;
-    const { page, limit, skip } = safeParsePagination(
-      req.query.page as string,
-      req.query.limit as string,
-      1,
-      25,
-      100,
-    );
+    const groupId = req.params.groupId as string;
+    const orgId = req.user?.orgId as string;
+    const { page, limit, skip } = this.parsePagination(req);
     const search = (req.query.search as string)?.trim();
 
-    const group = await UserGroups.findOne({
-      _id: groupId,
-      orgId,
-      isDeleted: false,
-    }).lean().exec();
+    const group = await getGroupRepository().getLive(orgId, groupId);
 
     if (!group) {
       throw new NotFoundError('Group not found');
     }
 
-    const allUserIds = group.users.map((u) => u.toString());
+    const allUserIds = group.users;
 
-    // Fetch user details with optional search filter
-    const userFilter: UserFilter = { _id: { $in: allUserIds }, isDeleted: { $ne: true } };
-    if (search) {
-      userFilter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    const [userDocs, totalCount] = await Promise.all([
-      Users.find(userFilter)
-        .select('fullName firstName lastName email')
-        .skip(skip)
-        .limit(limit)
-        .lean()
-        .exec(),
-      Users.countDocuments(userFilter),
-    ]);
+    // This page carries each member's id, name and email, so a service account
+    // in the group would be fully identifiable — and its id is what binds an
+    // agent to it. Applied to the query rather than the page, so the count
+    // agrees with what comes back.
+    const includeServiceAccounts =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), orgId));
+    const { rows: userDocs, total: totalCount } =
+      await getUserRepository().listMembersPage(orgId, allUserIds, {
+        search,
+        skip,
+        limit,
+        includeServiceAccounts,
+      });
 
     // Bulk-fetch DPs for this page of users
-    const pageUserIds = userDocs.map((u) => u._id.toString());
+    const pageUserIds = userDocs.map((u) => u._id);
     const dpMap = new Map<string, string>();
     if (pageUserIds.length > 0) {
-      const dpDocs = await UserDisplayPicture.find({
-        orgId,
-        userId: { $in: pageUserIds },
-        pic: { $ne: null },
-      }).lean().exec();
+      const dpDocs = await getPictureRepository().listSet(orgId, pageUserIds);
 
       for (const dp of dpDocs) {
         if (dp.userId && dp.pic) {
           const mime = dp.mimeType || 'image/jpeg';
-          dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+          dpMap.set(dp.userId, `data:${mime};base64,${dp.pic}`);
         }
       }
     }
 
     const users = userDocs.map((u) => ({
-      _id: u._id.toString(),
+      _id: u._id,
       fullName: u.fullName ?? null,
       email: u.email ?? null,
-      profilePicture: dpMap.get(u._id.toString()) ?? null,
+      profilePicture: dpMap.get(u._id) ?? null,
     }));
 
     res.status(200).json({
@@ -360,14 +408,10 @@ export class UserGroupController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const { userId } = req.params;
-    const orgId = req.user?.orgId;
+    const userId = req.params.userId as string;
+    const orgId = req.user?.orgId as string;
 
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('name type');
+    const groups = await getGroupRepository().groupsOfUser(orgId, userId);
 
     res.status(200).json(groups);
   }
@@ -376,19 +420,7 @@ export class UserGroupController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const orgId = new mongoose.Types.ObjectId(req.user?.orgId);
-
-    const stats = await UserGroups.aggregate([
-      { $match: { orgId, isDeleted: false } },
-      {
-        $group: {
-          _id: '$name',
-          count: { $sum: 1 },
-          totalUsers: { $sum: { $size: '$users' } },
-          avgUsers: { $avg: { $size: '$users' } },
-        },
-      },
-    ]);
+    const stats = await getGroupRepository().stats(req.user?.orgId as string);
 
     res.status(200).json(stats);
   }

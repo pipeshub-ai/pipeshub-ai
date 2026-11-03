@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -25,7 +25,8 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
+from connectors.jira.constants import connector_base_url
 from connectors.jira.jira_test_utils import parse_jira_timestamp
 
 
@@ -64,6 +65,29 @@ class JiraExpected:
         overrides: dict[str, Any] | None = None,
     ) -> TicketRecord:
         """Build a ``TicketRecord`` from live Jira issue JSON (mirrors connector issue mapping)."""
+        record, _unsettled = await JiraExpected.ticket_record_and_unsettled(
+            issue_key,
+            connector_id=connector_id,
+            datasource=datasource,
+            site_base_url=site_base_url,
+            value_mapper=value_mapper,
+            connector_enum=connector_enum,
+            overrides=overrides,
+        )
+        return record
+
+    @staticmethod
+    async def ticket_record_and_unsettled(
+        issue_key: str,
+        *,
+        connector_id: str,
+        datasource: Any,
+        site_base_url: str | None = None,
+        value_mapper: ValueMapper | None = None,
+        connector_enum: Connectors | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> tuple[TicketRecord, frozenset[str]]:
+        """``ticket_record``, plus the fields the issue JSON cannot settle, for ``skip_compare``."""
         vm = value_mapper or ValueMapper()
         ov = overrides or {}
 
@@ -91,7 +115,8 @@ class JiraExpected:
             parent_record_type = RecordType.TICKET
 
         status_obj = fields.get("status", {}) or {}
-        status = vm.map_status(status_obj.get("name") if status_obj else None)
+        source_status = status_obj.get("name") if status_obj else None
+        status = vm.map_status(source_status)
 
         priority_obj = fields.get("priority", {}) or {}
         priority = vm.map_priority(priority_obj.get("name") if priority_obj else None)
@@ -108,13 +133,27 @@ class JiraExpected:
 
         created_at = parse_jira_timestamp(fields.get("created"))
         updated_at = parse_jira_timestamp(fields.get("updated"))
+        # As the connector maps them: resolved until reopened; the due date is a calendar day.
+        resolved_at = parse_jira_timestamp(fields.get("resolutiondate")) or None
+        due_date = datetime_to_epoch_ms(fields.get("duedate"), "%Y-%m-%d")
 
         base_url = (
             site_base_url
-            or os.getenv("JIRA_TEST_BASE_URL")
-            or ""
+            or connector_base_url()
         ).rstrip("/")
         weburl = f"{base_url}/browse/{key}" if base_url and key else None
+
+        # As apply_issue_access_settled writes it for a team connector: an issue with
+        # a security level is limited to the level's members, and an explicit null
+        # level is open to its project and no further. A missing field depends on
+        # what the connector knows of the project's security scheme, which this JSON
+        # doesn't say, so the rule is left out of the comparison.
+        unsettled: frozenset[str] = frozenset()
+        security = fields.get("security")
+        has_level = isinstance(security, dict) and security.get("id") not in (None, "")
+        access_rule = AccessRule.RESTRICTED if has_level else AccessRule.STRICT
+        if "security" not in fields:
+            unsettled = frozenset({"access_rule"})
 
         external_group = ov.get("external_record_group_id")
         if external_group is None:
@@ -122,7 +161,7 @@ class JiraExpected:
             pid = project.get("id")
             external_group = str(pid) if pid is not None else None
 
-        return TicketRecord(
+        record = TicketRecord(
             id="",
             org_id="",
             record_name=issue_name,
@@ -143,10 +182,14 @@ class JiraExpected:
             created_at=created_at,
             updated_at=updated_at,
             inherit_permissions=True,
+            access_rule=access_rule,
             preview_renderable=False,
             is_dependent_node=False,
             parent_node_id=None,
             status=status,
+            source_status=source_status,
+            resolved_at=resolved_at,
+            due_date=due_date,
             priority=priority,
             type=issue_type,
             assignee=assignee_name,
@@ -156,6 +199,7 @@ class JiraExpected:
             assignee_email=assignee_email,
             creator_email=creator_email,
         )
+        return record, unsettled
 
     @staticmethod
     async def placeholder_stub(
@@ -271,7 +315,7 @@ class JiraExpected:
         if "." in filename:
             extension = filename.split(".")[-1].lower()
 
-        base = (site_base_url or os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+        base = (site_base_url or connector_base_url()).rstrip("/")
         weburl = f"{base}/browse/{issue_key}" if base and issue_key else None
 
         ts = created_at or get_epoch_timestamp_in_ms()

@@ -49,6 +49,15 @@ def fake_chat_model() -> FakeChatModel:
     return FakeChatModel()
 
 
+@pytest.fixture(autouse=True)
+def _explicit_sandbox_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`SANDBOX_MODE` has no default: unset means the factory registers no
+    code-execution tools. Pin `local` here so the wiring tests still cover
+    `run_code`; a test that needs the unavailable path deletes the var."""
+    monkeypatch.setenv("SANDBOX_MODE", "local")
+    monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+
+
 def make_context(**overrides: Any) -> AgentContext:
     defaults: dict[str, Any] = {
         "org_id": "org-1",

@@ -170,6 +170,22 @@ class TableMetadata(BaseModel):
     captions: Optional[list[str]] = Field(default_factory=list)
     footnotes: Optional[list[str]] = Field(default_factory=list)
 
+
+def summary_with_captions(summary: str | None, captions: list[str] | None) -> str:
+    """*summary* led by each caption it does not already contain.
+
+    A caption is often all that tells apart sibling tables with the same
+    columns, and an LLM summary written from the grid never sees it.
+    """
+    summary = summary or ""
+    missing = [
+        caption
+        for caption in dict.fromkeys((c or "").strip() for c in captions or [])
+        if caption and caption not in summary
+    ]
+    return "\n".join([*missing, summary] if summary else missing)
+
+
 class CodeMetadata(BaseModel):
     """Metadata specific to code blocks"""
     language: Optional[str] = None
@@ -181,9 +197,17 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # Repo-unique, human-readable resolution identity. The graph block key is
+    # hashed from this, so the blob and the graph must agree on it exactly.
     qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    # Cross-file edges whose source is this block and whose target is still a
+    # bare name; resolved by the corpus pass after every file is indexed.
+    pending_edges: Optional[list[dict]] = None
+    # Receiver-variable -> declared type for the whole file. Cannot be rebuilt
+    # without re-parsing, so the file-summary block carries it.
+    type_table: Optional[dict[str, str]] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
@@ -286,6 +310,7 @@ class GroupSubType(str, Enum):
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
+    named_entities: Optional[dict[str, Any]] = None
     section_numbers: Optional[list[str]] = None
     summary: Optional[str] = None
     keywords: Optional[list[str]] = None
@@ -298,6 +323,14 @@ class SemanticMetadata(BaseModel):
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
+    # Set when the labels above are the names extracted from this record's
+    # own content (app.modules.indexing.record_label_repair reads it).
+    own_labels: bool | None = None
+    # Populated for CODE_FILE records only. They reach chat context through the
+    # blob record, not the graph -- nothing creates taxonomy nodes for them.
+    architecture_role: Optional[str] = None
+    design_patterns: Optional[list[str]] = None
+    external_dependencies: Optional[list[str]] = None
 
     def to_llm_context(self) -> list[str]:
         lines = []
@@ -316,6 +349,12 @@ class SemanticMetadata(BaseModel):
             cat_parts.append(self.sub_category_level_3)
         if cat_parts:
             lines.append(f"Category: {' > '.join(cat_parts)}")
+        if self.architecture_role:
+            lines.append(f"Architecture Role: {self.architecture_role}")
+        if self.design_patterns:
+            lines.append(f"Design Patterns: {', '.join(self.design_patterns)}")
+        if self.external_dependencies:
+            lines.append(f"External Dependencies: {', '.join(self.external_dependencies)}")
         return lines
 
 class Block(BaseModel):
@@ -524,6 +563,8 @@ class BlockGroups(BaseModel):
 class BlocksContainer(BaseModel):
     block_groups: list[BlockGroup] = Field(default_factory=list)
     blocks: list[Block] = Field(default_factory=list)
+    # PARSER_VERSION of a code parse, so a stored blob says which fact schema it holds.
+    code_facts_version: Optional[str] = None
 
     def extend(self, other: 'BlocksContainer') -> None:
         """Append *other*'s content, rebasing its indices onto this container.

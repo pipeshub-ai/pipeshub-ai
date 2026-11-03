@@ -10,17 +10,17 @@ what the personal connector does differently, plus a baseline proving the shared
 still runs under it:
 
 - repo discovery is by account and the one required REPO_IDS filter;
-- every repo is granted to a single internal ``ConnectorGroup`` whose only member is
-  the creator — no per-collaborator edges, and no visibility-derived ORG grant even for
-  a public repo;
+- a repo inherits the app: it carries no grant of its own (no ConnectorGroup, no
+  per-collaborator edges, and no visibility-derived ORG grant even for a public repo),
+  and whoever passes the app's gate reads it;
 - no GitHub user directory is synced.
 
 It reuses the GitHub Teams tenant (same PAT and repos) and never writes to GitHub.
 
   order 1 TC-GHP-SYNC-001   — full sync baseline: every issue, PR and blob, wired correctly
-  order 2 TC-GHP-PERM-001   — ConnectorGroup: one member, one GROUP grant on the repo group
+  order 2 TC-GHP-PERM-001   — the repo group inherits the app and carries no grant
   order 3 TC-GHP-USER-001   — only the creator is linked to the app; no GitHub users
-  order 4 TC-GHP-STREAM-001 — the creator can stream an issue through the group grant
+  order 4 TC-GHP-STREAM-001 — the creator can stream an issue through the app
   order 5 TC-GHP-FILTER-001 — REPO_IDS scoping: the unlisted public repo does not sync
   order 6 TC-GHP-PERM-002   — a public repo still gets no ORG grant (its own connector)
 """
@@ -113,36 +113,35 @@ _CHILD_KINDS = ("work-items", "pull-requests", "code-repository")
 
 
 def _connector_group_id(connector_id: str) -> str:
-    """External id of the internal ConnectorGroup (``_connector_group_external_id``)."""
+    """External id the internal ConnectorGroup had (``_connector_group_external_id``)."""
     return f"internal-{connector_id}"
 
 
-async def _assert_repo_granted_to_connector_group_only(
+async def _assert_repo_inherits_the_app_only(
     graph_provider: GraphProviderProtocol,
     pipeshub_client: PipeshubClient,
     connector_id: str,
     repo: dict[str, Any],
 ) -> None:
-    """The repo group's whole ACL is one GROUP edge from the ConnectorGroup."""
+    """The repo group carries no grant and inherits the app."""
     repo_group = await graph_provider.get_record_group_by_external_id(connector_id, str(repo["id"]))
     assert repo_group is not None, f"record group for {repo['full_name']} missing"
     group = await graph_provider.get_user_group_by_external_id(
         connector_id, _connector_group_id(connector_id),
     )
-    assert group is not None, "ConnectorGroup was not created"
+    assert group is None, "a personal connector no longer creates a ConnectorGroup"
 
     grants = await graph_provider.count_permission_edges_to_record_groups(connector_id, str(repo["id"]))
-    assert grants == 1, (
+    assert grants == 0, (
         f"{repo['full_name']}: repo group has {grants} PERMISSION edge(s); a personal "
-        "connector grants access through the ConnectorGroup alone"
+        "repo inherits the app and carries no grant of its own"
     )
-    edges = await graph_provider.find_edges_between(
-        CollectionNames.GROUPS.value, group.id,
+    inherits = await graph_provider.find_edges_between(
         CollectionNames.RECORD_GROUPS.value, repo_group.id,
-        CollectionNames.PERMISSION.value,
+        CollectionNames.APPS.value, connector_id,
+        CollectionNames.INHERIT_PERMISSIONS.value,
     )
-    assert len(edges) == 1, f"expected one ConnectorGroup -> repo group edge, found {len(edges)}"
-    assert edges[0].get("type") == "GROUP", f"grant must be a GROUP permission, got {edges[0].get('type')!r}"
+    assert len(inherits) == 1, f"expected the repo group to inherit the app, found {len(inherits)} edge(s)"
 
     org_edges = await graph_provider.find_edges_between(
         CollectionNames.ORGS.value, pipeshub_client.org_id,
@@ -151,7 +150,7 @@ async def _assert_repo_granted_to_connector_group_only(
     )
     assert not org_edges, (
         f"{repo['full_name']} ({repo.get('visibility')}) carries an org-wide grant; a "
-        "personal connector must never grant beyond its ConnectorGroup"
+        "personal connector must never grant beyond its app"
     )
 
     for kind in _CHILD_KINDS:
@@ -223,17 +222,10 @@ class TestGitHubPersonalConnector:
         graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
     ) -> None:
-        """TC-GHP-PERM-001: access flows through one ConnectorGroup with one member.
-
-        The creator is the group's sole member, and the private repo's whole ACL is a
-        single GROUP edge from that group — no collaborator edges and no ORG grant.
-        """
+        """TC-GHP-PERM-001: the private repo inherits the app and carries no grant —
+        no ConnectorGroup, no collaborator edges and no ORG grant."""
         connector_id = github_personal_connector["connector_id"]
-        members = await graph_provider.count_user_to_group_permission_edges(
-            connector_id, _connector_group_id(connector_id),
-        )
-        assert members == 1, f"ConnectorGroup should have exactly one member (the creator), has {members}"
-        await _assert_repo_granted_to_connector_group_only(
+        await _assert_repo_inherits_the_app_only(
             graph_provider, pipeshub_client, connector_id, github_personal_connector["primary_repo"],
         )
         logger.info("TC-GHP-PERM-001 passed")
@@ -270,7 +262,7 @@ class TestGitHubPersonalConnector:
             f"{len(creator_edges)} creator -> app edge(s)"
         )
         groups = await graph_provider.count_user_groups(connector_id)
-        assert groups == 1, f"expected only the ConnectorGroup, found {groups} user groups"
+        assert groups == 0, f"a personal connector syncs no user groups, found {groups}"
 
     @pytest.mark.order(4)
     async def test_tc_ghp_stream_001_creator_can_stream(
@@ -282,7 +274,7 @@ class TestGitHubPersonalConnector:
         """TC-GHP-STREAM-001: an issue streams for the creator.
 
         Streaming checks the caller's access, so this proves the creator reaches synced
-        content through ConnectorGroup -> repo group -> child group -> record.
+        content through the app -> repo group -> child group -> record.
         """
         state = github_personal_connector
         issue = state["primary_issues"][0]
@@ -318,12 +310,12 @@ class TestGitHubPersonalConnector:
         graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
     ) -> None:
-        """TC-GHP-PERM-002: a public repo is still granted to the ConnectorGroup only.
+        """TC-GHP-PERM-002: a public repo still only inherits the app.
 
         The Teams connector mirrors GitHub, so a public repo becomes readable org-wide.
-        The personal connector must not: removing someone from the ConnectorGroup has to
-        revoke their access, which an ORG grant would silently undo. An instance syncs
-        one repository, so the public repo gets its own connector.
+        The personal connector must not: taking someone off the app has to revoke their
+        access, which an ORG grant would silently undo. An instance syncs one
+        repository, so the public repo gets its own connector.
         """
         public = github_personal_connector["public_repo"]
         async with synced_personal_connector(
@@ -331,7 +323,7 @@ class TestGitHubPersonalConnector:
             token=github_personal_connector["token"], name=connector_name("public"),
             repo_full_name=public["full_name"],
         ) as connector_id:
-            await _assert_repo_granted_to_connector_group_only(
+            await _assert_repo_inherits_the_app_only(
                 graph_provider, pipeshub_client, connector_id, public,
             )
         logger.info("TC-GHP-PERM-002 passed")

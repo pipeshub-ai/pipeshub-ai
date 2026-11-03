@@ -1,0 +1,235 @@
+{
+  "_comment": "Operations and parameters GitLab documents but openapi_v2.yaml leaves out. Each entry names its source page under specs/docs.",
+  "paths": {
+    "/api/v4/user": {
+      "get": {
+        "x-source": "docs/users.md 'Retrieve the current user' (non-admin shape; admins also get is_admin)",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "schema": {
+              "$ref": "#/definitions/API_Entities_UserPublic"
+            }
+          }
+        }
+      }
+    },
+    "/api/v4/users/{id}": {
+      "get": {
+        "x-source": "docs/users.md 'Retrieve a single user'",
+        "parameters": [
+          {
+            "name": "with_custom_attributes",
+            "in": "query",
+            "type": "boolean"
+          }
+        ],
+        "responses": {
+          "200": {
+            "schema": {
+              "$ref": "#/definitions/API_Entities_User"
+            }
+          }
+        }
+      }
+    },
+    "/api/v4/projects/{id}/issues/{issue_iid}/notes": {
+      "get": {
+        "x-source": "docs/notes.md 'List all issue notes'",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "type": "string",
+            "enum": [
+              "created_at",
+              "updated_at"
+            ]
+          },
+          {
+            "name": "activity_filter",
+            "in": "query",
+            "type": "string",
+            "enum": [
+              "all_notes",
+              "only_comments",
+              "only_activity"
+            ]
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "type": "integer"
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "type": "integer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/API_Entities_Note"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v4/projects/{id}/merge_requests/{merge_request_iid}/notes": {
+      "get": {
+        "x-source": "docs/notes.md 'List all merge request notes'",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "type": "string",
+            "enum": [
+              "created_at",
+              "updated_at"
+            ]
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "type": "integer"
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "type": "integer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/API_Entities_Note"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graphql": {
+      "post": {
+        "x-source": "docs/graphql_reference__index.md; schema in specs/gitlab_schema.graphql",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "schema": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  },
+  "extra_query_params": {
+    "get /api/v4/projects/{id}/merge_requests/{merge_request_iid}/changes": [
+      {
+        "name": "access_raw_diffs",
+        "type": "boolean",
+        "x-source": "docs/merge_requests.md 'Retrieve merge request changes' (access_raw_diffs)"
+      }
+    ],
+    "get /api/v4/projects/{id}/issues": [
+      {
+        "name": "pagination",
+        "type": "string",
+        "enum": [
+          "keyset"
+        ],
+        "x-source": "docs/rest__index.md keyset pagination: project issues, GitLab 18.3+"
+      }
+    ]
+  },
+  "definition_fixes": {
+    "_comment": "Grape documents these fields wrongly. The live API (gitlab.com, 2026-10-23, read-only) and the docs pages are the truth.",
+    "API_Entities_Issue": {
+      "assignees": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/issues.md example; live GET /projects/:id/issues"
+      }
+    },
+    "API_Entities_Member": {
+      "access_level": {
+        "type": "integer",
+        "x-source": "docs/project_members.md example; live members/all returned 50 and 20"
+      }
+    },
+    "API_Entities_MergeRequestBasic": {
+      "assignees": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/merge_requests.md examples (arrays of users)"
+      },
+      "reviewers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/merge_requests.md examples (arrays of users)"
+      }
+    },
+    "API_Entities_MergeRequest": {
+      "assignees": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/merge_requests.md examples (arrays of users)"
+      },
+      "reviewers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/merge_requests.md examples (arrays of users)"
+      }
+    },
+    "API_Entities_MergeRequestChanges": {
+      "assignees": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/merge_requests.md examples (arrays of users)"
+      },
+      "reviewers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/API_Entities_UserBasic"
+        },
+        "x-source": "docs/merge_requests.md examples (arrays of users)"
+      }
+    }
+  }
+}

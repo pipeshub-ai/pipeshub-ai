@@ -2,6 +2,7 @@
 // Workspace-wide constants
 // ========================================
 
+import type { TFunction } from 'i18next';
 import { GroupType } from './groups/types';
 
 // ── Group types ──────────────────────────────────────────────────
@@ -47,6 +48,19 @@ export const USER_ROLES = {
 } as const;
 
 export type UserRoleValue = (typeof USER_ROLES)[keyof typeof USER_ROLES];
+
+const ROLE_LABEL_KEYS: Record<string, string> = {
+  admin: 'workspace.users.roles.admin',
+  member: 'workspace.users.roles.member',
+  guest: 'workspace.users.roles.guest',
+};
+
+/** Translated label for a role from the server; a role we don't know is shown as sent. */
+export function userRoleLabel(role: string | null | undefined, t: TFunction): string {
+  if (!role) return t('workspace.users.roles.member');
+  const key = ROLE_LABEL_KEYS[role.toLowerCase()];
+  return key ? t(key) : role;
+}
 
 // ── Role option definitions (shared across components) ───────────
 

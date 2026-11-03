@@ -1,0 +1,68 @@
+# Throwaway stores for the knowledge-hub permission traversal parity harness.
+#
+#   docker compose -p kh-perm -f backend/python/tests/integration/graph_permissions/docker-compose.yml up -d
+#   docker compose -p kh-perm -f backend/python/tests/integration/graph_permissions/docker-compose.yml down -v
+#
+# Deliberately NOT on the default ports. A development Neo4j commonly runs on
+# 7474/7687 and the harness wipes whatever it connects to, so it publishes
+# 7475/7688 and 8530 instead and can never reach a dev instance by accident.
+# No volumes: every `up` starts empty, every `down` leaves nothing behind.
+#
+# Versions are pinned to match production (deployment/docker-compose/*): the
+# whole point of the harness is parity on the engines we actually ship.
+
+services:
+  neo4j:
+    image: neo4j:5.26.0
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    # Neo4j sizes its heap and page cache from the RAM it detects, which on a
+    # developer laptop means it reserves far more than a fixture of ~60 nodes
+    # will ever touch — measured at 615 MiB against a machine with under 700 MiB
+    # free, which is enough on its own to get a pytest run killed. These caps
+    # are about leaving room for the test process beside the database, not about
+    # performance; raise them if the fixture ever grows real data.
+    # Raised from 1g/512m/64m: at those values this container ran at 99% of its
+    # cgroup limit and started dropping sockets mid-run -- tests failed with
+    # `WinError 64: the specified network name is no longer available` and
+    # `RuntimeError: Neo4j driver not connected`, which read like assertion
+    # failures in the summary but are transport errors. The fixture is no longer
+    # the "~60 nodes" these caps were sized for: it now carries a 25-deep chain,
+    # an org-B subgraph and the deleted-record cases.
+    mem_limit: 2g
+    environment:
+      - NEO4J_AUTH=neo4j/khpermpass
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=768m
+      - NEO4J_server_memory_pagecache_size=128m
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  arango:
+    image: arangodb:3.12.4
+    ports:
+      - "8530:8529"
+    # Raised from 512m/384M: at those values this container was OOM-killed
+    # (`OOMKilled=true`, exit 137) three times in a row while loading the
+    # fixture, and a death mid-load is worse than a slow run -- `loaded_graph`
+    # writes to both stores, so Arango dying leaves Neo4j half-loaded and the
+    # whole suite reports failures that say nothing about the code. The fixture
+    # is no longer ~60 nodes: it now carries a 25-deep chain, an org-B subgraph
+    # and the deleted-record cases.
+    mem_limit: 1g
+    environment:
+      - ARANGO_ROOT_PASSWORD=khpermpass
+      # Same reasoning as Neo4j above, though Arango is the lighter of the two.
+      - ARANGODB_OVERRIDE_DETECTED_TOTAL_MEMORY=768M
+    healthcheck:
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password khpermpass --javascript.execute-string 'db._version()' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

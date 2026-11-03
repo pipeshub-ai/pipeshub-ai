@@ -8,7 +8,7 @@ Targets from coverage report (90.2% -> 97%+):
 - Lines 130-131: Invalid extension from VALID_IMAGE_EXTENSIONS
 - Line 156: 403 with X-Amz-Expires signed URL
 - Lines 167-170: Server error (>= 500)
-- Lines 177-178: aiohttp.ClientError (non-response errors)
+- PublicFetchError / UnsafeUrlError from the SSRF-safe fetcher
 - Line 237: empty width_value after regex sub
 - Line 247: viewBox used for height only
 - Line 269: viewBox ValueError/IndexError catch
@@ -23,12 +23,12 @@ import base64
 from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import aiohttp
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.utils.public_http import PublicFetchError, PublicFetchResponse, UnsafeUrlError
 
 
 @pytest.fixture
@@ -68,46 +68,47 @@ class TestIsValidImageUrlEdge:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_single_url -- extension not in VALID_IMAGE_EXTENSIONS (lines 130-131)
+# _fetch_single_url -- extension not in VALID_IMAGE_EXTENSIONS
 # ---------------------------------------------------------------------------
+def _fetcher(status=200, content_type="image/png", content=b"png-data"):
+    fetcher = MagicMock()
+    fetcher.get = AsyncMock(
+        return_value=PublicFetchResponse(
+            url="https://example.com/x",
+            status_code=status,
+            headers={"content-type": content_type},
+            content=content,
+        )
+    )
+    return fetcher
+
+
 class TestFetchSingleUrlExtensionFilter:
     @pytest.mark.asyncio
     async def test_extension_not_in_valid_list(self, parser):
         """Extension returned by mimetype mapping not in VALID_IMAGE_EXTENSIONS."""
-        mock_response = AsyncMock()
-        mock_response.headers = {"content-type": "image/tiff"}
-        mock_response.raise_for_status = MagicMock()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="tiff",
         ):
-            result = await parser._fetch_single_url(session, "https://example.com/image.tiff")
+            result = await parser._fetch_single_url(
+                _fetcher(content_type="image/tiff"), "https://example.com/image.tiff",
+                allow_remote_fetch=True
+            )
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_extension_gif_not_valid(self, parser):
         """gif extension is not in VALID_IMAGE_EXTENSIONS."""
-        mock_response = AsyncMock()
-        mock_response.headers = {"content-type": "image/gif"}
-        mock_response.raise_for_status = MagicMock()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="gif",
         ):
-            result = await parser._fetch_single_url(session, "https://example.com/anim.gif")
+            result = await parser._fetch_single_url(
+                _fetcher(content_type="image/gif"), "https://example.com/anim.gif",
+                allow_remote_fetch=True
+            )
 
         assert result is None
 
@@ -118,165 +119,100 @@ class TestFetchSingleUrlExtensionFilter:
 class TestFetchSingleUrlHttpErrors:
     @pytest.mark.asyncio
     async def test_403_with_signed_url_marker(self, parser):
-        """403 with X-Amz-Expires in error triggers signed URL warning (line 156)."""
-        error = aiohttp.ClientResponseError(
-            request_info=MagicMock(),
-            history=(),
-            status=403,
-            message="Forbidden X-Amz-Expires",
-        )
-
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = MagicMock(side_effect=error)
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
+        """403 on a presigned URL logs the expired-signature hint."""
         result = await parser._fetch_single_url(
-            session, "https://s3.amazonaws.com/bucket/key?X-Amz-Expires=3600",
+            _fetcher(status=403),
+            "https://s3.amazonaws.com/bucket/key?X-Amz-Expires=3600",
             logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
-        # Verify the signed-URL warning path was taken
-        parser.logger.warning.assert_called()
         call_msg = parser.logger.warning.call_args[0][0]
         assert "signed URL" in call_msg or "expired" in call_msg
 
     @pytest.mark.asyncio
-    async def test_403_without_signed_url(self, parser):
-        """403 without X-Amz-Expires triggers generic permission warning."""
-        error = aiohttp.ClientResponseError(
-            request_info=MagicMock(),
-            history=(),
-            status=403,
-            message="Forbidden",
-        )
-
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = MagicMock(side_effect=error)
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
-        result = await parser._fetch_single_url(
-            session, "https://example.com/protected.png", logger=parser.logger
-        )
+    @pytest.mark.parametrize("status", [403, 404, 429, 500])
+    async def test_http_error_logs_keep_the_query_string_out(self, parser, status):
+        url = "https://bucket.example.com/a.png?X-Amz-Expires=60&X-Amz-Signature=secret-sig"
+        result = await parser._fetch_single_url(_fetcher(status=status), url, logger=parser.logger, allow_remote_fetch=True)
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
-        assert "insufficient permissions" in call_msg
+        assert "https://bucket.example.com/a.png" in call_msg
+        assert "secret-sig" not in call_msg
+
+    @pytest.mark.asyncio
+    async def test_empty_content_log_keeps_the_query_string_out(self, parser):
+        url = "https://cdn.example.com/a.png?token=secret-token"
+        with patch(
+            "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
+            return_value="png",
+        ):
+            result = await parser._fetch_single_url(_fetcher(content=b""), url, logger=parser.logger, allow_remote_fetch=True)
+        assert result is None
+        assert "secret-token" not in parser.logger.info.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_403_without_signed_url(self, parser):
+        result = await parser._fetch_single_url(
+            _fetcher(status=403), "https://example.com/protected.png", logger=parser.logger,
+            allow_remote_fetch=True
+        )
+        assert result is None
+        assert "insufficient permissions" in parser.logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_500_server_error(self, parser):
-        """500+ server error triggers server error warning (lines 167-170)."""
-        error = aiohttp.ClientResponseError(
-            request_info=MagicMock(),
-            history=(),
-            status=500,
-            message="Internal Server Error",
-        )
-
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = MagicMock(side_effect=error)
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
         result = await parser._fetch_single_url(
-            session, "https://example.com/server-error.png", logger=parser.logger
+            _fetcher(status=500), "https://example.com/server-error.png", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
-        call_msg = parser.logger.warning.call_args[0][0]
-        assert "Server error" in call_msg
+        assert "Server error" in parser.logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_502_server_error(self, parser):
-        """502 error also triggers server error path."""
-        error = aiohttp.ClientResponseError(
-            request_info=MagicMock(),
-            history=(),
-            status=502,
-            message="Bad Gateway",
-        )
-
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = MagicMock(side_effect=error)
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
-        result = await parser._fetch_single_url(
-            session, "https://example.com/gateway.png"
-        )
+        result = await parser._fetch_single_url(_fetcher(status=502), "https://example.com/gateway.png", allow_remote_fetch=True)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_other_http_error(self, parser):
-        """Non-403/404/5xx HTTP error triggers generic warning (lines 169-173)."""
-        error = aiohttp.ClientResponseError(
-            request_info=MagicMock(),
-            history=(),
-            status=429,
-            message="Too Many Requests",
+        result = await parser._fetch_single_url(
+            _fetcher(status=429), "https://example.com/rate-limited.png", logger=parser.logger,
+            allow_remote_fetch=True
         )
+        assert result is None
+        assert "HTTP error (429)" in parser.logger.warning.call_args[0][0]
 
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = MagicMock(side_effect=error)
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
+    @pytest.mark.asyncio
+    async def test_unfollowed_3xx_is_not_an_image(self, parser):
+        result = await parser._fetch_single_url(_fetcher(status=304), "https://example.com/cached.png", allow_remote_fetch=True)
+        assert result is None
 
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+    @pytest.mark.asyncio
+    async def test_fetch_error_logs_network_warning(self, parser):
+        fetcher = MagicMock()
+        fetcher.get = AsyncMock(side_effect=PublicFetchError("connection refused"))
 
         result = await parser._fetch_single_url(
-            session, "https://example.com/rate-limited.png", logger=parser.logger
+            fetcher, "https://example.com/unreachable.png", logger=parser.logger,
+            allow_remote_fetch=True
+        )
+        assert result is None
+        assert "Network error" in parser.logger.warning.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_unsafe_url_is_skipped(self, parser):
+        fetcher = MagicMock()
+        fetcher.get = AsyncMock(side_effect=UnsafeUrlError("Blocked unsafe URL address: 127.0.0.1"))
+
+        result = await parser._fetch_single_url(
+            fetcher, "http://127.0.0.1/x.png?token=secret", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
-        assert "HTTP error (429)" in call_msg
-
-    @pytest.mark.asyncio
-    async def test_client_error_non_response(self, parser):
-        """aiohttp.ClientError (not response error) triggers network warning (lines 177-178)."""
-        mock_response = AsyncMock()
-        mock_response.__aenter__ = AsyncMock(
-            side_effect=aiohttp.ClientConnectionError("connection refused")
-        )
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
-        result = await parser._fetch_single_url(
-            session, "https://example.com/unreachable.png", logger=parser.logger
-        )
-        assert result is None
-        call_msg = parser.logger.warning.call_args[0][0]
-        assert "Network error" in call_msg
-
-    @pytest.mark.asyncio
-    async def test_timeout_error(self, parser):
-        """Timeout error is a ClientError subclass."""
-        mock_response = AsyncMock()
-        mock_response.__aenter__ = AsyncMock(
-            side_effect=aiohttp.ServerTimeoutError("timeout")
-        )
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
-        result = await parser._fetch_single_url(
-            session, "https://example.com/slow.png"
-        )
-        assert result is None
+        assert "non-public address" in call_msg
+        assert "secret" not in call_msg
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +427,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 600
@@ -505,7 +441,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_width=300)
+            ImageParser._svg_to_png_in_process(svg_b64, output_width=300)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 300
             assert call_kwargs["output_height"] == 200
@@ -519,7 +455,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_height=400)
+            ImageParser._svg_to_png_in_process(svg_b64, output_height=400)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 100
             assert call_kwargs["output_height"] == 400
@@ -533,7 +469,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 600
@@ -547,7 +483,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 500
             assert call_kwargs["output_height"] == 600
@@ -561,7 +497,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 400
@@ -575,7 +511,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(
+            ImageParser._svg_to_png_in_process(
                 svg_b64, output_width=1000, output_height=2000
             )
             call_kwargs = mock_svg2png.call_args[1]
@@ -595,7 +531,7 @@ class TestSvgBase64ToPngBase64Errors:
         b64_str = base64.b64encode(raw_bytes).decode("ascii")
 
         with pytest.raises(DocumentProcessingError, match="Cannot decode SVG content"):
-            ImageParser.svg_base64_to_png_base64(b64_str)
+            ImageParser._svg_to_png_in_process(b64_str)
 
     def test_svg2png_conversion_error(self):
         """When svg2png itself raises, the exception is wrapped."""
@@ -607,7 +543,7 @@ class TestSvgBase64ToPngBase64Errors:
             side_effect=RuntimeError("cairo error"),
         ):
             with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
-                ImageParser.svg_base64_to_png_base64(svg_b64)
+                ImageParser._svg_to_png_in_process(svg_b64)
 
     def test_xml_only_content_recognized(self):
         """Content starting with <?xml is recognized as SVG."""
@@ -618,7 +554,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ):
-            result = ImageParser.svg_base64_to_png_base64(svg_b64)
+            result = ImageParser._svg_to_png_in_process(svg_b64)
         assert result == base64.b64encode(b"fake-png").decode()
 
     def test_with_scale_and_background(self):
@@ -630,7 +566,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"png-data",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(
+            ImageParser._svg_to_png_in_process(
                 svg_b64, scale=2.0, background_color="#FFFFFF"
             )
             call_kwargs = mock_svg2png.call_args[1]
@@ -645,64 +581,45 @@ class TestFetchSingleUrlAdditional:
     @pytest.mark.asyncio
     async def test_svg_data_url_conversion_failure(self, parser):
         """SVG data URL where conversion fails returns None via generic exception."""
-        session = MagicMock()
+        fetcher = MagicMock()
         svg_data_url = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
 
         with patch.object(
             ImageParser,
-            "svg_base64_to_png_base64",
-            side_effect=Exception("conversion failed"),
+            "svg_base64_to_png_base64_async",
+            AsyncMock(side_effect=Exception("conversion failed")),
         ):
-            result = await parser._fetch_single_url(session, svg_data_url)
+            result = await parser._fetch_single_url(fetcher, svg_data_url, allow_remote_fetch=True)
         # Falls through to generic exception handler
         assert result is None
 
     @pytest.mark.asyncio
     async def test_http_url_svg_from_content_type(self, parser):
         """SVG detected via content-type with svg+xml extension."""
-        mock_response = AsyncMock()
-        mock_response.headers = {"content-type": "image/svg+xml; charset=utf-8"}
-        mock_response.read = AsyncMock(
-            return_value=b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+        fetcher = _fetcher(
+            content_type="image/svg+xml; charset=utf-8",
+            content=b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
         )
-        mock_response.raise_for_status = MagicMock()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
 
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="svg",
-        ), patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64):
-            result = await parser._fetch_single_url(
-                session, "https://example.com/icon"
-            )
+        ), patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)):
+            result = await parser._fetch_single_url(fetcher, "https://example.com/icon", allow_remote_fetch=True)
 
         assert result == f"data:image/png;base64,{fake_png_b64}"
 
     @pytest.mark.asyncio
     async def test_response_content_type_with_charset(self, parser):
         """Content-type with charset parameter is parsed correctly."""
-        mock_response = AsyncMock()
-        mock_response.headers = {"content-type": "image/png; charset=binary"}
-        mock_response.read = AsyncMock(return_value=b"png-data")
-        mock_response.raise_for_status = MagicMock()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-
-        session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
-
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="png",
         ):
             result = await parser._fetch_single_url(
-                session, "https://example.com/img.png"
+                _fetcher(content_type="image/png; charset=binary"), "https://example.com/img.png",
+                allow_remote_fetch=True
             )
 
         assert result is not None
@@ -720,7 +637,7 @@ class TestUrlsToBase64Edge:
         with patch.object(
             ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake
         ):
-            result = await parser.urls_to_base64(["https://example.com/img.png"])
+            result = await parser.urls_to_base64(["https://example.com/img.png"], allow_remote_fetch=True)
         assert result == [fake]
 
     @pytest.mark.asyncio
@@ -730,7 +647,8 @@ class TestUrlsToBase64Edge:
             ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=None
         ):
             result = await parser.urls_to_base64(
-                ["https://a.com/1.png", "https://b.com/2.png"]
+                ["https://a.com/1.png", "https://b.com/2.png"],
+                allow_remote_fetch=True
             )
         assert result == [None, None]
 
