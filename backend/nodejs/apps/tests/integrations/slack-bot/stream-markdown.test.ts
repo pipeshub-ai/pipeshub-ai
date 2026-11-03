@@ -193,13 +193,21 @@ describe('slack-bot streamed markdown', () => {
       ]);
     });
 
-    it('shows the first three documents in small text and puts the rest in a section Slack can fold', () => {
+    it('puts a list of more than three documents in one section Slack can fold, one text size throughout', () => {
       const rows = new Map([1, 2, 3, 4, 5].map((n) => [n, { name: `Doc ${String(n)}`, url: `https://x.test/${String(n)}` }]));
-      const blocks = numberedSourcesBlocks(rows) as AnyArgs[];
-      expect(blocks.map((b) => b.type)).to.deep.equal(['context', 'section']);
-      expect(blocks[0].elements[0].text.split('\n')).to.have.length(4);
-      expect(blocks[1]).to.deep.include({ expand: false });
-      expect(blocks[1].text.text).to.equal('• <https://x.test/4|Doc 4>  [4]\n• <https://x.test/5|Doc 5>  [5]');
+      expect(numberedSourcesBlocks(rows)).to.deep.equal([{
+        type: 'section',
+        expand: false,
+        text: {
+          type: 'mrkdwn',
+          text: ['*Sources*', ...[1, 2, 3, 4, 5].map((n) => `• <https://x.test/${String(n)}|Doc ${String(n)}>  [${String(n)}]`)].join('\n'),
+        },
+      }]);
+    });
+
+    it('keeps three documents in the small context block', () => {
+      const rows = new Map([1, 2, 3].map((n) => [n, { name: `Doc ${String(n)}`, url: `https://x.test/${String(n)}` }]));
+      expect((numberedSourcesBlocks(rows) as AnyArgs[]).map((b) => b.type)).to.deep.equal(['context']);
     });
 
     it('keeps a name from breaking its link, and posts nothing when nothing was cited', () => {

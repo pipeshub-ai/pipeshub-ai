@@ -501,7 +501,7 @@ export function groupSources(
   return [...documents.values()];
 }
 
-/** Documents shown at once; the rest go in a section Slack may fold behind "Show more". */
+/** Up to this many documents show as small text; a longer list goes in a section Slack can fold. */
 const SOURCES_SHOWN = 3;
 /** Room in one mrkdwn text object (Slack allows 3000 characters). */
 const SOURCES_TEXT_LIMIT = 2900;
@@ -533,32 +533,27 @@ function packLines(lines: string[], limit: number): string[] {
 }
 
 /**
- * The Sources list, kept secondary to the answer: a small "Sources" label
- * and the first documents in a context block (Slack's small grey text, links
- * clickable), the rest in a section with `expand: false` that Slack folds
- * behind "Show more" when it is long. Nothing when nothing was cited.
+ * The Sources list, kept secondary to the answer. Up to three documents: a
+ * context block (Slack's small grey text, links clickable). More: the whole
+ * list in one section with `expand: false`, one text size throughout, which
+ * Slack folds behind "Show more" when it is long. Nothing when nothing was
+ * cited.
  */
 export function sourcesBlocks(
   documents: SlackSourceDocument[],
 ): Record<string, unknown>[] {
   if (documents.length === 0) return [];
-  const head = [
-    '*Sources*',
-    ...documents.slice(0, SOURCES_SHOWN).map(sourceLine),
-  ].join('\n');
-  const rest = documents.slice(SOURCES_SHOWN).map(sourceLine);
-  const section = (text: string): Record<string, unknown> => ({
+  const lines = ['*Sources*', ...documents.map(sourceLine)];
+  const text = lines.join('\n');
+  if (documents.length <= SOURCES_SHOWN && text.length <= SOURCES_TEXT_LIMIT) {
+    return [{ type: 'context', elements: [{ type: 'mrkdwn', text }] }];
+  }
+  // A text over Slack's limit goes on in the next section.
+  return packLines(lines, SOURCES_TEXT_LIMIT).map((part) => ({
     type: 'section',
     expand: false,
-    text: { type: 'mrkdwn', text },
-  });
-  return [
-    // A context element holds one text object; one too long for it goes in a section.
-    head.length <= SOURCES_TEXT_LIMIT
-      ? { type: 'context', elements: [{ type: 'mrkdwn', text: head }] }
-      : section(head.slice(0, SOURCES_TEXT_LIMIT)),
-    ...packLines(rest, SOURCES_TEXT_LIMIT).map(section),
-  ];
+    text: { type: 'mrkdwn', text: part },
+  }));
 }
 
 /** The numbered Sources list for the given rows, one line per document. */
