@@ -224,6 +224,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     Neo4jClient,
     is_write_conflict,
 )
+from app.services.graph_db.neo4j.permission_scopes import Neo4jHierarchyView
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
     PushClaim,
@@ -8620,6 +8621,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
 
+    def permission_hierarchy_view(self) -> Neo4jHierarchyView:
+        return Neo4jHierarchyView(lambda: self.client)
+
     async def get_accessible_containers(
         self,
         user_id: str,
@@ -16129,11 +16133,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return updated_keys
         except Exception as e:
+            # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
+            # drops the write for good (the final-attempt FAILED marking left the record in its old status).
             self.logger.error(
                 "❌ Failed compare-and-set (%s -> %s): %s",
                 expected, new_status, str(e),
             )
-            return []
+            raise
 
     # ==================== Pipeline stage states ====================
 
