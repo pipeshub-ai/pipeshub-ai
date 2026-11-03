@@ -17,15 +17,17 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
 from app.services.graph_db.postgres.codegraph import CodeGraphMixin
 from app.services.graph_db.postgres.core import CoreMixin
+from app.services.graph_db.postgres.hierarchy import HierarchyMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
+from app.services.graph_db.postgres.records import RecordsMixin
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CodeGraphMixin, IdentityMixin, PermissionsMixin, CoreMixin)
+_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, IdentityMixin, PermissionsMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
 
