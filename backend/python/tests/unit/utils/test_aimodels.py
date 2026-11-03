@@ -290,6 +290,31 @@ class TestReasoningEffortKwargs:
         )
         assert result == {"reasoning_effort": "xhigh"}
 
+    @pytest.mark.parametrize("base_url", [
+        "https://us.api.openai.com/v1",
+        "https://eu.api.openai.com/v1",
+        "https://US.API.OPENAI.COM/v1/",
+    ])
+    @pytest.mark.parametrize("provider", ["openAI", "openAICompatible"])
+    def test_openai_regional_host_uses_responses_api(self, provider, base_url) -> None:
+        """Data-residency projects are served from regional subdomains of
+        api.openai.com, which reject reasoning_effort with tools on Chat
+        Completions exactly like the main host."""
+        for model in ("gpt-5.6-luna", "o4-mini"):
+            result = _reasoning_effort_kwargs(
+                "high", {"isReasoning": True}, provider=provider,
+                base_url=base_url, model_name=model,
+            )
+            assert result == {"reasoning": {"effort": "high"}, "use_responses_api": True}, model
+
+    def test_openai_regional_host_keeps_responses_api_with_reasoning_off(self) -> None:
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="openAI",
+            base_url="https://us.api.openai.com/v1", model_name="gpt-6-luna",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"use_responses_api": True}
+
     def test_host_match_is_exact_not_substring(self):
         """A lookalike host must not be mistaken for OpenAI's official API."""
         config = {"isReasoning": True}
@@ -297,6 +322,8 @@ class TestReasoningEffortKwargs:
             "https://api.openai.com.evil.example/v1",
             "https://not-api.openai.com/v1",
             "https://api.openai.company/v1",
+            "https://us.api.openai.com.evil.example/v1",
+            "https://evilapi.openai.com/v1",
         ):
             result = _reasoning_effort_kwargs(
                 "high", config, provider="openAICompatible", base_url=spoof,
@@ -868,8 +895,8 @@ class TestGetEmbeddingModel:
         self, mock_cls
     ):
         """The model name does not rescue a router host. tiktoken-encoded
-        `input` is accepted only by api.openai.com (see
-        `_TOKEN_ARRAY_EMBEDDING_HOSTS`); Requesty rejects it with a 400 no
+        `input` is accepted only by OpenAI's own API (see
+        `is_openai_api_url`); Requesty rejects it with a 400 no
         matter which upstream model it forwards to."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("openai/text-embedding-3-large")
@@ -887,6 +914,15 @@ class TestGetEmbeddingModel:
         get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["check_embedding_ctx_length"] is True
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_regional_endpoint_keeps_ctx_length_check(self, mock_cls) -> None:
+        """A regional OpenAI host is OpenAI's own API and accepts token arrays."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("text-embedding-3-large")
+        config["configuration"]["endpoint"] = "https://eu.api.openai.com/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        assert mock_cls.call_args.kwargs["check_embedding_ctx_length"] is True
 
     @patch("app.utils.custom_embeddings.TogetherEmbeddings")
     def test_together(self, mock_cls):

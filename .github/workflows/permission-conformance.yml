@@ -4,6 +4,9 @@ name: permission-conformance
 # decides read access must give the same answer as that oracle on the shared scenario corpus.
 #
 #   oracle     scenarios, round-trip, deltas and coverage matrix; no services, every pull request.
+#   graph      the oracle against the real graph check on Neo4j and ArangoDB (corpus + 50 generated worlds), plus
+#              the graph-permissions integration suite, which ran in no workflow before.
+#   nightly    600 generated worlds per generator for each standing seed (7, 11, 2026).
 
 on:
   pull_request:
@@ -12,8 +15,10 @@ on:
     paths:
       - 'backend/python/app/**'
       - 'backend/python/tests/permissions/**'
+      - 'backend/python/tests/integration/graph_permissions/**'
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
+      - 'scripts/assert_no_skips.py'
       - '.github/workflows/permission-conformance.yml'
   push:
     branches:
@@ -21,14 +26,25 @@ on:
     paths:
       - 'backend/python/tests/permissions/**'
       - '.github/workflows/permission-conformance.yml'
+  schedule:
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: permission-conformance-${{ github.event.pull_request.number || github.ref }}
+  # The event is part of the group, so a push to main cannot cancel the nightly run in progress.
+  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The compose file of the harness (tests/integration/graph_permissions/docker-compose.yml) publishes the same
+  # ports; the suite refuses the conventional 7687, 7474 and 8529 because it wipes what it connects to.
+  KH_PERM_NEO4J_URI: bolt://localhost:7688
+  KH_PERM_NEO4J_PASSWORD: khpermpass
+  KH_PERM_ARANGO_URL: http://localhost:8530
+  KH_PERM_ARANGO_PASSWORD: khpermpass
 
 jobs:
   oracle:
@@ -61,3 +77,164 @@ jobs:
         run: |
           cd backend/python
           pytest tests/permissions -m "not integration" -v -rx
+
+  graph:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      neo4j:
+        image: neo4j:5.26.0
+        ports:
+          - 7688:7687
+        env:
+          NEO4J_AUTH: neo4j/khpermpass
+          NEO4J_PLUGINS: '["apoc"]'
+          NEO4J_dbms_security_procedures_unrestricted: apoc.*
+          NEO4J_server_memory_heap_initial__size: 512m
+          NEO4J_server_memory_heap_max__size: 768m
+          NEO4J_server_memory_pagecache_size: 128m
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
+      arango:
+        image: arangodb:3.12.4
+        ports:
+          - 8530:8529
+        env:
+          ARANGO_ROOT_PASSWORD: khpermpass
+          ARANGODB_OVERRIDE_DETECTED_TOTAL_MEMORY: 768M
+        options: >-
+          --health-cmd "arangosh --server.endpoint tcp://localhost:8529 --server.password khpermpass --javascript.execute-string 'db._version()' || exit 1"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      # Both suites wipe the stores on setup, so they run one after the other. The graph-permissions suite ran in no
+      # workflow before; it includes the tests that a connector list never shows another organization's connectors.
+      - name: Run the graph-permissions integration suite
+        env:
+          KH_PERM_ARANGO_DB: kh_perm_suite
+        run: |
+          cd backend/python
+          pytest tests/integration/graph_permissions -m integration -v --timeout=300 --junitxml="$RUNNER_TEMP/graph-suite-junit.xml"
+
+      - name: Run the conformance suite against both stores
+        env:
+          KH_PERM_ARANGO_DB: kh_perm_conformance
+          PERM_GEN_WORLDS: '50'
+        run: |
+          cd backend/python
+          pytest tests/permissions -m integration -v --timeout=3000 --junitxml="$RUNNER_TEMP/graph-conformance-junit.xml"
+
+      # A skipped test here means a store was missing, so a skip fails the job; --min-tests pins the size of each run
+      # (a PR that adds tests raises it). The suite's two skips are tests of one store only, allowed by their exact names.
+      - name: Check the graph runs for skips
+        run: |
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 595 \
+            --allow "test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
+            --allow "test_the_tree_labels_follow_the_edges[arango]"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 6
+
+      - name: Upload the regressions the generator filed
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: permission-regressions-graph
+          path: backend/python/tests/permissions/scenarios/regressions/
+          if-no-files-found: ignore
+
+  nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [7, 11, 2026]
+    services:
+      neo4j:
+        image: neo4j:5.26.0
+        ports:
+          - 7688:7687
+        env:
+          NEO4J_AUTH: neo4j/khpermpass
+          NEO4J_PLUGINS: '["apoc"]'
+          NEO4J_dbms_security_procedures_unrestricted: apoc.*
+          NEO4J_server_memory_heap_initial__size: 512m
+          NEO4J_server_memory_heap_max__size: 768m
+          NEO4J_server_memory_pagecache_size: 128m
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
+      arango:
+        image: arangodb:3.12.4
+        ports:
+          - 8530:8529
+        env:
+          ARANGO_ROOT_PASSWORD: khpermpass
+          ARANGODB_OVERRIDE_DETECTED_TOTAL_MEMORY: 768M
+        options: >-
+          --health-cmd "arangosh --server.endpoint tcp://localhost:8529 --server.password khpermpass --javascript.execute-string 'db._version()' || exit 1"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run 600 generated worlds per generator against both stores
+        env:
+          KH_PERM_ARANGO_DB: kh_perm_nightly
+          PERM_GEN_WORLDS: '600'
+          PERM_GEN_SEED: ${{ matrix.seed }}
+        run: |
+          cd backend/python
+          pytest tests/permissions/test_gen_graph.py -m integration -v --timeout=14000 --junitxml="$RUNNER_TEMP/nightly-junit.xml"
+          cd ../..
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/nightly-junit.xml" --min-tests 2
+
+      - name: Upload the regressions the generator filed
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: permission-regressions-${{ matrix.seed }}
+          path: backend/python/tests/permissions/scenarios/regressions/
+          if-no-files-found: ignore

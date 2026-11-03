@@ -6,9 +6,13 @@ from typing import Any
 
 import httpx
 
-from app.services.ai_models.discovery.types import DiscoveryErrorCode, DiscoveryHttpError
+from app.services.ai_models.discovery.types import (
+    DiscoveryErrorCode,
+    DiscoveryHttpError,
+)
 from app.utils.aimodels import require_allowed_endpoint
 from app.utils.model_egress import guarded_async_client
+from app.utils.openai_hosts import openai_wrong_host, openai_wrong_host_message
 
 TIMEOUT_S = 15.0
 MAX_PAGES = 20
@@ -16,15 +20,33 @@ MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 MAX_MODELS = 2000
 
 
-def _status_error(status: int) -> DiscoveryHttpError:
+def _status_error(status: int, response: httpx.Response | None = None) -> DiscoveryHttpError:
     if status in (401, 403):
-        return DiscoveryHttpError(DiscoveryErrorCode.AUTH_ERROR, "The provider rejected these credentials.")
+        return DiscoveryHttpError(DiscoveryErrorCode.AUTH_ERROR, _auth_error_message(response))
     if status == 429:
         return DiscoveryHttpError(DiscoveryErrorCode.RATE_LIMITED, "The provider rate-limited model listing.")
     return DiscoveryHttpError(
         DiscoveryErrorCode.UNREACHABLE,
         f"The provider returned HTTP {status} while listing models.",
     )
+
+
+def _auth_error_message(response: httpx.Response | None) -> str:
+    try:
+        payload = response.json() if response is not None else None
+    except ValueError:
+        payload = None
+    host = openai_wrong_host(payload)
+    if host is None:
+        return "The provider rejected these credentials."
+    return openai_wrong_host_message(host, _called_url(response))
+
+
+def _called_url(response: httpx.Response | None) -> str | None:
+    try:
+        return str(response.request.url) if response is not None else None
+    except RuntimeError:  # a Response built without its request
+        return None
 
 
 class DiscoveryHttp:
@@ -57,7 +79,7 @@ class DiscoveryHttp:
                 DiscoveryErrorCode.INVALID_RESPONSE, "The model list response is too large."
             )
         if response.status_code >= 400:
-            raise _status_error(response.status_code)
+            raise _status_error(response.status_code, response)
         try:
             return response.json()
         except ValueError as exc:
@@ -106,7 +128,7 @@ class DiscoveryHttp:
                 DiscoveryErrorCode.INVALID_RESPONSE, "The model list response is too large."
             )
         if response.status_code >= 400:
-            raise _status_error(response.status_code)
+            raise _status_error(response.status_code, response)
         try:
             return response.json()
         except ValueError as exc:
