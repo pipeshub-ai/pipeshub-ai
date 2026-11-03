@@ -275,7 +275,7 @@ class CoreMixin(PgBase):
         colls = _LINK_COLLS if collection == "recordLinks" else [collection]
         r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_edge */ SELECT doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
             AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND e.to_id = $6
-            AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND e.ekey <> '')) ORDER BY e.ekey LIMIT 1""",
+            AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) ORDER BY e.ekey LIMIT 1""",
                                                   org, colls, from_collection, from_id, to_collection, to_id, kind), transaction)
         if not r:
             return None
@@ -338,7 +338,7 @@ class CoreMixin(PgBase):
         colls = _LINK_COLLS if collection == "recordLinks" else [collection]
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.batch_delete_edges */ WITH d AS (DELETE FROM graph.edges e USING
             jsonb_to_recordset($3::jsonb) x(fc text, fi text, tc text, ti text) WHERE e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = x.fc
-            AND e.from_id = x.fi AND e.to_coll = x.tc AND e.to_id = x.ti AND ($4::int = 0 OR ($4::int = 1 AND e.ekey = '') OR ($4::int = 2 AND e.ekey <> ''))
+            AND e.from_id = x.fi AND e.to_coll = x.tc AND e.to_id = x.ti AND ($4::int = 0 OR ($4::int = 1 AND e.ekey = '') OR ($4::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
             RETURNING 1) SELECT count(*) FROM d""", current_org_id(), colls, _j(pairs), kind), transaction, write=True)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> bool:

@@ -5,7 +5,6 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
-import os
 import uuid
 from typing import TYPE_CHECKING
 
@@ -20,9 +19,14 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _no_jobs_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before ``pg_db`` starts: the reads of a system scope need no jobs login, and these tests prove it."""
+    monkeypatch.delenv("PG_JOBS_URL", raising=False)
+
+
 @pytest.fixture
 async def two_orgs(pg_provider, org_ctx) -> AsyncIterator[tuple[str, str, str]]:
-    os.environ.pop("PG_JOBS_URL", None)            # proves the reads need no jobs login
     tag = uuid.uuid4().hex[:8]
     a, b = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]
     for org, name in ((a, "a"), (b, "b")):
