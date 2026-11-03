@@ -225,6 +225,10 @@ class PgBase:
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return self.is_write_conflict(error)
 
+    async def _one(self, sql: str, *args: Any, transaction: str | None = None) -> dict | None:  # noqa: ANN401
+        r = await self._q(lambda tx: tx.fetchrow(sql, *args), transaction)
+        return _doc(r["doc"]) if r else None
+
     @staticmethod
     def _shape(doc: dict, collection: str, fields: list[str] | None) -> dict:
         """``return_fields=["_key"]`` names the stored ``id`` (callers resolve records and paths that way)."""

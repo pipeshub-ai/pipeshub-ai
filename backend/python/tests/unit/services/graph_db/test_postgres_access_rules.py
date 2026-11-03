@@ -61,3 +61,11 @@ def test_an_app_or_a_user_is_never_a_seed() -> None:
 
 def test_the_grantees_of_a_permission_are_the_principal_collections_only() -> None:
     assert set(PRINCIPALS) == {"users", "groups", "roles", "teams", "organizations"}
+
+
+def test_the_service_account_predicate_reads_kind_and_the_reserved_address_and_keeps_people_without_either() -> None:
+    from app.services.graph_db.postgres.identity import _SERVICE_SUFFIX, _not_service
+    sql = _not_service("mu")
+    assert "mu.doc->>'kind'" in sql and "<> 'service'" in sql and sql.count(_SERVICE_SUFFIX) == 1
+    assert f"right(lower(coalesce(mu.doc->>'email', '')), {len(_SERVICE_SUFFIX)})" in sql      # a missing address gives '' and is kept
+    assert _SERVICE_SUFFIX == "@service.pipeshub.internal"
