@@ -43,6 +43,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityHit,
     EntitySearchTimedOut,
     probe_permitted_entities,
+    readable_spellings,
 )
 
 if TYPE_CHECKING:
@@ -343,7 +344,9 @@ async def alias_family(
 ) -> list[dict[str, Any]]:
     """The readable nodes a learned alias ties to ``entity_id``: its own aliases stored
     as nodes ("Pinecrest" for "Pinecrest Hospitality") and the node carrying its key as
-    an alias, each only while no other node carries that alias. ``{id, kind, name}``."""
+    an alias, each only while no other node carries that alias. ``{id, kind, name}``,
+    named as the readable records found for it spell it (a stored name may come from a
+    record the user cannot read); a node none of them spells is left out."""
     org_id = context.org_id
     nodes = await graph.get_named_entities_by_ids(org_id, [entity_id])
     node = nodes[0] if nodes else None
@@ -373,7 +376,10 @@ async def alias_family(
     permitted = (await probe(graph, context, probed)).permitted
     if entity_id not in permitted:
         return []
-    return [{"id": n["id"], "kind": n.get("kind"), "name": n.get("name")} for n in family if n["id"] in permitted]
+    readable = [n for n in family if n["id"] in permitted]
+    record_ids = sorted({str(r["_key"]) for n in readable for r in permitted[n["id"]].records if r.get("_key")})
+    spelled = await readable_spellings(graph, org_id, [n["id"] for n in readable], record_ids)
+    return [{"id": n["id"], "kind": n.get("kind"), "name": spelled[n["id"]]} for n in readable if n["id"] in spelled]
 
 
 async def _no_rows() -> list[dict[str, Any]]:
