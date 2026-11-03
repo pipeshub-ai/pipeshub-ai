@@ -499,7 +499,7 @@ class _LexTx:
     """A fake transaction behind ``lexical._run``: the function's raw rows (``total`` of them, best first), ``ok`` for the ones the extra
     conditions admit; records the arguments of every statement."""
 
-    def __init__(self, total: int, ok) -> None:  # noqa: ANN001
+    def __init__(self, total: int, ok: object) -> None:
         self.total, self.ok, self.calls = total, ok, []
 
     async def fetch(self, sql: str, *args: object) -> list[dict]:
@@ -512,7 +512,7 @@ class _LexDb:
     def __init__(self, tx: _LexTx | None = None, raises: Exception | None = None) -> None:
         self.tx, self.raises, self.opts = tx, raises, []
 
-    async def run(self, fn, **opts):  # noqa: ANN001, ANN201
+    async def run(self, fn: object, **opts: object) -> object:
         self.opts.append(opts)
         if self.raises:
             raise self.raises
