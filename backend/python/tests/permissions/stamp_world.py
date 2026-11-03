@@ -36,7 +36,7 @@ def stamp_graph(world: World, prefix: str = "", vrids: dict[str, str] | None = N
             frozenset(prefix + i for i in n.inherits), n.rule, n.deleted, n.placeholder, n.id in granted,
             n.kind == "group" and n.model == "RECORD_GROUP_LEVEL",
             tuple(sorted(prefix + b for b in n.belongs if b in ids and world.node(b).kind == "group")), prefix + vrid if vrid else None,
-            any(b in ids and world.node(b).kind == "app" for b in n.belongs))
+            any(b in ids and world.node(b).kind == "app" and b == n.connector for b in n.belongs))
     return InMemoryStampGraph(org, apps, nodes)
 
 
