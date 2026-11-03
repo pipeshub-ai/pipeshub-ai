@@ -281,9 +281,3 @@ def _edge_scope(collection: str, *, pair: bool = False) -> tuple[list[str], int]
     if collection == "nodeRelations":
         return (["nodeRelations"], 1) if pair else (_LINK_COLLS, 0)
     return [collection], 0
-
-
-def _kind_sql(n: int, alias: str = "e") -> str:
-    """The row-kind predicate for kind parameter ``$n`` of ``_edge_scope``: 0 any row, 1 a hierarchy row (no key), 2 a link (a keyless ``recordLinks`` row or a keyed one)."""
-    return f"(${n}::int = 0 OR (${n}::int = 1 AND {alias}.ekey = '') OR (${n}::int = 2 AND ({alias}.coll = 'recordLinks' OR {alias}.ekey <> '')))"
-
