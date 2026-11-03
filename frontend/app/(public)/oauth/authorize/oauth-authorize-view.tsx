@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
 import { Box, Button, Checkbox, Flex, Separator, Text } from '@radix-ui/themes';
+import type { CheckedState } from '@radix-ui/react-checkbox';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
@@ -314,14 +315,23 @@ export function OAuthAuthorizeView() {
 
   const listedScopes = asArray(consentData?.scopes).map((s) => s.name);
   const tickedScopes = listedScopes.filter((name) => ticked.has(name));
-  const toggleScope = (name: string, on: boolean) => {
+  const toggleScopes = (items: ScopeInfo[], on: boolean) => {
     setTicked((prev) => {
       const next = new Set(prev);
-      if (on) next.add(name);
-      else next.delete(name);
+      for (const { name } of items) {
+        if (on) next.add(name);
+        else next.delete(name);
+      }
       return next;
     });
   };
+  // Grouped and ordered like the OAuth app form, so the person sees the same layout.
+  const scopeGroups = Object.entries(
+    asArray(consentData?.scopes).reduce<Record<string, ScopeInfo[]>>((acc, s) => {
+      (acc[s.category] ??= []).push(s);
+      return acc;
+    }, {})
+  ).sort(([a], [b]) => a.localeCompare(b));
 
   const handleConsent = async (consent: 'granted' | 'denied') => {
     if (!clientId || !redirectUri) return;
@@ -662,46 +672,72 @@ export function OAuthAuthorizeView() {
               gap: 'var(--space-2)',
             }}
           >
-            {asArray(consentData.scopes).map((scopeItem) => (
-              <Text as="label" key={scopeItem.name} style={{ cursor: 'pointer' }}>
-                <Flex
-                  gap="3"
-                  align="start"
+            {scopeGroups.map(([category, items]) => {
+              const tickedInGroup = items.filter((i) => ticked.has(i.name)).length;
+              const groupChecked: CheckedState =
+                tickedInGroup === items.length
+                  ? true
+                  : tickedInGroup === 0
+                    ? false
+                    : 'indeterminate';
+              return (
+                <Box
+                  key={category}
                   p="3"
-                  width="100%"
                   style={{
                     borderRadius: 'var(--radius-2)',
                     border: '1px solid var(--gray-6)',
                     background: 'var(--gray-2)',
                   }}
                 >
-                  <Checkbox
-                    mt="1"
-                    checked={ticked.has(scopeItem.name)}
-                    onCheckedChange={(value) => toggleScope(scopeItem.name, value === true)}
-                    disabled={submitting}
-                  />
-                  <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
-                    <Text
-                      as="div"
-                      size="2"
-                      weight="medium"
-                      style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
-                    >
-                      {scopeItem.name}
+                  <Flex align="center" justify="between" gap="3">
+                    <Text as="label" size="2" weight="medium" style={{ cursor: 'pointer' }}>
+                      <Flex align="center" gap="2">
+                        <Checkbox
+                          checked={groupChecked}
+                          onCheckedChange={(c) => toggleScopes(items, c === true)}
+                          disabled={submitting}
+                        />
+                        {category}
+                      </Flex>
                     </Text>
-                    <Text
-                      as="div"
-                      size="2"
-                      color="gray"
-                      style={{ width: '100%', lineHeight: 'var(--line-height-2)' }}
-                    >
-                      {scopeItem.description}
+                    <Text size="2" color="gray">
+                      {tickedInGroup}/{items.length}
                     </Text>
                   </Flex>
-                </Flex>
-              </Text>
-            ))}
+                  <Flex direction="column" gap="2" mt="3">
+                    {items.map((scopeItem) => (
+                      <Text as="label" key={scopeItem.name} style={{ cursor: 'pointer' }}>
+                        <Flex
+                          align="start"
+                          gap="2"
+                          p="2"
+                          style={{
+                            borderRadius: 'var(--radius-2)',
+                            border: '1px solid var(--gray-5)',
+                          }}
+                        >
+                          <Checkbox
+                            mt="1"
+                            checked={ticked.has(scopeItem.name)}
+                            onCheckedChange={(c) => toggleScopes([scopeItem], c === true)}
+                            disabled={submitting}
+                          />
+                          <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
+                            <Text as="div" size="2" weight="medium">
+                              {scopeItem.name}
+                            </Text>
+                            <Text as="div" size="2" color="gray">
+                              {scopeItem.description}
+                            </Text>
+                          </Flex>
+                        </Flex>
+                      </Text>
+                    ))}
+                  </Flex>
+                </Box>
+              );
+            })}
           </Box>
 
           {notGrantedScopes.length > 0 ? (
