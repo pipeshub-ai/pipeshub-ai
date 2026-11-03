@@ -21,6 +21,9 @@ export const MAX_TASK_OUTPUT_CHARS = 2500;
 const MAX_REASONING_CHARS = 2500;
 const MAX_TASK_SOURCES = 10;
 const APPROVAL_OUTPUT = 'Waiting for your approval';
+/** The row that says the agent is still working between steps. */
+export const THINKING_TITLE = 'Thinking…';
+export const WRITING_TITLE = 'Writing the answer';
 /** The dashboard's chips for a call that needed approval. */
 const APPROVAL_CHIPS: Record<string, string> = {
   allowed: 'Approved',
@@ -532,9 +535,83 @@ export class SlackTaskPlan {
   private readonly waiting = new Set<string>();
   private openGroup: string | null = null;
   private sealedRows: SlackTaskChunk[] = [];
+  /** The "Thinking…" row shown in a quiet gap: the next step takes its place. */
+  private placeholder: string | null = null;
+  /** The placeholder once the answer began: it ends with the reply. */
+  private writing: string | null = null;
   private reasoning = '';
   private finishedReasoning = '';
   private seq = 0;
+
+  /**
+   * The plan went quiet after a step: a row says the agent is still at it.
+   * The next narration, step or answer takes its place, so it never stays
+   * behind. None while a step runs or waits, or once the answer began.
+   */
+  thinking(): SlackTaskChunk[] {
+    if (
+      this.placeholder !== null ||
+      this.writing !== null ||
+      this.tasks.size === 0
+    ) {
+      return [];
+    }
+    if (
+      [...this.tasks.values()].some((task) => task.status === 'in_progress')
+    ) {
+      return [];
+    }
+    this.placeholder = `next-${String(++this.seq)}`;
+    return [
+      this.put({
+        type: 'task_update',
+        id: this.placeholder,
+        title: THINKING_TITLE,
+        status: 'in_progress',
+      }),
+    ];
+  }
+
+  /** The answer began: the "Thinking…" row says so, and ends with the reply. */
+  answerStarted(): SlackTaskChunk[] {
+    const id = this.takePlaceholder();
+    if (id === undefined) return [];
+    this.writing = id;
+    return [
+      this.put({
+        type: 'task_update',
+        id,
+        title: WRITING_TITLE,
+        status: 'in_progress',
+      }),
+    ];
+  }
+
+  /** Rows that are open without being a step: they move to a new message and end with the reply. */
+  private isLiveRow(id: string): boolean {
+    return id === this.placeholder || id === this.writing;
+  }
+
+  private takePlaceholder(): string | undefined {
+    const id = this.placeholder ?? undefined;
+    this.placeholder = null;
+    return id;
+  }
+
+  /** Something else began after the answer started: its row ends. */
+  private settleWriting(): SlackTaskChunk[] {
+    const id = this.writing;
+    if (id === null) return [];
+    this.writing = null;
+    return [
+      this.put({
+        type: 'task_update',
+        id,
+        title: WRITING_TITLE,
+        status: 'complete',
+      }),
+    ];
+  }
 
   /** Text came between steps: the next tool call starts a new row. */
   endGroup(): void {
@@ -555,14 +632,18 @@ export class SlackTaskPlan {
   /** What the agent wrote before a step, as its own rows in the plan, in full. */
   narration(text: string): SlackTaskChunk[] {
     this.endGroup();
-    return splitIntoRows(redactSecrets(text)).map((title) =>
-      this.put({
-        type: 'task_update',
-        id: `note-${String(++this.seq)}`,
-        title,
-        status: 'complete',
-      }),
-    );
+    const settled = this.settleWriting();
+    return [
+      ...settled,
+      ...splitIntoRows(redactSecrets(text)).map((title) =>
+        this.put({
+          type: 'task_update',
+          id: this.takePlaceholder() ?? `note-${String(++this.seq)}`,
+          title,
+          status: 'complete',
+        }),
+      ),
+    ];
   }
 
   reasoningDelta(delta: string): void {
@@ -594,7 +675,7 @@ export class SlackTaskPlan {
     this.endGroup();
     return this.put({
       type: 'task_update',
-      id: `reasoning-${String(++this.seq)}`,
+      id: this.takePlaceholder() ?? `reasoning-${String(++this.seq)}`,
       title: 'Reasoning',
       status: 'complete',
       output: text,
@@ -630,15 +711,21 @@ export class SlackTaskPlan {
       // A row holds one kind of call: a different tool starts a row of its own.
       const open =
         this.openGroup === null ? undefined : this.groups.get(this.openGroup);
-      if (open?.calls.some((call) => call.toolName !== toolName)) {
+      // After a quiet gap the agent took a new turn: its calls take the "Thinking…" row's place.
+      if (
+        this.placeholder !== null ||
+        open?.calls.some((call) => call.toolName !== toolName)
+      ) {
         this.endGroup();
       }
       if (this.openGroup === null) {
-        this.openGroup = `tools-${String(++this.seq)}`;
+        this.openGroup =
+          this.takePlaceholder() ?? `tools-${String(++this.seq)}`;
         this.groups.set(this.openGroup, { calls: [] });
       }
       group = this.openGroup;
     }
+    const settled = this.settleWriting();
     this.groups.get(group)?.calls.push({
       id,
       toolName,
@@ -648,7 +735,7 @@ export class SlackTaskPlan {
       ...(meta.approvalAnswer ? { approvalAnswer: meta.approvalAnswer } : {}),
     });
     this.groupOf.set(id, group);
-    return this.render(group);
+    return [...settled, ...this.render(group)];
   }
 
   /** A call's arguments: the server's summary, and the raw arguments for what it leaves out. */
@@ -721,7 +808,7 @@ export class SlackTaskPlan {
     this.endGroup();
     let group = this.agentGroups.get(role);
     if (phase === 'started' || group === undefined) {
-      group = `agent-${String(++this.seq)}`;
+      group = this.takePlaceholder() ?? `agent-${String(++this.seq)}`;
       this.agentGroups.set(role, group);
       this.groups.set(group, { calls: [], agent: { role, status: 'running' } });
     }
@@ -741,7 +828,20 @@ export class SlackTaskPlan {
    * said, not failed.
    */
   failRunning(ids: ReadonlySet<string>): SlackTaskChunk[] {
-    const rows: SlackTaskChunk[] = [];
+    // The reply ends: a "Thinking…" or "Writing the answer" row ends with it.
+    const live = [this.placeholder, this.writing].filter(
+      (id): id is string => id !== null && ids.has(id),
+    );
+    this.placeholder = null;
+    this.writing = null;
+    const rows: SlackTaskChunk[] = live.map((id) =>
+      this.put({
+        type: 'task_update',
+        id,
+        title: WRITING_TITLE,
+        status: 'complete',
+      }),
+    );
     for (const [id, group] of this.groups) {
       if (!ids.has(id)) continue;
       group.closed = true;
@@ -772,7 +872,7 @@ export class SlackTaskPlan {
   /** A tool or sub-agent row that hasn't sent its details and output yet. */
   isOpen(id: string): boolean {
     const group = this.groups.get(id);
-    return group !== undefined && group.sealed !== true;
+    return this.isLiveRow(id) || (group !== undefined && group.sealed !== true);
   }
 
   /** A row's latest state, to show it again in a replaced message. */
@@ -962,6 +1062,12 @@ export class SlackPlanStream {
    * (100+ a minute), so a reply stays near 1.5 calls a second.
    */
   static minIntervalMs = 650;
+  /** Quiet time after a step before a "Thinking…" row shows the agent is still working. */
+  static gapMs = 2000;
+  /** A row in progress this long with nothing new shows how long it has taken… */
+  static tickerAfterMs = 10_000;
+  /** …refreshed this often (one update, within the stream's rate). */
+  static tickerEveryMs = 5000;
 
   ts: string | null = null;
   private lastCallAt = 0;
@@ -977,6 +1083,13 @@ export class SlackPlanStream {
   private detailed = new Set<string>();
   /** Rows still open when their message ended: they go on in the next message, sealed there once. */
   private moving: string[] = [];
+  private liveness: ReturnType<typeof setInterval> | null = null;
+  private lastEventAt = Date.now();
+  private lastTickAt = 0;
+  private inFlight = 0;
+  /** When each row went in progress, and its title without the elapsed time. */
+  private progressSince = new Map<string, number>();
+  private baseTitles = new Map<string, string>();
   /** Each message's text and steps in order (steps by id), to show them again if part is taken back. */
   private logs: ({ text: string } | { task: string })[][] = [];
   private afterTask = false;
@@ -992,6 +1105,7 @@ export class SlackPlanStream {
   ) {}
 
   async tasks(all: SlackTaskChunk[]): Promise<void> {
+    this.lastEventAt = Date.now();
     // A row settled in an earlier message stays there: sent here it would show again.
     const earlier = this.rowsOfEarlierMessages();
     const chunks = all.filter(
@@ -1081,6 +1195,7 @@ export class SlackPlanStream {
     options: { paragraph?: boolean } = {},
   ): Promise<void> {
     if (markdown === '') return;
+    this.lastEventAt = Date.now();
     let rest = markdown;
     let first = true;
     while (rest.length > 0 && !this.stopped && !this.unavailable) {
@@ -1138,6 +1253,7 @@ export class SlackPlanStream {
     options: { markdown?: string; blocks?: SlackBlock[] } = {},
   ): Promise<boolean> {
     const nothingToDeliver = !options.markdown && !options.blocks?.length;
+    this.stopLiveness();
     if (!this.ts || this.stopped || this.unavailable) return nothingToDeliver;
     const settled = this.prepare(this.plan.failRunning(this.taskIds));
     const chunks: SlackStreamChunk[] = [...settled];
@@ -1231,6 +1347,7 @@ export class SlackPlanStream {
 
   /** Deletes every message of this reply (e.g. the run asks a question instead). */
   async discard(): Promise<void> {
+    this.stopLiveness();
     const all = [...this.earlier, ...(this.ts ? [this.ts] : [])];
     if (this.ts && !this.stopped) {
       try {
@@ -1292,6 +1409,7 @@ export class SlackPlanStream {
             ...titled,
           ]
         : titled;
+    this.inFlight += 1;
     try {
       await this.pace();
       const result = await this.client.apiCall('chat.startStream', {
@@ -1312,8 +1430,11 @@ export class SlackPlanStream {
       console.error('Error starting Slack stream:', error);
       this.unavailable = true;
       return false;
+    } finally {
+      this.inFlight -= 1;
     }
     this.everOpened = true;
+    this.startLiveness();
     this.chars = 0;
     this.text = '';
     this.logs[this.earlier.length] = [];
@@ -1338,10 +1459,18 @@ export class SlackPlanStream {
     return this.logs[index];
   }
 
-  private track(chunks: SlackStreamChunk[]): void {
+  private track(chunks: SlackStreamChunk[], ticker = false): void {
     for (const chunk of chunks) {
       if (chunk.type === 'plan_update') continue;
       if (chunk.type === 'task_update') {
+        if (!ticker) {
+          this.baseTitles.set(chunk.id, chunk.title);
+          if (chunk.status !== 'in_progress') {
+            this.progressSince.delete(chunk.id);
+          } else if (!this.progressSince.has(chunk.id)) {
+            this.progressSince.set(chunk.id, Date.now());
+          }
+        }
         if (
           chunk.details !== undefined ||
           chunk.output !== undefined ||
@@ -1369,12 +1498,79 @@ export class SlackPlanStream {
   }
 
   private async append(chunks: SlackStreamChunk[]): Promise<void> {
-    await this.pace();
-    await this.client.apiCall('chat.appendStream', {
-      channel: this.channel,
-      ts: this.ts,
-      chunks: this.prepare(chunks),
-    });
+    this.inFlight += 1;
+    try {
+      await this.pace();
+      await this.client.apiCall('chat.appendStream', {
+        channel: this.channel,
+        ts: this.ts,
+        chunks: this.prepare(chunks),
+      });
+    } finally {
+      this.inFlight -= 1;
+    }
+  }
+
+  /**
+   * Keeps a quiet reply visibly alive: after a step, a "Thinking…" row;
+   * on a row in progress for a while, its elapsed time in the title. Titles
+   * and statuses replace in Slack, so nothing piles up.
+   */
+  private async pulse(): Promise<void> {
+    if (!this.ts || this.stopped || this.unavailable || this.inFlight > 0) {
+      return;
+    }
+    const now = Date.now();
+    const opened =
+      now - this.lastEventAt >= SlackPlanStream.gapMs
+        ? this.plan.thinking()
+        : [];
+    const refreshed: SlackTaskChunk[] = [];
+    if (now - this.lastTickAt >= SlackPlanStream.tickerEveryMs) {
+      for (const [id, since] of this.progressSince) {
+        const quiet = now - Math.max(since, this.lastEventAt);
+        if (!this.taskIds.has(id) || quiet < SlackPlanStream.tickerAfterMs) {
+          continue;
+        }
+        const base = this.baseTitles.get(id) ?? '';
+        const seconds = `${String(Math.floor((now - since) / 1000))}s`;
+        refreshed.push({
+          type: 'task_update',
+          id,
+          title: clip(
+            base.endsWith('…') ? `${base} ${seconds}` : `${base} · ${seconds}`,
+            MAX_TASK_TITLE_CHARS,
+          ),
+          status: 'in_progress',
+        });
+      }
+      if (refreshed.length > 0) this.lastTickAt = now;
+    }
+    if (opened.length + refreshed.length === 0) return;
+    try {
+      await this.append([...opened, ...refreshed]);
+      this.track(opened);
+      this.track(refreshed, true);
+    } catch (error) {
+      // The stream ended (expired, or an error): the next real update deals with it.
+      this.stopLiveness();
+      if (slackErrorCode(error) !== 'message_not_in_streaming_state') {
+        console.error('Error refreshing Slack steps:', error);
+      }
+    }
+  }
+
+  private startLiveness(): void {
+    if (this.liveness) return;
+    this.liveness = setInterval(() => {
+      void this.pulse();
+    }, 1000);
+    this.liveness.unref?.();
+  }
+
+  private stopLiveness(): void {
+    if (this.liveness) clearInterval(this.liveness);
+    this.liveness = null;
   }
 
   /** A row's details, output and sources reach a message once: later sends carry only its title and status. */

@@ -250,6 +250,64 @@ describe('slack-bot/utils/plan-stream', () => {
     });
   });
 
+  describe('the "Thinking…" row and the elapsed-time ticker', () => {
+    const finish = (plan: SlackTaskPlan, id = 'c1') => {
+      plan.toolStarted('web_search', 'Searched the web', id);
+      plan.toolArgs('web_search', { summary: 'Searched for "q"' }, id);
+      return plan.toolFinished('web_search', 'Searched the web', 'completed', id, { summary: '4 results' });
+    };
+
+    it('opens only after a step ended, with nothing running, and only once', () => {
+      const plan = new SlackTaskPlan();
+      expect(plan.thinking(), 'no step yet').to.deep.equal([]);
+      plan.toolStarted('web_search', 'Searched the web', 'c1');
+      expect(plan.thinking(), 'a step runs').to.deep.equal([]);
+      plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1');
+      const [row] = plan.thinking();
+      expect(row).to.deep.include({ title: 'Thinking…', status: 'in_progress' });
+      expect(plan.thinking(), 'already shown').to.deep.equal([]);
+    });
+
+    it('becomes the next narration: its title, complete, no details or output', () => {
+      const plan = new SlackTaskPlan();
+      finish(plan);
+      const [placeholder] = plan.thinking();
+      const [note] = plan.narration('Now checking the filings.');
+      expect(note).to.deep.equal({ type: 'task_update', id: placeholder!.id, title: 'Now checking the filings.', status: 'complete' });
+    });
+
+    it('becomes the next step\'s row, even one of the same kind, which seals once later', () => {
+      const plan = new SlackTaskPlan();
+      finish(plan);
+      const [placeholder] = plan.thinking();
+      const rows = plan.toolStarted('web_search', 'Searched the web', 'c2');
+      expect(rows.at(-1)).to.deep.equal({ type: 'task_update', id: placeholder!.id, title: 'Searched the web', status: 'in_progress' });
+      expect(plan.takeSealed().map((r) => r.id), 'the earlier row seals as its own').to.deep.equal(['tools-1']);
+      plan.toolFinished('web_search', 'Searched the web', 'completed', 'c2', { summary: '2 results' });
+      plan.endGroup();
+      expect(plan.takeSealed()[0]).to.deep.include({ id: placeholder!.id, output: '✓ 2 results' });
+    });
+
+    it('says the answer is being written, and ends with the reply', () => {
+      const plan = new SlackTaskPlan();
+      finish(plan);
+      const [placeholder] = plan.thinking();
+      expect(plan.answerStarted()).to.deep.equal([{ type: 'task_update', id: placeholder!.id, title: 'Writing the answer', status: 'in_progress' }]);
+      expect(plan.failRunning(new Set([placeholder!.id]))).to.deep.equal([
+        { type: 'task_update', id: placeholder!.id, title: 'Writing the answer', status: 'complete' },
+      ]);
+    });
+
+    it('never stays behind spinning when the reply stops before anything took its place', () => {
+      const plan = new SlackTaskPlan();
+      finish(plan);
+      const [placeholder] = plan.thinking();
+      const rows = plan.failRunning(new Set(['tools-1', placeholder!.id]));
+      expect(rows.find((r) => r.id === placeholder!.id)).to.deep.include({ status: 'complete' });
+      expect(rows.every((r) => r.title !== 'Thinking…')).to.equal(true);
+    });
+  });
+
   describe('compactArgs and redactSecrets', () => {
     it('shows scalars as key: value, skips nested values and masks secret keys', () => {
       expect(compactArgs('{"project":"OPS","limit":5,"filter":{"a":1},"password":"hunter2","botToken":"abc"}')).to.equal(
@@ -484,6 +542,83 @@ describe('slack-bot/utils/plan-stream', () => {
       c.apiCall.withArgs('chat.stopStream').rejects(expired());
 
       expect(await s.stop({ markdown: 'Something went wrong.' })).to.equal(false);
+    });
+
+    describe('keeps a quiet reply visibly alive', () => {
+      let clock: sinon.SinonFakeTimers;
+      beforeEach(() => {
+        clock = sinon.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+      });
+      afterEach(() => clock.restore());
+      const tsOf = (n: number) => `s${String(n)}`;
+      const titlesOf = (c: ReturnType<typeof slackClient>, id: string) =>
+        calls(c, 'chat.appendStream').flatMap((a: AnyArgs) => (a.chunks as AnyArgs[]).filter((ch) => ch.id === id).map((ch) => ch.title as string));
+
+      it('shows "Thinking…" after a quiet gap, then the narration in its place', async () => {
+        const { c, s, plan } = stream();
+        await s.tasks(plan.toolStarted('web_search', 'Searched the web', 'c1'));
+        await s.tasks(plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1', { summary: '4 results' }));
+        await clock.tickAsync(1000);
+        expect(replayRows(c, tsOf).map((r) => r.title), 'not before the gap').to.deep.equal(['Searched the web']);
+        await clock.tickAsync(2000);
+        expect(replayRows(c, tsOf).map((r) => [r.title, r.status])).to.deep.equal([
+          ['Searched the web', 'complete'],
+          ['Thinking…', 'in_progress'],
+        ]);
+        await s.tasks([...plan.narration('Checking the filings next.'), ...plan.takeSealed()]);
+        await s.stop();
+
+        const rows = replayRows(c, tsOf);
+        expect(rows.map((r) => [r.title, r.status, r.details, r.output])).to.deep.equal([
+          ['Searched the web', 'complete', '', '✓ 4 results'],
+          ['Checking the filings next.', 'complete', '', ''],
+        ]);
+        for (const row of rows) expect(row.detailSends).to.be.at.most(1);
+      });
+
+      it('adds the elapsed time to a long step\'s title, which its end replaces', async () => {
+        const { c, s, plan } = stream();
+        await s.tasks(plan.toolStarted('web_search', 'Searched the web', 'c1'));
+        await clock.tickAsync(16_000);
+        expect(titlesOf(c, 'tools-1').slice(-2)).to.deep.equal(['Searched the web · 10s', 'Searched the web · 15s']);
+        await s.tasks(plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1', { summary: '4 results' }));
+        plan.endGroup();
+        await s.tasks(plan.takeSealed());
+        await s.stop();
+
+        const [row] = replayRows(c, tsOf);
+        expect(row).to.deep.include({ title: 'Searched the web', status: 'complete', output: '✓ 4 results', detailSends: 1 });
+        expect(row!.output + row!.details).to.not.match(/\d+s\b/);
+      });
+
+      it('ticks the "Thinking…" row too, and sends at most one refresh every 5 seconds', async () => {
+        const { c, s, plan } = stream();
+        await s.tasks(plan.toolStarted('web_search', 'Searched the web', 'c1'));
+        await s.tasks(plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1'));
+        await clock.tickAsync(30_000);
+        const titles = titlesOf(c, 'next-2');
+        expect(titles[0]).to.equal('Thinking…');
+        expect(titles.slice(1, 3)).to.deep.equal(['Thinking… 10s', 'Thinking… 15s']);
+        expect(calls(c, 'chat.appendStream').length).to.be.at.most(2 + 1 + 4);
+        await s.stop();
+      });
+
+      it('stops its timer when the reply stops, is discarded, or the stream expires', async () => {
+        for (const end of ['stop', 'discard', 'expire'] as const) {
+          const { c, s, plan } = stream();
+          await s.tasks(plan.toolStarted('web_search', 'Searched the web', 'c1'));
+          if (end === 'stop') await s.stop();
+          if (end === 'discard') await s.discard();
+          if (end === 'expire') {
+            c.apiCall.withArgs('chat.appendStream').rejects(expired());
+            await clock.tickAsync(11_000);
+          }
+          expect(clock.countTimers(), end).to.equal(0);
+          const sent = c.apiCall.callCount;
+          await clock.tickAsync(30_000);
+          expect(c.apiCall.callCount, end).to.equal(sent);
+        }
+      });
     });
 
     describe('sends a row\'s details and output once, as Slack adds every resend to what it shows', () => {

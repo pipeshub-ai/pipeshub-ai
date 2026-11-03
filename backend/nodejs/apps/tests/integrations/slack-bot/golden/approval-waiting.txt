@@ -1,0 +1,7 @@
+▾ Thinking
+  ● I will open the ticket for you.
+  ● Waiting for your approval: Created a Jira issue  ⌄
+      Jira
+      • "OPS: rotate keys" → Waiting for your approval
+
+Something went wrong while generating the response. Please try again later.

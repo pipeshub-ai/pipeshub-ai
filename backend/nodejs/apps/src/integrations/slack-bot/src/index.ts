@@ -1142,7 +1142,8 @@ async function processSlackMessage(
       }
 
       answerPlan.endGroup();
-      pushPlan([answerPlan.flushReasoning()]);
+      // A "Thinking…" row shown in the gap now says the answer is being written.
+      pushPlan([answerPlan.flushReasoning(), answerPlan.answerStarted()]);
       pushedAnswerLength += textToAppend.length;
       answerTextStreamed = true;
       // Numbered now, in order: a reset may come before this is sent.
