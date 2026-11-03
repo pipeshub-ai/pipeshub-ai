@@ -1,0 +1,35 @@
+- id: REGR-04
+  title: 'Record-group-level arm: members (direct or via a sub-folder) admitted, non-members not; the mailbox is deleted'
+  source: independent review of the conformance harness
+  rule: membership
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+    nodes:
+      - {id: M, kind: app, app_type: MAIL}
+      - {id: M2, kind: app, app_type: MAIL}
+      - {id: mb, kind: group, connector: M, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [M], belongs: [M]}
+      - {id: m1, kind: record, connector: M, rule: RESTRICTED, parents: [mb], belongs: [mb]}
+      - {id: m2, kind: record, connector: M, rule: OPEN, parents: [mb], inherits: [mb]}
+      - {id: sub, kind: group, connector: M, rule: OPEN, parents: [mb]}
+      - {id: m3, kind: record, connector: M, rule: STRICT, parents: [sub], belongs: [sub]}
+      - {id: other, kind: group, connector: M2, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [M2], belongs: [M2]}
+      - {id: m4, kind: record, connector: M, rule: OPEN, parents: [mb], belongs: [other]}
+    grants:
+      - [u, mb]
+      - [u, other]
+    gates:
+      - [u, M]
+      - [u, M2]
+      - [v, M]
+  mutations:
+    - {kind: deleted, node: mb}
+  expect:
+    before:
+      u: {m1: admit, m2: deny, m3: admit, m4: deny}
+      v: {m1: deny, m3: deny}
+    verdicts:
+      u: {m1: deny, m3: deny, mb: deny}
+  tags: [regression, qa, rgl, delete]
+  comment: m1 is RESTRICTED and does not inherit, yet the declared arm admits it. m2 hangs under the mailbox without BELONGS_TO, and the walk never passes through a record-group-level group. m4 belongs to a record-group-level group of another connector, which does not count.
