@@ -1007,6 +1007,15 @@ describe('XSS Sanitization Middleware', () => {
       expect(body.received.query).to.equal(question)
     })
 
+    it('accepts <id> in the query of POST /api/v1/search/entities, unchanged, but not in its other fields', async () => {
+      const ok = await post('/api/v1/search/entities', { query: question })
+      expect(ok.status).to.equal(200)
+      expect(ok.body.received.query).to.equal(question)
+
+      const bad = await post('/api/v1/search/entities', { query: 'x', namedEntityKinds: ['<script>alert(1)</script>'] })
+      expect(bad.status).to.equal(400)
+    })
+
     it('accepts <id> in the query of POST /api/v1/retrieve, unchanged', async () => {
       const { status, body } = await post('/api/v1/retrieve', { query: question, limit: 5 })
 
