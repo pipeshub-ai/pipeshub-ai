@@ -468,3 +468,38 @@ def test_an_upgrade_without_pgvector_stops_with_a_message_and_changes_nothing(db
         c.execute("DROP EXTENSION vector")
         c.execute("CREATE EXTENSION vector WITH SCHEMA ext")
     assert run_migrate(url).returncode == 0                                       # the fix is a plain re-run
+
+
+def identity_value(cluster, name) -> int:
+    with cluster.admin(name) as c:
+        return c.execute("SELECT last_value FROM retrieval.embedding_spaces_space_id_seq").fetchone()[0]
+
+
+def test_adopting_or_replacing_to_an_existing_descriptor_spends_no_identity_value(rdb):
+    """The embedding-space id is a smallint identity (32,767 values): an insert that hits the unique key still spends one, so an
+    organisation that joins an existing (model, dimension, metric) must find the descriptor first and insert only when it is missing."""
+    cluster, name = rdb
+    orgs = [f"{n:024x}" for n in range(1, 9)]
+    adopt(cluster, name, orgs[0])
+    base = identity_value(cluster, name)
+    for org in orgs[1:5]:
+        adopt(cluster, name, org)                                                    # the same descriptor, four more organisations
+    assert identity_value(cluster, name) == base
+    for org in orgs[5:]:
+        assert replace_space(cluster, name, org, "bge", 4) is True                    # replacing to it, for organisations that hold nothing
+    assert identity_value(cluster, name) == base
+    assert replace_space(cluster, name, orgs[0], "other", 4) is True                 # a new descriptor does take a value
+    assert identity_value(cluster, name) == base + 1
+    assert {r[0] for r in spaces_of(cluster, name, orgs[1])} == {1}
+
+
+def test_an_unfiltered_sparse_search_never_returns_a_tombstoned_point_whose_postings_remain(rdb):
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_jobs") as c, uow(c, "pipeshub_jobs", ORG_A):
+        live = write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000001", "r1", {10: 1.0})
+        gone = write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000002", "r2", {10: 2.0})       # the better match
+        delta(c, ORG_A, 2)
+        c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) VALUES (%s, %s)", (ORG_A, gone))
+    assert [r[0] for r in search(cluster, name, ORG_A, [10])] == [live]               # no filter
+    assert [r[0] for r in search(cluster, name, ORG_A, [10], arms=(["c"], None, None, None))] == []   # a filter that admits nothing here

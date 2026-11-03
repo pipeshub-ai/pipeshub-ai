@@ -37,24 +37,8 @@ BEGIN
          + coalesce((SELECT sum(d.d) FROM retrieval.lexical_df_delta d
                       WHERE d.org_id = v_org AND d.collection_id = p_collection AND d.space_id = v_space AND d.term = -1), 0)
       INTO v_n;
-    IF p_must_vrids IS NULL AND p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL THEN
-      -- the whole org: a posting exists only for a live point, so the best p_leg sums are the answer
-      RETURN QUERY
-      WITH q AS MATERIALIZED (
-        SELECT CASE WHEN t.term > 2147483647 THEN t.term - 4294967296 ELSE t.term END AS term, t.qw
-          FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
-      idf AS MATERIALIZED (
-        SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
-          FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
-                                      WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
-         WHERE d.c > 0)
-      SELECT x.point_sk, sum(i.f * x.w) AS sc
-        FROM idf i CROSS JOIN LATERAL (
-          SELECT p.point_sk, p.w FROM retrieval.postings p
-           WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = i.term) x
-       GROUP BY x.point_sk ORDER BY 2 DESC, 1 LIMIT p_leg;
-    ELSE
-      -- a membership filter: check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass;
+      -- check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass: the point must exist
+      -- and carry no tombstone whatever the filter, and pass the membership arms when there are any (all four NULL: the whole org);
       -- if the best v_k are not enough and there are more, go again over all of them
       FOREACH v_k IN ARRAY ARRAY[p_leg * 8, NULL] LOOP          -- the last pass has no bound (LIMIT NULL)
         WITH q AS MATERIALIZED (
@@ -94,7 +78,6 @@ BEGIN
           RETURN;
         END IF;
       END LOOP;
-    END IF;
   END;
 END $fn$;
 REVOKE ALL ON FUNCTION retrieval.search_sparse(smallint, bigint[], real[], text[], text[], text[], text[], text[], int) FROM PUBLIC;
