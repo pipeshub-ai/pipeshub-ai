@@ -1,6 +1,7 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import sys
@@ -1719,8 +1720,11 @@ class TestGraphDbHealthCheck:
 
         from app.connectors_main import graph_db_health_check
 
-        async def hang() -> None:
-            await asyncio.sleep(30)
+        async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does
+            end = time.monotonic() + 2
+            while time.monotonic() < end:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.05)
 
         request = MagicMock()
         request.app.state.graph_provider = MagicMock(ping=hang)
@@ -1731,7 +1735,7 @@ class TestGraphDbHealthCheck:
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
-        assert time.monotonic() - t0 < 2
+        assert time.monotonic() - t0 < 1
         assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
 
     @pytest.mark.asyncio

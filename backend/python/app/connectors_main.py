@@ -1504,7 +1504,14 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     if data_store == "postgres":
         try:
             # Under Node's 5s graph timeout (also the Helm probe budget): a saturated pool must answer 503, not hang the probe.
-            await asyncio.wait_for(request.app.state.graph_provider.ping(), timeout=PG_PROBE_TIMEOUT_SEC)
+            # Not wait_for: that also waits for the cancelled ping to finish, and a stalled unit can take seconds to roll back.
+            ping = spawn_detached(request.app.state.graph_provider.ping(), name="pg_graph_health_ping")
+            done, _ = await asyncio.wait({ping}, timeout=PG_PROBE_TIMEOUT_SEC)
+            if not done:
+                ping.cancel()
+                ping.add_done_callback(lambda t: t.cancelled() or t.exception())  # retrieved, so nothing logs "never retrieved"
+                raise TimeoutError("PostgreSQL graph ping timed out")
+            ping.result()
             return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
         except Exception:
             request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)
