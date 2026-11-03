@@ -22,6 +22,7 @@ import {
   initializeSSEResponse,
   sendSSEErrorEvent,
   sendSSECompleteEvent,
+  searchDegradedMeta,
   buildAgentConversationSortOptions,
   buildSessionError,
   classifiedFailureChange,
@@ -1369,6 +1370,24 @@ describe('Enterprise Search Utils', () => {
       expect(parsed.meta.requestId).to.equal('req-123')
       expect(parsed.recordsUsed).to.equal(2)
       expect(parsed.meta.duration).to.be.at.least(500)
+      expect(parsed.meta).to.not.have.property('searchDegraded')
+    })
+
+    it('tells the client when the answer\'s search was degraded', () => {
+      const res = createMockResponse()
+      sendSSECompleteEvent(res, { id: 'c1' }, 2, 'req-1', Date.now(), undefined, searchDegradedMeta({ searchDegraded: true }))
+
+      const parsed = JSON.parse(res.write.firstCall.args[0].split('data: ')[1].replace('\n\n', ''))
+      expect(parsed.meta.searchDegraded).to.equal(true)
+    })
+  })
+
+  describe('searchDegradedMeta', () => {
+    it('is set only by an explicit true', () => {
+      expect(searchDegradedMeta({ searchDegraded: true })).to.deep.equal({ searchDegraded: true })
+      expect(searchDegradedMeta({ searchDegraded: false })).to.deep.equal({})
+      expect(searchDegradedMeta({})).to.deep.equal({})
+      expect(searchDegradedMeta(null)).to.deep.equal({})
     })
   })
 

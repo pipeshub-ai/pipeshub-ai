@@ -33,7 +33,11 @@ import {
   projectCallerFromRequest,
   resolveProjectLink,
 } from '../utils/project-context';
-import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
+import {
+  buildUserQueryMessage,
+  extractModelInfo,
+  searchDegradedMeta,
+} from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
@@ -190,6 +194,7 @@ const nonStreamingTurn =
         requestId,
         timestamp: new Date().toISOString(),
         duration: Date.now() - startTime,
+        ...searchDegradedMeta(turn),
       };
       if (mode === 'create') {
         res

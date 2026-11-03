@@ -1572,7 +1572,8 @@
       "internalSearch": "内部搜索",
       "webSearch": "网络搜索",
       "internalAndWebSearch": "内部 + 网络搜索"
-    }
+    },
+    "searchDegraded": "结果可能不完整。"
   },
   "workspaceMenu": {
     "appearance": "外观",
