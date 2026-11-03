@@ -223,6 +223,8 @@
   "app/services/parsing/client.py": 1,
   "app/services/record_content/authorizer.py": 1,
   "app/services/vector_db/models.py": 1,
+  "app/services/vector_db/pgvector/pgvector.py": 1,
+  "app/services/vector_db/pgvector/writes.py": 1,
   "app/services/vector_db/strategy.py": 1,
   "app/sources/client/confluence/confluence.py": 2,
   "app/sources/client/drupal_wiki/drupal_wiki.py": 1,

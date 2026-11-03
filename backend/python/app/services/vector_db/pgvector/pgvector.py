@@ -1,15 +1,20 @@
-"""PostgreSQL + pgvector provider: lifecycle, catalog and collections.
+"""PostgreSQL + pgvector provider: lifecycle, catalog, collections and writes.
 
 Every statement runs in a unit of work of the shared database runtime (``app.core.db``): the org is set per transaction and row-level
-security does the rest. This change carries the lifecycle (connect, health, capabilities), the collection catalog and the per-org
-space questions; points are written, read and searched by the changes that follow, and until then those methods raise
-``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
+security does the rest. Carried so far: the lifecycle (connect, health, capabilities), the collection catalog, the per-org space
+questions and the writes (upsert, delete, payload and membership). Reading and searching points follow, and until then those methods
+raise ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import time
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+import asyncpg
 
 from app.config.constants.service import config_node_constants
 from app.core.db import CapabilityError
@@ -36,18 +41,26 @@ from app.services.vector_db.models import (
     VectorDBHealth,
     VectorPoint,
 )
-from app.services.vector_db.pgvector import reads
-from app.services.vector_db.pgvector.catalog import Catalog, CollectionRow
+from app.services.vector_db.pgvector import reads, writes
+from app.services.vector_db.pgvector.catalog import Catalog, CollectionRow, OrgSpace
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
     CollectionAlreadyExistsError,
+    OrgMismatch,
     PgVectorError,
     PgVectorUnsupportedError,
+    SpaceMismatch,
     classify_pg_search_error,
 )
 from app.services.vector_db.pgvector.placement import OwnLeafPolicy, PlacementPolicy
 from app.services.vector_db.pgvector.probe import PgCapabilities, evaluate
-from app.services.vector_db.pgvector.scope import ambient_org, org_scope, require_org
+from app.services.vector_db.pgvector.scope import (
+    ambient_or_required,
+    ambient_org,
+    org_scope,
+    require_org,
+)
+from app.services.vector_db.pgvector.sql_filters import compile_filter, single_org
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -70,6 +83,30 @@ UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points t
 
 def _pending(method: str) -> NotImplementedError:
     return NotImplementedError(f"pgvector: {method} is not implemented yet")
+
+
+def _ids(point_ids: list[str]) -> list[uuid.UUID]:
+    out = []
+    for i in point_ids:
+        try:
+            out.append(uuid.UUID(str(i)))
+        except ValueError:
+            continue          # an id that is no UUID names no point
+    return out
+
+
+def _match(spaces: list[OrgSpace], dim: int, model: str | None) -> OrgSpace | None:
+    """The space vectors of ``dim`` (from ``model``, when named) belong in: the model's own space, else one adopted without a name
+    (a nameless space takes any model of its dimension until a stamped write names it, see ``_claim_name``); with no model, the active
+    space."""
+    fits = [s for s in spaces if s.role in ("active", "shadow") and s.dim == dim]
+    if model:
+        return next((s for s in fits if s.effective_model == model), None) or next((s for s in fits if s.effective_model == UNKNOWN_MODEL), None)
+    return next((s for s in fits if s.role == "active"), None)
+
+
+def _filter_org(expr: FilterExpression) -> str:
+    return require_org(single_org(expr))
 
 
 class PgVectorService(IVectorDBService):
@@ -283,7 +320,55 @@ class PgVectorService(IVectorDBService):
         """Accepted and ignored: the indexes are fixed by the schema (promoted columns, the membership table)."""
         return
 
-    # Points: written, read and searched by the changes that follow ----------------------------------------------
+    # Spaces --------------------------------------------------------------
+
+    async def _space_for_write(self, org: str, dim: int, models: set[str]) -> OrgSpace:
+        """The org's space for vectors of ``dim`` (and the named model): an active or shadow space that matches, else, when the
+        org has no active space yet, the space the vectors themselves define. Anything else is a SpaceMismatch."""
+        catalog = self._assert_connected()[1]
+        if len(models) > 1:
+            raise SpaceMismatch("a batch of points must come from one embedding model")
+        model = next(iter(models), None)
+        spaces = await catalog.org_spaces(org)
+        found = _match(spaces, dim, model)
+        if found:
+            return await self._claim_name(catalog, org, found, model)
+        if any(s.role == "active" for s in spaces):
+            # The org's space is another model's or dimension: while the org holds no point it takes the space this write defines,
+            # named as a first write names it (the database decides; a point that exists or lands meanwhile makes it refuse).
+            await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim)
+            # Whatever the answer, read the spaces again: a concurrent writer of this very model may have won the replacement.
+            catalog.forget(org=org)
+            found = _match(await catalog.org_spaces(org), dim, model)
+            if found:
+                return await self._claim_name(catalog, org, found, model)
+            raise SpaceMismatch(
+                f"the organisation has no embedding space for {model or 'unnamed'}-model vectors of dimension {dim}"
+            )
+        # No active space in our (possibly stale) view: adopt one. A concurrent first write may have adopted another, so the
+        # space that comes back is matched again, exactly like a cached one.
+        space = await catalog.activate_space(org, model or UNKNOWN_MODEL, dim)
+        found = _match([space], dim, model)
+        if found is None:
+            raise SpaceMismatch(
+                f"the organisation's embedding space is {space.effective_model} with dimension {space.dim}, not {model or 'unnamed'}-model vectors of dimension {dim}"
+            )
+        return found
+
+    @staticmethod
+    async def _claim_name(catalog: Catalog, org: str, space: OrgSpace, model: str | None) -> OrgSpace:
+        """A nameless space (adopted by a write that carried no model: points of releases before records were stamped) takes any
+        model of its dimension until the first stamped write names it; from then on it takes that model only."""
+        if not model or space.model != UNKNOWN_MODEL or space.named_by:
+            return space
+        if (named := await catalog.name_space(org, model)) != model:
+            raise SpaceMismatch(f"the organisation's embedding space is {named}, not {model}")
+        return dataclasses.replace(space, named_by=model)
+
+    async def _active_space(self, org: str) -> OrgSpace | None:
+        return await self._assert_connected()[1].active_space(org)
+
+    # Reads and search: the changes that follow ---------------------------------------------------------------------
 
     async def scroll(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None,
                      with_payload: list[str] | None = None) -> ScrollResult:
@@ -292,20 +377,131 @@ class PgVectorService(IVectorDBService):
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         raise _pending("retrieve_points")
 
-    async def upsert_points(self, collection_name: str, points: list[VectorPoint]) -> None:
-        raise _pending("upsert_points")
-
-    async def delete_points(self, collection_name: str, filter: FilterExpression, refresh: bool = False) -> None:  # noqa: A002, FBT001, FBT002
-        raise _pending("delete_points")
-
-    async def update_payload_by_ids(self, collection_name: str, point_ids: list[str], payload: dict) -> None:
-        raise _pending("update_payload_by_ids")
-
-    async def overwrite_payload(self, collection_name: str, payload: dict, points: FilterExpression) -> None:
-        raise _pending("overwrite_payload")
-
-    async def set_payload(self, collection_name: str, payload: dict, filter: FilterExpression, refresh: bool = False) -> None:  # noqa: A002, FBT001, FBT002
-        raise _pending("set_payload")
-
     async def query_nearest_points(self, collection_name: str, requests: list[HybridSearchRequest]) -> list[list[SearchResult]]:
         raise _pending("query_nearest_points")
+
+    # Writes --------------------------------------------------------------
+
+    async def upsert_points(
+        self, collection_name: str, points: list[VectorPoint]
+    ) -> None:
+        if not points:
+            return
+        db, catalog = self._assert_connected()
+        orgs = {require_org(((p.payload or {}).get("metadata") or {}).get("orgId")) for p in points}
+        if len(orgs) != 1:
+            raise OrgMismatch("a batch of points must belong to one organisation")
+        coll = await catalog.require_collection(collection_name)
+        computed_at = datetime.now(UTC)
+        for start in range(0, len(points), writes.UPSERT_BATCH):
+            batch = writes.prepare(points[start:start + writes.UPSERT_BATCH])
+            if len(set(batch.dims)) != 1:
+                raise SpaceMismatch("a batch of points must carry vectors of one dimension")
+            with org_scope(batch.org):
+                if self.placement is not None:
+                    await self.placement.before_first_write(batch.org)      # the org's leaf exists before its first row
+                space = await self._space_for_write(batch.org, batch.dims[0], {m for m in batch.models if m})
+                try:
+                    await db.run(
+                        lambda tx, batch=batch, space=space: writes.upsert(
+                            tx, coll.collection_id, space.space_id, batch, computed_at, safe_mode=self._safe_mode),
+                        write=True, idempotent=True, custom_plan=True,
+                    )
+                except asyncpg.ForeignKeyViolationError as e:       # the database's own guard: our view of the spaces was stale
+                    catalog.forget(org=batch.org)
+                    raise SpaceMismatch("the vectors do not fit the organisation's embedding space") from e
+
+    async def delete_points(
+        self,
+        collection_name: str,
+        filter: FilterExpression,  # noqa: A002 - IVectorDBService's parameter name
+        refresh: bool = False,  # noqa: FBT001, FBT002 - IVectorDBService's signature
+    ) -> None:
+        if filter.is_empty():
+            raise ValueError(
+                "delete_points called with an empty filter — this would wipe the entire "
+                "collection. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the collection. Pair it with a value match "
+                "(e.g. connectorIds)."
+            )
+        db, catalog = self._assert_connected()
+        org = _filter_org(filter)
+        coll = await catalog.require_collection(collection_name)
+        compiled = compile_filter(filter, first_param=3)
+        with org_scope(org):
+            while True:       # one transaction per batch, keyed on (org_id, point_sk)
+                done = await db.run(
+                    lambda tx: writes.delete_batch(tx, org, coll.collection_id, compiled, safe_mode=self._safe_mode),
+                    write=True, idempotent=True, custom_plan=True,
+                )
+                if done < writes.DELETE_BATCH:
+                    return
+
+    async def _write_payload(
+        self, collection_name: str, payload: dict, org: str, *, ids: list[uuid.UUID] | None, expr: FilterExpression | None,
+        computed_at: datetime | None, replace: bool,
+    ) -> None:
+        """Membership arrays go to the group rows behind the compare-and-set fence; every other key is merged into the stored
+        payload. One transaction."""
+        db, catalog = self._assert_connected()
+        coll = await catalog.require_collection(collection_name)
+        t = computed_at or datetime.now(UTC)
+        membership = writes.membership_of(payload)
+        group_filter = compile_filter(expr, first_param=3) if expr is not None else None
+        merge_filter = compile_filter(expr, first_param=5) if expr is not None else None
+
+        async def run(tx: Tx) -> None:
+            if membership:
+                keys = (await writes.group_keys_of_ids(tx, org, coll.collection_id, ids)) if ids is not None \
+                    else await writes.group_keys_matching(tx, org, coll.collection_id, group_filter)
+                if keys:
+                    await writes.write_groups(tx, org, coll.collection_id, dict.fromkeys(keys, membership), t, allow_empty=True)
+            await writes.merge_payload(tx, org, coll.collection_id, payload, merge_filter, ids, replace=replace)
+
+        with org_scope(org):
+            await db.run(run, write=True, idempotent=True, custom_plan=True)
+
+    async def update_payload_by_ids(
+        self, collection_name: str, point_ids: list[str], payload: dict, *, org_id: str | None = None,
+        computed_at: datetime | None = None,
+    ) -> None:
+        """Merge ``payload`` into the points of ``org_id`` with these ids; ids of another org are left alone. Ids alone do not name an
+        org: without ``org_id`` the request's org is used, and none at all is ``OrgRequired`` (a blank ``org_id`` too)."""
+        org = ambient_or_required() if org_id is None else require_org(org_id)
+        ids = _ids(point_ids)
+        if ids:
+            await self._write_payload(collection_name, payload, org, ids=ids, expr=None, computed_at=computed_at, replace=False)
+
+    async def overwrite_payload(
+        self, collection_name: str, payload: dict, points: FilterExpression
+    ) -> None:
+        if points.is_empty():
+            raise ValueError(
+                "overwrite_payload called with an empty filter — it would replace the payload of "
+                "every point in the collection. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        await self._write_payload(collection_name, payload, _filter_org(points), ids=None, expr=points, computed_at=None, replace=True)
+
+    async def set_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter: FilterExpression,  # noqa: A002 - IVectorDBService's parameter name
+        refresh: bool = False,  # noqa: FBT001, FBT002 - IVectorDBService's signature
+        *,
+        computed_at: datetime | None = None,
+    ) -> None:
+        """``computed_at``: when the writer read the graph the arrays come from (default: now). A row is replaced only by a
+        later one."""
+        if filter.is_empty():
+            raise ValueError(
+                "set_payload called with an empty filter — this would update the entire "
+                "collection. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        await self._write_payload(collection_name, payload, _filter_org(filter), ids=None, expr=filter, computed_at=computed_at, replace=False)
+
