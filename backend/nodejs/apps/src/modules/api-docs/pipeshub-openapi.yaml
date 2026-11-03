@@ -28923,6 +28923,9 @@ paths:
           description: |
             Not found. Possible causes:
             - User credentials not found (no password set for account)
+            - The account was not found when it was looked up after the new password was saved
+              ("Your session is no longer valid. Please sign in again."). The new password is
+              kept, and no new access token is returned.
           content:
             application/json:
               schema:
