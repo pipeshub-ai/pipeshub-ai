@@ -13,7 +13,7 @@ trap cleanup EXIT
 pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fail=1; fi; }
-pwvars="PG_ADMIN_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PASSWORD PG_QUERY_PASSWORD PG_JOBS_PASSWORD PG_MIGRATE_PASSWORD PG_BACKUP_PASSWORD"
+pwvars="PG_ADMIN_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PASSWORD PG_QUERY_PASSWORD PG_JOBS_PASSWORD PG_MIGRATE_PASSWORD PG_BACKUP_PASSWORD PG_KV_PASSWORD"
 
 envfile() { # major image
   { for v in $pwvars; do echo "$v=$(pw)"; done; echo "PG_MAJOR=$1"; echo "PG_IMAGE=${2%:*}"; echo "PG_IMAGE_REV=${2##*:$1-}"; echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=postgres"; } > "$work/env$1"

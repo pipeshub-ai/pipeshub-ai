@@ -12,10 +12,7 @@ verifier() { perl "${PG_SCRAM_VERIFIER:-/usr/local/bin/scram-verifier.pl}" "$1";
 
 args=(-v db="$db" -v node="$(verifier PG_NODE_PASSWORD)" -v conn="$(verifier PG_CONNECTORS_PASSWORD)"
       -v idx="$(verifier PG_INDEXING_PASSWORD)" -v qry="$(verifier PG_QUERY_PASSWORD)" -v jobs="$(verifier PG_JOBS_PASSWORD)"
-      -v mig="$(verifier PG_MIGRATE_PASSWORD)" -v bak="$(verifier PG_BACKUP_PASSWORD)")
-# PG_KV_PASSWORD is optional: without it the processes that only read configuration run as `query`.
-if [ -n "${PG_KV_PASSWORD:-}" ]; then args+=(-v kv="$(verifier PG_KV_PASSWORD)"); else args+=(-v kv=); fi
-
+      -v mig="$(verifier PG_MIGRATE_PASSWORD)" -v bak="$(verifier PG_BACKUP_PASSWORD)" -v kv="$(verifier PG_KV_PASSWORD)")
 psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" "${args[@]}" <<'SQL'
 SET log_statement = 'none';
 SET log_min_error_statement = 'panic';
@@ -41,10 +38,8 @@ END $$;
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', r.n, r.v)
   FROM (VALUES ('pipeshub_migrate', :'mig'), ('pipeshub_jobs', :'jobs'), ('pipeshub_backup', :'bak'),
                ('pipeshub_node_login', :'node'), ('pipeshub_connectors_login', :'conn'),
-               ('pipeshub_indexing_login', :'idx'), ('pipeshub_query_login', :'qry')) AS r(n, v)
+               ('pipeshub_indexing_login', :'idx'), ('pipeshub_query_login', :'qry'), ('pipeshub_kv_login', :'kv')) AS r(n, v)
   WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r.n) \gexec
-SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', 'pipeshub_kv_login', :'kv')
-  WHERE :'kv' <> '' AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeshub_kv_login') \gexec
 GRANT pipeshub_owner TO pipeshub_migrate;
 GRANT pipeshub_app TO pipeshub_node, pipeshub_connectors, pipeshub_indexing, pipeshub_query, pipeshub_kv
   WITH INHERIT TRUE, SET FALSE;                                      -- service roles inherit the policy group but cannot become it
@@ -53,8 +48,7 @@ GRANT pipeshub_node TO pipeshub_node_login WITH INHERIT FALSE, SET TRUE;
 GRANT pipeshub_connectors TO pipeshub_connectors_login WITH INHERIT FALSE, SET TRUE;
 GRANT pipeshub_indexing TO pipeshub_indexing_login WITH INHERIT FALSE, SET TRUE;
 GRANT pipeshub_query TO pipeshub_query_login WITH INHERIT FALSE, SET TRUE;
-SELECT 'GRANT pipeshub_kv TO pipeshub_kv_login WITH INHERIT FALSE, SET TRUE'
-  WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeshub_kv_login') \gexec
+GRANT pipeshub_kv TO pipeshub_kv_login WITH INHERIT FALSE, SET TRUE;
 -- the migration owner may only hand the vetted roles out (ADMIN), never use them
 GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform TO pipeshub_owner
   WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
