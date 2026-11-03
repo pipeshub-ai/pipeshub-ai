@@ -129,7 +129,7 @@ class TestProviderDispatch:
         assert provider is fake_provider
 
     @pytest.mark.asyncio
-    async def test_pgvector_is_chosen_only_by_name(self, logger, config_service, monkeypatch):
+    async def test_pgvector_is_chosen_only_by_name(self, logger, config_service, monkeypatch) -> None:
         """Nothing selects pgvector but VECTOR_DB_TYPE=pgvector; unset or any other value never reaches it."""
         create = AsyncMock(return_value=AsyncMock())
         with patch("app.services.vector_db.pgvector.pgvector.PgVectorService.create", create):
@@ -146,7 +146,7 @@ class TestProviderDispatch:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", ["not-a-real-db", "pg", "postgres", "pgvector2", ""])
-    async def test_an_unknown_value_is_a_startup_error_naming_the_setting(self, logger, config_service, monkeypatch, value):
+    async def test_an_unknown_value_is_a_startup_error_naming_the_setting(self, logger, config_service, monkeypatch, value) -> None:
         monkeypatch.setenv("VECTOR_DB_TYPE", value)
         with pytest.raises(ValueError, match="VECTOR_DB_TYPE") as exc:
             await VectorDBProviderFactory.create_provider(logger=logger, config_service=config_service)

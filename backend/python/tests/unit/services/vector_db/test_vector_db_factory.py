@@ -150,7 +150,7 @@ class TestVectorDBFactoryLegacyHelpers:
 class TestPgVectorEntry:
     @pytest.mark.asyncio
     @patch("app.services.vector_db.pgvector.pgvector.PgVectorService.create", new_callable=AsyncMock)
-    async def test_pgvector_entry(self, mock_create):
+    async def test_pgvector_entry(self, mock_create) -> None:
         mock_create.return_value = MagicMock()
         config = MagicMock()
 
