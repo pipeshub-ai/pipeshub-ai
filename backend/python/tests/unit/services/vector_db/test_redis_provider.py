@@ -1070,6 +1070,22 @@ class TestKeysMatchingFilter:
         assert mock_redis_client.execute_command.call_args_list[-1].args[:2] == ("FT.CURSOR", "DEL")
 
     @pytest.mark.asyncio
+    async def test_a_cancelled_scan_frees_its_cursor_and_stays_cancelled(self, service, mock_redis_client) -> None:
+        """CancelledError is not an Exception: without its own handler the cursor stayed open on the server."""
+        import asyncio
+
+        mock_redis_client.execute_command = AsyncMock(side_effect=[
+            [2000], _agg(2000, [b"k1"], cursor=7), asyncio.CancelledError(), None,
+        ])
+
+        with pytest.raises(asyncio.CancelledError):
+            await service._keys_matching_filter("test_collection", self._filter())
+
+        assert mock_redis_client.execute_command.call_args_list[-1].args[:4] == (
+            "FT.CURSOR", "DEL", service._index_name("test_collection"), 7,
+        )
+
+    @pytest.mark.asyncio
     async def test_invalid_response_format_raises(self, service, mock_redis_client) -> None:
         mock_redis_client.execute_command = AsyncMock(return_value="invalid")  # not even a count
 
