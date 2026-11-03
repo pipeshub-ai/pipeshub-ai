@@ -72,6 +72,16 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect([...minted].sort()).to.deep.equal([...AgentMcpScopes].sort())
   })
 
+  // Operators copy this list when they mint the token by hand.
+  it('BOOTSTRAP.md lists exactly the agent preset', () => {
+    const doc = readFileSync(
+      resolve(process.cwd(), '../../../deployment/docker-compose/BOOTSTRAP.md'),
+      'utf8',
+    )
+    const listed = doc.split('PAT scopes the script mints')[1]?.split('```')[1] ?? ''
+    expect(listed.trim().split('\n').sort()).to.deep.equal([...AgentMcpScopes].sort())
+  })
+
   // MCP clients request every scope discovery lists, so it lists only what
   // the /mcp tools use, never more than MCP_SCOPES allows.
   it('mcpDiscoveryScopes keeps the MCP_SCOPES the tools use, in order', () => {
