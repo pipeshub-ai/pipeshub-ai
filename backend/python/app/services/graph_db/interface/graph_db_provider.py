@@ -2701,6 +2701,10 @@ class IGraphDBProvider(ABC):
         Returns:
             list[str]: The ids actually updated. Ids absent from the result held some
                        other status and were left alone - a normal outcome, not an error.
+
+        Raises:
+            Exception: whatever the database raised. A failed write is never answered
+                       as an empty list, which means "no id held `expected`".
         """
         pass
 
