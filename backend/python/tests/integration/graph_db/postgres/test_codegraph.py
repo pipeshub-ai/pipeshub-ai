@@ -211,6 +211,16 @@ async def test_blocks_go_with_their_edges_and_a_name_is_folded_on_demand(pg_db) 
     assert await p.get_edges_to_node("blocks/b2", "recordLinks") == []
 
 
+async def test_blocks_linked_to_each_other_go_with_their_record_in_one_statement(pg_db) -> None:
+    """Both ends of an edge in the deleted set (blocks of one file, or a self-loop): the edge is deleted once, not by two clauses."""
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "b1", "recordId": "r1", "name": "A"}, {"_key": "b2", "recordId": "r1", "name": "B"}], "blocks")
+    await p.batch_upsert_node_relations([edge("b1", "b2", "CALLS"), edge("b2", "b2", "CALLS")])
+    assert await p.delete_blocks_for_records(["r1"]) == 2
+    assert await p.get_edges_to_node("blocks/b2", "recordLinks") == []
+    assert await p.get_document("b1", "blocks") is None
+
+
 async def test_record_fields_are_written_only_while_the_record_holds_the_revision_and_content_revisions_are_read(pg_db) -> None:
     p = bound(pg_db)
     await p.batch_upsert_nodes([{"_key": "r1", "contentRev": "1", "indexingStatus": "QUEUED"}, {"_key": "r2", "contentRev": "2", "indexingStatus": "QUEUED"},
