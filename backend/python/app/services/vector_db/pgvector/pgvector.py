@@ -79,6 +79,7 @@ _CAPABILITIES = VectorDBCapabilities(
     stamps_in_catalog=True,
     spaces_per_org=True,
 )
+MAX_SCROLL_LIMIT = 10_000   # rows one scroll page returns at most: the ceiling the other backends have (OpenSearch caps a page at 10,000)
 UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points that do not name theirs
 
 
@@ -392,8 +393,8 @@ class PgVectorService(IVectorDBService):
         opaque and belongs to the org that got it. A missing collection is an error; an org with no embedding space yet has no points."""
         db, catalog = self._assert_connected()
         org = _filter_org(scroll_filter)
-        if limit < 1:
-            raise ValueError("scroll limit must be at least 1")
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
         coll = await catalog.require_collection(collection_name)
         with org_scope(org):
             space = await catalog.active_space(org)
@@ -401,7 +402,7 @@ class PgVectorService(IVectorDBService):
                 return ScrollResult(points=[], next_offset=None)
             compiled = compile_filter(scroll_filter, first_param=5)
             points, nxt = await db.run(
-                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, with_payload),
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, with_payload or None),
                 custom_plan=True,
             )
         return ScrollResult(points=points, next_offset=nxt)
