@@ -322,23 +322,25 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         await again.db(DB).command({ ping: 1 });
         try {
           const forced = await run(['migrate', '--offline', '--dry-run', '--allow-clients']);
-          expect(forced.out.stage).to.equal('dry_run');
+          expect(forced.out.stage, JSON.stringify(forced.out.preflight ?? forced.out).slice(0, 1500)).to.equal('dry_run');
           expect(forced.out.preflight.yellow.map((x: any) => x.check)).to.include('app_running');
         } finally {
           await again.close();
         }
-        // writes by a tool that is not the application are no reason to refuse (and make the check deterministic)
+        // writes by a tool that is not the application are no reason to refuse (to a collection the copy knows and ignores: a collection it does not know that holds documents is rightly red)
         await noApplicationConnected();
         let go = true;
         const writer = (async () => {
           while (go) {
-            await mongo.client.db(DB).collection('scratch').insertOne({ t: Date.now() });
+            await mongo.client.db(DB).collection('crawlingManagerConfigs').insertOne({ t: Date.now() });
             await new Promise((res) => setTimeout(res, 50));
           }
         })();
         try {
+          // the writer has written before the preflight looks, as on a host where the command is slow to start
+          while ((await mongo.client.db(DB).collection('crawlingManagerConfigs').estimatedDocumentCount()) < 3) await new Promise((res) => setTimeout(res, 50));
           const r = await run(['migrate', '--offline', '--dry-run']);
-          expect(r.out.stage, JSON.stringify(r.out.red ?? r.out.message ?? r.out).slice(0, 800)).to.equal('dry_run');
+          expect(r.out.stage, JSON.stringify(r.out.preflight ?? r.out).slice(0, 1500)).to.equal('dry_run');
         } finally {
           go = false;
           await writer;
@@ -877,7 +879,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           'every writer carries the Mongo fence (attested)', 'shadow reads showed no difference (attested)']);
         expect((await fence()) ?? 'active').to.equal('active');
         const dry = await cut(['--dry-run']);
-        expect(dry.out.stage).to.equal('dry_run');
+        expect(dry.out.stage, JSON.stringify(dry.out.preflight ?? dry.out).slice(0, 1500)).to.equal('dry_run');
         expect((await fence()) ?? 'active').to.equal('active');
       });
 
