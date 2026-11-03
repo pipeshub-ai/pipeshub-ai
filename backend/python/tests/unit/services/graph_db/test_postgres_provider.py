@@ -1,0 +1,126 @@
+"""The PostgreSQL graph provider (``DATA_STORE=postgres``): it is opt-in, it comes from the factory over the shared database runtime, and it keeps up with the graph interface."""
+from __future__ import annotations
+
+import inspect
+import logging
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.postgres import core
+from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
+from app.services.graph_db.postgres.provider import PostgresGraphProvider, unimplemented
+
+FACTORY = "app.services.graph_db.graph_db_provider_factory.GraphDBProviderFactory"
+
+
+# ---- the factory: off unless asked for --------------------------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("env", [{}, {"DATA_STORE": "arangodb"}, {"DATA_STORE": "neo4j"}])
+async def test_without_data_store_postgres_nothing_postgres_is_built(env: dict) -> None:
+    """The default (and the other stores) never reach the PostgreSQL branch: no pool is acquired and no provider is made."""
+    with patch.dict(os.environ, env, clear=False), patch("app.core.db.shared.acquire_db", new_callable=AsyncMock) as acquire, \
+            patch(f"{FACTORY}._create_arango_http_provider", new_callable=AsyncMock), patch(f"{FACTORY}._create_neo4j_provider", new_callable=AsyncMock), \
+            patch("app.services.graph_db.postgres.provider.PostgresGraphProvider") as pg:
+        if not env:
+            os.environ.pop("DATA_STORE", None)
+        await GraphDBProviderFactory.create_provider(MagicMock(), MagicMock())
+    acquire.assert_not_awaited()
+    pg.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_data_store_postgres_builds_the_provider_over_the_shared_runtime() -> None:
+    """The provider gets its pool from ``acquire_db`` (one per process and loop), with the config of the process's own service role, never a client of its own."""
+    db, config = MagicMock(), MagicMock()
+    with patch.dict(os.environ, {"DATA_STORE": "Postgres", "PG_RUNTIME_SERVICE": "indexing"}), \
+            patch("app.core.db.shared.acquire_db", new_callable=AsyncMock, return_value=db) as acquire, \
+            patch("app.core.db.DbConfig.from_env", return_value="cfg") as from_env:
+        provider = await GraphDBProviderFactory.create_provider(logging.getLogger("t"), config)
+    from_env.assert_called_once_with("indexing")
+    acquire.assert_awaited_once_with("cfg")
+    assert isinstance(provider, PostgresGraphProvider)
+    assert provider._db is db and provider.config_service is config
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_store_still_names_postgres_among_the_choices() -> None:
+    with patch.dict(os.environ, {"DATA_STORE": "cassandra"}), pytest.raises(ValueError, match="'postgres'"):
+        await GraphDBProviderFactory.create_provider(MagicMock(), MagicMock())
+
+
+# ---- parity with the interface ----------------------------------------------------------------------------------------------------------
+
+def test_every_interface_method_is_implemented_or_stubbed_and_a_stub_says_so() -> None:
+    abstract = set(IGraphDBProvider.__abstractmethods__)
+    assert not PostgresGraphProvider.__abstractmethods__          # it can be built
+    assert set(unimplemented()) <= abstract
+    assert {"get_document", "batch_upsert_nodes", "create_node_if_absent", "get_existing_keys", "batch_create_edges"}.isdisjoint(unimplemented())
+    assert "execute_query" in unimplemented()                      # a raw query has no meaning on this store
+
+
+@pytest.mark.asyncio
+async def test_a_stubbed_method_raises_not_implemented_instead_of_returning_nothing() -> None:
+    p = PostgresGraphProvider(logging.getLogger("t"), MagicMock())
+    with pytest.raises(NotImplementedInPostgres, match="execute_query"):
+        await p.execute_query("RETURN 1")
+
+
+@pytest.mark.parametrize("name", sorted(unimplemented()))
+def test_a_stub_keeps_the_signature_of_the_interface_method(name: str) -> None:
+    """Callers and the cross-provider tests read the parameters (``raise_on_error``, ``transaction``) off the class."""
+    stub = getattr(PostgresGraphProvider, name)
+    assert inspect.signature(stub) == inspect.signature(getattr(IGraphDBProvider, name))
+    assert not getattr(stub, "__isabstractmethod__", False)
+
+
+def _mismatches(name: str) -> list[str]:
+    want = inspect.signature(inspect.unwrap(getattr(IGraphDBProvider, name))).parameters
+    have = inspect.signature(inspect.unwrap(getattr(PostgresGraphProvider, name))).parameters
+    out = []
+    for pname, p in want.items():
+        q = have.get(pname)
+        if q is None:
+            out.append(f"{pname}: missing")
+        elif q.kind is not p.kind:
+            out.append(f"{pname}: {q.kind.name}, the interface says {p.kind.name}")
+        elif q.default is inspect.Parameter.empty and p.default is not inspect.Parameter.empty:
+            out.append(f"{pname}: required here, optional in the interface")
+    out += [f"{pname}: required here, optional in the interface" for pname, q in have.items()
+            if pname not in want and q.default is inspect.Parameter.empty and q.kind not in (q.VAR_POSITIONAL, q.VAR_KEYWORD) and pname != "self"]
+    shared = [n for n in want if n in have and want[n].kind in (want[n].POSITIONAL_ONLY, want[n].POSITIONAL_OR_KEYWORD)]
+    if [n for n in have if n in shared] != shared:
+        out.append("positional order differs")
+    return out
+
+
+IMPLEMENTED = sorted(n for n, _ in inspect.getmembers(IGraphDBProvider, inspect.isfunction)
+                     if not n.startswith("_") and n not in unimplemented() and n in vars(core.CoreMixin))
+
+
+@pytest.mark.parametrize("name", IMPLEMENTED)
+def test_an_implemented_method_accepts_what_the_interface_declares(name: str) -> None:
+    assert inspect.iscoroutinefunction(getattr(PostgresGraphProvider, name))
+    assert not _mismatches(name)
+
+
+def test_the_foundation_implements_the_generic_documents_and_edges() -> None:
+    assert len(IMPLEMENTED) >= 20
+
+
+# ---- structure --------------------------------------------------------------------------------------------------------------------------
+
+def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
+    """A name defined twice is silently decided by the MRO."""
+    clashes = [n for n in vars(core.CoreMixin) if n in vars(PgBase) and not (n.startswith("__") and n.endswith("__"))]
+    assert not clashes
+
+
+def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
+    config = MagicMock()
+    assert PostgresGraphProvider(logging.getLogger("t"), MagicMock(), config_service=config).config_service is config
+    assert PostgresGraphProvider(logging.getLogger("t"), MagicMock()).config_service is None
