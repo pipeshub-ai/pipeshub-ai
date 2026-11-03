@@ -152,6 +152,10 @@ def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple
     module = dict(out)
     out.clear()
     for scope in reversed(scopes):         # outermost first
+        a = scope.args
+        for param in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
+            if param:
+                out.pop(param.arg, None)   # a parameter shadows what an enclosing function assigned to that name
         collect(scope, walk=True)
     return {**module, **out}, set(out)
 
@@ -165,15 +169,15 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
     text, built = _sql_text(arg, env)
     if text is not None or not isinstance(arg, ast.Name):
         return text, built
-    built, bases, tail = False, [], ""
+    built, cands = False, []
     for value, augmented in env.get(arg.id, []):
         value_text, value_built = _sql_text(value, env)
         built = built or value_built or (augmented and _pure(value, env) is None)
-        if augmented:
-            tail += value_text or ""
+        if augmented:                      # a ``+=`` extends the candidates assigned before it; a plain assignment starts a new one
+            cands = [c + (value_text or "") for c in cands or [""]]
         elif value_text is not None:
-            bases.append(value_text)       # each plain assignment may be the one that reaches the call
-    return (_ALT.join(b + tail for b in bases) or tail or None), built
+            cands.append(value_text)
+    return (_ALT.join(cands) or None), built
 
 
 def _statement_argument(node: ast.Call) -> ast.expr | None:

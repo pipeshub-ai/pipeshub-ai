@@ -370,6 +370,15 @@ def test_each_branch_and_assignment_needs_its_own_tag() -> None:
         assert [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")] == [UNTAGGED]
 
 
+def test_a_parameter_shadows_an_outer_assignment_and_a_plain_assignment_starts_a_new_candidate() -> None:
+    shadow = ('async def f(tx, x):\n    q = f"SELECT {x}"\n    async def inner(q):\n        await tx.fetch(q)\n')
+    assert sql_lint.scan_source(shadow) == []
+    for ps in ("*q", "**q"):
+        assert sql_lint.scan_source(shadow.replace("inner(q)", f"inner({ps})")) == []
+    chained = 'q = "SELECT "\n    q += "TING "\n    q = "SET"\n    q += " ROLE r"\n    await tx.execute(q)'
+    assert any("session SET" in f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {chained}\n"))
+
+
 def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
     src = ('async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    def inner(x):\n        q = f"SELECT {x}"\n        return q\n'
            '    await tx.fetch(q)\n')
