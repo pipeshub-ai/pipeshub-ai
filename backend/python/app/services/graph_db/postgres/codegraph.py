@@ -523,7 +523,7 @@ class CodeGraphMixin(PgBase):
                 rows = await self._q(lambda tx, org=org: tx.fetch("""/* pipeshub:graph.stage_states_stale */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2
                     AND doc->>'status' = ANY($3::text[]) AND doc->'updatedAtMs' < to_jsonb($4::bigint) ORDER BY doc->'updatedAtMs' LIMIT $5""",
                                                           org, _STAGES, statuses, updated_before_ms, limit), None)
-                out += [_doc(r["doc"]) for r in rows]
+                out += [{**_doc(r["doc"]), "orgId": org} for r in rows]    # the row's org, not the document's own claim
         self._raise_failed(errors)
         return sorted(out, key=lambda d: d.get("updatedAtMs") or 0)[:limit]
 

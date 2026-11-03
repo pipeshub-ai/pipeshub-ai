@@ -37,6 +37,7 @@ ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 
 STAGES = CollectionNames.STAGE_STATES.value
 RECORDS = CollectionNames.RECORDS.value
+MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 ORG = "stage-it"
 CONCURRENT = 30
 _logger = logging.getLogger("stage-states-it")
@@ -91,8 +92,9 @@ async def arango() -> AsyncIterator[ArangoHTTPProvider]:
         await client.update_collection_schema(STAGES, stage_state_schema)
     else:
         await client.create_collection(STAGES, edge=False, schema=stage_state_schema)
-    if not await client.has_collection(RECORDS):
-        await client.create_collection(RECORDS, edge=False, schema=None)
+    for collection in (RECORDS, MAPPING):
+        if not await client.has_collection(collection):
+            await client.create_collection(collection, edge=False, schema=None)
     yield provider
     for collection in (STAGES, RECORDS):
         await client.execute_aql(
@@ -170,9 +172,27 @@ async def test_stale_scan_returns_the_oldest_first(provider: IGraphDBProvider) -
     stale = await provider.stage_states_stale(["QUEUED"], 25, 10)
     mine = [s["stage"] for s in stale if s["virtualRecordId"] == vrid]
     assert mine == ["entities", "summary-embed"]
+    # The sweep binds each state's follow-up to this org.
+    assert all(s.get("orgId") for s in stale if s["virtualRecordId"] == vrid)
     assert {s["stage"] for s in await provider.stage_states_for_revision(vrid, "rev-a")} == {
         "classify", "entities", "summary-embed",
     }
+
+
+@pytest.mark.asyncio
+async def test_the_pointer_reads_carry_the_mappings_org(provider: IGraphDBProvider) -> None:
+    mapping = MAPPING
+    key = f"zz-{uuid.uuid4()}"
+    assert await provider.batch_upsert_nodes(
+        [{"_key": key, "orgId": ORG, "documentId": "d", "switchSeq": 1, "currentRev": "r2"}], mapping
+    )
+    try:
+        switch = await provider.get_switch_pointers(key[:-1], 5)
+        revision = await provider.get_revision_pointers(key[:-1], 5)
+        assert [p["orgId"] for p in switch if p["virtualRecordId"] == key] == [ORG]
+        assert [p["orgId"] for p in revision if p["virtualRecordId"] == key] == [ORG]
+    finally:
+        await provider.delete_nodes([key], mapping)
 
 
 @pytest.mark.asyncio

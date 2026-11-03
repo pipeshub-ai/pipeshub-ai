@@ -24,7 +24,7 @@ from app.config.constants.arangodb import (
 )
 from app.containers.indexing import initialize_container
 from app.core.envelope import configure_from_config as configure_envelope
-from app.core.org_context import spawn_detached
+from app.core.org_context import for_org, spawn_detached, system
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
@@ -578,60 +578,71 @@ async def recover_in_progress_records(
             except (TypeError, ValueError):
                 return True
 
-        for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
-            offset = 0
-            while True:
-                if (
-                    recovery_renewal_task is not None
-                    and recovery_renewal_task.done()
-                ):
-                    recovery_renewal_task.result()
+        # One organisation at a time: its page read and each record's follow-up are bound to it. The orgId filter
+        # keeps a store that scans globally from returning the same records for every org.
+        with system("stale_recovery"):
+            org_ids = [
+                str(o.get("_key") or o.get("id"))
+                for o in await graph_provider.get_all_orgs(active=True) or []
+                if o.get("_key") or o.get("id")
+            ]
+        for org_id in org_ids:
+            with for_org(org_id, job="stale_recovery"):
+                for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
+                    offset = 0
+                    while True:
+                        if (
+                            recovery_renewal_task is not None
+                            and recovery_renewal_task.done()
+                        ):
+                            recovery_renewal_task.result()
 
-                page = await graph_provider.get_documents_paginated(
-                    CollectionNames.RECORDS.value,
-                    skip=offset,
-                    limit=page_size,
-                    filters={
-                        status_field: ProgressStatus.IN_PROGRESS.value,
-                    },
-                    sort_field="_key",
-                    raise_on_error=True,
-                )
-                if not page:
-                    break
+                        page = await graph_provider.get_documents_paginated(
+                            CollectionNames.RECORDS.value,
+                            skip=offset,
+                            limit=page_size,
+                            filters={
+                                status_field: ProgressStatus.IN_PROGRESS.value,
+                                "orgId": org_id,
+                            },
+                            sort_field="_key",
+                            raise_on_error=True,
+                        )
+                        if not page:
+                            break
 
-                resume_enrichment = status_field == "extractionStatus"
-                candidates = [
-                    record
-                    for record in page
-                    if is_stale(record)
-                    and not (
-                        status_field == "parsingStatus"
-                        and record.get("indexingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                    )
-                    and (not resume_enrichment or _enrichment_cut_short(record))
-                ]
+                        resume_enrichment = status_field == "extractionStatus"
+                        candidates = [
+                            record
+                            for record in page
+                            if is_stale(record)
+                            and not (
+                                status_field == "parsingStatus"
+                                and record.get("indexingStatus")
+                                == ProgressStatus.IN_PROGRESS.value
+                            )
+                            and (not resume_enrichment or _enrichment_cut_short(record))
+                        ]
 
-                outcomes = await asyncio.gather(
-                    *(
-                        process_single_record(record, resume_enrichment=resume_enrichment)
-                        for record in candidates
-                    )
-                )
-                total_records += sum(outcome is not None for outcome in outcomes)
-                removed_from_result = sum(outcome is True for outcome in outcomes)
+                        outcomes = await asyncio.gather(
+                            *(
+                                process_single_record(record, resume_enrichment=resume_enrichment)
+                                for record in candidates
+                            )
+                        )
+                        total_records += sum(outcome is not None for outcome in outcomes)
+                        removed_from_result = sum(outcome is True for outcome in outcomes)
 
-                if len(page) < page_size:
-                    break
-                # Successful recovery removes rows from this filtered result,
-                # so only advance over rows that remain in front of the cursor.
-                # Caveat: this only accounts for rows this page removed — a
-                # concurrent status change on a row from an *earlier* page
-                # (outside our control) can still shift the offset by one and
-                # skip or repeat a row; harmless since the loop reruns on the
-                # next stale_recovery_interval_seconds tick.
-                offset += len(page) - removed_from_result
+                        if len(page) < page_size:
+                            break
+                        # Successful recovery removes rows from this filtered result,
+                        # so only advance over rows that remain in front of the cursor.
+                        # Caveat: this only accounts for rows this page removed — a
+                        # concurrent status change on a row from an *earlier* page
+                        # (outside our control) can still shift the offset by one and
+                        # skip or repeat a row; harmless since the loop reruns on the
+                        # next stale_recovery_interval_seconds tick.
+                        offset += len(page) - removed_from_result
 
         # QUEUED records on a disabled connector are unreachable by the scan
         # above: it filters on IN_PROGRESS, and a QUEUED row has no
@@ -879,12 +890,14 @@ async def _sweep_pipeline_stages(
 
         is_job_active = job_lease_held
 
-    report = await runtime.coordinator.sweep(
-        queued_older_than_ms=_STAGE_QUEUED_SWEEP_MS,
-        limit=_STAGE_SWEEP_LIMIT,
-        in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS,
-        is_job_active=is_job_active,
-    )
+    # The sweep reads every org's stale states; each state's follow-up binds its own org.
+    with system("stage_sweep"):
+        report = await runtime.coordinator.sweep(
+            queued_older_than_ms=_STAGE_QUEUED_SWEEP_MS,
+            limit=_STAGE_SWEEP_LIMIT,
+            in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS,
+            is_job_active=is_job_active,
+        )
     if report.republished or report.reclaimed:
         logger.info(
             "Pipeline stage sweep: %d re-published, %d reclaimed of %d scanned",
@@ -940,9 +953,10 @@ async def _sweep_retired_revisions(
         if not lease_held() or (deadline is not None and time.monotonic() >= deadline):
             break
         try:
-            next_key, report = await sweep.run_page(
-                _retention_cursor, still_leader=lease_held, deadline=deadline
-            )
+            with system("revision_retention"):
+                next_key, report = await sweep.run_page(
+                    _retention_cursor, still_leader=lease_held, deadline=deadline
+                )
         except Exception as exc:
             logger.warning("Revision retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
             break
@@ -1014,7 +1028,8 @@ async def _sweep_stored_records(
         if not lease_held():
             break
         try:
-            next_key, report = await sweep.run_page(_stored_retention_cursor, still_leader=lease_held)
+            with system("stored_retention"):
+                next_key, report = await sweep.run_page(_stored_retention_cursor, still_leader=lease_held)
         except Exception as exc:
             logger.warning("Stored-record retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
             break
@@ -1026,7 +1041,8 @@ async def _sweep_stored_records(
             break
     if not total.paused and not total.interrupted and lease_held():
         try:
-            _stored_stray_cursor, strays = await sweep.run_strays(_stored_stray_cursor, still_leader=lease_held)
+            with system("stored_retention_strays"):
+                _stored_stray_cursor, strays = await sweep.run_strays(_stored_stray_cursor, still_leader=lease_held)
             total.add(strays)
         except Exception as exc:
             logger.warning("Stored-record stray pass skipped this tick: %s: %s", type(exc).__name__, exc)
