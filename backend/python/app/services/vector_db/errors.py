@@ -15,3 +15,7 @@ class OrgRequired(VectorOrgError):
 
 class OrgMismatch(VectorOrgError):
     pass
+
+
+class SpaceMismatch(VectorOrgError):
+    pass

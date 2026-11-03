@@ -100,20 +100,41 @@ class TestRedisFilterOpsUnderTimeout:
         await redis_service.set_payload(col, {"recordGroupIds": ["g1"]}, filt)
         assert await _count(redis_service, col, "@recordGroupIds:{g1}") == POINTS
 
-    async def test_key_scan_sees_every_point_exactly_once(self, redis_service, seeded) -> None:
-        """An unsorted offset page repeats some keys and misses others while documents are still settling
-        in the index, so a payload write skipped points."""
-        col, filt = seeded
-        keys = await redis_service._keys_matching_filter(col, filt)
-        assert len(keys) == POINTS == len(set(keys))
-
     async def test_scroll_returns_the_requested_page(self, redis_service, seeded) -> None:
         col, filt = seeded
         page = await redis_service.scroll(col, filt, limit=5000)
         assert len(page.points) == 5000
 
 
-class TestRedisKeyScanIsHeldToACount:
+class TestRedisKeyScan:
+    async def test_key_scan_sees_every_point_exactly_once(self, redis_service) -> None:
+        """An unsorted offset page repeats some keys and misses others while documents are still settling
+        in the index, so a payload write skipped points. Scanned the moment the index counts them all."""
+        n = 30000
+        col = make_collection("redis_key_scan")
+        await redis_service.create_collection(col, make_collection_config())
+        try:
+            for start in range(0, n, 2000):
+                await redis_service.upsert_points(col, [
+                    VectorPoint(
+                        id=f"pt-{i}", dense_vector=make_dense([1.0]),
+                        payload={"page_content": f"c{i}", "metadata": {"orgId": "org1", "virtualRecordId": f"vr-{i % 500}"}},
+                    )
+                    for i in range(start, start + 2000)
+                ])
+            async def indexed() -> bool:
+                return await _count(redis_service, col) >= n
+
+            await wait_for(indexed, timeout=300, poll=0.2)
+
+            keys = await redis_service._keys_matching_filter(
+                col, FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")]),
+            )
+
+            assert len(keys) == n == len(set(keys))
+        finally:
+            await redis_service.delete_collection(col)
+
     async def test_a_truncated_cursor_raises_instead_of_answering_with_a_part(self, redis_service) -> None:
         """The scan is held to a separate count of the matches: a cursor that ends early (here, cut after its
         first batch) must not be taken for the whole set."""

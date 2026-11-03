@@ -422,6 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
+    from app.services.permissions.ports import HierarchyView
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -2701,6 +2702,10 @@ class IGraphDBProvider(ABC):
         Returns:
             list[str]: The ids actually updated. Ids absent from the result held some
                        other status and were left alone - a normal outcome, not an error.
+
+        Raises:
+            Exception: whatever the database raised. A failed write is never answered
+                       as an empty list, which means "no id held `expected`".
         """
         pass
 
@@ -2713,6 +2718,10 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
         """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        """The ``orgId`` named by any stage state of this virtual record, or None."""
 
     @abstractmethod
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
@@ -4933,6 +4942,13 @@ class IGraphDBProvider(ABC):
         return AccessibleContainers(
             fallback_reason="provider does not implement container filtering"
         )
+
+    def permission_hierarchy_view(self) -> "HierarchyView":
+        """The organisation's record groups and scopes, for `app.services.permissions.ViewerScopeResolver`.
+
+        Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
+        "no scopes"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
     @abstractmethod
     async def get_entity_access_context(
@@ -8421,8 +8437,9 @@ class IGraphDBProvider(ABC):
         when none does, users whose full name, a word of it, or email local
         part starts with it (only for 3+ characters). Every user sharing the
         email of a match is returned too, so one person's several nodes come
-        back together. No permission check: org members' names and emails are
-        visible to members.
+        back together. No permission check, so a caller must not show a user
+        until a record linking them is readable
+        (``entity_permissions.readable_person_offsets``).
 
         Returns:
             ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``

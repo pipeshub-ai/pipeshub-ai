@@ -409,18 +409,6 @@ async def test_the_orphan_sweep_marks_a_row_with_no_org_and_stays_quiet_after() 
     log.warning.assert_not_called()
 
 
-# the mapping row the metadata fallback creates names its org
-async def test_the_reconciliation_fallback_row_names_its_org() -> None:
-    from app.modules.transformers.blob_storage import BlobStorage
-
-    store = BlobStorage.__new__(BlobStorage)
-    store.graph_provider = AsyncMock()
-    store._mapping_node = AsyncMock(return_value=None)
-    await store._map_reconciliation_document("vr-1", "doc-1", A)
-    (row,) = store.graph_provider.batch_upsert_nodes.await_args.args[0]
-    assert row["orgId"] == A and row["_key"] == "vr-1"
-
-
 # a legacy shared VRID: the one mapping row outlives the first org's cleanup
 async def test_the_mapping_row_is_kept_while_another_org_still_has_points(db) -> None:
     released: list[list[str]] = []

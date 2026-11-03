@@ -154,6 +154,29 @@ class IVectorDBService(ABC):
         """Return normalised, provider-neutral collection metadata."""
         raise NotImplementedError
 
+    async def org_holds_points(self) -> bool:
+        """For providers with ``spaces_per_org``: whether the calling org holds any point (of any collection, deleted-but-kept rows
+        included). A read only; an org that holds none can change its embedding model."""
+        raise NotImplementedError
+
+    async def org_space_accepts(self, identity: str | None, dimension: int, current_identity: str | None = None) -> bool:
+        """For providers with ``spaces_per_org``: whether the calling org's active space already takes vectors of this model identity
+        (``provider:model:dimension``, None when unknown) and dimension, so changing to it changes nothing. ``current_identity`` is the one
+        configured now: a nameless space that holds points is read as named by it. A read only."""
+        raise NotImplementedError
+
+    async def get_collection_stamp(self, collection_name: str) -> str | None:
+        """The collection's stamp. Only for providers whose capabilities say ``stamps_in_catalog``."""
+        raise NotImplementedError
+
+    async def set_collection_stamp(self, collection_name: str, stamp: str) -> str:
+        """Sets the stamp unless the collection has one; answers the stamp in force. Only for ``stamps_in_catalog`` providers."""
+        raise NotImplementedError
+
+    async def orgs_of_virtual_records(self, virtual_record_ids: list[str]) -> dict[str, set[str]] | None:
+        """The orgs holding points of each virtual record (absent: none), or None when the provider cannot say without being told an org."""
+        return None
+
     @abstractmethod
     async def collection_exists(self, collection_name: str) -> bool:
         raise NotImplementedError

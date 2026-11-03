@@ -4,7 +4,7 @@ import { FENCE_WAIT_QUEUE_MS, fenceCutoverWaitMs } from '../../../src/libs/repos
 import { FENCED_APP_NAME, fenceClientOptions } from '../../../src/libs/repositories/fence'
 import { drain } from '../../../src/scripts/docstore-migrate/drain'
 import { resolveChange } from '../../../src/scripts/docstore-migrate/follow'
-import { appClients, describeClients, fenceTuning, sleep } from '../../../src/scripts/docstore-migrate/fence'
+import { appClients, describeClients, fenceTestMs, fenceTuning, sleep } from '../../../src/scripts/docstore-migrate/fence'
 import { nonObjectIdSample } from '../../../src/scripts/docstore-migrate/preflight'
 
 /** A runtime whose MongoDB answers every `$currentOp` aggregate with `rows`. */
@@ -18,9 +18,9 @@ const rtWith = (rows: unknown[], options: Record<string, unknown> = {}, mongoUri
 }
 
 describe('docstore-migrate fence helpers', () => {
-  const saved = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS }
+  const saved = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS, ms: process.env.MIGRATE_FENCE_TEST_MS }
   afterEach(() => {
-    for (const [k, v] of [['MIGRATE_TEST_HOOKS', saved.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', saved.opts]] as const)
+    for (const [k, v] of [['MIGRATE_TEST_HOOKS', saved.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', saved.opts], ['MIGRATE_FENCE_TEST_MS', saved.ms]] as const)
       if (v === undefined) delete process.env[k]
       else process.env[k] = v
   })
@@ -45,6 +45,20 @@ describe('docstore-migrate fence helpers', () => {
     expect(fenceTuning.clientOptions(rtWith([]))).to.include({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS })
     process.env.MIGRATE_TEST_HOOKS = '1'
     expect(fenceTuning.clientOptions(rtWith([]))).to.deep.equal({ waitQueueTimeoutMS: 100 })
+  })
+
+  it('MIGRATE_FENCE_TEST_MS shortens the cutover waits only with the hooks on, and only as a non-negative whole number', () => {
+    process.env.MIGRATE_FENCE_TEST_MS = '200'
+    expect(fenceTestMs()).to.equal(undefined)
+    process.env.MIGRATE_TEST_HOOKS = '1'
+    expect(fenceTestMs()).to.equal(200)
+    process.env.MIGRATE_FENCE_TEST_MS = '0'
+    expect(fenceTestMs()).to.equal(0)
+    delete process.env.MIGRATE_FENCE_TEST_MS
+    expect(fenceTestMs()).to.equal(undefined)
+    for (const bad of ['-1', 'abc', '1.5', '1e3', ' 5', 'Infinity'])
+      process.env.MIGRATE_FENCE_TEST_MS = bad,
+        expect(() => fenceTestMs(), bad).to.throw(/MIGRATE_FENCE_TEST_MS/)
   })
 
   it('counts the operations $currentOp lists as fenced writes', async () => {

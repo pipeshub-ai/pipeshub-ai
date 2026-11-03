@@ -18,7 +18,7 @@ const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
 const mockedPatch = vi.mocked(apiClient.patch);
 
-describe('ChatApi.fetchAvailableLlms', () => {
+describe('ChatApi.fetchOrgLlmCatalog', () => {
   beforeEach(() => {
     mockedGet.mockReset();
   });
@@ -26,31 +26,31 @@ describe('ChatApi.fetchAvailableLlms', () => {
   it('returns the models array on a well-formed response', async () => {
     const models = [{ modelKey: 'k1', modelName: 'gpt-5', provider: 'openai' }];
     mockedGet.mockResolvedValueOnce({ data: { status: 'success', models, message: '' } });
-    const result = await ChatApi.fetchAvailableLlms();
+    const { models: result } = await ChatApi.fetchOrgLlmCatalog();
     expect(result).toEqual(models);
   });
 
   it('returns an empty array when the response body is null', async () => {
     mockedGet.mockResolvedValueOnce({ data: null });
-    const result = await ChatApi.fetchAvailableLlms();
+    const { models: result } = await ChatApi.fetchOrgLlmCatalog();
     expect(result).toEqual([]);
   });
 
   it('returns an empty array when the response body is undefined', async () => {
     mockedGet.mockResolvedValueOnce({ data: undefined });
-    const result = await ChatApi.fetchAvailableLlms();
+    const { models: result } = await ChatApi.fetchOrgLlmCatalog();
     expect(result).toEqual([]);
   });
 
   it('returns an empty array when models is missing', async () => {
     mockedGet.mockResolvedValueOnce({ data: { status: 'success', message: '' } });
-    const result = await ChatApi.fetchAvailableLlms();
+    const { models: result } = await ChatApi.fetchOrgLlmCatalog();
     expect(result).toEqual([]);
   });
 
   it('returns an empty array when models is a malformed non-array value', async () => {
     mockedGet.mockResolvedValueOnce({ data: { status: 'success', models: { oops: true }, message: '' } });
-    const result = await ChatApi.fetchAvailableLlms();
+    const { models: result } = await ChatApi.fetchOrgLlmCatalog();
     expect(result).toEqual([]);
   });
 });

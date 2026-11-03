@@ -1,5 +1,6 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
-import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
+import { onSessionEnd } from '@/lib/api/session-cache';
+import { OrgApi, type OrgResponse } from '@/app/(main)/workspace/general/api';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { PROJECT_ID_UNASSIGNED } from './project-types';
@@ -852,10 +853,17 @@ export const ChatApi = {
     return { models: Array.isArray(data?.models) ? data.models : [], response: data };
   },
 
-  /** Fetch available LLM models for the org. */
+  /**
+   * The org's LLM models from the session cache that chat uses.
+   * @deprecated Kept for edition code; call `fetchModelsForContext(ASSISTANT_CTX)`.
+   */
   async fetchAvailableLlms(): Promise<AvailableLlmModel[]> {
-    const { models } = await this.fetchOrgLlmCatalog();
-    return models;
+    // Imported on use: that module imports this one.
+    const [{ fetchModelsForContext }, { ASSISTANT_CTX }] = await Promise.all([
+      import('./utils/fetch-models-for-context'),
+      import('./store'),
+    ]);
+    return fetchModelsForContext(ASSISTANT_CTX);
   },
 
   // ── Deprecated: knowledge-hub/nodes approach (commented out) ──
@@ -944,88 +952,35 @@ export interface KnowledgeBaseForChat {
   folders: string[];
 }
 
-// ── AI Models Config ──
-
-/** Shape of a single AI model entry from the config endpoint */
-export interface AiModelConfig {
-  modelKey: string;
-  modelName: string;
-  provider: string;
-  isEnabled: boolean;
-  isDefault?: boolean;
-}
-
-/** Response envelope for GET /api/v1/configurationManager/aiModelsConfig */
-export interface AiModelsConfigResponse {
-  models: AiModelConfig[];
-}
-
-/**
- * Fetch the org's AI model configuration.
- *
- * Returns the list of models available for chat (with their keys and names).
- * Used by the runtime to dynamically pick the model instead of hardcoding.
- */
-export async function fetchAiModelsConfig(): Promise<AiModelConfig[]> {
-  const { data } = await apiClient.get<AiModelsConfigResponse>(
-    '/api/v1/configurationManager/aiModelsConfig',
-  );
-  return data.models ?? [];
-}
-
 // ============================================
 // Organisation
 // ============================================
 
-export interface OrgResponse {
-  _id: string;
-  registeredName: string;
-  shortName: string;
-  domain: string;
-  contactEmail: string;
-  accountType: string;
-  onBoardingStatus: string;
-}
+type OrgWithLogo = { org: OrgResponse | null; logoUrl: string | null };
 
-/**
- * Fetch the current organisation details.
- */
-export async function fetchOrg(): Promise<OrgResponse> {
-  const { data } = await apiClient.get<OrgResponse>('/api/v1/org');
-  return data;
-}
+let _orgWithLogoPromise: Promise<OrgWithLogo> | null = null;
 
-/**
- * Fetch the organisation logo and return it as a data URL.
- * Returns null if no logo is set or the request fails.
- */
-export async function fetchOrgLogo(): Promise<string | null> {
-  try {
-    const response = await apiClient.get<Blob>('/api/v1/org/logo', {
-      responseType: 'blob',
-    });
-    if (response.status === 204) return null;
-    return await blobToDataUrl(response.data);
-  } catch {
-    return null;
-  }
-}
-
-
-let _orgWithLogoPromise: Promise<{ org: OrgResponse | null; logoUrl: string | null }> | null = null;
-
+/** @deprecated Kept for edition code; React code reads `useOrg` / `useOrgLogo`, which logo and org writes update. */
 export function clearOrgWithLogoCache(): void {
   _orgWithLogoPromise = null;
 }
 
-export function fetchOrgWithLogo(): Promise<{ org: OrgResponse | null; logoUrl: string | null }> {
+onSessionEnd(clearOrgWithLogoCache);
+
+/** @deprecated Kept for edition code; React code reads `useOrg` / `useOrgLogo`. */
+export function fetchOrgWithLogo(): Promise<OrgWithLogo> {
   if (!_orgWithLogoPromise) {
-    _orgWithLogoPromise = Promise.allSettled([fetchOrg(), fetchOrgLogo()]).then(
-      ([orgRes, logoRes]) => ({
-        org: orgRes.status === 'fulfilled' ? orgRes.value : null,
-        logoUrl: logoRes.status === 'fulfilled' ? logoRes.value : null,
-      })
+    const promise: Promise<OrgWithLogo> = Promise.allSettled([OrgApi.getOrg(), OrgApi.getLogoUrl()]).then(
+      ([orgRes, logoRes]) => {
+        // A failed org read is asked again next time instead of staying blank for the session.
+        if (orgRes.status === 'rejected' && _orgWithLogoPromise === promise) _orgWithLogoPromise = null;
+        return {
+          org: orgRes.status === 'fulfilled' ? orgRes.value : null,
+          logoUrl: logoRes.status === 'fulfilled' ? logoRes.value : null,
+        };
+      }
     );
+    _orgWithLogoPromise = promise;
   }
   return _orgWithLogoPromise;
 }

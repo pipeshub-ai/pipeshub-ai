@@ -74,10 +74,19 @@ def async_service(os_config):
     return OpenSearchService(os_config)
 
 
+def _settings(interval: str | None, *, default: str | None = None) -> dict:
+    """An indices.get_settings answer for one index (``default`` is what the cluster reports when unset)."""
+    body: dict = {"settings": {"index": {"refresh_interval": interval} if interval else {}}}
+    if default:
+        body["defaults"] = {"index": {"refresh_interval": default}}
+    return {"any-idx": body}
+
+
 @pytest.fixture
 def connected_service(service):
     client = AsyncMock()
     client.indices = AsyncMock()
+    client.indices.get_settings = AsyncMock(return_value=_settings("30s"))
     client.indices.exists = AsyncMock(return_value=False)
     client.indices.create = AsyncMock(return_value={"acknowledged": True})
     client.indices.delete = AsyncMock(return_value={"acknowledged": True})
@@ -690,6 +699,229 @@ class TestDeletePoints:
         assert call_kwargs["index"] == "my-idx"
 
     @pytest.mark.asyncio
+    async def test_a_version_conflict_is_refreshed_and_retried(self, connected_service) -> None:
+        """A document rewritten since the last refresh is skipped by conflicts=proceed; its points would
+        stay searchable after the delete."""
+        client = connected_service.client
+        client.delete_by_query = AsyncMock(side_effect=[{"version_conflicts": 2}, {"version_conflicts": 0}])
+        client.indices.refresh = AsyncMock()
+        filter_expr = FilterExpression(must=[GenericFieldCondition(key="metadata.orgId", value="org1")])
+
+        await connected_service.delete_points("my-idx", filter_expr)
+
+        assert client.delete_by_query.await_count == 2
+        client.indices.refresh.assert_awaited_once_with(index="my-idx")  # after the conflict
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_does_not_clear_raises(self, connected_service) -> None:
+        client = connected_service.client
+        client.delete_by_query = AsyncMock(return_value={"version_conflicts": 1})
+        client.indices.refresh = AsyncMock()
+        filter_expr = FilterExpression(must=[GenericFieldCondition(key="metadata.orgId", value="org1")])
+
+        with pytest.raises(RuntimeError, match="left 1 document"):
+            await connected_service.delete_points("my-idx", filter_expr)
+
+        assert client.delete_by_query.await_count == 6
+
+    @staticmethod
+    def _vr_filter(vrid: str | None) -> FilterExpression:
+        conds = [GenericFieldCondition(key="metadata.orgId", value="org1")]
+        if vrid:
+            conds.append(GenericFieldCondition(key="metadata.virtualRecordId", value=vrid))
+        return FilterExpression(must=conds)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pending", "delete_vrid", "refreshes"),
+        [
+            ({}, "vr-1", False),                  # nothing written since the last refresh
+            ({"vr-2": 0.0}, "vr-1", False),       # another record's points: the delete cannot miss them
+            ({"vr-1": 0.0}, "vr-1", True),        # the same record, just written
+            ({"vr-2": 0.0}, None, True),          # names no record: any pending point could match
+            ({"*": 0.0}, "vr-1", True),           # a pending point that names no record
+        ],
+    )
+    async def test_the_index_is_refreshed_only_when_a_pending_write_could_match(
+        self, connected_service, pending, delete_vrid, refreshes,
+    ) -> None:
+        """A document indexed since the last refresh is invisible to delete_by_query; a refresh per delete
+        would cost a segment per record during a re-index."""
+        import time
+
+        client = connected_service.client
+        client.indices.refresh = AsyncMock()
+        now = time.monotonic()
+        connected_service._unrefreshed = {"my-idx": dict.fromkeys(pending, now)} if pending else {}
+
+        await connected_service.delete_points("my-idx", self._vr_filter(delete_vrid))
+
+        assert (client.indices.refresh.await_count == 1) is refreshes
+        if refreshes:
+            assert "my-idx" not in connected_service._unrefreshed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("setting", "age", "refreshes"),
+        [
+            (_settings("30s"), 60, False),                      # the default the provider creates: visible
+            (_settings("5m"), 60, True),                        # a longer interval: 60 s is not enough
+            (_settings("5m"), 400, False),                      # ...but 400 s is
+            (_settings("500ms"), 10, False),
+            (_settings(None, default="1s"), 10, False),         # unset on the index: the cluster default
+            (_settings("-1"), 10_000, True),                    # never refreshes by itself (bulk load, restore)
+            (_settings("garbage"), 10_000, True),               # unreadable: do not assume
+        ],
+    )
+    async def test_the_visibility_window_follows_the_indexs_refresh_interval(
+        self, connected_service, setting, age, refreshes,
+    ) -> None:
+        import time
+
+        client = connected_service.client
+        client.indices.refresh = AsyncMock()
+        client.indices.get_settings = AsyncMock(return_value=setting)
+        connected_service._unrefreshed = {"my-idx": {"vr-1": time.monotonic() - age}}
+
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-1"))
+
+        assert (client.indices.refresh.await_count == 1) is refreshes
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("setting", [_settings("-1"), "error"])
+    async def test_an_index_that_does_not_refresh_by_itself_refreshes_every_delete(self, connected_service, setting) -> None:
+        """Even with nothing pending from this process: another process's writes would never become visible."""
+        client = connected_service.client
+        client.indices.refresh = AsyncMock()
+        client.indices.get_settings = (
+            AsyncMock(side_effect=RuntimeError("no settings")) if setting == "error" else AsyncMock(return_value=setting)
+        )
+
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-1"))
+
+        client.indices.refresh.assert_awaited_once_with(index="my-idx")
+
+    @pytest.mark.asyncio
+    async def test_the_interval_is_read_once_and_read_again_later(self, connected_service) -> None:
+        client = connected_service.client
+        client.indices.refresh = AsyncMock()
+
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-1"))
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-2"))
+        assert client.indices.get_settings.await_count == 1  # cached
+
+        window, read_at = connected_service._visible_after["my-idx"]
+        connected_service._visible_after["my-idx"] = (window, read_at - 3600)
+        client.indices.get_settings = AsyncMock(return_value=_settings("-1"))  # an operator changed it
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-3"))
+
+        assert client.indices.get_settings.await_count == 1
+        client.indices.refresh.assert_awaited_once()  # now every delete refreshes
+
+    @pytest.mark.asyncio
+    async def test_a_length_bound_on_virtual_records_does_not_pin_anything(self, connected_service) -> None:
+        """A count-only condition carries no id; treating it as one skipped the refresh for a pending point."""
+        import time
+
+        client = connected_service.client
+        client.indices.refresh = AsyncMock()
+        connected_service._unrefreshed = {"my-idx": {"vr-9": time.monotonic()}}
+        flt = FilterExpression(must=[
+            GenericFieldCondition(key="metadata.connectorIds", value="c1"),
+            GenericFieldCondition(key="metadata.virtualRecordId", values_count_lte=1),
+        ])
+
+        await connected_service.delete_points("my-idx", flt)
+
+        client.indices.refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_write_noted_while_the_refresh_ran_stays_pending(self, connected_service) -> None:
+        """The refresh covers what was noted before it began; a concurrent upsert noted during it may not be
+        in it, and a later delete must still refresh for it."""
+        import asyncio
+        import time
+
+        from app.services.vector_db.models import VectorPoint
+
+        client = connected_service.client
+        connected_service._unrefreshed = {"my-idx": {"vr-1": time.monotonic()}}
+
+        async def refresh_while_another_upsert_lands(**_kw: object) -> None:
+            await asyncio.sleep(0.01)
+            connected_service._note_unrefreshed(
+                "my-idx", [VectorPoint(id="n", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-new"}})],
+            )
+
+        client.indices.refresh = AsyncMock(side_effect=refresh_while_another_upsert_lands)
+
+        await connected_service.delete_points("my-idx", self._vr_filter("vr-1"))
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-new"}
+
+    @pytest.mark.asyncio
+    async def test_an_upsert_with_refresh_clears_only_what_it_covered(self, connected_service) -> None:
+        import time
+
+        from app.services.vector_db.models import VectorPoint
+
+        before = time.monotonic() - 1
+        connected_service._unrefreshed = {"my-idx": {"old": before}}
+
+        async def bulk_while_another_upsert_lands(*_a: object, **_kw: object) -> tuple:
+            connected_service._note_unrefreshed(
+                "my-idx", [VectorPoint(id="n", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-new"}})],
+            )
+            return (1, [])
+
+        pts = [VectorPoint(id="a", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-1"}})]
+        with patch(
+            "app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk",
+            new=AsyncMock(side_effect=bulk_while_another_upsert_lands),
+        ):
+            await connected_service.upsert_points("my-idx", pts, refresh=True)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-new"}
+
+    @pytest.mark.asyncio
+    async def test_an_empty_upsert_with_refresh_clears_nothing(self, connected_service) -> None:
+        """No bulk request is sent for no points, so no refresh happens and the pending writes are still pending."""
+        import time
+
+        connected_service._unrefreshed = {"my-idx": {"vr-1": time.monotonic() - 1}}
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=AsyncMock(return_value=(0, []))):
+            await connected_service.upsert_points("my-idx", [], refresh=True)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-1"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refresh", [False, True])
+    async def test_points_of_a_bulk_that_fails_part_way_are_still_noted(self, connected_service, refresh) -> None:
+        from app.services.vector_db.models import VectorPoint
+
+        pts = [VectorPoint(id="a", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-1"}})]
+        with patch(
+            "app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk",
+            new=AsyncMock(side_effect=RuntimeError("chunk 2 failed")),
+        ), pytest.raises(RuntimeError, match="chunk 2"):
+            await connected_service.upsert_points("my-idx", pts, refresh=refresh)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-1"}
+
+    @pytest.mark.asyncio
+    async def test_upserts_are_noted_as_unrefreshed(self, connected_service) -> None:
+        from app.services.vector_db.models import VectorPoint
+
+        pts = [
+            VectorPoint(id="a", dense_vector=[0.1], payload={"metadata": {"virtualRecordId": "vr-1"}}),
+            VectorPoint(id="b", dense_vector=[0.1], payload={"metadata": {"entityId": "e"}}),
+        ]
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=AsyncMock(return_value=(2, []))):
+            await connected_service.upsert_points("my-idx", pts)
+
+        assert set(connected_service._unrefreshed["my-idx"]) == {"vr-1", "*"}
+
+    @pytest.mark.asyncio
     async def test_delete_points_empty_filter(self, connected_service):
         filter_expr = FilterExpression()
         with pytest.raises(ValueError, match="empty filter"):
@@ -1049,6 +1281,8 @@ def _make_os_service():
     svc = OpenSearchService.__new__(OpenSearchService)
     svc.config_service = MagicMock()
     svc._cfg = None
+    svc._unrefreshed = {}
+    svc._visible_after = {}
     client = MagicMock()
     # Make transport.perform_request awaitable for pipeline tests
     client.transport = MagicMock()
@@ -1188,6 +1422,8 @@ class TestOpenSearchDeletePoints:
         """delete_by_query must be called with conflicts/slices/wait_for_completion."""
         from app.services.vector_db.models import FilterExpression, FieldCondition
         svc = _make_os_service()
+        svc.client.delete_by_query = AsyncMock(return_value={"version_conflicts": 0})
+        svc.client.indices.refresh = AsyncMock()
 
         filt = FilterExpression(
             must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]

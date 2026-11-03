@@ -199,6 +199,7 @@ class TestAbstractMethodInventory:
         "ensure_nodes",
         "stage_state_get",
         "stage_states_for_revision",
+        "stage_state_org_for_virtual_record",
         "stage_state_create",
         "stage_state_compare_and_set",
         "stage_states_stale",

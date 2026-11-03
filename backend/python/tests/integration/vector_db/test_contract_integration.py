@@ -114,17 +114,30 @@ class _VectorDBContractTests:
 
             flt = await vector_service.filter_collection(must={"orgId": "org-a", "virtualRecordId": "r1"})
             await vector_service.set_payload(col, {"connectorIds": ["c2"]}, flt, refresh=True)
-            org_a = await vector_service.filter_collection(must={"orgId": "org-a"})
+            await vector_service.delete_points(col, await vector_service.filter_collection(must={"orgId": "org-a"}))
 
-            async def delete_a_until_gone() -> bool:
-                # shortcut: OpenSearch's delete_by_query skips a document rewritten since the index last
-                # refreshed (conflicts=proceed), so the delete is repeated until it has all gone; drop the
-                # loop once fix/opensearch-delete-conflicts (refresh and retry inside delete_points) lands.
-                await vector_service.delete_points(col, org_a, refresh=True)
-                return len(await vector_service.retrieve_points(col, [p.id for p in a_pts])) == 0
-
-            await wait_for(delete_a_until_gone, timeout=VISIBILITY_TIMEOUT)
+            assert await vector_service.retrieve_points(col, [p.id for p in a_pts]) == []
             assert len(await members("org-b")) == 3
+        finally:
+            await vector_service.delete_collection(col)
+
+    async def test_delete_removes_points_rewritten_just_before(self, vector_service) -> None:
+        """A point rewritten right before its delete must still go on every backend."""
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_rewrite_del")
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            points = sample_points("org-del")
+            await vector_service.upsert_points(col, points)
+
+            async def seen() -> bool:
+                return (await vector_service.get_collection_info(col)).points_count == len(points)
+
+            await wait_for(seen, timeout=VISIBILITY_TIMEOUT)
+            await vector_service.upsert_points(col, points)
+            await vector_service.delete_points(col, await vector_service.filter_collection(must={"orgId": "org-del"}))
+
+            assert await vector_service.retrieve_points(col, [p.id for p in points]) == []
         finally:
             await vector_service.delete_collection(col)
 

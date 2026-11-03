@@ -995,6 +995,38 @@ def _agg(total: int, keys: list, cursor: int = 0) -> list:
     return [[total] + [[b"__key", k] for k in keys], cursor]
 
 
+class _SettlingIndex:
+    """A RediSearch whose unsorted result order changes from one call to the next, as it does while
+    documents are still settling in the index. A cursor read is one stable pass."""
+
+    def __init__(self, n: int) -> None:
+        self.keys = [f"records:p{i}".encode() for i in range(n)]
+        self.calls = 0
+
+    async def execute_command(self, *args) -> list:
+        import random
+
+        self.calls += 1
+        if args[0] == "FT.SEARCH":
+            order = random.Random(self.calls).sample(self.keys, len(self.keys))
+            offset, num = int(args[args.index("LIMIT") + 1]), int(args[args.index("LIMIT") + 2])
+            return [len(order), *order[offset:offset + num]]
+        assert args[0] == "FT.AGGREGATE"
+        return [[len(self.keys), *[[b"__key", k] for k in self.keys]], 0]
+
+
+class TestKeyScanUnderAnUnstableOrder:
+    @pytest.mark.asyncio
+    async def test_every_key_is_returned_once_although_the_search_order_moves(self) -> None:
+        """Offset paging over such an order repeats some keys and misses others, so set_payload skipped points."""
+        svc = _make_redis_service()
+        svc.client = _SettlingIndex(5000)
+
+        keys = await svc._keys_matching_filter("records", FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1")]))
+
+        assert sorted(keys) == sorted(svc.client.keys)
+
+
 class TestKeysMatchingFilter:
     @staticmethod
     def _filter() -> FilterExpression:
