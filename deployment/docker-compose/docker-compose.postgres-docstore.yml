@@ -1,8 +1,14 @@
 # Runs the Node API's document store on PostgreSQL (DOC_STORE=postgres) instead of MongoDB.
 #
-#   COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate in .env, the PG_*_PASSWORD values set, then
-#   docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -p pipeshub-ai up -d
-#   (install.sh: PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml)
+# Use it only with BOTH profiles `postgres` and `postgres-migrate` active: it depends on `pgbouncer` and `pipeshub-migrate`, which exist only
+# under them. By hand:
+#
+#   COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate \
+#     docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -p pipeshub-ai up -d --build
+#
+# (with the PG_*_PASSWORD values in .env). With a profile missing, compose stops with
+# `service "pipeshub-ai" depends on undefined service "pgbouncer": invalid compose project`. install.sh adds both profiles whenever
+# this file is listed in PIPESHUB_COMPOSE_OVERRIDES, and keeps them across --reconfigure.
 #
 # Start order: postgres healthy, pgbouncer healthy, pipeshub-migrate completed (exit 0), then the app; if the migration fails the app
 # never starts (see postgres/README.md). This switches the document store of a NEW install: it does not copy data from MongoDB.

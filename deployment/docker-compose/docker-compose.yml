@@ -688,7 +688,9 @@ services:
 
   # Runs the schema migrations straight against postgres (a session and an advisory lock are needed, so not through the pooler; the
   # runner refuses one). Idempotent: a database at head is left as it is, and a failed run changes nothing on an installed database.
-  # Exit 4 means the catalog check found violations. Built from backend/db/Dockerfile.
+  # Exit 4 means the catalog check found violations. Built from backend/db/Dockerfile (a repository checkout is needed). An empty
+  # PG_MIGRATE_PASSWORD is not checked here (compose interpolates inactive services, so a required-variable check would break the default
+  # config); the postgres service refuses to start with one, so the job fails closed.
   pipeshub-migrate:
     profiles: ["postgres-migrate"]
     image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}

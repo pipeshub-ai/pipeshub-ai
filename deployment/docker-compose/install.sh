@@ -112,6 +112,7 @@ FLAG_RECONFIGURE=false
 FLAG_UPGRADE=false
 FLAG_STOP=false
 FLAG_UNINSTALL=false
+FLAG_DELETE_POSTGRES=false
 FLAG_BUILD=false
 FLAG_NO_PULL=false
 FLAG_ROTATE_SIGNING_SECRETS=false
@@ -141,6 +142,8 @@ Options:
                        an image refresh. Pass --yes to skip the confirm prompt.
       --stop           Stop the running stack (data preserved)
       --uninstall      Stop and remove ALL data volumes (irreversible)
+      --delete-postgres  With --uninstall: also delete the PostgreSQL data volume. Without it, --yes keeps that volume and an
+                       interactive run asks.
   -h, --help           Show this help
 
 Environment overrides (bypass prompts in CI):
@@ -174,6 +177,7 @@ while [[ $# -gt 0 ]]; do
     --rotate-signing-secrets) FLAG_ROTATE_SIGNING_SECRETS=true ;;
     --stop)              FLAG_STOP=true ;;
     --uninstall)         FLAG_UNINSTALL=true ;;
+    --delete-postgres)   FLAG_DELETE_POSTGRES=true ;;
     -h|--help)           usage; exit 0 ;;
     *) die "Unknown option: $1. Use --help for usage." ;;
   esac
@@ -265,6 +269,15 @@ optional_env_line() {
   fi
 }
 
+# The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
+# both of them whenever the document-store override is in use, since it depends on services of both.
+opt_in_profiles() {
+  local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
+  for o in postgres postgres-migrate; do
+    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; fi
+  done
+}
+
 # Derive the COMPOSE_PROFILES that the *currently configured* services require,
 # from the canonical selectors persisted in .env. The app talks to whatever
 # DATA_STORE / MESSAGE_BROKER / KV_STORE_TYPE say, so the profiles that start the
@@ -282,11 +295,8 @@ derive_compose_profiles() {
   # Coding sandbox image. Eval skips it: Neo4j stays (search ACLs live there);
   # run_code is the cut. Slim/full keep the profile so SANDBOX_MODE=docker works.
   [[ "${DEPLOY_TYPE:-}" != "eval" ]] && p+=("sandbox")
-  # Opt-in profiles are not derived from a selector: keep the ones the operator already set.
   local o
-  for o in postgres postgres-migrate; do
-    [[ ",${COMPOSE_PROFILES:-}," == *",${o},"* ]] && p+=("$o")
-  done
+  while IFS= read -r o; do [[ -n "$o" ]] && p+=("$o"); done < <(opt_in_profiles)
   # Guard the empty-array case: on bash 3.2 under `set -u`, "${p[*]}" on an empty
   # array is an unbound-variable error.
   if (( ${#p[@]} == 0 )); then echo ""; return; fi
@@ -692,18 +702,25 @@ if $FLAG_UNINSTALL; then
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
-  # `down -v` with the postgres profile would delete the database with everything else: ask first.
+  # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
-  if ! $FLAG_YES && [[ -n "$(docker volume ls -q --filter "name=^${PROJECT_NAME}_postgres_data$" 2>/dev/null)" ]]; then
-    printf "\n  ${BOLD}%s${RESET} [y/N]: " "Also delete the PostgreSQL data volume?"
-    read -r _confirm_pg
-    [[ "${_confirm_pg:-N}" =~ ^[Yy]$ ]] || _keep_pg=true
+  if ! $FLAG_DELETE_POSTGRES && [[ -n "$(docker volume ls -q --filter "name=^${PROJECT_NAME}_postgres_data$" 2>/dev/null)" ]]; then
+    if $FLAG_YES; then
+      _keep_pg=true
+      info "Keeping the PostgreSQL data volume; pass --delete-postgres to remove it too."
+    else
+      printf "\n  ${BOLD}%s${RESET} [y/N]: " "Also delete the PostgreSQL data volume?"
+      read -r _confirm_pg
+      [[ "${_confirm_pg:-N}" =~ ^[Yy]$ ]] || _keep_pg=true
+    fi
   fi
   if $_keep_pg; then
-    # Remove the PostgreSQL containers without -v, then everything else with it.
-    COMPOSE_PROFILES="postgres,postgres-migrate" docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" rm -sf postgres pgbouncer pipeshub-migrate 2>/dev/null || true
-    export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
-    docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
+    # Stop and remove every container (all profiles), then every volume of the project except the database's.
+    docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
+    while IFS= read -r _vol; do
+      [[ -z "$_vol" || "$_vol" == "${PROJECT_NAME}_postgres_data" ]] && continue
+      docker volume rm "$_vol" >/dev/null || warn "Could not remove volume $_vol"
+    done < <(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT_NAME}")
     success "PipesHub stopped and data volumes removed, except PostgreSQL (project ${PROJECT_NAME})."
     exit 0
   fi
@@ -1149,6 +1166,8 @@ if ! ${SKIP_WIZARD:-false}; then
   [[ "$KV_STORE"  == "etcd"  ]] && PROFILES+=("kv-etcd")
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
   [[ "$DEPLOY_TYPE" != "eval" ]] && PROFILES+=("sandbox")
+  # --reconfigure rebuilds the profiles from the choices above: the opt-in ones must survive it (the saved override needs them).
+  while IFS= read -r _opt; do [[ -n "$_opt" ]] && PROFILES+=("$_opt"); done < <(opt_in_profiles)
   COMPOSE_PROFILES="$(IFS=','; echo "${PROFILES[*]}")"
 
   case "$GRAPH_DB" in
@@ -1604,6 +1623,11 @@ if [[ "${COMPOSE_PROFILES:-}" != "$_EXPECTED_PROFILES" ]]; then
   persist_env_var "COMPOSE_PROFILES" "$COMPOSE_PROFILES"
 fi
 
+# The migration job is built from backend/db/Dockerfile, which only a repository checkout has (a curl-installed directory does not).
+if [[ ",${COMPOSE_PROFILES:-}," == *",postgres-migrate,"* && ! -f "${SCRIPT_DIR}/../../backend/db/Dockerfile" ]]; then
+  warn "The postgres-migrate profile builds its job image from backend/db/Dockerfile, which is missing here (run from a repository checkout)."
+fi
+
 # On reuse/upgrade the wizard's interactive port scan was skipped. Confirm the
 # app port is free — or already held by our own stack (a restart) — and otherwise
 # fail clearly instead of letting docker emit a cryptic bind error mid-launch.
@@ -1660,8 +1684,8 @@ if $FLAG_PRINT_ENV_ONLY; then
   [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _build_flag=" --build"
   printf "\n"
   info "Run the following to start PipesHub:"
-  printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose -f %s -p %s up -d%s${RESET}\n\n" \
-    "${COMPOSE_PROFILES:-}" "$COMPOSE_FILE" "$PROJECT_NAME" "$_build_flag"
+  printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose %s -p %s up -d%s${RESET}\n\n" \
+    "${COMPOSE_PROFILES:-}" "${COMPOSE_FILES[*]}" "$PROJECT_NAME" "$_build_flag"
   success "Done (--print-env-only mode; not launching)."
   if $FLAG_ROTATE_SIGNING_SECRETS; then
     warn "ROTATE_SIGNING_SECRETS is set. Recreate the app container so secrets rotate:"

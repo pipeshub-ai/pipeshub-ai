@@ -463,6 +463,8 @@ echo "== In-tree installer: COMPOSE_PROFILES derivation (real functions) =="
 # Pull the real function definitions out of the installer and exercise them in
 # isolation. Both are defined at top level with the closing brace in column 0.
 eval "$(extract_fn derive_compose_profiles "$INNER_INSTALLER")"
+eval "$(extract_fn opt_in_profiles "$INNER_INSTALLER")"
+_saved_env_val() { :; }
 eval "$(extract_fn persist_env_var "$INNER_INSTALLER")"
 
 dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" derive_compose_profiles; }
@@ -512,6 +514,60 @@ wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^ 
   check "wizard pins the major" "$PG_MAJOR" "18"
 )
 check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "9"
+
+# --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
+# survive it, and the project must still render afterwards.
+(
+  work="$TMP_ROOT/reconfigure-pg"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "$COMPOSE_DIR/env.template" "$work/"
+  mkdir -p "$work/postgres"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nREDIS_PASSWORD=r\nNEO4J_PASSWORD=n\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\nPG_NODE_PASSWORD=keepnode\n' >"$work/.env"
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" && pass "--reconfigure with the override exits 0" || fail "--reconfigure with the override exits 0"
+  profiles="$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)"
+  check "--reconfigure keeps both PostgreSQL profiles" ",$profiles," ",postgres,postgres-migrate,"
+  check "--reconfigure keeps the override" "$(cat "$work/.env")" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml"
+  check "--reconfigure keeps an existing PG password" "$(cat "$work/.env")" "PG_NODE_PASSWORD=keepnode"
+  check "the printed command lists the override" "$out" "docker-compose.postgres-docstore.yml"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    (cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-docstore.yml config -q 2>&1) \
+      && pass "the project renders after --reconfigure" || fail "the project renders after --reconfigure"
+  else
+    pass "the project renders after --reconfigure (skipped: no docker compose here)"
+  fi
+  # An override with no profiles saved at all still gets both (a hand-written .env).
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\n' >"$work/.env"
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check "the override alone brings both profiles" ",$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)," ",postgres,postgres-migrate,"
+)
+
+# --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
+(
+  work="$TMP_ROOT/uninstall-pg"; mkdir -p "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "$work/"
+  printf 'COMPOSE_PROJECT_NAME=testproj\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\nCOMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate\n' >"$work/.env"
+  cat >"$work/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $*" >>"$DOCKER_LOG"
+case "$1 $2" in
+  "volume ls") printf 'testproj_postgres_data\ntestproj_neo4j_data\ntestproj_redis_data\n' ;;
+esac
+exit 0
+STUB
+  chmod +x "$work/bin/docker"
+  run_uninstall() { : >"$work/docker.log"; (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --uninstall "$@" </dev/null >"$work/out.txt" 2>&1); }
+  run_uninstall --yes
+  log="$(cat "$work/docker.log")"
+  check "--uninstall --yes does not run down -v" "$([[ "$log" != *"down -v"* ]] && echo no-down-v)" "no-down-v"
+  check "--uninstall --yes removes the other volumes" "$log" "volume rm testproj_neo4j_data"
+  check "--uninstall --yes keeps the PostgreSQL volume" "$([[ "$log" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
+  check "--uninstall --yes says how to delete it" "$(cat "$work/out.txt")" "--delete-postgres"
+  run_uninstall --yes --delete-postgres
+  check "--uninstall --yes --delete-postgres removes everything with down -v" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  run_uninstall --delete-postgres </dev/null
+  check "--uninstall --delete-postgres alone does not ask about PostgreSQL" "$([[ "$(cat "$work/out.txt")" != *"Also delete the PostgreSQL"* ]] && echo no-prompt)" "no-prompt"
+)
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="
 # `docker compose up -d` reuses a cached :latest without re-checking the registry,

@@ -14,14 +14,16 @@ Secrets: the passwords come from the container environment. They are not in the 
 
 ## Document store on PostgreSQL (`docker-compose.postgres-docstore.yml`)
 
-For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). In `.env`: `COMPOSE_PROFILES=...,postgres,postgres-migrate` (`install.sh` keeps these two if you set them) and all the `PG_*_PASSWORD` values, then
+For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). Run from a repository checkout (the migration job's image is built from `backend/db/Dockerfile`). The simplest way is the installer: `PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml ./install.sh`, which sets both profiles and generates the passwords. By hand, put the `PG_*_PASSWORD` values in `.env` and activate **both** profiles `postgres` and `postgres-migrate` (the override depends on services of both):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml up -d --build
-# install.sh: PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml
+COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate \
+  docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml -p pipeshub-ai up -d --build
 ```
 
-Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-ai`. The migration job (`python -m db.migrate`, built from `backend/db/Dockerfile`) connects straight to `postgres` (it needs a session and an advisory lock, so not through the pooler) as `pipeshub_migrate`. It is idempotent: a database at head is left as it is, an installed database is upgraded in one transaction, and a failed run changes nothing there. Exit 4 means the catalog or security-surface check found violations; the app is then not started: read `docker compose logs pipeshub-migrate`. Exit codes: `backend/db/README.md`. The app uses the pooled node and jobs logins (`PG_NODE_URL`, `PG_JOBS_URL`, built from the passwords). This does not copy existing MongoDB data, and MongoDB and the other stores stay as they are.
+If a profile is missing, compose stops with `service "pipeshub-ai" depends on undefined service "pgbouncer": invalid compose project`; add the profile.
+
+Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-ai`. The migration job (`python -m db.migrate`, built from `backend/db/Dockerfile`) connects straight to `postgres` (it needs a session and an advisory lock, so not through the pooler) as `pipeshub_migrate`. It is idempotent: a database at head is left as it is, an installed database is upgraded in one transaction, and a failed run changes nothing there. Exit 4 means the catalog or security-surface check found violations; the app is then not started: read `docker compose logs pipeshub-migrate`. Exit codes: `backend/db/README.md`. The app uses the pooled node and jobs logins (`PG_NODE_URL`, `PG_JOBS_URL`, built from the passwords). Cross-process change push (PostgreSQL `LISTEN`) is off, because the pooled node login cannot LISTEN and no direct address (`PG_LISTEN_URL`) is set; only the PostgreSQL-backed key-value store and queue (`KV_STORE_TYPE=postgres`, `MESSAGE_BROKER=postgres`) use it, and this override sets neither. A failed migration stops the app from starting. This does not copy existing MongoDB data, and MongoDB and the other stores stay as they are. `./install.sh --uninstall --yes` keeps the PostgreSQL data volume; add `--delete-postgres` to remove it (an interactive uninstall asks).
 
 ## Data volume
 
