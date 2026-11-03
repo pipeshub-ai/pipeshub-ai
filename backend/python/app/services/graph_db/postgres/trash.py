@@ -84,7 +84,7 @@ class TrashMixin(PgBase):
 
         async def go(tx: Tx) -> dict:
             roots, docs, _ = await self._walk_subtree(tx, record_ids, connector_id, list(follow), within_folder_id, include_trashed=include_trashed_roots, live_only=True)
-            marked = await tx.fetch("""/* pipeshub:graph.soft_delete_records */ UPDATE graph.nodes v SET doc = jsonb_strip_nulls(v.doc || jsonb_build_object('isDeleted', true,
+            marked = await tx.fetch("""/* pipeshub:graph.soft_delete_records */ UPDATE graph.nodes v SET doc = (v.doc - 'deletedByUserId') || jsonb_strip_nulls(jsonb_build_object('isDeleted', true,
                     'deletedAtTimestamp', $3::bigint, 'deleteSource', $4::text, 'deleteBatchId', $5::text, 'deletedByUserId', $6::text))
                 WHERE v.org_id = $1 AND v.coll = 'records' AND v.id = ANY($2::text[]) AND coalesce((v.doc->>'isDeleted')::boolean, false) = false
                 RETURNING v.id, v.doc->>'recordName' AS name, v.doc->>'virtualRecordId' AS vrid, v.doc->>'orgId' AS oid""",

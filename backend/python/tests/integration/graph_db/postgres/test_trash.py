@@ -281,3 +281,15 @@ async def test_reindex_of_a_record_group_returns_the_connector_for_the_caller_to
     assert (await p.reindex_record_group_records("g1", -5, "ext-me", p.org))["depth"] == 0                       # any other negative depth is direct records only
     await p.batch_update_nodes([{"id": "c1", "isActive": False}], "apps")
     assert (await p.reindex_record_group_records("g1", 0, "ext-me", p.org))["code"] == 409
+
+
+async def test_moving_a_record_to_the_trash_changes_only_the_trash_fields(pg_db) -> None:
+    """A null inside the record (a nested one) is the record's own: only the trash fields are written, and a delete without a user clears an earlier one."""
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "n1", meta={"keep": None, "x": 1}), rec(p.org, "n2", deletedByUserId="old")], "records")
+    await trash(p, ["n1"])
+    doc = await p.get_document("n1", "records")
+    assert doc["isDeleted"] is True and doc["deletedByUserId"] == "u1" and doc["meta"] == {"keep": None, "x": 1}
+    await p.soft_delete_records(["n2"], "c1", delete_source="USER", batch_id="b2", deleted_by_user_id=None)
+    doc = await p.get_document("n2", "records")
+    assert doc["isDeleted"] is True and "deletedByUserId" not in doc
