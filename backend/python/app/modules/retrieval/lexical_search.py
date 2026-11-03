@@ -38,6 +38,8 @@ class LexicalSearchResult:
     # Collections that could not be searched, of how many were asked.
     failed_collections: int = 0
     searched_collections: int = 0
+    # A store answered from a partial search, so the lists may miss chunks (see degraded_notice).
+    degraded: bool = False
 
     @classmethod
     def nothing(cls, queries: int) -> "LexicalSearchResult":
