@@ -83,6 +83,41 @@ class _VectorDBContractTests:
         finally:
             await vector_service.delete_collection(col)
 
+    async def test_empty_list_filter_matches_nothing(self, vector_service) -> None:
+        """An empty list narrows to nothing in a search, an allow-list and a
+        delete. Dropping it would leave the org condition alone and reach every
+        point of the org."""
+        col = make_collection(f"{vector_service.get_service_name()}_empty")
+        org = "org-empty"
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            await vector_service.upsert_points(col, sample_points(org))
+
+            async def matched(**clauses) -> int:
+                flt = await vector_service.filter_collection(**clauses)
+                return len((await vector_service.scroll(col, flt, limit=10)).points)
+
+            async def org_has_all() -> bool:
+                return await matched(must={"orgId": org}) == 3
+
+            await wait_for(org_has_all, timeout=VISIBILITY_TIMEOUT)
+            assert await matched(must={"orgId": org, "virtualRecordId": ["r1"]}) == 1
+            assert await matched(must={"orgId": org, "virtualRecordId": []}) == 0
+            assert await matched(must={"orgId": org, "virtualRecordId": [None]}) == 0
+            assert await matched(must={"orgId": org}, should={"virtualRecordId": []}) == 0
+            assert await matched(
+                must={"orgId": org}, should={"virtualRecordId": [], "connectorIds": ["c1"]}
+            ) == 0
+            # Excluding nothing excludes nothing.
+            assert await matched(must={"orgId": org}, must_not={"virtualRecordId": []}) == 3
+
+            await vector_service.delete_points(
+                col, await vector_service.filter_collection(must={"orgId": org, "virtualRecordId": []})
+            )
+            assert await matched(must={"orgId": org}) == 3
+        finally:
+            await vector_service.delete_collection(col)
+
     async def test_scroll_pagination(self, vector_service):
         provider = vector_service.get_service_name()
         col = make_collection(f"{provider}_scroll")
