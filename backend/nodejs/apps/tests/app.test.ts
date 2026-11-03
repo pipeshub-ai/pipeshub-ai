@@ -942,10 +942,20 @@ describe('Application', () => {
       '/api/v1/oauth-clients',
       '/mcp',
       '/.well-known',
-      '/auth.md',
-      '/.well-known/auth.md',
       '/api/v1/docs',
     ];
+
+    // The catch-all layers (static, SPA, query) match every path, so require a
+    // layer that matches the guide's path and not a neighbour.
+    it('should mount the agent auth guide at /auth.md and /.well-known/auth.md', () => {
+      const stack = (expressApp as any)._router?.stack || [];
+      const mountedOnly = (path: string, neighbour: string) =>
+        stack.some(
+          (layer: any) => layer.regexp?.test(path) && !layer.regexp.test(neighbour),
+        );
+      expect(mountedOnly('/auth.md', '/not-auth.md')).to.be.true;
+      expect(mountedOnly('/.well-known/auth.md', '/.well-known/jwks.json')).to.be.true;
+    });
 
     for (const route of expectedRoutes) {
       it(`should mount route: ${route}`, () => {
