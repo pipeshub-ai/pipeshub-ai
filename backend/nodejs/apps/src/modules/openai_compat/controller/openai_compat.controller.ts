@@ -1,7 +1,13 @@
 import { Request, Response } from 'express';
 
 import { AppConfig } from '../../tokens_manager/config/config';
-import { AgentRunError, runAgent } from '../utils/agent-run';
+import {
+  ChatModel,
+  chatModelsFrom,
+  findChatModel,
+  toOpenAIModel,
+} from '../utils/chat-models';
+import { ChatRunError, runChat } from '../utils/chat-run';
 import {
   asString,
   chatAnswerChunks,
@@ -25,9 +31,12 @@ import {
 type Handler = (req: Request, res: Response) => Promise<void>;
 
 const KEEPALIVE_MS = 10_000;
-const MODEL_PAGE_LIMIT = 200;
-// shortcut: lists at most 10 pages (2,000 agents); page by `search` if an org outgrows it.
-const MODEL_MAX_PAGES = 10;
+
+export interface OpenAICompatDeps {
+  appConfig: AppConfig;
+  /** The stored AI models config (decrypted), or null when none is saved. */
+  readModels: () => Promise<unknown>;
+}
 
 function flush(res: Response): void {
   (res as Response & { flush?: () => void }).flush?.();
@@ -45,21 +54,21 @@ function sendError(
 }
 
 function sendRunError(res: Response, error: unknown): void {
-  if (error instanceof AgentRunError) {
+  if (error instanceof ChatRunError) {
     const param = error.code === 'model_not_found' ? 'model' : null;
     sendError(res, error.status, error.message, error.code, param);
   } else {
-    sendError(res, 502, 'The agent run failed', 'server_error');
+    sendError(res, 502, 'The chat run failed', 'server_error');
   }
 }
 
 function runErrorParts(error: unknown): { code: string; message: string } {
-  return error instanceof AgentRunError
+  return error instanceof ChatRunError
     ? { code: error.code, message: error.message }
-    : { code: 'server_error', message: 'The agent run failed' };
+    : { code: 'server_error', message: 'The chat run failed' };
 }
 
-/** Aborts the agent run when the client goes away before the answer. */
+/** Aborts the chat run when the client goes away before the answer. */
 function abortOnClose(res: Response): AbortController {
   const controller = new AbortController();
   res.on('close', () => {
@@ -97,14 +106,34 @@ function requestBody(req: Request): Json {
   return isJson(body) ? body : {};
 }
 
-function requireModel(body: Json, res: Response): string | null {
-  const model = asString(body.model).trim();
-  if (model === '') {
+async function chatModels(deps: OpenAICompatDeps): Promise<ChatModel[]> {
+  return chatModelsFrom(await deps.readModels());
+}
+
+/** The requested model, or null after answering 400/404 for a missing or unknown one. */
+async function resolveModel(
+  deps: OpenAICompatDeps,
+  body: Json,
+  res: Response,
+): Promise<ChatModel | null> {
+  const id = asString(body.model).trim();
+  if (id === '') {
     sendError(
       res,
       400,
-      'model is required: pass an agent id from GET /models',
+      'model is required: pass a model id from GET /models',
       'missing_required_parameter',
+      'model',
+    );
+    return null;
+  }
+  const model = findChatModel(await chatModels(deps), id);
+  if (model === undefined) {
+    sendError(
+      res,
+      404,
+      `The model '${id}' does not exist`,
+      'model_not_found',
       'model',
     );
     return null;
@@ -112,69 +141,11 @@ function requireModel(body: Json, res: Response): string | null {
   return model;
 }
 
-interface AgentModel {
-  id: string;
-  object: 'model';
-  created: number;
-  owned_by: 'pipeshub';
-  name: string;
-  description: string;
-}
-
-function toModel(agent: Json): AgentModel {
-  const id = asString(agent._key);
-  const createdMs = Number(agent.createdAtTimestamp);
-  return {
-    id,
-    object: 'model',
-    created: Number.isFinite(createdMs) ? Math.floor(createdMs / 1000) : 0,
-    owned_by: 'pipeshub',
-    name: asString(agent.name) || id,
-    description: asString(agent.description),
-  };
-}
-
-async function listAgentModels(
-  appConfig: AppConfig,
-  req: Request,
-): Promise<AgentModel[]> {
-  const data: AgentModel[] = [];
-  for (let page = 1; page <= MODEL_MAX_PAGES; page++) {
-    const query = `page=${String(page)}&limit=${String(MODEL_PAGE_LIMIT)}`;
-    const response = await fetch(
-      `${appConfig.esBackend.replace(/\/$/, '')}/api/v1/agents?${query}`,
-      {
-        headers: {
-          Authorization: req.headers.authorization ?? '',
-          Accept: 'application/json',
-        },
-      },
-    );
-    const body: unknown = await response.json().catch(() => null);
-    if (response.status !== 200 || !isJson(body)) {
-      const error = isJson(body) && isJson(body.error) ? body.error : {};
-      throw new AgentRunError(
-        asString(error.message) || 'Could not list agents',
-        response.status === 200 ? 502 : response.status,
-        'server_error',
-      );
-    }
-    const agents = Array.isArray(body.agents) ? body.agents.filter(isJson) : [];
-    data.push(
-      ...agents
-        .filter((a) => asString(a._key) !== '' && a.isDeleted !== true)
-        .map(toModel),
-    );
-    if (!isJson(body.pagination) || body.pagination.hasNext !== true) break;
-  }
-  return data;
-}
-
 export const listModels =
-  (appConfig: AppConfig): Handler =>
-  async (req, res) => {
+  (deps: OpenAICompatDeps): Handler =>
+  async (_req, res) => {
     try {
-      const data = await listAgentModels(appConfig, req);
+      const data = (await chatModels(deps)).map(toOpenAIModel);
       res.status(200).json({ object: 'list', data });
     } catch (error) {
       sendRunError(res, error);
@@ -182,12 +153,13 @@ export const listModels =
   };
 
 export const retrieveModel =
-  (appConfig: AppConfig): Handler =>
+  (deps: OpenAICompatDeps): Handler =>
   async (req, res) => {
-    const id = req.params.modelId ?? '';
+    const params = req.params as Record<string, string | undefined>;
+    // Ids can hold a slash (`provider/name`), so the route captures the rest of the path.
+    const id = params['0'] ?? params.modelId ?? '';
     try {
-      const models = await listAgentModels(appConfig, req);
-      const found = models.find((m) => m.id === id);
+      const found = findChatModel(await chatModels(deps), id);
       if (found === undefined) {
         sendError(
           res,
@@ -198,18 +170,16 @@ export const retrieveModel =
         );
         return;
       }
-      res.status(200).json(found);
+      res.status(200).json(toOpenAIModel(found));
     } catch (error) {
       sendRunError(res, error);
     }
   };
 
 export const createChatCompletion =
-  (appConfig: AppConfig): Handler =>
+  (deps: OpenAICompatDeps): Handler =>
   async (req, res) => {
     const body = requestBody(req);
-    const model = requireModel(body, res);
-    if (model === null) return;
     const query = turnsToQuery(chatMessagesToTurns(body.messages));
     if (query === '') {
       sendError(
@@ -221,17 +191,26 @@ export const createChatCompletion =
       );
       return;
     }
+    let chatModel: ChatModel | null;
+    try {
+      chatModel = await resolveModel(deps, body, res);
+    } catch (error) {
+      sendRunError(res, error);
+      return;
+    }
+    if (chatModel === null) return;
+    const model = chatModel.id;
     const stream = body.stream === true;
     const id = newChatCompletionId();
     const controller = abortOnClose(res);
     let keepalive: (() => void) | null = null;
 
     try {
-      const answer = await runAgent({
-        baseUrl: appConfig.esBackend,
-        frontendUrl: appConfig.frontendUrl,
+      const answer = await runChat({
+        baseUrl: deps.appConfig.esBackend,
+        frontendUrl: deps.appConfig.frontendUrl,
         authorization: req.headers.authorization ?? '',
-        agentKey: model,
+        model: chatModel,
         query,
         signal: controller.signal,
         onFrame: () => keepalive?.(),
@@ -249,8 +228,8 @@ export const createChatCompletion =
         return;
       }
       // shortcut: the answer is sent as one delta when the run finishes, because the
-      // agent rewrites streamed text (citations, narration before tool calls);
-      // stream tokens live once the agent stream exposes a final-text-only channel.
+      // assistant rewrites streamed text (citations, narration before tool calls);
+      // stream tokens live once the chat stream exposes a final-text-only channel.
       for (const chunk of chatAnswerChunks(id, model, answer)) {
         writeData(res, chunk);
       }
@@ -268,11 +247,9 @@ export const createChatCompletion =
   };
 
 export const createResponse =
-  (appConfig: AppConfig): Handler =>
+  (deps: OpenAICompatDeps): Handler =>
   async (req, res) => {
     const body = requestBody(req);
-    const model = requireModel(body, res);
-    if (model === null) return;
     const previousResponseId = asString(body.previous_response_id) || null;
     const conversationId =
       previousResponseId === null
@@ -303,6 +280,15 @@ export const createResponse =
       );
       return;
     }
+    let chatModel: ChatModel | null;
+    try {
+      chatModel = await resolveModel(deps, body, res);
+    } catch (error) {
+      sendRunError(res, error);
+      return;
+    }
+    if (chatModel === null) return;
+    const model = chatModel.id;
 
     const stream = body.stream === true;
     const createdAt = Math.floor(Date.now() / 1000);
@@ -319,11 +305,11 @@ export const createResponse =
     };
 
     try {
-      const answer = await runAgent({
-        baseUrl: appConfig.esBackend,
-        frontendUrl: appConfig.frontendUrl,
+      const answer = await runChat({
+        baseUrl: deps.appConfig.esBackend,
+        frontendUrl: deps.appConfig.frontendUrl,
         authorization: req.headers.authorization ?? '',
-        agentKey: model,
+        model: chatModel,
         query,
         conversationId,
         signal: controller.signal,

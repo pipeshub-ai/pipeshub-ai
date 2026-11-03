@@ -85,7 +85,7 @@ import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
-import { createOpenAIAgentsRouter } from './modules/openai_agents/routes/openai_agents.routes';
+import { createOpenAICompatRouter } from './modules/openai_compat/routes/openai_compat.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -776,10 +776,10 @@ export class Application {
       '/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
     );
-    // OpenAI-compatible agents (models = the caller's agents); base URL `{origin}/api/v1/openai`.
+    // OpenAI-compatible chat (models = configured chat LLMs); base URL `{origin}/api/v1/openai`.
     this.app.use(
       '/api/v1/openai',
-      createOpenAIAgentsRouter(this.esAgentContainer),
+      createOpenAICompatRouter(this.esAgentContainer),
     );
     this.app.use(
       '/api/v1',

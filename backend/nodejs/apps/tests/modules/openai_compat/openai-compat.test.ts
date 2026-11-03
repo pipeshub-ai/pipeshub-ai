@@ -8,15 +8,17 @@ import {
   createChatCompletion,
   createResponse,
   listModels,
-} from '../../../src/modules/openai_agents/controller/openai_agents.controller';
-import { answerFromFrames, readSSE } from '../../../src/modules/openai_agents/utils/agent-run';
+  retrieveModel,
+} from '../../../src/modules/openai_compat/controller/openai_compat.controller';
+import { chatModelsFrom, findChatModel } from '../../../src/modules/openai_compat/utils/chat-models';
+import { answerFromFrames, readSSE } from '../../../src/modules/openai_compat/utils/chat-run';
 import {
   citationsToAnnotations,
   conversationIdFromResponseId,
   newResponseId,
   responsesInputToTurns,
   turnsToQuery,
-} from '../../../src/modules/openai_agents/utils/openai-format';
+} from '../../../src/modules/openai_compat/utils/openai-format';
 
 const CONV = '0123456789abcdef01234567';
 
@@ -40,7 +42,7 @@ async function* chunks(...parts: string[]) {
   for (const part of parts) yield new TextEncoder().encode(part);
 }
 
-describe('openai_agents format', () => {
+describe('openai_compat format', () => {
   it('passes a lone user turn through unchanged', () => {
     expect(turnsToQuery([{ role: 'user', text: 'hello' }])).to.equal('hello');
   });
@@ -92,7 +94,7 @@ describe('openai_agents format', () => {
   });
 });
 
-describe('openai_agents agent stream', () => {
+describe('openai_compat chat stream', () => {
   it('splits frames across chunk boundaries and CRLF', async () => {
     const out: string[] = [];
     for await (const f of readSSE(chunks('event: A\r\ndata: {"x"', ':1}\r\n\r\nevent: B\ndata: 2\n\n'))) {
@@ -138,7 +140,57 @@ describe('openai_agents agent stream', () => {
   });
 });
 
-describe('openai_agents routes against a fake agent API', () => {
+const llm = (modelKey: string, provider: string, model: string, extra: Record<string, unknown> = {}) => ({
+  modelKey,
+  provider,
+  configuration: { model },
+  ...extra,
+});
+
+describe('openai_compat chat models', () => {
+  it('lists one model per stored name, default first, with friendly names only for single-model entries', () => {
+    const models = chatModelsFrom({
+      llm: [
+        llm('k-anthropic', 'anthropic', 'claude-sonnet-5', { modelFriendlyName: 'Sonnet' }),
+        llm('k-openai', 'openAI', 'gpt-5, gpt-5-mini', { isDefault: true, modelFriendlyName: 'ignored' }),
+      ],
+      embedding: [llm('k-emb', 'openAI', 'text-embedding-3-small')],
+    });
+    expect(models.map((m) => [m.id, m.modelKey, m.friendlyName])).to.deep.equal([
+      ['gpt-5', 'k-openai', ''],
+      ['gpt-5-mini', 'k-openai', ''],
+      ['claude-sonnet-5', 'k-anthropic', 'Sonnet'],
+    ]);
+  });
+
+  it('qualifies a name configured twice, and resolves either form when unambiguous', () => {
+    const models = chatModelsFrom({
+      llm: [
+        llm('k1aaaaaaaa', 'openAI', 'gpt-5'),
+        llm('k2bbbbbbbb', 'azureOpenAI', 'gpt-5'),
+        llm('k3cccccccc', 'azureOpenAI', 'gpt-5'),
+        llm('k4dddddddd', 'gemini', 'gemini-3-pro'),
+      ],
+    });
+    expect(models.map((m) => m.id)).to.deep.equal([
+      'openAI/gpt-5',
+      'azureOpenAI/gpt-5@k2bbbbbb',
+      'azureOpenAI/gpt-5@k3cccccc',
+      'gemini-3-pro',
+    ]);
+    expect(findChatModel(models, 'openAI/gpt-5')?.modelKey).to.equal('k1aaaaaaaa');
+    expect(findChatModel(models, 'gemini/gemini-3-pro')?.modelKey).to.equal('k4dddddddd');
+    expect(findChatModel(models, 'gpt-5')).to.equal(undefined);
+    expect(findChatModel(models, 'azureOpenAI/gpt-5')).to.equal(undefined);
+  });
+
+  it('returns no models when nothing is configured', () => {
+    expect(chatModelsFrom(null)).to.deep.equal([]);
+    expect(chatModelsFrom({ llm: [{ provider: 'openAI', configuration: { model: 'x' } }] })).to.deep.equal([]);
+  });
+});
+
+describe('openai_compat routes against a fake chat API', () => {
   let upstream: Server;
   let api: Server;
   let base = '';
@@ -147,42 +199,34 @@ describe('openai_agents routes against a fake agent API', () => {
   before(async () => {
     const fake = express();
     fake.use(express.json());
-    fake.get('/api/v1/agents', (req, res) => {
-      calls.push({ path: req.path, body: req.query, auth: req.headers.authorization });
-      res.json({
-        agents: [{ _key: 'agent-1', name: 'HR', description: 'd', createdAtTimestamp: 2000 }],
-        pagination: { hasNext: false },
-      });
-    });
-    fake.get('/api/v1/agents/:agentKey', (req, res) => {
-      if (req.params.agentKey === 'missing') {
-        res.status(404).json({ error: { code: 'HTTP_NOT_FOUND', message: 'Agent not found' } });
-        return;
-      }
-      res.json({ agent: { _key: req.params.agentKey } });
-    });
-    fake.post(/\/api\/v1\/agents\/([^/]+)\/conversations(\/.*)?\/stream$/, (req, res) => {
+    fake.post(/\/api\/v1\/conversations(\/.*)?\/stream$/, (req, res) => {
       calls.push({ path: req.path, body: req.body, auth: req.headers.authorization });
-      if (req.path.includes('broken')) {
-        res.status(500).json({ error: { code: 'INTERNAL', message: 'Agent backend down' } });
+      if (req.body.query === 'boom') {
+        res.status(500).json({ error: { code: 'INTERNAL', message: 'Chat backend down' } });
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(frame('CUSTOM', { name: 'conversation_created', value: { conversationId: CONV } }));
-      res.end(finished('Hello from the agent'));
+      res.end(finished('Hello from the assistant'));
     });
     upstream = await new Promise<Server>((r) => {
       const s = fake.listen(0, '127.0.0.1', () => r(s));
     });
-    const appConfig = {
-      esBackend: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
-      frontendUrl: 'https://app.test',
-    } as any;
+    const deps = {
+      appConfig: {
+        esBackend: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
+        frontendUrl: 'https://app.test',
+      } as any,
+      readModels: async () => ({
+        llm: [llm('key-gpt', 'openAI', 'gpt-5', { isDefault: true, modelFriendlyName: 'GPT 5', updatedAt: 2000 })],
+      }),
+    };
     const app = express();
     app.use(express.json());
-    app.get('/models', listModels(appConfig));
-    app.post('/chat/completions', createChatCompletion(appConfig));
-    app.post('/responses', createResponse(appConfig));
+    app.get('/models', listModels(deps));
+    app.get('/models/*', retrieveModel(deps));
+    app.post('/chat/completions', createChatCompletion(deps));
+    app.post('/responses', createResponse(deps));
     api = await new Promise<Server>((r) => {
       const s = app.listen(0, '127.0.0.1', () => r(s));
     });
@@ -205,28 +249,43 @@ describe('openai_agents routes against a fake agent API', () => {
       body: JSON.stringify(body),
     });
 
-  it('lists agents as models with the caller token', async () => {
-    const res = await fetch(`${base}/models`, { headers: { Authorization: 'Bearer t' } });
-    const body = await res.json();
-    expect(body.data).to.deep.equal([
-      { id: 'agent-1', object: 'model', created: 2, owned_by: 'pipeshub', name: 'HR', description: 'd' },
-    ]);
-    expect(calls[0]!.auth).to.equal('Bearer t');
+  it('lists the configured chat models', async () => {
+    const body = await (await fetch(`${base}/models`)).json();
+    expect(body).to.deep.equal({
+      object: 'list',
+      data: [{ id: 'gpt-5', object: 'model', created: 2000, owned_by: 'openAI', name: 'GPT 5' }],
+    });
   });
 
-  it('answers a chat completion and starts a quick-mode agent conversation', async () => {
-    const res = await post('/chat/completions', { model: 'agent-1', messages: [{ role: 'user', content: 'hi' }] });
+  it('retrieves one model by id or provider/name, and 404s an unknown one', async () => {
+    expect((await (await fetch(`${base}/models/gpt-5`)).json()).id).to.equal('gpt-5');
+    expect((await (await fetch(`${base}/models/openAI/gpt-5`)).json()).id).to.equal('gpt-5');
+    const res = await fetch(`${base}/models/nope`);
+    expect(res.status).to.equal(404);
+    expect((await res.json()).error.code).to.equal('model_not_found');
+  });
+
+  it('runs the assistant with the chosen model and the caller token', async () => {
+    const res = await post('/chat/completions', { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] });
     const body = await res.json();
     expect(res.status).to.equal(200);
     expect(body.object).to.equal('chat.completion');
-    expect(body.choices[0].message.content).to.equal('Hello from the agent');
-    expect(calls[0]).to.deep.include({ path: '/api/v1/agents/agent-1/conversations/stream', auth: 'Bearer t' });
-    expect(calls[0]!.body).to.deep.equal({ query: 'hi', chatMode: 'quick' });
+    expect(body.model).to.equal('gpt-5');
+    expect(body.choices[0].message.content).to.equal('Hello from the assistant');
+    expect(calls[0]).to.deep.include({ path: '/api/v1/conversations/stream', auth: 'Bearer t' });
+    expect(calls[0]!.body).to.deep.equal({
+      query: 'hi',
+      chatMode: 'agent',
+      modelKey: 'key-gpt',
+      modelName: 'gpt-5',
+      modelProvider: 'openAI',
+      modelFriendlyName: 'GPT 5',
+    });
   });
 
   it('streams chat completion chunks ending in [DONE]', async () => {
     const text = await (await post('/chat/completions', {
-      model: 'agent-1',
+      model: 'gpt-5',
       stream: true,
       messages: [{ role: 'user', content: 'hi' }],
     })).text();
@@ -234,11 +293,11 @@ describe('openai_agents routes against a fake agent API', () => {
     expect(data.at(-1)).to.equal('[DONE]');
     const parsed = data.slice(0, -1).map((d) => JSON.parse(d));
     expect(parsed[0].choices[0].delta.role).to.equal('assistant');
-    expect(parsed.map((p) => p.choices[0].delta.content ?? '').join('')).to.equal('Hello from the agent');
+    expect(parsed.map((p) => p.choices[0].delta.content ?? '').join('')).to.equal('Hello from the assistant');
     expect(parsed.at(-1).choices[0].finish_reason).to.equal('stop');
   });
 
-  it('answers an unknown agent with model_not_found before starting a run', async () => {
+  it('answers an unknown model with model_not_found before starting a run', async () => {
     const res = await post('/chat/completions', { model: 'missing', messages: [{ role: 'user', content: 'hi' }] });
     const body = await res.json();
     expect(res.status).to.equal(404);
@@ -247,36 +306,36 @@ describe('openai_agents routes against a fake agent API', () => {
   });
 
   it('passes the upstream status and message through when the run cannot start', async () => {
-    const res = await post('/responses', { model: 'broken', input: 'hi', stream: true });
+    const res = await post('/responses', { model: 'gpt-5', input: 'boom', stream: true });
     const body = await res.json();
     expect(res.status).to.equal(500);
-    expect(body.error).to.include({ code: 'server_error', message: 'Agent backend down' });
+    expect(body.error).to.include({ code: 'server_error', message: 'Chat backend down' });
   });
 
   it('rejects a request without model or user text', async () => {
     expect((await post('/chat/completions', { messages: [{ role: 'user', content: 'x' }] })).status).to.equal(400);
-    expect((await post('/responses', { model: 'agent-1', input: [] })).status).to.equal(400);
+    expect((await post('/responses', { model: 'gpt-5', input: [] })).status).to.equal(400);
     expect(calls).to.have.length(0);
   });
 
   it('continues the conversation named by previous_response_id', async () => {
-    const first = await (await post('/responses', { model: 'agent-1', input: 'hi' })).json();
+    const first = await (await post('/responses', { model: 'gpt-5', input: 'hi' })).json();
     expect(first.status).to.equal('completed');
-    expect(first.output_text).to.equal('Hello from the agent');
+    expect(first.output_text).to.equal('Hello from the assistant');
     expect(conversationIdFromResponseId(first.id)).to.equal(CONV);
 
-    await post('/responses', { model: 'agent-1', input: 'again', previous_response_id: first.id });
-    expect(calls[1]!.path).to.equal(`/api/v1/agents/agent-1/conversations/${CONV}/messages/stream`);
-    expect(calls[1]!.body.query).to.equal('again');
+    await post('/responses', { model: 'gpt-5', input: 'again', previous_response_id: first.id });
+    expect(calls[1]!.path).to.equal(`/api/v1/conversations/${CONV}/messages/stream`);
+    expect(calls[1]!.body).to.include({ query: 'again', modelKey: 'key-gpt', chatMode: 'agent' });
   });
 
   it('refuses a previous_response_id this server did not issue', async () => {
-    const res = await post('/responses', { model: 'agent-1', input: 'x', previous_response_id: 'resp_nope' });
+    const res = await post('/responses', { model: 'gpt-5', input: 'x', previous_response_id: 'resp_nope' });
     expect(res.status).to.equal(400);
   });
 
   it('streams Responses events in order with sequence numbers', async () => {
-    const text = await (await post('/responses', { model: 'agent-1', input: 'hi', stream: true })).text();
+    const text = await (await post('/responses', { model: 'gpt-5', input: 'hi', stream: true })).text();
     const events = text
       .split('\n\n')
       .filter((b) => b.includes('data: '))
@@ -293,6 +352,6 @@ describe('openai_agents routes against a fake agent API', () => {
       'response.completed',
     ]);
     expect(events.map((e) => e.sequence_number)).to.deep.equal(events.map((_, i) => i));
-    expect(events.at(-1).response.output[0].content[0].text).to.equal('Hello from the agent');
+    expect(events.at(-1).response.output[0].content[0].text).to.equal('Hello from the assistant');
   });
 });

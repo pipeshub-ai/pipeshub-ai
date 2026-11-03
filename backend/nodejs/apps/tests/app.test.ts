@@ -54,7 +54,7 @@ import * as artifactsRoutes from '../src/modules/artifacts/routes/artifacts.rout
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
 import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
-import * as openaiAgentsRoutes from '../src/modules/openai_agents/routes/openai_agents.routes';
+import * as openaiCompatRoutes from '../src/modules/openai_compat/routes/openai_compat.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
@@ -186,7 +186,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
   sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
-  sandbox.stub(openaiAgentsRoutes, 'createOpenAIAgentsRouter').returns(dummyRouter);
+  sandbox.stub(openaiCompatRoutes, 'createOpenAICompatRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);

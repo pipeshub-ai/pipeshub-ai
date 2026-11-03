@@ -1,22 +1,23 @@
 /**
- * Runs one agent turn by calling this server's own agent stream route, so the
- * OpenAI endpoints get the same auth, permission, history and persistence as
- * the dashboard without a second copy of that pipeline.
+ * Runs one assistant turn by calling this server's own chat stream route, so
+ * the OpenAI endpoints get the same auth, permissions, knowledge search, history
+ * and persistence as the dashboard chat without a second copy of that pipeline.
  */
 import {
-  AgentAnswer,
+  ChatAnswer,
   asString,
   citationsToAnnotations,
   isJson,
   Json,
 } from './openai-format';
+import { ChatModel } from './chat-models';
 
-export interface AgentRunRequest {
+export interface ChatRunRequest {
   /** `appConfig.esBackend`: this Node API's own origin. */
   baseUrl: string;
   frontendUrl: string;
   authorization: string;
-  agentKey: string;
+  model: ChatModel;
   query: string;
   /** Continue this conversation instead of starting one. */
   conversationId?: string | null;
@@ -27,7 +28,7 @@ export interface AgentRunRequest {
   onFrame?: () => void;
 }
 
-export class AgentRunError extends Error {
+export class ChatRunError extends Error {
   constructor(
     message: string,
     public readonly status: number,
@@ -107,7 +108,7 @@ function answerFromConversation(
   conversation: Json,
   conversationId: string | null,
   frontendUrl: string,
-): AgentAnswer {
+): ChatAnswer {
   const messages = Array.isArray(conversation.messages)
     ? conversation.messages.filter(isJson)
     : [];
@@ -122,14 +123,14 @@ function answerFromConversation(
   };
 }
 
-/** The root run's answer from the frames of one agent stream. */
+/** The root run's answer from the frames of one chat stream. */
 export async function answerFromFrames(
   frames: AsyncIterable<SSEFrame>,
   frontendUrl: string,
   knownConversationId: string | null,
   onConversation?: (conversationId: string) => void,
   onFrame?: () => void,
-): Promise<AgentAnswer> {
+): Promise<ChatAnswer> {
   let conversationId = knownConversationId;
   if (conversationId !== null) onConversation?.(conversationId);
   for await (const frame of frames) {
@@ -149,8 +150,8 @@ export async function answerFromFrames(
         onConversation?.(id);
       }
     } else if (type === 'RUN_ERROR') {
-      throw new AgentRunError(
-        asString(data.message) || 'The agent run failed',
+      throw new ChatRunError(
+        asString(data.message) || 'The chat run failed',
         502,
         asString(data.code) || 'server_error',
       );
@@ -166,35 +167,20 @@ export async function answerFromFrames(
       );
     }
   }
-  throw new AgentRunError(
-    'The agent stream ended without an answer',
+  throw new ChatRunError(
+    'The chat stream ended without an answer',
     502,
     'server_error',
   );
 }
 
-export async function runAgent(req: AgentRunRequest): Promise<AgentAnswer> {
-  const key = encodeURIComponent(req.agentKey);
+export async function runChat(req: ChatRunRequest): Promise<ChatAnswer> {
   const base = req.baseUrl.replace(/\/$/, '');
-  // The stream route answers an unknown agent with 200 + RUN_ERROR after saving an
-  // empty conversation; look it up first so clients get a 404 and nothing is saved.
-  // Other statuses (an OAuth token without agent:read) fall through to the run.
-  const lookup = await fetch(`${base}/api/v1/agents/${key}`, {
-    headers: { Authorization: req.authorization, Accept: 'application/json' },
-    signal: req.signal,
-  });
-  if (lookup.status === 404) {
-    throw new AgentRunError(
-      `The model '${req.agentKey}' does not exist or you do not have access to it`,
-      404,
-      'model_not_found',
-    );
-  }
-  await lookup.body?.cancel();
   const path =
     req.conversationId != null && req.conversationId !== ''
-      ? `/api/v1/agents/${key}/conversations/${encodeURIComponent(req.conversationId)}/messages/stream`
-      : `/api/v1/agents/${key}/conversations/stream`;
+      ? `/api/v1/conversations/${encodeURIComponent(req.conversationId)}/messages/stream`
+      : '/api/v1/conversations/stream';
+  const { model } = req;
   const response = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: {
@@ -202,7 +188,17 @@ export async function runAgent(req: AgentRunRequest): Promise<AgentAnswer> {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ query: req.query, chatMode: 'quick' }),
+    body: JSON.stringify({
+      query: req.query,
+      // The dashboard's default mode: the assistant searches the caller's knowledge and uses tools.
+      chatMode: 'agent',
+      modelKey: model.modelKey,
+      modelName: model.modelName,
+      ...(model.provider !== '' ? { modelProvider: model.provider } : {}),
+      ...(model.friendlyName !== ''
+        ? { modelFriendlyName: model.friendlyName }
+        : {}),
+    }),
     signal: req.signal,
   });
   if (!response.ok || response.body === null) {
@@ -212,10 +208,10 @@ export async function runAgent(req: AgentRunRequest): Promise<AgentAnswer> {
       ? raw
       : (/^data: ?(.*)$/m.exec(raw)?.[1] ?? '');
     const status = response.status === 0 ? 502 : response.status;
-    throw new AgentRunError(
+    throw new ChatRunError(
       upstreamErrorMessage(
         parseJson(jsonText),
-        `Agent request failed (${String(status)})`,
+        `Chat request failed (${String(status)})`,
       ),
       status,
       codeForStatus(status),

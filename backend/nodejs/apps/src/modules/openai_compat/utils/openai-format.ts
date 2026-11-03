@@ -1,6 +1,6 @@
 /**
  * Pure mappers between OpenAI's Chat Completions / Responses wire shapes and
- * a PipesHub agent run. No I/O here, so every shape is unit-tested.
+ * a PipesHub assistant run. No I/O here, so every shape is unit-tested.
  */
 import { randomBytes } from 'crypto';
 
@@ -12,7 +12,7 @@ export const isJson = (value: unknown): value is Json =>
 export const asString = (value: unknown): string =>
   typeof value === 'string' ? value : '';
 
-export interface AgentAnswer {
+export interface ChatAnswer {
   conversationId: string;
   text: string;
   annotations: UrlCitation[];
@@ -55,9 +55,9 @@ export interface TurnMessage {
 }
 
 /**
- * One agent query from the client's turns. A single user turn goes through
+ * One assistant query from the client's turns. A single user turn goes through
  * as-is; anything more is folded into one plain-text transcript, because the
- * agent routes refuse client-supplied history as structured turns (CE-19) and
+ * chat routes refuse client-supplied history as structured turns (CE-19) and
  * keep their own history only for conversations they created.
  */
 export function turnsToQuery(
@@ -203,7 +203,7 @@ function chatAnnotation(a: UrlCitation): Json {
 export function chatCompletion(
   id: string,
   model: string,
-  answer: AgentAnswer,
+  answer: ChatAnswer,
 ): Json {
   return {
     id,
@@ -247,7 +247,7 @@ export function chatChunk(
 export function chatAnswerChunks(
   id: string,
   model: string,
-  answer: AgentAnswer,
+  answer: ChatAnswer,
 ): Json[] {
   return [
     chatChunk(id, model, {
@@ -264,7 +264,7 @@ export function chatAnswerChunks(
 
 export function responseMessageItem(
   itemId: string,
-  answer: AgentAnswer | null,
+  answer: ChatAnswer | null,
 ): Json {
   return {
     type: 'message',
@@ -317,7 +317,7 @@ export function responseObject(
 /** The Responses stream events for a finished answer, after `response.created`/`in_progress`. */
 export function responseAnswerEvents(
   itemId: string,
-  answer: AgentAnswer,
+  answer: ChatAnswer,
 ): Json[] {
   const part = {
     type: 'output_text',
