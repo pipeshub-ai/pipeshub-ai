@@ -83,6 +83,26 @@ class _VectorDBContractTests:
         finally:
             await vector_service.delete_collection(col)
 
+    async def test_delete_removes_points_rewritten_just_before(self, vector_service) -> None:
+        """A point rewritten right before its delete must still go on every backend."""
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_rewrite_del")
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            points = sample_points("org-del")
+            await vector_service.upsert_points(col, points)
+
+            async def seen() -> bool:
+                return (await vector_service.get_collection_info(col)).points_count == len(points)
+
+            await wait_for(seen, timeout=VISIBILITY_TIMEOUT)
+            await vector_service.upsert_points(col, points)
+            await vector_service.delete_points(col, await vector_service.filter_collection(must={"orgId": "org-del"}))
+
+            assert await vector_service.retrieve_points(col, [p.id for p in points]) == []
+        finally:
+            await vector_service.delete_collection(col)
+
     async def test_scroll_pagination(self, vector_service):
         provider = vector_service.get_service_name()
         col = make_collection(f"{provider}_scroll")
