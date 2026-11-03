@@ -67,6 +67,7 @@ describe('GET /api/v1/agent-activity', () => {
     const app = express()
     app.use('/api/v1/agent-activity', createAgentActivityRouter(container))
     app.use((err: any, _req: any, res: any, _next: any) => res.status(err?.statusCode ?? 500).json({ message: err?.message })) // eslint-disable-line @typescript-eslint/no-unused-vars
+    if (server) await new Promise<void>((r) => server!.close(() => r()))
     await new Promise<void>((r) => { server = app.listen(0, () => r()) })
     const res = await fetch(`http://127.0.0.1:${(server!.address() as { port: number }).port}/api/v1/agent-activity${query}`)
     return { status: res.status, body: (await res.json()) as any }

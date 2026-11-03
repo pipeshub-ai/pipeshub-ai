@@ -2804,7 +2804,7 @@ components:
           type: string
         tokenId:
           type: string
-          description: The token's `jti`. Never the token or a hash of it.
+          description: The id of the stored token (the id the token lists and revocation use). Never the token or a hash of it.
         tokenKind:
           type: string
           enum: [pat, oauth, delegated]
@@ -25222,8 +25222,10 @@ paths:
         and every MCP tool call is one row. Successful `GET` calls are rolled up into one row per
         token, route and minute, with `count` giving how many calls it stands for.
 
-        Only the route template (for example `/api/v1/knowledgeBase/{kbId}/records` written with
-        a `:kbId` placeholder), the method, the status and who made the call are kept. Request and
+        A row keeps who made the call (user, token id and kind, OAuth client), the client's
+        user-agent product token and channel, the method, the route template (for example
+        `/api/v1/knowledgeBase/{kbId}/records` written with a `:kbId` placeholder), the MCP tool
+        name, the status, whether a scope was missing, the duration and the request id. Request and
         response bodies, query strings, addresses and token values are never stored. Rows are kept
         for 30 days.
 
@@ -25257,7 +25259,7 @@ paths:
         - name: tokenId
           in: query
           required: false
-          description: Only calls made with this token (its `jti`).
+          description: Only calls made with this token (its id in the token lists).
           schema:
             type: string
             maxLength: 128
