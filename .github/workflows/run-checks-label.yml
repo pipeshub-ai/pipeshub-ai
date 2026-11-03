@@ -2,23 +2,50 @@ name: run-checks label
 
 # Pull request CI runs only when someone adds the `run-checks` label. Each CI
 # workflow starts on that `labeled` event; this one removes the label straight
-# away so adding it again re-runs CI on the latest commit. A label removed with
-# GITHUB_TOKEN starts no workflow, so the removal cancels nothing.
+# away so adding it again re-runs CI on the latest commit. A push starts no CI,
+# so this also cancels the runs still going on the commit it replaced.
+#
+# pull_request_target so the token can write on fork pull requests too. It runs
+# the base branch's copy of this file and never fetches or runs pull request
+# code: it only calls the GitHub API with the event's numbers and SHAs.
 on:
-  pull_request:
-    types: [labeled]
+  pull_request_target:
+    types: [labeled, synchronize]
 
 permissions:
+  actions: write
   pull-requests: write
 
 jobs:
   remove-label:
-    if: github.event.label.name == 'run-checks'
+    if: github.event.action == 'labeled' && github.event.label.name == 'run-checks'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Remove the label
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label 'run-checks'
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$NUMBER/labels/run-checks" > /dev/null
+
+  cancel-superseded:
+    if: github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel CI still running on earlier commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER")
+          for status in queued in_progress; do
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?event=pull_request&status=$status&per_page=100" \
+              | jq -r --argjson pr "$pr" '.workflow_runs[]
+                  | select(.head_branch == $pr.head.ref
+                      and .head_repository.full_name == $pr.head.repo.full_name
+                      and .head_sha != $pr.head.sha)
+                  | .id'
+          done | while read -r id; do
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel" > /dev/null || echo "run $id: already finished"
+          done

@@ -168,6 +168,8 @@ REVIEWED_SCRIPTS = {
     "5ecb769ad73c21cabf679e16e9789e26703180160bf1f99c256550d611d66a27": "post-release-probe.yml: Open or update an alert issue",
     "8ea3df04f08a086a5bd673a77689303e2ebeca9cec5674345406b568089dcdd8": "post-release-probe.yml: Close the alert once healthy again",
     "0df893cfbecb5f8cf7dc7516c1a45f00ef89eacacf9753b3890673d5c0a8b69d": "dco.yml: Check Signed-off-by on every commit",
+    "f7255e81a8cbc2efe210ccb6a9598bd4cb5206ab23f14d5c41e6e06d6f3d6d9d": "run-checks-label.yml: Remove the label",
+    "febdba1f48dab454bebb158e0601bcf003d6d7afbe5ae6032a7c71cac09284f1": "run-checks-label.yml: Cancel CI still running on earlier commits",
 }
 
 
@@ -422,9 +424,11 @@ PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
 # edit, or another file of the same name, fails until a security reviewer reads
 # it and pins the new hash. A pinned file that is not in the tree has nothing to
 # check. dco.yml is a sign-off check: it reads a pull request's commits through
-# the API and fetches or checks out nothing of it.
+# the API and fetches or checks out nothing of it. run-checks-label.yml removes a
+# label and cancels superseded runs through the API; it fetches nothing either.
 PINNED_PRIVILEGED_WORKFLOWS = {
     "dco.yml": "4d2ad49edd32c642d57e6e997fa5cb6d1cf3ee7f59a46b3b609b7d6102169310",
+    "run-checks-label.yml": "83a69dbb07e968bac4bd9695418818f56642779b2ef92bafaf6ad61f61aa918b",
 }
 
 _FORK_GUARDS = {
