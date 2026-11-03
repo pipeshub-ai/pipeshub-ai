@@ -1,4 +1,5 @@
-"""Where an org's vector rows live: the placement worker's side.
+"""Where an org's vector rows live: the placement worker's side, and the vector indexes of every points leaf (built when a leaf is
+made, and later by the ``build-indexes`` job for a space registered after the leaf existed).
 
 ``retrieval`` tables are partitioned LIST (org_id). An org without its own leaf shares the DEFAULT tree (hash leaves). The placement
 policy gives an org a leaf of its own BEFORE it writes, so nothing is ever moved: a per-org index, plan-time pruning and an O(1) drop.
@@ -11,7 +12,10 @@ per table, so a kill leaves nothing behind. An org that already has rows in the 
 offline operation, not this worker's).
 """
 import logging
+import os
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import psycopg
 from sqlalchemy import Connection
@@ -31,6 +35,10 @@ class Refused(Exception):
     """The placement rules refuse this request (the org already has rows in the shared tree, or an orphan leaf holds rows)."""
 
 
+def is_org_id(org: str) -> bool:
+    return bool(_ORG.fullmatch(org))
+
+
 def leaf_name(root: str, org: str) -> str:
     if root not in ROOTS:
         raise ValueError(f"not a partitioned root: {root!r}")
@@ -43,12 +51,16 @@ def _attached(owner: Connection, leaf: str) -> bool:
     return bool(owner.exec_driver_sql("SELECT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = to_regclass(%s))", (leaf,)).scalar())
 
 
+def parse_version(text: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in text.split("."))
+
+
 def _caps(owner: Connection) -> tuple[int, tuple[int, ...]]:
     major = int(owner.exec_driver_sql("SELECT current_setting('server_version_num')::int / 10000").scalar())
     v = owner.exec_driver_sql("SELECT extversion FROM pg_extension WHERE extname = 'vector'").scalar()
     if v is None:
         raise RuntimeError("the vector extension is not installed")
-    return major, tuple(int(x) for x in v.split("."))
+    return major, parse_version(v)
 
 
 def safe_mode(owner: Connection) -> bool:
@@ -57,7 +69,7 @@ def safe_mode(owner: Connection) -> bool:
     return _caps(owner)[1] < SAFE_BELOW
 
 
-def _index_specs(owner: Connection, leaf: str) -> list[tuple[str, str]]:
+def _index_specs(owner: Connection, leaf: str, spaces: list[tuple[int, int]]) -> list[tuple[str, str]]:
     """(name, definition after the index name) of the indexes of one points leaf: per embedding space the partial bit HNSW (hamming) on
     the binary-quantised column (the halfvec rerank reads the heap). Left out on PostgreSQL 18 before pgvector 0.8.3 (a Hamming
     regression)."""
@@ -65,7 +77,6 @@ def _index_specs(owner: Connection, leaf: str) -> list[tuple[str, str]]:
     if major >= 18 and ver < (0, 8, 3):
         return []
     short = leaf.split(".")[1]
-    spaces = [(int(r[0]), int(r[1])) for r in owner.exec_driver_sql("SELECT space_id, dim FROM retrieval.embedding_spaces ORDER BY 1")]
     return [(f"{short}_bq_s{sid}", f"ON {leaf} USING hnsw ((bq::bit({int(dim)})) ext.bit_hamming_ops) "
                                    f"WITH (m = 16, ef_construction = 128) WHERE space_id = {int(sid)}") for sid, dim in spaces]
 
@@ -85,10 +96,8 @@ def _place(owner: Connection, root: str, leaf: str, org: str) -> None:
             owner.exec_driver_sql(f"ALTER TABLE {leaf} SET ({POSTINGS_OPTIONS})")
         owner.exec_driver_sql("SELECT kernel.apply_rls_partition(%s::regclass, %s::regclass)", (leaf, root))
         if root == POINTS:                       # indexed with the leaf, before it is attached: plain CREATE INDEX on an empty table is instant
-            if safe_mode(owner):
-                owner.exec_driver_sql(f"ALTER TABLE {leaf} SET (vacuum_index_cleanup = off)")
-            for name, tail in _index_specs(owner, leaf):
-                owner.exec_driver_sql(f"CREATE INDEX {name} {tail}")
+            set_cleanup_option(owner, leaf)
+            create_leaf_indexes(owner, leaf)
         owner.exec_driver_sql(f"ALTER TABLE {root} ATTACH PARTITION {leaf} FOR VALUES IN ('{org}')")
         owner.exec_driver_sql("COMMIT")
     except BaseException:
@@ -149,3 +158,146 @@ def run_requests(owner: Connection, jobs: psycopg.Connection, limit: int | None 
             jobs.execute("UPDATE retrieval.placement_requests SET done_at = now(), note = NULL WHERE org_id = %s", (org,))
             done.append(org)
     return done, failed, refused
+
+
+# ---- vector indexes -----------------------------------------------------------------------------------------------------
+
+def points_leaves(owner: Connection) -> list[str]:
+    """Every leaf (a partition with no partitions below it) of the points tree."""
+    return [r[0] for r in owner.exec_driver_sql(
+        "SELECT relid::regclass::text FROM pg_partition_tree(%s::regclass) WHERE isleaf ORDER BY 1", (POINTS,))]
+
+
+def _spaces(owner: Connection) -> list[tuple[int, int]]:
+    return [(int(r[0]), int(r[1])) for r in owner.exec_driver_sql("SELECT space_id, dim FROM retrieval.embedding_spaces ORDER BY 1")]
+
+
+# ---- build sizing -------------------------------------------------------------------------------------------------------
+# pgvector builds the HNSW graph in maintenance_work_mem and falls back to a slow on-disk insert when it does not fit. Measured on
+# random bit vectors, 100k points (pgvector 0.8.6): the graph needs 843 B per point in memory at 1024 bits (the index is 435 B per
+# point), 761 B at 256 bits and 1,137 B at 3072 bits; so memory per point is about 730 B + bits / 8 (within 2 %). A build that fits ran in 38.6 s serial, 16.1 s with
+# 2 workers and 9.6 s with 4; one that spilled (64 MB) took 69.0 s serial.
+GRAPH_BYTES = 730
+BUILD_HEADROOM = 1.15           # the graph grows with the rows loaded while the build runs
+DEFAULT_BUILD_MB = 512         # the ceiling for one build; parallel builds need as much shared memory (the compose files give 1 GB)
+DEFAULT_BUILD_WORKERS = 2
+UNANALYSED_ROW_BYTES = 600     # beside the vector, when a leaf has no row estimate yet
+
+
+@dataclass(frozen=True)
+class BuildPlan:
+    rows: int
+    needed_mb: int          # what the graph needs to stay in memory
+    memory_mb: int          # what the build is given: the need, within the ceiling and never below the server's default
+    workers: int
+    fits: bool              # False: the ceiling is below the need, so the build spills (slower, still correct)
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    """An integer setting from the environment; an empty, malformed or too small value falls back to the default with a warning
+    (a typo in a deployment file must not stop the placement worker)."""
+    raw = os.environ.get(name, "")
+    if raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = minimum - 1
+    if value < minimum:
+        log.warning("%s=%r is not an integer of at least %d: using %d", name, raw, minimum, default)
+        return default
+    return value
+
+
+def build_plan(rows: int, dim: int, version: tuple[int, ...], *, ceiling_mb: int | None = None, workers: int | None = None,
+               floor_mb: int = 64) -> BuildPlan:
+    """Memory and workers for one HNSW build of ``rows`` points of ``dim`` bits. Before pgvector 0.8.2 a parallel build can overflow,
+    so it is serial there. ``VECTOR_BUILD_MEMORY_MB`` and ``VECTOR_BUILD_WORKERS`` set the ceiling and the workers (read at each
+    call, bad values ignored); ``floor_mb`` is the least a build gets (the server's own ``maintenance_work_mem``)."""
+    ceiling_mb = ceiling_mb if ceiling_mb is not None else _env_int("VECTOR_BUILD_MEMORY_MB", DEFAULT_BUILD_MB, 1)
+    workers = workers if workers is not None else _env_int("VECTOR_BUILD_WORKERS", DEFAULT_BUILD_WORKERS, 0)
+    need = -(-int(rows * (GRAPH_BYTES + dim / 8) * BUILD_HEADROOM) // 2**20)
+    return BuildPlan(rows, need, max(floor_mb, min(need, ceiling_mb)), workers if version >= (0, 8, 2) else 0, need <= ceiling_mb)
+
+
+def leaf_rows(owner: Connection, leaf: str, dim: int) -> int:
+    """The rows of a leaf as the planner knows them (the owner cannot count them: row-level security applies to it)."""
+    est, size = owner.exec_driver_sql("SELECT reltuples::bigint, pg_relation_size(oid) FROM pg_class WHERE oid = %s::regclass", (leaf,)).one()
+    return int(est) if est >= 0 else int(size // (2 * dim + UNANALYSED_ROW_BYTES))
+
+
+def _plan(owner: Connection, leaf: str, rows: int | None, spaces: list[tuple[int, int]]) -> BuildPlan:
+    dim = max((d for _, d in spaces), default=0)
+    floor = int(owner.exec_driver_sql("SELECT pg_size_bytes(current_setting('maintenance_work_mem')) / 1048576").scalar())
+    return build_plan(leaf_rows(owner, leaf, dim) if rows is None else rows, dim, _caps(owner)[1], floor_mb=max(64, floor))
+
+
+def set_cleanup_option(owner: Connection, leaf: str, lock_timeout: str | None = None) -> bool:
+    """In HNSW safe mode, give a leaf that has no ``vacuum_index_cleanup`` setting the value ``off``. Idempotent, and a setting that is
+    already there (ours, or an operator's) is never changed or reset, so a leaf that has one is not touched or locked; after a pgvector
+    upgrade an operator removes the setting with ``ALTER TABLE ... RESET (vacuum_index_cleanup)``. With ``lock_timeout`` a leaf that cannot
+    be locked in time raises instead of waiting (the caller holds the migrate lock). Returns whether the leaf was changed."""
+    if not safe_mode(owner):
+        return False
+    have = owner.exec_driver_sql("SELECT coalesce(reloptions, '{}') FROM pg_class WHERE oid = %s::regclass", (leaf,)).scalar()
+    if any(o.startswith("vacuum_index_cleanup=") for o in have):
+        return False
+    if lock_timeout:
+        owner.exec_driver_sql(f"SET lock_timeout = '{lock_timeout}'")
+    try:
+        owner.exec_driver_sql(f"ALTER TABLE {leaf} SET (vacuum_index_cleanup = off)")
+    finally:
+        if lock_timeout:
+            owner.exec_driver_sql("RESET lock_timeout")
+    return True
+
+
+def create_leaf_indexes(owner: Connection, leaf: str, rows: int = 0) -> None:
+    """Inside the caller's transaction, on a leaf that is not attached yet: plain CREATE INDEX (instant on an empty leaf, waits for
+    no other transaction's snapshot, and a kill leaves nothing). ``rows`` is how many rows were moved into it (sizes the build)."""
+    spaces = _spaces(owner)
+    specs = _index_specs(owner, leaf, spaces)
+    if specs:
+        plan = _plan(owner, leaf, rows, spaces)
+        owner.exec_driver_sql(f"SET LOCAL maintenance_work_mem = '{plan.memory_mb}MB'")
+        owner.exec_driver_sql(f"SET LOCAL max_parallel_maintenance_workers = {plan.workers}")
+    for name, tail in specs:
+        owner.exec_driver_sql(f"CREATE INDEX {name} {tail}")
+
+
+def build_leaf_indexes(owner: Connection, leaf: str, spaces: list[tuple[int, int]] | None = None,
+                       report: Callable[[str], None] | None = None) -> list[str]:
+    """Outside a transaction, on a live leaf: the same indexes built concurrently and checked valid (idempotent), with the memory and
+    workers :func:`build_plan` gives them. Returns the names."""
+    spaces = _spaces(owner) if spaces is None else spaces
+    specs = _index_specs(owner, leaf, spaces)
+    if not specs:
+        return []
+    plan = _plan(owner, leaf, None, spaces)
+    if report:
+        report(f"{leaf}: ~{plan.rows} rows, graph needs ~{plan.needed_mb} MB, build gets {plan.memory_mb} MB and {plan.workers} worker(s)"
+               + ("" if plan.fits else " (does not fit: the build spills to disk and is slower)"))
+    owner.exec_driver_sql(f"SET maintenance_work_mem = '{plan.memory_mb}MB'")
+    owner.exec_driver_sql(f"SET max_parallel_maintenance_workers = {plan.workers}")
+    try:
+        for name, tail in specs:
+            ddl.ensure_index(owner, f"retrieval.{name}", f"CREATE INDEX CONCURRENTLY {name} {tail}")
+    finally:
+        owner.exec_driver_sql("RESET maintenance_work_mem")
+        owner.exec_driver_sql("RESET max_parallel_maintenance_workers")
+    return [n for n, _ in specs]
+
+
+def leaves_missing_indexes(owner: Connection) -> list[str]:
+    """The leaves of the points tree that lack an index of some registered embedding space. A leaf is indexed when it is made, for the spaces
+    that exist then: the shared hash leaves, and any leaf made before its org's space was registered, need this later."""
+    spaces = _spaces(owner)
+    if not spaces:
+        return []
+    out = []
+    for leaf in points_leaves(owner):
+        names = [n for n, _ in _index_specs(owner, leaf, spaces)]
+        have = owner.exec_driver_sql("SELECT count(*) FROM pg_indexes WHERE schemaname = 'retrieval' AND indexname = ANY(%s)", (names,)).scalar() if names else 0
+        if names and have < len(names):
+            out.append(leaf)
+    return out
