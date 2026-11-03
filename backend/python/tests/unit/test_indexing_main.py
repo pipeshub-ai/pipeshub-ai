@@ -1041,6 +1041,21 @@ class TestRecoverCutShortEnrichment:
 
         assert {o for _, o in seen} == {"org-1"} and {"scan", "update"} <= {k for k, _ in seen}
 
+    async def test_a_stuck_record_of_an_inactive_external_org_is_still_recovered(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(0)])
+
+        async def orgs(*, active: bool = True, is_external: bool = False, **_: object) -> list[dict]:
+            return [{"_key": "org-1"}] if (active, is_external) == (False, True) else []
+
+        gp.get_all_orgs = AsyncMock(side_effect=orgs)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
     async def test_a_failed_connector_read_never_turns_it_auto_index_off(self) -> None:
         from app.indexing_main import recover_in_progress_records
 

@@ -580,13 +580,16 @@ async def recover_in_progress_records(
 
         # One organisation at a time: its page read and each record's follow-up are bound to it. The orgId filter
         # keeps a store that scans globally from returning the same records for every org.
+        # Every organisation, active or not, internal or external: the scan this replaces was global, so a stuck record
+        # in any of them is still recovered.
         with system("stale_recovery"):
-            org_ids = [
-                str(o.get("_key") or o.get("id"))
-                for o in await graph_provider.get_all_orgs(active=True) or []
-                if o.get("_key") or o.get("id")
-            ]
-        for org_id in org_ids:
+            org_ids: set[str] = set()
+            for active in (True, False):
+                for is_external in (False, True):
+                    for o in await graph_provider.get_all_orgs(active=active, is_external=is_external) or []:
+                        if o.get("_key") or o.get("id"):
+                            org_ids.add(str(o.get("_key") or o.get("id")))
+        for org_id in sorted(org_ids):
             with for_org(org_id, job="stale_recovery"):
                 for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
                     offset = 0
