@@ -82,12 +82,13 @@ jobs:
       - name: Start PostgreSQL ${{ matrix.pg }} in memory, with no fsync
         # The tests create and drop databases and run migrations all the time. A runner's disk made each commit wait for a flush, and a
         # container's layered filesystem is slower still: the cluster lives on a tmpfs and is started without the flushes, because it is
-        # thrown away after the job. (The image's data directory differs between majors, so PGDATA is set.)
+        # thrown away after the job. JIT is off: the organisation-isolation catalog view is costly enough to be compiled on every call, which took
+        # about 15 s of each planted-defect test. (The image's data directory differs between majors, so PGDATA is set.)
         run: |
           docker run -d --name pg --network host --tmpfs /pgdata:rw,mode=0700 -e PGDATA=/pgdata -e POSTGRES_HOST_AUTH_METHOD=trust \
-            pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+            pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c jit=off
           for _ in $(seq 1 60); do pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
-          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c 'SELECT version()' -c 'SHOW fsync' -c 'SHOW synchronous_commit' -c 'SHOW data_directory'
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c 'SELECT version()' -c 'SHOW fsync' -c 'SHOW synchronous_commit' -c "SHOW jit" -c 'SHOW data_directory'
 
       - name: Lints
         if: ${{ matrix.shard == 'misc' && matrix.pg == '17' }}      # the lints do not depend on the PostgreSQL major
