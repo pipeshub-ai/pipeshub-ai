@@ -11,6 +11,7 @@ export interface MessagePair {
   answer: string;
   citationMaps: CitationMaps;
   confidence?: ConfidenceLevel;
+  searchDegraded?: boolean;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
@@ -54,6 +55,8 @@ type AssistantCustom = {
   persistedParts?: MessagePart[];
   status?: 'stopped';
   streamError?: ChatStreamErrorInfo;
+  /** A search behind this answer was answered from a partial search. */
+  searchDegraded?: boolean;
 };
 
 type UserCustom = {
@@ -174,6 +177,7 @@ export function buildMessagePairs(
           ? emptyCitationMaps
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
+        searchDegraded: metadata?.searchDegraded === true,
         isStreaming: isCurrentlyStreaming || isBeingRegenerated,
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,

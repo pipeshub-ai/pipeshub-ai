@@ -75,17 +75,31 @@ class PgVectorConfig:
         placement = str(pick("placement", os.getenv("PGVECTOR_PLACEMENT") or "own_leaf"))
         if placement not in ("own_leaf", "none"):
             raise ValueError(f"pgvector placement must be 'own_leaf' or 'none', not {placement!r}")
-        placement_wait = float(pick("placement_wait", 30.0))  # type: ignore[arg-type]
-        catalog_ttl = float(pick("catalog_ttl", 5.0))  # type: ignore[arg-type]
+        def number(key: str, default: float) -> float:
+            raw = pick(key, default)
+            try:
+                value = float(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                raise ValueError(f"pgvector {key} must be a number of seconds, not {raw!r}") from None
+            return value
+
+        placement_wait, catalog_ttl = number("placement_wait", 30.0), number("catalog_ttl", 5.0)
         if not math.isfinite(placement_wait) or placement_wait <= 0:
             raise ValueError(f"pgvector placement_wait must be a positive number of seconds, not {placement_wait!r}")
         if not math.isfinite(catalog_ttl) or catalog_ttl < 0:
             raise ValueError(f"pgvector catalog_ttl must be zero or a positive number of seconds, not {catalog_ttl!r}")
+        raw_pool = pick("pool_max", pick("max_size", 10))
+        try:
+            pool_max = int(raw_pool)  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            raise ValueError(f"pgvector pool_max must be a whole number of at least 1, not {raw_pool!r}") from None
+        if pool_max < 1:
+            raise ValueError(f"pgvector pool_max must be a whole number of at least 1, not {raw_pool!r}")
         return cls(
             dsn=dsn,
             jobs_dsn=jobs_dsn,
             service=str(pick("service", os.getenv("PGVECTOR_SERVICE") or _service_of(dsn))),
-            pool_max=max(1, int(pick("pool_max", pick("max_size", 10)))),  # type: ignore[call-overload]
+            pool_max=pool_max,
             strict=parse_flag("strict (PGVECTOR_STRICT)", pick("strict", os.getenv("PGVECTOR_STRICT")), default=False),
             pooler=str(pick("pooler", os.getenv("PGVECTOR_POOLER") or "pgbouncer_txn")),
             fence=parse_flag("fence (PGVECTOR_FENCE)", pick("fence", os.getenv("PGVECTOR_FENCE")), default=True),

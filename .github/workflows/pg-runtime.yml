@@ -1,8 +1,9 @@
 name: pg-runtime
 
 # The PostgreSQL runtime (unit of work, key-value store, work queue, job scheduler, shared state) against real PostgreSQL 17 and 18
-# and PgBouncer. The Python job runs tests/integration/db (throwaway clusters it starts itself) and tests/integration/pg_runtime
-# (a migrated database on the packaged server, Redis Streams for the cross-broker contract cases). The Node job runs test:pg-services
+# and PgBouncer. The Python job runs tests/integration/db (throwaway clusters it starts itself), tests/integration/pg_runtime
+# (a migrated database on the packaged server, Redis Streams for the cross-broker contract cases) and tests/integration/graph_db/postgres
+# (the PostgreSQL graph provider on a migrated database). The Node job runs test:pg-services
 # against the same kind of database; test:pg (the Node unit of work) runs in node-pg-runtime.yml. A skip is a failure here: the
 # suites skip only when a service is missing, which in CI means the workflow is broken.
 on:
@@ -19,6 +20,13 @@ on:
       - 'backend/python/app/config/**'
       - 'backend/python/tests/integration/db/**'
       - 'backend/python/tests/integration/pg_runtime/**'
+      - 'backend/python/app/services/graph_db/postgres/**'
+      - 'backend/python/app/services/graph_db/interface/**'
+      - 'backend/python/app/services/graph_db/graph_db_provider_factory.py'
+      - 'backend/python/app/models/permission.py'
+      - 'backend/python/tests/integration/graph_db/postgres/**'
+      - 'backend/python/tests/permissions/**'
+      - 'backend/python/tests/integration/graph_permissions/loaders.py'
       - 'backend/python/pyproject.toml'
       - 'backend/nodejs/apps/src/libs/db/**'
       - 'backend/nodejs/apps/src/libs/services/pg-*.ts'
@@ -112,6 +120,13 @@ jobs:
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
           python -m pytest tests/integration/pg_runtime -m "not chaos" --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
 
+      - name: PostgreSQL graph provider (tests/integration/graph_db/postgres)
+        working-directory: backend/python
+        run: |
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
+          python -m pytest tests/integration/graph_db/postgres -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+
       - name: PostgreSQL clusters (on failure)
         if: ${{ failure() }}
         run: |
@@ -121,7 +136,8 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml"
+        # exactly the graph suite's cases ran (78), none failed: a suite that registered nothing is not a pass
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=78'
 
   node:
     runs-on: ubuntu-latest
