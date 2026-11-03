@@ -110,11 +110,14 @@ functions:
       DECLARE v_sp smallint;
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active') THEN
-          BEGIN
-            INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
-          EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent writer of the same model added the descriptor first
-          END;
           SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+          IF v_sp IS NULL THEN        -- select first: an insert that hits the unique key still spends an identity value, and there are 32,767
+            BEGIN
+              INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
+            EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent writer of the same model added the descriptor first
+            END;
+            SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+          END IF;
           BEGIN
             INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (v_org, v_sp, p_dim, 'active');
           EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent first write of this org adopted one: its space is the answer
@@ -154,11 +157,14 @@ functions:
           RETURN QUERY SELECT false;
           RETURN;
         END IF;
-        BEGIN
-          INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
-        EXCEPTION WHEN unique_violation THEN NULL;         -- a concurrent writer of the same model added the descriptor first
-        END;
         SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+        IF v_sp IS NULL THEN          -- select first: an insert that hits the unique key still spends an identity value, and there are 32,767
+          BEGIN
+            INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
+          EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent writer of the same model added the descriptor first
+          END;
+          SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+        END IF;
         BEGIN
           UPDATE retrieval.org_spaces o SET role = 'retiring', dim = 0, named_by = NULL WHERE o.org_id = v_org AND o.role = 'active' AND o.space_id <> v_sp;
           IF EXISTS (SELECT 1 FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.space_id = v_sp) THEN
@@ -380,24 +386,8 @@ functions:
              + coalesce((SELECT sum(d.d) FROM retrieval.lexical_df_delta d
                           WHERE d.org_id = v_org AND d.collection_id = p_collection AND d.space_id = v_space AND d.term = -1), 0)
           INTO v_n;
-        IF p_must_vrids IS NULL AND p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL THEN
-          -- the whole org: a posting exists only for a live point, so the best p_leg sums are the answer
-          RETURN QUERY
-          WITH q AS MATERIALIZED (
-            SELECT CASE WHEN t.term > 2147483647 THEN t.term - 4294967296 ELSE t.term END AS term, t.qw
-              FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
-          idf AS MATERIALIZED (
-            SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
-              FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
-                                          WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
-             WHERE d.c > 0)
-          SELECT x.point_sk, sum(i.f * x.w) AS sc
-            FROM idf i CROSS JOIN LATERAL (
-              SELECT p.point_sk, p.w FROM retrieval.postings p
-               WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = i.term) x
-           GROUP BY x.point_sk ORDER BY 2 DESC, 1 LIMIT p_leg;
-        ELSE
-          -- a membership filter: check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass;
+          -- check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass: the point must exist
+          -- and carry no tombstone whatever the filter, and pass the membership arms when there are any (all four NULL: the whole org);
           -- if the best v_k are not enough and there are more, go again over all of them
           FOREACH v_k IN ARRAY ARRAY[p_leg * 8, NULL] LOOP          -- the last pass has no bound (LIMIT NULL)
             WITH q AS MATERIALIZED (
@@ -437,7 +427,6 @@ functions:
               RETURN;
             END IF;
           END LOOP;
-        END IF;
       END;
     test:
       needle: >-
