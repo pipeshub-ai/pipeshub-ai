@@ -25,7 +25,7 @@ class KeenableSearch(KeyedProvider):
             payload={"query": query, "max_results": MAX_RESULTS},
             deadline=deadline,
         )
-        return collect(self.id, data.get("results", []), MAX_RESULTS, self._result)
+        return collect(self.id, data.get("results"), MAX_RESULTS, self._result)
 
     def _result(self, item: dict) -> WebResult:
         snippet = text(item.get("description")) or text(item.get("snippet"))[:SNIPPET_CHARS]
