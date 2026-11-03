@@ -9270,6 +9270,11 @@ components:
             duration:
               type: integer
               minimum: 0
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -9303,6 +9308,11 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentStreamCreateConversationRequest:
       allOf:
         - $ref: '#/components/schemas/AgentCreateConversationRequest'
@@ -9882,6 +9892,11 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     AgentAddMessageStreamRequest:
       allOf:
         - $ref: '#/components/schemas/AgentAddMessageRequest'
@@ -12406,6 +12421,11 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        searchDegraded:
+          type: boolean
+          description: |
+            Present (`true`) only when the search store answered from a partial search.
+            The results are valid but may be incomplete.
         searchIncomplete:
           type: string
           description: |
@@ -15953,6 +15973,7 @@ components:
           `result` is `{ conversation, recordsUsed, meta }` — the updated
           conversation plus request metadata after the regenerated response
           is persisted.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
           lookup failures, unauthorized conversation access, and regenerate
           rule failures such as "not the last message" are reported here.
@@ -16005,6 +16026,7 @@ components:
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
 
@@ -16062,6 +16084,7 @@ components:
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16122,6 +16145,7 @@ components:
           `{ conversation, recordsUsed, meta }`.
           `recordsUsed` is the count of citations attached to the new
           assistant message.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16179,6 +16203,8 @@ components:
         `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+        Optional `result.meta.searchDegraded` (`true`) is present on `RUN_FINISHED` only when a search behind the
+        answer was answered from a partial search.
       properties:
         event:
           type: string
@@ -16228,6 +16254,7 @@ components:
           parsed, citations are saved, and the updated conversation is
           persisted. The gateway emits `{ type, result }`; `result` carries
           `{ conversation, recordsUsed, meta }`.
+          Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired for runtime failures after the stream has
           already started, including conversation lookup failures, upstream
           AI startup failures, save failures, and stream transport errors.
@@ -23399,6 +23426,11 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            searchDegraded:
+              type: boolean
+              description: |
+                Present (`true`) only when a search behind the answer was answered from a
+                partial search, so the answer may be based on incomplete results.
     StoredAIModelsConfig:
       type: object
       additionalProperties: false
@@ -27492,6 +27524,10 @@ paths:
 
         - Multiple OTP requests may be rate-limited
         - Wait for the current OTP to expire before requesting a new one
+        - Requests about **one email address** are also limited across all clients
+          (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+          the same `200` and message but no code is sent, so the limit does not show whether the
+          address has an account. Password sign-in is not affected.
 
         **CAPTCHA:**
 
@@ -27566,6 +27602,10 @@ paths:
         email is registered. If the account exists a reset link is sent;
         otherwise the request is silently ignored. Internal lookup or mail
         delivery failures are logged server-side and do not change the response.
+
+        Requests about **one email address** are also limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute). Over that limit the answer is
+        the same `200` and message but no email is sent.
       operationId: forgotPassword
       security: []
       requestBody:
@@ -27710,6 +27750,10 @@ paths:
 
         **Known defects:** a value that is not an email is stored although the answer is `422`;
         a token without a `newEmail` claim stores the word `undefined` the same way.
+
+        **Rate limit:** confirmations for one new address are limited across all clients
+        (`ADDRESS_RATE_LIMIT_PER_MINUTE`, default 60 a minute); the address is the one in the
+        verified token. Over the limit the answer is `429` with `Retry-After`.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -27759,6 +27803,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many confirmations for this new address in the current minute. Try again after `Retry-After` seconds.
+          headers:
+            Retry-After:
+              description: Seconds until the current minute ends.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error. Also returned when the token's `userId` is not a valid
@@ -45418,6 +45473,7 @@ paths:
             `{ type, message, code? }` on failure. Forwarded lifecycle and
             child-run events may contain `runId`, `threadId`, and
             `parentRunId`. Clients should ignore unknown event names.
+            Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
 
             Refusals after validation are not HTTP errors. A missing, deleted
             or inaccessible conversation, a conversation with no messages, a
@@ -50114,6 +50170,7 @@ paths:
             Stable event names:
             - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
               updated conversation and metadata
+              Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
             - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
               authorization, or regenerate-rule failures
 

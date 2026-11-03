@@ -52,6 +52,7 @@ from app.utils.model_egress import (
     parse_answers,
     private_allowed_for,
 )
+from app.utils.openai_hosts import is_openai_api_url
 from app.utils.url_fetcher import (
     PRIVATE_ADDRESS_SWITCH_ENV,
     IPAddress,
@@ -624,14 +625,8 @@ def _set_openai_client_limits_kwargs(
 # Google, Cohere, Voyage, Nvidia, ...) requires plain strings and rejects token
 # arrays with a 400. tiktoken's vocabulary is OpenAI-specific anyway, so the
 # token IDs would be meaningless to a non-OpenAI model even where accepted.
-_TOKEN_ARRAY_EMBEDDING_HOSTS = frozenset({"api.openai.com"})
-
-
 def _accepts_token_array_embedding_input(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    host = urlparse(base_url).hostname
-    return bool(host) and host.lower() in _TOKEN_ARRAY_EMBEDDING_HOSTS
+    return is_openai_api_url(base_url)
 
 
 def iter_model_names(configuration: Mapping[str, Any] | None) -> list[str]:
@@ -1190,9 +1185,8 @@ _RESPONSES_API_PROVIDERS = frozenset({
 # OpenAI's own API is also reachable through the generic OpenAI-compatible
 # provider (endpoint set to https://api.openai.com/v1), which hits the same
 # Chat Completions restriction, so the decision is endpoint-aware and not
-# provider-only. Only OpenAI's official host is matched — a self-hosted or
+# provider-only. Only OpenAI's official hosts are matched — a self-hosted or
 # proxy endpoint that merely speaks the OpenAI protocol has no /v1/responses.
-_OPENAI_RESPONSES_API_HOSTS = frozenset({"api.openai.com"})
 
 
 def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
@@ -1206,10 +1200,7 @@ def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
 
 
 def _targets_openai_responses_api(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    host = urlparse(base_url).hostname
-    return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
+    return is_openai_api_url(base_url)
 
 
 # Qwen 3.8+ Chat Completions rejects OpenAI's 'xhigh'. That is a model-

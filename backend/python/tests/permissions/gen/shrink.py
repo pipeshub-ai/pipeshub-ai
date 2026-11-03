@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from ..model import ORG_ID, Node, World
 from ..runner import OracleLayer
-from ..scenario import Expect, Scenario, Verdict, dump_scenarios
+from ..scenario import Cite, Expect, Scenario, Verdict, dump_scenarios
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -90,6 +90,17 @@ def regression(scenario_id: str, world: World, viewer: str, node: str, note: str
         id=scenario_id, title=f"Generated: {note}", world=world, source="generator",
         rule="regression", comment=f"The oracle says {viewer} -> {node}: {'admit' if verdict.admitted else 'deny'} ({verdict.reason}). {note}",
         expect=Expect(verdicts=(Verdict(viewer, node, verdict.admitted),)), tags=("regression", "generated"))
+
+
+def cite_regression(scenario_id: str, world: World, viewer: str, vrid: str, indexed_only: bool, note: str,
+                    shape: Callable[[Graph], Graph] | None = None) -> Scenario:
+    """A scenario that expects the oracle's citation for a virtual record id (the record the viewer is shown, or none),
+    as the failing layer's store holds the world (`shape`)."""
+    record = (OracleLayer(shape) if shape else OracleLayer())._cited_now(world, Cite(viewer, vrid, None, indexed_only))
+    return Scenario(
+        id=scenario_id, title=f"Generated: {note}", world=world, source="generator",
+        rule="regression", comment=f"The oracle cites {record} for {viewer} -> {vrid} (indexed_only={indexed_only}). {note}",
+        expect=Expect(cite=(Cite(viewer, vrid, record, indexed_only),)), tags=("regression", "generated"))
 
 
 def write_regression(directory: Path, scenario: Scenario) -> Path:

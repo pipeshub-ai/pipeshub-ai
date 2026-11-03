@@ -36,6 +36,7 @@ import {
   markAgentConversationFailed,
   markConversationFailed,
   saveCompleteConversation,
+  searchDegradedMeta,
 } from './utils';
 
 /**
@@ -188,6 +189,8 @@ export interface CompleteTurnOptions {
 export interface CompletedTurn {
   conversation: Record<string, unknown>;
   recordsUsed: number;
+  /** The answer's search was served with less than the full search (see `searchDegradedMeta`). */
+  searchDegraded?: true;
 }
 
 /** Phases 2 and 3. Throws the error the client should see once the failure is saved. */
@@ -274,6 +277,7 @@ export const completeTurn = async (
       recordsUsed: Array.isArray(response.data.citations)
         ? response.data.citations.length
         : 0,
+      ...searchDegradedMeta(response.data),
     };
   } catch (error: unknown) {
     return fail(
