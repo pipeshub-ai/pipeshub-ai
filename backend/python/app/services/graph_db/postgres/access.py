@@ -22,14 +22,7 @@ MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
-_DELETED = "coalesce(({n}.doc->>'isDeleted')::boolean, false)"
 
-_TARGET_COLS = f"""t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
-FROM graph.nodes t
-WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT {_DELETED.format(n="t")} AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))"""
-# two statements, each served by one index, instead of one with an OR across them (which plans badly without statistics)
-TARGETS_BY_ID = f"""/* pipeshub:graph.access_targets */ SELECT {_TARGET_COLS} AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])"""
-TARGETS_BY_VRID = f"""/* pipeshub:graph.access_targets_vrid */ SELECT {_TARGET_COLS} AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])"""
 
 
 _HIER_TYPES = ["PARENT_CHILD", "ATTACHMENT"]
@@ -221,10 +214,19 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     gated = set(access["gated_app_ids"])
     granted = {g for ids in access["by_connector"].values() for g in ids}
     granted_l = sorted(granted)
-    rows = await tx.fetch(TARGETS_BY_ID, org, node_ids)
+    # two statements, each served by one index, instead of one with an OR across them (which plans badly without statistics)
+    rows = await tx.fetch("""/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+        FROM graph.nodes t
+        WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
+          AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
+          AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])""", org, node_ids)
     if vrids:
         seen_ids = {r["id"] for r in rows}
-        rows = [*rows, *(r for r in await tx.fetch(TARGETS_BY_VRID, org, node_ids, vrids) if r["id"] not in seen_ids)]
+        rows = [*rows, *(r for r in await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+            FROM graph.nodes t
+            WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
+              AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
+              AND t.coll = 'records' AND t.doc->>'virtualRecordId' = ANY($3::text[])""", org, node_ids, vrids) if r["id"] not in seen_ids)]
     targets = []
     for r in rows:
         doc = json.loads(r["doc"]) if isinstance(r["doc"], str) else dict(r["doc"])
