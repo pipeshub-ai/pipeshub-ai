@@ -4,6 +4,7 @@ import {
   type SlackBlock,
   type TypedSlackClient,
 } from '../helpers';
+import { spawnDetached } from '../../../../libs/context/orgContext';
 import { groupToolsetLabel, humanizeToolName } from './tool-display';
 
 /** Title of the plan block that holds the steps. */
@@ -1839,9 +1840,12 @@ export class SlackPlanStream {
 
   private startLiveness(): void {
     if (this.liveness) return;
-    this.liveness = setInterval(() => {
-      this.pulse();
-    }, 1000);
+    // Started outside the request's org context: it only talks to Slack, and ends with the reply.
+    this.liveness = spawnDetached(() =>
+      setInterval(() => {
+        this.pulse();
+      }, 1000),
+    );
     this.liveness.unref();
   }
 
