@@ -555,6 +555,43 @@ async def _execute_mariadb_query(
             "error": f"MariaDB query failed: {friendly_sql_error(str(e))}"
         }
 
+
+# An empty result on a filter against a literal copied from the question was
+# answered as a confident "none" when the stored spelling or case differed.
+_TEXT_LITERAL_FILTER = re.compile(
+    r"([A-Za-z_][\w.\"`]*)\s*(?:=|\bI?LIKE\b)\s*'((?:[^']|'')+)'", re.IGNORECASE
+)
+_CASE_INSENSITIVE_MATCH = {"postgres": "ILIKE", "snowflake": "ILIKE", "mariadb": "LIKE"}
+
+
+def _empty_result(rows: list[Any]) -> bool:
+    """No rows, or one row of only zeros and NULLs (a COUNT or SUM over nothing)."""
+    if not rows:
+        return True
+    if len(rows) > 1:
+        return False
+    values = rows[0].values() if isinstance(rows[0], dict) else rows[0]
+    return all(value is None or (isinstance(value, (int, float)) and value == 0) for value in values)
+
+
+def _zero_row_note(query: str, source_type: str, rows: list[Any]) -> str | None:
+    """A note when an empty result filtered on a text literal; ``None`` otherwise."""
+    # Backslash escapes and dollar quoting change where a literal ends per dialect.
+    if not _empty_result(rows) or "\\" in query or "$" in query:
+        return None
+    match = _TEXT_LITERAL_FILTER.search(query)
+    if not match:
+        return None
+    column, literal = match.group(1), match.group(2).replace("''", "'").strip("%")
+    op = _CASE_INSENSITIVE_MATCH.get(source_type, "LIKE")
+    return (
+        f"Nothing matched the filter {column} = '{literal}'. The stored value may be spelled, "
+        f"cased or abbreviated differently: look it up first (e.g. SELECT {column}, COUNT(*) "
+        f"... WHERE {column} {op} '%{literal[:20]}%' GROUP BY {column}) and rerun with the "
+        "stored value before answering that there are none."
+    )
+
+
 async def _execute_query_impl(
     query: str,
     source_name: str,
@@ -653,6 +690,9 @@ async def _execute_query_impl(
         if rows_cut:
             final_result["rows_cut_at"] = SQL_MAX_ROWS
             final_result["markdown_result"] += f"\n\n_{truncation_note()}_"
+        zero_rows = _zero_row_note(query, source_type, rows)
+        if zero_rows:
+            final_result["markdown_result"] += f"\n\n_{zero_rows}_"
         logger.info(f"🔍 [_execute_query_impl] Final result: ok=True, row_count={len(rows)}, column_count={len(columns)}")
         return final_result
     else:

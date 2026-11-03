@@ -1467,3 +1467,38 @@ async def test_a_database_timeout_is_a_tool_error() -> None:
     ):
         out = await eq._execute_postgres_query("SELECT pg_sleep(999)", MagicMock(), "c")
     assert out["ok"] is False and f"up to {SQL_QUERY_TIMEOUT_S}s" in out["error"]
+
+
+class TestZeroRowNote:
+    """A filter on a literal from the question ('America', 'stealth') returned
+    nothing and the answer said "none" without checking the stored spelling."""
+
+    @pytest.mark.parametrize(("query", "rows", "expected"), [
+        ("SELECT name FROM cards WHERE keyword = 'stealth'", [], True),
+        ("SELECT COUNT(*) FROM players WHERE country = 'America'", [(0,)], True),
+        ("SELECT SUM(x) FROM t WHERE t.name ILIKE '%acme%'", [(None,)], True),
+        ("SELECT name FROM t WHERE name = 'O''Brien'", [], True),
+        ("SELECT COUNT(*) FROM players WHERE country = 'America'", [(3,)], False),
+        ("SELECT name FROM cards WHERE keyword = 'stealth'", [("a",)], False),
+        ("SELECT name FROM cards WHERE year = 2020", [], False),
+        ("SELECT a, b FROM t WHERE c = 'x'", [(0, 0), (0, 0)], False),
+        ("SELECT name FROM t WHERE name = 'a\\'b'", [], False),
+    ])
+    def test_only_an_empty_result_on_a_text_literal_gets_the_note(self, query: str, rows: list, expected: bool) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        assert (_zero_row_note(query, "postgres", rows) is not None) is expected
+
+    def test_the_note_names_the_column_and_a_case_insensitive_lookup(self) -> None:
+        from app.utils.execute_query import _zero_row_note
+
+        note = _zero_row_note("SELECT * FROM p WHERE p.country = 'America'", "mariadb", [])
+        assert "p.country = 'America'" in note
+        assert "p.country LIKE '%America%'" in note
+
+    @pytest.mark.asyncio
+    async def test_the_note_reaches_the_model_with_the_empty_result(self) -> None:
+        with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["n"], "rows": [(0,)]})):
+            out = await eq._execute_query_impl("SELECT COUNT(*) AS n FROM p WHERE country = 'America'", "PostgreSQL", MagicMock(), "c")
+        assert "Nothing matched the filter country = 'America'" in out["markdown_result"]
+        assert out["raw_rows"] == [(0,)]
