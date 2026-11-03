@@ -364,6 +364,12 @@ def test_every_branch_and_every_assignment_that_reaches_the_call_is_checked() ->
     assert any("session SET" in r for r in rules(swapped))
 
 
+def test_each_branch_and_assignment_needs_its_own_tag() -> None:
+    for body in ('await tx.fetch("/* pipeshub:m.a */ SELECT 1" if x else "SELECT 2")',
+                 'q = "/* pipeshub:m.a */ SELECT 1"\n    q = "SELECT 2"\n    await tx.fetch(q)'):
+        assert [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")] == [UNTAGGED]
+
+
 def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
     src = ('async def f(tx):\n    q = "/* pipeshub:m.f */ SELECT 1"\n    def inner(x):\n        q = f"SELECT {x}"\n        return q\n'
            '    await tx.fetch(q)\n')

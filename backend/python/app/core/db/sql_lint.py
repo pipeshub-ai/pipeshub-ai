@@ -73,6 +73,7 @@ def sql_rules(sql: str) -> list[str]:
     return out
 
 
+_ALT = "\0"      # separates the texts of the alternatives (branches, assignments) that may reach one call
 _Env = dict[str, list[tuple[ast.expr, bool]]]       # name -> (assigned value, assigned by ``+=``) for each assignment
 _STATEMENT_KEYWORDS = {"query", "sql", "statement", "stmt"}
 
@@ -107,7 +108,7 @@ def _sql_text(node: ast.expr, env: _Env | None = None) -> tuple[str | None, bool
     if isinstance(node, ast.IfExp):
         (a, a_built), (b, b_built) = _sql_text(node.body, env), _sql_text(node.orelse, env)
         both = [t for t in (a, b) if t is not None]
-        return ("; ".join(both) or None), a_built or b_built        # every branch is checked: a clean branch must not hide the other
+        return (_ALT.join(both) or None), a_built or b_built        # every branch is checked: a clean branch must not hide the other
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
         text, _ = _sql_text(node.func.value, env)
         return text, True
@@ -172,7 +173,7 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
             tail += value_text or ""
         elif value_text is not None:
             bases.append(value_text)       # each plain assignment may be the one that reaches the call
-    return ("; ".join(b + tail for b in bases) or tail or None), built
+    return (_ALT.join(b + tail for b in bases) or tail or None), built
 
 
 def _statement_argument(node: ast.Call) -> ast.expr | None:
@@ -192,13 +193,17 @@ def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -
         if arg is None:
             continue
         text, built = _statement(arg, node, parents)
-        if text is None or not (any(_SQL_START.match(p) for p in (text, *text.split(";"))) or (built and _KEYWORDS.search(text))):
-            continue  # not SQL (an HTTP client's execute, a Redis call, ...)
+        if text is None:
+            continue
+        alts = [a for a in text.split(_ALT) if _SQL_START.match(a) or (built and _KEYWORDS.search(a))]   # the rest are not SQL (an HTTP client's execute, ...)
+        if not alts:
+            continue
         if built:
             found.append(Finding(path, node.lineno, "string-built SQL (use bound parameters)"))
-        found += [Finding(path, node.lineno, r) for r in sql_rules(text)]
-        if require_tag and not built and not _TAG.search(text):
-            found.append(Finding(path, node.lineno, "statement without a /* pipeshub:<module>.<fn> */ tag"))
+        for a in alts:         # each alternative is checked on its own: a tagged one must not vouch for an untagged one
+            found += [Finding(path, node.lineno, r) for r in sql_rules(a)]
+            if require_tag and not built and not _TAG.search(a):
+                found.append(Finding(path, node.lineno, "statement without a /* pipeshub:<module>.<fn> */ tag"))
     return found
 
 
