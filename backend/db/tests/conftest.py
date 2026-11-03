@@ -27,6 +27,22 @@ SURFACE_DIR = Path(__file__).parent
 UPDATE_SURFACE = os.environ.get("UPDATE_SURFACE") == "1"
 
 
+def pytest_addoption(parser):
+    parser.addoption("--slice", default="", metavar="I/N", help="run every N-th collected test, starting at the I-th (CI splits a big file over jobs)")
+
+
+def pytest_collection_modifyitems(config, items):
+    spec = config.getoption("--slice")
+    if not spec:
+        return
+    i, _, n = spec.partition("/")
+    if not (i.isdigit() and n.isdigit() and 0 <= int(i) < int(n)):
+        raise pytest.UsageError(f"--slice wants I/N with 0 <= I < N, got {spec!r}")
+    keep = [it for k, it in enumerate(items) if k % int(n) == int(i)]
+    config.hook.pytest_deselected(items=[it for it in items if it not in keep])
+    items[:] = keep
+
+
 def _bins() -> list[str]:
     if os.environ.get("MIGRATE_TEST_PG_EXTERNAL"):
         return ["external"]

@@ -18,43 +18,51 @@ jobs:
   migrations:
     name: migrations (${{ matrix.pg }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # The tests run in shards by file, each with its own PostgreSQL service container (the tests drop and recreate the cluster's roles, so
-    # two runs must not share a cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete.
+    # The tests run in shards, each with its own PostgreSQL (the tests drop and recreate the cluster's roles, so two runs must not share a
+    # cluster). A shard names whole files; the three rls shards split tests/test_rls.py by position (--slice I/3 in tests/conftest.py).
+    # tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete.
     # min_tests are the case counts of the files, so the shards sum to the total; a suite that did not run fails its shard.
     strategy:
       fail-fast: false
       matrix:
         pg: ['17', '18']
-        shard: [rls, integration, graph, vetted]
+        shard: [rls-0, rls-1, rls-2, misc, integration, graph, vetted]
         include:
-          - shard: rls
-            files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
-            min_tests: 439
+          - shard: rls-0
+            files: tests/test_rls.py
+            slice: '0/3'
+            min_tests: 88
+            suites: ''
+          - shard: rls-1
+            files: tests/test_rls.py
+            slice: '1/3'
+            min_tests: 87
+            suites: ''
+          - shard: rls-2
+            files: tests/test_rls.py
+            slice: '2/3'
+            min_tests: 87
+            suites: ''
+          - shard: misc
+            files: tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
+            slice: ''
+            min_tests: 178
             suites: ''
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
+            slice: ''
             min_tests: 54
             suites: ''
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
+            slice: ''
             min_tests: 54
-            suites: --expect-suite tests.test_graph=33 --expect-suite tests.test_retrieval=21
+            suites: '--expect-suite tests.test_graph=33 --expect-suite tests.test_retrieval=21'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
+            slice: ''
             min_tests: 423
             suites: ''
-    services:
-      postgres:
-        image: pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm      # the retrieval module needs pgvector
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,8 +79,18 @@ jobs:
           pip install -r backend/db/requirements.txt pytest
           sudo apt-get update -qq && sudo apt-get install -y -qq pgbouncer
 
+      - name: Start PostgreSQL ${{ matrix.pg }} in memory, with no fsync
+        # The tests create and drop databases and run migrations all the time. A runner's disk made each commit wait for a flush, and a
+        # container's layered filesystem is slower still: the cluster lives on a tmpfs and is started without the flushes, because it is
+        # thrown away after the job. (The image's data directory differs between majors, so PGDATA is set.)
+        run: |
+          docker run -d --name pg --network host --tmpfs /pgdata:rw,mode=0700 -e PGDATA=/pgdata -e POSTGRES_HOST_AUTH_METHOD=trust \
+            pgvector/pgvector:0.8.7-pg${{ matrix.pg }}-bookworm -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+          for _ in $(seq 1 60); do pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c 'SELECT version()' -c 'SHOW fsync' -c 'SHOW synchronous_commit' -c 'SHOW data_directory'
+
       - name: Lints
-        if: ${{ matrix.shard == 'rls' && matrix.pg == '17' }}      # the lints do not depend on the PostgreSQL major
+        if: ${{ matrix.shard == 'misc' && matrix.pg == '17' }}      # the lints do not depend on the PostgreSQL major
         working-directory: backend
         run: |
           python -m db.epoch_lint
@@ -83,7 +101,7 @@ jobs:
           python -m db.lib.vetted check db/versions/retrieval/vetted/manifest.yaml
 
       - name: Empty database to heads, then the org isolation catalog check
-        if: ${{ matrix.shard == 'rls' }}
+        if: ${{ matrix.shard == 'misc' }}
         # python -m db.migrate exits 4 when kernel.rls_violations returns any row.
         working-directory: backend
         env:
@@ -98,20 +116,14 @@ jobs:
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE ci_catalog'
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c "SELECT format('DROP ROLE %I;', rolname) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%'" | psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1
 
-      - name: Throwaway cluster, no fsync
-        # Every test creates and drops a database and runs a migration: on a runner's disk the cost is the flushes, which a cluster that is
-        # thrown away after the job has no use for.
-        run: |
-          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" \
-            -c "ALTER SYSTEM SET full_page_writes = off" -c "SELECT pg_reload_conf()"
-
       - name: Migration tests (planted defects, fault injection through PgBouncer, restore window)
         working-directory: backend/db
         env:
           MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
           MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
           FILES: ${{ matrix.files }}
-        run: python -m pytest -q --junitxml="$RUNNER_TEMP/db-junit.xml" $FILES
+          SLICE: ${{ matrix.slice }}
+        run: python -m pytest -q --durations=25 --junitxml="$RUNNER_TEMP/db-junit.xml" ${SLICE:+--slice "$SLICE"} $FILES
 
       - name: No unexpected skips
         # The generated vetted-function suite skips the checks that do not apply to a function by design (a function with no organisation

@@ -462,14 +462,34 @@ def test_no_shipped_table_uses_the_lineage_class():
     assert found == [], f"these revisions register the lineage class: {found}"
 
 
+def _files_on_disk(tests_dir: Path) -> list[str]:
+    """Every test file under the tests directory, at any depth, as the workflow names it (tests/sub/test_x.py)."""
+    return sorted(f"tests/{p.relative_to(tests_dir).as_posix()}" for p in tests_dir.rglob("test_*.py"))
+
+
+def test_the_shard_guard_sees_a_test_file_in_a_subdirectory(tmp_path):
+    (tmp_path / "sub" / "deeper").mkdir(parents=True)
+    for rel in ("test_a.py", "sub/test_b.py", "sub/deeper/test_c.py", "sub/helper.py"):
+        (tmp_path / rel).write_text("")
+    assert _files_on_disk(tmp_path) == ["tests/sub/deeper/test_c.py", "tests/sub/test_b.py", "tests/test_a.py"]
+
+
 def test_every_test_file_is_in_exactly_one_shard_of_the_db_migrations_workflow():
-    """CI runs the tests in shards by file; a test file that no shard names would not run, and one named twice would run twice."""
+    """CI runs the tests in shards; a test file that no shard names would not run, and one named twice would run twice.
+    A file may be split over shards by --slice I/N: then its slices must be exactly 0/N .. N-1/N."""
     import yaml
 
     workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "db-migrations.yml"
     if not workflow.is_file():
         pytest.skip("no workflow file in this checkout (the backend is packaged alone)")
     matrix = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["migrations"]["strategy"]["matrix"]
-    named = [f for shard in matrix["include"] for f in shard["files"].split()]
-    assert sorted(named) == sorted(f"tests/{p.name}" for p in Path(__file__).parent.glob("test_*.py")), named
+    seen: dict[str, list[str]] = {}
+    for shard in matrix["include"]:
+        for f in shard["files"].split():
+            seen.setdefault(f, []).append(shard.get("slice") or "")
+    for f, slices in seen.items():
+        if slices != [""]:
+            n = slices[0].partition("/")[2]
+            assert n.isdigit() and sorted(slices) == sorted(f"{i}/{n}" for i in range(int(n))), (f, slices)
+    assert sorted(seen) == _files_on_disk(Path(__file__).parent), seen
     assert sorted(s["shard"] for s in matrix["include"]) == sorted(matrix["shard"])
