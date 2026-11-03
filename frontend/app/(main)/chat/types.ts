@@ -1247,6 +1247,11 @@ export interface ChatSlot {
    */
   isOwner: boolean | null;
   /**
+   * Who the conversation is shared with: from the loaded detail, or from the
+   * last share/unshare answer. `null` when not known.
+   */
+  sharedWith: SharedWithEntry[] | null;
+  /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
    */
