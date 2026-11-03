@@ -207,7 +207,7 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
         assert c.execute("SELECT note FROM probe.t1 LIMIT 1").fetchone() is None
         versions = {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")}
         # the probe fails mid-run; the branches that ran before it (in an order Alembic does not fix) are complete revisions, never partial
-        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in MODULES))) for v in versions)
+        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg")))) for v in versions)
     assert epochs(cluster, name)["probe"] == (1, 0)
     write_probe(tmp_path)                                                              # the fix is a plain re-run
     r = run_migrate(url, **env)

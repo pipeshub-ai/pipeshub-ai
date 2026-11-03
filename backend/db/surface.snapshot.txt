@@ -965,6 +965,7 @@ constraint kernel.vetted_write_pins vetted_write_pins_shape c def=b118dcca6cd7f0
 constraint kg.class_literals class_literals_pkey p def=862704e281b724ef2e038c86d1032e7d
 constraint kg.class_literals org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint kg.class_literals org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint kg.graph_changes graph_changes_ends_check c def=99cd4fa03e09de54e1096ae4b0b550de
 constraint kg.graph_changes graph_changes_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint kg.graph_changes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint kg.graph_changes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
@@ -1158,12 +1159,6 @@ func kernel.restore_allows(text) owner=pipeshub_owner secdef=false leakproof=fal
 func kernel.set_epoch(text,integer,integer) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=8f910d57b1a6285a77542f5a3a0eac76 ext=-
 func kernel.src_text(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=search_path=pg_catalog, pg_temp body=3fc2fd51d3e06880f7956d4f18066887 ext=-
 func kernel.waive_sequence(regclass,regclass,name,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ce100d8398bc4d8937f3de3bc2a90b48 ext=-
-func kg.coll_code(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=bff17b2e559aaf658f7f0db3bedc067d ext=-
-func kg.edge_ends(text,text,text,text,text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=e671570d28e072cd101915e10014ed37 ext=-
-func kg.edge_sem(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=4ee117750a97059370f78e27a2b20ea6 ext=-
-func kg.log_graph_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp body=c13c0ee75c5b1ace429fbc1952c88cf2 ext=-
-func kg.proj_doc(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=e4d226f14291993cd491a2d70f1c2146 ext=-
-func kg.refuse_truncate() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=7e7bdc290cfd80fba9d7f003e6e3314f ext=-
 func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
@@ -1215,12 +1210,6 @@ funcacl kernel.profile_epoch() pipeshub_kv EXECUTE
 funcacl kernel.profile_epoch() pipeshub_node EXECUTE
 funcacl kernel.profile_epoch() pipeshub_query EXECUTE
 funcacl kernel.restore_allows(text) pipeshub_restore EXECUTE
-funcacl kg.coll_code(text) PUBLIC EXECUTE
-funcacl kg.edge_ends(text,text,text,text,text,jsonb) PUBLIC EXECUTE
-funcacl kg.edge_sem(text,jsonb) PUBLIC EXECUTE
-funcacl kg.log_graph_change() PUBLIC EXECUTE
-funcacl kg.proj_doc(text,jsonb) PUBLIC EXECUTE
-funcacl kg.refuse_truncate() PUBLIC EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
@@ -2218,31 +2207,24 @@ relacl kg.class_id_seq pipeshub_connectors USAGE grantable=false
 relacl kg.class_literals pipeshub_backup SELECT grantable=false
 relacl kg.class_literals pipeshub_connectors SELECT grantable=false
 relacl kg.class_literals pipeshub_indexing SELECT grantable=false
-relacl kg.class_literals pipeshub_jobs SELECT grantable=false
 relacl kg.class_literals pipeshub_query SELECT grantable=false
 relacl kg.class_literals pipeshub_restore INSERT grantable=false
 relacl kg.class_literals pipeshub_vetted_kg SELECT grantable=false
 relacl kg.graph_changes pipeshub_backup SELECT grantable=false
-relacl kg.graph_changes pipeshub_connectors INSERT grantable=false
 relacl kg.graph_changes pipeshub_connectors SELECT grantable=false
-relacl kg.graph_changes pipeshub_indexing INSERT grantable=false
 relacl kg.graph_changes pipeshub_indexing SELECT grantable=false
-relacl kg.graph_changes pipeshub_jobs SELECT grantable=false
-relacl kg.graph_changes pipeshub_query INSERT grantable=false
 relacl kg.graph_changes pipeshub_query SELECT grantable=false
 relacl kg.graph_changes pipeshub_restore INSERT grantable=false
 relacl kg.graph_changes pipeshub_vetted_kg SELECT grantable=false
 relacl kg.links pipeshub_backup SELECT grantable=false
 relacl kg.links pipeshub_connectors SELECT grantable=false
 relacl kg.links pipeshub_indexing SELECT grantable=false
-relacl kg.links pipeshub_jobs SELECT grantable=false
 relacl kg.links pipeshub_query SELECT grantable=false
 relacl kg.links pipeshub_restore INSERT grantable=false
 relacl kg.links pipeshub_vetted_kg SELECT grantable=false
 relacl kg.node_keys pipeshub_backup SELECT grantable=false
 relacl kg.node_keys pipeshub_connectors SELECT grantable=false
 relacl kg.node_keys pipeshub_indexing SELECT grantable=false
-relacl kg.node_keys pipeshub_jobs SELECT grantable=false
 relacl kg.node_keys pipeshub_query SELECT grantable=false
 relacl kg.node_keys pipeshub_restore INSERT grantable=false
 relacl kg.node_keys pipeshub_vetted_kg SELECT grantable=false
@@ -2250,35 +2232,30 @@ relacl kg.node_sk_seq pipeshub_vetted_kg USAGE grantable=false
 relacl kg.principal_closure pipeshub_backup SELECT grantable=false
 relacl kg.principal_closure pipeshub_connectors SELECT grantable=false
 relacl kg.principal_closure pipeshub_indexing SELECT grantable=false
-relacl kg.principal_closure pipeshub_jobs SELECT grantable=false
 relacl kg.principal_closure pipeshub_query SELECT grantable=false
 relacl kg.principal_closure pipeshub_restore INSERT grantable=false
 relacl kg.principal_closure pipeshub_vetted_kg SELECT grantable=false
 relacl kg.projection_state pipeshub_backup SELECT grantable=false
 relacl kg.projection_state pipeshub_connectors SELECT grantable=false
 relacl kg.projection_state pipeshub_indexing SELECT grantable=false
-relacl kg.projection_state pipeshub_jobs SELECT grantable=false
 relacl kg.projection_state pipeshub_query SELECT grantable=false
 relacl kg.projection_state pipeshub_restore INSERT grantable=false
 relacl kg.projection_state pipeshub_vetted_kg SELECT grantable=false
 relacl kg.records pipeshub_backup SELECT grantable=false
 relacl kg.records pipeshub_connectors SELECT grantable=false
 relacl kg.records pipeshub_indexing SELECT grantable=false
-relacl kg.records pipeshub_jobs SELECT grantable=false
 relacl kg.records pipeshub_query SELECT grantable=false
 relacl kg.records pipeshub_restore INSERT grantable=false
 relacl kg.records pipeshub_vetted_kg SELECT grantable=false
 relacl kg.scope_classes pipeshub_backup SELECT grantable=false
 relacl kg.scope_classes pipeshub_connectors SELECT grantable=false
 relacl kg.scope_classes pipeshub_indexing SELECT grantable=false
-relacl kg.scope_classes pipeshub_jobs SELECT grantable=false
 relacl kg.scope_classes pipeshub_query SELECT grantable=false
 relacl kg.scope_classes pipeshub_restore INSERT grantable=false
 relacl kg.scope_classes pipeshub_vetted_kg SELECT grantable=false
 relacl kg.scope_members pipeshub_backup SELECT grantable=false
 relacl kg.scope_members pipeshub_connectors SELECT grantable=false
 relacl kg.scope_members pipeshub_indexing SELECT grantable=false
-relacl kg.scope_members pipeshub_jobs SELECT grantable=false
 relacl kg.scope_members pipeshub_query SELECT grantable=false
 relacl kg.scope_members pipeshub_restore INSERT grantable=false
 relacl kg.scope_members pipeshub_vetted_kg SELECT grantable=false
@@ -2712,7 +2689,6 @@ schemaacl kernel pipeshub_vetted_kernel USAGE grantable=false
 schemaacl kg pipeshub_backup USAGE grantable=false
 schemaacl kg pipeshub_connectors USAGE grantable=false
 schemaacl kg pipeshub_indexing USAGE grantable=false
-schemaacl kg pipeshub_jobs USAGE grantable=false
 schemaacl kg pipeshub_query USAGE grantable=false
 schemaacl kg pipeshub_restore USAGE grantable=false
 schemaacl oauth pipeshub_backup USAGE grantable=false
@@ -2817,14 +2793,6 @@ trigger conversation.chat_sessions docstore_change_log enabled=O function=platfo
 trigger conversation.citations docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger conversation.semantic_search_members docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger conversation.semantic_searches docstore_change_log enabled=O function=platform.docstore_log_change()
-trigger graph.edges kg_edges_delete enabled=A function=kg.log_graph_change()
-trigger graph.edges kg_edges_insert enabled=A function=kg.log_graph_change()
-trigger graph.edges kg_edges_truncate enabled=A function=kg.refuse_truncate()
-trigger graph.edges kg_edges_update enabled=A function=kg.log_graph_change()
-trigger graph.nodes kg_nodes_delete enabled=A function=kg.log_graph_change()
-trigger graph.nodes kg_nodes_insert enabled=A function=kg.log_graph_change()
-trigger graph.nodes kg_nodes_truncate enabled=A function=kg.refuse_truncate()
-trigger graph.nodes kg_nodes_update enabled=A function=kg.log_graph_change()
 trigger identity.org_auth_config docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.org_logos docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.slug_counters docstore_change_log enabled=O function=platform.docstore_log_change()

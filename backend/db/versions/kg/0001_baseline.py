@@ -1,4 +1,4 @@
-"""kg: the typed graph: schema, tables with their row policies and change capture, indexes"""
+"""kg: the typed graph: schema, tables with their row policies, indexes"""
 from alembic import op
 from db.lib.ddl import ensure_partitioned_index
 from db.lib.run_sql import run_sql
@@ -7,7 +7,7 @@ revision = "kg_0001"
 down_revision = None
 branch_labels = ("kg",)
 depends_on = ("kernel_0017", "graph_0002")
-older_code_compatible = "creates a schema of its own and statement triggers on graph.nodes and graph.edges that only insert into kg.graph_changes; older code writes the graph unchanged"
+older_code_compatible = "creates a schema of its own; older code never touches it"
 
 INDEXES = [
     # (table, name, columns, unique[, partial predicate])
@@ -35,10 +35,6 @@ def upgrade():
 
 
 def downgrade():
-    for t, e in (("nodes", "insert"), ("nodes", "update"), ("nodes", "delete"), ("nodes", "truncate"),
-                 ("edges", "insert"), ("edges", "update"), ("edges", "delete"), ("edges", "truncate")):
-        op.execute(f"DROP TRIGGER IF EXISTS kg_{t}_{e} ON graph.{t}")
-    op.execute("DELETE FROM kernel.trigger_exemptions WHERE proc::oid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'kg'::regnamespace)")
     op.execute("DELETE FROM kernel.lock_keys WHERE class_id = 7360")
     op.execute("DROP SCHEMA kg CASCADE")
     op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
