@@ -181,7 +181,7 @@ const py = (module: string, env: Record<string, string>, ...args: string[]) =>
 export async function createKernelDb(cluster: Cluster, name: string): Promise<void> {
   await cluster.admin((c) => c.query(`CREATE DATABASE ${name}`))
   // the roles and the baseline extension (an extension needs a superuser: the administrator installs it)
-  py('db.bootstrap_roles', { PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${name}`, PG_BOOTSTRAP_EXTENSIONS: 'pg_trgm' })
+  py('db.bootstrap_roles', { PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${name}`, PG_BOOTSTRAP_EXTENSIONS: 'vector,pg_trgm' })
   py('db.migrate', { PG_MIGRATE_URL: `postgresql+psycopg://pipeshub_migrate@127.0.0.1:${cluster.port}/${name}` })
   await cluster.admin((c) => c.query(fixtureSql(name)), name)
 }

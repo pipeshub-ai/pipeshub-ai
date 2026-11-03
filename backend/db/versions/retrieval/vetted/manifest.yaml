@@ -1,0 +1,476 @@
+# Vetted SECURITY DEFINER functions of schema retrieval: the catalog. Format and rules: db/lib/vetted.py.
+# After editing: python -m db.lib.vetted render versions/retrieval/vetted/manifest.yaml
+# Reads are open to every service. Catalog writes (collections, spaces) are jobs paths. The only writes a service may make are the
+# two org-scoped functions org_space_adopt (an org's first space) and org_leaf_request (ask for a leaf), each acting only for the
+# caller's org. Spaces and collections are additive descriptors, so none of the writes deletes anything.
+functions:
+  - name: retrieval.collection_get
+    class: read
+    scope: global
+    args:
+      - {name: p_name, type: text, length: [1, 200]}
+    returns: "TABLE (collection_id smallint, sparse_enabled boolean, sparse_idf boolean, lexical_version text, status text)"
+    reads: [retrieval.collections]
+    body: |
+      RETURN QUERY SELECT c.collection_id, c.sparse_enabled, c.sparse_idf, c.lexical_version, c.status
+        FROM retrieval.collections c WHERE c.name = p_name AND c.status <> 'deleting' LIMIT 1;
+    test:
+      needle: "INSERT INTO retrieval.collections (collection_id, name, sparse_enabled, sparse_idf, lexical_version) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-coll', true, false, 'v-needle') ON CONFLICT DO NOTHING"
+      args: ["needle-coll"]
+      own_result: [[30001, true, false, "v-needle", "ready"]]
+      other_result: [[30001, true, false, "v-needle", "ready"]]
+      no_org_result: [[30001, true, false, "v-needle", "ready"]]
+      bad_args: [[""], [null]]
+
+  # One page of the live collections, after the given id.
+  - name: retrieval.collection_list
+    class: read
+    scope: global
+    args:
+      - {name: p_after, type: int, default: "0", range: [0, 32767]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (collection_id smallint, name text, sparse_enabled boolean, sparse_idf boolean, lexical_version text, status text)"
+    reads: [retrieval.collections]
+    body: |
+      RETURN QUERY SELECT c.collection_id, c.name, c.sparse_enabled, c.sparse_idf, c.lexical_version, c.status
+        FROM retrieval.collections c WHERE c.status <> 'deleting' AND c.collection_id > p_after ORDER BY c.collection_id LIMIT p_limit;
+    test:
+      needle: "INSERT INTO retrieval.collections (collection_id, name, sparse_enabled, sparse_idf, lexical_version) OVERRIDING SYSTEM VALUE VALUES (30002, 'needle-list', true, true, 'v-needle') ON CONFLICT DO NOTHING"
+      args: [30001, 10]
+      own_result: &listed [[30002, "needle-list", true, true, "v-needle", "ready"]]
+      other_result: *listed
+      no_org_result: *listed
+      bad_args: [[-1, 10], [0, 0], [0, 1001], [null, 10], [0, null]]
+
+  # The embedding spaces the bound org searches (active) and writes (active and shadow), with each space's descriptor.
+  - name: retrieval.org_space_list
+    class: read
+    scope: org
+    returns: "TABLE (space_id smallint, space_role text, model text, dim int, metric text)"
+    reads: [retrieval.org_spaces, retrieval.embedding_spaces]
+    body: |
+      RETURN QUERY SELECT o.space_id, o.role, s.model, s.dim, s.metric
+        FROM retrieval.org_spaces o JOIN retrieval.embedding_spaces s ON s.space_id = o.space_id
+        WHERE o.org_id = v_org ORDER BY o.space_id LIMIT 16;
+    test:
+      needle: >-
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 1024, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 1024, 'active') ON CONFLICT DO NOTHING
+      args: []
+      own_result: [[30001, "active", "needle-model", 1024, "cosine"]]
+      bad_args: []
+
+  # ---- jobs paths: executable by the jobs role only -----------------------------------------------------------------------
+  - name: retrieval.collection_create
+    class: jobs
+    scope: global
+    args:
+      - {name: p_name, type: text, length: [1, 200]}
+      - {name: p_sparse_enabled, type: boolean}
+      - {name: p_sparse_idf, type: boolean}
+      - {name: p_lexical_version, type: text, length: [1, 200]}
+    returns: "TABLE (new_id smallint)"
+    reads: [retrieval.collections]
+    body: |
+      RETURN QUERY WITH ins AS (
+        INSERT INTO retrieval.collections (name, sparse_enabled, sparse_idf, lexical_version)
+        VALUES (p_name, p_sparse_enabled, p_sparse_idf, p_lexical_version) RETURNING collections.collection_id)
+        SELECT ins.collection_id FROM ins LIMIT 1;
+    test:
+      checks: [privileges, catalog]
+
+  - name: retrieval.collection_mark_deleting
+    class: jobs
+    scope: global
+    args:
+      - {name: p_name, type: text, length: [1, 200]}
+    returns: "TABLE (gone_id smallint)"
+    reads: [retrieval.collections]
+    body: |
+      RETURN QUERY WITH u AS (
+        UPDATE retrieval.collections c SET status = 'deleting' WHERE c.name = p_name AND c.status <> 'deleting' RETURNING c.collection_id)
+        SELECT u.collection_id FROM u LIMIT 1;
+    test:
+      checks: [privileges, catalog]
+
+  # ---- the one write an application role may make: an org's first space -----------------------------------------------------
+  # Org-scoped: the org is the caller's. It only acts when the org has no active space, so a service can add at most one
+  # descriptor per org (spaces are descriptors; nothing is deleted or changed). Answers the org's active space either way.
+  - name: retrieval.org_space_adopt
+    class: write
+    scope: org
+    writer: pipeshub_indexing
+    args:
+      - {name: p_model, type: text, length: [1, 200]}
+      - {name: p_dim, type: int, range: [1, 3840]}
+      - {name: p_metric, type: text, enum: [cosine, dot, l2]}
+    returns: "TABLE (active_id smallint)"
+    reads: [retrieval.org_spaces, retrieval.embedding_spaces]
+    body: |
+      DECLARE v_sp smallint;
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active') THEN
+          BEGIN
+            INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
+          EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent writer of the same model added the descriptor first
+          END;
+          SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+          BEGIN
+            INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (v_org, v_sp, p_dim, 'active');
+          EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent first write of this org adopted one: its space is the answer
+          END;
+        END IF;
+        RETURN QUERY SELECT o.space_id FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active' LIMIT 1;
+      END;
+    test:
+      needle: "INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 1024, 'cosine') ON CONFLICT DO NOTHING"
+      state: "SELECT count(*) FROM retrieval.org_spaces WHERE org_id = '{org}'"
+      args: ["needle-model", 1024, "cosine"]
+      own_result: [[30001]]
+      other_result: [[30001]]
+      no_org_result: []
+      bad_args: [["", 1024, "cosine"], ["m", 0, "cosine"], ["m", 3841, "cosine"], ["m", 8, "euclid"], [null, 8, "cosine"]]
+
+  # Replace the caller's org's active embedding space by another while the org holds no point at all (a model picked after the default
+  # one pinned an empty space). Called by the indexing service on a write whose model or dimension fits no space of the org, with the
+  # name the write itself carries (none for a record point), exactly as a first write adopts a space. Org-scoped; nothing is deleted: the old space becomes 'retiring' and its row's dim is set to 0, which is
+  # part of the key the points reference. That is the guard against a write that lands meanwhile: a write committed first makes the
+  # key update fail (answer false, nothing changed); a key update committed first makes a late write fail on the foreign key. The
+  # shared embedding_spaces descriptors stay.
+  - name: retrieval.org_space_replace_empty
+    class: write
+    scope: org
+    writer: pipeshub_indexing
+    args:
+      - {name: p_model, type: text, length: [1, 200]}
+      - {name: p_dim, type: int, range: [1, 3840]}
+      - {name: p_metric, type: text, enum: [cosine, dot, l2]}
+    returns: "TABLE (replaced boolean)"
+    reads: [retrieval.org_spaces, retrieval.embedding_spaces, retrieval.points]
+    body: |
+      DECLARE v_sp smallint;
+      BEGIN
+        IF EXISTS (SELECT 1 FROM retrieval.points p WHERE p.org_id = v_org LIMIT 1) THEN
+          RETURN QUERY SELECT false;
+          RETURN;
+        END IF;
+        BEGIN
+          INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
+        EXCEPTION WHEN unique_violation THEN NULL;         -- a concurrent writer of the same model added the descriptor first
+        END;
+        SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+        BEGIN
+          UPDATE retrieval.org_spaces o SET role = 'retiring', dim = 0, named_by = NULL WHERE o.org_id = v_org AND o.role = 'active' AND o.space_id <> v_sp;
+          IF EXISTS (SELECT 1 FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.space_id = v_sp) THEN
+            UPDATE retrieval.org_spaces o SET role = 'active', dim = p_dim, named_by = NULL WHERE o.org_id = v_org AND o.space_id = v_sp;
+          ELSE
+            INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (v_org, v_sp, p_dim, 'active');
+          END IF;
+        EXCEPTION WHEN foreign_key_violation OR unique_violation THEN
+          RETURN QUERY SELECT false;
+          RETURN;
+        END;
+        RETURN QUERY SELECT true;
+      END;
+    test:
+      # the answer depends on the org holding no point: other checks seed some, so start from none
+      needle: >-
+        TRUNCATE retrieval.points CASCADE;
+        DELETE FROM retrieval.org_spaces;
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 1024, 'cosine') ON CONFLICT DO NOTHING
+      state: "SELECT count(*) FROM retrieval.org_spaces WHERE org_id = '{org}'"
+      args: ["needle-model", 1024, "cosine"]
+      own_result: [[true]]
+      other_result: [[true]]
+      no_org_result: []
+      bad_args: [["", 1024, "cosine"], ["m", 0, "cosine"], ["m", 3841, "cosine"], ["m", 8, "euclid"], [null, 8, "cosine"]]
+
+  # Which model first wrote to the org's active space when the space itself is nameless (a descriptor adopted by a write that carried no
+  # model: points of releases before records were stamped). A nameless space takes any model of its dimension until a stamped write
+  # names it here; after that it takes that model only.
+  - name: retrieval.org_space_named_by
+    class: read
+    scope: org
+    returns: "TABLE (space_id smallint, named_by text)"
+    reads: [retrieval.org_spaces]
+    body: |
+      RETURN QUERY SELECT o.space_id, o.named_by FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active' LIMIT 1;
+    test:
+      needle: >-
+        DELETE FROM retrieval.org_spaces;
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 1024, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role, named_by) VALUES ('{org}', 30001, 1024, 'active', 'needle-stamp') ON CONFLICT DO NOTHING
+      args: []
+      own_result: [[30001, "needle-stamp"]]
+      bad_args: []
+
+  - name: retrieval.org_space_name
+    class: write
+    scope: org
+    writer: pipeshub_indexing
+    args:
+      - {name: p_stamp, type: text, length: [1, 400]}
+    returns: "TABLE (named_by text)"
+    reads: [retrieval.org_spaces]
+    body: |
+      UPDATE retrieval.org_spaces o SET named_by = p_stamp WHERE o.org_id = v_org AND o.role = 'active' AND o.named_by IS NULL;
+      RETURN QUERY SELECT o.named_by FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active' LIMIT 1;
+    test:
+      needle: >-
+        DELETE FROM retrieval.org_spaces;
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 1024, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 1024, 'active') ON CONFLICT DO NOTHING;
+        UPDATE retrieval.org_spaces SET named_by = NULL WHERE org_id = '{org}'
+      state: "SELECT count(*) FROM retrieval.org_spaces WHERE org_id = '{org}' AND named_by IS NULL"
+      args: ["needle-stamp"]
+      own_result: [["needle-stamp"]]
+      no_org_result: []
+      bad_args: [[""], [null]]
+
+  # An org asks for a LIST leaf of its own (the placement worker creates it). Idempotent (answers true once a request exists); a request
+  # the worker closed as failed is re-opened at most every 30 seconds; the caller's org only.
+  - name: retrieval.org_leaf_request
+    class: write
+    scope: org
+    writer: pipeshub_indexing
+    returns: "TABLE (requested boolean)"
+    reads: [retrieval.placement_requests]
+    body: |
+      IF NOT EXISTS (SELECT 1 FROM retrieval.placement_requests r WHERE r.org_id = v_org) THEN
+        BEGIN
+          INSERT INTO retrieval.placement_requests (org_id) VALUES (v_org);
+        EXCEPTION WHEN unique_violation THEN NULL;         -- two writers of one org asked at once
+        END;
+      ELSE
+        UPDATE retrieval.placement_requests r SET failed_at = NULL, note = NULL, attempts = 0, next_try_at = NULL
+          WHERE r.org_id = v_org AND r.done_at IS NULL AND r.failed_at < now() - interval '30 seconds';
+      END IF;
+      RETURN QUERY SELECT true;
+    test:
+      state: "SELECT count(*) FROM retrieval.placement_requests WHERE org_id = '{org}'"
+      args: []
+      own_result: [[true]]
+      other_result: [[true]]
+      no_org_result: []
+      bad_args: []
+
+  # Whether the org's leaf exists (the placement worker closed the request), or why it will not be created.
+  - name: retrieval.org_leaf_status
+    class: read
+    scope: org
+    returns: "TABLE (placed boolean, note text)"
+    reads: [retrieval.placement_requests]
+    body: |
+      RETURN QUERY SELECT r.done_at IS NOT NULL, r.note FROM retrieval.placement_requests r WHERE r.org_id = v_org LIMIT 1;
+    test:
+      needle: "DELETE FROM retrieval.placement_requests WHERE org_id <> '{org}'; INSERT INTO retrieval.placement_requests (org_id, done_at) VALUES ('{org}', now()) ON CONFLICT (org_id) DO UPDATE SET done_at = now()"
+      args: []
+      own_result: [[true, null]]
+      other_result: []
+      no_org_result: []
+      bad_args: []
+
+  # ---- the collection stamp and the orgs holding a vrid --------------------------------------------------------
+  - name: retrieval.collection_stamp_get
+    class: read
+    scope: global
+    args:
+      - {name: p_name, type: text, length: [1, 200]}
+    returns: "TABLE (stamp text)"
+    reads: [retrieval.collections]
+    body: |
+      RETURN QUERY SELECT c.stamp FROM retrieval.collections c WHERE c.name = p_name AND c.status <> 'deleting' AND c.stamp IS NOT NULL LIMIT 1;
+    test:
+      needle: "INSERT INTO retrieval.collections (collection_id, name, sparse_enabled, sparse_idf, lexical_version, stamp) OVERRIDING SYSTEM VALUE VALUES (29999, 'needle-stamp', true, true, 'v-needle', 's0123456789a') ON CONFLICT DO NOTHING"
+      args: ["needle-stamp"]
+      own_result: &stamped [["s0123456789a"]]
+      other_result: *stamped
+      no_org_result: *stamped
+      bad_args: [[""], [null]]
+
+  # Sets the stamp only when the collection has none (a compare-and-set: two writers agree on the first), and answers the stamp in force.
+  - name: retrieval.collection_stamp_set
+    class: write
+    scope: global
+    writer: pipeshub_indexing
+    args:
+      - {name: p_name, type: text, length: [1, 200]}
+      - {name: p_stamp, type: text, length: [1, 64]}
+    returns: "TABLE (stamp text)"
+    reads: [retrieval.collections]
+    body: |
+      UPDATE retrieval.collections c SET stamp = p_stamp WHERE c.name = p_name AND c.status <> 'deleting' AND c.stamp IS NULL;
+      RETURN QUERY SELECT c.stamp FROM retrieval.collections c WHERE c.name = p_name AND c.status <> 'deleting' LIMIT 1;
+    test:
+      needle: "INSERT INTO retrieval.collections (collection_id, name, sparse_enabled, sparse_idf, lexical_version) OVERRIDING SYSTEM VALUE VALUES (29998, 'needle-stamp2', true, true, 'v-needle') ON CONFLICT DO NOTHING"
+      args: ["needle-stamp2", "sabcdef012345"]
+      checks: [privileges, catalog, shadowing]
+
+  # Global by design: it names the orgs of any vrid it is given, and only the indexing role (the orphan sweep) may call it.
+  # The orgs that hold points of these vrids (for a vrid no graph record names any more, so no caller knows its org): the orphan sweep.
+  # Class write only to bind the one role that may call it (the indexing service the sweep runs in); it changes nothing. Walks the
+  # orgs and collections and probes the (org, collection, group) index, so it is for a bounded, rare batch.
+  - name: retrieval.vrid_orgs
+    class: write
+    scope: global
+    writer: pipeshub_indexing
+    custom_plan: true
+    args:
+      - {name: p_vrids, type: "text[]", max_items: 100}
+    returns: "TABLE (vrid text, org_id text)"
+    reads: [retrieval.points, retrieval.org_spaces, retrieval.collections]
+    body: |
+      DECLARE v_n int;
+      BEGIN
+        RETURN QUERY SELECT DISTINCT v.vrid, s.org_id
+          FROM retrieval.org_spaces s
+          CROSS JOIN retrieval.collections c
+          CROSS JOIN unnest(p_vrids) AS v(vrid)
+          CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p WHERE p.org_id = s.org_id AND p.collection_id = c.collection_id AND p.group_key = v.vrid LIMIT 1) hit
+          WHERE s.role = 'active' AND c.status <> 'deleting'
+          LIMIT 1001;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        IF v_n > 1000 THEN RAISE EXCEPTION 'vrid_orgs: too many orgs for one batch' USING ERRCODE = '54000'; END IF;
+      END;
+    test:
+      args: [["vr-needle"]]
+      volume: >-
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim)
+          SELECT '{org}', 1, 30001, gen_random_uuid(), 'vr-' || g, '[1,0,0,0]'::ext.halfvec, 4 FROM generate_series(1, 6000) g
+      checks: [privileges, catalog, shadowing, plan, timing]
+      max_ms: 500
+
+  # ---- the lexical leg ---------------------------------------------------------------------------------------
+  # Sparse (term id, weight) query against the bound org's active space, exact BM25 as Qdrant's IDF modifier computes it:
+  # sum over query terms of ln((n - df + 0.5) / (df + 0.5) + 1) * query weight * stored weight, written ln(n + 1) - ln(df + 0.5)
+  # (the same number; the catalog check refuses a division in a vetted body). df is the number of the term's postings, n the folded
+  # count of points that have terms (the folded count plus the deltas not folded yet), so both are exact at once. Every posting of every
+  # query term is read (index-only scans) and summed per point; membership and tombstones are checked on the best points only, until p_leg pass.
+  # Membership: all four arms NULL = the whole org; otherwise a point passes when its group is in p_direct or has a member in an arm.
+  - name: retrieval.search_sparse
+    class: read
+    scope: org
+    custom_plan: true
+    args:
+      - {name: p_collection, type: smallint, range: [1, 32767]}
+      - {name: p_terms, type: "bigint[]", max_items: 20000}
+      - {name: p_weights, type: "real[]", max_items: 20000}
+      - {name: p_apps, type: "text[]", nullable: true, max_items: 10000}
+      - {name: p_groups, type: "text[]", nullable: true, max_items: 10000}
+      - {name: p_roots, type: "text[]", nullable: true, max_items: 10000}
+      - {name: p_direct, type: "text[]", nullable: true, max_items: 10000}
+      - {name: p_must_vrids, type: "text[]", nullable: true, max_items: 100000}
+      - {name: p_leg, type: int, range: [1, 1000]}
+    returns: "TABLE (point_sk bigint, score double precision)"
+    reads: [retrieval.postings, retrieval.points, retrieval.group_members, retrieval.point_tombstones, retrieval.collection_stats, retrieval.lexical_df_delta, retrieval.org_spaces]
+    body: |
+      DECLARE v_space smallint; v_n bigint; v_k int; v_sks bigint[]; v_scs double precision[]; v_total bigint;
+      BEGIN
+        IF cardinality(p_terms) < 1 OR cardinality(p_weights) <> cardinality(p_terms) THEN
+          RAISE EXCEPTION 'search_sparse: invalid arguments' USING ERRCODE = '22023';
+        END IF;
+        SELECT o.space_id INTO v_space FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active';
+        IF v_space IS NULL THEN RETURN; END IF;
+        SELECT coalesce((SELECT s.n_points FROM retrieval.collection_stats s
+                          WHERE s.org_id = v_org AND s.collection_id = p_collection AND s.space_id = v_space), 0)
+             + coalesce((SELECT sum(d.d) FROM retrieval.lexical_df_delta d
+                          WHERE d.org_id = v_org AND d.collection_id = p_collection AND d.space_id = v_space AND d.term = -1), 0)
+          INTO v_n;
+        IF p_must_vrids IS NULL AND p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL THEN
+          -- the whole org: a posting exists only for a live point, so the best p_leg sums are the answer
+          RETURN QUERY
+          WITH q AS MATERIALIZED (
+            SELECT CASE WHEN t.term > 2147483647 THEN t.term - 4294967296 ELSE t.term END AS term, t.qw
+              FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
+          idf AS MATERIALIZED (
+            SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
+              FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
+                                          WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
+             WHERE d.c > 0)
+          SELECT x.point_sk, sum(i.f * x.w) AS sc
+            FROM idf i CROSS JOIN LATERAL (
+              SELECT p.point_sk, p.w FROM retrieval.postings p
+               WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = i.term) x
+           GROUP BY x.point_sk ORDER BY 2 DESC, 1 LIMIT p_leg;
+        ELSE
+          -- a membership filter: check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass;
+          -- if the best v_k are not enough and there are more, go again over all of them
+          FOREACH v_k IN ARRAY ARRAY[p_leg * 8, NULL] LOOP          -- the last pass has no bound (LIMIT NULL)
+            WITH q AS MATERIALIZED (
+              SELECT CASE WHEN t.term > 2147483647 THEN t.term - 4294967296 ELSE t.term END AS term, t.qw
+                FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
+            idf AS MATERIALIZED (
+              SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
+                FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
+                                            WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
+               WHERE d.c > 0),
+            agg AS MATERIALIZED (
+              SELECT x.point_sk, sum(i.f * x.w) AS sc
+                FROM idf i CROSS JOIN LATERAL (
+                  SELECT p.point_sk, p.w FROM retrieval.postings p
+                   WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = i.term) x
+               GROUP BY x.point_sk),
+            kept AS (
+              SELECT b.point_sk, b.sc FROM (SELECT a.point_sk, a.sc FROM agg a ORDER BY a.sc DESC, a.point_sk LIMIT v_k) b JOIN LATERAL (
+                SELECT 1 AS ok FROM retrieval.points p
+                 WHERE p.org_id = v_org AND p.point_sk = b.point_sk
+                   AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
+                   AND ((p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL)
+                        OR p.group_key = ANY(p_direct)
+                        OR EXISTS (SELECT 1 FROM retrieval.group_members m
+                                    WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.group_key = p.group_key
+                                      AND ((m.kind = 1 AND m.member_id = ANY(p_apps)) OR (m.kind = 2 AND m.member_id = ANY(p_groups))
+                                           OR (m.kind = 3 AND m.member_id = ANY(p_roots)))))
+                   AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org AND x.point_sk = p.point_sk)
+                 LIMIT 1) m ON true
+              ORDER BY b.sc DESC, b.point_sk
+              LIMIT p_leg)
+            SELECT coalesce(array_agg(k.point_sk ORDER BY k.sc DESC, k.point_sk), '{}'), coalesce(array_agg(k.sc ORDER BY k.sc DESC, k.point_sk), '{}'),
+                   (SELECT count(*) FROM (SELECT 1 FROM agg LIMIT coalesce(v_k + 1, 2147483647)) c)   -- only 'more than v_k?' is asked
+              INTO v_sks, v_scs, v_total FROM kept k;
+            IF cardinality(v_sks) >= p_leg OR v_k IS NULL OR v_total <= v_k THEN
+              RETURN QUERY SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc) ORDER BY u.sc DESC, u.sk;
+              RETURN;
+            END IF;
+          END LOOP;
+        END IF;
+      END;
+    test:
+      needle: >-
+        DELETE FROM retrieval.postings WHERE org_id = '{org}';
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.collection_stats WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active');
+        INSERT INTO retrieval.points (org_id, point_sk, collection_id, space_id, point_id, group_key, embedding, embedding_dim, lex_terms) OVERRIDING SYSTEM VALUE
+          VALUES ('{org}', 777, 1, 30001, '00000000-0000-0000-0000-000000000777', 'vr-sparse', '[1,0,0,0]'::ext.halfvec, 4, '{900000001,900000002}'),
+                 ('{org}', 778, 1, 30001, '00000000-0000-0000-0000-000000000778', 'vr-sparse-2', '[1,0,0,0]'::ext.halfvec, 4, '{900000001}');
+        INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w)
+          VALUES ('{org}', 1, 30001, 900000001, 777, 2), ('{org}', 1, 30001, 900000002, 777, 1), ('{org}', 1, 30001, 900000001, 778, 1);
+        INSERT INTO retrieval.collection_stats (org_id, collection_id, space_id, n_points) VALUES ('{org}', 1, 30001, 10)
+      args: [1, [900000001, 900000002], [1, 1], null, null, null, null, null, 10]
+      own_result: [[777, 4.955639246538637], [778, 1.4816045409242156]]
+      other_result: []
+      no_org_result: []
+      bad_args: [[0, [1], [1], null, null, null, null, null, 10], [1, [], [], null, null, null, null, null, 10], [1, [1, 2], [1], null, null, null, null, null, 10],
+                 [1, [1], [1], null, null, null, null, null, 0], [1, [1], [1], null, null, null, null, null, 1001], [null, [1], [1], null, null, null, null, null, 10],
+                 [1, null, [1], null, null, null, null, null, 10]]
+      volume: >-
+        DELETE FROM retrieval.postings WHERE org_id = '{org}';
+        DELETE FROM retrieval.points WHERE org_id = '{org}';
+        DELETE FROM retrieval.collection_stats WHERE org_id = '{org}';
+        DELETE FROM retrieval.org_spaces WHERE org_id = '{org}';
+        INSERT INTO retrieval.embedding_spaces (space_id, model, dim, metric) OVERRIDING SYSTEM VALUE VALUES (30001, 'needle-model', 4, 'cosine') ON CONFLICT DO NOTHING;
+        INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES ('{org}', 30001, 4, 'active');
+        INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim, lex_terms)
+          SELECT '{org}', 1, 30001, gen_random_uuid(), 'vr-' || g, '[1,0,0,0]'::ext.halfvec, 4,
+                 ARRAY[(g % 997) + 1, ((g * 7) % 991) + 2000, 900000001 + (g % 3000)]::bigint[] FROM generate_series(1, 60000) g;
+        INSERT INTO retrieval.postings (org_id, collection_id, space_id, term, point_sk, w)
+          SELECT '{org}', 1, 30001, u.term::int, p.point_sk, 1.5 FROM retrieval.points p CROSS JOIN LATERAL unnest(p.lex_terms) AS u(term) WHERE p.org_id = '{org}';
+        INSERT INTO retrieval.collection_stats (org_id, collection_id, space_id, n_points) VALUES ('{org}', 1, 30001, 60000)
+      max_ms: 150
