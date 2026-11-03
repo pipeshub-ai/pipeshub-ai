@@ -540,6 +540,22 @@ export function describeAnswerWiring(
       expect(rendered).to.include('[2] Asana Q3 FY2026 results <https://investors.asana.com/q3>');
     });
 
+    it('shows reasoning that came after the last step as a row, though no text followed it', async () => {
+      const client = await ask([
+        { type: 'RUN_STARTED', runId: 'r1' },
+        { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'web_search', displayName: 'Searched the web' },
+        { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed', resultSummary: '4 results' },
+        { type: 'REASONING_MESSAGE_CONTENT', runId: 'r1', delta: 'That answers it.' },
+        { type: 'REASONING_END', runId: 'r1' },
+        finished('Done.'),
+      ]);
+
+      expect(replayRows(client).map((r) => [r.title, r.output])).to.deep.equal([
+        ['Searched the web', '✓ 4 results'],
+        ['Reasoning', 'That answers it.'],
+      ]);
+    });
+
     it('streams the step and then the answer in one message, ending with the sources', async () => {
       expectStreamedAnswer(await ask(answerFrames('completed')), 'complete');
     });
