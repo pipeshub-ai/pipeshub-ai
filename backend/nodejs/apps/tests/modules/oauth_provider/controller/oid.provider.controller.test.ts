@@ -184,6 +184,19 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('resource_metadata="http://localhost:3000/.well-known/oauth-protected-resource/mcp"')
     })
 
+    // Sending the listed scopes would drop offline_access, and the token could not refresh.
+    it('tells a raw device sign-in to send no scope, and says it refreshes only where offline_access is offered', async () => {
+      mockAppConfig.mcpScopes = ['offline_access', 'kb:read', 'semantic:write']
+      let out = await md()
+      expect(out).to.include('and no `scope`')
+      expect(out).to.include('plus `offline_access`, so it can refresh')
+      expect(out).to.include('A device sign-in refreshes itself')
+      mockAppConfig.mcpScopes = ['kb:read']
+      out = await md()
+      expect(out).to.not.include('offline_access')
+      expect(out).to.not.include('refreshes itself')
+    })
+
     it('lists only the agent scopes this instance offers', async () => {
       mockAppConfig.mcpScopes = ['openid', 'kb:read', 'semantic:write', 'org:admin']
       const out = await md()

@@ -14,6 +14,8 @@ export interface AuthMdInfo {
   dcrEnabled: boolean;
   /** The scopes an agent sign-in is granted on this instance. */
   agentScopes: readonly string[];
+  /** Whether a device sign-in also gets `offline_access`, so it can refresh. */
+  deviceRefreshes: boolean;
   /** Extra sections an edition adds after the ways in, as Markdown. */
   extraSections: readonly string[];
 }
@@ -38,7 +40,7 @@ npx -y -p @pipeshub-ai/mcp pipeshub login --wait
 
 The CLI stores the sign-in (\`~/.config/pipeshub/credentials.json\`, mode 0600) and refreshes it. \`npx -y @pipeshub-ai/mcp start\` uses it, so an MCP client config needs no token.
 
-Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and \`scope\` (space-separated, from the list below), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token.`);
+Without the CLI: \`POST ${oauth}/device_authorization\` with \`client_id=${info.deviceClientId}\` and no \`scope\` (the sign-in gets the agent scopes below${info.deviceRefreshes ? ' plus `offline_access`, so it can refresh' : ''}), show the person \`verification_uri_complete\` (or \`verification_uri\` and \`user_code\`), then poll \`POST ${oauth}/token\` with \`grant_type=urn:ietf:params:oauth:grant-type:device_code\`, \`device_code\` and \`client_id\` every \`interval\` seconds until it returns an access token.`);
   }
 
   if (info.dcrEnabled) {
@@ -74,7 +76,7 @@ An agent sign-in is granted these scopes: ${info.agentScopes.map((s) => `\`${s}\
 
 ## 4. When a call is refused
 
-- \`401\`: the token expired or was revoked. A device sign-in refreshes itself; otherwise sign in again or ask the person for a new token.
+- \`401\`: the token expired or was revoked. ${info.deviceRefreshes ? 'A device sign-in refreshes itself (the CLI does it for you); otherwise sign' : 'Sign'} in again or ask the person for a new token.
 - \`403\` with \`Insufficient scope\`: the token lacks the scope it names. The person needs a new token with it; do not try another route to the same data.
 `;
 }

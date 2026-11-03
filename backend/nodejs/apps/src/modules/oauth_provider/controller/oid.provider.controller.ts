@@ -201,6 +201,8 @@ export class OIDCProviderController {
             : null,
           dcrEnabled: process.env.PIPESHUB_ENABLE_DCR === 'true',
           agentScopes: AgentMcpScopes.filter((s) => offered.has(s)),
+          // The device app's preset adds offline_access where MCP_SCOPES allows it.
+          deviceRefreshes: deviceEnabled && offered.has('offline_access'),
           extraSections: extraSections(origin),
         }),
       );
