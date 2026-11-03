@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import {
   SlackPlanStream,
   SlackTaskPlan,
+  type SlackTaskChunk,
   compactArgs,
   isSecretKey,
   openFence,
@@ -11,6 +12,7 @@ import {
   splitIntoRows,
   viewSources,
 } from '../../../src/integrations/slack-bot/src/utils/plan-stream';
+import { replayRows } from './slack-bot-harness';
 import {
   SLACK_STREAM_MESSAGE_CHAR_LIMIT,
   type TypedSlackClient,
@@ -48,128 +50,101 @@ describe('slack-bot/utils/plan-stream', () => {
   afterEach(() => sinon.restore());
 
   describe('SlackTaskPlan', () => {
-    it('shows a lone call with its label as the title and its Arguments and Result as output', () => {
+    const run = (plan: SlackTaskPlan, name: string, label: string, id: string, args: string, status: string, summary?: string) => {
+      plan.toolStarted(name, label, id);
+      if (args) plan.toolArgs(name, { summary: args }, id);
+      return plan.toolFinished(name, label, status, id, summary ? { summary } : {});
+    };
+
+    it('titles a row by what it did and sends only title and status until it is sealed', () => {
       const plan = new SlackTaskPlan();
-      plan.toolStarted('knowledgegraph__search', 'Searched the knowledge base', 'c1');
-      plan.toolArgs('knowledgegraph__search', { summary: 'Searched for "Q3"' }, 'c1');
-
-      expect(
-        plan.toolFinished('knowledgegraph__search', 'Searched the knowledge base', 'completed', 'c1', { summary: 'No results found' }),
-      ).to.deep.equal([{
-        type: 'task_update',
-        id: 'tools-1',
-        title: 'Knowledgegraph: Searched the knowledge base',
-        status: 'complete',
-        output: 'Arguments: Searched for "Q3"\nResult: No results found',
-      }]);
-    });
-
-    it('joins calls with no text between them into one row: a summary line and every call listed', () => {
-      const plan = new SlackTaskPlan();
-      plan.toolStarted('web_search', 'Searched the web', 'c1');
-      plan.toolStarted('web_search', 'Searched the web', 'c2');
-      expect(plan.toolProgress('web_search', '1/3')[0]).to.deep.include({ details: '2 calls · 2 running' });
-      plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1', { summary: '7 results' });
-      const [row] = plan.toolFinished('web_search', 'Searched the web', 'failed', 'c2', { summary: 'Failed: The search took too long' });
-
-      expect(row).to.deep.include({
-        id: 'tools-1',
-        title: 'Explored 2 searches',
-        status: 'error',
-        details: '2 calls · 1 failed',
-        output: '✓ Searched the web\nResult: 7 results\n\n✗ Searched the web\nResult: Failed: The search took too long',
-      });
-      expect((row!.details as string).length).to.be.at.most(256);
+      const [live] = run(plan, 'knowledgegraph__search', 'Searched the knowledge base', 'c1', 'Searched for "Q3"', 'completed', 'No results found');
+      expect(live).to.deep.equal({ type: 'task_update', id: 'tools-1', title: 'Searched the knowledge base', status: 'complete' });
 
       plan.endGroup();
-      expect(plan.toolStarted('fetch_url', 'Read a web page', 'c3')[0]!.id).to.not.equal('tools-1');
+      expect(plan.takeSealed()).to.deep.equal([{
+        type: 'task_update',
+        id: 'tools-1',
+        title: 'Searched the knowledge base',
+        status: 'complete',
+        details: 'Knowledgegraph',
+        output: '✓ "Q3" → No results found',
+      }]);
+      expect(plan.takeSealed()).to.deep.equal([]);
     });
 
-    it('labels a burst of page reads the way the dashboard does, naming each page', () => {
+    it('starts a new row for a different tool, never a mixed one, and shows no counts', () => {
       const plan = new SlackTaskPlan();
-      const page = (url: string) => ({ view: { kind: 'fields', fields: [{ label: 'Title', value: 'Page' }], url } });
-      plan.toolStarted('fetch_url', 'Read a web page', 'c1');
-      plan.toolStarted('fetch_url', 'Read a web page', 'c2');
-      plan.toolFinished('fetch_url', 'Read a web page', 'completed', 'c1', { ...page('https://investors.asana.com/q3'), summary: 'Read “Q3 results” (investors.asana.com)' });
-      const [row] = plan.toolFinished('fetch_url', 'Read a web page', 'completed', 'c2', page('https://trustcenter.asana.com/'));
+      run(plan, 'jira__search_issues', 'Searched Jira', 'c1', 'Searched for "OPS"', 'completed', '2 results');
+      const [next] = plan.toolStarted('confluence__get_page', 'Read a Confluence page', 'c2');
+      expect(next!.id).to.not.equal('tools-1');
+      const [sealed] = plan.takeSealed();
+      expect(sealed).to.deep.include({ id: 'tools-1', title: 'Searched Jira', details: 'Jira', output: '✓ "OPS" → 2 results' });
+      expect(JSON.stringify(sealed)).to.not.match(/\b\d+ (calls?|tools|searches|running|failed)\b/);
+    });
 
+    it('reads a failed record download like a person would say it', () => {
+      const plan = new SlackTaskPlan();
+      run(plan, 'artifacts__get_record_download_url', 'Got record download links', 'c1',
+        'Get Record Download Url — record_id: 8dc0d3d5-4b1e-4c2a-9f3d-2a6b7c8d9e0f', 'failed',
+        'Failed: No download link for records from an external connector. Ask an admin.');
+      plan.endGroup();
+      const [row] = plan.takeSealed();
       expect(row).to.deep.include({
-        title: 'Ran 2 tools',
-        output: '✓ Read a web page (investors.asana.com)\nResult: Read “Q3 results” (investors.asana.com)\n\n✓ Read a web page (trustcenter.asana.com)',
+        title: 'Got record download links',
+        status: 'error',
+        details: 'Artifacts',
+        output: '✗ record 8dc0d3d5 → No download link for records from an external connector',
       });
     });
 
-    it('tags the row with the one app its tagged calls share, as the dashboard does', () => {
+    it('is an error row only when every call failed; a partial failure shows on its line', () => {
+      const plan = new SlackTaskPlan();
+      run(plan, 'web_search', 'Searched the web', 'c1', 'Searched for "a"', 'completed', '4 results');
+      run(plan, 'web_search', 'Searched the web', 'c2', 'Searched for "b"', 'failed', 'Failed: The search took too long');
+      plan.endGroup();
+      const [row] = plan.takeSealed();
+      expect(row).to.deep.include({ status: 'complete', output: '✓ "a" → 4 results\n✗ "b" → The search took too long' });
+    });
+
+    it('waits to seal a closed row until its last call ends', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('web_search', 'Searched the web', 'c1');
-      const [row] = plan.toolStarted('knowledgegraph__search', 'Searched the knowledge base', 'c2');
-      expect(row).to.deep.include({
-        title: 'Knowledgegraph: Explored 2 searches',
-        output: '• Searched the web\n\n• Searched the knowledge base',
-      });
+      plan.endGroup();
+      expect(plan.takeSealed()).to.deep.equal([{ type: 'task_update', id: 'tools-1', title: 'Searched the web', status: 'in_progress' }]);
+      const [row] = plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1', { summary: '3 results' });
+      expect(row).to.deep.include({ status: 'complete', output: '✓ 3 results' });
     });
 
-    it('says "Ran N tools" for a mix, and tags each call with its app when they differ', () => {
+    it('shows six lines and sums up the rest', () => {
       const plan = new SlackTaskPlan();
-      plan.toolStarted('jira__search_issues', 'Searched Jira', 'c1');
-      const [row] = plan.toolStarted('confluence__get_page', 'Read a page', 'c2');
-      expect(row).to.deep.include({ title: 'Ran 2 tools', status: 'in_progress', output: '• Jira: Searched Jira\n\n• Confluence: Read a page' });
+      for (let i = 0; i < 8; i += 1) run(plan, 'web_search', 'Searched the web', `c${String(i)}`, `Searched for "q${String(i)}"`, 'completed', 'ok');
+      plan.endGroup();
+      const [row] = plan.takeSealed();
+      expect(row!.output!.split('\n')).to.have.length(7);
+      expect(row!.output!.endsWith('+2 more')).to.equal(true);
     });
 
-    it('lists every call, continuing in another row rather than dropping or cutting one', () => {
+    it('cuts ids to 8 characters, falls back to compact arguments and masks secrets', () => {
       const plan = new SlackTaskPlan();
-      const long = `Searched for "${'x'.repeat(900)}"`;
-      let rows: ReturnType<SlackTaskPlan['toolStarted']> = [];
-      for (let i = 0; i < 6; i += 1) {
-        plan.toolStarted('web_search', 'Searched the web', `c${String(i)}`);
-        plan.toolArgs('web_search', { summary: long }, `c${String(i)}`);
-        rows = plan.toolFinished('web_search', 'Searched the web', 'completed', `c${String(i)}`);
-      }
-
-      expect(rows.length).to.be.greaterThan(1);
-      expect(rows[1]).to.deep.include({ title: 'Explored 6 searches (continued)', status: 'complete' });
-      const headings = rows.flatMap((r) => (r.output as string).split('\n').filter((l) => l.startsWith('✓')));
-      expect(headings).to.have.length(6);
-      expect(rows.every((r) => (r.output as string).length <= 2500)).to.equal(true);
-    });
-
-    it('falls back to compact arguments, shows a SQL query, and never shows a secret', () => {
-      const plan = new SlackTaskPlan();
-      plan.toolStarted('sql__execute_sql_query', 'Ran a query', 'c1');
-      plan.toolStarted('github__create_issue', 'Created an issue', 'c2');
-      plan.toolArgs('sql__execute_sql_query', { summary: 'Querying the database', raw: '{"query":"SELECT 1"}' }, 'c1');
-      const [row] = plan.toolArgs(
-        'github__create_issue',
-        { raw: '{"title":"Bug","token":"ghp_abcdefghijklmnopqrstuvwxyz0123","labels":["a"],"api_key":"k-123"}' },
-        'c2',
-      );
-
-      const output = row!.output as string;
-      expect(output).to.include('Arguments: Querying the database\nQuery: SELECT 1');
-      expect(output).to.include('Arguments: title: Bug, token: [redacted], api_key: [redacted]');
-      expect(output).to.not.include('ghp_').and.not.include('k-123').and.not.include('labels');
-    });
-
-    it('stays running while any call runs, and shows progress only then', () => {
-      const plan = new SlackTaskPlan();
-      plan.toolStarted('mcp_jira_search', 'Searched Jira', 'c1');
-      expect(plan.toolProgress('mcp_jira_search', ' 3/10')[0]).to.deep.include({ status: 'in_progress', output: 'Progress: 3/10' });
-      expect(plan.toolProgress('mcp_jira_search', ' 3/10')).to.deep.equal([]);
-      expect(plan.toolFinished('mcp_jira_search', 'Searched Jira', 'completed', 'c1')[0]).to.not.have.property('output');
+      plan.toolStarted('github__create_issue', 'Created an issue', 'c1');
+      plan.toolArgs('github__create_issue', { raw: '{"title":"Bug","token":"ghp_abcdefghijklmnopqrstuvwxyz0123","labels":["a"]}' }, 'c1');
+      plan.toolFinished('github__create_issue', 'Created an issue', 'completed', 'c1', { summary: 'Created issue 4f9a2c1e8b7d6a5f4e3d2c1b and token=abc' });
+      plan.endGroup();
+      const [row] = plan.takeSealed();
+      expect(row!.output).to.equal('✓ title: Bug, token: [redacted] → Created issue 4f9a2c1e and token=[redacted]');
     });
 
     it('keeps a tool waiting for approval in progress, then ends it as waiting, not failed, when the reply stops', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira_create', 'Created an issue', 'c1');
-      expect(plan.toolFinished('jira_create', 'Created an issue', 'awaiting_approval', 'c1')[0]).to.deep.include({
-        status: 'in_progress', details: 'Waiting for your approval',
-      });
+      expect(plan.toolFinished('jira_create', 'Created an issue', 'awaiting_approval', 'c1')[0]).to.deep.include({ status: 'in_progress' });
       expect(plan.failRunning(new Set(['tools-1']))).to.deep.equal([{
         type: 'task_update',
         id: 'tools-1',
         title: 'Waiting for your approval: Created an issue',
         status: 'complete',
-        details: 'Waiting for your approval',
+        output: '• Waiting for your approval',
       }]);
     });
 
@@ -182,49 +157,35 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(row!.title.length).to.be.at.most(256);
     });
 
-    it('shows a blocked call as a Result, with its reason when there is one', () => {
-      const plan = new SlackTaskPlan();
-      plan.toolStarted('jira_create', 'Created an issue', 'c1');
-      plan.toolStarted('jira_create', 'Created an issue', 'c2');
-      plan.toolFinished('jira_create', 'Created an issue', 'blocked', 'c1');
-      const [row] = plan.toolFinished('jira_create', 'Created an issue', 'blocked', 'c2', { summary: 'Not allowed here' });
-      expect(row!.output).to.equal('✗ Created an issue\nResult: Blocked\n\n✗ Created an issue\nResult: Blocked: Not allowed here');
-    });
-
     it('shows how an approval was settled, as the dashboard chips it', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('jira_create', 'Created an issue', 'c1', { approvalAnswer: 'allowed' });
-      const [row] = plan.toolStarted('jira_create', 'Created an issue', 'c2', { approvalAnswer: 'declined' });
-      expect(row!.output).to.equal('• Created an issue · Approved\n\n• Created an issue · Declined');
+      plan.toolFinished('jira_create', 'Created an issue', 'completed', 'c1', { summary: 'Created OPS-12' });
+      plan.endGroup();
+      expect(plan.takeSealed()[0]!.output).to.equal('✓ Created OPS-12 · Approved');
     });
 
-    it('puts a sub-agent in a row of its own, with its own calls listed', () => {
+    it('shows a blocked call with its reason', () => {
+      const plan = new SlackTaskPlan();
+      run(plan, 'jira_create', 'Created an issue', 'c1', '', 'blocked', 'Not allowed here');
+      plan.endGroup();
+      expect(plan.takeSealed()[0]).to.deep.include({ status: 'error', output: '✗ blocked: Not allowed here' });
+    });
+
+    it('puts a sub-agent in a row of its own, its calls named on their lines', () => {
       const plan = new SlackTaskPlan();
       expect(plan.subAgent('Researcher', 'started')[0]).to.deep.include({ title: 'Researcher', status: 'in_progress' });
       plan.toolStarted('web_search', 'Searched the web', 'c1', { agent: 'Researcher' });
+      plan.toolArgs('web_search', { summary: 'Searched for "Q3"' }, 'c1');
       plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1', { summary: '4 results' });
       const [row] = plan.subAgent('Researcher', 'completed');
-      expect(row).to.deep.include({
+      expect(row).to.deep.equal({
+        type: 'task_update',
+        id: row!.id,
         title: 'Researcher',
         status: 'complete',
-        details: '1 call',
-        output: '✓ Searched the web\nResult: 4 results',
+        output: '✓ Searched the web: "Q3" → 4 results',
       });
-      expect(plan.subAgent('Writer', 'failed')[0]).to.deep.include({ title: 'Writer', status: 'error' });
-    });
-
-    it('pairs a result without a call id with the open call of the same name', () => {
-      const plan = new SlackTaskPlan();
-      plan.toolStarted('search', 'Searched');
-      expect(plan.toolFinished('search', 'Searched', 'completed')[0]).to.deep.include({ id: 'tools-2', status: 'complete' });
-    });
-
-    it('shows narration as rows of its own, in full, and ends the open group', () => {
-      const plan = new SlackTaskPlan();
-      plan.toolStarted('web_search', 'Searched the web', 'c1');
-      const rows = plan.narration('Let me check the trust page.');
-      expect(rows).to.deep.equal([{ type: 'task_update', id: rows[0]!.id, title: 'Let me check the trust page.', status: 'complete' }]);
-      expect(plan.toolStarted('web_search', 'Searched the web', 'c2')[0]!.id).to.not.equal('tools-1');
     });
 
     it('shows finished reasoning as a row only when flushed, so a discarded call can drop it', () => {
@@ -234,19 +195,16 @@ describe('slack-bot/utils/plan-stream', () => {
       plan.reasoningDone();
       expect(plan.flushReasoning()).to.deep.include({ title: 'Reasoning', status: 'complete', output: 'Check the docs first.' });
       expect(plan.flushReasoning()).to.equal(null);
-
       plan.reasoningDelta('Wrong idea.');
       plan.reasoningDone();
       plan.dropReasoning();
       expect(plan.flushReasoning()).to.equal(null);
     });
 
-    it('fails only the running rows it is given', () => {
+    it('shows narration as plain rows: a title, never details or output', () => {
       const plan = new SlackTaskPlan();
-      plan.toolStarted('search', 'Searched', 'c1');
-      expect(plan.failRunning(new Set(['tools-1']))).to.deep.equal([
-        { type: 'task_update', id: 'tools-1', title: 'Searched', status: 'error' },
-      ]);
+      const rows = plan.narration('Let me check the trust page.');
+      expect(rows).to.deep.equal([{ type: 'task_update', id: rows[0]!.id, title: 'Let me check the trust page.', status: 'complete' }]);
     });
 
     it('never sends a status Slack does not document', () => {
@@ -330,9 +288,11 @@ describe('slack-bot/utils/plan-stream', () => {
     it('masks secrets in results too', () => {
       const plan = new SlackTaskPlan();
       plan.toolStarted('http__get', 'Called an API', 'c1');
-      const [row] = plan.toolFinished('http__get', 'Called an API', 'completed', 'c1', { summary: 'Got token=abc123 back' });
-      expect(row!.output).to.equal('Result: Got token=[redacted]');
+      plan.toolFinished('http__get', 'Called an API', 'completed', 'c1', { summary: 'Got token=abc123 back' });
+      plan.endGroup();
+      expect(plan.takeSealed()[0]!.output).to.equal('✓ Got token=[redacted]');
     });
+
   });
 
   describe('openFence', () => {
@@ -470,7 +430,7 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(calls(c, 'chat.stopStream')).to.deep.equal([{
         channel: 'C1',
         ts: 's1',
-        chunks: [{ type: 'task_update', id: 'tools-1', title: 'Searching', status: 'error' }],
+        chunks: [{ type: 'task_update', id: 'tools-1', title: 'Searching', status: 'error', output: '• Searching' }],
         blocks: sources,
       }]);
       expect(calls(c, 'chat.delete')).to.deep.equal([]);
@@ -485,35 +445,165 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(await s.stop({ markdown: 'Something went wrong.' })).to.equal(false);
     });
 
-    it('moves a row that Slack finds too big into a "(continued)" row instead of losing it', async () => {
-      const { c, s, plan } = stream();
-      await s.tasks(plan.toolStarted('search', 'Searched', 'c1'));
-      const tooLong = Object.assign(new Error('big'), { data: { error: 'msg_blocks_too_long' } });
-      c.apiCall.withArgs('chat.appendStream').onFirstCall().rejects(tooLong);
-      const row = { type: 'task_update' as const, id: 'tools-1', title: 'Searched', status: 'complete' as const, output: 'a\n\nb' };
+    describe('sends a row\'s details and output once, as Slack adds every resend to what it shows', () => {
+      const tsOf = (n: number) => `s${String(n)}`;
+      const tooLong = () => Object.assign(new Error('big'), { data: { error: 'msg_blocks_too_long' } });
+      /** The rows as Slack shows them, each row's details sent at most once. */
+      const shown = (c: ReturnType<typeof slackClient>, refused: ReadonlySet<number> = new Set()) => {
+        const rows = replayRows(c, tsOf, refused);
+        for (const row of rows) expect(row.detailSends, `${row.id} sends its details once`).to.be.at.most(1);
+        expect(new Set(rows.map((r) => r.id)).size, 'no row repeats').to.equal(rows.length);
+        return rows;
+      };
+      const setup = () => {
+        const parts = stream();
+        // As the entry does: rows sealed meanwhile go first.
+        const push = (rows: SlackTaskChunk[]) => parts.s.tasks([...parts.plan.takeSealed(), ...rows]);
+        const search = async (id: string, query: string, status = 'completed', summary = '4 results') => {
+          await push(parts.plan.toolStarted('kb__search', 'Searched the knowledge base', id));
+          await push(parts.plan.toolArgs('kb__search', { summary: `Searched for "${query}"` }, id));
+          await push(parts.plan.toolFinished('kb__search', 'Searched the knowledge base', status, id, { summary }));
+        };
+        return { ...parts, push, search };
+      };
 
-      await s.tasks([row]);
+      it('1) seals a group once, when the next step starts', async () => {
+        const { c, s, plan, push, search } = setup();
+        await search('c1', 'a');
+        await search('c2', 'b');
+        await push(plan.narration('Checking one more thing.'));
+        await s.stop();
 
-      const [, retried] = calls(c, 'chat.appendStream');
-      expect(retried.chunks).to.deep.equal([
-        { ...row, output: 'a' },
-        { type: 'task_update', id: 'tools-1-overflow', title: 'Searched (continued)', status: 'complete', output: 'b' },
-      ]);
-    });
+        const [row, note] = shown(c);
+        expect(row).to.deep.include({ title: 'Searched the knowledge base', status: 'complete', details: 'Kb', output: '✓ "a" → 4 results\n✓ "b" → 4 results' });
+        expect(note).to.deep.include({ title: 'Checking one more thing.', details: '', output: '' });
+      });
 
-    it('ends an overflow row the way its row ends, so nothing keeps spinning after the reply', async () => {
-      const { c, s, plan } = stream();
-      await s.tasks(plan.toolStarted('search', 'Searched', 'c1'));
-      const tooLong = Object.assign(new Error('big'), { data: { error: 'msg_blocks_too_long' } });
-      c.apiCall.withArgs('chat.appendStream').onFirstCall().rejects(tooLong);
-      await s.tasks([{ type: 'task_update', id: 'tools-1', title: 'Searched', status: 'in_progress', output: 'a\n\nb' }]);
-      await s.tasks(plan.toolFinished('search', 'Searched', 'completed', 'c1'));
+      it('2) shows a failed call once', async () => {
+        const { c, s, plan, push } = setup();
+        await push(plan.toolStarted('artifacts__get_record_download_url', 'Got record download links', 'c1'));
+        await push(plan.toolArgs('artifacts__get_record_download_url', { summary: 'record_id: 8dc0d3d5-4b1e-4c2a-9f3d-2a6b7c8d9e0f' }, 'c1'));
+        await push(plan.toolFinished('artifacts__get_record_download_url', 'Got record download links', 'failed', 'c1', { summary: 'Failed: No download link.' }));
+        await s.stop();
 
-      await s.stop();
+        expect(shown(c)).to.deep.equal([{
+          id: 'tools-1', title: 'Got record download links', status: 'error', details: 'Artifacts',
+          output: '✗ record 8dc0d3d5 → No download link', sources: [], detailSends: 1,
+        }]);
+      });
 
-      const [stop] = calls(c, 'chat.stopStream');
-      expect(stop.chunks).to.deep.include({
-        type: 'task_update', id: 'tools-1-overflow', title: 'Searched (continued)', status: 'complete', output: 'b',
+      it('3) lets a row that turned error take more calls, still sending them once', async () => {
+        const { c, s, plan, push, search } = setup();
+        await search('c1', 'a', 'failed', 'Failed: Timed out');
+        expect(shown(c)[0]!.status).to.equal('error');
+        await search('c2', 'b');
+        await push(plan.toolFinished('kb__search', 'Searched the knowledge base', 'completed', 'c2', { summary: 'late repeat' }));
+        await s.stop();
+
+        expect(shown(c)[0]).to.deep.include({ status: 'complete', output: '✗ "a" → Timed out\n✓ "b" → late repeat' });
+      });
+
+      it('4) holds a call waiting for approval, then shows how it was answered, once', async () => {
+        const { c, s, plan, push } = setup();
+        await push(plan.toolStarted('jira__create', 'Created an issue', 'c1'));
+        await push(plan.toolFinished('jira__create', 'Created an issue', 'awaiting_approval', 'c1'));
+        expect(shown(c)[0]).to.deep.include({ status: 'in_progress', output: '' });
+        await push(plan.toolStarted('jira__create', 'Created an issue', 'c1', { approvalAnswer: 'allowed' }));
+        await push(plan.toolFinished('jira__create', 'Created an issue', 'completed', 'c1', { summary: 'Created OPS-12' }));
+        await s.stop();
+
+        expect(shown(c)[0]).to.deep.include({ title: 'Created an issue', status: 'complete', output: '✓ Created OPS-12 · Approved' });
+      });
+
+      it('5) seals a sub-agent row when the sub-agent ends', async () => {
+        const { c, s, plan, push } = setup();
+        await push(plan.subAgent('Researcher', 'started'));
+        await push(plan.toolStarted('web_search', 'Searched the web', 'c1', { agent: 'Researcher' }));
+        await push(plan.toolArgs('web_search', { summary: 'Searched for "Q3"' }, 'c1'));
+        await push(plan.toolFinished('web_search', 'Searched the web', 'completed', 'c1', { summary: '4 results' }));
+        await push(plan.subAgent('Researcher', 'completed'));
+        await push(plan.narration('Done researching.'));
+        await s.stop();
+
+        expect(shown(c)[0]).to.deep.include({ title: 'Researcher', status: 'complete', output: '✓ Searched the web: "Q3" → 4 results' });
+      });
+
+      it('6) settles rows left open at stop, and ends the reply as failed elsewhere, each once', async () => {
+        const { c, s, plan, push, search } = setup();
+        await search('c1', 'a');
+        await push(plan.toolStarted('web_search', 'Searched the web', 'c2'));
+        await s.stop();
+        await push(plan.toolFinished('web_search', 'Searched the web', 'completed', 'c2', { summary: 'too late' }));
+
+        const rows = shown(c);
+        expect(rows.map((r) => [r.status, r.output])).to.deep.equal([
+          ['complete', '✓ "a" → 4 results'],
+          ['error', '• Searched the web'],
+        ]);
+        expect(calls(c, 'chat.stopStream')[0].chunks, 'only the open row is settled').to.have.length(1);
+      });
+
+      it('7) shrinks a row Slack finds too big and never resends it or adds a "(continued)" row', async () => {
+        const { c, s, plan, push, search } = setup();
+        for (let i = 0; i < 6; i += 1) await search(`c${String(i)}`, `query ${String(i)}`);
+        const refusedAt = c.apiCall.callCount;
+        c.apiCall.withArgs('chat.appendStream').onCall(calls(c, 'chat.appendStream').length).rejects(tooLong());
+        await push(plan.narration('Next.'));
+        await s.stop();
+
+        const rows = shown(c, new Set([refusedAt]));
+        expect(rows.map((r) => r.title)).to.deep.equal(['Searched the knowledge base', 'Next.']);
+        expect(rows[0]!.output.split('\n')).to.deep.equal([
+          '✓ "query 0" → 4 results', '✓ "query 1" → 4 results', '✓ "query 2" → 4 results', '+3 more',
+        ]);
+      });
+
+      it('8) takes back a discarded model call without showing any row twice', async () => {
+        const { c, s, plan, push, search } = setup();
+        await search('c1', 'kept');
+        await push(plan.narration('Kept note.'));
+        s.markSegment();
+        await s.answer('Wrong partial answer.');
+        await search('c2', 'dropped');
+        await s.dropSegment();
+        await search('c3', 'after');
+        await push(plan.narration('Answering now.'));
+        await s.stop();
+
+        const rows = shown(c);
+        expect(rows.map((r) => r.output || r.title)).to.deep.equal([
+          '✓ "kept" → 4 results', 'Kept note.', '✓ "dropped" → 4 results\n✓ "after" → 4 results', 'Answering now.',
+        ]);
+      });
+
+      it('9) keeps rows of a full message there when the reply goes on in a new one', async () => {
+        const { c, s, plan, push, search } = setup();
+        await search('c1', 'a');
+        await push(plan.narration('Writing.'));
+        const line = `${'x'.repeat(99)}\n`;
+        await s.answer(line.repeat(Math.ceil(SLACK_STREAM_MESSAGE_CHAR_LIMIT / line.length) + 5));
+        await search('c2', 'b');
+        await push(plan.narration('More.'));
+        await s.stop();
+
+        expect(calls(c, 'chat.startStream')).to.have.length(2);
+        expect(shown(c).map((r) => r.output || r.title)).to.deep.equal([
+          '✓ "a" → 4 results', 'Writing.', '✓ "b" → 4 results', 'More.',
+        ]);
+      });
+
+      it('10) gives calls of the same kind after a sealed row a new row, leaving the old one as it was', async () => {
+        const { c, s, plan, search } = setup();
+        await search('c1', 'a');
+        plan.endGroup();
+        await search('c2', 'b');
+        await search('c3', 'c');
+        await s.stop();
+
+        expect(shown(c).map((r) => [r.id, r.output])).to.deep.equal([
+          ['tools-1', '✓ "a" → 4 results'],
+          ['tools-2', '✓ "b" → 4 results\n✓ "c" → 4 results'],
+        ]);
       });
     });
 
@@ -531,7 +621,7 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(calls(c, 'chat.delete')).to.deep.equal([{ channel: 'C1', ts: 's1' }]);
       expect(calls(c, 'chat.startStream')[1].chunks).to.deep.equal([
         { type: 'plan_update', title: 'Thinking' },
-        { type: 'task_update', id: 'tools-1', title: 'Searched', status: 'complete' },
+        { type: 'task_update', id: 'tools-1', title: 'Searched', status: 'complete', output: '✓ Searched' },
         { type: 'markdown_text', text: 'Kept opening.' },
         { type: 'task_update', id: 'note-2', title: 'Checking once more.', status: 'complete' },
       ]);
