@@ -95,6 +95,13 @@ describe('entity search controller', () => {
     expect(error).to.be.instanceOf(Error)
   })
 
+  it('keeps the AI service\'s 501 (no local file storage) a 501, with its words', async () => {
+    answer(501, { detail: 'Exact-text search needs local file storage.' })
+    const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+    expect(error.statusCode).to.equal(501)
+    expect(error.message).to.contain('local file storage')
+  })
+
   it('reports an unreachable AI service as 503 and a slow one as 504, not as a 500', async () => {
     execute.rejects(Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))
     const refused = await run(searchEntities(appConfig), { query: 'x' })

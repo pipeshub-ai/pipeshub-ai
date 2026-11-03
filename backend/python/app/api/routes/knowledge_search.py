@@ -85,7 +85,15 @@ logger = logging.getLogger(__name__)
 
 SEARCH_SCOPES = (OAuthScopes.SEMANTIC_READ, OAuthScopes.SEMANTIC_WRITE)
 MAX_PATTERN_CHARS = 500
-_BACKREFERENCE = re.compile(r"\\[1-9]")
+# A counted repeat above this, or one nested in another, makes the regex compiler build a state per repetition (a 33-character pattern
+# can take 20 seconds and tens of gigabytes), and compiling has no time limit: such a pattern is refused before it is compiled.
+MAX_REPEAT_COUNT = 100
+# Characters of one response, and of one record's text, searched; past them the answer says it is incomplete.
+MAX_RESPONSE_CHARS = 1_000_000
+MAX_RECORD_CHARS = 5_000_000
+_QUANTIFIER = re.compile(r"\{(\d*)(?:,(\d*))?\}")
+_REFERENCE_ESCAPES = frozenset("123456789gk")
+_REFERENCE_GROUPS = ("(?P=", "(?P>", "(?&", "(?R", "(?0")
 # Records read for line matches (or labels) at once; each is a blob fetch.
 _LOAD_CONCURRENCY = 8
 # Readable records one app may give back (the request's ``limit`` cuts after).
@@ -143,6 +151,73 @@ class GrepQuery(BaseModel):
         return value
 
 
+def _unsafe_regex(pattern: str) -> str | None:
+    """Why *pattern* will not be run, or None. Scans the pattern without compiling it: a counted repeat above ``MAX_REPEAT_COUNT``, a
+    counted repeat inside a counted repeat, and every kind of reference to an earlier group (numbered, named, relative, recursion) are
+    refused. Escapes and character classes are skipped, so an escaped backslash followed by 1, or ``[{99}]``, is not mistaken for either."""
+    stack: list[bool] = [False]  # per open group: does it hold a counted repeat?
+    last_counted = False  # does the atom just read hold one?
+    has_atom = False  # is there anything before this point in the group for a repeat to apply to?
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            nxt = pattern[i + 1] if i + 1 < n else ""
+            if nxt in _REFERENCE_ESCAPES:
+                return "References to earlier groups (back-references, \\g, \\k) are not supported."
+            i += 2
+            if nxt and nxt in "pPxNu" and i < n and pattern[i] == "{":  # \p{L}, \x{41}: a name, not a repeat
+                i = pattern.find("}", i) + 1 or n
+            last_counted = False
+        elif c == "[":
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1
+            while i < n and pattern[i] != "]":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+            last_counted = False
+        elif c == "(":
+            if pattern.startswith(_REFERENCE_GROUPS, i) or re.match(r"\(\?[-+]?\d", pattern[i:]):
+                return "References to earlier groups and recursion are not supported."
+            if pattern.startswith("(?#", i):  # a comment
+                i = pattern.find(")", i) + 1 or n
+                continue
+            stack.append(False)
+            i += 1
+            last_counted = False
+            has_atom = False
+            continue
+        elif c == ")":
+            held = stack.pop() if len(stack) > 1 else False
+            stack[-1] = stack[-1] or held
+            last_counted = held
+            has_atom = True
+            i += 1
+            continue
+        elif c == "{" and has_atom and (q := _QUANTIFIER.match(pattern, i)) and (q.group(1) or q.group(2)):
+            if any(g and int(g) > MAX_REPEAT_COUNT for g in q.groups()):
+                return f"A repeat count above {MAX_REPEAT_COUNT} is not supported."
+            if last_counted:
+                return "A counted repeat inside another counted repeat is not supported."
+            stack[-1] = True
+            last_counted = True
+            i = q.end()
+            continue
+        elif c == "|":
+            has_atom = False
+            last_counted = False
+            i += 1
+            continue
+        else:
+            last_counted = False
+            i += 1
+        has_atom = True
+    return None
+
+
 def _grep_command(body: GrepQuery) -> tuple[str, regex.Pattern[str]]:
     """The grep command the pattern-match layer runs, and the compiled pattern
     that finds the matching lines. 400 for a pattern it will not run.
@@ -153,8 +228,8 @@ def _grep_command(body: GrepQuery) -> tuple[str, regex.Pattern[str]]:
     writer never escapes (see ``ere_prefilter``); a pattern with no such text
     picks every record.
     """
-    if body.regex and _BACKREFERENCE.search(body.pattern):
-        raise HTTPException(status_code=400, detail="Back-references are not supported; remove \\1 style groups.")
+    if body.regex and (reason := _unsafe_regex(body.pattern)):
+        raise HTTPException(status_code=400, detail=reason)
     ignore_case = not body.caseSensitive
     try:
         compiled = regex.compile(
@@ -285,6 +360,9 @@ async def grep(
                     log.warning("grep: could not read record %s", graph_rec.get("_key"), exc_info=True)
                     coverage.stop("some records could not be read in time")
                     return None
+                if sum(len(str(b.get("data", ""))) for b in blocks if isinstance(b, dict)) > MAX_RECORD_CHARS:
+                    coverage.stop("some records were too large to search")
+                    return None
                 matches, total, language, complete = await find_matches_bounded(
                     blocks, compiled,
                     context_lines=body.contextLines, max_matches=body.maxMatchesPerRecord, deadline=deadline,
@@ -312,7 +390,17 @@ async def grep(
                 item["preview"] = graph_rec["_match_snippet"]
             return item
 
-        records = [r for r in await asyncio.gather(*(one(v, r) for v, r in kept)) if r is not None]
+        records = []
+        size = 0
+        for item in await asyncio.gather(*(one(v, r) for v, r in kept)):
+            if item is None:
+                continue
+            size += len(json.dumps(item))
+            if records and size > MAX_RESPONSE_CHARS:
+                coverage.records_truncated = True
+                coverage.stop("the answer was cut at its size limit")
+                break
+            records.append(item)
         note = render_pattern_match_coverage_note(coverage).strip()
         return JSONResponse(content={
             "status": "success",

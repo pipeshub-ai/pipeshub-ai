@@ -24045,7 +24045,9 @@ components:
             $ref: '#/components/schemas/GrepMatch'
         preview:
           type: string
-          description: Set when the pattern matched the record's title or metadata but no line of its text, so `matches` is empty.
+          description: >-
+            Set when the pattern matched the record's title or metadata but no line of its text, so `matches` is empty.
+            It is a fragment of the stored record of a record the caller can read, and may be raw stored text (JSON) rather than prose.
     GrepResponse:
       type: object
       description: Result of `POST /search/grep`.
@@ -72313,9 +72315,11 @@ paths:
         '501':
           description: This deployment does not keep records on local file storage. Use `POST /search`.
         '500':
-          description: Unexpected server error, or the AI search service was unreachable.
+          description: Unexpected server error.
         '503':
-          description: The AI search service is temporarily unavailable.
+          description: The AI search service is temporarily unavailable or could not be reached.
+        '504':
+          description: The AI search service did not answer in time.
 
   /search/entities:
     post:
@@ -72371,9 +72375,11 @@ paths:
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
         '500':
-          description: Unexpected server error, or the AI search service was unreachable.
+          description: Unexpected server error.
         '503':
-          description: Entity search is not available in this deployment or timed out before the access check finished. This is not an empty result; try again.
+          description: Entity search is not available in this deployment, could not reach the AI search service, or timed out before the access check finished. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
 
   /search/entities/neighbors:
     post:
@@ -72428,9 +72434,11 @@ paths:
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
         '500':
-          description: Unexpected server error, or the AI search service was unreachable.
+          description: Unexpected server error.
+        '504':
+          description: The AI search service did not answer in time.
         '503':
-          description: The lookup failed or timed out. This is not an empty result; try again.
+          description: The AI search service could not be reached, or the lookup failed or timed out. This is not an empty result; try again.
 
   /search/updateAppConfig:
     post:

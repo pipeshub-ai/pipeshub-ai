@@ -8,7 +8,10 @@
  * organisation. These requests are not saved to search history.
  */
 import { NextFunction, Response } from 'express';
-import { InternalServerError } from '../../../libs/errors/http.errors';
+import {
+  InternalServerError,
+  NotImplementedError,
+} from '../../../libs/errors/http.errors';
 import { handleBackendError } from '../../../libs/errors/backend-error';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
@@ -76,6 +79,15 @@ const forward =
       }
       if (!aiResponse.data) {
         throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode === 501) {
+        // the AI service says this deployment cannot serve the route; handleBackendError has no 501 and would make it a 500
+        const data = aiResponse.data as { detail?: unknown } | undefined;
+        throw new NotImplementedError(
+          typeof data?.detail === 'string'
+            ? data.detail
+            : 'This deployment does not support this request.',
+        );
       }
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(

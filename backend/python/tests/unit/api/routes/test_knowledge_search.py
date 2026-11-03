@@ -82,12 +82,12 @@ async def _fake_grep(**kwargs: dict) -> list[dict]:
     return list(kwargs["found"].values())
 
 
-async def _grep(accessible: bool, **body) -> dict:
+async def _grep(accessible: bool, retrieval: MagicMock | None = None, **body) -> dict:
     body.setdefault("pattern", "compute_invoice_total_v2")
     with patch.object(ks, "run_pattern_match_with_llm_grep", _fake_grep), \
          patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value="https://pipes.test")):
-        response = await ks.grep(_request(), ks.GrepQuery(**body), _retrieval(), _graph(accessible))
+        response = await ks.grep(_request(), ks.GrepQuery(**body), retrieval or _retrieval(), _graph(accessible))
     return json.loads(response.body)
 
 
@@ -117,7 +117,12 @@ async def test_grep_path_globs_filter_after_the_access_check() -> None:
     assert (await _grep(True, paths=["*.md"]))["totalRecords"] == 0
 
 
-@pytest.mark.parametrize("pattern,use_regex", [(r"(a)\1", True), ("(", True), ("[a", True)])
+@pytest.mark.parametrize("pattern,use_regex", [
+    (r"(a)\1", True), ("(", True), ("[a", True),
+    # every spelling of a reference to an earlier group, and recursion
+    ("(?P<n>a)(?P=n)", True), (r"(a)\g<1>", True), (r"(?P<n>a)\k<n>", True), ("(a)(?1)", True), ("(a)(?-1)", True),
+    ("(?P<n>a)(?&n)", True), ("(a)(?R)", True),
+])
 def test_grep_refuses_patterns_it_cannot_run_safely(pattern, use_regex) -> None:
     with pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern=pattern, regex=use_regex))
@@ -582,7 +587,7 @@ def test_the_grep_body_has_no_place_for_an_organisation_or_a_user() -> None:
     assert not {"orgId", "userId", "org_id", "user_id"} & set(ks.GrepQuery.model_fields)
 
 
-async def test_grep_with_no_organisation_or_user_in_the_session_is_a_401_and_reads_nothing() -> None:
+async def test_grep_with_no_organisation_context_is_a_401_and_reads_nothing(no_org_context) -> None:
     graph = _graph(True)
     with pytest.raises(HTTPException) as err:
         await ks.grep(_request({}), ks.GrepQuery(pattern="x"), _retrieval(), graph)
@@ -610,3 +615,59 @@ async def test_grep_never_returns_a_line_from_a_record_the_caller_cannot_read() 
     out = await _grep(accessible=False)
     assert out["records"] == [] and out["totalRecords"] == 0
     assert RID not in json.dumps(out) and "return x" not in json.dumps(out)  # no id, no line of text
+
+
+# ---- patterns that are expensive to compile -----------------------------------
+@pytest.mark.parametrize("pattern", [
+    "(?:(?:(?:(?:a{99}){99}){99}){99})",    # 33 characters: 23 s and 27 GB to compile
+    "((((a{40}){40}){40}){40})",
+    "(?:a{2}){3}",                           # a counted repeat inside a counted repeat
+    "(a{1,2}b){2,3}",
+    "a{101}", "a{1,101}", "a{101,}", "(?:ab){999}", "x{0,100000}",
+])
+def test_grep_refuses_costly_repeats_before_compiling_and_fast(pattern) -> None:
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(HTTPException) as err:
+        ks._grep_command(ks.GrepQuery(pattern=pattern, regex=True))
+    assert err.value.status_code == 400
+    assert time.monotonic() - started < 0.5
+
+
+@pytest.mark.parametrize("pattern", [
+    "a{100}", "a{2,100}", "a{3,}", "(?:ab|cd){50}", "(a|b)+c{5}d{5}", r"\\1", r"[{999}]", r"a\{999\}", r"\p{L}{5}",
+    "x{,5}", "a{abc}", "(a{2})(b{2})", "(?#c{999}) a",
+])
+def test_grep_still_accepts_bounded_repeats_and_things_that_only_look_like_references(pattern) -> None:
+    command, compiled = ks._grep_command(ks.GrepQuery(pattern=pattern, regex=True))
+    assert command.startswith("grep ") and compiled is not None
+
+
+def test_grep_does_not_scan_a_literal_pattern_for_repeats() -> None:
+    command, compiled = ks._grep_command(ks.GrepQuery(pattern="a{9999}", regex=False))
+    assert compiled.search("a{9999}")
+
+
+async def test_the_answer_is_cut_at_its_size_limit_and_says_so() -> None:
+    vrids = [f"v{i}" for i in range(10)]
+    wide = [{"line": n, "text": "x" * 400, "before": [], "after": [], "blockIndex": 0} for n in range(50)]
+
+    async def matcher(*args: object, **kwargs: object) -> tuple[list[dict], int, None, bool]:
+        return [dict(m) for m in wide], 50, None, True
+
+    with patch.object(ks, "MAX_RESPONSE_CHARS", 30_000), patch.object(ks, "find_matches_bounded", matcher):
+        out = json.loads(await _grep_raw(vrids, _two_user_graph(set(vrids))))
+    assert 1 <= len(out["records"]) < 10
+    assert out["coverage"]["complete"] is False and "size limit" in out["coverage"]["note"]
+
+
+async def test_a_record_with_too_much_text_is_not_searched_and_the_answer_says_so() -> None:
+    retrieval = _retrieval()
+    retrieval.blob_store.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [
+        {"index": 0, "data": "x" * 200},
+    ]}})
+    with patch.object(ks, "MAX_RECORD_CHARS", 100):
+        out = await _grep(True, retrieval=retrieval)
+    assert out["records"] == [] and out["coverage"]["complete"] is False
+    assert "too large" in out["coverage"]["note"]
