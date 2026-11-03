@@ -83,7 +83,7 @@ export async function startCluster(bin: string, work: string): Promise<Cluster> 
   const port = await withFreePort(async (p) => {
     execFileSync(
       join(bin, 'pg_ctl'),
-      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on`, 'start'],
+      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on -c fsync=off -c synchronous_commit=off -c full_page_writes=off`, 'start'],
       { stdio: 'ignore' },
     )
     return p
@@ -181,7 +181,7 @@ const py = (module: string, env: Record<string, string>, ...args: string[]) =>
 export async function createKernelDb(cluster: Cluster, name: string): Promise<void> {
   await cluster.admin((c) => c.query(`CREATE DATABASE ${name}`))
   // the roles and the baseline extension (an extension needs a superuser: the administrator installs it)
-  py('db.bootstrap_roles', { PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${name}`, PG_BOOTSTRAP_EXTENSIONS: 'pg_trgm' })
+  py('db.bootstrap_roles', { PG_ADMIN_URL: `postgresql://postgres@127.0.0.1:${cluster.port}/${name}`, PG_BOOTSTRAP_EXTENSIONS: 'vector,pg_trgm' })
   py('db.migrate', { PG_MIGRATE_URL: `postgresql+psycopg://pipeshub_migrate@127.0.0.1:${cluster.port}/${name}` })
   await cluster.admin((c) => c.query(fixtureSql(name)), name)
 }
