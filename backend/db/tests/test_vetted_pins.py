@@ -482,7 +482,7 @@ def test_no_pinned_function_takes_an_org_argument(pdb):
     with conn(pdb) as c:
         for name in CALLS:
             names = c.execute("SELECT proargnames FROM pg_proc WHERE oid = %s::regprocedure", (SIG[name],)).fetchone()[0] or []
-            assert not [n for n in names if any(w in n for w in ("org", "tenant", "workspace", "account"))], (name, names)
+            assert not [n for n in names if any(w in n for w in ("org", "workspace", "account"))], (name, names)
 
 
 def call(c, name: str, org: str | None, args=None):

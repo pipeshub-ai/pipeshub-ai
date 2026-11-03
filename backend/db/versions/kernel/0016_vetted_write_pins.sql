@@ -116,14 +116,20 @@ pins AS (
          COALESCE(lower(n.nspname || '.' || c.relname), p.rel::text) AS qrel, n.nspname AS rel_nsp, c.relname, pk.cols AS pk_cols
   FROM kernel.vetted_write_pins p LEFT JOIN pg_class c ON c.oid = p.rel LEFT JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pk ON pk.rel = p.rel),
 pinrel AS (SELECT p.rel AS oid FROM pins p UNION SELECT t.relid FROM pins p, LATERAL pg_partition_tree(p.rel) t),
-defs AS (  -- every SECURITY DEFINER function, text and all
-  SELECT p.oid, p.oid::regprocedure::text AS name, p.proname, n.nspname, p.prosrc, p.prosqlbody IS NOT NULL AS atomic_body, kernel.src_text(p.prosrc) AS src,
-         p.oid IN (SELECT fn FROM pins) AS is_pinned
-  FROM pg_proc p JOIN nsp n ON n.oid = p.pronamespace WHERE p.prosecdef),
-rtn AS (  -- every SQL or PL/pgSQL routine outside the system schemas and extensions, definer or invoker: what a vetted role can run through a pinned function
-  SELECT p.oid, p.oid::regprocedure::text AS name, p.prosqlbody IS NOT NULL AS atomic_body, kernel.src_text(p.prosrc) AS src, kernel.src_text(p.prosrc, true) AS srck
+vroles AS (SELECT r.oid FROM pg_roles r, s WHERE r.rolname LIKE s.vetted_prefix || '%'),
+rtn_all AS (  -- every SQL or PL/pgSQL routine outside the system schemas and extensions, definer or invoker
+  SELECT p.oid, p.oid::regprocedure::text AS name, p.proname, p.proowner, p.prosqlbody IS NOT NULL AS atomic_body, kernel.src_text(p.prosrc) AS src, kernel.src_text(p.prosrc, true) AS srck
   FROM pg_proc p JOIN nsp n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang AND l.lanname IN ('sql', 'plpgsql')
   WHERE NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')),
+scoped(oid) AS (  -- what a vetted role can run: the routines it owns, and every routine they call (by name), however deep. A helper nothing vetted reaches is not read
+  SELECT r.oid FROM rtn_all r WHERE r.proowner IN (SELECT oid FROM vroles)
+  UNION
+  SELECT a.oid FROM scoped sc JOIN rtn_all c ON c.oid = sc.oid JOIN rtn_all a ON a.oid <> c.oid AND c.src ~* ('\m' || a.proname || ' *\(')),
+rtn AS (SELECT r.* FROM rtn_all r WHERE r.oid IN (SELECT oid FROM scoped)),
+defs AS (  -- every SECURITY DEFINER function, text and all
+  SELECT p.oid, p.oid::regprocedure::text AS name, p.proname, n.nspname, p.prosrc, p.prosqlbody IS NOT NULL AS atomic_body, kernel.src_text(p.prosrc) AS src,
+         p.oid IN (SELECT fn FROM pins) AS is_pinned, p.oid IN (SELECT oid FROM scoped) AS in_scope
+  FROM pg_proc p JOIN nsp n ON n.oid = p.pronamespace WHERE p.prosecdef),
 fn AS (  -- the pinned functions
   SELECT p.oid, p.oid::regprocedure::text AS name, p.proowner, p.prosecdef, n.nspname, kernel.src_text(p.prosrc) AS src,
          p.proargnames, p.proargtypes::oid[] AS argtypes, g.class, g.scope, g.writer, COALESCE(p.proacl, acldefault('f', p.proowner)) AS acl
@@ -146,7 +152,7 @@ ops AS (  -- the DML statement of a piece that has exactly one, from its keyword
 others AS (
   SELECT d.oid AS fn, d.name,
          CASE WHEN lower(m.g[1]) LIKE '%.%' THEN lower(m.g[1]) ELSE lower(d.nspname) || '.' || lower(m.g[1]) END AS tgt
-  FROM defs d, LATERAL regexp_matches(d.src, '\m(?:insert into|delete from|update|truncate(?: table)?) ([a-z_][a-z0-9_.]*)', 'gi') m(g)
+  FROM defs d, LATERAL regexp_matches(d.src, '\m(?:insert into|delete from|update|truncate(?: table)?|merge into)(?: only)? ([a-z_][a-z0-9_.]*)', 'gi') m(g)
   WHERE NOT d.is_pinned AND EXISTS (SELECT 1 FROM kernel.vetted_write_pins)),
 -- ---- deletes: the full primary key from capped arguments, or the current transaction ----
 dels AS (
@@ -233,6 +239,8 @@ SELECT '105 pin names an operation the function never performs: ' || p.op || ' o
   WHERE NOT EXISTS (SELECT 1 FROM ops o WHERE o.fn = p.fn AND o.tgt = p.qrel AND o.op = p.op)
 UNION ALL
 SELECT '105 pinned function truncates', f.name FROM fn f WHERE f.src ~* '\mtruncate\M'
+UNION ALL -- MERGE (any WHEN action) and UPDATE / DELETE FROM ONLY are statements the shapes below do not read
+SELECT '105 pinned function uses MERGE or ONLY, which no pinned shape contains', f.name FROM fn f WHERE f.src ~* '\m(merge|only)\M'
 UNION ALL
 SELECT '105 a statement of a pinned function has more than one DML keyword, or a WITH in front of one', p.name FROM piece_n p
   WHERE p.n > 1 OR (p.n = 1 AND p.st ~* '\mwith\M.*\m(insert into|delete from|update [a-z_][a-z0-9_.]*(?: as)?(?: [a-z_][a-z0-9_]*)? set)\M')
@@ -274,7 +282,7 @@ SELECT '110 ' || CASE WHEN g.grantee = 0 THEN 'PUBLIC' ELSE g.grantee::regrole::
     AND ((g.privilege_type = 'INSERT' AND pr.ins) OR (g.privilege_type = 'UPDATE' AND pr.upd) OR (g.privilege_type = 'DELETE' AND pr.del))
 UNION ALL -- 111 a definer body the DML detectors cannot be sure to read as PostgreSQL does: CR, form feed, vertical tab, a $ or a non-ASCII character outside a string
 SELECT '111 SECURITY DEFINER body has a CR, form feed, vertical tab, $ or non-ASCII character outside a string or a comment', d.name FROM defs d
-  WHERE d.prosrc ~ E'[\\r\\f\\v]' OR regexp_replace(d.src, '(?<![\w$])\$[0-9]+', ' ', 'g') ~ E'\\$|[^\\x01-\\x7f]'
+  WHERE d.in_scope AND (d.prosrc ~ E'[\\r\\f\\v]' OR regexp_replace(d.src, '(?<![\w$])\$[0-9]+', ' ', 'g') ~ E'\\$|[^\\x01-\\x7f]')
 UNION ALL -- 112 a SQL-standard body (BEGIN ATOMIC, or RETURN <expression>) is stored as a parse tree: prosrc is empty and no text check can read it; a pinned function reaches an invoker routine too
 SELECT '112 routine with a SQL-standard body (BEGIN ATOMIC or RETURN expression)', r.name FROM rtn r WHERE r.atomic_body
 UNION ALL -- 130 a routine may not start a statement that no text check reads: DO (its code is a string), SET and RESET (they change app.org_id, search_path, role), PREPARE, DDL and the rest
@@ -315,6 +323,16 @@ UNION ALL -- 123 a foreign key from a pinned relation whose action rewrites or d
 SELECT '123 foreign key that cascades from or into a pinned relation', k.conrelid::regclass::text || ' -> ' || k.confrelid::regclass::text
   FROM pg_constraint k WHERE k.contype = 'f' AND (k.conrelid IN (SELECT oid FROM pinrel) OR k.confrelid IN (SELECT oid FROM pinrel))
     AND (k.confdeltype IN ('c', 'n', 'd') OR k.confupdtype IN ('c', 'n', 'd'))
+UNION ALL -- 132 a pinned function calls pinned functions and vetted kernel routines only: any other routine would run its statements outside the shapes
+SELECT '132 pinned function calls ' || x.oid::regprocedure::text || ', which is neither a pinned function nor a vetted kernel routine', f.name
+  FROM fn f JOIN pg_proc x ON x.oid <> f.oid AND f.src ~* ('\m' || x.proname || ' *\(') JOIN nsp xn ON xn.oid = x.pronamespace, s
+  WHERE x.oid NOT IN (SELECT fn FROM pins)
+    AND NOT (xn.nspname = 'kernel' AND x.proowner = to_regrole(s.vetted_prefix || 'kernel')::oid)
+    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = x.oid AND d.deptype = 'e')
+UNION ALL -- 133 no routine carries an app.* setting of its own: SET app.org_id = ... on a function the pinned function calls would change the org its statements run for
+SELECT '133 routine carries an app.* setting in its configuration', p.oid::regprocedure::text FROM pg_proc p JOIN nsp n ON n.oid = p.pronamespace
+  WHERE EXISTS (SELECT 1 FROM kernel.vetted_write_pins) AND EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c ~* '^app\.')
+    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
 UNION ALL -- 125 the writer of a pinned function is a role registered as one (kernel.pin_writers)
 SELECT '125 pinned function has a writer that is not a registered pin writer', f.name FROM fn f WHERE f.writer IS NULL OR f.writer NOT IN (SELECT role FROM kernel.pin_writers)
 )

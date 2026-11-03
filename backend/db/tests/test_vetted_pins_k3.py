@@ -43,7 +43,8 @@ PLANTS = [
     ("set_config of the org in a function", hand("g01", f"  PERFORM set_config('app.org_id', '{ORG_B}', true);\n  RETURN 1;", writer="pipeshub_query"), "131"),
     ("set_config with a computed name", hand("g02", "  PERFORM set_config('app.' || 'org_id', 'x', true);\n  RETURN 1;", writer="pipeshub_query"), "131"),
     ("set_config of the org in an invoker routine",
-     OWNER + f"CREATE FUNCTION kt.inv_cfg() RETURNS void LANGUAGE plpgsql AS 'BEGIN PERFORM set_config(''app.org_id'', ''{ORG_B}'', true); END'; ", "131"),
+     OWNER + f"CREATE FUNCTION kt.inv_cfg() RETURNS void LANGUAGE plpgsql AS 'BEGIN PERFORM set_config(''app.org_id'', ''{ORG_B}'', true); END'; "
+     + hand("x_call_cfg", "  PERFORM kt.inv_cfg();\n  RETURN 1;", writer="pipeshub_query"), "131"),
     # ---- SQL-standard bodies of invoker routines
     ("invoker BEGIN ATOMIC that deletes the pinned table, called by a writer", INV_ATOMIC + CALL_INV, "112"),
     ("the same with EXECUTE revoked from PUBLIC and granted to the vetted role",
@@ -51,6 +52,34 @@ PLANTS = [
     ("invoker RETURN <expression> (a parse tree in prosqlbody)",
      OWNER + "CREATE FUNCTION kt.inv_ret() RETURNS bigint LANGUAGE sql RETURN (SELECT count(*) FROM kt.grants); "
      + hand("x_call_ret", "  PERFORM kt.inv_ret();\n  RETURN 1;", writer="pipeshub_query"), "112"),
+    # ---- MERGE and ONLY: statements the shapes do not read (a pinned function, and a function with no pin)
+    ("MERGE ... WHEN MATCHED THEN DELETE in a pinned function",
+     hand("n01", "  MERGE INTO kt.fences t USING (SELECT p_id AS id) k ON t.org_id = v_org AND t.id = k.id WHEN MATCHED THEN DELETE;\n  RETURN 1;", pins=(PIN_FENCE,)), "105"),
+    ("MERGE ... UPDATE of a table the function does not pin",
+     hand("n02", DEL_FENCE + "  MERGE INTO kt.grants t USING (SELECT p_id AS id) k ON t.org_id = v_org WHEN MATCHED THEN UPDATE SET role = 9;\n  RETURN 1;", pins=(PIN_FENCE,)), "105"),
+    ("MERGE ... INSERT in a pinned function",
+     hand("n03", DEL_FENCE + "  MERGE INTO kt.fences t USING (SELECT p_id AS id) k ON t.org_id = v_org AND t.id = k.id WHEN NOT MATCHED THEN INSERT (org_id, id, reason) VALUES (v_org, k.id, 'x');\n  RETURN 1;",
+          pins=(PIN_FENCE,)), "105"),
+    ("UPDATE ONLY in a pinned function", hand("n04", DEL_FENCE + "  UPDATE ONLY kt.grants SET role = 9 WHERE org_id = v_org;\n  RETURN 1;", pins=(PIN_FENCE,)), "105"),
+    ("DELETE FROM ONLY in a pinned function", hand("n05", "  DELETE FROM ONLY kt.fences t WHERE t.org_id = v_org AND t.id = p_id;\n  RETURN 1;", pins=(PIN_FENCE,)), "105"),
+    ("UPDATE ONLY of a pinned table in a function with no pin", hand("n06", "  UPDATE ONLY kt.grants SET role = 9;\n  RETURN 1;", writer="pipeshub_query"), "114"),
+    ("DELETE FROM ONLY of a pinned table in a function with no pin", hand("n07", "  DELETE FROM ONLY kt.fences;\n  RETURN 1;", writer="pipeshub_query"), "114"),
+    ("MERGE ... DELETE of a pinned table in a function with no pin",
+     hand("n08", "  MERGE INTO kt.grants t USING (SELECT 1 AS x) k ON true WHEN MATCHED THEN DELETE;\n  RETURN 1;", writer="pipeshub_query"), "114"),
+    ("MERGE ... UPDATE of a pinned table in a function with no pin",
+     hand("n09", "  MERGE INTO kt.grants t USING (SELECT 1 AS x) k ON true WHEN MATCHED THEN UPDATE SET role = 9;\n  RETURN 1;", writer="pipeshub_query"), "114"),
+    ("MERGE ... INSERT into a pinned table in a function with no pin",
+     hand("n10", "  MERGE INTO kt.fences t USING (SELECT 1 AS x) k ON false WHEN NOT MATCHED THEN INSERT (org_id, id, reason) VALUES ('x', 1, 'y');\n  RETURN 1;", writer="pipeshub_query"), "114"),
+    # ---- a pinned function calls pinned functions and vetted kernel routines only
+    ("a pinned function calls an invoker routine that deletes",
+     "CREATE FUNCTION public.evil_del() RETURNS void LANGUAGE sql AS 'DELETE FROM kt.fences'; " + hand("c01", DEL_FENCE + "  PERFORM public.evil_del();\n  RETURN 1;", pins=(PIN_FENCE,)), "132"),
+    ("a pinned function calls an invoker routine of its own schema",
+     OWNER + "CREATE FUNCTION kt.helper() RETURNS int LANGUAGE sql AS 'SELECT 1'; " + hand("c02", DEL_FENCE + "  PERFORM kt.helper();\n  RETURN 1;", pins=(PIN_FENCE,)), "132"),
+    # ---- no routine carries an app.* setting
+    ("an invoker routine that sets app.org_id for its own run, called by a pinned function",
+     f"CREATE FUNCTION public.evil_org() RETURNS void LANGUAGE sql SET app.org_id = '{ORG_B}' AS 'DELETE FROM kt.fences'; "
+     + hand("c03", DEL_FENCE + "  PERFORM public.evil_org();\n  RETURN 1;", pins=(PIN_FENCE,)), "133"),
+    ("a routine with an app.* setting that nothing calls", "CREATE FUNCTION public.lonely() RETURNS int LANGUAGE sql SET app.org_id = 'x' AS 'SELECT 1'; ", "133"),
 ]
 
 
@@ -116,7 +145,53 @@ def test_the_boundary_is_the_text_checks_not_the_policy_a_routine_that_sets_the_
             c.execute("DELETE FROM kt.fences")
 
 
+def test_a_pinned_function_may_call_a_vetted_kernel_routine(pdb):
+    got = planted(pdb, hand("c04", DEL_FENCE + "  PERFORM kernel.profile_epoch();\n  RETURN 1;", pins=(PIN_FENCE,)))
+    assert not [r for r, _ in got if r.startswith("132")], got
+
+
 def test_the_new_table_is_clean_once_it_asks_for_the_policy_and_a_table_that_reads_unbound_is_not_asked(pdb):
     assert not any(r.startswith("128") for r, _ in planted(pdb, NEW_TABLE + "SELECT kernel.require_vetted_org_policy('kt.newacc');"))
     with conn(pdb) as c:        # kt.notes is read unbound by its vetted role (a different kind of table): not what 128 is about
         assert not any(r.startswith("128") for r, _ in violations(c))
+
+
+def test_a_helper_nothing_vetted_calls_is_not_read_by_the_routine_rules(pdb):
+    """Rules 111, 112, 130 and 131 are about what a vetted role can run. A helper outside that reach, with the constructs they refuse, is not theirs."""
+    helpers = ("CREATE FUNCTION public.h_set() RETURNS void LANGUAGE plpgsql AS 'BEGIN SET LOCAL statement_timeout = 5; END'; "
+               "CREATE FUNCTION public.h_analyze() RETURNS void LANGUAGE plpgsql AS 'BEGIN ANALYZE; END'; "
+               "CREATE FUNCTION public.h_temp() RETURNS void LANGUAGE plpgsql AS 'BEGIN CREATE TEMP TABLE h_t (a int); END'; "
+               "CREATE FUNCTION public.h_cfg() RETURNS text LANGUAGE sql AS $$ SELECT set_config('statement_timeout', '5', true) $$; "
+               "CREATE FUNCTION public.h_ret(a int) RETURNS int LANGUAGE sql RETURN a + 1; ")
+    got = planted(pdb, helpers)
+    assert not [r for r, _ in got if r[:3] in ("111", "112", "130", "131")], got
+
+
+def test_a_helper_a_vetted_function_calls_is_read_however_deep(pdb):
+    chain = ("CREATE FUNCTION public.h_deep() RETURNS void LANGUAGE plpgsql AS 'BEGIN SET LOCAL statement_timeout = 5; END'; "
+                     "CREATE FUNCTION public.h_mid() RETURNS void LANGUAGE sql AS 'SELECT public.h_deep()'; ")
+    got = planted(pdb, chain + hand("c05", "  PERFORM public.h_mid();\n  RETURN 1;", writer="pipeshub_query"))
+    assert any(r.startswith("130") for r, _ in got), got
+
+
+def test_a_routine_with_its_own_org_setting_that_a_pinned_function_calls_is_named_and_would_cross_the_policy(pdb):
+    """The review's probe: an invoker routine with SET app.org_id = <another org> deletes that org's rows when a pinned function calls it, and the per-org policy
+    (which keys on that setting) does not stop it. The catalog names it (132 for the call, 133 for the setting) before it can be installed through the migration."""
+    from .test_vetted import install
+    with conn(pdb) as c:
+        c.execute("DELETE FROM kt.fences")
+        c.execute("INSERT INTO kt.fences (org_id, id, reason) VALUES (%s, 7, 'a'), (%s, 7, 'b')", (ORG_A, ORG_B))
+        c.execute("BEGIN")
+        try:
+            c.execute(f"CREATE FUNCTION public.evil_del() RETURNS void LANGUAGE sql SET app.org_id = '{ORG_B}' AS 'DELETE FROM kt.fences'")
+            install(c, hand("probe", DEL_FENCE + "  PERFORM public.evil_del();\n  RETURN 1;", pins=(PIN_FENCE,)))
+            names = {r for r, _ in violations(c)}
+            assert any(r.startswith("132") for r in names) and any(r.startswith("133") for r in names), names
+            c.execute("SET LOCAL ROLE pipeshub_connectors")                      # what the rules prevent: run as the service for org A, org B's row goes too
+            c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
+            c.execute("SELECT kt.probe(7)")
+            c.execute("RESET ROLE")
+            assert c.execute("SELECT count(*) FROM kt.fences").fetchone()[0] == 0
+        finally:
+            c.execute("ROLLBACK")
+            c.execute("DELETE FROM kt.fences")
