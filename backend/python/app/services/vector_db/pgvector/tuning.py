@@ -8,6 +8,7 @@ hardware replaces them by configuration, not by code.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, fields
 from typing import Any
@@ -127,16 +128,17 @@ class Tuning:
             raw = data.get(name, os.getenv(f"PGVECTOR_{name.upper()}"))
             if raw is None or raw == "":
                 continue
+            var = f"PGVECTOR_{name.upper()}"
             try:
                 value = float(raw)
-                if isinstance(default, int):
-                    if value != int(value):
-                        raise ValueError("not a whole number")
-                    value = int(value)
-                if not lo <= value <= hi or value != value:
-                    raise ValueError("out of range")
             except (TypeError, ValueError):
-                logger.warning("pgvector search setting %s=%r is not a number in %s..%s; using %s", name, raw, lo, hi, default)
+                raise ValueError(f"{var} must be a number, got {raw!r}") from None
+            if not math.isfinite(value) or (isinstance(default, int) and value != int(value)):
+                raise ValueError(f"{var} must be {'a whole number' if isinstance(default, int) else 'a finite number'}, got {raw!r}")
+            if isinstance(default, int):
+                value = int(value)
+            if not lo <= value <= hi:
+                logger.warning("pgvector search setting %s=%r is outside %s..%s; using %s", name, raw, lo, hi, default)
                 continue
             out[name] = value
         for name, default in _FLAGS.items():
