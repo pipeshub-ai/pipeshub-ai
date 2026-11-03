@@ -542,7 +542,7 @@ export const STORE_READ_TIMEOUT_MS = 10_000;
 export async function storeEpochOnFreshConnection(
   rt: MigrationRuntime,
   fail: boolean,
-): Promise<{ backend: string; epoch: number }> {
+): Promise<{ backend: string; epoch: number; readonly: boolean }> {
   if (fail) throw new Error('injected: the store row cannot be read');
   const c = new Client({
     connectionString: rt.cfg.pgMigrateUrl,
@@ -551,9 +551,11 @@ export async function storeEpochOnFreshConnection(
   });
   await c.connect();
   try {
-    const { rows } = await c.query<{ backend: string; epoch: number }>(
-      'SELECT backend, epoch FROM platform.store_epoch',
-    );
+    const { rows } = await c.query<{
+      backend: string;
+      epoch: number;
+      readonly: boolean;
+    }>('SELECT backend, epoch, readonly FROM platform.store_epoch');
     if (!rows[0]) throw new Error('platform.store_epoch has no row');
     return rows[0];
   } finally {

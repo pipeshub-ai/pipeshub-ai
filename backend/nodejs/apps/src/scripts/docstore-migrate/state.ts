@@ -144,11 +144,18 @@ export class JobState {
 
   /** Attaches to the running job or starts one. */
   static async attach(rt: MigrationRuntime): Promise<JobState> {
+    return (await JobState.attachOrStart(rt)).js;
+  }
+
+  /** `attach`, saying whether this call started the job (the caller may then end it if its own work fails before it did anything). */
+  static async attachOrStart(
+    rt: MigrationRuntime,
+  ): Promise<{ js: JobState; created: boolean }> {
     const cur = await JobState.current(rt);
     if (cur) {
       const js = new JobState(rt, cur.id, cur.progress);
       js.remember(cur.progress);
-      return js;
+      return { js, created: false };
     }
     const { rows } = await rt.migratePool.query<{ id: string }>(
       'SELECT platform.job_start($1)::text AS id',
@@ -156,7 +163,7 @@ export class JobState {
     );
     const js = new JobState(rt, Number(rows[0]?.id), emptyProgress());
     await js.checkpoint();
-    return js;
+    return { js, created: true };
   }
 
   private saving: Promise<void> = Promise.resolve();
