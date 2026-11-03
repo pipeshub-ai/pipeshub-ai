@@ -942,6 +942,8 @@ describe('Application', () => {
       '/api/v1/oauth-clients',
       '/mcp',
       '/.well-known',
+      '/auth.md',
+      '/.well-known/auth.md',
       '/api/v1/docs',
     ];
 
