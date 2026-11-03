@@ -201,6 +201,10 @@ describe('openai_compat routes against a fake chat API', () => {
     fake.use(express.json());
     fake.post(/\/api\/v1\/conversations(\/.*)?\/stream$/, (req, res) => {
       calls.push({ path: req.path, body: req.body, auth: req.headers.authorization });
+      if (req.path.includes('ffffffffffffffffffffffff')) {
+        res.status(404).json({ error: { code: 'HTTP_NOT_FOUND', message: 'Conversation not found' } });
+        return;
+      }
       if (req.body.query === 'boom') {
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Chat backend down' } });
         return;
@@ -327,6 +331,17 @@ describe('openai_compat routes against a fake chat API', () => {
     await post('/responses', { model: 'gpt-5', input: 'again', previous_response_id: first.id });
     expect(calls[1]!.path).to.equal(`/api/v1/conversations/${CONV}/messages/stream`);
     expect(calls[1]!.body).to.include({ query: 'again', modelKey: 'key-gpt', chatMode: 'agent' });
+  });
+
+  it('reports a missing previous conversation against previous_response_id, not model', async () => {
+    const res = await post('/responses', {
+      model: 'gpt-5',
+      input: 'x',
+      previous_response_id: newResponseId('ffffffffffffffffffffffff'),
+    });
+    const body = await res.json();
+    expect(res.status).to.equal(404);
+    expect(body.error).to.include({ code: 'previous_response_not_found', param: 'previous_response_id' });
   });
 
   it('refuses a previous_response_id this server did not issue', async () => {

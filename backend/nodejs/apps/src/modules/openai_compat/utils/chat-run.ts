@@ -214,7 +214,10 @@ export async function runChat(req: ChatRunRequest): Promise<ChatAnswer> {
         `Chat request failed (${String(status)})`,
       ),
       status,
-      codeForStatus(status),
+      // The model is resolved before the run, so a 404 on a follow-up is the conversation.
+      status === 404 && path !== '/api/v1/conversations/stream'
+        ? 'previous_response_not_found'
+        : codeForStatus(status),
     );
   }
   return answerFromFrames(

@@ -55,7 +55,12 @@ function sendError(
 
 function sendRunError(res: Response, error: unknown): void {
   if (error instanceof ChatRunError) {
-    const param = error.code === 'model_not_found' ? 'model' : null;
+    const param =
+      error.code === 'model_not_found'
+        ? 'model'
+        : error.code === 'previous_response_not_found'
+          ? 'previous_response_id'
+          : null;
     sendError(res, error.status, error.message, error.code, param);
   } else {
     sendError(res, 502, 'The chat run failed', 'server_error');
