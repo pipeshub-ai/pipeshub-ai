@@ -21,7 +21,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') AND EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'ext') THEN
     BEGIN
       CREATE EXTENSION vector WITH SCHEMA ext;
-    EXCEPTION WHEN insufficient_privilege OR undefined_file THEN NULL;       -- the check below says what to do
+    EXCEPTION WHEN insufficient_privilege OR undefined_file OR feature_not_supported THEN NULL;       -- the check below says what to do
     END;
   END IF;
   SELECT e.extversion, s.nspname INTO v, n FROM pg_extension e JOIN pg_namespace s ON s.oid = e.extnamespace WHERE e.extname = 'vector';
