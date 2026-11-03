@@ -156,7 +156,7 @@ class TestMetadataReplacesMissingDocument:
     @pytest.mark.asyncio
     async def test_missing_metadata_document_created_without_retry(self) -> None:
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-gone"})
+        gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-gone", "orgId": "org-1"})
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
         bs = _make_bs(graph_provider=gp)
         bs._update_metadata_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("gone"))
@@ -243,7 +243,7 @@ class TestSupersededDocumentCleanup:
     @pytest.mark.asyncio
     async def test_metadata_replaced_after_retry_is_deleted_after_the_mapping_names_it(self) -> None:
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-old"})
+        gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-old", "orgId": "org-1"})
         order: list[str] = []
         gp.batch_update_nodes = AsyncMock(side_effect=lambda *a: order.append("map") or True)
         bs = _make_bs(graph_provider=gp)
@@ -263,7 +263,7 @@ class TestSupersededDocumentCleanup:
     @pytest.mark.asyncio
     async def test_missing_metadata_document_is_not_deleted_again(self) -> None:
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-gone"})
+        gp.get_document = AsyncMock(return_value={"record_metadata_doc_id": "meta-gone", "orgId": "org-1"})
         bs = _make_bs(graph_provider=gp)
         bs._update_metadata_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("gone"))
         bs._create_metadata_document = AsyncMock(return_value="meta-new")

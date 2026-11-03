@@ -286,12 +286,12 @@ class TestSaveReconciliationMetadata:
         bs._find_unmapped_record_document.assert_awaited_once_with("org", "vr", kind="metadata")
         bs._create_metadata_document.assert_not_awaited()
         graph_provider.batch_upsert_nodes.assert_not_awaited()
-        updated = graph_provider.batch_update_nodes.call_args.args[0][0]
-        assert updated["record_metadata_doc_id"] == "meta-left-behind"
-        # The existing row named no org; it is named only while still missing.
-        graph_provider.update_node_fields_if_match.assert_awaited_once_with(
-            "vr", "virtualRecordToDocIdMapping", {"orgId": "org"}, {"orgId": None},
-        )
+        # The existing row named no org: the org goes in with the metadata id, in one
+        # write that expects it still absent.
+        key, collection, updates, expected = graph_provider.update_node_fields_if_match.await_args.args
+        assert (key, collection, expected) == ("vr", "virtualRecordToDocIdMapping", {"orgId": None})
+        assert (updates["record_metadata_doc_id"], updates["orgId"]) == ("meta-left-behind", "org")
+        graph_provider.batch_update_nodes.assert_not_awaited()
 
     @staticmethod
     def _reusing(mapping: dict) -> tuple[AsyncMock, BlobStorage]:
@@ -311,9 +311,10 @@ class TestSaveReconciliationMetadata:
 
         assert await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1}) == "meta-left-behind"
 
-        calls = graph_provider.update_node_fields_if_match.await_args_list
-        assert calls[0].args[3] == {"documentId": "doc-1", "switchSeq": 3}
-        assert calls[1].args == ("vr", "virtualRecordToDocIdMapping", {"orgId": "org"}, {"orgId": None})
+        _, _, updates, expected = graph_provider.update_node_fields_if_match.await_args.args
+        assert expected == {"documentId": "doc-1", "switchSeq": 3, "orgId": None}
+        assert (updates["record_metadata_doc_id"], updates["orgId"]) == ("meta-left-behind", "org")
+        graph_provider.update_node_fields_if_match.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_mapping_that_names_its_org_is_not_touched_again(self) -> None:
@@ -322,20 +323,29 @@ class TestSaveReconciliationMetadata:
 
         await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
 
-        graph_provider.update_node_fields_if_match.assert_awaited_once()
+        _, _, updates, expected = graph_provider.update_node_fields_if_match.await_args.args
+        assert "orgId" not in updates and "orgId" not in expected
 
     @pytest.mark.asyncio
     async def test_a_mapping_removed_before_the_metadata_is_named_fails_the_save(self) -> None:
         # The record's delete took the mapping between the read and the write.
-        graph_provider, bs = self._reusing({"record_doc_id": "rec-doc"})
+        graph_provider, bs = self._reusing({"record_doc_id": "rec-doc", "orgId": "org"})
         graph_provider.batch_update_nodes = AsyncMock(return_value=False)
         bs._delete_replaced_document = AsyncMock()
 
         with pytest.raises(ReconciliationMappingGoneError):
             await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
 
-        graph_provider.update_node_fields_if_match.assert_not_awaited()
         bs._delete_replaced_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_org_less_mapping_removed_before_the_write_fails_the_save(self) -> None:
+        graph_provider, bs = self._reusing({"record_doc_id": "rec-doc"})
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=False)
+        graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+
+        with pytest.raises(ReconciliationMappingGoneError):
+            await bs.save_reconciliation_metadata("org", "rec", "vr", {"a": 1})
 
     @pytest.mark.asyncio
     async def test_failure_in_create_propagates(self):
@@ -351,7 +361,7 @@ class TestSaveReconciliationMetadata:
     async def test_existing_non_versioned_metadata_falls_back_to_create(self):
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
-            return_value={"record_metadata_doc_id": "legacy-meta"}
+            return_value={"record_metadata_doc_id": "legacy-meta", "orgId": "org"}
         )
         graph_provider.batch_upsert_nodes = AsyncMock()
         bs = _make_bs(graph_provider=graph_provider)
@@ -631,3 +641,34 @@ class TestGetReconciliationMetadata:
 
         result = await bs.get_reconciliation_metadata("vr", "org")
         assert result is None
+
+
+class TestSwitchMappingOrg:
+    """A switch of an existing mapping names a missing org in the same compare-and-set."""
+
+    @pytest.mark.asyncio
+    async def test_an_org_less_mapping_gets_its_org_with_the_switch(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+        bs = _make_bs(graph_provider=graph_provider)
+
+        assert await bs._switch_mapping(
+            "org", "vr", {"documentId": "doc-1", "switchSeq": 2}, {"documentId": "doc-2", "updatedAt": 5},
+        )
+
+        _, _, updates, expected = graph_provider.update_node_fields_if_match.await_args.args
+        assert updates == {"documentId": "doc-2", "updatedAt": 5, "orgId": "org"}
+        assert expected == {"documentId": "doc-1", "switchSeq": 2, "orgId": None}
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_that_names_its_org_switches_without_it(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+        bs = _make_bs(graph_provider=graph_provider)
+
+        await bs._switch_mapping(
+            "org", "vr", {"documentId": "doc-1", "switchSeq": 2, "orgId": "org"}, {"documentId": "doc-2"},
+        )
+
+        _, _, updates, expected = graph_provider.update_node_fields_if_match.await_args.args
+        assert "orgId" not in updates and "orgId" not in expected
