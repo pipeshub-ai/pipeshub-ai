@@ -541,13 +541,12 @@ async def _readable_page(
     deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
     counted_from = start
     for offset in range(start, len(hits), _CHECK_BATCH):
-        if not page:
-            if offset > start and time.monotonic() >= deadline:
-                logger.info(
-                    "find_records_by_value: walk stopped at its deadline with no readable hit org=%s checked=%d",
-                    org_id, offset - start,
-                )
-                return [], None, False
+        if not page and offset > start and time.monotonic() >= deadline:
+            logger.info(
+                "find_records_by_value: walk stopped at its deadline with no readable hit org=%s checked=%d",
+                org_id, offset - start,
+            )
+            return [], None, False
         batch = hits[offset:offset + _CHECK_BATCH]
         readable = set(await graph.filter_accessible_record_ids(
             [hit.record_id for hit in batch], user_id, org_id,
