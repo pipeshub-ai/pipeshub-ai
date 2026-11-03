@@ -315,7 +315,7 @@ async def test_mail_message_file_and_duplicate_lookups(g: G) -> None:
 
     await g.graph.update_node(f.id, RECORDS, {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 5, "duplicateReconcileAttempts": 2})
     rows = await g.graph.get_records_pending_duplicate_reconcile(due_before_ms=10, limit=100)
-    assert {"_key": f.id, "duplicateReconcileAttempts": 2, "duplicateReconcileDueAt": 5} in rows
+    assert {"_key": f.id, "orgId": g.org, "duplicateReconcileAttempts": 2, "duplicateReconcileDueAt": 5} in rows
     assert not [r for r in await g.graph.get_records_pending_duplicate_reconcile(due_before_ms=5, limit=100) if r["_key"] == f.id]
 
 
@@ -382,10 +382,15 @@ def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     assert LOOKUP_METHODS == set(NO_ORG_CALLS)
 
 
+SWEEPS_BY_SYSTEM = {"get_records_pending_duplicate_reconcile"}
+
+
 @pytest.mark.parametrize("name", sorted(NO_ORG_CALLS))
 async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_provider, name: str) -> None:
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, name)(*NO_ORG_CALLS[name], **NO_ORG_KW.get(name, {}))
+    if name in SWEEPS_BY_SYSTEM:      # read for every organisation under a system context: the test below covers it
+        return
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
         await getattr(pg_provider, name)(*NO_ORG_CALLS[name], **NO_ORG_KW.get(name, {}))
 
@@ -421,7 +426,7 @@ async def test_urls_issue_sites_threads_duplicates_and_removal_by_a_field(pg_db)
     assert await p.get_records_linking_to_weburls(["https://z/u"], p.org, []) == []
     assert [d["id"] for d in await p.find_duplicate_records("d1", "m", p.org)] == ["d2"]
     pending = await p.get_records_pending_duplicate_reconcile(10, 5)
-    assert pending == [{"_key": "d1", "duplicateReconcileAttempts": None, "duplicateReconcileDueAt": 5}] and await p.get_records_pending_duplicate_reconcile(3, 5) == []
+    assert pending == [{"_key": "d1", "orgId": p.org, "duplicateReconcileAttempts": None, "duplicateReconcileDueAt": 5}] and await p.get_records_pending_duplicate_reconcile(3, 5) == []
     await p.batch_create_edges([{"from_id": "t1", "from_collection": "records", "to_id": "t2", "to_collection": "records", "relationshipType": "REFERENCE"}], "nodeRelations")
     assert await p.remove_nodes_by_field("records", "recordType", field_value="TICKET") == 2
     assert await p.get_existing_record_keys(["t1", "t2", "host"]) == {"host"} and await p.get_edges_from_node("records/t1", "nodeRelations") == []
@@ -469,3 +474,22 @@ async def test_no_lookup_returns_another_orgs_record_or_a_trashed_one(pg_db) -> 
     await a.batch_update_nodes([{"id": "r", "isDeleted": True}], "records")
     assert (await a.get_record_by_weburl("https://w/1", a.org)).id == "r2" and [d["id"] for d in await a.find_duplicate_records("r2", "m", a.org)] == []
     assert [d["id"] for d in await a.get_records_by_weburls(["https://w/1"], a.org)] == ["r2"]
+
+
+async def test_the_pending_reconciles_of_every_org_come_back_with_their_org_under_a_system_context(pg_db) -> None:
+    from app.core import org_context
+
+    orgs = [new_org(), new_org()]
+    key = f"d-{uuid.uuid4().hex}"
+    for o in orgs:
+        p = OrgBound(StandInProvider(logging.getLogger("lk"), pg_db), o)
+        await p.batch_upsert_nodes([{"_key": o, "name": "o"}], "organizations")
+        await p.batch_upsert_nodes([raw(o, key, duplicateReconcilePending=True, duplicateReconcileDueAt=5)], "records")
+    sys_p = StandInProvider(logging.getLogger("lk"), pg_db)
+    with org_context.system("test.pending_reconciles"):
+        got = [r for r in await sys_p.get_records_pending_duplicate_reconcile(10, 1000) if r["_key"] == key]
+    assert sorted(r["orgId"] for r in got) == sorted(orgs)
+    with org_context.for_org(orgs[0], job="test"):
+        assert [r["orgId"] for r in await sys_p.get_records_pending_duplicate_reconcile(10, 1000) if r["_key"] == key] == [orgs[0]]
+    with pytest.raises(org_context.MissingOrgContext):
+        await sys_p.get_records_pending_duplicate_reconcile(10, 1000)
