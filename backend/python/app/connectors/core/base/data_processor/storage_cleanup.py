@@ -362,6 +362,65 @@ class StorageCleanupHelper:
             failed += len(batch) - done
         return moved, failed
 
+    async def hand_over_after_record_delete(
+        self, org_id: str, connector_id: str, virtual_record_id: str
+    ) -> bool:
+        """After a record holding ``virtual_record_id`` left the graph, move the
+        shared copy under a record that still holds it. True when it moved.
+
+        The copy is filed under whichever holder indexed it first. Once that
+        holder is deleted, the copy still sits under its folder and is tagged
+        with its connector, where the survivors' connector scope (grep, their
+        knowledge base's delete) does not look. A copy already under a remaining
+        holder's path stays put, and so does one in the flat layout, which the
+        flat-storage migration moves. Raises when the copy should move and
+        could not.
+        """
+        holders = [
+            h for h in (
+                await self.graph_provider.get_virtual_record_holders([virtual_record_id], org_id)
+            ).get(virtual_record_id) or []
+            if h.get("id") and h.get("connectorId")
+        ]
+        if not holders:
+            return False
+        current = await self.current_content_path(org_id, virtual_record_id)
+        if not current or current == f"records/{virtual_record_id}":
+            return False
+        owner = choose_storage_owner(holders)
+        # The owner first: it is where the copy usually already is.
+        owner_path: str | None = None
+        for holder in [owner, *(h for h in holders if h is not owner)]:
+            path = await self._owner_storage_path(holder)
+            if path == current:
+                return False
+            if holder is owner:
+                owner_path = path
+        if not owner_path:
+            raise StorageHandoverError(
+                f"no storage path for holder {owner.get('id')} of VRID {virtual_record_id}"
+            )
+        # Storage moves only what the named connector's delete would take; the
+        # copy sits under its filing connector, which is not always this one.
+        parts = current.split("/")
+        from_connector = parts[1] if parts[0] == "records" and len(parts) > 2 else connector_id
+        move = {
+            "virtualRecordId": virtual_record_id,
+            "newPath": owner_path,
+            "connectorId": owner["connectorId"],
+        }
+        if owner.get("recordGroupId"):
+            move["recordGroupId"] = owner["recordGroupId"]
+        if not await self._relocate(org_id, from_connector, [move]):
+            raise StorageHandoverError(
+                f"storage did not move VRID {virtual_record_id} to {owner_path}"
+            )
+        self.logger.info(
+            "Shared copy of VRID %s handed over after a record delete: %s -> %s (holder %s)",
+            virtual_record_id, current, owner_path, owner.get("id"),
+        )
+        return True
+
     async def _owner_storage_path(self, owner: dict) -> str | None:
         # No flat fallback: a failed path lookup is retried rather than filing
         # the copy where the owner's connector scope cannot find it.

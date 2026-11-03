@@ -1548,6 +1548,57 @@ class TestDeleteRecordEvent:
         assert len(events) == 2
 
 
+class TestDeleteRecordSharedCopyHandover:
+    """A deleted record may be the one its shared content is filed under; the
+    copy is handed to a record that still holds it, and never fails the delete."""
+
+    PAYLOAD = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "connectorId": "kb-1"}
+
+    @staticmethod
+    def _handler() -> "RecordEventHandler":
+        handler = _make_handler()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_the_delete_hands_the_copy_over(self) -> None:
+        handler = self._handler()
+        with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
+            helper = helper_cls.return_value
+            helper.hand_over_after_record_delete = AsyncMock(return_value=True)
+            helper.close = AsyncMock()
+            events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
+
+        assert len(events) == 2
+        helper.hand_over_after_record_delete.assert_awaited_once_with("org-1", "kb-1", "vr1")
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_handover_is_logged_and_the_delete_completes(self) -> None:
+        handler = self._handler()
+        with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
+            helper = helper_cls.return_value
+            helper.hand_over_after_record_delete = AsyncMock(side_effect=RuntimeError("storage is down"))
+            helper.close = AsyncMock()
+            events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, dict(self.PAYLOAD))
+
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        warned = " ".join(str(c.args) for c in handler.logger.warning.call_args_list)
+        assert "storage is down" in warned
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing", ["orgId", "connectorId", "virtualRecordId"])
+    async def test_nothing_is_handed_over_without_the_ids_it_needs(self, missing) -> None:
+        handler = self._handler()
+        payload = {k: v for k, v in self.PAYLOAD.items() if k != missing}
+        with patch("app.services.messaging.kafka.handlers.record.StorageCleanupHelper") as helper_cls:
+            events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        assert len(events) == 2
+        helper_cls.assert_not_called()
+
+
 class TestDeleteRecordTaxonomyCleanup:
     """A deleted knowledge-base record names the taxonomy entities it linked to
     (``taxonomyRefs``); the points no other live record reaches are deleted."""

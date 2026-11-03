@@ -29,6 +29,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
@@ -870,6 +871,33 @@ class RecordEventHandler(BaseEventService):
             )
             self._edge_request_failures = 0
 
+    async def _hand_over_shared_copy(self, payload: dict) -> None:
+        """The deleted record may be the one its shared content is filed under;
+        that copy moves under a record that still holds it.
+
+        Never raises: the survivors still read the copy where it is, so a failed
+        handover leaves it misfiled, not lost, and must not fail the delete.
+        """
+        org_id = payload.get("orgId")
+        connector_id = payload.get("connectorId")
+        virtual_record_id = payload.get("virtualRecordId")
+        if not (org_id and connector_id and virtual_record_id):
+            return
+        helper = StorageCleanupHelper(
+            self.logger, self.event_processor.graph_provider, self.config_service
+        )
+        try:
+            await helper.hand_over_after_record_delete(org_id, connector_id, virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "Deleted record %s: the content it shared with other records stays filed "
+                "under its old folder, because it could not be moved under a record that "
+                "still holds it (VRID %s): %s",
+                payload.get("recordId"), virtual_record_id, e,
+            )
+        finally:
+            await helper.close()
+
     async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
         """A deleted code file changes the repo's graph too.
 
@@ -1634,6 +1662,7 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
+                await self._hand_over_shared_copy(payload)
                 await self._request_code_edge_build_for_deleted(payload)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
