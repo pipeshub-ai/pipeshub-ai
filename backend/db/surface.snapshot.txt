@@ -1164,6 +1164,22 @@ func kg.edge_sem(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false v
 func kg.log_graph_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp body=c13c0ee75c5b1ace429fbc1952c88cf2 ext=-
 func kg.proj_doc(text,jsonb) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=e4d226f14291993cd491a2d70f1c2146 ext=-
 func kg.refuse_truncate() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=7e7bdc290cfd80fba9d7f003e6e3314f ext=-
+func kg.w_app_cross_set(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=631b829c42c92d3e6dd9d759f81e5cd1 ext=-
+func kg.w_app_facts_set(bigint,boolean,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e81274fd2cfe9af69cd104b6ffe729dd ext=-
+func kg.w_changes_ack() owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=67c0169b30ad4cd4f591b50a2a49e7b7 ext=-
+func kg.w_changes_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ac2ec93c9f2ceed2efe7a68c447a17a4 ext=-
+func kg.w_class_literals_set(bigint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=97d1dccd98fad7e193e04cdc6ebf58db ext=-
+func kg.w_classes_set(bigint[],bigint[],bigint[],jsonb[],bytea[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f4eeb7f2c82468bdb903b022e07e7e8e ext=-
+func kg.w_closure_delete(bigint[],bigint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=9ea9a3aca2b429143dd4b5db0c1173d5 ext=-
+func kg.w_closure_set(bigint[],bigint[],bigint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=86467839849e450fe602fdb49e1c44c0 ext=-
+func kg.w_grants_delete(bigint[],bigint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e2eede98a83e1c0cc691ec6b198b003c ext=-
+func kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=43bd48a439c334e0c78aa72153a11623 ext=-
+func kg.w_links_delete(bigint[],smallint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a7decab3812bf844b268407e34ccb818 ext=-
+func kg.w_links_set(bigint[],smallint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f0240373cc86e45de724409958f3e157 ext=-
+func kg.w_nodes_upsert(smallint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f6f837aec58778cf734e7c4ec493123a ext=-
+func kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2e71bdff7589756a237e177947d0fdcf ext=-
+func kg.w_records_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=57b12b3b54f958479bce80a7e47f9af0 ext=-
+func kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=6494427e7f8184cb79a24c72b55e51df ext=-
 func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
@@ -1221,6 +1237,22 @@ funcacl kg.edge_sem(text,jsonb) PUBLIC EXECUTE
 funcacl kg.log_graph_change() PUBLIC EXECUTE
 funcacl kg.proj_doc(text,jsonb) PUBLIC EXECUTE
 funcacl kg.refuse_truncate() PUBLIC EXECUTE
+funcacl kg.w_app_cross_set(bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_app_facts_set(bigint,boolean,boolean) pipeshub_connectors EXECUTE
+funcacl kg.w_changes_ack() pipeshub_connectors EXECUTE
+funcacl kg.w_changes_delete(bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_class_literals_set(bigint[],bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_classes_set(bigint[],bigint[],bigint[],jsonb[],bytea[]) pipeshub_connectors EXECUTE
+funcacl kg.w_closure_delete(bigint[],bigint[],bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_closure_set(bigint[],bigint[],bigint[],text[]) pipeshub_connectors EXECUTE
+funcacl kg.w_grants_delete(bigint[],bigint[],text[]) pipeshub_connectors EXECUTE
+funcacl kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) pipeshub_connectors EXECUTE
+funcacl kg.w_links_delete(bigint[],smallint[],bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_links_set(bigint[],smallint[],bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_nodes_upsert(smallint[],text[]) pipeshub_connectors EXECUTE
+funcacl kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) pipeshub_connectors EXECUTE
+funcacl kg.w_records_delete(bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
@@ -1523,6 +1555,22 @@ operator ext.>=(ext.sparsevec,ext.sparsevec) owner=<bootstrap-superuser> functio
 operator ext.>=(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_ge
 operator ext.||(ext.halfvec,ext.halfvec) owner=<bootstrap-superuser> function=ext.halfvec_concat
 operator ext.||(ext.vector,ext.vector) owner=<bootstrap-superuser> function=ext.vector_concat
+pin kg.w_app_cross_set(bigint[]) kg.projection_state upsert key=- set=cross_app txn=- max=5000
+pin kg.w_app_facts_set(bigint,boolean,boolean) kg.projection_state upsert key=- set=opens,has_group_level,facts_set txn=- max=5000
+pin kg.w_changes_ack() kg.graph_changes delete key=- set=- txn=txid max=5000
+pin kg.w_changes_delete(bigint[]) kg.graph_changes delete key=id set=- txn=- max=5000
+pin kg.w_class_literals_set(bigint[],bigint[]) kg.class_literals upsert key=- set= txn=- max=5000
+pin kg.w_classes_set(bigint[],bigint[],bigint[],jsonb[],bytea[]) kg.scope_classes upsert key=- set= txn=- max=5000
+pin kg.w_closure_delete(bigint[],bigint[],bigint[]) kg.principal_closure delete key=user_sk,principal_sk,app_sk set=- txn=- max=5000
+pin kg.w_closure_set(bigint[],bigint[],bigint[],text[]) kg.principal_closure upsert key=- set=via txn=- max=5000
+pin kg.w_grants_delete(bigint[],bigint[],text[]) kg.scope_members delete key=principal_sk,node_sk,gtype set=- txn=- max=5000
+pin kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) kg.scope_members upsert key=- set=role,app_sk,leaf txn=- max=5000
+pin kg.w_links_delete(bigint[],smallint[],bigint[]) kg.links delete key=parent_sk,kind,child_sk set=- txn=- max=5000
+pin kg.w_links_set(bigint[],smallint[],bigint[]) kg.links upsert key=- set= txn=- max=5000
+pin kg.w_nodes_upsert(smallint[],text[]) kg.node_keys upsert key=- set= txn=- max=5000
+pin kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) kg.projection_state upsert key=- set=code_epoch,mode,verify_digest,backfill_cursor,verified_at txn=- max=5000
+pin kg.w_records_delete(bigint[]) kg.records delete key=sk set=- txn=- max=5000
+pin kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) kg.records upsert key=- set=coll,id,kind,app_sk,group_sk,parent_sk,rule,model,vrid,name,name_key,updated_ms,created_ms,size_bytes,record_type,origin,external_id,deleted,placeholder,granted txn=- max=5000
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.documents import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy content.documents org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -2221,7 +2269,9 @@ relacl kg.class_literals pipeshub_indexing SELECT grantable=false
 relacl kg.class_literals pipeshub_jobs SELECT grantable=false
 relacl kg.class_literals pipeshub_query SELECT grantable=false
 relacl kg.class_literals pipeshub_restore INSERT grantable=false
+relacl kg.class_literals pipeshub_vetted_kg INSERT grantable=false
 relacl kg.class_literals pipeshub_vetted_kg SELECT grantable=false
+relacl kg.class_literals pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.graph_changes pipeshub_backup SELECT grantable=false
 relacl kg.graph_changes pipeshub_connectors INSERT grantable=false
 relacl kg.graph_changes pipeshub_connectors SELECT grantable=false
@@ -2231,6 +2281,7 @@ relacl kg.graph_changes pipeshub_jobs SELECT grantable=false
 relacl kg.graph_changes pipeshub_query INSERT grantable=false
 relacl kg.graph_changes pipeshub_query SELECT grantable=false
 relacl kg.graph_changes pipeshub_restore INSERT grantable=false
+relacl kg.graph_changes pipeshub_vetted_kg DELETE grantable=false
 relacl kg.graph_changes pipeshub_vetted_kg SELECT grantable=false
 relacl kg.links pipeshub_backup SELECT grantable=false
 relacl kg.links pipeshub_connectors SELECT grantable=false
@@ -2238,14 +2289,19 @@ relacl kg.links pipeshub_indexing SELECT grantable=false
 relacl kg.links pipeshub_jobs SELECT grantable=false
 relacl kg.links pipeshub_query SELECT grantable=false
 relacl kg.links pipeshub_restore INSERT grantable=false
+relacl kg.links pipeshub_vetted_kg DELETE grantable=false
+relacl kg.links pipeshub_vetted_kg INSERT grantable=false
 relacl kg.links pipeshub_vetted_kg SELECT grantable=false
+relacl kg.links pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.node_keys pipeshub_backup SELECT grantable=false
 relacl kg.node_keys pipeshub_connectors SELECT grantable=false
 relacl kg.node_keys pipeshub_indexing SELECT grantable=false
 relacl kg.node_keys pipeshub_jobs SELECT grantable=false
 relacl kg.node_keys pipeshub_query SELECT grantable=false
 relacl kg.node_keys pipeshub_restore INSERT grantable=false
+relacl kg.node_keys pipeshub_vetted_kg INSERT grantable=false
 relacl kg.node_keys pipeshub_vetted_kg SELECT grantable=false
+relacl kg.node_keys pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.node_sk_seq pipeshub_vetted_kg USAGE grantable=false
 relacl kg.principal_closure pipeshub_backup SELECT grantable=false
 relacl kg.principal_closure pipeshub_connectors SELECT grantable=false
@@ -2253,35 +2309,48 @@ relacl kg.principal_closure pipeshub_indexing SELECT grantable=false
 relacl kg.principal_closure pipeshub_jobs SELECT grantable=false
 relacl kg.principal_closure pipeshub_query SELECT grantable=false
 relacl kg.principal_closure pipeshub_restore INSERT grantable=false
+relacl kg.principal_closure pipeshub_vetted_kg DELETE grantable=false
+relacl kg.principal_closure pipeshub_vetted_kg INSERT grantable=false
 relacl kg.principal_closure pipeshub_vetted_kg SELECT grantable=false
+relacl kg.principal_closure pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.projection_state pipeshub_backup SELECT grantable=false
 relacl kg.projection_state pipeshub_connectors SELECT grantable=false
 relacl kg.projection_state pipeshub_indexing SELECT grantable=false
 relacl kg.projection_state pipeshub_jobs SELECT grantable=false
 relacl kg.projection_state pipeshub_query SELECT grantable=false
 relacl kg.projection_state pipeshub_restore INSERT grantable=false
+relacl kg.projection_state pipeshub_vetted_kg INSERT grantable=false
 relacl kg.projection_state pipeshub_vetted_kg SELECT grantable=false
+relacl kg.projection_state pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.records pipeshub_backup SELECT grantable=false
 relacl kg.records pipeshub_connectors SELECT grantable=false
 relacl kg.records pipeshub_indexing SELECT grantable=false
 relacl kg.records pipeshub_jobs SELECT grantable=false
 relacl kg.records pipeshub_query SELECT grantable=false
 relacl kg.records pipeshub_restore INSERT grantable=false
+relacl kg.records pipeshub_vetted_kg DELETE grantable=false
+relacl kg.records pipeshub_vetted_kg INSERT grantable=false
 relacl kg.records pipeshub_vetted_kg SELECT grantable=false
+relacl kg.records pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.scope_classes pipeshub_backup SELECT grantable=false
 relacl kg.scope_classes pipeshub_connectors SELECT grantable=false
 relacl kg.scope_classes pipeshub_indexing SELECT grantable=false
 relacl kg.scope_classes pipeshub_jobs SELECT grantable=false
 relacl kg.scope_classes pipeshub_query SELECT grantable=false
 relacl kg.scope_classes pipeshub_restore INSERT grantable=false
+relacl kg.scope_classes pipeshub_vetted_kg INSERT grantable=false
 relacl kg.scope_classes pipeshub_vetted_kg SELECT grantable=false
+relacl kg.scope_classes pipeshub_vetted_kg UPDATE grantable=false
 relacl kg.scope_members pipeshub_backup SELECT grantable=false
 relacl kg.scope_members pipeshub_connectors SELECT grantable=false
 relacl kg.scope_members pipeshub_indexing SELECT grantable=false
 relacl kg.scope_members pipeshub_jobs SELECT grantable=false
 relacl kg.scope_members pipeshub_query SELECT grantable=false
 relacl kg.scope_members pipeshub_restore INSERT grantable=false
+relacl kg.scope_members pipeshub_vetted_kg DELETE grantable=false
+relacl kg.scope_members pipeshub_vetted_kg INSERT grantable=false
 relacl kg.scope_members pipeshub_vetted_kg SELECT grantable=false
+relacl kg.scope_members pipeshub_vetted_kg UPDATE grantable=false
 relacl oauth.access_tokens pipeshub_backup SELECT grantable=false
 relacl oauth.access_tokens pipeshub_import DELETE grantable=false
 relacl oauth.access_tokens pipeshub_import INSERT grantable=false
@@ -2715,6 +2784,7 @@ schemaacl kg pipeshub_indexing USAGE grantable=false
 schemaacl kg pipeshub_jobs USAGE grantable=false
 schemaacl kg pipeshub_query USAGE grantable=false
 schemaacl kg pipeshub_restore USAGE grantable=false
+schemaacl kg pipeshub_vetted_kg USAGE grantable=false
 schemaacl oauth pipeshub_backup USAGE grantable=false
 schemaacl oauth pipeshub_import USAGE grantable=false
 schemaacl oauth pipeshub_jobs USAGE grantable=false

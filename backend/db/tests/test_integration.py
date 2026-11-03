@@ -70,9 +70,9 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
 HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0),
-         "graph": (2, 0), "kg": (1, 0), "retrieval": (1, 0)}
+         "graph": (2, 0), "kg": (2, 0), "retrieval": (1, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "kg_0001", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "kg_0002", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
@@ -207,7 +207,7 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
         assert c.execute("SELECT note FROM probe.t1 LIMIT 1").fetchone() is None
         versions = {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")}
         # the probe fails mid-run; the branches that ran before it (in an order Alembic does not fix) are complete revisions, never partial
-        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in MODULES))) for v in versions)
+        assert "probe_0001" in versions and all(v == "probe_0001" or v.startswith(("kernel_", *(f"{b}_" for b in (*MODULES, "graph", "kg")))) for v in versions)
     assert epochs(cluster, name)["probe"] == (1, 0)
     write_probe(tmp_path)                                                              # the fix is a plain re-run
     r = run_migrate(url, **env)

@@ -1,0 +1,398 @@
+# Vetted SECURITY DEFINER writers of schema kg. Format and rules: db/lib/vetted.py; shapes the catalog accepts: db/README.md "Pinned writes".
+# Only the connectors service executes them; each is pinned (kernel.vetted_write_pins), takes the org from app.org_id, and the tables have
+# the per-org row policy for the vetted role. Written by gen from the same list as the tests; edit and run
+# python -m db.lib.vetted render versions/kg/vetted/manifest.yaml
+# The statements are exactly the pinned shapes: arrays are capped at 5000 items, every key is the whole primary key.
+functions:
+  - name: kg.w_nodes_upsert
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.node_keys", "set": []}]
+    args:
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 8]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+    returns: "TABLE (o_coll smallint, o_id text, o_sk bigint)"
+    reads: ["kg.node_keys"]
+    body: |
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_ids) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.node_keys (org_id, coll, id) SELECT v_org, k.a, k.b FROM unnest(p_colls, p_ids) AS k(a, b)
+          ON CONFLICT (org_id, coll, id) DO NOTHING;
+        RETURN QUERY SELECT k.coll, k.id, k.sk FROM kg.node_keys k JOIN unnest(p_colls, p_ids) AS x(c, i) ON k.coll = x.c AND k.id = x.i WHERE k.org_id = v_org LIMIT 5000;
+      END;
+
+  - name: kg.w_records_upsert
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms", "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_group_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_parent_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_rules", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_models", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_vrids", "type": "text[]", "max_items": 5000, "item_length": [0, 256]}
+      - {"name": "p_names", "type": "text[]", "max_items": 5000, "item_length": [0, 4000]}
+      - {"name": "p_name_keys", "type": "text[]", "max_items": 5000, "item_length": [0, 4000]}
+      - {"name": "p_updated", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_created", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_sizes", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_record_types", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_origins", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_external_ids", "type": "text[]", "max_items": 5000, "item_length": [0, 2000]}
+      - {"name": "p_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_placeholders", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_granted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_app_sks) <> cardinality(p_sks) OR cardinality(p_group_sks) <> cardinality(p_sks) OR cardinality(p_parent_sks) <> cardinality(p_sks) OR cardinality(p_rules) <> cardinality(p_sks) OR cardinality(p_models) <> cardinality(p_sks) OR cardinality(p_vrids) <> cardinality(p_sks) OR cardinality(p_names) <> cardinality(p_sks) OR cardinality(p_name_keys) <> cardinality(p_sks) OR cardinality(p_updated) <> cardinality(p_sks) OR cardinality(p_created) <> cardinality(p_sks) OR cardinality(p_sizes) <> cardinality(p_sks) OR cardinality(p_record_types) <> cardinality(p_sks) OR cardinality(p_origins) <> cardinality(p_sks) OR cardinality(p_external_ids) <> cardinality(p_sks) OR cardinality(p_deleted) <> cardinality(p_sks) OR cardinality(p_placeholders) <> cardinality(p_sks) OR cardinality(p_granted) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, group_sk, parent_sk, rule, model, vrid, name, name_key, updated_ms, created_ms, size_bytes, record_type, origin, external_id, deleted, placeholder, granted) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, k.i, k.j, k.k, k.l, k.m, k.n, k.o, k.p, k.q, k.r, k.s, k.t, k.u FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_app_sks, p_group_sks, p_parent_sks, p_rules, p_models, p_vrids, p_names, p_name_keys, p_updated, p_created, p_sizes, p_record_types, p_origins, p_external_ids, p_deleted, p_placeholders, p_granted) AS k(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u)
+          ON CONFLICT (org_id, sk) DO UPDATE SET coll = excluded.coll, id = excluded.id, kind = excluded.kind, app_sk = excluded.app_sk, group_sk = excluded.group_sk, parent_sk = excluded.parent_sk, rule = excluded.rule, model = excluded.model, vrid = excluded.vrid, name = excluded.name, name_key = excluded.name_key, updated_ms = excluded.updated_ms, created_ms = excluded.created_ms, size_bytes = excluded.size_bytes, record_type = excluded.record_type, origin = excluded.origin, external_id = excluded.external_id, deleted = excluded.deleted, placeholder = excluded.placeholder, granted = excluded.granted;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_records_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.records", "key": ["sk"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.records t USING unnest(p_sks) AS k(a) WHERE t.org_id = v_org AND t.sk = k.a;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_links_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.links", "set": []}]
+    args:
+      - {"name": "p_parents", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 2]}
+      - {"name": "p_children", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.links"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_kinds) <> cardinality(p_parents) OR cardinality(p_children) <> cardinality(p_parents) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT v_org, k.a, k.b, k.c FROM unnest(p_parents, p_kinds, p_children) AS k(a, b, c)
+          ON CONFLICT (org_id, parent_sk, kind, child_sk) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_links_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.links", "key": ["parent_sk", "kind", "child_sk"]}]
+    args:
+      - {"name": "p_parents", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 2]}
+      - {"name": "p_children", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.links"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_kinds) <> cardinality(p_parents) OR cardinality(p_children) <> cardinality(p_parents) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        DELETE FROM kg.links t USING unnest(p_parents, p_kinds, p_children) AS k(a, b, c) WHERE t.org_id = v_org AND t.parent_sk = k.a AND t.kind = k.b AND t.child_sk = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_grants_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.scope_members", "set": ["role", "app_sk", "leaf"]}]
+    args:
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_gtypes", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 64]}
+      - {"name": "p_roles", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_members"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_roles) <> cardinality(p_principals) OR cardinality(p_apps) <> cardinality(p_principals) OR cardinality(p_leaves) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype, role, app_sk, leaf) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f FROM unnest(p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves) AS k(a, b, c, d, e, f)
+          ON CONFLICT (org_id, principal_sk, node_sk, gtype) DO UPDATE SET role = excluded.role, app_sk = excluded.app_sk, leaf = excluded.leaf;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_grants_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.scope_members", "key": ["principal_sk", "node_sk", "gtype"]}]
+    args:
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_gtypes", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 64]}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_members"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        DELETE FROM kg.scope_members t USING unnest(p_principals, p_nodes, p_gtypes) AS k(a, b, c) WHERE t.org_id = v_org AND t.principal_sk = k.a AND t.node_sk = k.b AND t.gtype = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_closure_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.principal_closure", "set": ["via"]}]
+    args:
+      - {"name": "p_users", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_vias", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 32]}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.principal_closure"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_principals) <> cardinality(p_users) OR cardinality(p_apps) <> cardinality(p_users) OR cardinality(p_vias) <> cardinality(p_users) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.principal_closure (org_id, user_sk, principal_sk, app_sk, via) SELECT v_org, k.a, k.b, k.c, k.d FROM unnest(p_users, p_principals, p_apps, p_vias) AS k(a, b, c, d)
+          ON CONFLICT (org_id, user_sk, principal_sk, app_sk) DO UPDATE SET via = excluded.via;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_closure_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.principal_closure", "key": ["user_sk", "principal_sk", "app_sk"]}]
+    args:
+      - {"name": "p_users", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.principal_closure"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_principals) <> cardinality(p_users) OR cardinality(p_apps) <> cardinality(p_users) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        DELETE FROM kg.principal_closure t USING unnest(p_users, p_principals, p_apps) AS k(a, b, c) WHERE t.org_id = v_org AND t.user_sk = k.a AND t.principal_sk = k.b AND t.app_sk = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_changes_ack
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.graph_changes", "txn": "txid"}]
+    args: []
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.graph_changes t WHERE t.org_id = v_org AND t.txid = pg_current_xact_id();
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_changes_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.graph_changes", "key": ["id"]}]
+    args:
+      - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.graph_changes t USING unnest(p_ids) AS k(a) WHERE t.org_id = v_org AND t.id = k.a;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_projection_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.projection_state", "set": ["code_epoch", "mode", "verify_digest", "backfill_cursor", "verified_at"]}]
+    args:
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_code_epoch", "type": "int", "range": [0, 1000000]}
+      - {"name": "p_mode", "type": "text", "enum": ["legacy", "shadow", "enforce"]}
+      - {"name": "p_digest", "type": "text", "nullable": true, "length": [0, 128]}
+      - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
+      - {"name": "p_verified_at", "type": "timestamptz", "nullable": true}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      INSERT INTO kg.projection_state (org_id, app_sk, code_epoch, mode, verify_digest, backfill_cursor, verified_at) VALUES (v_org, p_app_sk, p_code_epoch, p_mode, p_digest, p_cursor, p_verified_at)
+          ON CONFLICT (org_id, app_sk) DO UPDATE SET code_epoch = excluded.code_epoch, mode = excluded.mode, verify_digest = excluded.verify_digest, backfill_cursor = excluded.backfill_cursor, verified_at = excluded.verified_at;
+        RETURN true;
+
+  - name: kg.w_classes_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.scope_classes", "set": []}]
+    args:
+      - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_group_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_clauses", "type": "jsonb[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_hashes", "type": "bytea[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_classes"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_app_sks) <> cardinality(p_ids) OR cardinality(p_group_sks) <> cardinality(p_ids) OR cardinality(p_clauses) <> cardinality(p_ids) OR cardinality(p_hashes) <> cardinality(p_ids) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e)
+          ON CONFLICT (org_id, id) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_class_literals_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.class_literals", "set": []}]
+    args:
+      - {"name": "p_anchors", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_classes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.class_literals"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_classes) <> cardinality(p_anchors) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.class_literals (org_id, anchor_sk, class_id) SELECT v_org, k.a, k.b FROM unnest(p_anchors, p_classes) AS k(a, b)
+          ON CONFLICT (org_id, anchor_sk, class_id) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_app_facts_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.projection_state", "set": ["opens", "has_group_level", "facts_set"]}]
+    args:
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_opens", "type": "boolean"}
+      - {"name": "p_group_level", "type": "boolean"}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      INSERT INTO kg.projection_state (org_id, app_sk, opens, has_group_level, facts_set) VALUES (v_org, p_app_sk, p_opens, p_group_level, true)
+          ON CONFLICT (org_id, app_sk) DO UPDATE SET opens = excluded.opens, has_group_level = excluded.has_group_level, facts_set = excluded.facts_set;
+        RETURN true;
+
+  - name: kg.w_app_cross_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.projection_state", "set": ["cross_app"]}]
+    args:
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true, "item_range": [0, 9223372036854775807]}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.projection_state"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        INSERT INTO kg.projection_state (org_id, app_sk, cross_app) SELECT v_org, k.a, true FROM unnest(p_app_sks) AS k(a)
+          ON CONFLICT (org_id, app_sk) DO UPDATE SET cross_app = excluded.cross_app;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;

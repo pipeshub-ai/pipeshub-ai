@@ -1,0 +1,33 @@
+-- generated from the manifest by python -m db.lib.vetted render: edit the manifest, not this file
+GRANT pipeshub_vetted_kg TO pipeshub_owner WITH SET TRUE;
+GRANT USAGE ON SCHEMA kg TO pipeshub_vetted_kg;           -- the body names objects of its own schema
+GRANT CREATE ON SCHEMA kg TO pipeshub_vetted_kg;
+SET LOCAL ROLE pipeshub_vetted_kg;
+CREATE FUNCTION kg.w_app_cross_set(p_app_sks bigint[])
+RETURNS int LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path = pg_catalog, kg, pg_temp
+SET standard_conforming_strings = on
+SET plan_cache_mode = force_custom_plan
+AS $fn$
+DECLARE v_org text := NULLIF(current_setting('app.org_id', true), '');
+BEGIN
+  IF p_app_sks IS NULL THEN RAISE EXCEPTION 'w_app_cross_set: p_app_sks is required' USING ERRCODE = '22023'; END IF;
+  IF cardinality(p_app_sks) > 5000 THEN RAISE EXCEPTION 'w_app_cross_set: p_app_sks takes at most 5000 items' USING ERRCODE = '22023'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(p_app_sks) e WHERE e IS NULL) THEN RAISE EXCEPTION 'w_app_cross_set: p_app_sks has a NULL item' USING ERRCODE = '22023'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(p_app_sks) e WHERE e IS NOT NULL AND e NOT BETWEEN 0 AND 9223372036854775807) THEN RAISE EXCEPTION 'w_app_cross_set: p_app_sks has an item out of range' USING ERRCODE = '22023'; END IF;
+  IF v_org IS NULL THEN RETURN 0; END IF;       -- no org (or someone else's): no rows, the same answer
+  DECLARE v_n integer;
+  BEGIN
+    INSERT INTO kg.projection_state (org_id, app_sk, cross_app) SELECT v_org, k.a, true FROM unnest(p_app_sks) AS k(a)
+      ON CONFLICT (org_id, app_sk) DO UPDATE SET cross_app = excluded.cross_app;
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RETURN v_n;
+  END;
+END $fn$;
+REVOKE ALL ON FUNCTION kg.w_app_cross_set(bigint[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION kg.w_app_cross_set(bigint[]) TO pipeshub_connectors;
+SET LOCAL ROLE pipeshub_owner;
+REVOKE CREATE ON SCHEMA kg FROM pipeshub_vetted_kg;
+REVOKE pipeshub_vetted_kg FROM pipeshub_owner;
+SELECT kernel.register_function('kg.w_app_cross_set(bigint[])', 'write', 'pipeshub_connectors', 'org', false);
+SELECT kernel.allow_vetted_write_op('kg.w_app_cross_set(bigint[])', 'kg.projection_state', 'upsert', NULL, ARRAY['cross_app']::name[], NULL, 5000);
