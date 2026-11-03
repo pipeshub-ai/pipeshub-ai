@@ -30,7 +30,7 @@ function approval(fields: Partial<ToolApprovalDetails> = {}): ToolApprovalDetail
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 type AnyBlock = any;
 
 function actionsOf(blocks: AnyBlock[]): AnyBlock[] {
