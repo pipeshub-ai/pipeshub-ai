@@ -7835,7 +7835,7 @@ class TestSyncAccountsRemaining:
         assert "001000000000001AAA" not in ids
 
     @pytest.mark.asyncio
-    async def test_an_account_adopts_the_organisation_documents_named_before(self):
+    async def test_an_account_adopts_the_organisation_documents_named_before(self) -> None:
         """KG-13 3b: documents named "Globex Corp" before the CRM synced its
         "Globex Corporation" account; the account takes that node over, so
         the records that named it link to the account."""
@@ -7864,7 +7864,7 @@ class TestSyncAccountsRemaining:
         assert (written["_key"], written["name"], written["normalizedName"]) == (extracted, "Globex Corporation", "globex")
 
     @pytest.mark.asyncio
-    async def test_on_a_name_shared_with_an_extracted_organisation_the_account_keeps_its_node(self):
+    async def test_on_a_name_shared_with_an_extracted_organisation_the_account_keeps_its_node(self) -> None:
         """An account synced before it was keyed and an organisation documents
         named with the same name: the account must not move onto the
         extracted node, whatever order the graph returns them in."""
@@ -7893,7 +7893,7 @@ class TestSyncAccountsRemaining:
         assert written["_key"] == "acc-1"
 
     @pytest.mark.asyncio
-    async def test_two_accounts_sharing_a_key_stay_two(self):
+    async def test_two_accounts_sharing_a_key_stay_two(self) -> None:
         """Only a node extraction made is adopted by key: "Acme Inc" and an
         existing "Acme LLC" account are separate CRM accounts."""
         connector = _make_connector()
