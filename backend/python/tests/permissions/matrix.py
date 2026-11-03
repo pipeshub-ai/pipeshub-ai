@@ -111,7 +111,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("google/drive/team", "drive", UNION, "google/drive/team/drive_access.py:64",
               "My Drive: full list, no inherit; shared drive: inherit unless limited"),
     Connector("google/drive/individual", "container", CONTAINER, "google/drive/individual/connector.py:185"),
-    Connector("linear", "linear", CONTAINER, "linear/connector.py:1174",
+    Connector("linear", "linear", CONTAINER, "linear/connector.py:1190",
               "team group RECORD_GROUP_LEVEL, ORG grant (public) or group grant (private); the source doc calls it override"),
     Connector("slack/team", "container", CONTAINER, "slack/team/connector.py:1625"),
     Connector("slack/individual", "container", CONTAINER, "slack/individual/connector.py:332"),

@@ -18,7 +18,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1060` | writer read |
 | `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
 | `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
-| `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py:1174` | writer read |
+| `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py:1190` | writer read |
 | `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py:1625` | writer read |
 | `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:332` | writer read |
 | `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1787` | writer read |
