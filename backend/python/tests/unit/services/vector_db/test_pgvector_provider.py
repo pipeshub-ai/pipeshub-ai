@@ -177,11 +177,9 @@ def test_identity_and_capabilities() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reading_and_searching_are_not_implemented_yet(svc) -> None:
-    flt = await svc.filter_collection(must={"orgId": ORG})
-    for call in (svc.scroll("records", flt, 1), svc.retrieve_points("records", ["x"]), svc.query_nearest_points("records", [])):
-        with pytest.raises(NotImplementedError, match="pgvector"):
-            await call
+async def test_searching_is_not_implemented_yet(svc) -> None:
+    with pytest.raises(NotImplementedError, match="pgvector"):
+        await svc.query_nearest_points("records", [])
 
 
 # ---- collections: the same answers as the other providers ------------------------------------------------------------------------

@@ -66,7 +66,7 @@ jobs:
           uv pip install --system pytest pytest-asyncio pytest-timeout
           uv pip install --system -e ".[full,dev]"
 
-      - name: pgvector provider (lifecycle, collections, per-organisation questions, writes)
+      - name: pgvector provider (lifecycle, collections, per-organisation questions, writes, reads)
         working-directory: backend/python
         env:
           KERNEL_TEST_PG_BINS: ${{ env.PG_BIN }}
@@ -78,12 +78,14 @@ jobs:
           tests/integration/vector_db/test_pgvector_provider_core.py
           tests/integration/vector_db/test_pgvector_probe.py
           tests/integration/vector_db/test_pgvector_writes.py
+          tests/integration/vector_db/test_pgvector_reads.py
           -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/pgvector-junit.xml"
 
       - name: No unexpected skips, and every case ran
         if: ${{ always() }}
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 29
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 39
           --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=7'
           --expect-suite 'tests.integration.vector_db.test_pgvector_probe=2'
           --expect-suite 'tests.integration.vector_db.test_pgvector_writes=20'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_reads=10'

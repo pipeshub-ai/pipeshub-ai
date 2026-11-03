@@ -1,9 +1,9 @@
-"""PostgreSQL + pgvector provider: lifecycle, catalog, collections and writes.
+"""PostgreSQL + pgvector provider: lifecycle, catalog, collections, writes and reads.
 
 Every statement runs in a unit of work of the shared database runtime (``app.core.db``): the org is set per transaction and row-level
 security does the rest. Carried so far: the lifecycle (connect, health, capabilities), the collection catalog, the per-org space
-questions and the writes (upsert, delete, payload and membership). Reading and searching points follow, and until then those methods
-raise ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
+questions, the writes (upsert, delete, payload and membership) and the reads (scroll, retrieve). Searching follows, and until then
+``query_nearest_points`` raises ``NotImplementedError``. Nothing selects the provider yet (no ``VECTOR_DB_TYPE`` entry).
 """
 
 from __future__ import annotations
@@ -370,12 +370,47 @@ class PgVectorService(IVectorDBService):
 
     # Reads and search: the changes that follow ---------------------------------------------------------------------
 
-    async def scroll(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None,
-                     with_payload: list[str] | None = None) -> ScrollResult:
-        raise _pending("scroll")
+    # Reads ---------------------------------------------------------------------------------------------------------
+
+    async def scroll(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: str | None = None,
+        with_payload: list[str] | None = None,
+    ) -> ScrollResult:
+        """A page of the org's points that match the filter, ordered by insertion; the filter must pin ``metadata.orgId``. The offset is
+        opaque and belongs to the org that got it. A missing collection is an error; an org with no embedding space yet has no points."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if limit < 1:
+            raise ValueError("scroll limit must be at least 1")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, with_payload),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
 
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
-        raise _pending("retrieve_points")
+        """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
+        The interface carries no org: it is the request's."""
+        db, catalog = self._assert_connected()
+        org = ambient_or_required()
+        coll = await catalog.require_collection(collection_name)
+        space = await catalog.active_space(org)
+        wanted = _ids(ids)
+        if space is None or not wanted:
+            return []
+        found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
+        position = {str(i): n for n, i in enumerate(wanted)}
+        return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
 
     async def query_nearest_points(self, collection_name: str, requests: list[HybridSearchRequest]) -> list[list[SearchResult]]:
         raise _pending("query_nearest_points")
