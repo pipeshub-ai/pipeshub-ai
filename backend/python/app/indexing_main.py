@@ -24,7 +24,7 @@ from app.config.constants.arangodb import (
 )
 from app.containers.indexing import initialize_container
 from app.core.envelope import configure_from_config as configure_envelope
-from app.core.org_context import spawn_detached
+from app.core.org_context import for_org, spawn_detached
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
@@ -1096,6 +1096,16 @@ async def _sweep_orphaned_virtual_record_mappings(
             for mapping in page
             if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
         ]
+        # The org a mapping row names is the one its points are cleaned up for.
+        org_of = {
+            vrid: mapping.get("orgId")
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        }
+        marked = {
+            vrid for mapping in page
+            if mapping.get("orgNotResolved") and isinstance(vrid := mapping.get("_key") or mapping.get("id"), str)
+        }
         try:
             # One read per page, not one per mapping: the answer is the same,
             # and on Neo4j each read is a millisecond of the indexing loop.
@@ -1123,8 +1133,21 @@ async def _sweep_orphaned_virtual_record_mappings(
         for vrid in unreferenced:
             if vrid in trashed:
                 continue
+            if not org_of.get(vrid):
+                # No org to act for, and no record left to name one: never cleaned up across orgs.
+                # Marked on the row so the warning comes once, not every lap.
+                if vrid not in marked:
+                    logger.warning("Orphan sweep cannot clean virtual record %s: its mapping names no org", vrid)
+                    try:
+                        await graph_provider.update_node(
+                            vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, {"orgNotResolved": True}
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not mark the mapping of %s: %s", vrid, exc)
+                continue
             try:
-                outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+                with for_org(org_of[vrid], job="orphan-sweep"):
+                    outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
             except Exception as exc:
                 logger.error(
                     "Failed to clean up orphaned vectors for virtual record %s: %s",

@@ -2405,7 +2405,7 @@ def _orphan_graph(mappings, records_by_vrid, trashed_by_vrid=None):
     happily accept a misspelled pagination keyword.
     """
     graph = AsyncMock()
-    state = {"rows": list(mappings)}
+    state = {"rows": [{"orgId": "o1", **row} for row in mappings]}  # a mapping row names its org
 
     async def _paged(
         collection,

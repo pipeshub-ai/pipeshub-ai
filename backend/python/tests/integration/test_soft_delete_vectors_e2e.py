@@ -259,7 +259,8 @@ async def _remove(w: _World) -> None:
                 {"ids": ids},
             )
     await w.qdrant.delete_points(
-        w.collection, await w.qdrant.filter_collection(should={"virtualRecordId": sorted(set(w.vrids.values()))})
+        w.collection, await w.qdrant.filter_collection(
+            must={"orgId": w.org_id, "virtualRecordId": sorted(set(w.vrids.values()))})
     )
 
 

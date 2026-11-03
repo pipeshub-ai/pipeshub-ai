@@ -59,10 +59,10 @@ async def seeded(redis_service) -> AsyncIterator[tuple[str, FilterExpression]]:
         if await _count(redis_service, col) == POINTS:
             break
         await asyncio.sleep(1)
-    filt = FilterExpression(must=[FieldCondition(
-        key="metadata.virtualRecordId",
-        values=[f"vr-{i}" for i in range(VRIDS)],
-    )])
+    filt = FilterExpression(must=[
+        FieldCondition(key="metadata.orgId", value="org1"),
+        FieldCondition(key="metadata.virtualRecordId", values=[f"vr-{i}" for i in range(VRIDS)]),
+    ])
     original = (await redis_service.client.execute_command(
         "CONFIG", "GET", "search-timeout"))[1]
     await redis_service.client.execute_command("CONFIG", "SET", "search-timeout", "1")

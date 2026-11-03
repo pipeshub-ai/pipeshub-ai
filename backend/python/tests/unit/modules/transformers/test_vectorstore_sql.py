@@ -23,6 +23,9 @@ _LANGCHAIN_DOCUMENT_IS_CLASS = isinstance(_vs_mod.Document, type)
 
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore():
     from app.services.vector_db.models import VectorDBCapabilities
 

@@ -5,6 +5,7 @@ actually can. Same machinery, different grouping axis — which is the check tha
 the abstraction is not quietly specialised to per-org.
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,17 +17,28 @@ from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record,
     sync_vector_membership,
 )
-from app.services.vector_db.models import CollectionConfig, ScrollResult, VectorCollectionInfo
+from app.services.vector_db.models import (
+    CollectionConfig,
+    ScrollResult,
+    VectorCollectionInfo,
+)
 from app.services.vector_db.strategies.per_connector_type import (
     PerConnectorTypeStrategy,
 )
 from app.services.vector_db.strategy import DeleteContext, QueryContext, RecordContext
+from tests.support.bound_org import bind_test_org
 from tests.support.vector_db import make_config_service
 
 pytestmark = pytest.mark.asyncio
 
 DRIVE = "drive_records"
 SLACK = "slack_records"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """Membership and delete calls act for the bound org (a filter always carries one)."""
+    yield from bind_test_org()
 
 
 class FakeVectorDB:

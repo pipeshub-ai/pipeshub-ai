@@ -3407,7 +3407,7 @@ class BlobStorage(Transformer):
                 )
 
             if metadata_document_id and self.graph_provider:
-                await self._map_reconciliation_document(virtual_record_id, metadata_document_id)
+                await self._map_reconciliation_document(virtual_record_id, metadata_document_id, org_id)
                 self.logger.debug(
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
@@ -3423,7 +3423,9 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
 
-    async def _map_reconciliation_document(self, virtual_record_id: str, metadata_document_id: str) -> None:
+    async def _map_reconciliation_document(
+        self, virtual_record_id: str, metadata_document_id: str, org_id: str | None = None,
+    ) -> None:
         """Name the metadata document on the mapping.
 
         When the mapping already names a stored document, this is a compare-and-set on
@@ -3456,6 +3458,8 @@ class BlobStorage(Transformer):
                 "_key": virtual_record_id,
                 "record_metadata_doc_id": metadata_document_id,
                 "updatedAt": get_epoch_timestamp_in_ms(),
+                # A row created here must name its org: the orphan sweep cleans up points for it.
+                **({"orgId": org_id} if org_id else {}),
             }],
             collection,
         )

@@ -25,6 +25,8 @@ from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
 )
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
 
 def _loc(names=("records",)) -> StaticCollectionLocator:
     """The single-collection locator these tests previously expressed as a

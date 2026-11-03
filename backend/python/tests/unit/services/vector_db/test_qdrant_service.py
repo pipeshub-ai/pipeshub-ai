@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.vector_db.errors import OrgRequired
+
 pytest.importorskip("qdrant_client", reason="qdrant_client not installed")
 
 from qdrant_client.http.models import (
@@ -685,7 +687,7 @@ class TestDeletePoints:
     async def test_delete_points_not_connected(self, service):
         # Use a non-empty filter so the empty-filter guard doesn't fire first
         filter_expr = FilterExpression(
-            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[GenericFieldCondition(key="metadata.orgId", value="o1"), GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="not connected"):
             await service.delete_points("col", filter_expr)
@@ -833,7 +835,7 @@ class TestSetPayload:
 
         sentinel = _MagicMock(name="FilterSelectorInstance")
         filter_expr = FilterExpression(
-            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[GenericFieldCondition(key="metadata.orgId", value="o1"), GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         payload = {"connectorIds": ["c1"], "recordGroupIds": ["g1"]}
 
@@ -853,7 +855,7 @@ class TestSetPayload:
     @pytest.mark.asyncio
     async def test_not_connected(self, service):
         filter_expr = FilterExpression(
-            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[GenericFieldCondition(key="metadata.orgId", value="o1"), GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="not connected"):
             await service.set_payload("col", {"connectorIds": ["c1"]}, filter_expr)
@@ -879,7 +881,7 @@ class TestDeletePointsEmptyFilterGuard:
         """delete_points with a non-empty filter must proceed normally."""
         connected_service.client.delete = AsyncMock()
         filter_expr = FilterExpression(
-            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+            must=[GenericFieldCondition(key="metadata.orgId", value="o1"), GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         # Must not raise
         await connected_service.delete_points("col", filter_expr)
@@ -955,18 +957,26 @@ class TestUpdatePayloadByIds:
     async def test_sets_payload_on_the_listed_points_by_id_filter(self, connected_service) -> None:
         """A plain id list makes Qdrant 404 the whole call when one id is
         missing; the interface says missing ids are ignored."""
-        await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]})
+        await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]}, org_id="o1")
 
         kwargs = connected_service.client.set_payload.await_args.kwargs
         assert kwargs["collection_name"] == "entities"
         assert kwargs["payload"] == {"connectorIds": ["c1"]}
         assert kwargs["wait"] is True
-        (condition,) = kwargs["points"].filter.must
-        assert condition.has_id == ["p1", "p2"]
+        by_id, by_org = kwargs["points"].filter.must
+        assert by_id.has_id == ["p1", "p2"]
+        assert (by_org.key, by_org.match.value) == ("metadata.orgId", "o1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, "", "  "])
+    async def test_a_missing_org_raises(self, connected_service, org) -> None:
+        with pytest.raises(OrgRequired):
+            await connected_service.update_payload_by_ids("entities", ["p1"], {"x": 1}, org_id=org)
+        connected_service.client.set_payload.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_ids_makes_no_call(self, connected_service):
-        await connected_service.update_payload_by_ids("entities", [], {"x": 1})
+        await connected_service.update_payload_by_ids("entities", [], {"x": 1}, org_id="o1")
         connected_service.client.set_payload.assert_not_called()
 
 
@@ -992,3 +1002,26 @@ class TestRetrievePoints:
     async def test_no_ids_makes_no_call(self, connected_service):
         assert await connected_service.retrieve_points("entities", []) == []
         connected_service.client.retrieve.assert_not_called()
+
+
+class TestDeletesAndUpdatesNeedAnOrg:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["delete_points", "set_payload", "overwrite_payload"])
+    async def test_a_filter_without_an_org_raises_before_any_call(self, connected_service, method) -> None:
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        no_org = FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        blank = FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", value=" "), FieldCondition(key="metadata.virtualRecordId", value="vr-1"),
+        ])
+        several = FilterExpression(must=[
+            FieldCondition(key="metadata.orgId", values=["o1", "o2"]), FieldCondition(key="metadata.virtualRecordId", value="vr-1"),
+        ])
+        for filt in (no_org, blank, several):
+            call = (
+                connected_service.delete_points("col", filt) if method == "delete_points"
+                else getattr(connected_service, method)("col", {"x": 1}, filt)
+            )
+            with pytest.raises(OrgRequired):
+                await call
+

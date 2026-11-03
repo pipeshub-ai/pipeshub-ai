@@ -28,6 +28,7 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db.errors import OrgMismatch, OrgRequired
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -50,6 +51,60 @@ def canonical_filter_key(key: str) -> str:
     if key.startswith("metadata.") or key in TOP_LEVEL_FILTER_FIELDS:
         return key
     return f"metadata.{key}"
+
+
+ORG_FIELD = "metadata.orgId"
+
+
+def is_missing(value: object) -> bool:
+    """None and blank strings stand for "no value" (``""`` is the default of several callers)."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def org_for_filter(org_id: str | None = None, *, match_bound: bool = False) -> str:
+    """The org a filter must pin: the explicit one, else the one bound in ``app.core.org_context``.
+
+    Raises OrgRequired for a blank org or when no single org is bound (a system context included),
+    never falls back to "every org". With ``match_bound`` an explicit org that differs from a bound
+    one raises ``OrgMismatch``.
+    """
+    from app.core import org_context  # deferred: the context module pulls in telemetry
+
+    if org_id is not None:
+        if is_missing(org_id):
+            raise OrgRequired("the organisation of this vector call is blank")
+        if match_bound:
+            try:
+                bound = org_context.current_or_system().org_id
+            except org_context.MissingOrgContext:
+                bound = None
+            if bound is not None and bound != org_id:
+                raise OrgMismatch("the organisation of this vector call differs from the bound one")
+        return org_id
+    try:
+        return org_context.current_org_id()
+    except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed) as exc:
+        raise OrgRequired(f"no organisation is bound for this vector call: {exc}") from exc
+
+
+def require_filter_org(expr: FilterExpression) -> None:
+    """Raise OrgRequired unless MUST pins ``metadata.orgId`` to a non-blank value.
+
+    Every delete and update names its org, so a filter without one is a bug of the caller,
+    not a request for every org. An org-only filter passes: that is the whole-org removal.
+    """
+    orgs: set = set()
+    for cond in expr.must:
+        if cond.key != ORG_FIELD:
+            continue
+        vals = cond.values if cond.values is not None else [cond.value]
+        if len(vals) != 1 or is_missing(vals[0]):
+            raise OrgRequired("the filter must pin metadata.orgId to exactly one non-blank value")
+        orgs.add(vals[0])
+    if not orgs:
+        raise OrgRequired("the filter carries no organisation (metadata.orgId in MUST is required)")
+    if len(orgs) > 1:
+        raise OrgMismatch("the filter names more than one organisation")
 
 
 def build_max_values_conditions(max_values: Dict[str, int]) -> List[FieldCondition]:
@@ -161,6 +216,14 @@ def build_filter_expression(
             all_should.update(extra_kwargs)
         elif filter_mode == FilterMode.MUST_NOT:
             all_must_not.update(extra_kwargs)
+
+    # A blank org would be dropped by the condition builders and widen the filter to every org.
+    for key in ("orgId", ORG_FIELD):
+        if key in all_must and (
+            is_missing(all_must[key])
+            or (isinstance(all_must[key], (list, tuple)) and (len(all_must[key]) != 1 or is_missing(all_must[key][0])))
+        ):
+            raise OrgRequired(f"'{key}' in the filter must be exactly one non-blank org id")
 
     must_conds = build_conditions(all_must) if all_must else []
     should_conds = build_conditions(all_should) if all_should else []

@@ -82,10 +82,10 @@ async def test_full_page_persists_cursor_then_short_page_completes():
     graph.page_records_for_vector_membership_backfill = AsyncMock(
         side_effect=[
             [
-                {"_key": "r1", "virtualRecordId": "v1"},
-                {"_key": "r2", "virtualRecordId": "v2"},
+                {"_key": "r1", "virtualRecordId": "v1", "orgId": "o1"},
+                {"_key": "r2", "virtualRecordId": "v2", "orgId": "o1"},
             ],
-            [{"_key": "r3", "virtualRecordId": "v3"}],
+            [{"_key": "r3", "virtualRecordId": "v3", "orgId": "o1"}],
         ]
     )
     graph.update_node = AsyncMock()
@@ -173,8 +173,8 @@ async def test_failed_vrid_continues_page():
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
         return_value=[
-            {"_key": "r1", "virtualRecordId": "bad"},
-            {"_key": "r2", "virtualRecordId": "good"},
+            {"_key": "r1", "virtualRecordId": "bad", "orgId": "o1"},
+            {"_key": "r2", "virtualRecordId": "good", "orgId": "o1"},
         ]
     )
     graph.update_node = AsyncMock()
@@ -211,7 +211,7 @@ async def test_repeated_failures_eventually_stop_retrying():
         }
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": "r1", "virtualRecordId": "bad"}]
+        return_value=[{"_key": "r1", "virtualRecordId": "bad", "orgId": "o1"}]
     )
     graph.update_node = AsyncMock()
     pipeline = AsyncMock()
@@ -239,8 +239,8 @@ async def test_lost_leadership_stops_the_page():
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
         return_value=[
-            {"_key": "r1", "virtualRecordId": "v1"},
-            {"_key": "r2", "virtualRecordId": "v2"},
+            {"_key": "r1", "virtualRecordId": "v1", "orgId": "o1"},
+            {"_key": "r2", "virtualRecordId": "v2", "orgId": "o1"},
         ]
     )
     graph.update_node = AsyncMock()
@@ -277,11 +277,11 @@ async def test_lost_leadership_stops_the_page():
 def test_distinct_non_empty_vrids_skips_blanks_and_dupes():
     assert distinct_non_empty_vrids(
         [
-            {"_key": "a", "virtualRecordId": "v1"},
+            {"_key": "a", "virtualRecordId": "v1", "orgId": "o1"},
             {"_key": "b", "virtualRecordId": ""},
             {"_key": "c", "virtualRecordId": None},
-            {"_key": "d", "virtualRecordId": "v1"},
-            {"_key": "e", "virtualRecordId": "v2"},
+            {"_key": "d", "virtualRecordId": "v1", "orgId": "o1"},
+            {"_key": "e", "virtualRecordId": "v2", "orgId": "o1"},
         ]
     ) == ["v1", "v2"]
 
@@ -414,7 +414,7 @@ async def test_lease_renewal_is_batched_not_per_vrid():
         return_value={"_key": "app-1"}
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": f"r{i}", "virtualRecordId": f"v{i}"} for i in range(50)]
+        return_value=[{"_key": f"r{i}", "virtualRecordId": f"v{i}", "orgId": "o1"} for i in range(50)]
     )
     graph.update_node = AsyncMock()
 
@@ -463,7 +463,7 @@ async def test_exhausted_pass_is_not_recorded_as_success():
         }
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": "r1", "virtualRecordId": "vr-1"}]
+        return_value=[{"_key": "r1", "virtualRecordId": "vr-1", "orgId": "o1"}]
     )
     graph.update_node = AsyncMock()
 
@@ -498,7 +498,7 @@ async def test_rewound_pass_does_not_inherit_the_previous_vrid_count():
         }
     )
     graph.page_records_for_vector_membership_backfill = AsyncMock(
-        return_value=[{"_key": "r1", "virtualRecordId": "vr-1"}]
+        return_value=[{"_key": "r1", "virtualRecordId": "vr-1", "orgId": "o1"}]
     )
     graph.update_node = AsyncMock()
 

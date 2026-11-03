@@ -57,6 +57,7 @@ from app.services.messaging.error_classifier import format_exception_chain
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     reset_membership_context,
@@ -1656,9 +1657,10 @@ class VectorStore(Transformer):
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
+        org_id = org_for_filter()
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
@@ -1676,9 +1678,10 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     async def delete_embeddings(self, virtual_record_id: str, collection_name: str) -> None:
+        org_id = org_for_filter()
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(

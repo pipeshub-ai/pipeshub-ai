@@ -29,7 +29,7 @@ from app.services.vector_db.strategies.per_connector_type import (
     PerConnectorTypeStrategy,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("bound_org")]
 
 
 def _locator(managed=("google_drive_records", "slack_records")):

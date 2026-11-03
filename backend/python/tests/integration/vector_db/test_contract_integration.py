@@ -28,6 +28,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 VISIBILITY_TIMEOUT = 45.0
 
 
+async def _is(read, expected) -> bool:
+    return await read() == expected
+
+
 class _VectorDBContractTests:
     """Provider-agnostic contract. Subclasses inject `vector_service` from a
     module-scoped fixture (qdrant_service / opensearch_service / redis_service)
@@ -80,6 +84,46 @@ class _VectorDBContractTests:
             await wait_for(lambda: points_count_is(len(points)), timeout=VISIBILITY_TIMEOUT)
             await vector_service.delete_points(col, flt)
             await wait_for(lambda: points_count_is(0), timeout=VISIBILITY_TIMEOUT)
+        finally:
+            await vector_service.delete_collection(col)
+
+    async def test_a_write_for_one_org_leaves_the_other_orgs_points_alone(self, vector_service) -> None:
+        """The same virtual record id under two orgs: ids, filters and deletes of org A never reach org B."""
+        provider = vector_service.get_service_name()
+        col = make_collection(f"{provider}_orgs")
+        try:
+            await vector_service.create_collection(col, make_collection_config())
+            a_pts, b_pts = sample_points("org-a"), sample_points("org-b")
+            for pt in b_pts:
+                pt.id = point_id("b-" + str(pt.id))
+            await vector_service.upsert_points(col, a_pts + b_pts)
+            ids = [p.id for p in a_pts + b_pts]
+
+            async def count() -> int:
+                return (await vector_service.get_collection_info(col)).points_count
+
+            await wait_for(lambda: _is(count, 6), timeout=VISIBILITY_TIMEOUT)
+
+            async def members(org: str) -> list:
+                got = await vector_service.retrieve_points(col, ids)
+                return [p.payload.get("connectorIds") for p in got if p.payload["metadata"]["orgId"] == org]
+
+            await vector_service.update_payload_by_ids(col, ids, {"connectorIds": ["c1"]}, org_id="org-a")
+            await wait_for(lambda: _is(lambda: members("org-a"), [["c1"]] * 3), timeout=VISIBILITY_TIMEOUT)
+            assert all(v in (None, [], ()) for v in await members("org-b"))
+
+            flt = await vector_service.filter_collection(must={"orgId": "org-a", "virtualRecordId": "r1"})
+            await vector_service.set_payload(col, {"connectorIds": ["c2"]}, flt, refresh=True)
+            org_a = await vector_service.filter_collection(must={"orgId": "org-a"})
+
+            async def delete_a_until_gone() -> bool:
+                # OpenSearch skips a document updated since its last refresh (conflicts=proceed), so a
+                # repeat after the refresh finishes the job; refresh=True makes each pass visible.
+                await vector_service.delete_points(col, org_a, refresh=True)
+                return len(await vector_service.retrieve_points(col, [p.id for p in a_pts])) == 0
+
+            await wait_for(delete_a_until_gone, timeout=VISIBILITY_TIMEOUT)
+            assert len(await members("org-b")) == 3
         finally:
             await vector_service.delete_collection(col)
 

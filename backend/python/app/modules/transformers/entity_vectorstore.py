@@ -1108,6 +1108,7 @@ class EntityVectorStore:
                         await self.vector_db_service.update_payload_by_ids(
                             collection, [point_id],
                             {CONNECTOR_IDS_FIELD: connector_ids, RECORD_GROUP_IDS_FIELD: record_group_ids},
+                            org_id=entity.org_id,
                         )
                         outcome.membership_only += 1
                     else:
@@ -1746,6 +1747,7 @@ class EntityVectorStore:
                 await self.vector_db_service.update_payload_by_ids(
                     collection, point_ids,
                     {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
+                    org_id=org_id,
                 )
             if exclusive and membership_lookup is not None:
                 exclusive = await self._rewrite_still_reached(
@@ -1793,6 +1795,7 @@ class EntityVectorStore:
                 await self.vector_db_service.update_payload_by_ids(
                     collection, [point_id],
                     {CONNECTOR_IDS_FIELD: connectors, RECORD_GROUP_IDS_FIELD: groups},
+                    org_id=org_id,
                 )
         return to_delete
 
