@@ -1,6 +1,6 @@
 # PostgreSQL image and PgBouncer (compose profile `postgres`)
 
-Opt-in: nothing starts unless `postgres` is in `COMPOSE_PROFILES`, and nothing in the application connects to it yet. Without the profile `docker compose config` is unchanged.
+Opt-in: nothing starts unless `postgres` is in `COMPOSE_PROFILES`, and the application connects to it only with the document-store override below. Without the profile `docker compose config` is unchanged.
 
 - `Dockerfile`: pgvector 0.8.7 base for PostgreSQL 18 (default) or 17, both pinned by digest and multi-arch; adds `pg_textsearch` 1.5.1 and PgBouncer 1.26.1 (source tarballs checked by SHA-256). Build: `docker compose --profile postgres build postgres`. The `postgres` and `pgbouncer` services run the same image.
 - `pgbouncer.ini`: transaction pooling with `server_reset_query` and `server_reset_query_always = 1`, so session state (role, settings, temp tables, cursors) never reaches the next client. Do not weaken these. One server pool per login; the sizes add up to at most `max_db_connections`.
@@ -9,6 +9,17 @@ Opt-in: nothing starts unless `postgres` is in `COMPOSE_PROFILES`, and nothing i
 - `scram-verifier.pl`: computes the SCRAM-SHA-256 verifier of a password (read from the environment, printable ASCII only).
 
 Secrets: the passwords come from the container environment. They are not in the image, the build context, or the logs. The server never receives a clear-text password: `pg-roles.sh` computes the SCRAM verifiers itself and sends only those (so `pg_stat_statements`, the statement log and `pg_stat_tmp` hold verifiers, not passwords), and turns off statement tracking and logging for its session. The passwords stay in the container's environment (`docker inspect`, `/proc/<pid>/environ` inside), and the verifiers in the database and in the volume's backups; a verifier can be attacked offline, so use long random passwords. A password you set later with `ALTER ROLE ... PASSWORD '<clear text>'` is visible to the server the same way unless you send a verifier.
+
+## Document store on PostgreSQL (`docker-compose.postgres-docstore.yml`)
+
+For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). In `.env`: `COMPOSE_PROFILES=...,postgres,postgres-migrate` (`install.sh` keeps these two if you set them) and all the `PG_*_PASSWORD` values, then
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres-docstore.yml up -d --build
+# install.sh: PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml
+```
+
+Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0, then `pipeshub-ai`. The migration job (`python -m db.migrate`, built from `backend/db/Dockerfile`) connects straight to `postgres` (it needs a session and an advisory lock, so not through the pooler) as `pipeshub_migrate`. It is idempotent: a database at head is left as it is, an installed database is upgraded in one transaction, and a failed run changes nothing there. Exit 4 means the catalog or security-surface check found violations; the app is then not started: read `docker compose logs pipeshub-migrate`. Exit codes: `backend/db/README.md`. The app uses the pooled node and jobs logins (`PG_NODE_URL`, `PG_JOBS_URL`, built from the passwords, which may contain only letters, digits and `. _ ~ -` for that reason). This does not copy existing MongoDB data, and MongoDB and the other stores stay as they are.
 
 ## Data volume
 

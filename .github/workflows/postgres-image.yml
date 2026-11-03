@@ -11,6 +11,8 @@ on:
     paths:
       - 'deployment/docker-compose/postgres/**'
       - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/docker-compose.postgres-docstore.yml'
+      - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
       - '.github/workflows/postgres-image.yml'
@@ -56,3 +58,6 @@ jobs:
 
       - name: Roles, privileges and PgBouncer authentication
         run: bash deployment/docker-compose/tests/postgres_roles_test.sh
+
+      - name: Migration job and the document-store override
+        run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
