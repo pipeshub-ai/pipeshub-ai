@@ -18,7 +18,7 @@ from sqlglot import exp, parse_one
 PROVIDER = Path(__file__).resolve().parents[4] / "app" / "services" / "graph_db" / "postgres"
 MODULES = ["records.py", "codegraph.py", "core.py", "hierarchy.py", "trash.py", "lookups.py", "delete.py"]
 PARTITIONED = {"graph.nodes", "graph.edges"}
-CALLS = {"fetch", "fetchrow", "fetchval", "execute"}
+CALLS = {"fetch", "fetchrow", "fetchval", "execute", "_qrows", "_lrows", "_drows", "_rows", "_one", "_id_rows"}      # the helpers pass their SQL on
 
 
 def unbound_tables(sql: str) -> list[str]:
@@ -75,3 +75,21 @@ def test_the_scan_catches_a_statement_that_forgot_the_org() -> None:
     assert unbound_tables(sql) == ["n"]
     assert unbound_tables(sql.replace("WHERE n.coll", "WHERE n.org_id = $1 AND n.coll")) == []
     assert unbound_tables("DELETE FROM graph.nodes WHERE coll = $2") == ["nodes"]
+
+
+# identity.py builds six statements by formatting (a filter list, a page size, a SQL fragment); strict xfail: it turns red when they are rewritten.
+KNOWN = {"identity.py": "six statements built by formatting, still to be rewritten as literals"}
+
+
+@pytest.mark.parametrize("module", [pytest.param(p.name, marks=pytest.mark.xfail(strict=True, reason=KNOWN[p.name])) if p.name in KNOWN else p.name
+                                    for p in sorted(PROVIDER.glob("*.py"))])
+def test_no_statement_of_the_provider_is_built_by_formatting(module: str) -> None:
+    """The runtime SQL guard sees only calls named fetch/execute; the provider's own helpers pass their SQL on, so they are read here."""
+    built = []
+    for node in ast.walk(ast.parse((PROVIDER / module).read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in CALLS and node.args:
+            arg = node.args[0]
+            text = "".join(v.value for v in getattr(arg, "values", []) if isinstance(v, ast.Constant) and isinstance(v.value, str))
+            if (isinstance(arg, ast.JoinedStr) and any(isinstance(v, ast.FormattedValue) for v in arg.values) and "graph." in text) or isinstance(arg, ast.BinOp):
+                built.append(node.lineno)
+    assert built == [], f"{module}: statements built by formatting at lines {built}"
