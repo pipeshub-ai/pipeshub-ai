@@ -1,7 +1,7 @@
 /** The cutover tooling's side of the Mongo fence document (see libs/repositories/fence.ts). */
 import {
   FENCE_POLL_GAP_MS,
-  FENCE_VISIBLE_MS,
+  fenceCutoverWaitMs,
   fenceSendMs,
   appFenceSendOptions,
   FENCED_WRITE_OP_MATCH,
@@ -87,7 +87,7 @@ export const fenceTuning = {
 /**
  * The rule for leaving `draining`. A write that passed the fence earlier can still be on its way to the server, for as long as the
  * client can hold it (wait queue, connect, server selection, once more for a retry). So, before the fence becomes `readonly` or
- * `retired`: it must be `draining`; it has been for FENCE_VISIBLE_MS + fenceSendMs(client options), counted from the fence document's `at`; and
+ * `retired`: it must be `draining`; it has been for fenceCutoverWaitMs(client options), counted from the fence document's `at`; and
  * two polls of `$currentOp`, FENCE_POLL_GAP_MS apart, list no operation carrying the fenced-write tag (and every poll before them
  * that did list one has been waited out). The polling phase logs its progress and ends at the operator's timeout by throwing
  * FenceOpsTimeoutError, never by moving the fence anyway. A client with an unbounded wait queue gives no bound at all: refused.
@@ -107,8 +107,12 @@ async function enforceDrainDwell(
     throw new Error(
       `the fence must be 'draining' before '${to}' (it is '${mode}')`,
     );
+  const opts = fenceTuning.clientOptions(rt);
+  const shortened = testMs();
   const wait =
-    (testMs() ?? FENCE_VISIBLE_MS) + fenceSendMs(fenceTuning.clientOptions(rt));
+    shortened === undefined
+      ? fenceCutoverWaitMs(opts)
+      : shortened + fenceSendMs(opts);
   if (!Number.isFinite(wait))
     throw new Error(
       'the MongoDB client has an unbounded wait queue (waitQueueTimeoutMS 0): no time bounds a write that passed the fence; the cutover is refused',
