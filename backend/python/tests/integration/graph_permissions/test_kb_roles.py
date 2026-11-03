@@ -183,25 +183,68 @@ async def test_the_single_collection_role_matches_the_listing(store, name, expec
     assert await store.provider.get_user_kb_permission(_kb_id(name), USER) == expected
 
 
+async def _load_odd(store, nodes: list[dict], edges: list[dict]) -> None:
+    """Load edges carrying a role no writer stores; ArangoDB's permissions schema refuses them."""
+    try:
+        await store.load(nodes, edges)
+    except Exception as exc:
+        if not (isinstance(store, _Arango) and "permissions schema" in str(exc)):
+            raise
+        pytest.skip(f"ArangoDB's permissions schema refuses the role: {exc}")
+
+
+def _odd_graph(role: str, team_reader: bool) -> tuple[list[dict], list[dict]]:
+    """``kbr-odd`` (direct ``role``, a record in it, optionally a READER team grant) and ``kbr-ok`` (direct READER)."""
+    nodes, edges = [], []
+    for kb, name in (("kbr-odd", "odd"), ("kbr-ok", "ok")):
+        nodes += [_org(app(kb, name, connector=KB, app_group="Local Storage", scope="personal")),
+                  _org(rec(f"{kb}-r", f"{name} record", origin="UPLOAD", connector_id=kb, virtualRecordId=f"{kb}-v"))]
+        edges += [bt(f"{kb}-r", kb), perm(USER, kb, role="READER" if kb == "kbr-ok" else role)]
+    if team_reader:
+        nodes.append(_org(_node("Teams", "kbr-odd-team", name="kbr-odd-team")))
+        edges += [perm(USER, "kbr-odd-team", role="READER"),
+                  perm("kbr-odd-team", "kbr-odd", grant_type="TEAM", role="READER")]
+    return nodes, edges
+
+
 @pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
 @pytest.mark.parametrize("team_reader", [False, True])
 async def test_an_unrecognised_direct_role_is_no_access(store, role, team_reader) -> None:
     """A direct edge with a role no writer stores neither wins nor lists the
     collection; a team grant beside it still gives its own role."""
-    kb, team = "kbr-odd", "kbr-odd-team"
-    nodes = [_org(app(kb, "odd", connector=KB, app_group="Local Storage", scope="personal"))]
-    edges = []
-    if team_reader:
-        nodes.append(_org(_node("Teams", team, name=team)))
-        edges += [perm(USER, team, role="READER"), perm(team, kb, grant_type="TEAM", role="READER")]
-    try:
-        await store.load(nodes, [*edges, perm(USER, kb, role=role)])
-    except Exception as exc:  # ArangoDB's permissions schema refuses the role
-        pytest.skip(f"the store refuses the role: {exc}")
+    await _load_odd(store, *_odd_graph(role, team_reader))
     expected = "READER" if team_reader else None
-    assert await store.provider.get_user_kb_permission(kb, USER) == expected
+    assert await store.provider.get_user_kb_permission("kbr-odd", USER) == expected
     roles, _, _ = await _listed(store.provider)
-    assert roles.get("odd") == expected
+    if expected is None:
+        assert "odd" not in roles
+    else:
+        assert roles["odd"] == expected
+
+
+@pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
+async def test_an_unrecognised_direct_role_opens_no_collection_or_record(store, role) -> None:
+    """The access paths that read the direct edge themselves agree with the role lookup."""
+    await _load_odd(store, *_odd_graph(role, False))
+    provider = store.provider
+
+    accessible = await provider._get_accessible_kb_ids("kbr-m")
+    assert "kbr-ok" in accessible and "kbr-odd" not in accessible
+    gated = {a["id"] for a in await provider.get_gated_apps(USER, ORG)}
+    assert "kbr-ok" in gated and "kbr-odd" not in gated
+    assert await provider.check_record_access_with_details("kbr-m", ORG, "kbr-odd-r") is None
+    assert await provider.check_record_access_with_details("kbr-m", ORG, "kbr-ok-r")
+    context = await provider.get_entity_access_context("kbr-m", ORG)
+    assert "kbr-odd" not in {a["id"] for a in context["apps"]}
+
+
+async def test_the_hub_ranks_a_team_reader_above_an_unrecognised_direct_role(store) -> None:
+    await _load_odd(store, *_odd_graph("ADMIN", True))
+
+    context = await store.provider.get_knowledge_hub_context_permissions(
+        USER, ORG, "kbr-odd", parent_type="app")
+
+    assert (context["role"], context["canManagePermissions"]) == ("READER", False), context
 
 
 async def test_the_member_list_shows_a_retired_role_as_reader(store) -> None:

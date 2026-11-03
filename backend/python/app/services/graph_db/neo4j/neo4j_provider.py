@@ -340,6 +340,11 @@ _TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
 # The roles a knowledge base grant can carry; any other direct role is no access.
 _KB_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in TEAM_GRANT_ROLES) + "]"
 
+
+def _kb_edge_role_ok(edge: str) -> str:
+    """Cypher predicate: the direct grant ``edge`` on a knowledge base carries a KB role."""
+    return f"(CASE WHEN {edge}.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE {edge}.role END) IN {_KB_ROLES_CYPHER}"
+
 # The dates a time range bounds, read beside each record of a shared timeline
 # walk (``dated_scope``): as columns, as fields of a collected pair, and back
 # out of the pair.
@@ -8142,9 +8147,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # reaches its own hidden KB — is honoured as-is.
             kb_filter_clause = ""
             if kb_ids:
-                kb_filter_clause = " WHERE kb.id IN $kb_ids"
+                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND kb.id IN $kb_ids"
             else:
-                kb_filter_clause = " WHERE coalesce(kb.isHidden, false) = false"
+                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND coalesce(kb.isHidden, false) = false"
 
             # Prepare parameters (populated further below, and mutated by time-range conditions)
             parameters = {
@@ -8166,7 +8171,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL {{
                 WITH userDoc
                 // Direct user-KB permissions (KB is now an App node with type="KB")
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {{type: "KB"}})
+                OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE {cypher_searchable_record("r")}
@@ -8249,8 +8254,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         CALL {
             WITH userDoc
-            OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {type: "KB"})
-            WHERE $includeHidden OR coalesce(kb.isHidden, false) = false
+            OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {type: "KB"})
+            WHERE __KB_EDGE_OK__ AND ($includeHidden OR coalesce(kb.isHidden, false) = false)
             RETURN collect(DISTINCT kb.id) AS directIds
         }
 
@@ -8267,7 +8272,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         UNWIND ids AS kbId
         WITH kbId WHERE kbId IS NOT NULL
         RETURN DISTINCT kbId AS kbId
-        """
+        """.replace("__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         results = await self.client.execute_query(
             query, parameters={"userId": user_id, "includeHidden": include_hidden}
         )
@@ -8315,8 +8320,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN app
                 UNION
                 WITH u
-                MATCH (u)-[:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
-                WHERE app.orgId = $org_id
+                MATCH (u)-[kbp:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id AND __KB_EDGE_OK__
                 RETURN app
                 UNION
                 WITH u
@@ -8422,7 +8427,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
 
         RETURN u.id AS user_key, apps, record_group_ids
-        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH)).replace(
+            "__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         rows = await self.client.execute_query(
             query,
             parameters={
@@ -12796,6 +12802,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (u, kh_kbs) {
                 UNWIND kh_kbs AS kb
                 MATCH (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
+                WHERE __KB_EDGE_OK__
                 RETURN [x IN COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: null}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbDirectAccess
             }
 
@@ -12830,7 +12837,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess AS allAccess
             WHERE size([a IN allAccess WHERE a.source IS NOT NULL]) > 0
             RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
-            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER).replace(
+                "__KB_EDGE_OK__", _kb_edge_role_ok("kbPerm"))
 
             access_results = await self.client.execute_query(
                 access_query,
@@ -19578,8 +19586,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH {keep}, [u.id] + viaMembership + viaOrg AS granteeIds
         UNWIND granteeIds AS granteeId
         MATCH (grantee:User|Group|Role|Teams|Organization {{id: granteeId}})
-        OPTIONAL MATCH (grantee)-[:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
+        OPTIONAL MATCH (grantee)-[gateRel:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
         WHERE gatedApp.orgId = {org}
+          AND (NOT (grantee:User AND type(gateRel) = 'PERMISSION' AND gatedApp.type = 'KB')
+               OR {_kb_edge_role_ok('gateRel')})
         WITH {keep}, granteeIds, collect(DISTINCT gatedApp.id) AS gatedApps
         OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)
         OPTIONAL MATCH (kh_linkedApp:App {{id: kh_link.connectorId}})
@@ -23798,6 +23808,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH principal, target
                 MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
                 WHERE p1.role IS NOT NULL AND p1.role <> ''
+                  AND (NOT (target:App AND target.type = 'KB') OR {_kb_edge_role_ok('p1')})
                 RETURN collect(DISTINCT p1.role) AS direct_roles
             }}
 
@@ -23925,6 +23936,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH principal, target
                 MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
                 WHERE p1.role IS NOT NULL AND p1.role <> ''
+                  AND (NOT (target:App AND target.type = 'KB') OR {_kb_edge_role_ok('p1')})
                 RETURN collect(DISTINCT p1.role) AS direct_roles
             }}
 
@@ -24056,14 +24068,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Get app scope and check if user is creator
             // createdBy stores the graph user key, compare with user.id
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm, team_kb_role, is_admin,
-                CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE direct_perm.role END AS direct_role,
+                CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER'
+                     WHEN direct_perm.role IN {_KB_ROLES_CYPHER} THEN direct_perm.role
+                     ELSE null END AS direct_role,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.id OR {node_var}.createdBy = {user_var}.userId) AS is_creator
 
             // Determine role based on conditions (highest privilege wins)
             RETURN CASE
                 // No access path at all: no access
-                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND direct_perm IS NULL AND team_kb_role IS NULL THEN null
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND direct_role IS NULL AND team_kb_role IS NULL THEN null
                 // An explicit role (direct grant or team share) wins; the higher of the two
                 WHEN direct_role IS NOT NULL AND team_kb_role IS NOT NULL
                     AND coalesce({role_priority_map}[team_kb_role], 0) > coalesce({role_priority_map}[direct_role], 0)
