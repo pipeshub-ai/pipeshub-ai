@@ -690,8 +690,10 @@ export class OAuthTokenService {
     let accessClient: string | undefined;
     if (!registrationId) {
       try {
+        // RFC 7009 revokes any token the holder has, expired ones included; the signature still has to be ours.
         const payload = jwt.verify(token, this.verifyKey, {
           algorithms: [this.algorithm],
+          ignoreExpiration: true,
         }) as OAuthTokenPayload;
         if (typeof payload.agent_registration_id !== 'string') return false;
         registrationId = payload.agent_registration_id;

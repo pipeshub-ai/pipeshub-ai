@@ -677,6 +677,26 @@ describe('AgentRegistrationService', () => {
       expect(repo.revoked[0]).to.match(/^pipeshub-agent:/);
     });
 
+    it('an expired access token issued under a registration still revokes it', async () => {
+      const r = await claimed();
+      await service.claimGrant(r.claim_token);
+      const expired = jwt.sign(
+        {
+          iss: ISSUER,
+          scope: 'org:read',
+          client_id: 'pipeshub-agent',
+          agent_registration_id: r.registration_id,
+          exp: Math.floor(Date.now() / 1000) - 60,
+        },
+        SECRET,
+        { algorithm: 'HS256' },
+      );
+      expect(await tokens.revokeAgentToken(expired)).to.equal(true);
+      expect([...repo.rows.values()][0].status).to.equal(
+        AgentRegistrationStatus.REVOKED,
+      );
+    });
+
     it('leaves any other token alone', async () => {
       const r = await claimed();
       await service.claimGrant(r.claim_token);
