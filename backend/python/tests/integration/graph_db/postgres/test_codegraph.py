@@ -94,7 +94,7 @@ KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_re
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     from app.services.graph_db.postgres.codegraph import CodeGraphMixin
     public = {n for n, f in vars(CodeGraphMixin).items() if not n.startswith("__") and callable(f)}
-    assert public - {"ensure_pipeline_schema", "_pointer_page", "_each_org"} == {c[0] for c in CALLS}
+    assert public - {"ensure_pipeline_schema", "_pointer_page", "_sweep_orgs", "_sweep", "_raise_failed"} == {c[0] for c in CALLS}
 
 
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
@@ -403,3 +403,29 @@ async def test_a_code_file_prefix_is_a_range_that_takes_percent_and_underscore_l
     assert sorted(d["id"] for d in await p.get_nodes_by_field_prefix("codeFiles", "filePath", "a_")) == ["c1"]
     assert sorted(d["id"] for d in await p.get_nodes_by_field_prefix("codeFiles", "filePath", "a%")) == ["c3"]
     assert len(await p.get_nodes_by_field_prefix("codeFiles", "filePath", "")) == 4
+
+
+async def test_a_failing_org_does_not_stop_the_sweep_of_the_others_and_is_raised_after(pg_db, monkeypatch) -> None:
+    orgs = [new_org(), new_org()]
+    ps = [bound(pg_db, o) for o in orgs]
+    tag = uuid.uuid4().hex
+    for i, p in enumerate(ps):
+        await p.batch_upsert_nodes([{"_key": p.org, "name": f"org{i}"}], "organizations")
+        await p.stage_state_create({"id": f"s{i}-{tag}", "virtualRecordId": f"v{i}-{tag}", "rev": "1", "stage": "e", "status": "PENDING", "connectorId": "c", "updatedAtMs": 5})
+    sys_p = StandInProvider(logging.getLogger("cg"), pg_db)
+    bad = sorted(orgs)[0]                                              # the sweep visits organisations in order: the failing one is first
+    real_q = type(sys_p)._q
+
+    async def q(self, fn, transaction, *, write=False):  # noqa: ANN202
+        if write and org_context.current_org_id() == bad:
+            raise RuntimeError("boom")
+        return await real_q(self, fn, transaction, write=write)
+    monkeypatch.setattr(type(sys_p), "_q", q)
+    vids = [(f"v{i}-{tag}", "1") for i in range(2)]
+    with org_context.system("test.sweeps"), pytest.raises(RuntimeError, match="boom") as raised:
+        await sys_p.stage_states_delete_unheld_revisions(vids, updated_before_ms=1000)
+    assert bad in "".join(raised.value.__notes__)                       # the failure names the organisation
+    monkeypatch.undo()
+    good = ps[orgs.index(next(o for o in orgs if o != bad))]
+    assert await good.stage_state_get(f"s{orgs.index(good.org)}-{tag}") is None        # the later organisation was swept
+    assert await ps[orgs.index(bad)].stage_state_get(f"s{orgs.index(bad)}-{tag}") is not None
