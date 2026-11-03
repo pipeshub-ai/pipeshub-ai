@@ -39,7 +39,14 @@ export function schemaType(schema: JsonSchema): string | undefined {
   return Array.isArray(s.type) ? s.type.find((t) => t !== 'null') : s.type;
 }
 
-function controlFor(name: string, raw: JsonSchema): FieldControl {
+// No type keyword and nothing else that fixes one: the schema takes any value.
+const untyped = (s: JsonSchema) => s.type === undefined && !s.enum && s.const === undefined && !s.$ref && !s.anyOf && !s.oneOf && !s.properties && !s.items;
+
+/** Whether a schema without one type still takes text: untyped, or a union with a plain text branch. */
+const takesText = (s: JsonSchema) =>
+  untyped(s) || (s.anyOf ?? s.oneOf ?? []).some((b) => schemaType(b) === 'string' && !b.enum?.length && b.const === undefined);
+
+function controlFor(name: string, raw: JsonSchema, value: unknown): FieldControl {
   const schema = unwrapNullable(raw);
   if (schema.enum?.length) return 'select';
   switch (schemaType(schema)) {
@@ -54,18 +61,24 @@ function controlFor(name: string, raw: JsonSchema): FieldControl {
       return 'number';
     case 'boolean':
       return 'switch';
-    case 'array':
-      return schemaType(schema.items ?? {}) === 'string' ? 'chips' : 'json';
+    case 'array': {
+      const items = schema.items ?? {};
+      const textItems = untyped(items) && Array.isArray(value) && value.every((v) => typeof v === 'string');
+      return schemaType(items) === 'string' || textItems ? 'chips' : 'json';
+    }
     default:
-      return 'json'; // objects, unions, `$ref` and untyped schemas have no input, so stay read-only
+      // The server checks the edit against the full schema, so text the call wrote stays text.
+      if (typeof value === 'string' && takesText(schema)) return longText(name, schema) ? 'textarea' : 'text';
+      return 'json'; // objects, other unions, `$ref` and untyped values that aren't text have no input, so stay read-only
   }
 }
 
-/** One field per top-level property: required ones first, then in the schema's order. */
-export function schemaFields(schema: JsonSchema): FieldSpec[] {
+/** One field per top-level property: required ones first, then in the schema's order. `values`, the
+ * call's own arguments, decide the control where the schema leaves the type open. */
+export function schemaFields(schema: JsonSchema, values: Record<string, unknown> = {}): FieldSpec[] {
   const required = new Set(schema.required ?? []);
   const fields = Object.entries(schema.properties ?? {}).map(([name, prop]): FieldSpec => {
-    const control = controlFor(name, prop);
+    const control = controlFor(name, prop, values[name]);
     return {
       name,
       label: prop.title?.trim() || toolDisplayName(name),
