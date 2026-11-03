@@ -20,11 +20,14 @@ BEGIN
   DECLARE v_sp smallint;
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM retrieval.org_spaces o WHERE o.org_id = v_org AND o.role = 'active') THEN
-      BEGIN
-        INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
-      EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent writer of the same model added the descriptor first
-      END;
       SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+      IF v_sp IS NULL THEN        -- select first: an insert that hits the unique key still spends an identity value, and there are 32,767
+        BEGIN
+          INSERT INTO retrieval.embedding_spaces (model, dim, metric) VALUES (p_model, p_dim, p_metric);
+        EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent writer of the same model added the descriptor first
+        END;
+        SELECT s.space_id INTO v_sp FROM retrieval.embedding_spaces s WHERE s.model = p_model AND s.dim = p_dim AND s.metric = p_metric;
+      END IF;
       BEGIN
         INSERT INTO retrieval.org_spaces (org_id, space_id, dim, role) VALUES (v_org, v_sp, p_dim, 'active');
       EXCEPTION WHEN unique_violation THEN NULL;       -- a concurrent first write of this org adopted one: its space is the answer
