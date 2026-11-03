@@ -680,10 +680,11 @@ export function describeAnswerWiring(
       const client = await ask([
         { type: 'RUN_STARTED', runId: 'r1' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
-        ...tokens(opening, 40),
+        ...tokens(opening.slice(0, 80), 40),
         { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: older }] },
-        // The backend clears its live citations before a tool call; a link known by then stays.
+        // An empty snapshot (the backend clears its live citations before a tool call) keeps a link already known.
         { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: [] }] },
+        ...tokens(opening.slice(80), 40),
         { type: 'TOOL_CALL_START', runId: 'r1', toolCallId: 'c1', toolCallName: 'search' },
         { type: 'TOOL_CALL_RESULT', runId: 'r1', toolCallId: 'c1', status: 'completed' },
         { type: 'TEXT_MESSAGE_START', runId: 'r1' },
