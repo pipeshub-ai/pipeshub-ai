@@ -239,6 +239,7 @@ class TestAdaptiveConcurrencyPressure:
         assert min(limits) >= 1, limits  # never starved
         assert limits[-1] <= floor, limits  # the brake does not lift it to the floor
         assert len(set(limits[-5:])) == 1, limits  # settled: no 1 -> 2 -> 1 swing
+        assert all(b <= a for a, b in zip(limits, limits[1:])), limits  # hard pressure never raises it
 
 
 @pytest.mark.asyncio
