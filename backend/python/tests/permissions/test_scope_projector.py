@@ -347,6 +347,22 @@ async def test_a_record_of_an_open_app_is_container_only_with_the_edge_to_the_ap
     assert got["loose"].refused and got["loose"].fields == ScopeFields.legacy()
 
 
+async def test_a_record_filed_under_another_app_is_not_a_member_of_its_own_open_app() -> None:
+    """The edge to the app must be to the record's own connector: a record owned by app A and filed only under app B (cross-connector
+    filing) is not a member of A, so it gets no container stamp from A's APP_LEVEL permission model."""
+    from .model import Node, WorldBuilder
+
+    b = WorldBuilder()
+    b.principal("x")
+    b.node(Node("A", "app", app_type="KB", model="APP_LEVEL"))
+    b.node(Node("B", "app", app_type="KB", model="APP_LEVEL"))
+    b.node(Node("own", "record", connector="A", belongs=("A",)))
+    b.node(Node("foreign", "record", connector="A", belongs=("B",)))
+    got = await project(b.build())
+    assert got["own"].fields.stamp is Stamp.CONTAINER
+    assert got["foreign"].fields.stamp is not Stamp.CONTAINER and got["foreign"].refused
+
+
 def test_union_and_override_are_refused_below_a_record_group_level_group_and_when_a_non_open_node_sits_below_a_seed() -> None:
     from app.services.permissions.rules import assert_may_stamp as may
 

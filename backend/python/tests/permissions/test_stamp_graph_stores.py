@@ -22,8 +22,21 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(1800)]
 CHUNK = 25
 
 
+def _record_filed_under_another_app():  # noqa: ANN202
+    """A owns `foreign`, but its only edge to an app is to B: it is not a member of A (no container stamp from A's APP_LEVEL model)."""
+    from .model import Node, WorldBuilder
+
+    b = WorldBuilder()
+    b.principal("x")
+    b.node(Node("A", "app", app_type="KB", model="APP_LEVEL"))
+    b.node(Node("B", "app", app_type="KB", model="APP_LEVEL"))
+    b.node(Node("own", "record", connector="A", belongs=("A",)))
+    b.node(Node("foreign", "record", connector="A", belongs=("B",)))
+    return b.build()
+
+
 async def test_projections_over_the_real_graphs_equal_those_over_the_in_memory_graph(graph_layers: list[GraphCheckLayer]) -> None:
-    worlds = list(dict.fromkeys(s.final_world() for s in load_all()))
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), _record_filed_under_another_app()]
     for layer in graph_layers:
         compared = skipped = 0
         view = layer._provider.permission_stamp_graph()
