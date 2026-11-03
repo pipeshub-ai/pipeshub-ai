@@ -30,7 +30,7 @@ const KEEP = new Set(['platform.store_epoch', 'platform.deployment_profile', 'pl
 
 for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
   suite(`docstore-migrate: CLI end to end (${bin})`, function () {
-    this.timeout(600_000);
+    this.timeout(240_000);
     let stack: PgStack;
     let mongo: TestMongo;
     let env: NodeJS.ProcessEnv;
