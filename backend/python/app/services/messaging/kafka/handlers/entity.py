@@ -150,8 +150,9 @@ class EntityEventService(BaseEventService):
             else AccountType.INDIVIDUAL.value
         )
         try:
+            org_id = payload["orgId"]
             org_data = {
-                "_key": payload["orgId"],
+                "_key": org_id,
                 "name": payload.get("registeredName", "Individual Account"),
                 "accountType": accountType,
                 "isActive": True,
@@ -253,6 +254,7 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [org_data], CollectionNames.ORGS.value
             )
+            await notify_principals_changed(org_id)  # before the cleanup below; see process_event
             self.logger.info(
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
