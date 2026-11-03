@@ -378,6 +378,24 @@ export const GOLDEN_RUNS: { name: string; clock?: boolean; frames: () => Record<
   },
   { name: 'jira-conversation', frames: () => conversationFrames('jira-conversation.json') },
   {
+    name: 'five-sources',
+    frames: () => {
+      const docs = ['Pricing page', 'Q3 report', 'Security overview', 'Release notes', 'Support policy'];
+      const cites = docs.map((name, i) => ({
+        citationData: { chunkIndex: i + 1, metadata: { recordId: `doc-${String(i)}`, recordName: name, webUrl: `https://docs.example.com/${String(i + 1)}` } },
+      }));
+      const answer = docs.map((name, i) => `${name} covers it [source](ref${String(i + 1)}).`).join(' ');
+      return [
+        { type: 'RUN_STARTED', runId: 'r1' },
+        ...goldenCall('c1', 'knowledgegraph__search', 'Searched the knowledge base', 'Searched for "plan details"', 'completed', '5 results'),
+        { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: cites }] },
+        { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+        ...tokens(answer, 20),
+        finished('normalized', cites),
+      ];
+    },
+  },
+  {
     name: 'long-answer-rollover',
     frames: () => {
       const answer = [
@@ -531,7 +549,9 @@ export function renderReplay(client: ReturnType<typeof slackClient>): string {
   if (messages > 1) lines.push(`  [the reply went on in ${String(messages)} messages]`);
   lines.push('', visibleText(client));
   for (const block of replyBlocks(client)) {
-    if (block.type === 'section') lines.push('', String(block.text?.text ?? '').replace(/\*/g, ''));
+    if (block.type === 'section') {
+      lines.push('', ...(block.expand === false ? ['[folds behind "Show more" when long]'] : []), String(block.text?.text ?? '').replace(/\*/g, ''));
+    }
     // Small grey text in Slack (the Sources list).
     if (block.type === 'context') {
       for (const element of (block.elements ?? []) as AnyArgs[]) {
