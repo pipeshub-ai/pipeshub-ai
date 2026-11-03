@@ -429,3 +429,11 @@ async def test_a_failing_org_does_not_stop_the_sweep_of_the_others_and_is_raised
     good = ps[orgs.index(next(o for o in orgs if o != bad))]
     assert await good.stage_state_get(f"s{orgs.index(good.org)}-{tag}") is None        # the later organisation was swept
     assert await ps[orgs.index(bad)].stage_state_get(f"s{orgs.index(bad)}-{tag}") is not None
+
+
+async def test_a_sync_point_update_removes_top_level_nulls_only(pg_db) -> None:
+    p = bound(pg_db)
+    await p.upsert_sync_point("sp", {"cursor": "c1", "keep": {"a": None}}, "syncPoints")
+    assert await p.update_sync_point_if("sp", {"cursor": "c1"}, {"cursor": None, "nested": {"b": None}}, "syncPoints") is True
+    got = await p.get_sync_point("sp", "syncPoints")
+    assert "cursor" not in got and got["keep"] == {"a": None} and got["nested"] == {"b": None}

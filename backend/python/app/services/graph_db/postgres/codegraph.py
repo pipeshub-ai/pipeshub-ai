@@ -205,7 +205,7 @@ class CodeGraphMixin(PgBase):
             d["id"] = n.get("id") or n["_key"]
             docs.append({"id": d["id"], "doc": d})
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.ensure_nodes */ INSERT INTO graph.nodes (org_id, coll, id, doc)
-            SELECT $1, $2, x.id, jsonb_strip_nulls(x.doc) FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb)
+            SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb)
             ON CONFLICT (org_id, coll, id) DO NOTHING""", org, collection, _j(docs)), transaction, write=True)
 
     async def ensure_pipeline_schema(self) -> None:
@@ -216,7 +216,7 @@ class CodeGraphMixin(PgBase):
         from app.utils.time_conversion import get_epoch_timestamp_in_ms
         data = {**sync_point_data, "syncPointKey": sync_point_key, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}
         # The id is stable, so the row lock UPDATE takes re-checks `expected` against a write that committed while this waited.
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_sync_point_if */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls(n.doc || $4::jsonb)
+        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_sync_point_if */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = (SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>'syncPointKey' = $3 ORDER BY id LIMIT 1)
               AND NOT EXISTS (SELECT 1 FROM jsonb_each($5::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
                   AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL)) RETURNING 1) SELECT count(*) FROM u""",
@@ -252,10 +252,10 @@ class CodeGraphMixin(PgBase):
               CROSS JOIN LATERAL (SELECT t0.coll FROM unnest(CASE WHEN x.tc = '' THEN $4::text[] ELSE ARRAY[x.tc] END) WITH ORDINALITY c(coll, o)
                   JOIN graph.nodes t0 ON t0.org_id = $1 AND t0.coll = c.coll AND t0.id = x.ti ORDER BY c.o LIMIT 1) t)
             INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-            SELECT $1, $2, fcoll, fi, tcoll, ti, k, jsonb_strip_nulls(doc) FROM src
-            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = jsonb_strip_nulls(graph.edges.doc || (
+            SELECT $1, $2, fcoll, fi, tcoll, ti, k, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM src
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(graph.edges.doc || (
                 SELECT s.doc - 'createdAtTimestamp' FROM src s WHERE s.fcoll = graph.edges.from_coll AND s.fi = graph.edges.from_id
-                AND s.tcoll = graph.edges.to_coll AND s.ti = graph.edges.to_id AND s.k = graph.edges.ekey))""",
+                AND s.tcoll = graph.edges.to_coll AND s.ti = graph.edges.to_id AND s.k = graph.edges.ekey)) AS _nv WHERE _nv.value <> 'null'::jsonb)""",
                                                   org, _LINKS, _j(rows), list(_LINK_ENDS)), transaction, write=True)
         return True
 
@@ -451,7 +451,7 @@ class CodeGraphMixin(PgBase):
         # Locks are taken in id order, and the revision is read after the lock.
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'contentRev' = $3 ORDER BY id FOR UPDATE)
-            UPDATE graph.nodes n SET doc = jsonb_strip_nulls(n.doc || $4::jsonb) FROM l WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = l.id RETURNING n.id""",
+            UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM l WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = l.id RETURNING n.id""",
                                                   org, keys, content_rev, _j(fields)), None, write=True)
         return [r["id"] for r in rows]
 
@@ -471,13 +471,13 @@ class CodeGraphMixin(PgBase):
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         org = current_org_id()
         return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.stage_state_create */ WITH i AS (INSERT INTO graph.nodes (org_id, coll, id, doc)
-            VALUES ($1, $2, $3, jsonb_strip_nulls($4::jsonb)) ON CONFLICT (org_id, coll, id) DO NOTHING RETURNING 1) SELECT count(*) FROM i""",
+            VALUES ($1, $2, $3, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each($4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)) ON CONFLICT (org_id, coll, id) DO NOTHING RETURNING 1) SELECT count(*) FROM i""",
                                                   org, _STAGES, document["id"], _j(document)), None, write=True))
 
     async def stage_state_compare_and_set(self, key: str, expected: str, new: str, fields: dict[str, Any], *, expected_attempt: int | None = None) -> bool:
         org = current_org_id()
         return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.stage_state_compare_and_set */ WITH u AS (UPDATE graph.nodes n
-            SET doc = jsonb_strip_nulls(n.doc || $5::jsonb || jsonb_build_object('status', $4::text))
+            SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $5::jsonb || jsonb_build_object('status', $4::text)) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->>'status' = $6 AND ($7::bigint IS NULL OR (n.doc->>'attempt')::bigint = $7)
             RETURNING 1) SELECT count(*) FROM u""", org, _STAGES, key, new, _j(fields), expected, expected_attempt), None, write=True))
 
