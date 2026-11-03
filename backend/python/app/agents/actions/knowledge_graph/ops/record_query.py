@@ -183,6 +183,7 @@ async def execute_find_records(
     if any(isinstance(c, MentionCondition) for c in conditions) and not policy.named_entities:
         return False, NAMED_ENTITIES_DISABLED_MSG
     _resolve_ids(query, state)
+    by_id = _names_by_id(conditions)
     try:
         context = await load_entity_access_context(state)
         refused, people = await resolve_person_names(state, context, query)
@@ -209,6 +210,10 @@ async def execute_find_records(
     except EntityAccessError:
         logger.warning("find_records failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
+    if by_id and not result.total:
+        # An id whose records the user cannot read must read as an id that names nothing:
+        # "approximate" would say the scan stopped among its unreadable candidates.
+        result.approximate = False
     recall = None if _no_recall(query) else await finish_recall(
         state["graph_provider"], context, result, recall_task, correlation_id=qid,
     )
@@ -247,6 +252,13 @@ async def execute_find_records(
     return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state), cite_refs=cite_refs,
                         scope_note=limited_scope_note(context), people=people, recall=recall, possible=possible,
                         judged=judged)
+
+
+def _names_by_id(conditions: list[Any]) -> bool:
+    """Whether the caller named a person, organisation, entity or linked record
+    by id; a person given by name is resolved later, and only to someone shown."""
+    by_id = (OrganizationCondition, EntityCondition, LinkCondition)
+    return any((isinstance(c, PersonCondition) and c.person.ids) or isinstance(c, by_id) for c in conditions)
 
 
 def _no_recall(query: RecordQuery) -> bool:

@@ -34,8 +34,10 @@ from app.modules.retrieval.entity_permissions import (
     PERSON_ENTITY_TYPE,
     EntityAccessContext,
 )
-from app.modules.retrieval.record_query import engine as record_query_engine
-from app.services.graph_db.common.record_query_rows import CandidateKey, RecordCandidates
+from app.services.graph_db.common.record_query_rows import (
+    CandidateKey,
+    RecordCandidates,
+)
 from app.services.graph_db.common.utils import EntityCandidateRows
 from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
 
@@ -194,11 +196,14 @@ class TestProbe:
 
 # ------------------------------------------------- find_records and merged names
 
+OUTSIDER = {"id": "pn-1", "name": "Ola Outsider", "email": "ola@ext.io"}
+
+
 def _query_state(users: list[dict], candidates: dict[str, list[dict]], *, readable: tuple[str, ...] = (),
                  scanned: dict[str, int] | None = None, nodes: list[dict] = ()) -> dict:
     """``_state`` with record query on. ``scanned[id]`` is how many unreadable
-    candidates a find_records scan meets for a condition naming ``id``; more
-    than the cap reads as a capped scan."""
+    candidates a find_records scan meets for a condition naming ``id``, as a
+    scan the provider stopped at its cap."""
     state = _state(users, candidates, readable=readable)
     graph = state["graph_provider"]
     unreadable = {f"q-{key}-{i}" for key, n in (scanned or {}).items() for i in range(n)}
@@ -208,7 +213,7 @@ def _query_state(users: list[dict], candidates: dict[str, list[dict]], *, readab
         named = json.dumps(pushdown, default=str)
         keys = [CandidateKey(f"q-{key}-{i}", 1_000 - i) for key, n in (scanned or {}).items()
                 if f'"{key}"' in named for i in range(n)]
-        return RecordCandidates(keys[:scan_cap], capped=len(keys) >= scan_cap)
+        return RecordCandidates(keys[:scan_cap], capped=bool(keys))
 
     graph.get_record_query_candidates = AsyncMock(side_effect=scan)
     graph.get_record_query_rows = AsyncMock(return_value=[])
@@ -224,7 +229,6 @@ def query_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(record_query, "cite_listed_records", AsyncMock(return_value={}))
     monkeypatch.setattr(record_query, "start_search", lambda *a, **k: None)
     monkeypatch.setattr(record_query, "finish_recall", AsyncMock(return_value=None))
-    monkeypatch.setattr(record_query_engine, "SCAN_CAP", 1000)
 
 
 def _same_but_id(text: str, other: str, ours: str, theirs: str) -> None:
@@ -282,3 +286,36 @@ class TestFindRecordsPersonByName:
         )
         assert reply == nobody
         _no_leak(reply[1])
+
+
+@pytest.mark.usefixtures("query_wiring")
+class TestFindRecordsById:
+    """An organisation, outsider or person given by id whose records the user
+    cannot read reads as an id that names nothing, also when the scan stopped
+    among its unreadable records."""
+
+    @pytest.mark.parametrize(("kind", "ours", "nodes"), [
+        ("organization", "o-1", []),
+        ("person", "pn-1", [OUTSIDER]),
+        ("person", "u-p", [{"id": "u-p", "name": "Priya Shah", "email": "priya@x.io"}]),
+    ])
+    async def test_a_capped_scan_of_unreadable_records_reads_as_an_unknown_id(
+        self, kind: str, ours: str, nodes: list[dict],
+    ) -> None:
+        state = _query_state([], {}, scanned={ours: 1500}, nodes=nodes)
+        ok, text = await merged_listings.find_records_for_entity(state, entity_id=ours, entity_type=kind)
+        _, unknown = await merged_listings.find_records_for_entity(
+            _query_state([], {}, nodes=nodes), entity_id="none-1", entity_type=kind,
+        )
+        assert ok
+        _same_but_id(text, unknown, ours, "none-1")
+        assert "approximate" not in text and "ola@ext.io" not in text and "priya@x.io" not in text
+
+    async def test_find_records_itself_reads_an_unreadable_organisation_as_an_unknown_one(self) -> None:
+        state = _query_state([], {}, scanned={"o-1": 1500})
+        _, text = await record_query.execute_find_records(state, where=[{"organization": {"ids": ["o-1"]}}])
+        _, unknown = await record_query.execute_find_records(
+            _query_state([], {}), where=[{"organization": {"ids": ["none-1"]}}],
+        )
+        _same_but_id(text, unknown, "o-1", "none-1")
+
