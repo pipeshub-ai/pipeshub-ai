@@ -245,6 +245,18 @@ jobs:
           pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
 
+      # The pgvector building blocks run in the services shard; a shard that collected fewer of their tests than expected (a file
+      # dropped, a collection error that hid a module) must not pass. Skips elsewhere in the shard are not this step's concern.
+      - name: pgvector unit suites ran in full
+        if: ${{ matrix.shard == 'services' }}
+        working-directory: backend/python
+        run: >
+          python3 ../../scripts/assert_no_skips.py "junit-$SHARD.xml" --allow '' --min-tests 1
+          --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=45'
+          --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=5'
+        env:
+          SHARD: ${{ matrix.shard }}
+
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
       # posts everything under that name to Slack.
