@@ -193,8 +193,14 @@ export async function reverseCopy(
     ).map((id) => idFilter(id));
     // pending device sign-ins live minutes and MongoDB still holds the originals: nothing to bring back (a client starts again)
     if (m.collection === 'oauthDeviceCodes') continue;
-    // shortcut: registrations made after the move are not carried back (an agent registers again), upgrade if a rollback must keep them
-    if (m.collection === 'oauthAgentRegistrations') continue;
+    // Written back in full: MongoDB still holds the pre-move status, so skipping would turn a sign-in revoked after the move live again.
+    if (m.collection === 'oauthAgentRegistrations') {
+      const model = modelFor(m.collection);
+      if (!model) throw new Error(`${m.collection}: no Mongoose model`);
+      reversed[m.collection] = await reverseCollection(rt, m, model, kept);
+      log('reversed', { collection: m.collection, ...reversed[m.collection] });
+      continue;
+    }
     const manual = REVERSE_MANUAL(m);
     if (manual) {
       notReversed.push(`${m.collection}: ${manual}`);
