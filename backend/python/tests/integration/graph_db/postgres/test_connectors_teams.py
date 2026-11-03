@@ -197,3 +197,13 @@ async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_
         await getattr(pg_provider, name)(*args, **kwargs)
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
         await getattr(pg_provider, name)(*args, **kwargs)
+
+
+async def test_names_compare_with_the_databases_lower_on_both_sides_even_beyond_ascii(w: World) -> None:
+    """The stored and the asked name are lowered by the same function; what it makes equal is a clash, in whatever locale the database runs."""
+    a, b = "Équipe", "éQUIPE"
+    same = await w.p._q(lambda tx: tx.fetchval("SELECT lower($1::text) = lower($2::text)", a, b), None)
+    await app(w, "t1", name=a)
+    await _team(w, "tn", name=a)
+    assert await w.p.check_connector_name_exists("apps", b, "team", org_id=w.org) is bool(same)
+    assert (await w.p.find_team_by_name(w.org, b) is not None) is bool(same)

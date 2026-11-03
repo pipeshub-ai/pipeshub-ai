@@ -123,15 +123,17 @@ async def test_graph_keys_by_user_ids_name_every_missing_user(w: World) -> None:
         await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], chunk_size=10)
 
 
-async def test_the_people_behind_an_app_include_guests_without_an_org_edge(w: World) -> None:
+async def test_the_people_behind_an_app_are_the_orgs_members_linked_to_it(w: World) -> None:
     await member(w, "m", userId="um", email="m@x.com")
     await w.nodes("users", {"_key": "guest", "userId": "ug", "email": "g@x.com"})
     await w.edge("userAppRelation", ("users", "m"), ("apps", APP), sourceUserId="src-m")
     await w.edge("userAppRelation", ("users", "guest"), ("apps", APP))
     got = {u["_key"]: u for u in await w.p.get_app_users(w.org, APP)}
-    assert set(got) == {"m", "guest"} and got["m"]["sourceUserId"] == "src-m" and got["guest"]["sourceUserId"] is None and got["m"]["appName"] == "JIRA"
+    assert set(got) == {"m"} and got["m"]["sourceUserId"] == "src-m" and got["m"]["appName"] == "JIRA"          # a guest has no org edge: as on Neo4j, not listed
     assert (await w.p.get_user_by_source_id("src-m", APP)).id == "m"
     assert await w.p.get_user_by_source_id("src-m", "other-app") is None
+    await w.edge("userAppRelation", ("users", "m"), ("apps", "ghost-app"), sourceUserId="src-ghost")             # an edge to an app that is not there
+    assert await w.p.get_user_by_source_id("src-ghost", "ghost-app") is None
     assert (await w.p.get_app_creator_user(APP)) is None                                    # created by a user that is not there
     await w.nodes("users", {"_key": "creator", "userId": "uid-creator", "email": "c@x.com"})
     assert (await w.p.get_app_creator_user(APP)).id == "creator"
@@ -155,7 +157,8 @@ async def test_synced_users_are_created_inactive_members_unless_guests_and_reuse
     members = {u["_key"] for u in await w.p.get_users(w.org, active=False)}
     assert members == {"existing", "n2"}                                               # a guest is no member, and a healed one lost the edge
     linked = {u["_key"]: u["sourceUserId"] for u in await w.p.get_app_users(w.org, APP)}
-    assert linked == {"existing": "src-n1", "n2": "src-n3", "n4": "src-n4", "healme": "src-n5"}
+    assert linked == {"existing": "src-n1", "n2": "src-n3"}                                  # the members; a guest is linked to the app but is no member
+    assert {e["from_id"] for e in await w.p.get_edges_to_node(f"apps/{APP}", "userAppRelation")} == {"existing", "n2", "n4", "healme"}
     await w.p.batch_upsert_app_users([])                                                 # nothing to do
 
 
@@ -264,3 +267,40 @@ async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_
         await getattr(pg_provider, name)(*args, **kwargs)
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
         await getattr(pg_provider, name)(*args, **kwargs)
+
+
+async def test_two_connectors_of_one_creator_and_source_account_are_two_links(w: World) -> None:
+    await w.nodes("users", {"_key": "c"}, {"_key": "s"})
+    await w.nodes("apps", {"_key": "app2", "type": "SLACK", "isActive": True})
+    await w.p.upsert_authenticated_as("c", "s", APP, w.org)
+    await w.p.upsert_authenticated_as("c", "s", "app2", w.org)
+    assert sorted(e["connectorId"] for e in await w.p.get_edges_from_node("users/c", "authenticatedAs")) == sorted([APP, "app2"])
+    assert sorted(await w.p.get_user_app_ids("c")) == sorted([APP, "app2"])
+    await w.p.upsert_authenticated_as("c", "s", APP, w.org)                                  # touching one leaves the other
+    assert len(await w.p.get_edges_from_node("users/c", "authenticatedAs")) == 2
+    assert await w.p.remove_authenticated_as(APP) is True
+    assert [e["connectorId"] for e in await w.p.get_edges_from_node("users/c", "authenticatedAs")] == ["app2"]
+    # the same through the generic writer, as the conformance loader and a connector write them
+    await w.p.batch_create_edges([{"from_id": "c", "from_collection": "users", "to_id": "s", "to_collection": "users", "connectorId": "app3"},
+                                  {"from_id": "c", "from_collection": "users", "to_id": "s", "to_collection": "users", "connectorId": "app4"}], "authenticatedAs")
+    assert len(await w.p.get_edges_from_node("users/c", "authenticatedAs")) == 3
+
+
+async def test_graph_keys_by_user_ids_only_name_users_of_the_org_asked(w: World) -> None:
+    await w.nodes("users", {"_key": "k1", "userId": "uid-1"})
+    await w.p.batch_upsert_nodes([{"_key": "k2", "userId": "uid-2", "orgId": "someone-else"}], "users")
+    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], w.org, chunk_size=10) == {"uid-1": "k1"}
+    with pytest.raises(ValueError, match="uid-2"):
+        await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10)
+    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-2"], None, chunk_size=10) == {"uid-2": "k2"}      # no org asked: any user of this graph
+
+
+async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the_asked_side_agree(w: World) -> None:
+    """Python's lower() and the database's can differ on non-ASCII letters (and the database's on its locale): one node per address, whichever agrees."""
+    a, b = "\u00c9L\u00c8VE@X.com", "\u00e9l\u00e8ve@x.COM"
+    same = await w.p._q(lambda tx: tx.fetchval("SELECT lower($1::text) = lower($2::text)", a, b), None)
+    await w.p.batch_upsert_app_users([app_user(a, "n1"), app_user(b, "n2")])
+    nodes = await w.p.get_all_documents("users")
+    assert (len(nodes) == 1) is bool(same)
+    assert (await w.p.get_user_by_email(b)).id == ("n1" if same else "n2")            # the lookup by address resolves as the batch did
+    assert [r["id"] for r in await w.p.find_users(w.org, b)] == (["n1"] if same else ["n2"])

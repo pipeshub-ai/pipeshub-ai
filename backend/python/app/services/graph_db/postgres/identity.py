@@ -227,9 +227,11 @@ class IdentityMixin(PgBase):
 
     async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         # lower(), not casefold(): the stored side is lower() too, which keeps "ß". Not _soft: a failed read raises, as the interface says.
-        wanted = " ".join((query or "").split()).lower()
-        if not org_id or not wanted or not self._mine(org_id):
+        # Lowered by the database, once, so that the stored side and the asked side are lowered by the same function.
+        wanted_raw = " ".join((query or "").split())
+        if not org_id or not wanted_raw or not self._mine(org_id):
             return []
+        wanted = await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.lower */ SELECT lower($1::text)", wanted_raw), None)
         if "@" in wanted:    # an email names one person: all their nodes, no name normalising
             rows = await self._id_rows("""/* pipeshub:graph.find_users_by_email */ SELECT u.id, u.doc->>'fullName' AS "fullName", u.doc->>'email' AS email FROM graph.nodes u
                 WHERE u.org_id = $1 AND u.coll = 'users' AND lower(u.doc->>'email') = $2 ORDER BY u.id COLLATE "C" """, [current_org_id(), wanted], None)
@@ -255,8 +257,8 @@ class IdentityMixin(PgBase):
     async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
         if not user_ids:
             return {}
-        rows = await self._id_rows("/* pipeshub:graph.user_keys_by_user_ids */ SELECT doc->>'userId' AS uid, id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = ANY($2::text[])",
-                                [current_org_id(), list(user_ids)], None)
+        rows = await self._id_rows("/* pipeshub:graph.user_keys_by_user_ids */ SELECT doc->>'userId' AS uid, id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = ANY($2::text[])"
+                                " AND ($3::text IS NULL OR doc->>'orgId' = $3)", [current_org_id(), list(user_ids), org_id], None)
         found = {r["uid"]: r["id"] for r in rows if r["uid"] and r["id"]}
         missing = [u for u in user_ids if u not in found]
         if missing:
@@ -266,7 +268,8 @@ class IdentityMixin(PgBase):
     @_soft(None, flag=True)
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> User | None:
         rows = await self._id_rows("""/* pipeshub:graph.get_user_by_source_id */ SELECT u.doc FROM graph.edges e JOIN graph.nodes u ON u.org_id = e.org_id AND u.coll = 'users' AND u.id = e.from_id
-            WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.to_id = $2 AND e.doc->>'sourceUserId' = $3 LIMIT 1""",
+            JOIN graph.nodes a ON a.org_id = e.org_id AND a.coll = 'apps' AND a.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.to_coll = 'apps' AND e.to_id = $2 AND e.doc->>'sourceUserId' = $3 LIMIT 1""",
                                 [current_org_id(), connector_id, source_user_id], transaction)
         return User.from_arango_user(_arango(_doc(rows[0]["doc"]), "users")) if rows else None
 
@@ -278,15 +281,17 @@ class IdentityMixin(PgBase):
         return User.from_arango_user(user) if user else None
 
     async def get_app_users(self, org_id: str, connector_id: str, *, raise_on_error: bool = False) -> list[dict]:
-        """Every user linked to the app, a guest or an external collaborator included. A link the source names no user for has no
-        ``sourceUserId`` (None here, never an error), and an app without a type has an empty ``appName``."""
+        """Every member of the org linked to the app (a guest or an external collaborator, who is no member, is not listed). A link the source names
+        no user for has no ``sourceUserId`` (None here, never an error), and an app without a type has an empty ``appName``."""
         try:
             if not self._mine(org_id):
                 return []
             rows = await self._id_rows("""/* pipeshub:graph.get_app_users */ SELECT u.doc, r.doc->>'sourceUserId' AS sid, a.doc->>'type' AS app
                 FROM graph.edges r JOIN graph.nodes u ON u.org_id = r.org_id AND u.coll = 'users' AND u.id = r.from_id
                 JOIN graph.nodes a ON a.org_id = r.org_id AND a.coll = 'apps' AND a.id = r.to_id
-                WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_id = $2""", [current_org_id(), connector_id], None)
+                WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_id = $2
+                  AND EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = u.id
+                              AND b.to_coll = 'organizations' AND b.to_id = $1 AND b.doc->>'entityType' = 'ORGANIZATION')""", [current_org_id(), connector_id], None)
             return [{**_arango(_doc(r["doc"]), "users"), "sourceUserId": r["sid"], "appName": (r["app"] or "").upper()} for r in rows]
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
@@ -309,14 +314,16 @@ class IdentityMixin(PgBase):
         async with self._atomic(transaction) as tx:
             await self._q(lambda t: t.execute("""/* pipeshub:graph.ensure_minimal_app */ INSERT INTO graph.nodes (org_id, coll, id, doc)
                 VALUES ($1, 'apps', $2, $3::jsonb) ON CONFLICT DO NOTHING""", org, connector_id, _j({"id": connector_id, "name": connector_id, "isActive": True})), tx, write=True)
-            emails = list({u.email.lower() for u in users})
+            # the database lowers an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
+            low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
+                                                                   [list({u.email for u in users})], tx)}
             have = {r["email"]: (r["id"], bool(r["active"])) for r in await self._id_rows(
                 """/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])""", [org, emails], tx)}
+                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])""", [org, sorted(set(low.values()))], tx)}
             new: dict[str, Any] = {}
             for u in users:
-                if u.email.lower() not in have and u.email.lower() not in new:
-                    new[u.email.lower()] = u
+                if low[u.email] not in have and low[u.email] not in new:
+                    new[low[u.email]] = u
             if new:
                 nodes = []
                 for u in new.values():
@@ -326,7 +333,7 @@ class IdentityMixin(PgBase):
                     nodes.append(d)
                 await self.batch_upsert_nodes(nodes, CollectionNames.USERS.value, tx)
                 for u in new.values():
-                    have[u.email.lower()] = (u.id, False)
+                    have[low[u.email]] = (u.id, False)
                     try:  # the address may already be a Person from an external share; one contact must not fail a sync
                         await self.migrate_person_to_user(u.email, u.id, org_node, transaction=tx)
                     except NotImplementedInPostgres:
@@ -337,13 +344,13 @@ class IdentityMixin(PgBase):
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
             # a guest an earlier sync made an org member loses it, unless an admin invite made them active
-            heal = list({have[u.email.lower()][0] for u in users if u.is_guest and u.email.lower() not in new and not have[u.email.lower()][1]})
+            heal = list({have[low[u.email]][0] for u in users if u.is_guest and low[u.email] not in new and not have[low[u.email]][1]})
             if heal:
                 await self._q(lambda t: t.execute("""/* pipeshub:graph.guest_org_edge_heal */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo'
                     AND from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'organizations' AND to_id = $3""", org, heal, org_node), tx, write=True)
             links = {}
             for u in users:
-                key = have[u.email.lower()][0]
+                key = have[low[u.email]][0]
                 links[key] = {"from_id": key, "from_collection": "users", "to_id": connector_id, "to_collection": "apps", "sourceUserId": u.source_user_id,
                               "isExternalUser": False, "syncState": "NOT_STARTED", "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now}
             await self.batch_create_edges(list(links.values()), CollectionNames.USER_APP_RELATION.value, tx)
@@ -453,10 +460,10 @@ class IdentityMixin(PgBase):
             await tx.execute("""/* pipeshub:graph.authenticated_as_drop_stale */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
                 AND doc->>'connectorId' = $2 AND NOT (from_id = $3 AND to_id = $4)""", org, connector_id, creator_key, source_user_key)
             await tx.execute("""/* pipeshub:graph.authenticated_as_upsert */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-                VALUES ($1, 'authenticatedAs', 'users', $2, 'users', $3, '', $4::jsonb)
+                VALUES ($1, 'authenticatedAs', 'users', $2, 'users', $3, $6, $4::jsonb)
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc || jsonb_build_object('orgId', $1::text, 'updatedAtTimestamp', $5::bigint)""",
                              org, creator_key, source_user_key,
-                             _j({"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}), ts)
+                             _j({"connectorId": connector_id, "orgId": org, "createdAtTimestamp": ts, "updatedAtTimestamp": ts}), ts, connector_id)
         await self._q(go, transaction, write=True)
 
     async def remove_authenticated_as(self, connector_id: str, transaction: str | None = None) -> bool:
@@ -551,8 +558,8 @@ class IdentityMixin(PgBase):
             return False
         if scope != "personal" and not org_id:      # a team connector is looked up under an org
             return False
-        q = _Args(current_org_id(), collection, instance_name.strip().lower(), scope)
-        cond = ["n.doc->>'scope' = $4", "lower(regexp_replace(n.doc->>'name', '^\\s+|\\s+$', '', 'g')) = $3"]
+        q = _Args(current_org_id(), collection, instance_name, scope)
+        cond = ["n.doc->>'scope' = $4", "lower(regexp_replace(n.doc->>'name', '^\\s+|\\s+$', '', 'g')) = lower(regexp_replace($3, '^\\s+|\\s+$', '', 'g'))"]
         if scope == "personal":
             cond.append(f"n.doc->>'createdBy' = {q(user_id)}")
         else:  # the organization's team connectors
@@ -664,8 +671,8 @@ class IdentityMixin(PgBase):
             return None
         r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.find_team_by_name */ SELECT t.id, t.doc->>'name' AS name FROM graph.nodes t
             WHERE t.org_id = $1 AND t.coll = 'teams' AND t.doc->>'orgId' = $2 AND jsonb_typeof(t.doc->'name') = 'string'
-              AND lower(btrim(t.doc->>'name')) = $3 AND t.id <> $4 ORDER BY t.id LIMIT 1""",
-                                                 current_org_id(), org_id, name.strip().lower(), exclude_team_id or ""), transaction)
+              AND lower(btrim(t.doc->>'name')) = lower(btrim($3)) AND t.id <> $4 ORDER BY t.id LIMIT 1""",
+                                                 current_org_id(), org_id, name, exclude_team_id or ""), transaction)
         return {"id": r["id"], "name": r["name"]} if r else None
 
     @_soft(None)
