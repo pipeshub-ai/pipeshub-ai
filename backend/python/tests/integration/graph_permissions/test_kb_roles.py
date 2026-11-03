@@ -15,6 +15,8 @@ from .loaders import EDGE_TARGETS, NODE_TARGETS, load_into_arango, load_into_neo
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+pytestmark = pytest.mark.integration
+
 ORG = "org-kbr"
 USER = "kbr-u"
 
@@ -245,6 +247,18 @@ async def test_the_hub_ranks_a_team_reader_above_an_unrecognised_direct_role(sto
         USER, ORG, "kbr-odd", parent_type="app")
 
     assert (context["role"], context["canManagePermissions"]) == ("READER", False), context
+
+
+async def test_a_connector_app_keeps_the_hub_role_of_its_direct_edge(store) -> None:
+    """Only a knowledge base holds direct roles to the KB rule; no writer stores EDITOR on a
+    connector app, but the hub reads one as it always did."""
+    await _load_odd(store, [_org(app("kbr-conn", "conn", connector="DRIVE", app_group="Google Workspace"))],
+                    [perm(USER, "kbr-conn", role="EDITOR")])
+
+    context = await store.provider.get_knowledge_hub_context_permissions(
+        USER, ORG, "kbr-conn", parent_type="app")
+
+    assert context["role"] == "EDITOR", context
 
 
 async def test_the_member_list_shows_a_retired_role_as_reader(store) -> None:

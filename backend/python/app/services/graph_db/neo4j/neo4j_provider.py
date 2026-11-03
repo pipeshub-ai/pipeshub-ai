@@ -24069,7 +24069,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // createdBy stores the graph user key, compare with user.id
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm, team_kb_role, is_admin,
                 CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER'
-                     WHEN direct_perm.role IN {_KB_ROLES_CYPHER} THEN direct_perm.role
+                     WHEN {node_var}.type <> 'KB' OR direct_perm.role IN {_KB_ROLES_CYPHER} THEN direct_perm.role
                      ELSE null END AS direct_role,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.id OR {node_var}.createdBy = {user_var}.userId) AS is_creator
@@ -24077,7 +24077,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Determine role based on conditions (highest privilege wins)
             RETURN CASE
                 // No access path at all: no access
-                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND direct_role IS NULL AND team_kb_role IS NULL THEN null
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND (direct_role IS NULL AND (direct_perm IS NULL OR {node_var}.type = 'KB')) AND team_kb_role IS NULL THEN null
                 // An explicit role (direct grant or team share) wins; the higher of the two
                 WHEN direct_role IS NOT NULL AND team_kb_role IS NOT NULL
                     AND coalesce({role_priority_map}[team_kb_role], 0) > coalesce({role_priority_map}[direct_role], 0)
