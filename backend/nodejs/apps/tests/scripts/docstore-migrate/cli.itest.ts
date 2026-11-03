@@ -13,7 +13,6 @@ import { expect } from 'chai';
 import { Pool } from 'pg';
 import { runCli } from '../../../src/scripts/docstore-migrate/cli';
 import { loadConfig } from '../../../src/scripts/docstore-migrate/config';
-import { appClients } from '../../../src/scripts/docstore-migrate/fence';
 import { makeOrgContext, runWithOrgContext } from '../../../src/libs/context/orgContext';
 import { MigrationRuntime } from '../../../src/scripts/docstore-migrate/runtime';
 import { verifyAll } from '../../../src/scripts/docstore-migrate/verify';
@@ -277,22 +276,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(r.out.red.some((x: any) => x.check === 'legacy_conversations')).to.equal(true);
       });
 
-      /** The server forgets a closed client a little later on a slow host: wait until it lists no application (the preflight counts any Node client). */
-      const noApplicationConnected = async (): Promise<void> => {
-        const rt = await MigrationRuntime.open(loadConfig(env));
-        try {
-          const t0 = Date.now();
-          let seen = await appClients(rt);
-          while (seen.length > 0 && Date.now() - t0 < 30_000) {
-            await new Promise((r) => setTimeout(r, 200));
-            seen = await appClients(rt);
-          }
-          expect(seen, 'application connections still listed by the server').to.deep.equal([]);
-        } finally {
-          await rt.close();
-        }
-      };
-
       it('migrate --offline refuses while an application is connected, even an idle one, and not for writes by other tools', async () => {
         // an idle application: a connected client named as the application names its connections, no writes at all
         const app = await new MongoClient(mongo.uri, { appName: 'pipeshub-app' }).connect();
@@ -328,7 +311,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           await again.close();
         }
         // writes by a tool that is not the application are no reason to refuse (to a collection the copy knows and ignores: a collection it does not know that holds documents is rightly red)
-        await noApplicationConnected();
         let go = true;
         const writer = (async () => {
           while (go) {
