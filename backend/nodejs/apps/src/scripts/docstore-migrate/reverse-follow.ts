@@ -27,7 +27,7 @@ import { SPECIAL, reverseSpecial } from './reverse-special';
 import type { MigrationRuntime } from './runtime';
 import { JobState } from './state';
 import { readMongoFence, setMongoFence } from './fence';
-import { freezePostgres, unfreezePostgres } from './reverse';
+import { freezePostgres, notPostgresStore, releasePostgres } from './reverse';
 import { VerifyReport, verifyAll } from './verify';
 
 const ROOT = new Map<string, CollectionMapping>();
@@ -308,7 +308,11 @@ export async function rollbackOnline(
 ): Promise<OnlineRollbackReport> {
   const js = await JobState.attach(rt);
   const t0 = Date.now();
-  const unfreezePg = (): Promise<void> => unfreezePostgres(rt);
+  let previous = false;
+  const unfreezePg = (): Promise<string> =>
+    releasePostgres(rt, previous, o.failAt);
+  const notStore = await notPostgresStore(rt);
+  if (notStore) return { ok: false, stage: 'fence', message: notStore };
   const fenceBefore = await readMongoFence(rt);
   if (fenceBefore.mode !== 'retired')
     return {
@@ -317,7 +321,7 @@ export async function rollbackOnline(
       message: `the MongoDB fence is '${fenceBefore.mode}': it was not retired by a move to PostgreSQL`,
     };
   try {
-    await freezePostgres(rt);
+    previous = await freezePostgres(rt);
   } catch (e) {
     return {
       ok: false,
@@ -352,12 +356,11 @@ export async function rollbackOnline(
         );
     }
     if (Date.now() - t0 > o.maxFreezeMs) {
-      await unfreezePg();
+      const note = await unfreezePg();
       return {
         ok: false,
         stage: 'budget',
-        message:
-          'the freeze budget was used up; PostgreSQL is writable again and remains the store',
+        message: `the freeze budget was used up; PostgreSQL is writable again and remains the store.${note}`,
       };
     }
     const v = await verifyAll(rt, {
@@ -366,14 +369,13 @@ export async function rollbackOnline(
       ...(o.sample !== undefined ? { sample: o.sample } : {}),
     });
     if (!v.ok) {
-      await unfreezePg();
+      const note = await unfreezePg();
       return {
         ok: false,
         stage: 'verify',
         verify: v,
         applied: r.applied,
-        message:
-          'the reverse copy does not verify; PostgreSQL is writable again and remains the store',
+        message: `the reverse copy does not verify; PostgreSQL is writable again and remains the store.${note}`,
       };
     }
     await setMongoFence(rt, 'active', fenceBefore.epoch + 1);
@@ -419,11 +421,11 @@ export async function rollbackOnline(
         freezeMs: Date.now() - t0,
         message: `MongoDB is the store again at a new epoch and PostgreSQL is closed, but the job record could not be finished (${why}): end the job and remove the follower's markers by hand, then roll the application back to DOC_STORE=mongo now`,
       };
-    await unfreezePg();
+    const note = await unfreezePg();
     return {
       ok: false,
       stage: 'error',
-      message: `the rollback failed (${why}); PostgreSQL is writable again and remains the store`,
+      message: `the rollback failed (${why}); PostgreSQL is writable again and remains the store.${note}`,
     };
   }
 }

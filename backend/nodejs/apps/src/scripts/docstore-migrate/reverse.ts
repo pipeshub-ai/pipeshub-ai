@@ -217,16 +217,21 @@ export async function reverseCopy(
   return { reversed, notReversed };
 }
 /** PostgreSQL read-only: the barrier lock (waits for every writer in flight, later ones are refused) and `readonly` in one transaction. */
-export async function freezePostgres(rt: MigrationRuntime): Promise<void> {
+export async function freezePostgres(rt: MigrationRuntime): Promise<boolean> {
   const c = await rt.migratePool.connect();
   try {
     await c.query('BEGIN');
     await c.query("SET LOCAL lock_timeout = '20s'");
     await c.query('SELECT pg_advisory_xact_lock(7340, 1)');
+    // read under the lock, so it is the value the writers saw
+    const prev = await c.query<{ readonly: boolean }>(
+      'SELECT readonly FROM platform.store_epoch',
+    );
     await c.query(
       'UPDATE platform.store_epoch SET readonly = true, updated_at = now()',
     );
     await c.query('COMMIT');
+    return prev.rows[0]?.readonly ?? false;
   } catch (e) {
     await c.query('ROLLBACK').catch(() => undefined);
     throw e;
@@ -235,18 +240,54 @@ export async function freezePostgres(rt: MigrationRuntime): Promise<void> {
   }
 }
 
-export const unfreezePostgres = async (rt: MigrationRuntime): Promise<void> => {
-  await rt.migratePool
-    .query(
-      'UPDATE platform.store_epoch SET readonly = false, updated_at = now()',
+/** Puts `readonly` back to what the freeze found, only while PostgreSQL is still the store. False: no row was updated. */
+export async function unfreezePostgres(
+  rt: MigrationRuntime,
+  previous: boolean,
+): Promise<boolean> {
+  const up = await rt.migratePool.query(
+    "UPDATE platform.store_epoch SET readonly = $1, updated_at = now() WHERE backend = 'postgres'",
+    [previous],
+  );
+  return up.rowCount === 1;
+}
+
+/** unfreezePostgres for the failure paths: never throws, returns what to add to the message when PostgreSQL could not be reopened. */
+export async function releasePostgres(
+  rt: MigrationRuntime,
+  previous: boolean,
+  failAt?: string,
+): Promise<string> {
+  try {
+    if (failAt === 'unfreeze' && process.env.MIGRATE_TEST_HOOKS === '1')
+      throw new Error('injected failure of the unfreeze');
+    if (await unfreezePostgres(rt, previous)) return '';
+  } catch {
+    // reported below
+  }
+  return ` PostgreSQL is still read-only: run \`UPDATE platform.store_epoch SET readonly = ${String(previous)} WHERE backend = 'postgres'\` to reopen it.`;
+}
+
+/** Nothing to roll back unless PostgreSQL is the store: a second run must not reopen a closed PostgreSQL. */
+export async function notPostgresStore(
+  rt: MigrationRuntime,
+): Promise<string | undefined> {
+  const b = (
+    await rt.migratePool.query<{ backend: string }>(
+      'SELECT backend FROM platform.store_epoch',
     )
-    .catch(() => undefined);
-};
+  ).rows[0]?.backend;
+  return b === 'postgres'
+    ? undefined
+    : `the store is '${String(b)}', not PostgreSQL: there is nothing to roll back`;
+}
 
 export async function rollback(
   rt: MigrationRuntime,
-  o: { reverse: boolean; allowWriters: boolean; log: Log },
+  o: { reverse: boolean; allowWriters: boolean; log: Log; failAt?: string },
 ): Promise<RollbackReport> {
+  const notStore = await notPostgresStore(rt);
+  if (notStore) return { ok: false, mode: 'refused', message: notStore };
   if (!o.allowWriters) {
     const clients = await appClients(rt);
     if (clients.length > 0)
@@ -259,8 +300,9 @@ export async function rollback(
   const fence = await readMongoFence(rt);
   // an application on PostgreSQL could still write while the copy is compared and copied back, and those writes would be lost: PostgreSQL
   // is read-only from here until MongoDB is made the store (or the rollback ends without it)
+  let previous: boolean;
   try {
-    await freezePostgres(rt);
+    previous = await freezePostgres(rt);
   } catch (e) {
     return {
       ok: false,
@@ -294,28 +336,30 @@ export async function rollback(
       };
     }
     if (!o.reverse) {
-      await unfreezePostgres(rt);
+      const note = await releasePostgres(rt, previous, o.failAt);
       return {
         ok: false,
         mode: 'refused',
         verify: v,
         message:
-          'PostgreSQL differs from MongoDB (the application has written to it, or the copy is wrong): MongoDB is NOT made live. Run `rollback --reverse` to copy PostgreSQL back first',
+          'PostgreSQL differs from MongoDB (the application has written to it, or the copy is wrong): MongoDB is NOT made live. Run `rollback --reverse` to copy PostgreSQL back first.' +
+          note,
       };
     }
     const r = await reverseCopy(rt, o.log);
     const after = await verifyAll(rt, { log: o.log, afterReverse: true });
     const manual = r.notReversed.length;
     if (!after.ok || manual > 0) {
-      await unfreezePostgres(rt);
+      const note = await releasePostgres(rt, previous, o.failAt);
       return {
         ok: false,
         mode: 'reverse',
         verify: after,
         ...r,
         message: manual
-          ? 'some collections need their own reverse step (see notReversed); MongoDB is not made live'
-          : 'the reverse copy does not verify; MongoDB is not made live',
+          ? 'some collections need their own reverse step (see notReversed); MongoDB is not made live' +
+            note
+          : 'the reverse copy does not verify; MongoDB is not made live' + note,
       };
     }
     await handOver();
@@ -336,7 +380,8 @@ export async function rollback(
         mode: 'reverse',
         message: `MongoDB is the live store again, but platform.store_epoch was not updated (${why}). PostgreSQL is still read-only. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then set DOC_STORE=mongo and start the application`,
       };
-    await unfreezePostgres(rt);
+    const note = await releasePostgres(rt, previous, o.failAt);
+    if (note && e instanceof Error) e.message += `.${note}`; // the original error stays, with what is left to do
     throw e;
   }
 }
