@@ -654,6 +654,29 @@ def _trash_list_page_query(*, hinted: bool) -> str:
 _PURGE_WALK_INDEX = "record_org_deleted_at"
 _PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
 _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+# The record-people backfill's paging index, created by ensure_schema. By its
+# statistics the planner can prefer (orgId, recordType) and then sort every page.
+_RECORD_ORG_ID_INDEX = "record_org_id_key"
+_RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
+_RECORD_ORG_ID_HINT_WARNING = (
+    "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
+)
+
+
+def _record_ids_by_type_page(hint: str) -> str:
+    """One page of an org's records of some types, after a key, in (orgId, id)
+    index order: every page, the first too (after ""), seeks an id range, so
+    the index gives the order and the page stops at the limit."""
+    return f"""
+            MATCH (record:Record)
+            {hint}
+            WHERE record.orgId = $org_id AND record.id > $after_key
+              AND record.recordType IN $types
+              AND coalesce(record.isDeleted, false) = false
+            RETURN record.id AS id
+            ORDER BY record.orgId, record.id
+            LIMIT $limit
+            """
 # A write that waited for a node's lock while another transaction deleted it.
 _ENTITY_NOT_FOUND = "Neo.ClientError.Statement.EntityNotFound"
 
@@ -12480,26 +12503,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
-        # Every page, the first too (after ""), seeks the (orgId, id) index on
-        # an id range and orders by both of its keys, so the index gives the
-        # order and the page stops at the limit; ordering by id alone, or the
-        # first page without a range, sorts the whole org's records instead.
-        # The hint pins that index: by its statistics the planner can prefer
-        # (orgId, recordType) and then sort every page.
-        rows = await self.client.execute_query(
-            """
-            MATCH (record:Record)
-            USING INDEX record:Record(orgId, id)
-            WHERE record.orgId = $org_id AND record.id > $after_key
-              AND record.recordType IN $types
-              AND coalesce(record.isDeleted, false) = false
-            RETURN record.id AS id
-            ORDER BY record.orgId, record.id
-            LIMIT $limit
-            """,
-            parameters={
-                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit,
-            },
+        rows = await self._execute_hinted(
+            _record_ids_by_type_page(_RECORD_ORG_ID_HINT),
+            _record_ids_by_type_page(""),
+            {"org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit},
+            None,
+            index=_RECORD_ORG_ID_INDEX,
+            warning=_RECORD_ORG_ID_HINT_WARNING,
         )
         return [str(row["id"]) for row in rows or [] if row.get("id")]
 
