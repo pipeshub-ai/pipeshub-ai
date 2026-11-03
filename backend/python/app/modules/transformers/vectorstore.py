@@ -88,6 +88,7 @@ from app.utils.embedding_retry import (
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
+from app.utils.openai_hosts import is_openai_api_url
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -404,16 +405,9 @@ def _batch_documents_by_size(
     return batches
 
 
-_OPENAI_API_HOST = "api.openai.com"
-
-
 def _is_openai_api(endpoint: str) -> bool:
     """True for no endpoint (the SDK's default) or OpenAI's own API host."""
-    if not endpoint:
-        return True
-    from urllib.parse import urlparse
-
-    return (urlparse(endpoint).hostname or "").lower() == _OPENAI_API_HOST
+    return not endpoint or is_openai_api_url(endpoint)
 
 
 def _batch_documents_by_tokens(

@@ -610,9 +610,7 @@ async def write_scope_fields(
 ) -> None:
     """Write the scope keys (and only those) of the points of these virtual records. Matches this organisation's points when one is
     known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields."""
-    must: dict[str, Any] = {"virtualRecordId": list(virtual_record_ids)}
-    if org_id:
-        must["orgId"] = org_id
+    must: dict[str, Any] = {"virtualRecordId": list(virtual_record_ids), **({"orgId": org_id} if org_id else {})}
     filt = await vector_db.filter_collection(must=must)
     for name in collections:
         await vector_db.set_payload(name, fields.to_payload(), filt)

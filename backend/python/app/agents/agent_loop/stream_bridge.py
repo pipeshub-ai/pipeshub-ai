@@ -55,6 +55,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval import degraded_notice
 from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
@@ -323,6 +324,7 @@ async def _heartbeat(queue: "asyncio.Queue[Any]", interval: float = 15.0) -> Non
         pass
 
 
+@degraded_notice.scoped
 async def run_agent_loop_stream(
     query_info: dict[str, Any],
     user_info: dict[str, Any],
