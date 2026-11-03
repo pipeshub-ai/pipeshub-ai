@@ -153,8 +153,9 @@ date range is inclusive by day: `YYYY-MM-DD`, or epoch ms where a UTC
 midnight `to` covers that whole day (as `find_records_by_value`'s
 `date_to`); the graph's exclusive end is computed from it. Only in the
 top-level `where` list. The engine resolves each to the matching records of
-the connectors in scope (`EntityFilterResolver`, at most the scan cap; too
-many asks for a narrower one) and pushes them down as `records`, which the
+the connectors in scope (`EntityFilterResolver`, at most the scan cap; a
+value too broad across the org is matched again within the records the user
+can read, and only too many of those asks for a narrower one) and pushes them down as `records`, which the
 scan seeds from. A mention is a text mention, never a field: it filters,
 the result says so, and nothing totals or groups the mentioned values. A
 record the mention did not find is unknown for it, not a miss
@@ -164,7 +165,9 @@ need named entities on (`KnowledgeGraphPolicy.named_entities`).
 ## Result
 
 - `total`: exact count of admitted records matching, or a lower bound with
-  `approximate: true` when the scan cap or deadline was hit. Never silent.
+  `approximate: true` when the scan cap or deadline was hit. Never silent,
+  except that a scan which admitted no record reads as exact: a value, id or
+  name found only in records the user cannot read answers as one found nowhere.
 - `value`: the aggregate, over admitted rows only.
 - `groups`: `[{key, label, count, value}]`, top N by count.
 - `unassigned`: for `group_by` organization (the one grouping classification

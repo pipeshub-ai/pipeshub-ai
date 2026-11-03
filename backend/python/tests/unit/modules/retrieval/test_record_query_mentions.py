@@ -116,8 +116,11 @@ def test_a_record_the_mention_did_not_find_is_unknown_never_a_miss() -> None:
 class _Graph:
     """Named-entity hits for every mention, and a scan that applies ``records``."""
 
-    def __init__(self, hits: list[dict[str, Any]], *, truncated: bool = False, fail: bool = False) -> None:
+    def __init__(self, hits: list[dict[str, Any]], *, truncated: bool = False, fail: bool = False,
+                 readable: frozenset[str] | None = None) -> None:
         self.hits, self.truncated, self.fail = hits, truncated, fail
+        # Records the user can read; None: every one.
+        self.readable = readable
         self.entity_calls: list[tuple[Any, dict[str, Any]]] = []
         self.scans: list[dict[str, Any]] = []
 
@@ -125,7 +128,16 @@ class _Graph:
         if self.fail:
             raise RuntimeError("down")
         self.entity_calls.append((query, kw))
+        if kw.get("within") is not None:
+            within = set(kw["within"])
+            # Too broad within everything only when the user reads every record.
+            return {"hits": [h for h in self.hits if h["recordId"] in within],
+                    "truncated": self.truncated and self.readable is None}
         return {"hits": self.hits, "truncated": self.truncated}
+
+    async def get_accessible_virtual_record_ids(self, user_id: str, org_id: str, filters: Any, **kw: Any) -> dict:  # noqa: ANN401
+        ids = [h["recordId"] for h in self.hits] if self.readable is None else sorted(self.readable)
+        return {f"v-{i}": i for i in ids}
 
     async def get_record_query_candidates(self, org_id: str, **kw: Any) -> RecordCandidates:  # noqa: ANN401
         self.scans.append(kw)
@@ -139,8 +151,9 @@ class _Graph:
 
 @pytest.fixture(autouse=True)
 def _everything_readable(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def admitted(provider: object, context: object, keys: Any) -> frozenset[str]:  # noqa: ANN401
-        return frozenset(keys)
+    async def admitted(provider: Any, context: object, keys: Any) -> frozenset[str]:  # noqa: ANN401
+        readable = getattr(provider, "readable", None)
+        return frozenset(k for k in keys if readable is None or k in readable)
 
     monkeypatch.setattr(engine, "admitted_node_ids", admitted)
 
@@ -181,3 +194,31 @@ async def test_a_person_given_by_name_never_reaches_the_engine_unresolved() -> N
         await run_record_query(_Graph([]), CONTEXT, RecordQuery.model_validate(
             {"where": [{"person": {"name": "Priya Nair"}}]},
         ))
+
+
+async def test_a_mention_too_broad_across_the_org_is_counted_within_what_the_user_can_read() -> None:
+    graph = _Graph([_hit(f"r{i}") for i in range(5)], truncated=True, readable=frozenset({"r3"}))
+    result = await run_record_query(graph, CONTEXT, RecordQuery.model_validate(
+        {"where": [{"mentions": {"kind": "date"}}]},
+    ), user_id="user-1")
+    assert result.total == 1 and result.matched_ids == {"r3"} and not result.approximate
+    assert graph.entity_calls[-1][1]["within"] == ["r3"]
+
+
+async def test_a_mention_too_broad_across_the_org_that_the_user_reads_nowhere_counts_zero_exactly() -> None:
+    graph = _Graph([_hit(f"r{i}") for i in range(5)], truncated=True, readable=frozenset())
+    result = await run_record_query(graph, CONTEXT, RecordQuery.model_validate(
+        {"where": [{"mentions": {"kind": "date"}}]},
+    ), user_id="user-1")
+    assert result.total == 0 and not result.approximate and result.next_cursor is None
+
+
+@pytest.mark.parametrize(("readable", "approximate"), [(frozenset(), False), (frozenset({"r0"}), True)])
+async def test_a_scan_stopped_at_its_deadline_is_approximate_only_once_it_admitted_a_record(
+    readable: frozenset[str], approximate: bool,
+) -> None:
+    graph = _Graph([_hit(f"r{i}") for i in range(5)], readable=readable)
+    result = await run_record_query(graph, CONTEXT, RecordQuery.model_validate(
+        {"where": [{"mentions": {"name": "Acme"}}]},
+    ), window=1, deadline_seconds=0.0)
+    assert result.approximate is approximate and result.total == len(readable)

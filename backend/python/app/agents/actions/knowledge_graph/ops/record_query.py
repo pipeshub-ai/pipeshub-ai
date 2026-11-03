@@ -200,7 +200,7 @@ async def execute_find_records(
         )
         try:
             result = await run_record_query(state["graph_provider"], context, query, apps=apps or None,
-                                            correlation_id=qid)
+                                            correlation_id=qid, user_id=state.get("user_id") or "")
         except BaseException:
             if recall_task is not None:
                 recall_task.cancel()

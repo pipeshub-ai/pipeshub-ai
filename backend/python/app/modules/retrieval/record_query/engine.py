@@ -3,8 +3,9 @@ the access check every entity tool uses, then evaluated and aggregated over
 the admitted rows only. See ``docs/record-query.md``.
 
 A total is exact unless the scan cap or the deadline stopped the scan, and
-then it says so (``approximate``); a provider or access failure raises
-``EntityAccessError``, never an empty answer.
+then it says so (``approximate``), but only once the scan admitted a record:
+before that, saying so would tell of records the user cannot read. A provider
+or access failure raises ``EntityAccessError``, never an empty answer.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
+    EntityFilterMatch,
     EntityFilterResolver,
     EntityFilterUnavailableError,
 )
@@ -90,8 +92,11 @@ async def run_record_query(
     deadline_seconds: float = DEADLINE_SECONDS,
     correlation_id: str | None = None,
     apps: Iterable[str] | None = None,
+    user_id: str = "",
 ) -> RecordQueryResult:
-    """``apps``, when given, narrows the connectors read to those of them in scope."""
+    """``apps``, when given, narrows the connectors read to those of them in scope.
+    ``user_id`` (the asking user's ``userId``) counts a mention too broad across
+    the org within the records that user can read."""
     qid = correlation_id or uuid.uuid4().hex[:12]
     connector_ids = _connector_ids(context, query)
     if apps is not None:
@@ -101,7 +106,9 @@ async def run_record_query(
         logger.debug("record query %s: no connector in scope", qid)
         return RecordQueryResult(total=0, resolved_query=query)
     query = await resolve_people(graph_provider, context, query, query_id=qid)
-    query = await resolve_mentions(graph_provider, context, query, connector_ids, scan_cap=scan_cap, query_id=qid)
+    query = await resolve_mentions(
+        graph_provider, context, query, connector_ids, scan_cap=scan_cap, query_id=qid, user_id=user_id,
+    )
     pushed = pushdown(query)
     started = time.monotonic()
     deadline = started + deadline_seconds
@@ -139,7 +146,9 @@ async def run_record_query(
         # Rows keep the scan's order and the time it ordered them by.
         admitted_rows += [{**by_id[k.id], "sortTs": k.sort_ts} for k in keys if k.id in by_id]
         checked += len(keys)
-    result = _result(query, admitted_rows, approximate=approximate)
+    # A scan stopped among records none of which the user can read reads as one
+    # that found nothing: "approximate" would say such records exist.
+    result = _result(query, admitted_rows, approximate=approximate and bool(admitted_rows))
     result.connector_ids, result.resolved_query = connector_ids, query
     logger.info(
         "record query %s org=%s scanned=%d checked=%d admitted=%d total=%d approximate=%s not_classified=%d ms=%d",
@@ -161,11 +170,13 @@ TOO_BROAD_MENTION_MSG = (
 
 async def resolve_mentions(
     graph_provider: IGraphDBProvider, context: EntityAccessContext, query: RecordQuery,
-    connector_ids: list[str], *, scan_cap: int = SCAN_CAP, query_id: str = "",
+    connector_ids: list[str], *, scan_cap: int = SCAN_CAP, query_id: str = "", user_id: str = "",
 ) -> RecordQuery:
     """``query`` with each mentions condition resolved to the records of
     ``connector_ids`` whose text mentions the value (the named-entity graph),
-    at most ``scan_cap`` of them; the provider then scans only those."""
+    at most ``scan_cap`` of them; the provider then scans only those. A value
+    too broad across the org is matched again within the records ``user_id``
+    can read, so "too many" is never decided by records they cannot read."""
     mentions = [c for c in query.where if isinstance(c, MentionCondition)]
     if not mentions:
         return query
@@ -177,6 +188,10 @@ async def resolve_mentions(
         except EntityFilterUnavailableError as exc:
             raise EntityAccessError("Record query failed") from exc
         if match.error == TOO_BROAD_MESSAGE:
+            match = await _match_within_readable(
+                graph_provider, resolver, context, cond, connector_ids, user_id, scan_cap, query_id,
+            )
+        if match.error == TOO_BROAD_MESSAGE:
             raise QueryNotRunnable(TOO_BROAD_MENTION_MSG)
         if match.error:
             raise QueryNotRunnable(match.error)
@@ -184,6 +199,27 @@ async def resolve_mentions(
         logger.debug("record query id=%s mention resolved: hits=%d in_scope=%d", query_id, len(match.hits),
                      len(cond.record_ids or ()))
     return resolved
+
+
+async def _match_within_readable(
+    graph_provider: IGraphDBProvider, resolver: EntityFilterResolver, context: EntityAccessContext,
+    cond: MentionCondition, connector_ids: list[str], user_id: str, scan_cap: int, query_id: str,
+) -> EntityFilterMatch:
+    # shortcut: counted over the connectors in scope, not only the turn's selection
+    # inside them (the readable-record query has no selection filter); rows are
+    # still decided by the access check of the scan.
+    try:
+        readable = await graph_provider.get_accessible_virtual_record_ids(
+            user_id, context.org_id, {"apps": connector_ids}, raise_on_error=True,
+        )
+        within = list(dict.fromkeys(readable.values()))
+        match = await resolver.match(context.org_id, cond.entity_filter(), within=within, limit=scan_cap)
+    except Exception as exc:
+        logger.debug("record query id=%s mention: readable-records match failed", query_id)
+        raise EntityAccessError("Record query failed") from exc
+    logger.debug("record query id=%s mention too broad across the org: readable=%d hits=%d too_broad=%s",
+                 query_id, len(within), len(match.hits), match.error == TOO_BROAD_MESSAGE)
+    return match
 
 
 async def resolve_people(
