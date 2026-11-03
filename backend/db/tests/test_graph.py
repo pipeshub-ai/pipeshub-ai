@@ -165,3 +165,22 @@ def test_a_function_refuses_a_bad_argument_under_an_authorised_role(rdb, fn, mar
         as_role(c, "pipeshub_indexing")
         with pytest.raises(psycopg.errors.InvalidParameterValue):
             c.execute(f"SELECT * FROM {fn}{marks}", args)
+
+
+def test_a_graph_that_holds_rows_upgrades_to_the_record_revision_index(db):
+    """graph_0002 on a graph that already holds rows: the upgrade is one transaction, so the index is built inside it and the upgrade succeeds."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute(NODE, (A, "records", "r1", '{"id": "r1", "virtualRecordId": "v1", "contentRev": "1"}'))
+        c.execute("COMMIT")
+        assert c.execute("SELECT to_regclass('graph.nodes_record_virtual_rev')").fetchone()[0] is None
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM pg_index i JOIN pg_class x ON x.oid = i.indexrelid WHERE x.relname LIKE '%nodes_record_virtual_rev' AND i.indisvalid").fetchone()[0] >= 17
