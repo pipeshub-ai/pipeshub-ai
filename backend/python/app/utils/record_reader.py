@@ -21,6 +21,10 @@ no rendering or ranking of its own:
 Hints in the text use the API's own parameters (`API_READ_HINTS`), not the
 assistant's tool name, and the citation labels the assistant needs (`[ref3]`)
 are taken out: an API caller has no use for them.
+
+The header is leaner than the assistant's (`lean_read_header`): no lines
+PipesHub's own model wrote about the record (Summary, Topics, Category), and
+no field that says nothing (an ID of `N/A`, the MIME type).
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from app.models.blocks import SemanticMetadata
 from app.utils.chat_helpers import (
     CitationRefMapper,
     _renderable_block_indices,
@@ -50,6 +55,50 @@ from app.utils.render_budget import (
     RecordRenderOutcome,
     RenderBudget,
 )
+
+# Header lines PipesHub's own model wrote about the record at indexing time.
+_MODEL_WRITTEN_PREFIXES = ("Summary: ", "Topics: ", "Category: ")
+_MODEL_WRITTEN_FIELDS = (
+    "summary", "topics", "categories", "sub_category_level_1", "sub_category_level_2", "sub_category_level_3",
+)
+# Header lines that tell an API caller nothing it can use.
+_EMPTY_HEADER_LINE = re.compile(r"^(?:Connector ID: N/A|External Parent ID: N/A|MIME Type: .*)\n?", re.MULTILINE)
+
+
+def lean_read_header(record: dict[str, Any]) -> dict[str, Any]:
+    """The record with a header for an API reader: without the lines PipesHub's
+    model wrote about it, and without fields that say nothing.
+
+    An agent reading through the API pays for every token of a read, and pays
+    again on each later step of its turn. In an evaluation on public Apache
+    data, the Summary, Topics and Category lines were about an eighth of the
+    tokens of a typical read, and an agent repeating a detail that only a
+    summary stated was one cause of its wrong claims (about one in nine): the
+    record's own text, which the read returns, is the source to cite. The
+    assistant's own fetch is unchanged.
+
+    The lines are taken out by their exact text, rendered from the record's
+    `semantic_metadata` as the header was, so a summary that runs over several
+    lines goes whole and nothing else is touched.
+    """
+    header = record.get("context_metadata")
+    if not isinstance(header, str) or not header:
+        return record
+    semantic = record.get("semantic_metadata")
+    if isinstance(semantic, dict):
+        # Only the fields those lines are made of, unvalidated, so that a stored
+        # value of another shape elsewhere (`languages: ""`) cannot stop the match.
+        fields = {k: semantic.get(k) for k in _MODEL_WRITTEN_FIELDS}
+        try:
+            lines = SemanticMetadata.model_construct(**fields).to_llm_context()
+        except Exception:  # a header we cannot match is left as it is
+            lines = []
+        for line in lines:
+            if line.startswith(_MODEL_WRITTEN_PREFIXES):
+                header = header.replace(f"\n{line}", "", 1) if f"\n{line}" in header else header.replace(line, "", 1)
+    header = _EMPTY_HEADER_LINE.sub("", header)
+    return {**record, "context_metadata": header}
+
 
 # What a caller gets when it names no budget: about 10k tokens, well inside
 # the tool-output limit of common agent clients.
@@ -219,6 +268,7 @@ async def read_record(
     is what the hints tell a caller to send to read on, or to read a selected
     record from the top.
     """
+    record = lean_read_header(record)
     budget = RenderBudget(max_chars=max_chars, max_blocks=FETCH_SAFETY_MAX_BLOCKS)
     key = _record_key(record)
     budget.begin_record(key)

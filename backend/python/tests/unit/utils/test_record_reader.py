@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import record_to_text
-from app.utils.record_reader import MAX_READ_CHARS, read_record, read_thread
+from app.utils.record_reader import (
+    MAX_READ_CHARS,
+    lean_read_header,
+    read_record,
+    read_thread,
+)
 
 
 def _text_block(index: int, text: str) -> dict:
@@ -400,3 +405,83 @@ class TestReadingAThread:
 
         assert read["complete"] is True
         assert read["records"] == []
+
+
+_SEMANTIC = {
+    "summary": "Board minutes for April 2025.\nThe FY2026 budget passed 7-1-1.",
+    "categories": ["Governance"],
+    "topics": ["FY2026 budget", "Board appointments"],
+    "sub_category_level_1": "Board Governance",
+    "sub_category_level_2": "",
+    "sub_category_level_3": "",
+    "languages": "",
+    "departments": "",
+}
+
+
+def _header_record(**extra: object) -> dict:
+    header = "\n".join([
+        "Record ID: doc-1",
+        "Name: board-minutes-2025-04-16",
+        "Connector: KB",
+        "Type: FILE",
+        "External ID: 6ada020a",
+        "File Last Modified: 2025-04-16 12:00:00 UTC (the uploaded file's timestamp, not a document date)",
+        "Connector ID: N/A",
+        "External Parent ID: N/A",
+        "MIME Type: text/markdown",
+        "Web URL: https://app.example.com/record/doc-1",
+        "Summary: Board minutes for April 2025.\nThe FY2026 budget passed 7-1-1.",
+        "Topics: ['FY2026 budget', 'Board appointments']",
+        "Category: Governance > Board Governance",
+        "File Information:",
+        "* Extension: md",
+    ])
+    return _record("doc-1", [_text_block(0, "<b0> The FY2026 budget passed 7-1-1.")],
+                   context_metadata=header, semantic_metadata=_SEMANTIC, **extra)
+
+
+class TestLeanReadHeader:
+    """An API read's header leaves out what PipesHub's model wrote about the record,
+    and fields that say nothing; the record's own text and every useful field stay."""
+
+    async def test_model_written_lines_and_empty_fields_are_left_out(self) -> None:
+        read = await read_record(_header_record(), max_chars=40_000)
+        text = read["content"]
+
+        for gone in ("Summary:", "Board minutes for April 2025.", "Topics:", "Category:",
+                     "Connector ID: N/A", "External Parent ID: N/A", "MIME Type:"):
+            assert gone not in text
+        for kept in ("Record ID: doc-1", "Name: board-minutes-2025-04-16", "Connector: KB", "Type: FILE",
+                     "External ID: 6ada020a", "not a document date", "Web URL: https://app.example.com/record/doc-1",
+                     "* Extension: md", "<b0> The FY2026 budget passed 7-1-1."):
+            assert kept in text
+
+    def test_a_set_connector_id_and_parent_are_kept(self) -> None:
+        record = _header_record()
+        record["context_metadata"] = (
+            record["context_metadata"]
+            .replace("Connector ID: N/A", "Connector ID: c72f18b1")
+            .replace("External Parent ID: N/A", "External Parent ID: 42")
+        )
+
+        header = lean_read_header(record)["context_metadata"]
+
+        assert "Connector ID: c72f18b1" in header
+        assert "External Parent ID: 42" in header
+
+    def test_a_record_without_semantic_metadata_keeps_its_header(self) -> None:
+        record = _record("doc-2", [], context_metadata="Record ID: doc-2\nName: notes\nSummary: written by a person")
+
+        header = lean_read_header(record)["context_metadata"]
+
+        # Only a summary rendered from the record's own semantic metadata is taken out.
+        assert header == "Record ID: doc-2\nName: notes\nSummary: written by a person"
+
+    def test_the_callers_record_is_not_changed(self) -> None:
+        record = _header_record()
+        before = record["context_metadata"]
+
+        lean_read_header(record)
+
+        assert record["context_metadata"] == before
