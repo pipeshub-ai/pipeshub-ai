@@ -419,8 +419,9 @@ class CodeGraphMixin(PgBase):
         # Blocks are found by recordId, so this is right before or after the record goes; every edge of a block goes with it (DETACH DELETE).
         return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_blocks_for_records */ WITH b AS (
             SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'blocks' AND doc->>'recordId' = ANY($2::text[])),
-          de1 AS (DELETE FROM graph.edges e USING b WHERE e.org_id = $1 AND e.from_coll = 'blocks' AND e.from_id = b.id RETURNING 1),
-          de2 AS (DELETE FROM graph.edges e USING b WHERE e.org_id = $1 AND e.to_coll = 'blocks' AND e.to_id = b.id RETURNING 1),
+          -- one DELETE: an edge with both ends in b (blocks of one file, a self-loop) must not be the target of two sub-statements
+          de AS (DELETE FROM graph.edges e WHERE e.org_id = $1 AND ((e.from_coll = 'blocks' AND e.from_id IN (SELECT id FROM b))
+                 OR (e.to_coll = 'blocks' AND e.to_id IN (SELECT id FROM b))) RETURNING 1),
           d AS (DELETE FROM graph.nodes n USING b WHERE n.org_id = $1 AND n.coll = 'blocks' AND n.id = b.id RETURNING 1)
           SELECT count(*) FROM d""", org, record_ids), transaction, write=True) or 0)
 
