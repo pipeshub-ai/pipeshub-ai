@@ -1739,6 +1739,32 @@ class TestGraphDbHealthCheck:
         assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
 
     @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_cancelled_handler_cancels_the_ping(self) -> None:
+        """If the request is cancelled while the probe waits, the ping is cancelled too and nothing is left unretrieved."""
+        from app.connectors_main import graph_db_health_check
+
+        started = asyncio.Event()
+        seen: list[asyncio.Task] = []
+
+        async def ping() -> None:
+            seen.append(asyncio.current_task())
+            started.set()
+            await asyncio.sleep(30)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=ping)
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            handler = asyncio.create_task(graph_db_health_check(request))
+            await started.wait()
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+            await asyncio.sleep(0)
+
+        assert seen[0].cancelled()
+
+    @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
         """Neo4j health probe returns 200 when the open driver answers RETURN 1."""
         from app.connectors_main import graph_db_health_check
