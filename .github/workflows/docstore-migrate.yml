@@ -80,6 +80,8 @@ jobs:
         run: npm ci
 
       - name: Migration tool suites (test:docstore-migrate)
+        # fail fast: the suite takes minutes; a test past 240 s (mocha's per-test limit) or the step past 40 minutes is a hang, and the log names the test (progress-hooks.ts)
+        timeout-minutes: 40
         working-directory: backend/nodejs/apps
         env:
           PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin

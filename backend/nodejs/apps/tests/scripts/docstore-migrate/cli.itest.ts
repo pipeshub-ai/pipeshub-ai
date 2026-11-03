@@ -36,8 +36,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     let env: NodeJS.ProcessEnv;
     const base = (): Record<string, unknown[]> => ({ ...identityDocs(), ...conversationDocs(), ...contentDocs() });
 
+    // The fence tuning reads process.env (not the env a command is given): without these two every cutover waits the two minutes an application's
+    // write could be held, and the suite runs past the CI job limit.
+    const saved = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS };
+
     before(async () => {
       process.env.DOC_STORE = 'postgres';
+      process.env.MIGRATE_TEST_HOOKS = '1';
+      process.env.MIGRATE_FENCE_CLIENT_OPTIONS = JSON.stringify({ waitQueueTimeoutMS: 100, connectTimeoutMS: 100, serverSelectionTimeoutMS: 100, retryWrites: true });
       stack = await startPgStack(bin, 'migrate_cli', { importer: true });
       mongo = await startMongo(process.env.PG_TEST_WORK ?? '/tmp');
       env = {
@@ -56,6 +62,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       };
     });
     after(async () => {
+      for (const [k, v] of [['MIGRATE_TEST_HOOKS', saved.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', saved.opts]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
       await mongo?.stop();
       await stack?.stop();
     });
