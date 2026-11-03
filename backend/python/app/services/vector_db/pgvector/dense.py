@@ -376,11 +376,6 @@ class Sizer:
         self._connectors[(org, collection_id)] = (time.monotonic() + ttl, value)
         return value
 
-    def forget(self, org: str) -> None:
-        for d in (self._counts, self._leaves, self._connectors, self._inflight, self._connectors_inflight):
-            for k in [k for k in d if k[0] == org]:
-                del d[k]
-
 
 async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool = True) -> tuple[Leg, Sizing]:
     """The dense leg. Never returns a silent shortfall: a leg that could not run in its tier (no slot, a timeout, a sizing that
