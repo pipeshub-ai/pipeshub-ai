@@ -31,8 +31,8 @@ for major in 17 18; do
   wait_exit() { for _ in $(seq 1 120); do [ "$($DOCKER inspect -f '{{.State.Status}}' "$proj-pipeshub-migrate-1" 2>/dev/null)" = exited ] && return 0; sleep 2; done; return 1; }
 
   # Ordering: starting only the job brings up postgres first and waits for it to be healthy.
-  if ! dc up -d --no-build pipeshub-migrate > "$work/up.log" 2>&1; then echo "FAIL $major: compose up failed:"; cat "$work/up.log"; fail=1; continue; fi
-  wait_exit || { echo "FAIL $major: the migrate job did not finish"; dc logs --tail 30 pipeshub-migrate; fail=1; continue; }
+  if ! dc up -d --no-build pipeshub-migrate > "$work/up.log" 2>&1; then echo "FAIL $major: compose up failed:"; cat "$work/up.log"; fail=1; dc down -v >/dev/null 2>&1; continue; fi
+  wait_exit || { echo "FAIL $major: the migrate job did not finish"; dc logs --tail 30 pipeshub-migrate; fail=1; dc down -v >/dev/null 2>&1; continue; }
   check "$major: the migrate job exits 0" "$($DOCKER inspect -f '{{.State.ExitCode}}' "$proj-pipeshub-migrate-1")" 0
   check "$major: the schema is built (kernel.schema_epoch has rows)" "$([ "$(sql 'select count(*) from kernel.schema_epoch')" -gt 0 ] && echo yes)" yes
   check "$major: the catalog check is clean" "$(sql 'select count(*) from kernel.rls_violations')" 0
