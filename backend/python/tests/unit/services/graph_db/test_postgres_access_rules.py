@@ -45,6 +45,8 @@ def test_below_a_seed_a_hop_must_be_open_and_inherit_or_be_granted(rule: str, in
 @pytest.mark.parametrize(("doc", "granted", "seed"), [
     ({"connectorId": "app"}, True, True),
     ({"connectorId": "app", "accessRule": "OPEN"}, True, True),
+    ({"connectorId": "app", "accessRule": None}, True, True),           # a stored null is a missing rule
+    ({"connectorId": "app", "isDeleted": None}, True, True),
     ({"connectorId": "app", "accessRule": ""}, True, False),            # an empty rule is not OPEN
     ({"connectorId": "app", "accessRule": "STRICT"}, True, False),
     ({"connectorId": "app", "isDeleted": True}, True, False),

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.services.graph_db.postgres.base import NotImplementedInPostgres
 
 if TYPE_CHECKING:
@@ -209,8 +210,9 @@ async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids:
 
 
 def _is_seed(doc: dict, coll: str, app_id: str, granted: set[str], node_id: str) -> bool:
+    rule = doc.get("accessRule")      # a stored null is a missing rule (OPEN), as the SQL coalesce reads it; an empty string is not OPEN
     return (coll in ("records", "recordGroups") and doc.get("connectorId") == app_id and not doc.get("isDeleted")
-            and doc.get("accessRule", "OPEN") == "OPEN" and node_id in granted)
+            and (rule is None or rule == "OPEN") and node_id in granted)
 
 
 async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str], access: dict[str, Any]) -> list[dict[str, Any]]:
@@ -302,7 +304,7 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
         if cand:
             for r in await tx.fetch("""/* pipeshub:graph.access_orphan */ SELECT DISTINCT e.to_id FROM graph.edges e
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'records' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[])
-                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], ["ORG", "ORGANIZATION"]):
+                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES)):
                 ok.add(r["to_id"])
     out = []
     groups: dict[tuple[str, str], list[str]] = {}
