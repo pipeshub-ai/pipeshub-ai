@@ -951,7 +951,8 @@ li > blockquote {
   .tool-approval-card-lead {
     margin-left: 0;
   }
-  .tool-approval-card-answer > button {
+  /* Deny and the split Approve share the row evenly. */
+  .tool-approval-card-answer > * {
     flex: 1;
     min-width: 0;
   }

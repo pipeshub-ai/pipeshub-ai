@@ -487,7 +487,7 @@ function ApproveButton({ label, destructive, sending, lasting, onApprove }: {
   const color = destructive ? 'red' : undefined;
   const main = (
     <Button size="2" color={color} loading={sending} onClick={() => onApprove()}
-      style={lasting ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : undefined}>
+      style={lasting ? { flex: 1, borderTopRightRadius: 0, borderBottomRightRadius: 0 } : undefined}>
       {label}
     </Button>
   );

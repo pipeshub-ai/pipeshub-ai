@@ -682,8 +682,8 @@ describe('ToolApprovalCard: house style', () => {
     const narrow = css.match(/@container \(max-width: 460px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
     expect(narrow).toMatch(/\.tool-approval-card-group \{\s*width: 100%;/);
     expect(narrow).toMatch(/\.tool-approval-card-lead \{\s*margin-left: 0;/);
-    // Only Deny and Allow split their line; the quiet actions wrap, so four of them fit at 375px.
-    expect(narrow).toMatch(/\.tool-approval-card-answer > button \{\s*flex: 1;/);
+    // Only Deny and the split Approve share their line; the quiet actions wrap, so four of them fit at 375px.
+    expect(narrow).toMatch(/\.tool-approval-card-answer > \* \{\s*flex: 1;/);
     expect(narrow).not.toMatch(/\.tool-approval-card-group > button/);
     expect(screen.getByRole('button', { name: 'Deny' }).parentElement?.className).toContain('tool-approval-card-answer');
     expect(screen.getByRole('button', { name: 'Edit' }).parentElement?.className).toContain('rt-r-fw-wrap');
@@ -809,7 +809,7 @@ describe('ChatResponse with a call waiting for approval', () => {
 
   it.each([
     ['allowed', 'You approved Create an issue'],
-    ['declined', 'You declined Create an issue'],
+    ['declined', 'You denied Create an issue'],
     ['expired', "Create an issue didn't run: the request expired"],
   ] as const)('says above the answer what was done with an %s card', (approvalAnswer, line) => {
     const settled = [
@@ -886,7 +886,7 @@ describe('ChatResponse with a call waiting for approval', () => {
     renderInTheme(<ChatResponse question="Q" answer="Done." persistedParts={settled} isLastMessage />);
 
     const receipts = screen.getByTestId('tool-approval-receipts');
-    expect(receipts.textContent).toContain('You declined Create an issue: Put it on the Q4 board');
+    expect(receipts.textContent).toContain('You denied Create an issue: Put it on the Q4 board');
     expect(screen.queryByText('Changed: title, labels')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'You approved Create an issue with changes' }));
     expect(screen.getByText('Changed: title, labels')).toBeTruthy();
@@ -913,7 +913,7 @@ describe('ChatResponse with a call waiting for approval', () => {
       { type: 'text' as const, content: 'OK.', isFinal: true },
     ];
     renderInTheme(<ChatResponse question="Q" answer="OK." persistedParts={declined} isLastMessage />);
-    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe('You declined Create an issue: Use the full noteJira');
+    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe('You denied Create an issue: Use the full noteJira');
   });
 
   it('says when an allowed call was stopped before it ran', () => {

@@ -1528,11 +1528,11 @@
       },
       "receipt": {
         "allowed": "You approved {{tool}}",
-        "declined": "You declined {{tool}}",
+        "declined": "You denied {{tool}}",
         "expired": "{{tool}} didn't run: the request expired",
         "allowedNotRun": "You approved {{tool}}, but it didn't run",
         "allowedWithChanges": "You approved {{tool}} with changes",
-        "declinedWithNote": "You declined {{tool}}: {{note}}",
+        "declinedWithNote": "You denied {{tool}}: {{note}}",
         "changedFields": "Changed: {{fields}}"
       },
       "edit": "Edit",
@@ -1563,7 +1563,7 @@
       "busyElsewhere": "That chat is still working. Try again in a moment.",
       "alreadyAnswered": "This was already answered in that chat.",
       "runningIn": "Approved. {{tool}} is running in \"{{title}}\".",
-      "declinedIn": "Declined in \"{{title}}\".",
+      "declinedIn": "Denied in \"{{title}}\".",
       "titleIn": "{{tool}} in {{server}}",
       "inChatExpiresIn_one": "In \"{{title}}\" · Expires in {{count}} min",
       "inChatExpiresIn_other": "In \"{{title}}\" · Expires in {{count}} min",

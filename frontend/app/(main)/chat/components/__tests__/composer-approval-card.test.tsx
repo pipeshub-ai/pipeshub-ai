@@ -211,7 +211,7 @@ describe('ComposerApprovalCard', () => {
   it('Deny → toast declinedIn', async () => {
     await show([item('a', 'conv-a', 'Fix login')]);
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
-    await waitFor(() => expect(m.toast.success).toHaveBeenCalledWith('Declined in "Fix login".', expect.anything()));
+    await waitFor(() => expect(m.toast.success).toHaveBeenCalledWith('Denied in "Fix login".', expect.anything()));
   });
 
   it('stale item leaves', async () => {
