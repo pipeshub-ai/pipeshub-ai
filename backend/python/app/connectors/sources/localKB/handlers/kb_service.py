@@ -3416,11 +3416,15 @@ class KnowledgeBaseService:
         frec.parent_external_record_id = parent_folder_id or None
         # Server-side stamp: never trust a client-supplied uploader.
         frec.uploaded_by = uploaded_by or None
-        # The converter keeps a stored record's statuses and content id; an upload
-        # is new content, and a client-sent "COMPLETED" would skip its indexing.
+        # The converter keeps a stored record's statuses, content id and flags; an
+        # upload is a new, ordinary file, and any of these sent by the client
+        # ("COMPLETED", a placeholder, internal, not a file) would skip its indexing.
         frec.indexing_status = ProgressStatus.QUEUED.value
         frec.extraction_status = ProgressStatus.NOT_STARTED.value
         frec.virtual_record_id = None
+        frec.is_placeholder = False
+        frec.is_internal = False
+        frec.is_file = True
         frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
