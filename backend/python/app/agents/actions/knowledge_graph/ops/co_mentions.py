@@ -143,10 +143,8 @@ async def execute_find_co_mentioned_entities(
             # Keep what was listed: a sample, said so, rather than nothing.
             readable.complete = False
         if not readable.records:
-            if not readable.complete:
-                return False, TOO_SLOW_MSG
-            # The same reply for an unknown id, one the user cannot reach and one with no
-            # readable records: none of them may be told apart.
+            # The same reply for an unknown id, one the user cannot reach, one with no
+            # readable records and one whose scan ran out first: none may be told apart.
             return True, NO_RECORDS_MSG
         rows = await asyncio.wait_for(
             graph.get_named_entity_mentions_from_records(org_id, [r["_key"] for r in readable.records]),
