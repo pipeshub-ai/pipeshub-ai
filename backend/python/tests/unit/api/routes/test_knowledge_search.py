@@ -5,6 +5,7 @@ check the routes hand them every result, return nothing the check refuses, and
 take the caller from the session, never from the body.
 """
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,12 +17,28 @@ from fastapi.responses import JSONResponse
 
 import app.edition_config  # noqa: F401  (the route module loads cleanly only after this)
 from app.api.routes import knowledge_search as ks
+from app.core.org_context import OrgContext, bind
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityRecordPage,
 )
 
 ORG, USER, RID = "org-1", "user-1", "rec-1"
+
+
+@pytest.fixture(autouse=True)
+def _signed_in(request: pytest.FixtureRequest) -> Iterator[None]:
+    """The auth middleware binds the org context before a route runs; a test that asks for ``no_org_context`` runs without it."""
+    if "no_org_context" in request.fixturenames:
+        yield
+        return
+    with bind(OrgContext(ORG, USER, "user", "jwt", "req-1")):
+        yield
+
+
+@pytest.fixture
+def no_org_context() -> None:
+    """Marks a test that runs with no org context bound (see ``_signed_in``)."""
 
 
 def _request(user: dict | None = None) -> MagicMock:
@@ -114,16 +131,28 @@ def test_the_bodies_have_no_place_for_an_organisation_or_a_user() -> None:
     assert not hasattr(body, "orgId") and not hasattr(body, "userId")
 
 
-@pytest.mark.parametrize("user", [{}, {"orgId": ORG}, {"userId": USER}])
-async def test_a_session_without_organisation_or_user_is_a_401_and_reads_nothing(user) -> None:
+async def test_no_organisation_context_is_a_401_and_reads_nothing_whatever_the_request_claims(no_org_context) -> None:
     graph = MagicMock()
+    # the claims on the request are not read for the org: without a bound context there is no caller
+    request = _request({"orgId": "someone-else", "userId": USER})
     with pytest.raises(HTTPException) as err:
-        await ks.search_entities(_request(user), ks.EntitySearchQuery(query="payments"), graph)
+        await ks.search_entities(request, ks.EntitySearchQuery(query="payments"), graph)
     assert err.value.status_code == 401
     with pytest.raises(HTTPException) as err:
-        await ks.entity_neighbors(_request(user), ks.EntityNeighborsQuery(entityId="e", entityType="topic"), graph)
+        await ks.entity_neighbors(request, ks.EntityNeighborsQuery(entityId="e", entityType="topic"), graph)
     assert err.value.status_code == 401
     assert graph.method_calls == []
+
+
+async def test_a_bound_context_without_a_user_is_a_401() -> None:
+    with bind(OrgContext(ORG, None, "user", "jwt", "req-2")):
+        with pytest.raises(HTTPException) as err:
+            await ks.search_entities(_request({}), ks.EntitySearchQuery(query="payments"), MagicMock())
+    assert err.value.status_code == 401
+
+
+async def test_the_organisation_is_the_bound_one_not_the_one_in_the_claims() -> None:
+    assert ks._user(_request({"orgId": "someone-else", "userId": "ignored"})) == (ORG, USER)
 
 
 async def test_the_access_check_is_built_for_the_session_user() -> None:

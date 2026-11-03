@@ -28,6 +28,7 @@ from app.agents.actions.knowledge_graph.views import _compact_date
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
+from app.core.org_context import MissingOrgContext, SystemContextNotAllowed, current
 from app.models.entities import resolve_weburl
 from app.models.source_dates import RecordDates
 from app.modules.retrieval.entity_permissions import (
@@ -57,11 +58,15 @@ async def _graph_provider(request: Request) -> IGraphDBProvider:
 
 
 def _user(request: Request) -> tuple[str, str]:
-    user = request.state.user
-    org_id, user_id = user.get("orgId"), user.get("userId")
-    if not org_id or not user_id:
+    """The caller, from the org context the auth middleware bound (never from the body or the claims read here)."""
+    try:
+        ctx = current()
+    except (MissingOrgContext, SystemContextNotAllowed) as exc:
+        raise HTTPException(status_code=401, detail="Sign in again; your session has no organisation or user.") from exc
+    user_id = ctx.user_id or request.state.user.get("userId")
+    if not ctx.org_id or not user_id:
         raise HTTPException(status_code=401, detail="Sign in again; your session has no organisation or user.")
-    return org_id, user_id
+    return ctx.org_id, user_id
 
 
 # ---------------------------------------------------------------------------
