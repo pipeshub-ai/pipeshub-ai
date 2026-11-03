@@ -23,6 +23,15 @@ describe('slack-bot/utils/approval-fields', () => {
     expect(approvalProduct('jira_create_issue', 'Jira')).to.equal('Jira');
   });
 
+  it('puts format switches set to a format name under Details, as the web card does', () => {
+    const l = approvalLayout(
+      { contentFormat: 'markdown', responseContentFormat: 'adf', body_format: 'HTML', imageFormat: 'png', format: 'Quarterly report' },
+      undefined,
+    );
+    expect(l.details.map((f) => f.name)).to.deep.equal(['contentFormat', 'responseContentFormat', 'body_format']);
+    expect(l.meta.map((f) => f.name)).to.deep.equal(['imageFormat', 'format']);
+  });
+
   it('lays out the Jira call as the web card does', () => {
     const l = approvalLayout(
       {

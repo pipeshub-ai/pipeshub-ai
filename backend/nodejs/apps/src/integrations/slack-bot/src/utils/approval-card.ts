@@ -44,7 +44,8 @@ const HEADER_MAX_CHARS = 150;
 const SECTION_MAX_CHARS = 3000;
 const ARGUMENT_KEY_MAX_CHARS = 100;
 const ARGUMENT_VALUE_MAX_CHARS = 200;
-const SEE_EVERYTHING = 'Open in PipesHub to see everything.';
+// True of every cut: the call runs with what it was asked, not with what fits on the card.
+const SEE_EVERYTHING = 'Shortened to fit here. It runs with the full text.';
 // Room kept in the section for the "+N more" line.
 const MORE_LINE_RESERVE = 80;
 
@@ -296,7 +297,7 @@ export function buildApprovalCard(
 }
 
 const RECEIPTS = {
-  expired: 'Expired',
+  expired: "Expired, so it didn't run",
   answered: 'Already answered',
   sending: 'Sending your answer…',
 };
@@ -312,7 +313,7 @@ export function buildApprovalReceipt(
     text = `Approved by <@${actorSlackId}>, but it didn't run`;
   } else if (kind !== 'declined') text = RECEIPTS[kind];
   else {
-    text = `Declined by <@${actorSlackId}>`;
+    text = `Denied by <@${actorSlackId}>`;
     // The feedback is capped at 2000, so the line stays under the 3000 limit.
     if (note !== undefined && note !== '') text += `: ${plain(note, 2500)}`;
   }

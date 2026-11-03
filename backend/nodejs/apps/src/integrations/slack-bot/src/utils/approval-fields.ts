@@ -139,6 +139,34 @@ const HEADLINE_NAME = /^(title|subject|summary|name)$/i;
 const ID_WORD = new Set(['id', 'ids', 'uuid', 'guid']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// What a format switch (`contentFormat`, `responseContentFormat`) is set to: how the call is sent, not what it does.
+const WIRE_FORMAT = new Set([
+  'markdown',
+  'md',
+  'adf',
+  'html',
+  'json',
+  'text',
+  'plain',
+  'plaintext',
+  'xml',
+  'yaml',
+  'wiki',
+  'storage',
+  'rich_text',
+  'richtext',
+]);
+
+/** A machine setting the person doesn't judge the call by: an id (`cloudId`, a uuid) or a format switch set to a format name. */
+function isTechnical(word: string, prop: FieldSchema, value: unknown): boolean {
+  if (ID_WORD.has(word) || prop.format === 'uuid') return true;
+  if (typeof value !== 'string') return false;
+  return (
+    UUID.test(value.trim()) ||
+    (word === 'format' && WIRE_FORMAT.has(value.trim().toLowerCase()))
+  );
+}
+
 const blank = (v: unknown): boolean =>
   v === undefined ||
   v === null ||
@@ -182,12 +210,7 @@ export function approvalLayout(
       (prop.items?.format === 'email' || RECIPIENT_WORD.has(word))
     )
       layout.recipients.push(field);
-    else if (
-      ID_WORD.has(word) ||
-      prop.format === 'uuid' ||
-      (isText(value) && UUID.test(value.trim()))
-    )
-      layout.details.push(field);
+    else if (isTechnical(word, prop, value)) layout.details.push(field);
     else if (!layout.headline && isText(value) && HEADLINE_NAME.test(name))
       layout.headline = field;
     else if (

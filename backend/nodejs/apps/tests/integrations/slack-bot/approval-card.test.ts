@@ -66,7 +66,9 @@ const JIRA: Partial<ToolApprovalDetails> = {
     issueTypeName: 'Task',
     summary: 'Test Slack automation and tool approvals',
     description:
-      'Test Slack automation workflows and verify tool approval behavior. Document test results, issues found, and any follow-up actions.',
+      'Test Slack automation workflows and verify tool approval behavior, including expected approval prompts and outcomes.',
+    contentFormat: 'markdown',
+    responseContentFormat: 'markdown',
   },
   inputSchema: {
     type: 'object',
@@ -77,6 +79,10 @@ const JIRA: Partial<ToolApprovalDetails> = {
       issueTypeName: { type: 'string' },
       summary: { type: 'string' },
       description: { type: 'string' },
+      parent: { type: 'string' },
+      assigneeAccountId: { type: 'string' },
+      contentFormat: { type: 'string', enum: ['markdown', 'adf'] },
+      responseContentFormat: { type: 'string', enum: ['markdown', 'adf'] },
     },
   },
 };
@@ -114,11 +120,16 @@ describe('slack-bot/utils/approval-card', () => {
           type: 'mrkdwn',
           text:
             '*Test Slack automation and tool approvals*\n' +
-            'Test Slack automation workflows and verify tool approval behavior. Document test results, issues found, and any follow-up actions.',
+            'Test Slack automation workflows and verify tool approval behavior, including expected approval prompts and outcomes.',
         },
       },
       context('approval_meta', 'Project: PP · Issue type: Task'),
-      context('approval_details', '*Details*', 'Cloud ID: c7f37664-a798-44ef-a525-ecacfeb1087d'),
+      // The unset parent and assignee aren't shown; the format switches are machine settings.
+      context(
+        'approval_details',
+        '*Details*',
+        'Cloud ID: c7f37664-a798-44ef-a525-ecacfeb1087d · Content format: markdown · Response content format: markdown',
+      ),
       context('approval_status', `Waiting on <@U1> to answer · ${EXPIRES}`),
       actions(),
     ]);
@@ -200,7 +211,7 @@ describe('slack-bot/utils/approval-card', () => {
     expect(doc.length).to.be.at.most(3000);
     expect(doc.endsWith('...')).to.equal(true);
     expect(blocks.find((b) => b.block_id === 'approval_details').elements.map((e: AnyBlock) => e.text)).to.deep.equal([
-      '_Open in PipesHub to see everything._',
+      '_Shortened to fit here. It runs with the full text._',
     ]);
   });
 
@@ -225,7 +236,7 @@ describe('slack-bot/utils/approval-card', () => {
     };
     const text = long.blocks.find((b: AnyBlock) => b.type === 'section').text.text as string;
     expect(text.length).to.be.at.most(3000);
-    expect(text.endsWith('\n_Open in PipesHub to see everything._')).to.equal(true);
+    expect(text.endsWith('\n_Shortened to fit here. It runs with the full text._')).to.equal(true);
   });
 
   it('keeps the notification text plain', () => {
@@ -249,9 +260,9 @@ describe('slack-bot/utils/approval-card', () => {
     const textOf = (blocks: AnyBlock[]) => blocks[0].elements[0].text;
     expect(textOf(buildApprovalReceipt('allowed', 'U1'))).to.equal('Approved by <@U1>');
     expect(textOf(buildApprovalReceipt('allowedNotRun', 'U1'))).to.equal("Approved by <@U1>, but it didn't run");
-    expect(textOf(buildApprovalReceipt('declined', 'U1'))).to.equal('Declined by <@U1>');
-    expect(textOf(buildApprovalReceipt('declined', 'U1', 'use OPS-2'))).to.equal('Declined by <@U1>: use OPS-2');
-    expect(textOf(buildApprovalReceipt('expired', 'U1'))).to.equal('Expired');
+    expect(textOf(buildApprovalReceipt('declined', 'U1'))).to.equal('Denied by <@U1>');
+    expect(textOf(buildApprovalReceipt('declined', 'U1', 'use OPS-2'))).to.equal('Denied by <@U1>: use OPS-2');
+    expect(textOf(buildApprovalReceipt('expired', 'U1'))).to.equal("Expired, so it didn't run");
     expect(textOf(buildApprovalReceipt('answered', 'U1'))).to.equal('Already answered');
     expect(textOf(buildApprovalReceipt('sending', 'U1'))).to.equal('Sending your answer…');
   });
