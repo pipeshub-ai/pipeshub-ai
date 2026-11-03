@@ -77,7 +77,8 @@ import {
   BACKEND_STREAM_TIMEOUT_MS,
   truncateForSlack,
   truncateForSlackStreamMarkdown,
-  hasMarkdownTableStartOutsideCodeFences,
+  markdownTableStart,
+  trailingTableRowsStart,
   buildFinalSlackChunks,
   splitBeforeFirstTable,
   slackBlocksFallbackText,
@@ -784,8 +785,13 @@ async function processSlackMessage(
       }
 
       streamTableProbeText += nextChunk;
-      if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
-        // The text held before the table shows as text; the table goes below it as blocks.
+      const tableAt = markdownTableStart(streamTableProbeText);
+      if (tableAt >= 0) {
+        // The text before the table shows as text, even the part in this delta; the table and the rest go below it as blocks.
+        const unsent = heldAnswerText + pendingAppendText + nextChunk;
+        const unsentAt = streamTableProbeText.length - unsent.length;
+        heldAnswerText = "";
+        pendingAppendText = unsent.slice(0, Math.max(0, tableAt - unsentAt));
         flushPendingAppend(true);
         tableStreamingDisabled = true;
         return;
@@ -1116,9 +1122,16 @@ async function processSlackMessage(
 
     const flushPendingAppend = (final = false): void => {
       clearAnswerFlushTimer();
-      const [ready, held] = final
-        ? [heldAnswerText + pendingAppendText, ""]
-        : splitOpenLinkTail(heldAnswerText + pendingAppendText);
+      const unsent = heldAnswerText + pendingAppendText;
+      let [ready, held] = final
+        ? [unsent, ""]
+        : splitOpenLinkTail(unsent);
+      // Lines starting with `|` may be a table's first rows: they wait until it is known, so no row goes out as text.
+      const rowsAt = final ? -1 : trailingTableRowsStart(streamTableProbeText);
+      const cut = rowsAt - (streamTableProbeText.length - unsent.length);
+      if (rowsAt >= 0 && cut < ready.length) {
+        [ready, held] = [unsent.slice(0, Math.max(0, cut)), unsent.slice(Math.max(0, cut))];
+      }
       pendingAppendText = "";
       heldAnswerText = held;
       const textToAppend = ready;
