@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org
 from app.modules.transformers.stored_write import retired_list
 from app.telemetry.modules.record_storage_metrics import record_retention
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -63,10 +64,12 @@ class StoredRetentionReport:
     strays_purged: int = 0
     paused: bool = False
     failed: int = 0
+    # Mappings with no organisation: nothing is read or purged for them.
+    skipped_no_org: int = 0
     interrupted: bool = False
 
     def add(self, other: StoredRetentionReport) -> None:
-        for name in ("scanned", "purged", "marked", "held_no_fence", "fingerprints", "strays_purged", "failed"):
+        for name in ("scanned", "purged", "marked", "held_no_fence", "fingerprints", "strays_purged", "failed", "skipped_no_org"):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         self.paused = self.paused or other.paused
         self.interrupted = self.interrupted or other.interrupted
@@ -108,13 +111,14 @@ class StoredRecordRetention:
         for pointer in pointers:
             if await self._halted(report, still_leader):
                 return after_key, report
-            target = self._target(pointer)
+            target = self._target(pointer, report)
             if target is None:
                 continue
             vrid, org_id = target
             try:
                 if retired_list(pointer):
-                    await self._retire_entries(vrid, org_id, report)
+                    with for_org(org_id, job="stored_retention"):
+                        await self._retire_entries(vrid, org_id, report)
             except Exception as exc:
                 report.failed += 1
                 record_retention("stored_record", "failed")
@@ -137,7 +141,7 @@ class StoredRecordRetention:
         for pointer in pointers:
             if await self._halted(report, still_leader):
                 return after_key, report
-            target = self._target(pointer)
+            target = self._target(pointer, report)
             if target is None:
                 continue
             vrid, org_id = target
@@ -145,7 +149,8 @@ class StoredRecordRetention:
             if not pointer.get("documentId"):
                 continue
             try:
-                await self._collect_strays(vrid, org_id, report)
+                with for_org(org_id, job="stored_retention"):
+                    await self._collect_strays(vrid, org_id, report)
             except Exception as exc:
                 report.failed += 1
                 record_retention("stored_record", "failed")
@@ -168,11 +173,15 @@ class StoredRecordRetention:
             return True
         return False
 
-    @staticmethod
-    def _target(pointer: dict[str, Any]) -> tuple[str, str] | None:
+    def _target(self, pointer: dict[str, Any], report: StoredRetentionReport) -> tuple[str, str] | None:
         vrid = str(pointer.get("virtualRecordId") or "")
         org_id = pointer.get("orgId")
-        return (vrid, str(org_id)) if vrid and org_id else None
+        if vrid and org_id:
+            return vrid, str(org_id)
+        report.skipped_no_org += 1
+        record_retention("stored_record", "skipped_no_org")
+        self.logger.warning("Stored-record retention: mapping %r has no organisation and is skipped", vrid)
+        return None
 
     @staticmethod
     def _is_fingerprint(mapping: dict[str, Any]) -> bool:
