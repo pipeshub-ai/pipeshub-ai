@@ -5,6 +5,8 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import uuid
 
@@ -83,6 +85,8 @@ CALLS = [
     ("get_switch_pointers", (None, 10)), ("get_revision_pointers", (None, 10)), ("stage_states_unheld_revisions", (["v"],)),
     ("stage_states_delete_unheld_revisions", ([("v", "1")],)),
 ]
+SWEEPS = {"get_switch_pointers", "get_revision_pointers", "stage_states_stale", "stage_states_unheld_revisions", "stage_states_delete_unheld_revisions",
+          "backfill_block_name_folded"}
 KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_revs": {"status_field": "s", "statuses": ["A"]},
           "stage_states_unheld_revisions": {"updated_before_ms": 1}, "stage_states_delete_unheld_revisions": {"updated_before_ms": 1}}
 
@@ -90,7 +94,7 @@ KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_re
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     from app.services.graph_db.postgres.codegraph import CodeGraphMixin
     public = {n for n, f in vars(CodeGraphMixin).items() if not n.startswith("__") and callable(f)}
-    assert public - {"ensure_pipeline_schema", "_pointer_page"} == {c[0] for c in CALLS}
+    assert public - {"ensure_pipeline_schema", "_pointer_page", "_each_org"} == {c[0] for c in CALLS}
 
 
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
@@ -98,6 +102,8 @@ async def test_no_org_is_an_error_even_where_a_failed_read_answers_a_default(pg_
     kwargs = KWARGS.get(name, {})
     with pytest.raises(MissingOrgContext):
         await getattr(pg_provider, name)(*args, **kwargs)
+    if name in SWEEPS:      # these run across organisations under a system context (the tests below)
+        return
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
         await getattr(pg_provider, name)(*args, **kwargs)
 
@@ -262,3 +268,138 @@ async def test_two_foreign_keys_of_one_type_between_a_pair_are_two_links(pg_db) 
     assert len(got) == 2 and {n["relationshipType"] for n in got} == {"FOREIGN_KEY"}
     edges = await p.get_edges_from_node("records/t1", "recordLinks")
     assert sorted(e["constraintName"] for e in edges) == ["fk_a", "fk_b"] and next(e for e in edges if e["constraintName"] == "fk_a")["note"] == "again"
+
+
+def ctx(org: str) -> OrgContext:
+    return OrgContext(org, None, "job", "job:test", "t")
+
+
+async def test_a_stage_state_claimed_while_the_sweep_waits_is_not_deleted(pg_db) -> None:
+    """The delete locks the states first and decides after: a state another writer claims (a newer ``updatedAtMs``) while it waits stays."""
+    p = bound(pg_db)
+    await p.stage_state_create({"id": "s1", "virtualRecordId": "v1", "rev": "1", "stage": "e", "status": "PENDING", "connectorId": "c", "updatedAtMs": 5})
+    assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=1000) == [("v1", "1")]
+    apart = contextvars.copy_context()                                  # the other writer's own context, not inside the open unit of work
+    with bind(ctx(p.org)):
+        async with pg_db.uow(write=True) as tx:
+            await tx.execute("UPDATE graph.nodes SET doc = doc || '{\"updatedAtMs\": 100000}'::jsonb WHERE org_id = $1 AND coll = 'stageStates' AND id = 's1'", p.org)
+            sweep = asyncio.get_running_loop().create_task(p.stage_states_delete_unheld_revisions([("v1", "1")], updated_before_ms=1000), context=apart)
+            await asyncio.sleep(0.5)
+            assert not sweep.done()                                        # waiting for the row, not deciding on its snapshot
+    assert await sweep == 0
+    assert await p.stage_state_get("s1") is not None
+
+
+async def test_the_revision_guard_holds_between_two_writers(pg_db) -> None:
+    """A write guarded by the revision waits for a writer that is moving the record on and then writes nothing."""
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "r1", "contentRev": "1", "indexingStatus": "QUEUED"}], "records")
+    apart = contextvars.copy_context()
+    with bind(ctx(p.org)):
+        async with pg_db.uow(write=True) as tx:
+            await tx.execute("UPDATE graph.nodes SET doc = doc || '{\"contentRev\": \"2\"}'::jsonb WHERE org_id = $1 AND coll = 'records' AND id = 'r1'", p.org)
+            stale = asyncio.get_running_loop().create_task(p.compare_and_set_record_fields(["r1"], "1", {"indexingStatus": "COMPLETED"}), context=apart)
+            await asyncio.sleep(0.5)
+            assert not stale.done()
+    assert await stale == []
+    assert (await p.get_document("r1", "records"))["indexingStatus"] == "QUEUED"
+    wins = await asyncio.gather(*(p.compare_and_set_record_fields(["r1"], "2", {"who": w}) for w in "ab"))
+    assert sorted(len(w) for w in wins) == [1, 1] and (await p.get_document("r1", "records"))["who"] in "ab"       # each holds the revision: both apply, last wins
+
+
+async def test_the_sweeps_run_for_every_org_under_a_system_context(pg_db) -> None:
+    orgs = [new_org(), new_org()]
+    ps = [bound(pg_db, o) for o in orgs]
+    tag = uuid.uuid4().hex
+    for i, p in enumerate(ps):
+        await p.batch_upsert_nodes([{"_key": p.org, "name": f"org{i}"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": f"b{i}", "recordId": "r", "name": "MixedCase"}], "blocks")
+        await p.batch_upsert_nodes([{"_key": f"v{i}-{tag}", "documentId": "d", "switchSeq": 1, "retired": "[\"x\"]", "currentRev": "2"}], "virtualRecordToDocIdMapping")
+        await p.stage_state_create({"id": f"s{i}-{tag}", "virtualRecordId": f"v{i}-{tag}", "rev": "1", "stage": "e", "status": "PENDING", "connectorId": "c", "updatedAtMs": 5})
+    sys_p = StandInProvider(logging.getLogger("cg"), pg_db)
+    mine = {f"v{i}-{tag}" for i in range(2)}
+    vids = sorted(mine)
+    with org_context.system("test.sweeps"):
+        sw = [x for x in await sys_p.get_switch_pointers(None, 100000) if x["virtualRecordId"] in mine]
+        assert {x["orgId"] for x in sw} == set(orgs) and all(x["retired"] == ["x"] for x in sw)         # a JSON string of a list is decoded as on Neo4j
+        assert {x["orgId"] for x in await sys_p.get_revision_pointers(None, 100000) if x["virtualRecordId"] in mine} == set(orgs)
+        assert {d["id"] for d in await sys_p.stage_states_stale(["PENDING"], 1000, 100000)} >= {f"s{i}-{tag}" for i in range(2)}
+        assert await sys_p.stage_states_unheld_revisions(vids, updated_before_ms=1000) == [(v, "1") for v in vids]
+        assert await sys_p.backfill_block_name_folded(100000) >= 2
+        assert await sys_p.stage_states_delete_unheld_revisions([(v, "1") for v in vids], updated_before_ms=1000) == 2
+    assert [(await p.get_document("b" + str(i), "blocks"))["nameFolded"] for i, p in enumerate(ps)] == ["mixedcase"] * 2
+    assert [await p.stage_state_get(f"s{i}-{tag}") for i, p in enumerate(ps)] == [None, None]
+
+
+async def test_the_system_sweeps_cap_one_pass_by_the_limit(pg_db) -> None:
+    orgs = [new_org(), new_org()]
+    for i, o in enumerate(orgs):
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": o, "name": "o"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": f"c{i}-{j}", "recordId": "r", "name": "N"} for j in range(3)], "blocks")
+    with org_context.system("test.sweeps"):
+        assert await StandInProvider(logging.getLogger("cg"), pg_db).backfill_block_name_folded(2) == 2
+
+
+async def test_a_sync_point_is_updated_only_while_it_holds_the_expected_values_and_a_null_clears(pg_db) -> None:
+    p = bound(pg_db)
+    await p.upsert_sync_point("sp", {"cursor": "c1", "n": 1}, "syncPoints")
+    assert await p.update_sync_point_if("sp", {"cursor": "other"}, {"cursor": "c2"}, "syncPoints") is False
+    assert await p.update_sync_point_if("nope", {}, {"cursor": "c2"}, "syncPoints") is False
+    assert await p.update_sync_point_if("sp", {"cursor": "c1"}, {"cursor": "c2", "n": None}, "syncPoints") is True
+    got = await p.get_sync_point("sp", "syncPoints")
+    assert got["cursor"] == "c2" and "n" not in got                                                                    # cleared, not stored as JSON null
+    assert await p.update_sync_point_if("sp", {"missing": None}, {"cursor": "c3"}, "syncPoints") is True            # an absent property equals null
+
+
+async def test_neighbours_by_direction_with_a_self_loop(pg_db) -> None:
+    p = bound(pg_db)
+    await blocks(p, "a", "b", "c")
+    await p.batch_upsert_node_relations([edge("a", "b", "CALLS"), edge("c", "a", "CALLS"), edge("a", "a", "CALLS"), edge("a", "c", "IMPORTS")])
+
+    async def keys(direction: str, types: list[str]) -> list[str]:
+        return sorted(n["key"] for n in await p.get_neighbors_by_relationship_types("a", "blocks", types, direction))
+    assert await keys("outbound", ["CALLS"]) == ["a", "b"]
+    assert await keys("inbound", ["CALLS"]) == ["a", "c"]
+    assert await keys("outbound", ["IMPORTS"]) == ["c"] and await keys("inbound", ["IMPORTS"]) == []
+    many = await p.get_neighbors_for_nodes_by_relationship_types(["a", "c"], "blocks", ["CALLS"], "any")
+    assert sorted((n["anchorKey"], n["key"]) for n in many) == [("a", "a"), ("a", "b"), ("a", "c"), ("c", "a")]
+
+
+async def test_one_batch_of_links_merges_repeats_clears_nulls_and_keeps_types_apart(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "t1"}, {"_key": "t2"}], "records")
+    named = edge("t1", "t2", "CALLS", "records", "records", line=3)
+    unnamed = {"from_id": "t1", "to_id": "t2", "relationshipType": "CALLS", "confidence": 0.5}
+    await p.batch_upsert_node_relations([named, unnamed, edge("t1", "t2", "IMPORTS", "records", "records")])        # one edge named two ways, and a second type
+    got = {e["relationshipType"]: e for e in await p.get_edges_from_node("records/t1", "recordLinks")}
+    assert sorted(got) == ["CALLS", "IMPORTS"] and got["CALLS"]["line"] == 3 and got["CALLS"]["confidence"] == 0.5
+    await p.batch_upsert_node_relations([edge("t1", "t2", "CALLS", "records", "records", line=None)])
+    again = {e["relationshipType"]: e for e in await p.get_edges_from_node("records/t1", "recordLinks")}
+    assert "line" not in again["CALLS"] and again["CALLS"]["confidence"] == 0.5
+
+
+async def test_an_end_without_a_collection_is_the_record_before_a_block(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "same"}, {"_key": "other"}], "records")
+    await p.batch_upsert_nodes([{"_key": "same", "recordId": "x"}], "blocks")
+    await p.batch_upsert_node_relations([{"from_id": "same", "to_id": "other", "relationshipType": "CALLS"}])
+    assert [e["from_collection"] for e in await p.get_edges_to_node("records/other", "recordLinks")] == ["records"]
+
+
+async def test_hierarchy_types_between_one_pair_are_one_edge_as_in_the_core(pg_db) -> None:
+    """``PARENT_CHILD`` and ``ATTACHMENT`` are the hierarchy, one edge per pair (the access walk reads it); link types are separate edges. Never links."""
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "t1"}, {"_key": "t2"}], "records")
+    await p.batch_upsert_node_relations([edge("t1", "t2", "PARENT_CHILD", "records", "records"), edge("t1", "t2", "ATTACHMENT", "records", "records")])
+    assert len(await p.get_edges_from_node("records/t1", "nodeRelations")) == 1 and await p.get_edges_from_node("records/t1", "recordLinks") == []
+    assert await p.delete_edges_by_source_keys(["records/t1"], "recordLinks") == 0
+    assert await p.get_edges_by_target_keys(["records/t2"], "recordLinks") == []
+
+
+async def test_a_code_file_prefix_is_a_range_that_takes_percent_and_underscore_literally(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": k, "filePath": f} for k, f in (("c1", "a_c/x.py"), ("c2", "abc/x.py"), ("c3", "a%c/y.py"), ("c4", "b/z.py"))], "codeFiles")
+    assert sorted(d["id"] for d in await p.get_nodes_by_field_prefix("codeFiles", "filePath", "a_")) == ["c1"]
+    assert sorted(d["id"] for d in await p.get_nodes_by_field_prefix("codeFiles", "filePath", "a%")) == ["c3"]
+    assert len(await p.get_nodes_by_field_prefix("codeFiles", "filePath", "")) == 4
