@@ -141,3 +141,27 @@ def test_organisations_page_by_org_and_id_and_filter_on_the_flags(rdb):
         assert seen == sorted([(A, A), (A, "second")])                              # live and internal only
         assert [r[0] for r in c.execute("SELECT org_id FROM graph.system_orgs(true, false, '', '', 10)")] == [A, A, B]
         assert [r[0] for r in c.execute("SELECT org_id FROM graph.system_orgs(false, true, '', '', 10)")] == ["c" * 24]
+
+
+LONG = "x" * 201
+BAD_ARGS = [
+    ("graph.system_orgs", "(%s, %s, %s, %s, %s)", args) for args in (
+        (None, False, "", "", 10), (True, None, "", "", 10), (True, False, None, "", 10), (True, False, "", None, 10),
+        (True, False, LONG, "", 10), (True, False, "", LONG, 10), (True, False, "", "", 0), (True, False, "", "", 1001), (True, False, "", "", None))
+] + [
+    ("graph.system_apps", "(%s, %s, %s, %s)", args) for args in (
+        (None, "", "", 10), (True, None, "", 10), (True, "", None, 10), (True, LONG, "", 10), (True, "", LONG, 10),
+        (True, "", "", 0), (True, "", "", 1001), (True, "", "", None))
+] + [
+    ("graph.system_app", "(%s)", args) for args in ((None,), ("",), (LONG,))
+]
+
+
+@pytest.mark.parametrize(("fn", "marks", "args"), BAD_ARGS, ids=[f"{f.removeprefix('graph.')}-{i}" for i, (f, _, _) in enumerate(BAD_ARGS)])
+def test_a_function_refuses_a_bad_argument_under_an_authorised_role(rdb, fn, marks, args):
+    """A null, an over-long cursor or id and a limit outside 1..1000 are refused with invalid_parameter_value, not answered."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_indexing")
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            c.execute(f"SELECT * FROM {fn}{marks}", args)
