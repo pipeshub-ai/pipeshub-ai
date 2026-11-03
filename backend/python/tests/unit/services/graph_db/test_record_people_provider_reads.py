@@ -43,7 +43,7 @@ class TestGetUserByEmailOrg:
     """The same address can exist in several organisations."""
 
     @staticmethod
-    def _call(p, make):
+    def _call(p, make) -> tuple[str, dict]:
         if make is _arango:
             args = p.http_client.execute_aql.await_args
             return args.args[0], args.kwargs["bind_vars"]
