@@ -180,6 +180,20 @@ async def test_without_cascade_only_attachments_go_and_survivors_lose_the_parent
     assert "externalParentId" not in await p.get_document("b", "records")
 
 
+async def test_a_survivor_with_no_group_keeps_its_parent_id_as_on_neo4j(pg_db) -> None:
+    """Neo4j matches the survivors through ``BELONGS_TO`` a record group (its docstring: cleared "only when they already BELONGS_TO a RecordGroup"), so a
+    survivor with no group is neither reported for re-parenting nor cleared."""
+    p = bound(pg_db)
+    await tree(p)
+    await p.batch_upsert_nodes([rec(p.org, "s", "a")], "records")
+    await p.batch_upsert_nodes([{"_key": "g", "orgId": p.org, "connectorId": "c1"}], "recordGroups")
+    await p.batch_create_edges([{"from_id": "b", "from_collection": "records", "to_id": "g", "to_collection": "recordGroups"}], "belongsTo")      # s has none
+    out = await p.delete_records_recursive(["a"], "c1", cascade_children=False)
+    assert [r["record_id"] for r in out["reparented"]] == ["b"]
+    assert "externalParentId" not in await p.get_document("b", "records")
+    assert (await p.get_document("s", "records"))["externalParentId"] == "x-a"
+
+
 async def test_a_single_record_and_a_raw_delete(pg_db) -> None:
     p = bound(pg_db)
     await tree(p)

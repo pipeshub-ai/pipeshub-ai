@@ -260,3 +260,16 @@ async def test_batches_of_mixed_types_in_opposite_orders_do_not_deadlock(pg_db) 
     await asyncio.gather(*(p.batch_upsert_records(b) for b in batches))
     assert await p.get_existing_record_keys([f"m{j}" for j in range(8)]) == {f"m{j}" for j in range(8)}
     assert len(await p.get_edges_from_node("records/m1", "isOfType")) >= 1
+
+
+async def test_a_delete_waits_for_a_writer_that_is_attaching_a_type_and_takes_that_type_too(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_records([plain(p.org, "w1")])                                     # a record with no type document yet
+    txn = await p.begin_transaction(read=[], write=[])
+    await p.batch_upsert_records([code(p.org, "w1")], transaction=txn)                     # rewrites the record's row and adds its type document, uncommitted
+    deleting = asyncio.create_task(p.delete_nodes(["w1"], "records"))
+    await asyncio.sleep(0.5)
+    assert not deleting.done()                                                             # it waits on the record's row instead of reading the types around the writer
+    await p.commit_transaction(txn)
+    assert await asyncio.wait_for(deleting, 20) is True
+    assert await p.get_document("w1", "codeFiles") is None and await p.get_edges_from_node("records/w1", "isOfType") == []
