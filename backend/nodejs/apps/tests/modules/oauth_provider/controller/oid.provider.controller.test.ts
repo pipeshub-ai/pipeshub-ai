@@ -203,6 +203,7 @@ describe('OIDCProviderController', () => {
       expect(out).to.include('`scope=kb:read`')
       expect(out).to.not.include('offline_access')
       expect(out).to.not.include('refresh token')
+      expect(out).to.not.include('and refreshes it')
     })
 
     it('lists only the agent scopes this instance offers', async () => {
