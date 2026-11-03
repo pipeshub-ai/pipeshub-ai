@@ -950,7 +950,7 @@ describe('slack-bot/utils/plan-stream', () => {
         await push(plan.toolFinished('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'blocked', 'c3', { summary: 'Declined by the user.' }));
         // As the live run sent them: a secret inside the value, and the backend's reasons naming the raw tool.
         await push(plan.toolStarted('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'c4'));
-        await push(plan.toolArgs('mcp_tracker_create_ticket', { summary: 'Create Ticket — title: "Think ee ea65ab password=hunter2"' }, 'c4'));
+        await push(plan.toolArgs('mcp_tracker_create_ticket', { summary: 'Create Ticket — title: "Follow up 4f2a91 password=hunter2"' }, 'c4'));
         await push(plan.toolFinished('mcp_tracker_create_ticket', 'Tracker · create_ticket', 'blocked', 'c4', {
           summary: "Create_ticket on Tracker needs someone to approve it in the PipesHub app, so it wasn't run.",
         }));
@@ -968,7 +968,7 @@ describe('slack-bot/utils/plan-stream', () => {
             output: [
               '✗ "Think" → Needs approval in the PipesHub app',
               '✗ Declined by the user',
-              '✗ "Think ee ea65ab password=[redacted]" → Needs approval in the PipesHub app',
+              '✗ "Follow up 4f2a91 password=[redacted]" → Needs approval in the PipesHub app',
               '✗ Create ticket is no longer available on Tracker',
             ].join('\n'),
           },
