@@ -58,9 +58,9 @@ SELECT 'GRANT pipeshub_kv TO pipeshub_kv_login WITH INHERIT FALSE, SET TRUE'
 -- the migration owner may only hand the vetted roles out (ADMIN), never use them
 GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform TO pipeshub_owner
   WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
--- extensions are installed here, by the superuser, into schema ext (a migration cannot: pgvector is not a trusted extension)
+-- extensions are installed here, by the superuser, into schema ext (a migration cannot create an extension that is not trusted);
+-- `vector` is added with the schema that uses it
 CREATE SCHEMA IF NOT EXISTS ext AUTHORIZATION pipeshub_owner;
-CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA ext;
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ext;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT CREATE ON DATABASE :"db" TO pipeshub_owner;
