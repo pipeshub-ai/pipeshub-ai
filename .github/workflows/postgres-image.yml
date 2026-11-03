@@ -65,3 +65,6 @@ jobs:
 
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
+
+      - name: Server and pooler under the Helm chart's pod restrictions
+        run: bash deployment/docker-compose/tests/postgres_nonroot_test.sh

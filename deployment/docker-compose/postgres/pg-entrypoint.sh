@@ -42,7 +42,8 @@ if [ "$1" = postgres ]; then
   if [ -x "$roles" ]; then
     (
       for _ in $(seq 1 300); do pg_isready -q -h 127.0.0.1 -U postgres && break; sleep 1; done
-      gosu postgres "$roles" || echo "pg-entrypoint: role setup failed; see the lines above" >&2
+      # Already the postgres user when the container runs non-root (the Helm chart does); gosu needs root.
+      if [ "$(id -u)" = 0 ]; then gosu postgres "$roles"; else "$roles"; fi || echo "pg-entrypoint: role setup failed; see the lines above" >&2
     ) &
   fi
   # pg_textsearch must be preloaded. shared_buffers is ~25% of PG_MEMORY_LIMIT (set in .env).
