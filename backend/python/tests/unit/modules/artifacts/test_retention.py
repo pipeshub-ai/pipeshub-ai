@@ -828,3 +828,50 @@ async def test_a_trash_check_that_cannot_run_fails_the_page_before_anything_is_d
         await _sweep(graph, store).run_page(None)
 
     assert store.deleted == [] and store.list_calls == 0 and len(graph.states) == 1
+
+
+@dataclass
+class _TwoOrgGraph(FakeGraph):
+    """The same virtual record id in two organisations: pointers, trash and stage states are each told by organisation."""
+
+    trashed_orgs: set[str] = field(default_factory=set)
+    org_states: dict[str, list[tuple[str, str, int]]] = field(default_factory=dict)
+    pointers: list[dict[str, Any]] = field(default_factory=list)
+
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        return [p for p in self.pointers if after_key is None or p["virtualRecordId"] > after_key][:limit]
+
+    async def get_virtual_record_ids_in_use(
+        self, vrids: list[str], *, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> set[str]:
+        return set(vrids) if current_org_id_or_none() in self.trashed_orgs else set()
+
+    async def get_virtual_record_holders(self, vrids: list[str], org_id: str) -> dict[str, list[dict[str, Any]]]:
+        return {}
+
+    async def stage_states_unheld_revisions(self, vrids: list[str], *, updated_before_ms: int) -> list[tuple[str, str]]:
+        return sorted({(v, r) for v, r, at in self.org_states.get(current_org_id_or_none() or "", []) if v in vrids and at < updated_before_ms})
+
+    async def stage_states_delete_unheld_revisions(self, revisions: list[tuple[str, str]], *, updated_before_ms: int) -> int:
+        org = current_org_id_or_none() or ""
+        self.delete_orgs.append(org)
+        before = len(self.org_states[org])
+        self.org_states[org] = [s for s in self.org_states[org] if (s[0], s[1]) not in set(revisions)]
+        return before - len(self.org_states[org])
+
+
+@pytest.mark.asyncio
+async def test_two_orgs_that_share_a_virtual_record_id_never_touch_each_others_state() -> None:
+    """The retention state was told by virtual record id alone, so the pointer of the later organisation took the id over: the first one's
+    pass ran under the wrong organisation, and one organisation's trashed copy kept the other's revisions from being retired."""
+    graph, store = _TwoOrgGraph(), FakeStore()
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in ("org-a", "org-b")]
+    graph.trashed_orgs = {"org-b"}
+    graph.org_states = {"org-a": [("v", "r1", OLD)], "org-b": [("v", "r1", OLD)]}
+
+    with org_context.system("retention_test"):
+        _, report = await _sweep(graph, store).run_page(None)
+
+    assert graph.delete_orgs == ["org-a"]                      # org-a's stale revision is retired, under org-a
+    assert graph.org_states == {"org-a": [], "org-b": [("v", "r1", OLD)]}      # org-b's copy is in the trash: nothing of it is touched
+    assert report.skipped_trashed == 1 and report.stage_states_deleted == 1
