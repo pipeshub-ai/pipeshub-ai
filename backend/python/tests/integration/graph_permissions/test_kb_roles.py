@@ -15,6 +15,8 @@ from .loaders import EDGE_TARGETS, NODE_TARGETS, load_into_arango, load_into_neo
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+pytestmark = pytest.mark.integration
+
 ORG = "org-kbr"
 USER = "kbr-u"
 
@@ -23,6 +25,7 @@ COLLECTIONS: dict[str, tuple[str | None, list[tuple[str, str]], dict]] = {
     "reader-direct-writer-team": ("READER", [("WRITER", "READER")], {}),
     "writer-direct-reader-team": ("WRITER", [("READER", "OWNER")], {}),
     "organizer-direct": ("ORGANIZER", [], {}),
+    "commenter-direct": ("COMMENTER", [], {}),
     "Alpha team only": (None, [("COMMENTER", "OWNER")], {}),
     "hidden": ("OWNER", [], {"isHidden": True}),
     "other org": ("OWNER", [], {"orgId": "org-other"}),
@@ -141,12 +144,13 @@ async def _listed(provider, **kwargs) -> tuple[dict[str, str], int, dict]:
 async def test_the_listing_shows_each_collection_with_the_best_role(store) -> None:
     roles, total, filters = await _listed(store.provider)
     assert roles == {
-        "reader-direct-writer-team": "WRITER",
+        "reader-direct-writer-team": "READER",
         "writer-direct-reader-team": "WRITER",
         "organizer-direct": "READER",
-        "Alpha team only": "READER",
+        "commenter-direct": "READER",
+        "Alpha team only": "WRITER",
     }
-    assert total == 4
+    assert total == 5
     assert sorted(filters["permissions"]) == ["READER", "WRITER"]
 
 
@@ -154,30 +158,112 @@ async def test_the_listing_sorts_by_role(store) -> None:
     """Arango sorted on a variable of the role subquery and returned nothing."""
     kbs, total, _ = await store.provider.list_user_knowledge_bases(
         USER, ORG, skip=0, limit=50, sort_by="userRole", sort_order="desc")
-    assert total == 4
-    assert [kb["userRole"] for kb in kbs] == ["WRITER", "WRITER", "READER", "READER"]
+    assert total == 5
+    assert [kb["userRole"] for kb in kbs] == ["WRITER", "WRITER", "READER", "READER", "READER"]
 
 
 async def test_search_finds_a_collection_shared_only_through_a_team(store) -> None:
     roles, total, _ = await _listed(store.provider, search="alpha")
-    assert roles == {"Alpha team only": "READER"} and total == 1
+    assert roles == {"Alpha team only": "WRITER"} and total == 1
 
 
 async def test_the_role_filter_uses_the_role_as_read(store) -> None:
     roles, total, _ = await _listed(store.provider, permissions=["READER"])
-    assert set(roles) == {"organizer-direct", "Alpha team only"} and total == 2
+    assert set(roles) == {"reader-direct-writer-team", "organizer-direct", "commenter-direct"} and total == 3
     roles, total, _ = await _listed(store.provider, permissions=["ORGANIZER", "COMMENTER"])
     assert roles == {} and total == 0
 
 
 @pytest.mark.parametrize(("name", "expected"), [
-    ("reader-direct-writer-team", "WRITER"),
+    ("reader-direct-writer-team", "READER"),
     ("writer-direct-reader-team", "WRITER"),
     ("organizer-direct", "READER"),
-    ("Alpha team only", "READER"),
+    ("commenter-direct", "READER"),
+    ("Alpha team only", "WRITER"),
 ])
 async def test_the_single_collection_role_matches_the_listing(store, name, expected) -> None:
     assert await store.provider.get_user_kb_permission(_kb_id(name), USER) == expected
+
+
+async def _load_odd(store, nodes: list[dict], edges: list[dict]) -> bool:
+    """Load edges carrying a role no writer stores. ArangoDB's permissions schema refuses them,
+    which is its guarantee: that is asserted here and False returned, so the caller stops."""
+    if not isinstance(store, _Arango):
+        await store.load(nodes, edges)
+        return True
+    with pytest.raises(Exception, match="permissions schema"):
+        await store.load(nodes, edges)
+    return False
+
+
+def _odd_graph(role: str, team_reader: bool) -> tuple[list[dict], list[dict]]:
+    """``kbr-odd`` (direct ``role``, a record in it, optionally a READER team grant) and ``kbr-ok`` (direct READER)."""
+    nodes, edges = [], []
+    for kb, name in (("kbr-odd", "odd"), ("kbr-ok", "ok")):
+        nodes += [_org(app(kb, name, connector=KB, app_group="Local Storage", scope="personal")),
+                  _org(rec(f"{kb}-r", f"{name} record", origin="UPLOAD", connector_id=kb, virtualRecordId=f"{kb}-v"))]
+        edges += [bt(f"{kb}-r", kb), perm(USER, kb, role="READER" if kb == "kbr-ok" else role)]
+    if team_reader:
+        nodes.append(_org(_node("Teams", "kbr-odd-team", name="kbr-odd-team")))
+        edges += [perm(USER, "kbr-odd-team", role="READER"),
+                  perm("kbr-odd-team", "kbr-odd", grant_type="TEAM", role="READER")]
+    return nodes, edges
+
+
+@pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
+@pytest.mark.parametrize("team_reader", [False, True])
+async def test_an_unrecognised_direct_role_is_no_access(store, role, team_reader) -> None:
+    """A direct edge with a role no writer stores neither wins nor lists the
+    collection; a team grant beside it still gives its own role."""
+    if not await _load_odd(store, *_odd_graph(role, team_reader)):
+        return
+    expected = "READER" if team_reader else None
+    assert await store.provider.get_user_kb_permission("kbr-odd", USER) == expected
+    roles, _, _ = await _listed(store.provider)
+    if expected is None:
+        assert "odd" not in roles
+    else:
+        assert roles["odd"] == expected
+
+
+@pytest.mark.parametrize("role", ["ADMIN", "EDITOR", "owner"])
+async def test_an_unrecognised_direct_role_opens_no_collection_or_record(store, role) -> None:
+    """The access paths that read the direct edge themselves agree with the role lookup."""
+    if not await _load_odd(store, *_odd_graph(role, False)):
+        return
+    provider = store.provider
+
+    accessible = await provider._get_accessible_kb_ids("kbr-m")
+    assert "kbr-ok" in accessible and "kbr-odd" not in accessible
+    gated = {a["id"] for a in await provider.get_gated_apps(USER, ORG)}
+    assert "kbr-ok" in gated and "kbr-odd" not in gated
+    assert await provider.check_record_access_with_details("kbr-m", ORG, "kbr-odd-r") is None
+    assert await provider.check_record_access_with_details("kbr-m", ORG, "kbr-ok-r")
+    context = await provider.get_entity_access_context("kbr-m", ORG)
+    assert "kbr-odd" not in {a["id"] for a in context["apps"]}
+
+
+async def test_the_hub_ranks_a_team_reader_above_an_unrecognised_direct_role(store) -> None:
+    if not await _load_odd(store, *_odd_graph("ADMIN", True)):
+        return
+
+    context = await store.provider.get_knowledge_hub_context_permissions(
+        USER, ORG, "kbr-odd", parent_type="app")
+
+    assert (context["role"], context["canManagePermissions"]) == ("READER", False), context
+
+
+async def test_a_connector_app_keeps_the_hub_role_of_its_direct_edge(store) -> None:
+    """Only a knowledge base holds direct roles to the KB rule; no writer stores EDITOR on a
+    connector app, but the hub reads one as it always did."""
+    if not await _load_odd(store, [_org(app("kbr-conn", "conn", connector="DRIVE", app_group="Google Workspace"))],
+                           [perm(USER, "kbr-conn", role="EDITOR")]):
+        return
+
+    context = await store.provider.get_knowledge_hub_context_permissions(
+        USER, ORG, "kbr-conn", parent_type="app")
+
+    assert context["role"] == "EDITOR", context
 
 
 async def test_the_member_list_shows_a_retired_role_as_reader(store) -> None:
@@ -193,10 +279,11 @@ async def test_the_owner_count_counts_users_only(store) -> None:
 
 
 @pytest.mark.parametrize(("name", "expected"), [
-    ("reader-direct-writer-team", "WRITER"),
+    ("reader-direct-writer-team", "READER"),
     ("writer-direct-reader-team", "WRITER"),
     ("organizer-direct", "READER"),
-    ("Alpha team only", "READER"),
+    ("commenter-direct", "READER"),
+    ("Alpha team only", "WRITER"),
 ])
 async def test_the_item_role_on_a_collection_matches_the_listing(store, name, expected) -> None:
     assert await store.item_role("kb", "App", _kb_id(name)) == expected
