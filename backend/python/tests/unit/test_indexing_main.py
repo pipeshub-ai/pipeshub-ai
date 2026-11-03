@@ -4,7 +4,7 @@ import asyncio
 import os
 import time
 from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -1026,12 +1026,12 @@ class TestRecoverCutShortEnrichment:
         seen: list[tuple[str, str]] = []
         paginated, update = gp.get_documents_paginated.side_effect, gp.update_node.side_effect
 
-        async def recording_paginated(*a: Any, **k: Any) -> list[dict]:
+        async def recording_paginated(*a: object, **k: object) -> list[dict]:
             seen.append(("scan", current_org_id()))
             assert k["filters"]["orgId"] == "org-1"
             return await paginated(*a, **k)
 
-        async def recording_update(*a: Any, **k: Any) -> bool:
+        async def recording_update(*a: object, **k: object) -> bool:
             seen.append(("update", current_org_id()))
             return await update(*a, **k)
 
