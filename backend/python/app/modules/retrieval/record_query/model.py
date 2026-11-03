@@ -388,6 +388,11 @@ class RecordQueryResult(BaseModel):
     # Records shown or left unknown that wait for classification on first use:
     # the fields ``app.modules.pipeline.first_use`` needs to ask for it. Never rendered.
     not_classified: list[dict[str, Any]] = Field(default_factory=list)
+    # What the recall check reconciles search against (``recall.py``); never rendered.
+    matched_ids: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    matched_virtual_ids: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    connector_ids: list[str] = Field(default_factory=list, exclude=True)
+    resolved_query: Any = Field(default=None, exclude=True)  # the RecordQuery as the engine ran it
 
 
 for _model in (AllOf, AnyOf, Not, RecordQuery):

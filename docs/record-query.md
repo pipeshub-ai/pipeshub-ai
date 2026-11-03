@@ -26,7 +26,8 @@ graph providers, or the `find_records` agent tool.
 4. **Agent tool** (`knowledgegraph__find_records`): with the record-query
    flag on, the one listing tool. It takes the conditions of the three it
    replaces (`find_records_by_entity`, `find_records_by_person`,
-   `find_records_by_value`) and the query's aggregates; totals first.
+   `find_records_by_value`) and the query's aggregates; totals first, then
+   the recall check's possible matches.
 
 ## Field registry
 
@@ -157,7 +158,7 @@ many asks for a narrower one) and pushes them down as `records`, which the
 scan seeds from. A mention is a text mention, never a field: it filters,
 the result says so, and nothing totals or groups the mentioned values. A
 record the mention did not find is unknown for it, not a miss
-(`unknown["mentions"]`), which the scan never meets: it reads only the mentioned records. Mentions
+(`unknown["mentions"]`), which only the recall check ever meets. Mentions
 need named entities on (`KnowledgeGraphPolicy.named_entities`).
 
 ## Result
@@ -188,6 +189,7 @@ need named entities on (`KnowledgeGraphPolicy.named_entities`).
   counts only the sources the conversation is limited to (`LIMITED_SCOPE_NOTE`).
 - `applied`: the conditions as the engine read them (values as stored).
 - `next_cursor`, an opaque keyset cursor (see Paging), absent at the end.
+- The recall check's line: possible matches, or why it did not run (below).
 
 ## Provider contract
 
@@ -247,6 +249,43 @@ Neo4j and ArangoDB implement both calls;
 `tests/integration/graph_db/test_record_query_real_backends.py` runs one
 contract suite on both and compares each with a Python reference over the
 same seeded graph.
+
+## Recall check
+
+Graph extraction is imperfect, and a record must never be silently lost.
+Every `find_records` call but a pure `describe` (`limit` 0, no aggregate or
+grouping) runs a bounded hybrid search beside the engine
+(`record_query/recall.py`):
+
+- **Terms** are the query's own: people's names (resolved, or as search
+  found them), entity and organisation names `search_entities` returned,
+  the values of value fields (status, priority, ...; never source, record
+  type or container, which are filters), and mention text (name, amounts,
+  currency, percent). Never ids. A query with no such term skips the check
+  and says so.
+- **Search** is the search tool's retrieval call
+  (`RetrievalService.search_with_filters`) within the turn's scope
+  (`search_scope`: apps, knowledge bases, selection, strict scope, the
+  request's entity filter) and its permission path, with the query's
+  created/updated window; top 50 (`RECALL_TOP_K`), a 4-second deadline
+  (`RECALL_DEADLINE_SECONDS`) for the search and again for reconciling.
+- **Reconcile**: each hit the engine did not match (nor another copy of,
+  by virtual record id) is run through the scan restricted to the hits
+  (`records`) with the query's structural conditions only (source, type,
+  container, window, link, taxonomy entity), then the access check every
+  row passes, then its row is read and evaluated in recall mode: a known
+  contradicting fact (another assignee in the role, another status,
+  outside the window or container) drops it; what the graph cannot tell (no
+  person or organisation edge, no field, not classified, no extracted
+  mention) makes it a possible match.
+- **Render**: the exact total as before, then "Possible matches the graph
+  could not confirm: M" with up to 10 listed and cited like rows, and the
+  rule that they are never added to an exact total. A failed or late search
+  says the check did not run; the call itself never fails for it.
+- **Logs** carry counts only (searched, outside, admitted, possible by
+  connector and by condition kind) with the query's correlation id.
+
+Judging possible matches by reading them (a side sub-agent) is R3b.
 
 ## One listing tool
 

@@ -188,3 +188,77 @@ async def test_find_records_by_value_with_a_knowledge_base_reads_it_as_a_contain
     assert container.field == "container" and container.in_ == ["kb-1"]
     assert engine.await_args.kwargs["apps"] is None
 
+
+# ------------------------------------------------------------- recall check
+
+
+def _possible(key: str) -> dict[str, Any]:
+    return {"_key": key, "recordName": f"Ticket {key}", "recordType": "TICKET", "connectorName": "JIRA",
+            "people": [], "organizations": [], "links": []}
+
+
+async def test_possible_matches_are_listed_apart_cited_and_never_in_the_total(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.retrieval.record_query.recall import RecallCheck
+
+    check = RecallCheck(ran=True, possible=[_possible(f"p{i}") for i in range(12)])
+    monkeypatch.setattr(op, "finish_recall", AsyncMock(return_value=check))
+    op.cite_listed_records.return_value = {"p0": "[R1]"}
+    ok, text = await op.execute_find_records(_state(), where=[{"field": "status", "in": ["OPEN"]}])
+    lines = text.splitlines()
+    assert ok and lines[0] == "Total: 3 matching records you can open (exact)"
+    (header,) = [line for line in lines if line.startswith("Possible matches the graph could not confirm: 12")]
+    assert op.POSSIBLE_RULE in header
+    listed = lines[lines.index(header) + 1:]
+    assert len(listed) == 10 and '"cite":"[R1]"' in listed[0]
+    cited = op.cite_listed_records.await_args.args[3]
+    assert {"p0", "p9"} <= set(cited) and "p10" not in cited
+
+
+@pytest.mark.parametrize(("check", "line"), [
+    ({"failed": True}, op.RECALL_DID_NOT_RUN),
+    ({"skipped": "no_terms"}, op.RECALL_SKIPPED),
+])
+async def test_a_recall_check_that_did_not_run_says_so(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch, check: dict[str, Any], line: str,
+) -> None:
+    from app.modules.retrieval.record_query.recall import RecallCheck
+
+    monkeypatch.setattr(op, "finish_recall", AsyncMock(return_value=RecallCheck(**check)))
+    ok, text = await op.execute_find_records(_state(), where=[{"field": "status", "in": ["OPEN"]}])
+    assert ok and line in text.splitlines()
+
+
+async def test_a_pure_describe_runs_no_recall_check(engine: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    finish = AsyncMock()
+    monkeypatch.setattr(op, "finish_recall", finish)
+    start = MagicMock()
+    monkeypatch.setattr(op, "start_search", start)
+    ok, text = await op.execute_find_records(_state(), describe=["status"], limit=0)
+    assert ok and "Recall check" not in text
+    finish.assert_not_awaited()
+    start.assert_not_called()
+
+
+async def test_the_recall_search_is_the_search_tools_call_within_the_turns_scope(engine: AsyncMock) -> None:
+    retrieval = MagicMock()
+    retrieval.search_with_filters = AsyncMock(return_value={
+        "searchResults": [{"metadata": {"recordId": "r2"}}, {"metadata": {"recordId": "r1"}}],
+        "virtual_to_record_map": {"v1": {"_key": "r1"}, "v3": {"_key": "r3"}},
+    })
+    state = _state(retrieval_service=retrieval, user_id="user-1",
+                   filters={"apps": ["jira"], "strictScope": True}, is_placeholder_agent=False)
+    search = op._search(state)
+    assert await search("ravi open", {"source_created_after_ms": 1}) == ["r2", "r1", "r3"]
+    kwargs = retrieval.search_with_filters.await_args.kwargs
+    assert kwargs["queries"] == ["ravi open"] and kwargs["limit"] == op.RECALL_TOP_K
+    assert kwargs["filter_groups"]["apps"] == ["jira"] and kwargs["filter_groups"]["strictScope"] is True
+    assert kwargs["time_range"] == {"source_created_after_ms": 1} and kwargs["user_id"] == "user-1"
+
+
+async def test_a_search_that_answers_with_an_error_status_is_a_failed_check(engine: AsyncMock) -> None:
+    retrieval = MagicMock()
+    retrieval.search_with_filters = AsyncMock(return_value={"status_code": 503, "message": "down"})
+    with pytest.raises(RuntimeError):
+        await op._search(_state(retrieval_service=retrieval))("x", None)

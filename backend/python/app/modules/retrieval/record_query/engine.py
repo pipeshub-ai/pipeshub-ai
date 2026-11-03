@@ -99,7 +99,7 @@ async def run_record_query(
         connector_ids = [c for c in connector_ids if c in wanted]
     if not connector_ids:
         logger.debug("record query %s: no connector in scope", qid)
-        return RecordQueryResult(total=0)
+        return RecordQueryResult(total=0, resolved_query=query)
     query = await resolve_people(graph_provider, context, query, query_id=qid)
     query = await resolve_mentions(graph_provider, context, query, connector_ids, scan_cap=scan_cap, query_id=qid)
     pushed = pushdown(query)
@@ -140,6 +140,7 @@ async def run_record_query(
         admitted_rows += [{**by_id[k.id], "sortTs": k.sort_ts} for k in keys if k.id in by_id]
         checked += len(keys)
     result = _result(query, admitted_rows, approximate=approximate)
+    result.connector_ids, result.resolved_query = connector_ids, query
     logger.info(
         "record query %s org=%s scanned=%d checked=%d admitted=%d total=%d approximate=%s not_classified=%d ms=%d",
         qid, context.org_id, len(found.keys), checked, len(admitted_rows), result.total, result.approximate,
@@ -233,6 +234,8 @@ def _result(query: RecordQuery, admitted: list[Row], *, approximate: bool) -> Re
         unknown=dict(found.unknown), described=_described(query, matched),
         rows=[row_view(r) for r in shown], offset=start, next_cursor=next_cursor,
         not_classified=[_first_use_doc(r) for r in list(waiting.values())[:MAX_TO_CLASSIFY]],
+        matched_ids=frozenset(str(r["_key"]) for r in matched),
+        matched_virtual_ids=frozenset(str(r["virtualRecordId"]) for r in matched if r.get("virtualRecordId")),
     )
 
 

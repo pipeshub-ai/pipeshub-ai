@@ -124,13 +124,21 @@ def _undecided(row: Row) -> Verdict:
     return Verdict(False)
 
 
-def evaluate(cond: Condition, row: Row) -> Verdict:
+# Entity types reached over edges extraction writes from the text; the recall
+# check decides them from the row, as people and organisations.
+EDGE_ENTITY_TYPES = frozenset({"person", "organization", "named_entity"})
+
+
+def evaluate(cond: Condition, row: Row, *, recall: bool = False) -> Verdict:
+    """``recall`` is the recall check's reading of a search hit the scan did
+    not match (``recall.py``): a missing person or organisation edge is
+    unknown there, not a miss, since extraction is what writes most of them;
+    a role filled by someone else, or a field holding another value, is still a miss."""
     if isinstance(cond, FieldCondition):
         return _field(cond, row)
     if isinstance(cond, PersonCondition):
         edges = set(ROLE_EDGES[cond.person.role]) if cond.person.role else set(ROLE_OF_EDGE)
-        people, ids = row.get("people") or [], set(cond.person.ids or ())
-        return Verdict(any(p["role"] in edges and p["id"] in ids for p in people))
+        return _person(row, edges, set(cond.person.ids or ()), recall=recall)
     if isinstance(cond, MentionCondition):
         if cond.record_ids is not None and row.get("_key") in cond.record_ids:
             return Verdict(True)
@@ -138,6 +146,8 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
     if isinstance(cond, OrganizationCondition):
         if any(o["id"] in cond.organization.ids for o in row.get("organizations") or []):
             return Verdict(True)
+        if recall:
+            return Verdict(None, frozenset({"organization"}))
         # Classification writes the MENTIONS edges; before it runs, no link is no answer.
         return _undecided(row)
     if isinstance(cond, LinkCondition):
@@ -147,6 +157,12 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
             for link in row.get("links") or []
         ))
     if isinstance(cond, EntityCondition):
+        if recall and cond.entity.type in EDGE_ENTITY_TYPES:
+            if cond.entity.type == "person":
+                return _person(row, set(ROLE_OF_EDGE), {cond.entity.id}, recall=True)
+            if any(o["id"] == cond.entity.id for o in row.get("organizations") or []):
+                return Verdict(True)
+            return Verdict(None, frozenset({cond.entity.type}))
         # Only ever top level (RecordQuery checks), where the provider applies it.
         # Edges to a classified entity exist only once classification has run, so
         # the provider also passes rows not classified yet and names, in
@@ -157,9 +173,9 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
             return Verdict(True)
         return _undecided(row)
     if isinstance(cond, Not):
-        inner = evaluate(cond.not_, row)
+        inner = evaluate(cond.not_, row, recall=recall)
         return Verdict(None if inner.value is None else not inner.value, inner.unknown_fields)
-    parts = [evaluate(c, row) for c in (cond.all_of if isinstance(cond, AllOf) else cond.any_of)]
+    parts = [evaluate(c, row, recall=recall) for c in (cond.all_of if isinstance(cond, AllOf) else cond.any_of)]
     unknown = frozenset().union(*(p.unknown_fields for p in parts if p.value is None))
     decisive = False if isinstance(cond, AllOf) else True
     if any(p.value is decisive for p in parts):
@@ -169,8 +185,15 @@ def evaluate(cond: Condition, row: Row) -> Verdict:
     return Verdict(not decisive)
 
 
-def evaluate_all(conditions: list[Condition], row: Row) -> Verdict:
-    return evaluate(AllOf(all_of=conditions), row) if conditions else Verdict(True)
+def _person(row: Row, edges: set[str], ids: set[str], *, recall: bool) -> Verdict:
+    in_role = [p for p in row.get("people") or [] if p["role"] in edges]
+    if any(p["id"] in ids for p in in_role):
+        return Verdict(True)
+    return Verdict(None, frozenset({"person"})) if recall and not in_role else Verdict(False)
+
+
+def evaluate_all(conditions: list[Condition], row: Row, *, recall: bool = False) -> Verdict:
+    return evaluate(AllOf(all_of=conditions), row, recall=recall) if conditions else Verdict(True)
 
 
 @dataclass
@@ -287,5 +310,5 @@ def unassigned(query: RecordQuery, rows: list[Row]) -> list[Group]:
     return out
 
 
-__all__ = ["CLASSIFICATION_FAILED", "MENTIONS", "NOT_CLASSIFIED", "NO_ORGANIZATION", "UNASSIGNED_LABELS", "unassigned", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
+__all__ = ["EDGE_ENTITY_TYPES", "CLASSIFICATION_FAILED", "MENTIONS", "NOT_CLASSIFIED", "NO_ORGANIZATION", "UNASSIGNED_LABELS", "unassigned", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
            "field_value", "groups", "tally"]

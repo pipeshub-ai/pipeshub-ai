@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -20,9 +21,11 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     NAMED_ENTITIES_DISABLED_MSG,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_INDEX_CACHE_KEY,
     limited_scope_note,
     load_entity_access_context,
 )
+from app.agents.actions.knowledge_graph.ops.scope import search_scope
 from app.agents.actions.knowledge_graph.views import CITE_NOTE
 from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.modules.agents.qna.chat_state import remember_record_ids
@@ -38,6 +41,7 @@ from app.modules.retrieval.record_fields import (
 )
 from app.modules.retrieval.record_query.engine import (
     QueryNotRunnable,
+    row_view,
     run_record_query,
 )
 from app.modules.retrieval.record_query.evaluate import (
@@ -55,6 +59,14 @@ from app.modules.retrieval.record_query.model import (
     walk_conditions,
 )
 from app.modules.retrieval.record_query.paging import NEWEST
+from app.modules.retrieval.record_query.recall import (
+    MAX_POSSIBLE_SHOWN,
+    RECALL_TOP_K,
+    RecallCheck,
+    finish_recall,
+    start_search,
+)
+from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 
 if TYPE_CHECKING:
@@ -78,6 +90,13 @@ MENTIONS_CONDITION_TEXT = (
     '{"mentions": {"kind", "name", "amount": {"from", "to", "currency"}, "quantity": {"from", "to", '
     '"dimension"}, "date": {"from", "to"}, "percent": {"from", "to"}}} (a value written in the text however '
     'it is phrased, "deals over $50k"; percent as a fraction; a mention, never a field to total or group), '
+)
+RECALL_DID_NOT_RUN = (
+    "Recall check did not run (search failed or timed out): records the graph could not link are not listed."
+)
+RECALL_SKIPPED = "Recall check skipped: no condition here is something search can look for."
+POSSIBLE_RULE = (
+    "Never add them to the exact total: say how many are possible, or read one with fetch to decide it."
 )
 MENTIONS_NOTE = (
     "mentions matched values written in the records' text (as extracted), not record fields: "
@@ -159,12 +178,24 @@ async def execute_find_records(
         apps = [s for s in sources or () if s in context.app_ids]
         if sources and not apps:
             query.where.append(FieldCondition.model_validate({"field": "container", "in": list(sources)}))
-        result = await run_record_query(state["graph_provider"], context, query, apps=apps or None)
+        qid = uuid.uuid4().hex[:12]
+        # Beside the engine, so it adds no wait of its own; a pure describe has nothing to recall.
+        recall_task = None if _describe_only(query) else start_search(query, _names(state, people), _search(state))
+        try:
+            result = await run_record_query(state["graph_provider"], context, query, apps=apps or None,
+                                            correlation_id=qid)
+        except BaseException:
+            if recall_task is not None:
+                recall_task.cancel()
+            raise
     except QueryNotRunnable as exc:
         return False, str(exc)
     except EntityAccessError:
         logger.warning("find_records failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
+    recall = None if _describe_only(query) else await finish_recall(
+        state["graph_provider"], context, result, recall_task, correlation_id=qid,
+    )
     if result.not_classified and state.get("config_service") is not None:
         # As a search does: records this query met that wait for classification
         # are classified in the background (only with the Labs flag on), so the
@@ -178,12 +209,57 @@ async def execute_find_records(
         note_retrieved_by(state, "entity", graph_record_refs([{"_key": k} for k in keys]))
     # Each row is cited for the facts it shows, as navigate and list_files cite
     # theirs; totals and groups are computed, not quoted, so they get none.
+    possible = [row_view(r) for r in (recall.possible if recall else [])[:MAX_POSSIBLE_SHOWN]]
+    if possible:
+        remember_record_ids(state, [r["record_id"] for r in possible],
+                            names={r["record_id"]: r.get("title") or "" for r in possible})
+        note_retrieved_by(state, "search", graph_record_refs([{"_key": r["record_id"]} for r in possible]))
     cite_refs = await cite_listed_records(
         state, state["graph_provider"], context.org_id,
-        {r["record_id"]: row_facts(r) for r in result.rows if r.get("record_id")},
+        {r["record_id"]: row_facts(r) for r in [*result.rows, *possible] if r.get("record_id")},
     )
     return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state), cite_refs=cite_refs,
-                        scope_note=limited_scope_note(context), people=people)
+                        scope_note=limited_scope_note(context), people=people, recall=recall, possible=possible)
+
+
+def _describe_only(query: RecordQuery) -> bool:
+    return bool(query.describe) and query.limit == 0 and query.aggregate.op == "count" and query.group_by is None
+
+
+def _names(state: ChatState, people: Mapping[str, str]) -> dict[str, str]:
+    """Display names search can look for: people named back, and entities search_entities returned."""
+    names = {asked: label.split(" (", 1)[0] for asked, label in people.items()}
+    for entity_id, entity in (state.get(ENTITY_INDEX_CACHE_KEY) or {}).items():
+        if isinstance(entity, dict) and entity.get("name"):
+            names.setdefault(str(entity_id), str(entity["name"]))
+    return names
+
+
+def _search(state: ChatState) -> Any:  # noqa: ANN401
+    """The recall check's search: the search tool's retrieval call, within
+    the turn's scope and permissions, record ids best first."""
+    async def search(text: str, time_range: dict[str, int] | None) -> list[str]:
+        retrieval = state.get("retrieval_service")
+        if retrieval is None:
+            raise RuntimeError("retrieval service not available")
+        filters = state.get("filters") or {}
+        groups: dict[str, Any] = dict(search_scope(state).to_filter_groups())
+        if filters.get(STRICT_SCOPE_FILTER_KEY):
+            groups[STRICT_SCOPE_FILTER_KEY] = True
+        if filters.get("entityFilters"):
+            groups["entityFilters"] = filters["entityFilters"]
+        found = await retrieval.search_with_filters(
+            queries=[text], org_id=state.get("org_id") or "", user_id=state.get("user_id") or "",
+            limit=RECALL_TOP_K, filter_groups=groups, time_range=time_range,
+        )
+        if not isinstance(found, dict) or found.get("status_code", 200) >= 400:
+            raise RuntimeError("search failed")
+        by_vid = found.get("virtual_to_record_map") or {}
+        ids = [str((r.get("metadata") or {}).get("recordId") or "") for r in found.get("searchResults") or []]
+        ids += [str(rec.get("_key") or "") for rec in by_vid.values() if isinstance(rec, dict)]
+        return [i for i in dict.fromkeys(ids) if i]
+
+    return search
 
 
 _AGAIN = 'Call knowledgegraph__find_records again with that person\'s email as person.name.'
@@ -248,6 +324,7 @@ def row_facts(row: dict[str, Any]) -> str:
 def render(
     query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None,  # noqa: ANN401
     cite_refs: Mapping[str, str] | None = None, scope_note: str = "", people: Mapping[str, str] | None = None,
+    recall: RecallCheck | None = None, possible: list[dict[str, Any]] | None = None,
 ) -> str:
     """Totals first, then what was computed, then a page of rows to cite."""
     cite_refs = cite_refs or {}
@@ -313,7 +390,30 @@ def render(
             lines.append("- " + json.dumps(shown, ensure_ascii=False, separators=(",", ":")))
     if result.next_cursor:
         lines.append(f'More records: call again with the same arguments and cursor="{result.next_cursor}".')
+    if recall is not None:
+        lines += _recall_lines(recall, possible or [], cite_refs, shortener)
     return "\n".join(lines)
+
+
+def _recall_lines(
+    recall: RecallCheck, possible: list[dict[str, Any]], cite_refs: Mapping[str, str], shortener: Any,  # noqa: ANN401
+) -> list[str]:
+    if recall.failed:
+        return [RECALL_DID_NOT_RUN]
+    if recall.skipped:
+        return [RECALL_SKIPPED]
+    if not recall.possible:
+        return []
+    lines = [f"Possible matches the graph could not confirm: {len(recall.possible)} "
+             f"(search found them; the graph lacks the facts to decide). {POSSIBLE_RULE}"]
+    for row in possible:
+        shown = dict(row)
+        if shown.get("record_id") in cite_refs:
+            shown["cite"] = cite_refs[shown["record_id"]]
+        if shortener is not None and shown.get("record_id"):
+            shown["record_id"] = shortener.shorten_record_ids_in_text(shown["record_id"])
+        lines.append("- " + json.dumps(shown, ensure_ascii=False, separators=(",", ":")))
+    return lines
 
 
 def roles_guide() -> str:
