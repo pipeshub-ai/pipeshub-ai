@@ -53,7 +53,7 @@ for major in 17 18; do
     "$(sql "select count(*) from pg_auth_members m join pg_roles r on r.oid=m.roleid join pg_roles u on u.oid=m.member where u.rolname like '%\\_login' and (m.inherit_option or not m.set_option)")" 0
   check "$major: pipeshub_ro has no password" "$(sql "select rolpassword is null from pg_authid where rolname='pipeshub_ro'")" t
   check "$major: stored verifiers are SCRAM" "$(sql "select count(*) from pg_authid where rolname like 'pipeshub\\_%' and rolpassword is not null and rolpassword not like 'SCRAM-SHA-256\$%'")" 0
-  check "$major: pg_trgm sits in schema ext" "$(sql "select string_agg(extname,',' order by extname) from pg_extension e join pg_namespace n on n.oid=e.extnamespace where n.nspname='ext' and extname in ('vector','pg_trgm')")" "pg_trgm"
+  check "$major: pg_trgm sits in schema ext, and vector is not installed yet" "$(sql "select string_agg(extname,',' order by extname) from pg_extension e join pg_namespace n on n.oid=e.extnamespace where n.nspname='ext' and extname in ('vector','pg_trgm')")" "pg_trgm"
   check "$major: public schema is closed to PUBLIC" "$(sql "select has_schema_privilege('pipeshub_node_login','public','CREATE')")" f
   check "$major: connections from other hosts need SCRAM" "$($DOCKER exec "$proj-postgres-1" sh -c "grep -E '^host +all +all +all ' /var/lib/postgresql/data/pg_hba.conf | grep -c scram-sha-256")" 1
 

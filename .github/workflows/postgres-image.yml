@@ -1,7 +1,8 @@
 name: postgres-image
 
 # The opt-in PostgreSQL + PgBouncer image of the Compose `postgres` profile, built for 17 and 18 and exercised through docker-compose.yml:
-# the entrypoint's volume-layout guard, the data volume across down/up, and the role layout with PgBouncer authentication.
+# the entrypoint's volume-layout guard, the data volume across down/up, the role layout with PgBouncer authentication, and the
+# repository's own migration and security-surface check (backend/db) against a fresh database made by the image.
 # Everything runs in containers (the bases are Debian bookworm images pinned by digest), so the runner needs only Docker and Compose:
 # ubuntu-latest (26.04) is enough. Unlike docstore-migrate.yml this job installs no MongoDB or PGDG packages from the host.
 on:
@@ -58,6 +59,9 @@ jobs:
 
       - name: Roles, privileges and PgBouncer authentication
         run: bash deployment/docker-compose/tests/postgres_roles_test.sh
+
+      - name: The repository's migration and security-surface check on a fresh database
+        run: bash deployment/docker-compose/tests/postgres_migration_check_test.sh
 
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
