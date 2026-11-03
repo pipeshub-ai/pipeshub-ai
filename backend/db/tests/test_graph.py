@@ -183,4 +183,8 @@ def test_a_graph_that_holds_rows_upgrades_to_the_record_revision_index(db):
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_index i JOIN pg_class x ON x.oid = i.indexrelid WHERE x.relname LIKE '%nodes_record_virtual_rev' AND i.indisvalid").fetchone()[0] >= 17
+        # every index of the tree, the root on graph.nodes included: a valid leaf set under an invalid root would still pass a count
+        tree = "SELECT count(*), bool_and(i.indisvalid) FROM pg_partition_tree('graph.nodes_record_virtual_rev') t JOIN pg_index i ON i.indexrelid = t.relid"
+        n, all_valid = c.execute(tree).fetchone()
+        assert n == c.execute("SELECT count(*) FROM pg_partition_tree('graph.nodes')").fetchone()[0], "one index for every table of the tree"
+        assert all_valid is True

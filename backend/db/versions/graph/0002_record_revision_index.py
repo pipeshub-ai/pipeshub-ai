@@ -17,6 +17,9 @@ INDEXES = [
 def upgrade():
     # An upgrade that is checked runs as one transaction, which refuses CREATE INDEX CONCURRENTLY: each leaf is indexed in it, so a
     # graph that already holds rows has its writers wait for the build of that leaf (the store is opt-in, and the build reads one leaf).
+    # shortcut: the leaf locks last until the migration commits, so on a large graph with live writers they wait for the whole upgrade;
+    # no release holds a graph built before this revision. Prebuild the leaves CONCURRENTLY ahead of db.migrate for a later index on
+    # graphs that hold rows.
     for name, cols, where in INDEXES:
         ensure_partitioned_index(op.get_bind(), "graph.nodes", name, cols, where=where, blocking=True)
 
