@@ -18,6 +18,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
 import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
+import { DEFAULT_SELECTED_SCOPES } from '@/lib/constants/oauth-default-scopes';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
 const AUTHORIZE_API = '/api/v1/oauth2/authorize';
@@ -61,6 +62,14 @@ interface AuthorizeResponse {
   redirectUrl?: string;
   error?: string;
   error_description?: string;
+}
+
+/** The default scopes among those listed; every listed scope when none of them is a default, so Allow is not left disabled. */
+function initiallyTicked(scopes: ScopeInfo[] | undefined): Set<string> {
+  const names = asArray(scopes).map((s) => s.name);
+  const defaults = new Set<string>(DEFAULT_SELECTED_SCOPES);
+  const picked = names.filter((name) => defaults.has(name));
+  return new Set(picked.length > 0 ? picked : names);
 }
 
 function normalizeScopeForPost(scopeFromUrl: string | null): string {
@@ -174,8 +183,8 @@ export function OAuthAuthorizeView() {
   const [codeChallenge, setCodeChallenge] = useState('');
   const [codeChallengeMethod, setCodeChallengeMethod] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
-  // Scopes the person unticked; everything listed starts ticked.
-  const [unticked, setUnticked] = useState<Set<string>>(() => new Set());
+  // Starts as the default scopes once the consent data loads; the person ticks more if they want.
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set());
   const triedWorkspaceSwitchRef = useRef(false);
 
   const clientId = searchParams.get('client_id');
@@ -251,6 +260,7 @@ export function OAuthAuthorizeView() {
 
         if (data.requiresConsent && data.consentData) {
           setConsentData(data.consentData);
+          setTicked(initiallyTicked(data.consentData.scopes));
           setCodeChallenge(data.codeChallenge ?? '');
           setCodeChallengeMethod(data.codeChallengeMethod ?? '');
         } else {
@@ -303,12 +313,12 @@ export function OAuthAuthorizeView() {
   }, [outcome]);
 
   const listedScopes = asArray(consentData?.scopes).map((s) => s.name);
-  const tickedScopes = listedScopes.filter((name) => !unticked.has(name));
-  const toggleScope = (name: string, ticked: boolean) => {
-    setUnticked((prev) => {
+  const tickedScopes = listedScopes.filter((name) => ticked.has(name));
+  const toggleScope = (name: string, on: boolean) => {
+    setTicked((prev) => {
       const next = new Set(prev);
-      if (ticked) next.delete(name);
-      else next.add(name);
+      if (on) next.add(name);
+      else next.delete(name);
       return next;
     });
   };
@@ -511,7 +521,7 @@ export function OAuthAuthorizeView() {
     const granted = outcome.consent === 'granted';
     const scopePermissionSummary = asArray(consentData.scopes).map((s) => ({
       name: s.name,
-      granted: granted && !unticked.has(s.name),
+      granted: granted && ticked.has(s.name),
     }));
     return (
       <OAuthConnectionOutcome
@@ -667,7 +677,7 @@ export function OAuthAuthorizeView() {
                 >
                   <Checkbox
                     mt="1"
-                    checked={!unticked.has(scopeItem.name)}
+                    checked={ticked.has(scopeItem.name)}
                     onCheckedChange={(value) => toggleScope(scopeItem.name, value === true)}
                     disabled={submitting}
                   />

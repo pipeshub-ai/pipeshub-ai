@@ -158,8 +158,12 @@ describe('OAuthAuthorizeView scope choice', () => {
   const scopes: Scope[] = [
     { name: 'offline_access', description: 'Refresh tokens', category: 'Identity' },
     { name: 'kb:read', description: 'Read knowledge bases', category: 'Knowledge Base' },
+    { name: 'team:read', description: 'Read teams', category: 'Teams' },
     { name: 'agent:read', description: 'Read agents', category: 'Agents' },
   ];
+  const tickState = async () =>
+    (await screen.findAllByRole('checkbox')).map((b) => b.getAttribute('aria-checked'));
+  const allow = () => screen.getByRole('button', { name: en.oauthConsent.allow }) as HTMLButtonElement;
 
   beforeEach(() => {
     get.mockReset();
@@ -171,26 +175,34 @@ describe('OAuthAuthorizeView scope choice', () => {
     cleanup();
   });
 
-  it('posts only the scopes left ticked', async () => {
+  it('starts with only the default scopes ticked and posts what the person chose', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    const boxes = await screen.findAllByRole('checkbox');
-    expect(boxes.map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'true', 'true']);
+    expect(await tickState()).toEqual(['true', 'true', 'false', 'true']);
+    fireEvent.click(screen.getByText('team:read'));
     fireEvent.click(screen.getByText('agent:read'));
-    fireEvent.click(screen.getByRole('button', { name: en.oauthConsent.allow }));
+    fireEvent.click(allow());
 
     await waitFor(() => expect(post).toHaveBeenCalled());
-    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('offline_access kb:read');
+    expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('offline_access kb:read team:read');
+  });
+
+  it('ticks every scope when none of them is a default', async () => {
+    get.mockResolvedValue(consentResponse([], false, [scopes[2]]));
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(await tickState()).toEqual(['true']);
+    expect(allow().disabled).toBe(false);
   });
 
   it('disables Allow when every scope is unticked', async () => {
     get.mockResolvedValue(consentResponse([], false, scopes));
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
 
-    for (const box of await screen.findAllByRole('checkbox')) fireEvent.click(box);
-    expect(
-      (screen.getByRole('button', { name: en.oauthConsent.allow }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    for (const box of await screen.findAllByRole('checkbox')) {
+      if (box.getAttribute('aria-checked') === 'true') fireEvent.click(box);
+    }
+    expect(allow().disabled).toBe(true);
   });
 });
