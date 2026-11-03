@@ -84,7 +84,7 @@ export interface SlackAGUICallbacks {
     displayName?: string,
     status?: string,
     toolCallId?: string,
-    result?: { summary?: string; view?: unknown },
+    result?: { summary?: string; view?: unknown; artifactId?: string },
   ) => void;
   /**
    * A call's arguments: the server's summary (e.g. `Searched for "Q3 revenue"`)
@@ -431,6 +431,9 @@ export function createSlackAGUIEventHandler(
                 ? { summary: data.content }
                 : {}),
             view: data?.resultView,
+            ...(typeof data?.artifactId === "string"
+              ? { artifactId: data.artifactId }
+              : {}),
           },
         );
 

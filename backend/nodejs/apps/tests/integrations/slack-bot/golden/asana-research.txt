@@ -10,12 +10,12 @@
       Knowledgegraph
       ✓ "Asana Q3 fiscal year 2026 third quarter revenue earnings results" → 4 results
       ✗ "Asana Q3 fiscal 2025 third quarter revenue earnings results" → The search took too long
-  ✗ Got record download links  ⌄
+  ✗ Get record download links  ⌄
       Artifacts
       ✗ record 8dc0d3d5 → No download link for records from an external connector
   ● Loaded tools  ⌄
       ✓ Tracker → Loaded 3 tools
-  ✗ Created ticket  ⌄
+  ✗ Create ticket  ⌄
       Tracker
       ✗ "Asana Q3 follow-up password=[redacted]" → Needs approval in the PipesHub app
 

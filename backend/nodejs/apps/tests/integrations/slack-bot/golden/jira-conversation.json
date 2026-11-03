@@ -1,20 +1,21 @@
 {
- "question": "What are the latest tickets i have to work on ?",
+ "_note": "Fictional data in the shape of a real conversation: every part in order, as the stream sends it.",
+ "question": "What are the latest tickets I have to work on?",
  "parts": [
   {
    "type": "text",
-   "content": "I’ll check the connected ticket data for the most recently updated items assigned to you, then summarize what needs attention."
+   "content": "I will check the connected ticket data for the most recently updated items assigned to you, then summarize what needs attention."
   },
   {
    "type": "tool_call",
    "toolCallId": "call_1",
    "toolName": "knowledgegraph__search_entities",
    "status": "completed",
-   "args": "{\"query\": \"Sam Lee assigned Jira tickets\", \"entity_types\": [\"record_group\"], \"top_k\": 10}",
+   "args": "{\"query\": \"Alex Rivera assigned Jira tickets\", \"entity_types\": [\"record_group\"], \"top_k\": 10}",
    "displayName": "Searched knowledge graph entities",
-   "argsSummary": "Searched entities for \"Sam Lee assigned Jira tickets\"",
-   "resultPreview": "{\"status\": \"success\", \"results\": [{\"entityId\": \"c6de47f6-3b23-4ab0-9a7c-214c2f534b20\", \"entityType\": \"record_group\", \"name\": \"sample-test-ipsh\"}]}",
-   "resultSummary": "Found 3 entities: sample-test-ipsh, pipeshub-connector-test-bucket, test-s3-ipsh"
+   "argsSummary": "Searched entities for \"Alex Rivera assigned Jira tickets\"",
+   "resultPreview": "{\"status\": \"success\", \"results\": [{\"entityId\": \"11111111-2222-4333-8444-555555555555\", \"entityType\": \"record_group\", \"name\": \"demo-docs\"}]}",
+   "resultSummary": "Found 3 entities: demo-docs, demo-connector-sample-bucket, demo-archive"
   },
   {
    "type": "text",
@@ -27,7 +28,7 @@
    "status": "completed",
    "args": "{\"query\": \"search Jira issues assigned to current user\", \"limit\": 5}",
    "argsSummary": "Searching for tools matching \"search Jira issues assigned to current user\"",
-   "resultPreview": "{\"matches\": [{\"name\": \"mcp_notion_notion-search-agents\"}, {\"name\": \"mcp_atlassian_rovo_search\"}]}",
+   "resultPreview": "{\"matches\": [{\"name\": \"mcp_atlassian_rovo_search\"}]}",
    "resultSummary": "Found 5 matches"
   },
   {
@@ -39,10 +40,10 @@
    "toolCallId": "call_3",
    "toolName": "mcp_atlassian_rovo_search",
    "status": "completed",
-   "args": "{\"query\": \"Jira issues assigned to Sam Lee (user@example.com), open or in progress, most recently updated; include issue key, summary, status, assignee, priority, updated date, and URL.\"}",
+   "args": "{\"query\": \"Jira issues assigned to Alex Rivera (alex@example.com), open or in progress, most recently updated\"}",
    "displayName": "Atlassian Rovo · search",
-   "argsSummary": "query: \"Jira issues assigned to Sam Lee (user@example.com), open or…\"",
-   "resultPreview": "{\"results\":[{\"id\":\"ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/661454853\",\"title\":\"Bug Bash: PipesHub OSS Release Checklist\"}]… [truncated: 10103 chars total]",
+   "argsSummary": "query: \"Jira issues assigned to Alex Rivera (alex@example.com), open or…\"",
+   "resultPreview": "{\"results\": [{\"id\": \"ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001\", \"title\": \"Release checklist for the demo project\"}]}… [truncated: 10412 chars total]",
    "resultSummary": "Found 17 results",
    "resultView": {
     "kind": "records",
@@ -56,56 +57,56 @@
     "rows": [
      {
       "cells": [
-       "Bug Bash: PipesHub OSS Release Checklist",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/661454853",
-       "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/661454853/Bug+Bash+PipesHub+OSS+Release+Checklist",
+       "Release checklist for the demo project",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/661454853/Bug+Bash+PipesHub+OSS+Release+Checklist"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project"
      },
      {
       "cells": [
-       "Bug Bash: PipesHub EE Release Checklist",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/674889746",
-       "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/674889746/Bug+Bash+PipesHub+EE+Release+Checklist",
+       "Connector onboarding guide",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1002",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1002/Connector+onboarding+guide",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/674889746/Bug+Bash+PipesHub+EE+Release+Checklist"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1002/Connector+onboarding+guide"
      },
      {
       "cells": [
-       "PA-27 - Latest Jira Ticket Summary - 30 Oct 2026",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/673480708",
-       "https://pipeshub.atlassian.net/wiki/spaces/~71202055194b3331404d909e525fe272669d3b/pages/673480708/PA-27+-+Latest+Jira+…",
+       "DEMO-27 - Weekly ticket summary",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1003",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1003/DEMO-27+-+Weekly+ticket+summary",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/~71202055194b3331404d909e525fe272669d3b/pages/673480708/PA-27+-+Latest+Jira+Ticket+Summary+-+30+Oct+2026"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1003/DEMO-27+-+Weekly+ticket+summary"
      },
      {
       "cells": [
-       "[pipeshub_test#4] GitHub toolset not working",
-       "ari:cloud:jira:c7f37664-a798-44ef-a525-ecacfeb1087d:issue/34484",
-       "https://pipeshub.atlassian.net/browse/PST-52",
+       "DEMO-52 - Fix the flaky export test",
+       "ari:cloud:jira:00000000-1111-4222-8333-444444444444:issue/52",
+       "https://example.atlassian.net/browse/DEMO-52",
        "issue"
       ],
-      "url": "https://pipeshub.atlassian.net/browse/PST-52"
+      "url": "https://example.atlassian.net/browse/DEMO-52"
      }
     ]
    }
   },
   {
    "type": "text",
-   "content": "The first search surfaced one clearly assigned open ticket, but it may not be exhaustive. I’m narrowing the lookup to current assignment and unresolved status so I can distinguish your active work from unrelated mentions."
+   "content": "The first search found one open ticket assigned to you, but it may not be complete. I am narrowing the lookup to open tickets assigned to you."
   },
   {
    "type": "tool_call",
    "toolCallId": "call_4",
    "toolName": "mcp_atlassian_rovo_search",
    "status": "completed",
-   "args": "{\"query\": \"Jira issues where assignee is Sam Lee or user@example.com and status is not Done/Closed. Return the most recently updated first with key, summary, status, priority, updated date, and direct Jira URL.\"}",
+   "args": "{\"query\": \"Jira issues where assignee is Alex Rivera and status is not Done, most recently updated first\"}",
    "displayName": "Atlassian Rovo · search",
-   "argsSummary": "query: \"Jira issues where assignee is Sam Lee or user@example.com a…\"",
-   "resultPreview": "{\"results\":[{\"title\":\"Bug Bash: PipesHub OSS Release Checklist\"}]… [truncated: 11175 chars total]",
+   "argsSummary": "query: \"Jira issues where assignee is Alex Rivera and status is not Done, most recently…\"",
+   "resultPreview": "{\"results\": [{\"id\": \"ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001\", \"title\": \"Release checklist for the demo project\"}]}… [truncated: 10412 chars total]",
    "resultSummary": "Found 20 results",
    "resultView": {
     "kind": "records",
@@ -119,30 +120,30 @@
     "rows": [
      {
       "cells": [
-       "Bug Bash: PipesHub OSS Release Checklist",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/661454853",
-       "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/661454853/Bug+Bash+PipesHub+OSS+Release+Checklist",
+       "Release checklist for the demo project",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/661454853/Bug+Bash+PipesHub+OSS+Release+Checklist"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project"
      },
      {
       "cells": [
-       "Auth-related Jira Issues — Indexed Discovery + Live Status Verification",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/321093633",
-       "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/321093633/Auth-related+Jira+Issues+Indexed+Discovery+Live+Status+Ve…",
+       "Sign-in issues: status review",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1004",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1004/Sign-in+issues+status+review",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/SD/pages/321093633/Auth-related+Jira+Issues+Indexed+Discovery+Live+Status+Verification"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1004/Sign-in+issues+status+review"
      },
      {
       "cells": [
-       "Feature -> Storage pattern",
-       "ari:cloud:jira:c7f37664-a798-44ef-a525-ecacfeb1087d:issue/26912",
-       "https://pipeshub.atlassian.net/browse/PA-1718",
+       "Storage layout notes",
+       "ari:cloud:jira:00000000-1111-4222-8333-444444444444:issue/71",
+       "https://example.atlassian.net/browse/DEMO-71",
        "issue"
       ],
-      "url": "https://pipeshub.atlassian.net/browse/PA-1718"
+      "url": "https://example.atlassian.net/browse/DEMO-71"
      }
     ]
    }
@@ -152,11 +153,11 @@
    "toolCallId": "call_5",
    "toolName": "knowledgegraph__search",
    "status": "completed",
-   "args": "{\"query\": \"Jira ticket assignee Sam Lee current status To Do In Progress updated assigned to me\"}",
+   "args": "{\"query\": \"Jira ticket assignee Alex Rivera current status To Do In Progress updated\"}",
    "displayName": "Searched the knowledge base",
-   "argsSummary": "Searched for \"Jira ticket assignee Sam Lee current status To Do In Progress updated assigned to me\"",
-   "resultPreview": "Top 10 blocks from 5 records (ranked sample — other records may match).\n\n<record>\n\nRecord ID: 68f23c7d-119c-46f5-a57d-f43944339cc1\nName: Release Blocker.xlsx … [truncated: 22404 chars total]",
-   "resultSummary": "Retrieved 10 blocks from 5 records\n- Release Blocker.xlsx\n- Contract document (1).pdf\n- PipesHub-Readme (1) (1).md\n- ASAN_Transcript_FY25Q4.pdf\n- README.md\n- and 2 more"
+   "argsSummary": "Searched for \"Jira ticket assignee Alex Rivera current status To Do In Progress updated\"",
+   "resultPreview": "Top 10 blocks from 5 records (ranked sample).\n\n<record>\n\nRecord ID: 22222222-3333-4444-8555-666666666666\nName: Launch plan.xlsx … ",
+   "resultSummary": "Retrieved 10 blocks from 5 records\n- Launch plan.xlsx\n- Vendor agreement.pdf\n- Demo readme.md\n- Quarterly notes.pdf\n- README.md"
   },
   {
    "type": "text",
@@ -167,10 +168,10 @@
    "toolCallId": "call_6",
    "toolName": "mcp_atlassian_rovo_search",
    "status": "completed",
-   "args": "{\"query\": \"\\\"Sam\\\" \\\"Assignee\\\" \\\"Updated\\\" Jira ticket latest open assigned issues PA-1478\"}",
+   "args": "{\"query\": \"\\\"Alex\\\" \\\"Assignee\\\" \\\"Updated\\\" Jira ticket latest open assigned issues DEMO-148\"}",
    "displayName": "Atlassian Rovo · search",
-   "argsSummary": "query: \"\"Sam\" \"Assignee\" \"Updated\" Jira ticket latest open assigned issues PA-1478\"",
-   "resultPreview": "{\"results\":[{\"title\":\"PA-1478 - CSV Export and Copy Table Support Updated\"}]… [truncated: 11416 chars total]",
+   "argsSummary": "query: \"\"Alex\" \"Assignee\" \"Updated\" Jira ticket latest open assigned issues DEMO-148\"",
+   "resultPreview": "{\"results\": [{\"id\": \"ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1005\", \"title\": \"DEMO-148 - Table export and copy\"}]}… [truncated: 10412 chars total]",
    "resultSummary": "Found 20 results",
    "resultView": {
     "kind": "records",
@@ -184,30 +185,30 @@
     "rows": [
      {
       "cells": [
-       "PA-1478 - CSV Export and Copy Table Support Updated",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/371425299",
-       "https://pipeshub.atlassian.net/wiki/spaces/~7120202c136d9b19dd472bba99091bec4a987b/pages/371425299/PA-1478+-+CSV+Export…",
+       "DEMO-148 - Table export and copy",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1005",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1005/DEMO-148+-+Table+export+and+copy",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/~7120202c136d9b19dd472bba99091bec4a987b/pages/371425299/PA-1478+-+CSV+Export+and+Copy+Table+Support+Updated"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1005/DEMO-148+-+Table+export+and+copy"
      },
      {
       "cells": [
-       "Jira tickets summary (PA) matched to Confluence pages",
-       "ari:cloud:confluence:c7f37664-a798-44ef-a525-ecacfeb1087d:page/310214657",
-       "https://pipeshub.atlassian.net/wiki/spaces/~712020b509ccf7d57c41208ab69fbd13b72df5/pages/310214657/Jira+tickets+summary…",
+       "Ticket summary matched to pages",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1006",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1006/Ticket+summary+matched+to+pages",
        "page"
       ],
-      "url": "https://pipeshub.atlassian.net/wiki/spaces/~712020b509ccf7d57c41208ab69fbd13b72df5/pages/310214657/Jira+tickets+summary+PA+matched+to+Confluence+pages"
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1006/Ticket+summary+matched+to+pages"
      },
      {
       "cells": [
-       "Jira Connector Indexing Progress Not Advancing",
-       "ari:cloud:jira:c7f37664-a798-44ef-a525-ecacfeb1087d:issue/18101",
-       "https://pipeshub.atlassian.net/browse/PST-9",
+       "Indexing progress not advancing",
+       "ari:cloud:jira:00000000-1111-4222-8333-444444444444:issue/9",
+       "https://example.atlassian.net/browse/DEMO-9",
        "issue"
       ],
-      "url": "https://pipeshub.atlassian.net/browse/PST-9"
+      "url": "https://example.atlassian.net/browse/DEMO-9"
      }
     ]
    }
@@ -223,7 +224,7 @@
    "status": "completed",
    "args": "{\"query\": \"Jira issue search JQL assigned user updated order\", \"limit\": 10}",
    "argsSummary": "Searching for tools matching \"Jira issue search JQL assigned user updated order\"",
-   "resultPreview": "{\"matches\": [{\"name\": \"mcp_atlassian_rovo_search\"}]… [truncated: 3020 chars total]",
+   "resultPreview": "{\"matches\": [{\"name\": \"mcp_atlassian_rovo_search\"}]}… [truncated: 3020 chars total]",
    "resultSummary": "Found 10 matches"
   },
   {
@@ -235,26 +236,26 @@
    "toolCallId": "call_8",
    "toolName": "mcp_atlassian_rovo_searchJiraIssuesUsingJql",
    "status": "completed",
-   "args": "{\"cloudId\": \"c7f37664-a798-44ef-a525-ecacfeb1087d\", \"jql\": \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", \"maxResults\": 50, \"fields\": [\"summary\", \"status\", \"priority\", \"assignee\", \"updated\", \"created\", \"issuetype\", \"project\", \"duedate\"], \"responseContentFormat\": \"markdown\", \"searchResultMode\": \"issues\"}",
+   "args": "{\"cloudId\": \"00000000-1111-4222-8333-444444444444\", \"jql\": \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", \"maxResults\": 50}",
    "displayName": "Atlassian Rovo · searchJiraIssuesUsingJql",
-   "argsSummary": "cloudId: \"c7f37664-a798-44ef-a525-ecacfeb1087d\", jql: \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", maxResults: 50, …",
-   "resultPreview": "{\n  \"issues\": [\n    {\n      \"key\": \"PP-497\",\n      \"fields\": {\n        \"summary\": \"Update documentation on docs.pipehsub\"… [truncated: 200000 chars total]",
+   "argsSummary": "cloudId: \"00000000-1111-4222-8333-444444444444\", jql: \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", maxResults: 50, …",
+   "resultPreview": "{\n  \"issues\": [\n    {\n      \"key\": \"DEMO-101\",\n      \"fields\": {\n        \"summary\": \"Update the setup guide\"… [truncated: 200000 chars total]",
    "resultSummary": "{",
-   "artifactId": "b44fc5f0-dd6e-413a-8acd-89bf9cec8e38"
+   "artifactId": "33333333-4444-4555-8666-777777777777"
   },
   {
    "type": "text",
-   "content": "I found the live Jira assignment list. I’m checking the top of the update-sorted results in a compact view so the answer focuses on your newest open items, not old ticket mentions in docs."
+   "content": "I found the open ticket list. I am checking the newest results in a compact view so the answer focuses on your latest open items."
   },
   {
    "type": "tool_call",
    "toolCallId": "call_9",
    "toolName": "mcp_atlassian_rovo_searchJiraIssuesUsingJql",
    "status": "completed",
-   "args": "{\"cloudId\": \"c7f37664-a798-44ef-a525-ecacfeb1087d\", \"jql\": \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", \"maxResults\": 10, \"fields\": [\"summary\", \"status\", \"priority\", \"updated\", \"duedate\"], \"responseContentFormat\": \"markdown\", \"searchResultMode\": \"issues\"}",
+   "args": "{\"cloudId\": \"00000000-1111-4222-8333-444444444444\", \"jql\": \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", \"maxResults\": 10}",
    "displayName": "Atlassian Rovo · searchJiraIssuesUsingJql",
-   "argsSummary": "cloudId: \"c7f37664-a798-44ef-a525-ecacfeb1087d\", jql: \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", maxResults: 10, …",
-   "resultPreview": "{\n  \"issues\": [\n    {\n      \"key\": \"PP-497\"… [truncated: 14085 chars total]",
+   "argsSummary": "cloudId: \"00000000-1111-4222-8333-444444444444\", jql: \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", maxResults: 10, …",
+   "resultPreview": "{\n  \"issues\": [\n    {\n      \"key\": \"DEMO-101\"… [truncated: 14085 chars total]",
    "resultSummary": "Found 10 issues",
    "resultView": {
     "kind": "records",
@@ -268,34 +269,34 @@
     "rows": [
      {
       "cells": [
-       "PP-497",
-       "Update documentation on docs.pipehsub",
-       "PR review",
+       "DEMO-101",
+       "Update the setup guide",
+       "In review",
        "2026-11-03"
       ]
      },
      {
       "cells": [
-       "PP-36",
-       "Automation for testing of ee/oss",
-       "In Progress",
+       "DEMO-102",
+       "Add retries to the sync job",
+       "Testing",
        "2026-11-03"
       ]
      },
      {
       "cells": [
-       "PP-38",
-       "OT-5 · Turn on helmet and CSP regardless of STRICT_MODE",
-       "Backlog",
+       "DEMO-103",
+       "Show progress while the agent works",
+       "Testing",
        "2026-11-03"
       ]
      },
      {
       "cells": [
-       "PP-498",
-       "MCP pipeline improvements",
-       "In Progress",
-       "2026-11-02"
+       "DEMO-104",
+       "Tidy the sign-in scopes",
+       "Testing",
+       "2026-11-03"
       ]
      }
     ]
@@ -303,8 +304,8 @@
   },
   {
    "type": "text",
-   "isFinal": true,
-   "content": "Here are your **10 most recently updated unresolved Jira tickets**, ordered newest first:\n\n| Ticket | Summary | Status | Priority | Last updated |\n|---|---|---|---|---|\n| [PP-497](https://pipeshub.atlassian.net/browse/PP-497) | Update documentation on docs.pipehsub | PR review | Medium | Tue, Nov 3, 11:35 AM IST |\n| [PP-36](https://pipeshub.atlassian.net/browse/PP-36) | Automation for testing of ee/oss | In Progress | Medium | Tue, Nov 3, 11:35 AM IST |\n| [PP-38](https://pipeshub.atlassian.net/browse/PP-38) | OT-5 · Turn on helmet and CSP regardless of STRICT_MODE | Backlog | Medium | Tue, Nov 3, 11:27 AM IST |\n| [PP-498](https://pipeshub.atlassian.net/browse/PP-498) | MCP pipeline improvements | In Progress | Medium | Mon, Nov 2, 11:44 AM IST |\n| [PP-485](https://pipeshub.atlassian.net/browse/PP-485) | Generative UI card for tool approvals | Testing | Medium | Mon, Nov 2, 11:42 AM IST |\n| [PP-447](https://pipeshub.atlassian.net/browse/PP-447) | Show more option for thinking in the Slack bot | Testing | Medium | Mon, Nov 2, 11:42 AM IST |\n| [PP-481](https://pipeshub.atlassian.net/browse/PP-481) | Enable permissions for non permission native connectors | Testing | Medium | Sat, Oct 31, 11:35 AM IST |\n| [PP-39](https://pipeshub.atlassian.net/browse/PP-39) | CR-8 · Fail startup on missing secrets in the legacy compose file and env template | In Progress | Low | Fri, Oct 30, 1:37 PM IST |\n| [PP-40](https://pipeshub.atlassian.net/browse/PP-40) | SB-6 · Binary-only, no-scripts, hash-pinned package installs | In Progress | Medium | Fri, Oct 30, 1:37 PM IST |\n| [PP-480](https://pipeshub.atlassian.net/browse/PP-480) | Automation for Slack-Jira-Confluence bug bash workflow | Backlog | Medium | Fri, Oct 30, 11:37 AM IST |\n\nThe most immediate follow-ups by status appear to be **PP-497** (PR review) and **PP-485, PP-447, PP-481** (Testing)."
+   "isFinal": "True",
+   "content": "Here are your **10 most recently updated unresolved Jira tickets**, ordered newest first:\n\n| Ticket | Summary | Status | Priority | Last updated |\n|---|---|---|---|---|\n| [DEMO-101](https://example.atlassian.net/browse/DEMO-101) | Update the setup guide | In review | Medium | Tue, Nov 3, 11:35 AM |\n| [DEMO-102](https://example.atlassian.net/browse/DEMO-102) | Add retries to the sync job | Testing | High | Tue, Nov 3, 10:02 AM |\n| [DEMO-103](https://example.atlassian.net/browse/DEMO-103) | Show progress while the agent works | Testing | High | Mon, Nov 2, 6:40 PM |\n| [DEMO-104](https://example.atlassian.net/browse/DEMO-104) | Tidy the sign-in scopes | Testing | Medium | Mon, Nov 2, 4:15 PM |\n| [DEMO-105](https://example.atlassian.net/browse/DEMO-105) | Back off when indexing is busy | In progress | Medium | Mon, Nov 2, 1:05 PM |\n| [DEMO-106](https://example.atlassian.net/browse/DEMO-106) | Write the chat app setup page | To do | Low | Sun, Nov 1, 9:30 PM |\n| [DEMO-107](https://example.atlassian.net/browse/DEMO-107) | Tune search ranking | In progress | Medium | Sun, Nov 1, 3:12 PM |\n| [DEMO-108](https://example.atlassian.net/browse/DEMO-108) | Index page attachments | To do | Medium | Sat, Oct 31, 8:44 PM |\n| [DEMO-109](https://example.atlassian.net/browse/DEMO-109) | Add a rate-limit chart | In progress | Low | Sat, Oct 31, 11:20 AM |\n| [DEMO-110](https://example.atlassian.net/browse/DEMO-110) | Time out slow tool servers | To do | High | Fri, Oct 30, 7:58 PM |\n\nThe most immediate follow-ups by status are **DEMO-101** (In review) and **DEMO-102, DEMO-103, DEMO-104** (Testing)."
   }
  ]
 }

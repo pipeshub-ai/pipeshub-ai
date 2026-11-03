@@ -113,5 +113,13 @@ describe('slack-bot/utils/agui-stream', () => {
       handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 't1', status: 'blocked', content: 'Declined by the user.' }));
       expect(onToolResult.lastCall.args[4]).to.deep.include({ summary: 'Declined by the user.' });
     });
+
+    it('passes the saved file of a result when the stream names one', () => {
+      const onToolResult = sinon.spy();
+      const handle = createSlackAGUIEventHandler({ onToolResult });
+      handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 't1', toolCallName: 'jql' }));
+      handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 't1', status: 'completed', resultSummary: '{', artifactId: 'a1' }));
+      expect(onToolResult.lastCall.args[4]).to.deep.include({ summary: '{', artifactId: 'a1' });
+    });
   });
 });
