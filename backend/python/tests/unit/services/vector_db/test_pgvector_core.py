@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from types import SimpleNamespace
 from typing import Never
 
@@ -33,6 +34,13 @@ from app.services.vector_db.pgvector.scope import (
 )
 
 ORG = "a" * 24
+
+
+@pytest.fixture(autouse=True)
+def _clean_pgvector_env(monkeypatch) -> None:
+    """An exported PGVECTOR_* setting must not change what a test reads."""
+    for name in [n for n in os.environ if n.startswith("PGVECTOR_")]:
+        monkeypatch.delenv(name)
 
 
 # ---- configuration ----------------------------------------------------------------------------------------------------
@@ -239,7 +247,7 @@ def test_below_floor_or_unreadable_version_is_refused_even_when_not_strict(ext) 
 
 
 # ---- the org of a call -----------------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("bad", [None, "", "   ", "A" * 24, "a" * 23, "a' OR 1=1 --", 5])
+@pytest.mark.parametrize("bad", [None, "", "   ", "A" * 24, "a" * 23, "a" * 24 + "\n", "a' OR 1=1 --", 5])
 def test_an_org_that_is_not_an_org_id_is_refused(bad) -> None:
     with pytest.raises(OrgRequired):
         require_org(bad)
@@ -443,3 +451,8 @@ async def test_vrid_lookup_splits_a_refused_batch_and_gives_up_on_one_vrid() -> 
             raise asyncpg.ProgramLimitExceededError("too many")
     with pytest.raises(asyncpg.ProgramLimitExceededError):
         await Catalog(Always({}), ttl=0).orgs_of_vrids(["only"])
+
+
+def test_the_repr_of_a_config_never_shows_a_password() -> None:
+    cfg = PgVectorConfig.from_dict({"dsn": "postgresql://pipeshub_query_login:s3cret-a@h/db", "jobs_dsn": "postgresql://pipeshub_jobs:s3cret-b@h/db"})
+    assert "s3cret" not in repr(cfg) and "s3cret" not in str(cfg)

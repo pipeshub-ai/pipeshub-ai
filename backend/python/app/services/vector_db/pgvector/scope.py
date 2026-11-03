@@ -22,7 +22,7 @@ def require_org(value: object) -> str:
     """The org id as a string, or OrgRequired (None, empty, blank or not an org id)."""
     if not isinstance(value, str) or not value.strip():
         raise OrgRequired("the call carries no organisation (a non-empty org id is required)")
-    if not _ORG.match(value):
+    if not _ORG.fullmatch(value):
         raise OrgRequired("the organisation id is not well formed")
     return value
 
