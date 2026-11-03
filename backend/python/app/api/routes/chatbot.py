@@ -65,6 +65,7 @@ from app.modules.transformers.transformer import (
     TransformContext,
 )
 from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.model_identity.boundary import (
@@ -1193,6 +1194,8 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+    if edges or direct_kept:
+        await notify_principals_changed(org_id)  # a narrowing PERMISSION write
     return len(edges) + len(direct_kept)
 
 

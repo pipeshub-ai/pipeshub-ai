@@ -38,6 +38,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
+from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
 from app.models.entities import FileRecord, RecordType
@@ -50,7 +51,7 @@ from app.models.source_dates import (
 )
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
-from app.services.cache.invalidation_hooks import notify_kb_records_changed
+from app.services.cache.invalidation_hooks import notify_kb_records_changed, notify_principals_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
@@ -284,6 +285,14 @@ def _upload_lock(kb_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _UPLOAD_LOCKS[kb_id] = lock
     return lock
+
+
+def _ambient_org() -> str | None:
+    """The org of the request this runs in, so a KB change moves that org's viewer-scope version and not every org's."""
+    try:
+        return current_org_id()
+    except Exception:  # no org bound (a job): the caller's global bump is the safe answer
+        return None
 
 
 class KnowledgeBaseService:
@@ -1198,9 +1207,13 @@ class KnowledgeBaseService:
                 return refused
 
             # From here the cascade may have removed part of the KB, so the status stays DELETING.
-            result = await self.graph_provider.delete_connector_instance(
-                connector_id=kb_id, org_id=org_id
-            )
+            try:
+                result = await self.graph_provider.delete_connector_instance(
+                    connector_id=kb_id, org_id=org_id
+                )
+            finally:
+                # Whether or not it finished, the cascade may have removed the members' access.
+                await notify_principals_changed(org_id)
 
             if not result or not result.get("success"):
                 # the provider's "error" can be exception text, so it stays in the log
@@ -2562,7 +2575,7 @@ class KnowledgeBaseService:
                 updated = await self.update_kb_permission(kb_id, requester_id, role_changes, [], role)
                 if not (updated or {}).get("success"):
                     # The new members above are already written.
-                    await notify_kb_records_changed(kb_id)
+                    await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                     return updated
             if result.get("success"):
                 result["updatedUsers"] = role_changes
@@ -2571,7 +2584,7 @@ class KnowledgeBaseService:
                 # expires otherwise: the cache is only invalidated on
                 # record-set changes, and a permission edit changes no
                 # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
+                await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                 return result
             else:
                 return self._mutation_failure(result, "share this knowledge base")
@@ -2800,7 +2813,7 @@ class KnowledgeBaseService:
                 # expires otherwise: the cache is only invalidated on
                 # record-set changes, and a permission edit changes no
                 # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
+                await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                 return {
                     "success": True,
                     "userIds": valid_user_ids,
@@ -2992,7 +3005,7 @@ class KnowledgeBaseService:
                 # expires otherwise: the cache is only invalidated on
                 # record-set changes, and a permission edit changes no
                 # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
+                await notify_kb_records_changed(kb_id, scope_org=_ambient_org())
                 return {
                     "success": True,
                     "userIds": valid_user_ids,

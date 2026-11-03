@@ -173,6 +173,7 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoHTTPClient,
     ArangoQueryError,
 )
+from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -25024,6 +25025,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # a wrong one, so it must never fail the query.
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
+
+    def permission_hierarchy_view(self) -> ArangoHierarchyView:
+        return ArangoHierarchyView(lambda: self.http_client)
 
     async def get_accessible_containers(
         self,

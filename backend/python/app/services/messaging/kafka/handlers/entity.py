@@ -32,6 +32,7 @@ from app.containers.connector import (
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
@@ -57,6 +58,11 @@ _PARKED_WHILE_OFF = {
 }
 
 
+# Events that change who a person is or which apps they reach, and with it what they may read. Each moves the
+# viewer-scope version (tests/unit/services/permissions/test_permission_writers_bump.py keeps this list complete).
+PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
+
+
 class EntityEventService(BaseEventService):
     def __init__(
         self,
@@ -74,6 +80,17 @@ class EntityEventService(BaseEventService):
         """Handle entity-related events by calling appropriate handlers"""
         try:
             self.logger.info(f"Processing entity event: {event_type}")
+            handled = await self._dispatch(event_type, payload)
+            if event_type in PRINCIPAL_EVENTS:
+                # Success or not: a handler that failed half way may have changed edges. Nothing here widens access.
+                await notify_principals_changed(payload.get("orgId") if isinstance(payload, dict) else None)
+            return handled
+        except Exception as e:
+            self.logger.error(f"Error processing entity event: {str(e)}")
+            return False
+
+    async def _dispatch(self, event_type: str, payload: dict) -> bool:
+        try:
             if event_type == "orgCreated":
                 return await self._handle_org_created(payload)
             elif event_type == "orgUpdated":

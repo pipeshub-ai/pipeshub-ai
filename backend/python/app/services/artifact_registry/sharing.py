@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.notification.types import (
     NotificationOrigin,
     NotificationSeverity,
@@ -153,6 +154,8 @@ class ArtifactSharingService:
             await self._graph.batch_create_edges(to_keep_for_chat, CollectionNames.PERMISSION.value)
         if to_delete:
             await self._graph.batch_delete_edges(to_delete, CollectionNames.PERMISSION.value)
+        if to_keep_for_chat or to_delete:
+            await notify_principals_changed(actor.org_id)  # a narrowing PERMISSION write
         return len(to_keep_for_chat) + len(to_delete)
 
     async def _authorize(self, actor: Actor, artifact_id: str) -> str:
