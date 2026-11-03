@@ -1497,6 +1497,18 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 },
             )
 
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    if data_store == "postgres":
+        try:
+            await request.app.state.graph_provider.ping()
+            return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
+        except Exception:
+            request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "error": "PostgreSQL graph health check failed", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(
         status_code=200,

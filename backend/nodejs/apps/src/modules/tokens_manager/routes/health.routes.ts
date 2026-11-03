@@ -120,7 +120,7 @@ export function createHealthRouter(
           : deployment.messageBrokerType === 'postgres'
             ? 'PostgreSQL queue'
             : 'Kafka';
-      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
+      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : deployment.dataStoreType === 'postgres' ? 'PostgreSQL' : 'Neo4j';
       const vectorDbNames: Record<string, string> = {
         qdrant: 'Qdrant',
         opensearch: 'OpenSearch',
@@ -207,11 +207,15 @@ export function createHealthRouter(
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
         logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
-      } else if (deployment.dataStoreType === 'neo4j' || deployment.dataStoreType === 'arangodb') {
+      } else if (
+        deployment.dataStoreType === 'neo4j' ||
+        deployment.dataStoreType === 'arangodb' ||
+        deployment.dataStoreType === 'postgres'
+      ) {
         try {
           // Delegate to the Python connector service which probes the graph DB
           // using the same driver the application uses (Bolt for Neo4j,
-          // python-arango for ArangoDB). This avoids the Node.js layer having
+          // python-arango for ArangoDB, the graph provider for PostgreSQL). This avoids the Node.js layer having
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).

@@ -1685,6 +1685,34 @@ class TestGraphDbHealthCheck:
         assert response.status_code == 503
 
     @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_healthy(self) -> None:
+        """PostgreSQL graph probe pings the provider and answers 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(return_value=None))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 200
+        request.app.state.graph_provider.ping.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_unhealthy(self) -> None:
+        """A failing PostgreSQL graph read answers 503, not the unknown-store 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(side_effect=RuntimeError("down")))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
         """Neo4j health probe returns 200 when the open driver answers RETURN 1."""
         from app.connectors_main import graph_db_health_check

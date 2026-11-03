@@ -320,6 +320,35 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment.graphDbType).to.equal('neo4j')
     })
 
+    it('labels PostgreSQL and probes it through the connector service', async () => {
+      mockAppConfig.deployment.dataStoreType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      const get = sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.serviceNames.graphDb).to.equal('PostgreSQL')
+      expect(body.services.graphDb).to.equal('healthy')
+      expect(get.args.map((a: any[]) => a[0])).to.include('http://localhost:8088/health/graph-db')
+    })
+
+    it('reports an unhealthy PostgreSQL graph when the connector probe answers 503', async () => {
+      mockAppConfig.deployment.dataStoreType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').callsFake(async (url: string) => ({ status: url.includes('/health/graph-db') ? 503 : 200 }))
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.services.graphDb).to.equal('unhealthy')
+      expect(body.status).to.equal('unhealthy')
+    })
+
     it('should show Redis Streams in serviceNames when messageBrokerType is redis', async () => {
       mockAppConfig.deployment.messageBrokerType = 'redis'
       router = createHealthRouter(container, cmContainer)
