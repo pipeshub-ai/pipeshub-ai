@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 _CALLS = {"fetch", "fetchrow", "fetchval", "execute", "executemany"}
-_SQL_START = re.compile(r"\s*(?:/\*(?:[^*]|\*(?!/))*\*/\s*)*(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
+_SQL_START = re.compile(r"\s*(?:(?:/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*)\s*)*(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
                         r"prepare|execute|deallocate|discard|close|fetch|move|savepoint|release|rollback|commit|begin|end|abort|start)\b", re.I | re.S)
 _TAG = re.compile(r"/\*\s*pipeshub:[A-Za-z0-9_.]{1,80}\s*\*/")
 _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
@@ -73,9 +73,21 @@ def sql_rules(sql: str) -> list[str]:
     return out
 
 
+_MAX_CANDIDATES = 16
 _ALT = "\0"      # separates the texts of the alternatives (branches, assignments) that may reach one call
 _Env = dict[str, list[tuple[ast.expr, bool]]]       # name -> (assigned value, assigned by ``+=``) for each assignment
 _STATEMENT_KEYWORDS = {"query", "sql", "statement", "stmt"}
+
+
+class _Unresolvable(Exception):
+    """The text a call is given is assembled in a way this module does not model exactly."""
+
+
+def _bounded(texts: Iterable[str]) -> list[str]:
+    out = list(dict.fromkeys(texts))
+    if len(out) > _MAX_CANDIDATES:
+        raise _Unresolvable
+    return out
 
 
 def _pure(node: ast.expr, env: _Env, seen: tuple[str, ...] = ()) -> str | None:
@@ -104,7 +116,8 @@ def _sql_text(node: ast.expr, env: _Env | None = None) -> tuple[str | None, bool
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Mod):
         left, _ = _sql_text(node.left, env)
         right, _ = _sql_text(node.right, env) if isinstance(node.op, ast.Add) else (None, False)
-        return (left or "") + (right or "") or None, True
+        both = _bounded(a + b for a in (left or "").split(_ALT) for b in (right or "").split(_ALT))      # every pairing of the alternatives
+        return (_ALT.join(both) or None), True
     if isinstance(node, ast.IfExp):
         (a, a_built), (b, b_built) = _sql_text(node.body, env), _sql_text(node.orelse, env)
         both = [t for t in (a, b) if t is not None]
@@ -115,11 +128,23 @@ def _sql_text(node: ast.expr, env: _Env | None = None) -> tuple[str | None, bool
     return None, False
 
 
-def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[_Env, set[str]]:
+_BRANCHING = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match)
+_LOOPS = (ast.For, ast.AsyncFor, ast.While)
+
+
+def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[_Env, set[str], set[str]]:
     """The values assigned to plain local names in the functions around ``call`` (``q = ...``, ``q: str = ...``, ``q += ...``), and the
     module's own plain assignments (for names of constants). Only simple assignments are followed: not names that arrive as arguments, and not
-    aliases, joins or wrapper helpers (see the module docstring)."""
+    aliases, joins or wrapper helpers (see the module docstring). The third result is the names bound in a way that is not modelled exactly
+    (a ``+=`` inside a branch or loop, an assignment in a loop, a tuple, ``for``, ``with`` or walrus target, another augmented operator)."""
     out: _Env = {}
+    odd: set[str] = set()
+
+    def within(n: ast.AST, scope: ast.AST, kinds: tuple[type, ...]) -> bool:
+        while (n := parents.get(n)) is not None and n is not scope:
+            if isinstance(n, kinds):
+                return True
+        return False
 
     def own(scope: ast.AST) -> Iterable[ast.AST]:
         """The nodes of a function body, without those of the functions nested in it (they have their own names)."""
@@ -132,14 +157,20 @@ def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple
 
     def collect(scope: ast.AST, *, walk: bool) -> None:
         for n in (sorted(own(scope), key=lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0))) if walk else getattr(scope, "body", [])):
+            if walk and isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and not isinstance(parents.get(n), ast.Assign | ast.AnnAssign | ast.AugAssign):
+                odd.add(n.id)
             if isinstance(n, ast.Assign):
                 for t in n.targets:
                     if isinstance(t, ast.Name):
                         out.setdefault(t.id, []).append((n.value, False))
+                        if walk and within(n, scope, _LOOPS):
+                            odd.add(t.id)
             elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value is not None:
                 out.setdefault(n.target.id, []).append((n.value, False))
-            elif walk and isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and isinstance(n.op, ast.Add | ast.Mod):
+            elif walk and isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
                 out.setdefault(n.target.id, []).append((n.value, True))
+                if not isinstance(n.op, ast.Add | ast.Mod) or within(n, scope, _BRANCHING):
+                    odd.add(n.target.id)
 
     node: ast.AST | None = call
     scopes: list[ast.AST] = []
@@ -156,16 +187,20 @@ def _local_assignments(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple
         for param in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
             if param:
                 out.pop(param.arg, None)   # a parameter shadows what an enclosing function assigned to that name
+                odd.discard(param.arg)
         collect(scope, walk=True)
-    return {**module, **out}, set(out)
+    return {**module, **out}, set(out) | odd, odd
 
 
 def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[str | None, bool]:
     """(constant text or None, is_string_built) of the statement a call is given: the argument itself, or what the local name it passes
     was assigned (built when any assignment builds it; ``q += x`` builds unless ``x`` is a pure constant)."""
-    env, local = _local_assignments(call, parents)
-    if isinstance(arg, ast.Name) and arg.id not in local:
-        return None, False               # a module constant or an argument: not followed
+    env, local, odd = _local_assignments(call, parents)
+    if isinstance(arg, ast.Name):
+        if arg.id in odd:
+            raise _Unresolvable
+        if arg.id not in local:
+            return None, False           # a module constant or an argument: not followed
     text, built = _sql_text(arg, env)
     if text is not None or not isinstance(arg, ast.Name):
         return text, built
@@ -173,10 +208,12 @@ def _statement(arg: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]) -
     for value, augmented in env.get(arg.id, []):
         value_text, value_built = _sql_text(value, env)
         built = built or value_built or (augmented and _pure(value, env) is None)
-        if augmented:                      # a ``+=`` extends the candidates assigned before it; a plain assignment starts a new one
-            cands = [c + (value_text or "") for c in cands or [""]]
+        if augmented:                      # a ``+=`` extends every candidate assigned before it, for every alternative it has
+            cands = _bounded(c + t for c in cands or [""] for t in (value_text or "").split(_ALT))
         elif value_text is not None:
-            cands.append(value_text)
+            cands = _bounded([*cands, *value_text.split(_ALT)])     # a plain assignment adds candidates
+        elif not isinstance(value, ast.Constant):
+            raise _Unresolvable          # an alias, call, join or anything else not modelled
     return (_ALT.join(cands) or None), built
 
 
@@ -196,7 +233,11 @@ def scan_source(source: str, path: str = "<src>", *, require_tag: bool = True) -
         arg = _statement_argument(node)
         if arg is None:
             continue
-        text, built = _statement(arg, node, parents)
+        try:
+            text, built = _statement(arg, node, parents)
+        except _Unresolvable:
+            found.append(Finding(path, node.lineno, "statement not resolvable (use a literal with bound parameters)"))
+            continue
         if text is None:
             continue
         alts = [a for a in text.split(_ALT) if _SQL_START.match(a) or (built and _KEYWORDS.search(a))]   # the rest are not SQL (an HTTP client's execute, ...)

@@ -306,6 +306,7 @@ async def f(con, redis, name):
 
 
 BUILT = "string-built SQL (use bound parameters)"
+NOT_RESOLVABLE = "statement not resolvable (use a literal with bound parameters)"
 UNTAGGED = "statement without a /* pipeshub:<module>.<fn> */ tag"
 
 
@@ -377,6 +378,26 @@ def test_a_parameter_shadows_an_outer_assignment_and_a_plain_assignment_starts_a
         assert sql_lint.scan_source(shadow.replace("inner(q)", f"inner({ps})")) == []
     chained = 'q = "SELECT "\n    q += "TING "\n    q = "SET"\n    q += " ROLE r"\n    await tx.execute(q)'
     assert any("session SET" in f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {chained}\n"))
+
+
+def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
+    def rules(body: str) -> list[str]:
+        return [f.rule for f in sql_lint.scan_source(f"async def f(tx, x):\n    {body}\n")]
+
+    cross = ('q = "/* pipeshub:m.a */ SELECT pg_" if x else "/* pipeshub:m.b */ SELECT 1 -- "\n    q += "advisory_lock(5)"\n    await tx.fetch(q)')
+    assert any("session advisory lock" in r for r in rules(cross))
+    assert any("session SET" in r for r in rules('await tx.execute("-- maintenance\\nSET statement_timeout = 0")'))
+    assert any("session SET" in r for r in rules('await tx.execute("/* c */ -- d\\n/* pipeshub:m.f */ SET ROLE r")'))
+    steps = "".join(f'\n    q += " /*{i}a*/" if x else " /*{i}b*/"' for i in range(5))
+    bound = 'q = "/* pipeshub:m.f */ SELECT 1"' + steps + "\n    await tx.fetch(q)"
+    assert NOT_RESOLVABLE in rules(bound)
+    assert NOT_RESOLVABLE not in rules(cross)
+    for unmodelled in ('q = helper(x)\n    await tx.fetch(q)',
+                       'q = "/* pipeshub:m.f */ SELECT 1"\n    if x:\n        q += " AND 1 = 1"\n    await tx.fetch(q)',
+                       'q = "/* pipeshub:m.f */ SELECT 1"\n    for y in x:\n        q += y\n    await tx.fetch(q)',
+                       'for q in x:\n        await tx.fetch(q)',
+                       'q, r = x\n    await tx.fetch(q)'):
+        assert NOT_RESOLVABLE in rules(unmodelled), unmodelled
 
 
 def test_a_nested_function_does_not_change_what_the_outer_name_holds() -> None:
