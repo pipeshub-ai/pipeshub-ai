@@ -7,7 +7,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 printf '#!/bin/sh\necho STARTED "$@"\n' > "$work/bin/docker-entrypoint.sh"; chmod +x "$work/bin/docker-entrypoint.sh"
 fail=0
-pw="POSTGRES_PASSWORD=x PG_NODE_PASSWORD=x PG_CONNECTORS_PASSWORD=x PG_INDEXING_PASSWORD=x PG_QUERY_PASSWORD=x PG_JOBS_PASSWORD=x PG_MIGRATE_PASSWORD=x PG_BACKUP_PASSWORD=x"
+pw="POSTGRES_PASSWORD=x PG_NODE_PASSWORD=x PG_CONNECTORS_PASSWORD=x PG_INDEXING_PASSWORD=x PG_QUERY_PASSWORD=x PG_JOBS_PASSWORD=x PG_MIGRATE_PASSWORD=x PG_BACKUP_PASSWORD=x PG_KV_PASSWORD=x"
 run() { # name expected(0|78) pgdata, then the files (relative to the volume root) that hold a cluster
   local name="$1" want="$2" pgdata="$3"; shift 3
   rm -rf "$work/vol"; mkdir -p "$work/vol/data"
@@ -32,11 +32,16 @@ run "cluster in data/pgdata starts with PGDATA there"           0  ROOT/data/pgd
 run "cluster in data/pgdata refused under the compose PGDATA"   78 ROOT/data data/pgdata/PG_VERSION
 run "cluster at data/ refused under PGDATA=data/pgdata"         78 ROOT/data/pgdata data/PG_VERSION
 # an empty password is refused before the stock entrypoint (which would create the cluster) is reached
-for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_BACKUP_PASSWORD; do
+for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_BACKUP_PASSWORD PG_KV_PASSWORD; do
   EXTRA_ENV="$v=" run "empty $v refused before anything is started" 78 ROOT/data
 done
-# the passwords go into connection URLs, so reserved characters are refused too
-for bad in 'a@b' 'a:b' 'a/b' 'a?b' 'a%b'; do
+# a password outside printable ASCII is refused there too (the role script's SCRAM verifier needs it), and punctuation is fine
+for v in POSTGRES_PASSWORD PG_NODE_PASSWORD PG_KV_PASSWORD; do
+  EXTRA_ENV="$v=pässword" run "non-ASCII $v refused before anything is started" 78 ROOT/data
+done
+# the passwords go into connection URLs, so only unreserved characters are accepted
+EXTRA_ENV='PG_NODE_PASSWORD=Ab1._~-' run "URL-safe punctuation in a password starts" 0 ROOT/data
+for bad in 'a@b' 'a:b' 'a/b' 'a?b' 'a%b' 'a#b'; do
   EXTRA_ENV="PG_JOBS_PASSWORD=$bad" run "password '$bad' refused" 78 ROOT/data
 done
 exit $fail

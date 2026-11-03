@@ -511,7 +511,7 @@ wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^ 
   check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
   check "wizard pins the major" "$PG_MAJOR" "18"
 )
-check ".env writer lists all eight PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "8"
+check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "9"
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="
 # `docker compose up -d` reuses a cached :latest without re-checking the registry,
