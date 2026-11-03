@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Button, Checkbox, Flex, Text, TextArea, Tooltip, VisuallyHidden } from '@radix-ui/themes';
+import { Badge, Box, Button, DropdownMenu, Flex, IconButton, Text, TextArea, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { validateApprovalEdits } from '../../api';
@@ -76,8 +76,6 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const { t } = useTranslation();
   const minutesLeft = useMinutesLeft(approval.expiresAt);
   const original = approval.arguments ?? null;
-  const [remember, setRemember] = useState(false);
-  const [forConversation, setForConversation] = useState(false);
   const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...(approval.editedArguments ?? original ?? {}) }));
   const [errors, setErrors] = useState<EditError[]>(() => approval.editErrors ?? []);
   const [editing, setEditing] = useState(() => Boolean(approval.editErrors?.length));
@@ -166,7 +164,12 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
   const changeCount = t('chat.toolApproval.changeCount', { count: changed.size });
   const changedLabels = [...changed].map((name) => fields.find((f) => f.name === name)?.label ?? name).join(', ');
 
-  const answer = async (decision: ToolApprovalDecision, extra: { arguments?: Record<string, unknown>; feedback?: string } = {}) => {
+  type Lasting = { remember?: boolean; forConversation?: boolean };
+  const answer = async (
+    decision: ToolApprovalDecision,
+    extra: { arguments?: Record<string, unknown>; feedback?: string } = {},
+    { remember = false, forConversation = false }: Lasting = {},
+  ) => {
     // An edit or a note is about this one call, so it never sets a lasting rule.
     const plain = !edited && !extra.arguments && !extra.feedback;
     const payload: ToolApprovalAnswer = {
@@ -237,12 +240,19 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
     await answer('allow', { arguments: args });
   };
 
+  // Leaving the editor puts the call back as it was asked: what's approved is what's shown.
+  const cancelEdit = () => {
+    setValues({ ...(original ?? {}) });
+    setErrors([]);
+    setEditing(false);
+    editRef.current?.focus();
+  };
+
   const onFormKeyDown = (e: React.KeyboardEvent) => {
     // A Select or other layer closing on Esc has already handled it.
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     e.stopPropagation();
-    setEditing(false);
-    editRef.current?.focus();
+    cancelEdit();
   };
 
   const onNoteKeyDown = (e: React.KeyboardEvent) => {
@@ -318,12 +328,6 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
               {edited ? changeCount : ''}
             </VisuallyHidden>
           )}
-          {/* The call's own fields say it below; the summary stands in only when they're too large to send. */}
-          {approval.argsSummary && !original && (
-            <Text as="p" size="2" truncate style={{ color: 'var(--gray-11)' }}>
-              {approval.argsSummary}
-            </Text>
-          )}
           <Text as="p" size="1" style={{ color: 'var(--gray-11)' }}>
             {detail}
           </Text>
@@ -367,8 +371,6 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
             errors={fieldErrors}
             onChange={(name, value) => {
               setValues((prev) => ({ ...prev, [name]: value }));
-              setRemember(false);
-              setForConversation(false);
               setErrors((prev) => prev.filter((e) => pointerField(e.path) !== name));
             }}
           />
@@ -433,23 +435,15 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
       >
         <Flex className="tool-approval-card-group tool-approval-card-lead" align="center" gapX="4" gapY="2" wrap="wrap">
           {canEdit && (
-            <Button ref={editRef} size="2" variant="ghost" color="gray" onClick={() => setEditing((value) => !value)}>
-              {showForm ? t('chat.toolApproval.done') : t('chat.toolApproval.edit')}
-            </Button>
-          )}
-          {showForm && edited && (
             <Button
+              ref={editRef}
               size="2"
               variant="ghost"
               color="gray"
-              onClick={() => {
-                setValues({ ...(original ?? {}) });
-                setErrors([]);
-                // Reset leaves with the changes; Done is next to it.
-                editRef.current?.focus();
-              }}
+              // Cancel leaves the editor with the call as it was asked; Edit opens it.
+              onClick={() => (showForm ? cancelEdit() : setEditing(true))}
             >
-              {t('chat.toolApproval.reset')}
+              {showForm ? t('common.cancel') : t('chat.toolApproval.edit')}
             </Button>
           )}
           <Button ref={suggestRef} size="2" variant="ghost" color="gray" aria-expanded={noteOpen} onClick={() => setNoteOpen((value) => !value)}>
@@ -466,49 +460,53 @@ export function ToolApprovalCard({ approval, isLatest, rowId, placement = 'inlin
           <Button size="2" variant="outline" color="gray" disabled={sending} onClick={() => void answer('deny')}>
             {t('chat.toolApproval.deny')}
           </Button>
-          <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} loading={sending} onClick={() => void allow()}>
-            {edited ? t('chat.toolApproval.allowWithChanges') : t('chat.toolApproval.allow')}
-          </Button>
+          <ApproveButton
+            label={edited ? t('chat.toolApproval.allowWithChanges') : t('chat.toolApproval.allow')}
+            destructive={approval.kind === 'destructive'}
+            sending={sending}
+            // An admin owns the rule, and an edit is about this one call: then there is nothing to remember.
+            lasting={!edited && approval.canRemember !== false}
+            onApprove={(lasting) => void (lasting ? answer('allow', {}, lasting) : allow())}
+          />
         </Flex>
       </Flex>
-      {/* An admin owns the rule: neither choice is the person's to save. */}
-      {!edited && approval.canRemember !== false && (
-        <Flex mt="3" direction="column" gap="2">
-          <Text as="label" size="1" style={{ color: 'var(--gray-11)', cursor: 'pointer' }}>
-            <Flex gap="2" align="center">
-              <Checkbox
-                size="1"
-                checked={remember}
-                onCheckedChange={(value) => {
-                  setRemember(value === true);
-                  if (value === true) setForConversation(false);
-                }}
-              />
-              {t('chat.toolApproval.dontAskAgain')}
-            </Flex>
-          </Text>
-          <Box>
-            <Text as="label" size="1" style={{ color: 'var(--gray-11)', cursor: 'pointer' }}>
-              <Flex gap="2" align="center">
-                <Checkbox
-                  size="1"
-                  checked={forConversation}
-                  aria-describedby={`${approval.approvalId}-conversation-hint`}
-                  onCheckedChange={(value) => {
-                    setForConversation(value === true);
-                    if (value === true) setRemember(false);
-                  }}
-                />
-                {t('chat.toolApproval.allowForConversation')}
-              </Flex>
-            </Text>
-            <Text as="p" id={`${approval.approvalId}-conversation-hint`} size="1" style={{ color: 'var(--gray-10)', paddingLeft: 'var(--space-5)' }}>
-              {t('chat.toolApproval.allowForConversationHint')}
-            </Text>
-          </Box>
-        </Flex>
-      )}
     </Box>
+  );
+}
+
+/** The primary, with the lasting answers beside it in one small menu: one click for this call,
+ * two for "this chat" or "always". */
+function ApproveButton({ label, destructive, sending, lasting, onApprove }: {
+  label: string;
+  destructive: boolean;
+  sending: boolean;
+  lasting: boolean;
+  onApprove: (lasting?: { remember?: boolean; forConversation?: boolean }) => void;
+}) {
+  const { t } = useTranslation();
+  const color = destructive ? 'red' : undefined;
+  const main = (
+    <Button size="2" color={color} loading={sending} onClick={() => onApprove()}
+      style={lasting ? { flex: 1, borderTopRightRadius: 0, borderBottomRightRadius: 0 } : undefined}>
+      {label}
+    </Button>
+  );
+  if (!lasting) return main;
+  return (
+    <Flex align="center" style={{ gap: 'calc(var(--space-1) / 4)' }}>
+      {main}
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger disabled={sending}>
+          <IconButton size="2" color={color} aria-label={t('chat.toolApproval.approveOptions')} style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}>
+            <MaterialIcon name="expand_more" size={16} />
+          </IconButton>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content size="2" align="end">
+          <DropdownMenu.Item onSelect={() => onApprove({ forConversation: true })}>{t('chat.toolApproval.approveForChat')}</DropdownMenu.Item>
+          <DropdownMenu.Item onSelect={() => onApprove({ remember: true })}>{t('chat.toolApproval.alwaysApprove')}</DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+    </Flex>
   );
 }
 

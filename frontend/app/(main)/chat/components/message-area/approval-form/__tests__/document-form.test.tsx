@@ -48,9 +48,11 @@ describe('DocumentForm', () => {
     expect(screen.getByRole('group', { name: 'To' })).toBeTruthy();
     expect((screen.getByRole('textbox', { name: 'Subject' }) as HTMLInputElement).value).toBe('Hello');
     expect((screen.getByRole('textbox', { name: 'Body' }) as HTMLTextAreaElement).value).toBe('Hi there');
-    expect(screen.getByRole('button', { name: 'Priority: not set' })).toBeTruthy();
+    // An optional field the call left empty waits under More fields, with the read-only ones.
+    expect(screen.queryByRole('button', { name: 'Priority: not set' })).toBeNull();
     expect(screen.queryByText("Can't be edited here")).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'More fields' }));
+    expect(screen.getByRole('spinbutton', { name: 'Priority' })).toBeTruthy();
     expect(screen.getByText("Can't be edited here")).toBeTruthy();
   });
 
@@ -84,9 +86,9 @@ describe('DocumentForm', () => {
 
   it('pill opens a popover editor that writes the value back', () => {
     const onChange = vi.fn();
-    renderInTheme(<Harness initial={{ to: [], subject: 'Hello' }} onChange={onChange} />);
+    renderInTheme(<Harness initial={{ to: [], subject: 'Hello', priority: 1 }} onChange={onChange} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Priority: not set' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Priority: 1' }));
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Priority' }), { target: { value: '3' } });
     expect(onChange).toHaveBeenLastCalledWith('priority', 3);
     expect(screen.getByRole('button', { name: /^Priority: 3/ })).toBeTruthy();
@@ -115,8 +117,8 @@ describe('DocumentForm', () => {
   });
 
   it('a pill is a Radix button with a 28px hairline, not a hand-rolled one', () => {
-    renderInTheme(<Harness initial={{ to: [], subject: 'Hello' }} />);
-    const pill = screen.getByRole('button', { name: 'Priority: not set' });
+    renderInTheme(<Harness initial={{ to: [], subject: 'Hello', priority: 1 }} />);
+    const pill = screen.getByRole('button', { name: 'Priority: 1' });
     expect(pill.className).toMatch(/rt-Button/);
     expect(pill.style.borderRadius).toBe('var(--radius-2)');
     expect(pill.style.border).toContain('var(--gray-6)');
@@ -131,8 +133,8 @@ describe('DocumentForm', () => {
     expect(screen.queryByRole('button', { name: /^Labels:/ })).toBeNull();
   });
 
-  it('an unset optional yes/no pill says not set until it is changed', () => {
-    const toggle = schemaFields({ type: 'object', properties: { urgent: { type: 'boolean' } } });
+  it('an unset required yes/no pill stays in view and says not set until it is changed', () => {
+    const toggle = schemaFields({ type: 'object', required: ['urgent'], properties: { urgent: { type: 'boolean' } } });
     const onChange = vi.fn();
     renderInTheme(<DocumentForm fields={toggle} values={{}} errors={{}} onChange={onChange} />);
     fireEvent.click(screen.getByRole('button', { name: 'Urgent: not set' }));
