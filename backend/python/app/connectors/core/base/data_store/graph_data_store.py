@@ -1779,14 +1779,17 @@ def _wrap_connector_writer(name: str, connector_of: Callable[[dict], str | None]
 
 
 # writers that name their connector
-for _name, _of in {
+_CONNECTOR_WRITERS: dict[str, Callable[[dict], str | None]] = {
     "delete_records_recursive": lambda b: b["connector_id"],
     "soft_delete_records": lambda b: b["connector_id"],
     "restore_records": lambda b: b.get("connector_id"),
     "delete_record_by_external_id": lambda b: b["connector_id"],
     # a revoked grant may be the last one on its record, and the record is named by its external id: the connector moves on every call
     "remove_user_access_to_record": lambda b: b["connector_id"],
-}.items():
+    # the same for every grant the user holds on the connector: any of them may be the last on its record or group
+    "remove_user_access_to_connector": lambda b: b["connector_id"],
+}
+for _name, _of in _CONNECTOR_WRITERS.items():
     _wrap_connector_writer(_name, _of)
 
 
@@ -1874,7 +1877,7 @@ _wrap_patch("batch_upsert_nodes")
 
 # writes that move no structure: grants, memberships, people, sync points, content and indexing state, and the transaction itself
 _HARMLESS_WRITERS = frozenset({
-    "batch_upsert_nodes", "batch_update_nodes", "remove_user_access_to_record", "delete_user_group_by_id", "batch_upsert_people",
+    "batch_upsert_nodes", "batch_update_nodes", "delete_user_group_by_id", "batch_upsert_people",
     "upsert_person_by_email", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
     "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
@@ -1885,10 +1888,8 @@ _HARMLESS_WRITERS = frozenset({
     "delete_record_by_external_id", "compare_and_set_indexing_status",
     # a push claim writes the document id and version of the record, never a field that decides access or place
     "claim_push_record", "retag_push_record",
-    # removes the user's grant on the connector (a PERMISSION edge), never a hierarchy, group or inherit edge
-    "remove_user_access_to_connector",
 })
-CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | _HARMLESS_WRITERS
+CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 
 
 def _scoped(name: str) -> None:
