@@ -111,6 +111,21 @@ def _group(graph: FakeGraph, *, primary: str = "p1", siblings: tuple[str, ...] =
 
 
 class TestReconciler:
+    async def test_the_membership_sync_runs_for_the_records_org(self) -> None:
+        """The retry sweep binds no org; the vector write must still name one."""
+        from app.core import org_context
+
+        graph = FakeGraph()
+        _group(graph, org="org-7")
+        seen: list[str] = []
+
+        async def _sync(vrid: str) -> None:
+            seen.append(org_context.current_org_id())
+
+        reconciler, _ = _reconciler(graph, membership=_sync)
+        assert await reconciler.reconcile("p1", "vr1") is True
+        assert seen == ["org-7"]
+
     async def test_copies_and_syncs_every_sibling(self) -> None:
         graph = FakeGraph()
         _group(graph, siblings=("s1", "s2"))

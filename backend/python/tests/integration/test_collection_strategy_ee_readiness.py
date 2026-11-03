@@ -19,6 +19,7 @@ exist. Each was a silent no-op: the write landed nowhere, the delete removed
 nothing, and the vectors stayed searchable.
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -40,6 +41,7 @@ from app.services.vector_db.strategy import (
     QueryContext,
     RecordContext,
 )
+from tests.support.bound_org import bind_test_org
 from tests.support.vector_db import make_config_service
 from tests.unit.services.vector_db.test_strategy_contract import PerOrgStrategy
 
@@ -49,6 +51,13 @@ ORG_A = "acme"
 ORG_B = "globex"
 COLL_A = "org_acme_records"
 COLL_B = "org_globex_records"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org(request: pytest.FixtureRequest) -> Iterator[str]:
+    """Membership and delete calls act for the bound org (a filter always carries one): ORG_A unless
+    a test parametrizes this fixture (indirect) with another."""
+    yield from bind_test_org(getattr(request, "param", ORG_A))
 
 
 class FakeVectorDB:
@@ -83,8 +92,8 @@ class FakeVectorDB:
     async def create_index(self, collection_name, field_name, field_schema) -> None:
         return None
 
-    async def filter_collection(self, must=None, should=None):
-        return {"must": must, "should": should}
+    async def filter_collection(self, must=None, should=None, must_not=None):
+        return {"must": must, "should": should, "must_not": must_not}
 
     async def set_payload(self, collection_name, payload, filter) -> None:
         self.payload_writes.append(collection_name)
@@ -96,7 +105,7 @@ class FakeVectorDB:
         self.searched.append(collection_name)
         return [[] for _ in requests]
 
-    async def scroll(self, collection_name, scroll_filter, limit, offset=None):
+    async def scroll(self, collection_name, scroll_filter, limit, offset=None, with_payload=None):
         from app.services.vector_db.models import ScrollResult
 
         return ScrollResult(points=[], next_offset=None)
@@ -198,9 +207,10 @@ class TestMembershipIsOrgScoped:
 
         assert vdb.payload_writes == [COLL_A]
 
-    async def test_a_vrid_shared_by_two_orgs_is_rewritten_in_both(self):
+    @pytest.mark.parametrize("_bound_org, coll", [(ORG_A, COLL_A), (ORG_B, COLL_B)], indirect=["_bound_org"])
+    async def test_a_vrid_shared_by_two_orgs_is_rewritten_for_the_calling_org_only(self, coll):
         """Legacy cross-org duplicates exist on upgraded deployments, from when
-        dedup was global. Both copies must stay consistent with the graph."""
+        dedup was global. Each org's own sync writes its own copy from its own records."""
         vdb = FakeVectorDB()
         registry = await _two_org_registry(vdb)
         graph = _graph(
@@ -211,7 +221,7 @@ class TestMembershipIsOrgScoped:
             vdb, _locator(registry), graph, "vr-shared", MagicMock()
         )
 
-        assert set(vdb.payload_writes) == {COLL_A, COLL_B}
+        assert set(vdb.payload_writes) == {coll}
 
 
 class TestDeleteIsOrgScoped:
@@ -226,6 +236,7 @@ class TestDeleteIsOrgScoped:
 
         assert vdb.point_deletes == [COLL_A]
 
+    @pytest.mark.parametrize("_bound_org", [ORG_B], indirect=True)
     async def test_a_vrid_alive_in_one_org_is_rewritten_there_and_purged_elsewhere(self):
         """Org B still has a record for this content; org A does not any more.
 

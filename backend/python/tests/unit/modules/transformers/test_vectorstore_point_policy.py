@@ -23,6 +23,9 @@ from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorst
 LONG = " ".join(f"Sentence number {i} has some words in it to count." for i in range(20))
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _points(policy: str | None, monkeypatch: pytest.MonkeyPatch, text: str = LONG,
             window: "vs._Window | None" = None) -> list[Document]:
     if policy:

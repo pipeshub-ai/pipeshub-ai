@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.core.org_context import for_org
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
+from app.services.vector_db.org_metrics import ORG_SKIPPED
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -269,19 +271,35 @@ async def run_vector_membership_backfill_tick(
 
     failed = 0
     vrids = distinct_non_empty_vrids(page)
+    # Each point set is written for the org its record names; a VRID shared by two orgs is synced once per org.
+    orgs_of: dict[str, list[str]] = {}
+    for row in page:
+        row_vrid, row_org = row.get("virtualRecordId"), row.get("orgId")
+        if isinstance(row_vrid, str) and row_org and row_org not in orgs_of.setdefault(row_vrid, []):
+            orgs_of[row_vrid].append(row_org)
     for processed, vrid in enumerate(vrids, start=1):
-        try:
-            await pipeline.sync_vector_membership(vrid)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            failed += 1
-            logger.exception(
-                "Vector membership backfill failed for virtualRecordId=%s "
-                "connector=%s; continuing page",
-                vrid,
-                connector_id,
+        if not orgs_of.get(vrid):
+            # Not a failure: retrying cannot name an org, and a failure would hold the connector's backfill open for ever.
+            ORG_SKIPPED.inc("membership_backfill")
+            logger.warning(
+                "Vector membership backfill skipped virtualRecordId=%s connector=%s: none of its records names an org",
+                vrid, connector_id,
             )
+        else:
+            try:
+                for org_id in orgs_of[vrid]:
+                    with for_org(org_id, job="vector-membership-backfill"):
+                        await pipeline.sync_vector_membership(vrid)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "Vector membership backfill failed for virtualRecordId=%s "
+                    "connector=%s; continuing page",
+                    vrid,
+                    connector_id,
+                )
         if vrid_pause_ms > 0:
             await asyncio.sleep(vrid_pause_ms / 1000.0)
 

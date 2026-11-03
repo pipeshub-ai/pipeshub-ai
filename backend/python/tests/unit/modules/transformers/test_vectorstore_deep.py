@@ -31,6 +31,9 @@ from tests.support.vector_db import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore(supports_sparse=False):
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from unittest.mock import MagicMock as _MM
