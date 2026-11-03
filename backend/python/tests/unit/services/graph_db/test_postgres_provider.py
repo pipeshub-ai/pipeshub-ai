@@ -116,3 +116,46 @@ def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
     config = MagicMock()
     assert PostgresGraphProvider(logging.getLogger("t"), MagicMock(), config_service=config).config_service is config
     assert PostgresGraphProvider(logging.getLogger("t"), MagicMock()).config_service is None
+
+
+# ---- the methods the interface gained so that callers need not know the concrete provider ----------------------------------------------------
+
+HELPERS = ["_normalize_name", "_normalized_name_variants_lower", "_generate_upload_message", "_analyze_upload_structure", "_populate_file_destinations"]
+CALLER_METHODS = ["_get_kb_context_for_record", "_fetch_existing_file_names_in_parent", "_validate_upload_context", "get_user_app_ids",
+                  "get_user_permission_app_ids", "_create_reindex_event_payload", "delete_inherit_permissions_relation_record_group", "get_user_apps",
+                  "delete_all_edges_for_node", "get_template", "clone_agent_template"]
+
+
+def _providers() -> list[type]:
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+    return [ArangoHTTPProvider, Neo4jProvider, PostgresGraphProvider]
+
+
+@pytest.mark.parametrize("provider", _providers(), ids=lambda c: c.__name__)
+def test_every_provider_has_every_method_callers_use(provider: type) -> None:
+    assert not provider.__abstractmethods__
+    for name in CALLER_METHODS:
+        assert name in IGraphDBProvider.__abstractmethods__
+        assert callable(getattr(provider, name))
+
+
+@pytest.mark.parametrize("name", CALLER_METHODS)
+def test_a_caller_method_of_the_postgres_provider_is_implemented_or_stubbed_never_empty(name: str) -> None:
+    if name in unimplemented():
+        return
+    assert inspect.iscoroutinefunction(getattr(PostgresGraphProvider, name))
+
+
+def test_the_shared_name_and_upload_helpers_give_what_each_store_gave() -> None:
+    """The interface now holds the helpers the Arango and Neo4j providers each carried; the answers are the same on all three."""
+    files = [{"filePath": "a/b/x.txt"}, {"filePath": "a/y.txt"}, {"filePath": "z.txt"}]
+    valid = {"upload_target": "folder", "parent_folder": {"id": "p1"}}
+    result = {"total_created": 3, "folders_created": 2, "failed_files": ["f"], "skipped_files": []}
+    out = []
+    for cls in _providers():
+        p = object.__new__(cls)
+        out.append((p._normalize_name("  e\u0301cole "), p._normalize_name(None), p._normalized_name_variants_lower(" Ée "),
+                    p._generate_upload_message(result, "folder"), p._analyze_upload_structure(files, valid)))
+    assert out[0] == out[1] == out[2]
+    assert out[2][0] == "\u00e9cole" and out[2][1] is None

@@ -156,6 +156,8 @@ CALLS = [
     ("delete_edge", ("x", "things", "y", "things", "belongsTo"), {}),
     ("delete_edges_from", ("x", "things", "belongsTo"), {}),
     ("delete_edges_to", ("y", "things", "belongsTo"), {}),
+    ("delete_all_edges_for_node", ("things/x", "belongsTo"), {}),
+    ("delete_inherit_permissions_relation_record_group", ("r", "g"), {}),
 ]
 
 
@@ -298,3 +300,32 @@ async def test_deleting_records_by_key_waits_for_the_records_module_too(pg_provi
         with pytest.raises(NotImplementedInPostgres):
             await pg_provider.delete_nodes(["r1"], "records")
         assert await pg_provider.get_document("r1", "records") is not None                   # nothing was deleted
+
+
+async def test_all_edges_of_a_node_go_in_both_directions_within_one_collection_and_one_org(pg_provider, orgs, org_ctx) -> None:
+    a, b = orgs
+    p = pg_provider
+
+    def edge(f: str, t: str) -> dict:
+        return {"from_id": f, "from_collection": "things", "to_id": t, "to_collection": "things"}
+    for org in (a, b):
+        with org_ctx(org):
+            await p.batch_create_edges([edge("n", "o"), edge("m", "n"), edge("p", "q")], "belongsTo")
+            await p.batch_create_edges([edge("n", "o")], "other")
+    with org_ctx(a):
+        assert await p.delete_all_edges_for_node("things/n", "belongsTo") == 2
+        assert await p.delete_all_edges_for_node("n", "belongsTo") == 0                  # no collection in the key: nothing, as on the other stores
+        assert await p.get_edge("p", "things", "q", "things", "belongsTo") is not None
+        assert await p.get_edge("n", "things", "o", "things", "other") is not None       # another edge collection stays
+    with org_ctx(b):
+        assert await p.get_edge("n", "things", "o", "things", "belongsTo") is not None   # another org stays
+
+
+async def test_the_inherit_permissions_edge_of_a_record_goes(pg_provider, orgs, org_ctx) -> None:
+    a, _ = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_create_edges([{"from_id": "r", "from_collection": "records", "to_id": "g", "to_collection": "recordGroups"}], "inheritPermissions")
+        assert await p.get_edge("r", "records", "g", "recordGroups", "inheritPermissions") is not None
+        await p.delete_inherit_permissions_relation_record_group("r", "g")
+        assert await p.get_edge("r", "records", "g", "recordGroups", "inheritPermissions") is None

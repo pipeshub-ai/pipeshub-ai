@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import current_or_system, current_org_id
 
 if TYPE_CHECKING:
@@ -348,6 +349,23 @@ class CoreMixin(PgBase):
         org = current_org_id()
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_from */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = $2
             AND from_coll = $3 AND from_id = $4 RETURNING 1) SELECT count(*) FROM d""", org, collection, from_collection, from_id), transaction, write=True)
+
+    async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None = None) -> int:
+        """Every edge of ``collection`` that starts or ends at ``node_key`` (``coll/key``); 0 for a key with no collection."""
+        coll, _, key = node_key.partition("/")
+        if not key:
+            self.logger.warning("Could not parse collection from node_key: %s", node_key)
+            return 0
+        org = current_org_id()
+        colls = _LINK_COLLS if collection == "nodeRelations" else [collection]
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_all_edges_for_node */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1
+            AND coll = ANY($2::text[]) AND ((from_coll = $3 AND from_id = $4) OR (to_coll = $3 AND to_id = $4)) RETURNING 1) SELECT count(*) FROM d""",
+                                                     org, colls, coll, key), transaction, write=True)
+
+    async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str, transaction: str | None = None) -> None:
+        """The record's INHERIT_PERMISSIONS edge to the record group."""
+        await self.delete_edge(record_id, CollectionNames.RECORDS.value, record_group_id, CollectionNames.RECORD_GROUPS.value,
+                               CollectionNames.INHERIT_PERMISSIONS.value, transaction)
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str, transaction: str | None = None) -> int:
         org = current_org_id()
