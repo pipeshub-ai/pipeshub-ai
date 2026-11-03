@@ -28808,14 +28808,16 @@ paths:
         **Order of checks:** these run before authentication, in this order:
         - The app-wide body parsers refuse a body that is not valid JSON (`400`), a body past
           the size limits (`413`), and an unsupported content encoding or character set (`415`).
-        - The markup filter refuses a field that looks like markup (`400`).
+        - The markup filter refuses a body field or query value that looks like markup (`400`).
         - The global rate limiter, which counts per IP at this point, answers `429` once its
           limit is exceeded.
+        - The query guard refuses a query parameter whose name starts with `$` or contains `.`,
+          such as `?a.b=1` (`400`, `VALIDATION_ERROR`).
 
         Only then is the access token read, before the body is validated, so a request
         without a valid session token answers `401` (or `403` for a personal access token or
         OAuth access token) whatever fields its body holds. Body fields other than the three
-        below are dropped by the validator, and the query string is not read.
+        below are dropped by the validator, and the route handler ignores the query string.
 
         **Effect on sessions:** the change ends refresh tokens issued before it. The response
         carries a new access token.
