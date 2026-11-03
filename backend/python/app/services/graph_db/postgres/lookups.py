@@ -10,7 +10,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import current_org_id
+from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
     PermissionVerificationUnavailableError,
@@ -224,12 +224,21 @@ class LookupsMixin(PgBase):
             return []
 
     async def get_records_pending_duplicate_reconcile(self, due_before_ms: int, limit: int, transaction: str | None = None) -> list[dict]:
-        rows = await self._lrows("""/* pipeshub:graph.get_records_pending_duplicate_reconcile */ SELECT n.id AS "_key", n.doc->'duplicateReconcileAttempts' AS a,
-              n.doc->'duplicateReconcileDueAt' AS d FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-              AND coalesce((n.doc->>'duplicateReconcilePending')::boolean, false) AND coalesce((n.doc->>'duplicateReconcileDueAt')::bigint, 0) < $2 AND coalesce((n.doc->>'isDeleted')::boolean, false) = false
-            ORDER BY n.id LIMIT $3""", current_org_id(), due_before_ms, max(1, int(limit)), transaction=transaction)
-        return [{"_key": r["_key"], "duplicateReconcileAttempts": json.loads(r["a"]) if r["a"] else None,
-                 "duplicateReconcileDueAt": json.loads(r["d"]) if r["d"] else None} for r in rows]
+        """Under an org context that org's rows; under a system context (the recovery pass) every organisation's, each row carrying its ``orgId``."""
+        current_or_system()
+        out: list[dict] = []
+        errors: list[tuple[str, Exception]] = []
+        for org_id in await self._sweep_orgs():
+            with self._sweep(org_id, errors):
+                org = current_org_id()
+                rows = await self._lrows("""/* pipeshub:graph.get_records_pending_duplicate_reconcile */ SELECT n.id AS "_key", n.doc->'duplicateReconcileAttempts' AS a,
+                      n.doc->'duplicateReconcileDueAt' AS d FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+                      AND coalesce((n.doc->>'duplicateReconcilePending')::boolean, false) AND coalesce((n.doc->>'duplicateReconcileDueAt')::bigint, 0) < $2 AND coalesce((n.doc->>'isDeleted')::boolean, false) = false
+                    ORDER BY n.id LIMIT $3""", org, due_before_ms, max(1, int(limit)), transaction=transaction)
+                out += [{"_key": r["_key"], "orgId": org, "duplicateReconcileAttempts": json.loads(r["a"]) if r["a"] else None,
+                         "duplicateReconcileDueAt": json.loads(r["d"]) if r["d"] else None} for r in rows]
+        self._raise_failed(errors)
+        return sorted(out, key=lambda r: r["_key"])[:max(1, int(limit))]
 
     async def find_file_by_name_in_parent(self, kb_id: str, file_name: str, mime_type: str, parent_folder_id: str | None = None,
                                           exclude_record_id: str | None = None, transaction: str | None = None) -> dict | None:
