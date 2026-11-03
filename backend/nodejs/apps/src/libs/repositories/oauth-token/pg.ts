@@ -26,10 +26,14 @@ import {
   refreshOrg,
 } from '../oauth-app/pg-org';
 import {
+  AgentRegistrationStatus,
   OAuthDeviceCodeStatus,
   REFRESH_ROTATED,
   REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
+  type AgentClaimAttempt,
+  type AgentRegistrationDto,
+  type NewAgentRegistration,
   type AuthorizationCodeDto,
   type DeviceCodeDto,
   type NewAccessToken,
@@ -133,6 +137,45 @@ const DEVICE = `d.id AS dev_id, d.device_code_hash AS dev_hash, d.user_code AS d
   d.status AS dev_status, d.approved_user_id AS dev_user, (CASE WHEN d.approved_user_id IS NOT NULL THEN d.org_id END) AS dev_org, d.poll_interval AS dev_interval, d.last_polled_at AS dev_polled,
   d.expires_at AS dev_expires, d.created_at AS dev_created, d.updated_at AS dev_updated, d.version AS dev_version,
   d.limit_apps AS dev_limit_apps, d.limit_groups AS dev_limit_groups, d.limit_records AS dev_limit_records`;
+interface AgentRow {
+  id: string;
+  claim_email: string;
+  claim_token_hash: string;
+  attempt_token_hash: string;
+  user_code_hash: string;
+  attempt_expires_at: Date;
+  expires_at: Date;
+  status: AgentRegistrationStatus;
+  failed_attempts: number;
+  last_polled_at: Date | null;
+  claimed_user_id: string | null;
+  claimed_org_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+const AGENT = `id, claim_email, claim_token_hash, attempt_token_hash, user_code_hash, attempt_expires_at, expires_at, status, failed_attempts,
+  last_polled_at, claimed_user_id, claimed_org_id, created_at, updated_at`;
+const agentDto = (r: AgentRow): AgentRegistrationDto => {
+  const o: Record<string, unknown> = {
+    _id: r.id,
+    claimEmail: r.claim_email,
+    claimTokenHash: r.claim_token_hash,
+    attemptTokenHash: r.attempt_token_hash,
+    userCodeHash: r.user_code_hash,
+    attemptExpiresAt: r.attempt_expires_at,
+    expiresAt: r.expires_at,
+    status: r.status,
+    failedAttempts: r.failed_attempts,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+  optional(o, r, [
+    ['last_polled_at', 'lastPolledAt'],
+    ['claimed_user_id', 'claimedUserId'],
+    ['claimed_org_id', 'claimedOrgId'],
+  ]);
+  return o as unknown as AgentRegistrationDto;
+};
 const ACCESS = `id, org_id, token_hash, client_id, user_id, scopes, expires_at, is_revoked, revoked_at, revoked_by, revoked_reason,
   parent_refresh_token_id, name, last_used_at, actor_user_id, knowledge_limit, version, created_at, updated_at`;
 const REFRESH = `id, org_id, token_hash, client_id, user_id, scopes, expires_at, is_revoked, revoked_at, revoked_by, revoked_reason,
@@ -964,5 +1007,179 @@ export class PgOAuthTokenRepository
           : null;
       },
     );
+  }
+
+  // ---- agent registrations (the install's organisation) ----------------------------------------------------------------
+  async createAgentRegistration(
+    input: NewAgentRegistration,
+  ): Promise<AgentRegistrationDto> {
+    const i = stripNul(input, 'oauth-token', 'agent');
+    const made = await inKeyUnit<AgentRegistrationDto | null>(
+      installOrg,
+      true,
+      null,
+      async (k) => {
+        const now = new Date();
+        const { rows } = await k.query<AgentRow>(
+          `/* pipeshub:oauth.agent_create */ INSERT INTO oauth.agent_registrations
+             (org_id, id, claim_email, claim_token_hash, attempt_token_hash, user_code_hash, attempt_expires_at, expires_at, purge_at, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) RETURNING ${AGENT}`,
+          [
+            k.orgId,
+            newObjectId(),
+            i.claimEmail,
+            i.claimTokenHash,
+            i.attemptTokenHash,
+            i.userCodeHash,
+            i.attemptExpiresAt,
+            i.expiresAt,
+            i.purgeAt,
+            now,
+          ],
+        );
+        return rows[0] ? agentDto(rows[0]) : null;
+      },
+    );
+    if (!made)
+      throw new InternalServerError('there is no organisation to register in');
+    return made;
+  }
+
+  private findAgent(
+    column: string,
+    key: unknown,
+  ): Promise<AgentRegistrationDto | null> {
+    if (!goodKey(key)) return Promise.resolve(null);
+    return inKeyUnit<AgentRegistrationDto | null>(
+      installOrg,
+      false,
+      null,
+      async (k) => {
+        const { rows } = await k.query<AgentRow>(
+          `/* pipeshub:oauth.agent_by_key */ SELECT ${AGENT} FROM oauth.agent_registrations WHERE org_id = $1 AND ${column} = $2 LIMIT 1`,
+          [k.orgId, key],
+        );
+        return rows[0] ? agentDto(rows[0]) : null;
+      },
+    );
+  }
+
+  findAgentRegistrationById(id: string): Promise<AgentRegistrationDto | null> {
+    const rid = id24(id);
+    return rid ? this.findAgent('id', rid) : Promise.resolve(null);
+  }
+
+  findAgentRegistrationByClaimHash(
+    hash: string,
+  ): Promise<AgentRegistrationDto | null> {
+    return this.findAgent('claim_token_hash', hash);
+  }
+
+  findAgentRegistrationByAttemptHash(
+    hash: string,
+  ): Promise<AgentRegistrationDto | null> {
+    return this.findAgent('attempt_token_hash', hash);
+  }
+
+  /** One conditional write on a registration of the install's org; true when a row matched. */
+  private async updateAgent(
+    id: string,
+    set: string,
+    extra: unknown[],
+    where = `status = 'pending'`,
+  ): Promise<boolean> {
+    const rid = id24(id);
+    if (!rid) return false;
+    return inKeyUnit(installOrg, true, false, async (k) => {
+      const r = await k.query(
+        `/* pipeshub:oauth.agent_update */ UPDATE oauth.agent_registrations SET ${set}, updated_at = $3
+          WHERE org_id = $1 AND id = $2 AND ${where}`,
+        [k.orgId, rid, new Date(), ...extra],
+      );
+      return (r.rowCount ?? 0) === 1;
+    });
+  }
+
+  startAgentClaimAttempt(id: string, a: AgentClaimAttempt): Promise<boolean> {
+    return this.updateAgent(
+      id,
+      'attempt_token_hash = $4, user_code_hash = $5, attempt_expires_at = $6, failed_attempts = 0',
+      [a.attemptTokenHash, a.userCodeHash, a.attemptExpiresAt],
+    );
+  }
+
+  async recordAgentFailedAttempt(id: string, max: number): Promise<void> {
+    await this.updateAgent(
+      id,
+      `failed_attempts = failed_attempts + 1, status = CASE WHEN failed_attempts + 1 >= $4 THEN 'expired' ELSE status END`,
+      [max],
+    );
+  }
+
+  async recordAgentPoll(id: string, at: Date): Promise<void> {
+    await this.updateAgent(id, 'last_polled_at = $4', [at], 'true');
+  }
+
+  decideAgentRegistration(
+    id: string,
+    decision:
+      | { status: AgentRegistrationStatus.REVOKED }
+      | {
+          status: AgentRegistrationStatus.CLAIMED;
+          userId: string;
+          orgId: string;
+        },
+  ): Promise<boolean> {
+    if (decision.status === AgentRegistrationStatus.REVOKED)
+      return this.updateAgent(id, `status = 'revoked'`, []);
+    const uid = id24(decision.userId);
+    if (!uid) return Promise.resolve(false);
+    return this.updateAgent(
+      id,
+      `status = 'claimed', claimed_user_id = $4, claimed_org_id = $5`,
+      [uid, decision.orgId],
+    );
+  }
+
+  async consumeAgentRegistration(
+    id: string,
+  ): Promise<AgentRegistrationDto | null> {
+    const rid = id24(id);
+    if (!rid) return null;
+    return inKeyUnit<AgentRegistrationDto | null>(
+      installOrg,
+      true,
+      null,
+      async (k) => {
+        const { rows } = await k.query<AgentRow>(
+          `/* pipeshub:oauth.agent_consume */ UPDATE oauth.agent_registrations SET status = 'consumed', updated_at = $3
+          WHERE org_id = $1 AND id = $2 AND status = 'claimed' RETURNING ${AGENT}`,
+          [k.orgId, rid, new Date()],
+        );
+        return rows[0] ? agentDto(rows[0]) : null;
+      },
+    );
+  }
+
+  async revokeAgentRegistrationsForUser(userId: string): Promise<void> {
+    const uid = id24(userId);
+    if (!uid) return;
+    await inKeyUnit(installOrg, true, undefined, async (k) => {
+      await k.query(
+        `/* pipeshub:oauth.agent_revoke_user */ UPDATE oauth.agent_registrations SET status = 'revoked', updated_at = $3
+          WHERE org_id = $1 AND claimed_user_id = $2 AND status IN ('claimed', 'consumed')`,
+        [k.orgId, uid, new Date()],
+      );
+    });
+  }
+
+  async revokeAllAgentRegistrations(): Promise<void> {
+    await inKeyUnit(installOrg, true, undefined, async (k) => {
+      await k.query(
+        `/* pipeshub:oauth.agent_revoke_all */ UPDATE oauth.agent_registrations SET status = 'revoked', updated_at = $2
+          WHERE org_id = $1 AND status IN ('claimed', 'consumed')`,
+        [k.orgId, new Date()],
+      );
+    });
   }
 }

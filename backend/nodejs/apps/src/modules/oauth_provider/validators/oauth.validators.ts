@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { OAuthGrantType } from '../../../libs/repositories/oauth-app/types';
+import {
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
 import {
+  emailCheck,
   guidCheck,
   integerCheck,
   urlCheck,
@@ -115,6 +120,8 @@ export const tokenSchema = z.object({
       OAuthGrantType.REFRESH_TOKEN,
       OAuthGrantType.DEVICE_CODE,
       OAuthGrantType.TOKEN_EXCHANGE,
+      AGENT_CLAIM_GRANT,
+      JWT_BEARER_GRANT,
     ]),
     code: z.string().optional(),
     redirect_uri: z.string().check(urlCheck()).optional(),
@@ -129,6 +136,9 @@ export const tokenSchema = z.object({
       .regex(codeVerifierPattern, 'Invalid code_verifier format')
       .optional(),
     device_code: z.string().min(1).optional(),
+    // auth.md agent registration
+    claim_token: z.string().min(1).max(256).optional(),
+    assertion: z.string().min(1).max(4096).optional(),
     // RFC 8693 token exchange. Bounded here so an oversized body is refused
     // before any of it is parsed as a token; `requested_subject` holds a user
     // id or an email address, so it is capped at the schema's email length.
@@ -176,6 +186,33 @@ export const deviceConsentSchema = z.object({
   body: z.object({
     user_code: z.string().min(1).max(32),
     consent: z.enum(['granted', 'denied']),
+  }),
+});
+
+// auth.md agent registration. `type` is checked by the service, which answers an unknown one with the protocol's own error codes.
+export const agentIdentitySchema = z.object({
+  body: z.object({
+    type: z.string().max(64).optional(),
+    login_hint: z.string().max(320).optional(),
+  }),
+});
+
+export const agentClaimSchema = z.object({
+  body: z.object({
+    claim_token: z.string().min(1).max(256),
+    email: z.string().max(320).check(emailCheck()),
+  }),
+});
+
+export const agentClaimVerifySchema = z.object({
+  body: z.object({ claim_attempt_token: z.string().min(1).max(256) }),
+});
+
+export const agentClaimCompleteSchema = z.object({
+  body: z.object({
+    claim_attempt_token: z.string().min(1).max(256),
+    user_code: z.string().max(32).optional(),
+    action: z.enum(['approve', 'deny']),
   }),
 });
 

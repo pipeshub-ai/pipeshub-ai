@@ -5349,6 +5349,19 @@
       "server_error": "An unexpected error occurred on the server. Please try again later."
     }
   },
+  "agentClaim": {
+    "title": "Connect an agent",
+    "intro": "An agent says it works for you. Approve it only if you asked it to, and the code below matches the one it showed you.",
+    "scopesHeading": "This agent will be able to:",
+    "codeLabel": "Enter the 6-digit code the agent showed",
+    "approve": "Approve",
+    "loading": "Checking this request…",
+    "missingLink": "This link is missing its claim token. Ask the agent for a new one.",
+    "doneTitle": "Agent connected",
+    "doneLine": "The agent can now continue. This window can be closed.",
+    "deniedTitle": "Request denied",
+    "deniedLine": "The agent was not given access."
+  },
   "oauthDevice": {
     "title": "Connect a device",
     "codeLabel": "Enter the code shown in your terminal",

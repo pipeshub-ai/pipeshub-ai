@@ -43,6 +43,11 @@ import {
 } from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
+import { AgentRegistrationService } from '../services/agent-registration.service';
+import {
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { clientTags } from '../../../libs/services/telemetry/identity';
@@ -72,6 +77,8 @@ export class OAuthProviderController {
     private oauthDeviceService: OAuthDeviceService,
     @inject('TokenExchangeService')
     private tokenExchangeService: TokenExchangeService,
+    @inject('AgentRegistrationService')
+    private agentRegistrationService: AgentRegistrationService,
   ) {}
 
   /**
@@ -358,6 +365,25 @@ export class OAuthProviderController {
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Pragma', 'no-cache');
         res.json(exchanged);
+        return;
+      }
+
+      // The agent grants, like token exchange, authenticate with the credential they present (claim_token, assertion): no client_id.
+      if (
+        tokenRequest.grant_type === AGENT_CLAIM_GRANT ||
+        tokenRequest.grant_type === JWT_BEARER_GRANT
+      ) {
+        const issued =
+          tokenRequest.grant_type === AGENT_CLAIM_GRANT
+            ? await this.agentRegistrationService.claimGrant(
+                tokenRequest.claim_token ?? '',
+              )
+            : await this.agentRegistrationService.jwtBearerGrant(
+                tokenRequest.assertion ?? '',
+              );
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
+        res.json(issued);
         return;
       }
 

@@ -108,7 +108,9 @@ export interface TokenRequest {
     | 'client_credentials'
     | 'refresh_token'
     | 'urn:ietf:params:oauth:grant-type:device_code'
-    | 'urn:ietf:params:oauth:grant-type:token-exchange';
+    | 'urn:ietf:params:oauth:grant-type:token-exchange'
+    | 'urn:workos:agent-auth:grant-type:claim'
+    | 'urn:ietf:params:oauth:grant-type:jwt-bearer';
   code?: string;
   redirect_uri?: string;
   client_id: string;
@@ -117,6 +119,10 @@ export interface TokenRequest {
   scope?: string;
   code_verifier?: string;
   device_code?: string;
+  /** auth.md claim grant: the agent's claim_token. */
+  claim_token?: string;
+  /** RFC 7523: the identity assertion a claim grant returned. */
+  assertion?: string;
   /** RFC 8693: the credential being exchanged — here, a service token. */
   subject_token?: string;
   subject_token_type?: string;
@@ -318,6 +324,13 @@ export interface OpenIDConfiguration {
   device_authorization_endpoint?: string;
   /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
   pipeshub_device_client_id?: string;
+  /** auth.md agent registration. Present only where it is enabled. */
+  agent_auth?: {
+    skill: string;
+    identity_endpoint: string;
+    claim_endpoint: string;
+    identity_types_supported: string[];
+  };
   scopes_supported: string[];
   response_types_supported: string[];
   grant_types_supported: string[];

@@ -5598,6 +5598,19 @@
     "thisItemOnly": "Solo este elemento",
     "withChildren": "Este elemento y todo su contenido"
   },
+  "agentClaim": {
+    "title": "Conectar un agente",
+    "intro": "Un agente dice que trabaja para ti. Apruébalo solo si se lo pediste y el código coincide con el que te mostró.",
+    "scopesHeading": "Este agente podrá:",
+    "codeLabel": "Introduce el código de 6 dígitos que mostró el agente",
+    "approve": "Aprobar",
+    "loading": "Comprobando la solicitud…",
+    "missingLink": "Este enlace no incluye el token de reclamación. Pide uno nuevo al agente.",
+    "doneTitle": "Agente conectado",
+    "doneLine": "El agente ya puede continuar. Puedes cerrar esta ventana.",
+    "deniedTitle": "Solicitud denegada",
+    "deniedLine": "No se concedió acceso al agente."
+  },
   "oauthDevice": {
     "title": "Conectar un dispositivo",
     "codeLabel": "Introduzca el código que aparece en su terminal",

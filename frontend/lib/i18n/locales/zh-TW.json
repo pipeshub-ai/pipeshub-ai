@@ -5499,6 +5499,19 @@
     "expired": "此問題已過期。請在聊天中回覆以繼續。",
     "repliedInChat": "你已在聊天中回覆。"
   },
+  "agentClaim": {
+    "title": "連接代理",
+    "intro": "一個代理表示它為您工作。僅在是您要求它這麼做，且代碼與它顯示給您的相符時，才核准。",
+    "scopesHeading": "此代理將可以：",
+    "codeLabel": "輸入代理顯示的 6 位數代碼",
+    "approve": "核准",
+    "loading": "正在檢查此請求…",
+    "missingLink": "此連結缺少認領權杖。請向代理重新取得。",
+    "doneTitle": "代理已連接",
+    "doneLine": "代理現在可以繼續。可以關閉此視窗。",
+    "deniedTitle": "請求已拒絕",
+    "deniedLine": "代理未獲得存取權限。"
+  },
   "oauthDevice": {
     "title": "連接裝置",
     "codeLabel": "請輸入終端機中顯示的代碼",

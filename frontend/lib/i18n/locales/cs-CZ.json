@@ -5483,6 +5483,19 @@
       "server_error": "Na serveru došlo k neočekávané chybě. Zkuste to prosím znovu později."
     }
   },
+  "agentClaim": {
+    "title": "Připojit agenta",
+    "intro": "Agent tvrdí, že pracuje pro vás. Schvalte ho jen tehdy, pokud jste o to požádali vy a kód odpovídá tomu, který vám ukázal.",
+    "scopesHeading": "Tento agent bude moci:",
+    "codeLabel": "Zadejte šestimístný kód, který agent zobrazil",
+    "approve": "Schválit",
+    "loading": "Kontroluje se požadavek…",
+    "missingLink": "Tomuto odkazu chybí token pro převzetí. Požádejte agenta o nový.",
+    "doneTitle": "Agent připojen",
+    "doneLine": "Agent nyní může pokračovat. Toto okno lze zavřít.",
+    "deniedTitle": "Požadavek zamítnut",
+    "deniedLine": "Agent nezískal přístup."
+  },
   "oauthDevice": {
     "title": "Připojit zařízení",
     "codeLabel": "Zadejte kód zobrazený ve vašem terminálu",
