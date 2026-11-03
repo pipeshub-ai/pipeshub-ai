@@ -259,6 +259,7 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
+    # A search answered from less than the full search is reported with degraded_notice.note(reason) or SearchResult.degraded (see models).
     @abstractmethod
     async def query_nearest_points(
         self,
