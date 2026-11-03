@@ -64,9 +64,9 @@ async def _run(tx: Tx, org: str, collection_id: int, sparse: SparseVector, scope
     ``leg`` rows kept although the function had more."""
     terms, weights = terms_of(sparse)
     extra, extra_params = scope.extra_sql(first_param=11)
-    sql, asked = lexical_sql(extra), rows_asked(leg, scope, t)
+    asked = rows_asked(leg, scope, t)
     while True:
-        rows = await tx.fetch(sql, org, collection_id, terms, weights, *scope.args(), asked, *extra_params)
+        rows = await tx.fetch(lexical_sql(extra), org, collection_id, terms, weights, *scope.args(), asked, *extra_params)
         kept = [(r["point_sk"], str(r["point_id"])) for r in rows if r["ok"]][:leg]
         more = len(rows) >= asked                       # the function had at least as many as asked: there may be more
         if len(kept) >= leg or not more or scope.extra is None:
