@@ -245,6 +245,18 @@ jobs:
           pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
 
+      # The pgvector building blocks run again on their own, with a report of their own, so that a collection error or a skipped case
+      # in them fails the build, whatever else the shard skips: every case must have run, and the counts must be the files' counts.
+      - name: pgvector unit suites ran in full
+        if: ${{ matrix.shard == 'services' }}
+        working-directory: backend/python
+        run: |
+          pytest -p no:cacheprovider tests/unit/services/vector_db/test_pgvector_core.py tests/unit/services/vector_db/test_pgvector_placement.py \
+            --timeout=60 --junitxml=junit-pgvector.xml
+          python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
+            --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
+            --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
+
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
       # posts everything under that name to Slack.
