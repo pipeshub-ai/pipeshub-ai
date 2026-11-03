@@ -90,7 +90,7 @@ describe('ComposerApprovalCard', () => {
     try {
       const bar = screen.getByTestId('composer-approval-bar');
       expect(bar.textContent).toContain('Create an issue is waiting in "Fix login" · Asked 3 min ago');
-      expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
       expect(within(bar).getByRole('button', { name: 'Open chat' })).toBeTruthy();
       expect(within(bar).getByRole('button', { name: /\+1 more/ })).toBeTruthy();
@@ -98,13 +98,13 @@ describe('ComposerApprovalCard', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Review' }));
       act(() => vi.runAllTimers());
       expect(screen.queryByTestId('composer-approval-bar')).toBeNull();
-      expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy();
       expect(inCard(/In "Fix login" · Expires in 12 min · Asked 3 min ago/)).toBeTruthy();
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Hide' }));
 
-      fireEvent.keyDown(screen.getByRole('button', { name: 'Allow' }), { key: 'Escape' });
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Approve' }), { key: 'Escape' });
       act(() => vi.runAllTimers());
-      expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Review' }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Review' }));
@@ -167,10 +167,10 @@ describe('ComposerApprovalCard', () => {
 
   it('folds to the bar while this chat shows its own approval card', async () => {
     await show([item('a', 'conv-a', 'Fix login')]);
-    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy();
     act(() => usePendingApprovals.getState().markInline(1));
     expect(screen.getByTestId('composer-approval-bar')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
 
   it('shows In "title", +N more steps through items', async () => {
@@ -196,11 +196,11 @@ describe('ComposerApprovalCard', () => {
 
   it('Allow → toast runningIn with Open chat', async () => {
     await show([item('a', 'conv-a', 'Fix login')]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(m.toast.success).toHaveBeenCalled());
     expect(m.answerElsewhere.mock.calls[0][1]).toMatchObject({ approvalId: 'a', decision: 'allow' });
     const [title, options] = m.toast.success.mock.calls[0];
-    expect(title).toBe('Allowed. Create an issue is running in "Fix login".');
+    expect(title).toBe('Approved. Create an issue is running in "Fix login".');
     expect(options.action.label).toBe('Open chat');
     expect(options.placement).toBe('top');
     options.action.onClick();
@@ -217,7 +217,7 @@ describe('ComposerApprovalCard', () => {
   it('stale item leaves', async () => {
     m.answerElsewhere.mockResolvedValue('stale');
     await show([item('a', 'conv-a', 'Fix login')]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('This was already answered in that chat.', expect.anything()));
     expect(usePendingApprovals.getState().items).toEqual([]);
     expect(screen.queryByTestId('tool-approval-card')).toBeNull();
@@ -226,7 +226,7 @@ describe('ComposerApprovalCard', () => {
   it('a busy chat keeps the card and says so', async () => {
     m.answerElsewhere.mockResolvedValue('busy');
     await show([item('a', 'conv-a', 'Fix login')]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(await screen.findByText('That chat is still working. Try again in a moment.')).toBeTruthy();
     expect(usePendingApprovals.getState().items).toHaveLength(1);
   });
@@ -245,7 +245,7 @@ describe('ComposerApprovalCard', () => {
       return 'refused';
     });
     await show([editable]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(await screen.findByText('Fix the highlighted fields')).toBeTruthy();
     expect(m.toast.success).not.toHaveBeenCalled();
     expect(usePendingApprovals.getState().items).toHaveLength(1);
@@ -254,7 +254,7 @@ describe('ComposerApprovalCard', () => {
   it('a failed answer keeps the card and says why', async () => {
     m.answerElsewhere.mockResolvedValue('failed');
     await show([item('a', 'conv-a', 'Fix login')]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(await screen.findByText("Couldn't send your answer. Try again.")).toBeTruthy();
     expect(usePendingApprovals.getState().items).toHaveLength(1);
     expect(m.toast.success).not.toHaveBeenCalled();
@@ -265,7 +265,7 @@ describe('ComposerApprovalCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
     fireEvent.click(screen.getByRole('button', { name: /\+2 more/ }));
     expect(inCard(/In "Budget"/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(inCard(/In "Fix login"/)).toBeTruthy());
   });
 
@@ -286,7 +286,7 @@ describe('ComposerApprovalCard', () => {
   it('a failure that says why shows the reason', async () => {
     m.answerElsewhere.mockResolvedValue({ failed: 'The tool server is down.' } as never);
     await show([item('a', 'conv-a', 'Fix login')]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(await screen.findByText('The tool server is down.')).toBeTruthy();
     expect(usePendingApprovals.getState().items).toHaveLength(1);
   });
@@ -317,7 +317,7 @@ describe('ComposerApprovalCard', () => {
   it('a deleted chat leaves the list with a toast, from Allow or from Open chat', async () => {
     m.answerElsewhere.mockResolvedValue('gone' as never);
     await show([item('a', 'conv-a', 'Fix login'), item('b', 'conv-b', 'Weekly report')]);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(m.toast.info).toHaveBeenCalledWith('That chat was deleted.', expect.anything()));
     expect(usePendingApprovals.getState().items.map((i) => i.card.approvalId)).toEqual(['b']);
 
