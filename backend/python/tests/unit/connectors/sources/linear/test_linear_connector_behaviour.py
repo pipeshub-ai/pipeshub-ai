@@ -1160,6 +1160,20 @@ class TestRunSync:
         processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [alice, guest])
 
     @pytest.mark.asyncio
+    async def test_the_old_node_of_an_account_whose_email_changed_loses_the_connector(self) -> None:
+        connector = _make_connector()
+        alice, guest, _ = self._prepare(connector)
+        old_node = AppUser(
+            app_name=Connectors.LINEAR, connector_id=CONNECTOR_ID, source_user_id="u1",
+            org_id="org-1", email="alice.old@test.com", full_name="Alice", is_active=True)
+        processor = connector.data_entities_processor
+        processor.get_all_app_users = AsyncMock(return_value=[old_node, alice, guest])
+
+        await self._run(connector)
+
+        processor.withdraw_app_user_access.assert_awaited_once_with(CONNECTOR_ID, [old_node])
+
+    @pytest.mark.asyncio
     async def test_nobody_is_withdrawn_while_everyone_is_listed(self) -> None:
         connector = _make_connector()
         alice, guest, _ = self._prepare(connector)

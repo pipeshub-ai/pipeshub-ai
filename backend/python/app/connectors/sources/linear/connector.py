@@ -972,10 +972,12 @@ class LinearConnector(BaseConnector):
         """Take the connector away from stored users the complete user read no longer lists as
         active: Linear leaves suspended accounts out of it. A failed read raises before this
         runs, so an incomplete list never strips anyone. Reactivation saves the user again."""
-        kept = {u.source_user_id for u in listed}
+        # PipesHub finds a user by email, so an account whose email changed gets a second node
+        # while the old one keeps the connector: match the stored relation on both.
+        kept = {(u.email.lower(), u.source_user_id) for u in listed}
         gone = [
             u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
-            if u.source_user_id not in kept
+            if ((u.email or "").lower(), u.source_user_id) not in kept
         ]
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
