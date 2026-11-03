@@ -38,11 +38,6 @@ if TYPE_CHECKING:
 _SERVICE_SUFFIX = f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}"
 
 
-def _not_service(u: str) -> str:
-    """Keep only people in user alias ``u``: not ``kind`` service, and no address in the service-account domain (a node written before ``kind`` existed)."""
-    return f"(coalesce({u}.doc->>'kind', '') <> 'service' AND right(lower(coalesce({u}.doc->>'email', '')), {len(_SERVICE_SUFFIX)}) <> '{_SERVICE_SUFFIX}')"
-
-
 def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
     """Neo4j swallows a failed read of these methods and answers a default (``flag``: unless ``raise_on_error``). A missing org never is."""
     def deco(fn: Any) -> Any:  # noqa: ANN401
@@ -60,21 +55,6 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
         return wrapper
     return deco
 
-
-
-class _Args:
-    """Positional parameters of one statement, numbered as they are added."""
-
-    def __init__(self, *first: Any) -> None:  # noqa: ANN401
-        self.a = list(first)
-
-    def __call__(self, v: Any) -> str:  # noqa: ANN401
-        self.a.append(v)
-        return f"${len(self.a)}"
-
-
-def _contains(col: str, ph: str) -> str:
-    return f"position(lower({ph}) in lower(coalesce({col}, ''))) > 0"
 
 
 
@@ -176,20 +156,20 @@ class IdentityMixin(PgBase):
                                      transaction: str | None = None, *, include_service_accounts: bool = False) -> tuple[list[dict], int]:
         if not self._mine(org_id):
             return [], 0
-        q = _Args(current_org_id())
-        where = f" AND ({_contains('u.doc->>' + chr(39) + 'fullName' + chr(39), q(search))} OR {_contains('u.doc->>' + chr(39) + 'email' + chr(39), '$' + str(len(q.a)))})" if search else ""
-        if not include_service_accounts:
-            where += f" AND {_not_service('u')}"
-        off, lim = q((page - 1) * limit), q(limit)
-        rows = await self._id_rows(f"""/* pipeshub:graph.get_organization_users */ WITH m AS (SELECT u.id, u.doc FROM graph.edges b
+        org = current_org_id()
+        # the search, the service-account filter and the page are bound parameters of one fixed statement
+        rows = await self._id_rows("""/* pipeshub:graph.get_organization_users */ WITH m AS (SELECT u.id, u.doc FROM graph.edges b
               JOIN graph.nodes u ON u.org_id = b.org_id AND u.coll = 'users' AND u.id = b.from_id
               WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.to_coll = 'organizations' AND b.to_id = $1 AND b.doc->>'entityType' = 'ORGANIZATION'
-                AND coalesce((u.doc->>'isActive')::boolean, false) {where}),
+                AND coalesce((u.doc->>'isActive')::boolean, false)
+                AND ($2::text IS NULL OR position(lower($2) in lower(coalesce(u.doc->>'fullName', ''))) > 0 OR position(lower($2) in lower(coalesce(u.doc->>'email', ''))) > 0)
+                AND ($3::boolean OR (coalesce(u.doc->>'kind', '') <> 'service' AND right(lower(coalesce(u.doc->>'email', '')), length($4::text)) <> $4::text))),
             cnt AS (SELECT count(DISTINCT id) AS total FROM m)
             SELECT cnt.total, p.doc FROM cnt LEFT JOIN LATERAL (SELECT DISTINCT ON (id) id, doc FROM m ORDER BY id) p ON false
             UNION ALL
             SELECT cnt.total, p.doc FROM cnt, LATERAL (SELECT doc FROM (SELECT DISTINCT ON (id) id, doc FROM m ORDER BY id) d
-              ORDER BY doc->>'fullName' COLLATE "C" ASC NULLS LAST, id OFFSET {off} LIMIT {lim}) p""", q.a, transaction)
+              ORDER BY doc->>'fullName' COLLATE "C" ASC NULLS LAST, id OFFSET $5 LIMIT $6) p""",
+                                  [org, search or None, include_service_accounts, _SERVICE_SUFFIX, (page - 1) * limit, limit], transaction)
         total = rows[0]["total"] if rows else 0
         out = []
         for r in rows:
@@ -212,10 +192,9 @@ class IdentityMixin(PgBase):
                 WHERE u.org_id = $1 AND u.coll = 'users' AND lower(u.doc->>'email') = $2 ORDER BY u.id COLLATE "C" """, [current_org_id(), wanted], None)
             return [dict(r) for r in rows]
         # a name's words are cut at single spaces and rejoined, so runs of spaces compare equal
-        words = "array_to_string(array_remove(string_to_array(lower({}), ' '), ''), ' ')"
-        rows = await self._id_rows(f"""/* pipeshub:graph.find_users */ WITH u AS (
-              SELECT x.id, x.doc, lower(coalesce(x.doc->>'email', '')) AS email, {words.format("coalesce(x.doc->>'fullName', '')")} AS name,
-                     {words.format("coalesce(x.doc->>'firstName', '') || ' ' || coalesce(x.doc->>'lastName', '')")} AS parts
+        rows = await self._id_rows("""/* pipeshub:graph.find_users */ WITH u AS (
+              SELECT x.id, x.doc, lower(coalesce(x.doc->>'email', '')) AS email, array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'fullName', '')), ' '), ''), ' ') AS name,
+                     array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'firstName', '') || ' ' || coalesce(x.doc->>'lastName', '')), ' '), ''), ' ') AS parts
               FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'users'),
             hits AS (
               SELECT id, name, (email = $2 OR name = $2 OR parts = $2) AS exact, CASE WHEN email <> '' THEN email ELSE 'id:' || id END AS person FROM u
