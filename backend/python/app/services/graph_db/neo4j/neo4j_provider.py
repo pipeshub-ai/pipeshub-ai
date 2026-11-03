@@ -224,6 +224,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     Neo4jClient,
     is_write_conflict,
 )
+from app.services.graph_db.neo4j.permission_scopes import Neo4jHierarchyView
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
     PushClaim,
@@ -8619,6 +8620,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # a wrong one, so it must never fail the query.
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
+
+    def permission_hierarchy_view(self) -> Neo4jHierarchyView:
+        return Neo4jHierarchyView(lambda: self.client)
 
     async def get_accessible_containers(
         self,

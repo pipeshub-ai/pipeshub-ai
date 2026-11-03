@@ -422,6 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
+    from app.services.permissions.ports import HierarchyView
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -4933,6 +4934,13 @@ class IGraphDBProvider(ABC):
         return AccessibleContainers(
             fallback_reason="provider does not implement container filtering"
         )
+
+    def permission_hierarchy_view(self) -> "HierarchyView":
+        """The organisation's record groups and scopes, for `app.services.permissions.ViewerScopeResolver`.
+
+        Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
+        "no scopes"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
     @abstractmethod
     async def get_entity_access_context(
