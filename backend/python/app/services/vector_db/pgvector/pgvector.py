@@ -43,7 +43,14 @@ from app.services.vector_db.models import (
     VectorDBHealth,
     VectorPoint,
 )
-from app.services.vector_db.pgvector import dense, fusion, lexical, reads, validate, writes
+from app.services.vector_db.pgvector import (
+    dense,
+    fusion,
+    lexical,
+    reads,
+    validate,
+    writes,
+)
 from app.services.vector_db.pgvector.catalog import Catalog, CollectionRow, OrgSpace
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
