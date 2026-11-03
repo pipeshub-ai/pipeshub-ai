@@ -26,6 +26,7 @@ export interface SlackBotConfig {
   botToken: string;
   signingSecret: string;
   agentId?: string;
+  createAccountsForSlackUsers?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -35,6 +36,7 @@ export interface SlackBotConfigPayload {
   botToken: string;
   signingSecret: string;
   agentId?: string;
+  createAccountsForSlackUsers?: boolean;
 }
 
 // ========================================

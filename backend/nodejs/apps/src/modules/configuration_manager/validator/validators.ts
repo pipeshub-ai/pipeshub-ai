@@ -30,6 +30,7 @@ const slackBotConfigBodySchema = z.object({
   botToken: z.string().trim().min(1, { message: 'Bot token is required' }),
   signingSecret: z.string().trim().min(1, { message: 'Signing secret is required' }),
   agentId: z.string().trim().optional().or(z.literal('')),
+  createAccountsForSlackUsers: z.boolean().optional(),
 });
 
 export const s3ConfigSchema = baseStorageSchema.extend({

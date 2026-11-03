@@ -88,6 +88,7 @@ import {
   resolveSlackBotForEvent,
   resolveThreadId,
   sendUserFacingSlackErrorMessage,
+  slackFullMemberClaims,
   slackCallerDisplayName,
   isIgnoredSlackMessage,
   isThreadFollowUpMessage,
@@ -422,11 +423,19 @@ async function processSlackMessage(
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
   }
 
+  const memberClaims = await slackFullMemberClaims(
+    typedClient,
+    currentBotId,
+    typedContext.botUserId,
+    typedMessage.user,
+    lookupResult.user,
+    callerDisplayName,
+  );
   const accessToken = slackJwtGenerator(
     email,
     await configService.getScopedJwtSecret(),
     undefined,
-    { configId: currentBotId },
+    { configId: currentBotId, ...memberClaims },
   );
 
   const conversation = await getFromDatabase(

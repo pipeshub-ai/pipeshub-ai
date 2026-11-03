@@ -280,6 +280,36 @@ describe('Configuration manager stored settings', () => {
       expect(stored[0]).to.include({ id: 'bot-1', name: 'Support bot v2', botToken: 'xoxb-rotated' });
       expect(stored[1]).to.deep.equal(other);
     });
+    describe('createAccountsForSlackUsers', () => {
+      it('is off unless the admin turns it on, and is shown either way', async () => {
+        const created = await run(createSlackBotConfig(store()), {
+          body: { name: 'New bot', botToken: 'xoxb-new', signingSecret: 'sig-new' },
+        });
+        expect(created.res.body?.config).to.include({ createAccountsForSlackUsers: false });
+        expect(openSlackBots()[0]).to.include({ createAccountsForSlackUsers: false });
+
+        const on = await run(createSlackBotConfig(store()), {
+          body: { name: 'Bot 2', botToken: 'xoxb-2', signingSecret: 'sig-2', createAccountsForSlackUsers: true },
+        });
+        expect(on.res.body?.config).to.include({ createAccountsForSlackUsers: true });
+      });
+
+      it('is kept by an update that leaves it out, and changed by one that sends it', async () => {
+        kv.values.set(configPaths.slackBot, seal({ configs: [{ ...existingBot, createAccountsForSlackUsers: true }] }));
+
+        await run(updateSlackBotConfig(store()), {
+          params: { configId: 'bot-1' },
+          body: { name: 'Renamed', botToken: 'x', signingSecret: 'y', agentId: 'agent-1' },
+        });
+        expect(openSlackBots()[0]).to.include({ createAccountsForSlackUsers: true });
+
+        await run(updateSlackBotConfig(store()), {
+          params: { configId: 'bot-1' },
+          body: { name: 'Renamed', botToken: 'x', signingSecret: 'y', agentId: 'agent-1', createAccountsForSlackUsers: false },
+        });
+        expect(openSlackBots()[0]).to.include({ createAccountsForSlackUsers: false });
+      });
+    });
   });
 
   describe('web search providers', () => {

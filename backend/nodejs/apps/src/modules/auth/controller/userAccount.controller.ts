@@ -85,6 +85,8 @@ import {
 import { withoutRemovedSignInMethods } from '../utils/removedSignInMethods';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { getOrgRepository } from '../../../libs/repositories/org';
+import { isSlackOnlyAccount } from '../../user_management/constants/service-account.constants';
+import { SLACK_ONLY_SIGN_IN_MESSAGE } from '../../user_management/services/slack-only-accounts.service';
 import {
   EntitiesEventProducer,
   Event,
@@ -825,7 +827,12 @@ export class UserAccountController {
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       const user = await this.iamService.getUserByEmail(email, authToken);
 
-      if (user.statusCode === 200 && user.data) {
+      // A Slack-only account has no password to reset.
+      if (
+        user.statusCode === 200 &&
+        user.data &&
+        !isSlackOnlyAccount(user.data as { kind?: string })
+      ) {
         await this.sendForgotPasswordEmail(user.data);
       }
     } catch (lookupOrSendError) {
@@ -1277,7 +1284,13 @@ export class UserAccountController {
         _id: string;
         orgId: string;
         fullName: string;
+        kind?: string;
       };
+      if (isSlackOnlyAccount(user)) {
+        await this.generateHashedOTP();
+        res.status(200).send(SIGN_IN_CODE_REQUESTED);
+        return;
+      }
 
       // A locked account or a failed send gets the same answer as an unknown
       // email, so the answer never shows that the account exists.
@@ -1896,6 +1909,30 @@ export class UserAccountController {
           const methodKey =
             method === AuthMethodType.MICROSOFT ? 'microsoft' : 'google';
 
+          // The provider has proven the address, so a Slack-only account is
+          // upgraded where just-in-time provisioning would have created one,
+          // and refused where it would not.
+          if (user && isSlackOnlyAccount(user)) {
+            if (!(jitConfig?.[methodKey] && userDetails)) {
+              throw new ForbiddenError(SLACK_ONLY_SIGN_IN_MESSAGE);
+            }
+            const {
+              _id,
+              orgId: userOrgId,
+              email,
+            } = user as {
+              _id: string;
+              orgId: string;
+              email: string;
+            };
+            await this.jitProvisioningService.upgradeSlackOnlyUser(
+              { _id, orgId: userOrgId, email },
+              userDetails,
+              methodKey,
+            );
+            user = { ...user, kind: 'human' };
+          }
+
           if (!user) {
             if (jitConfig && jitConfig[methodKey] && userDetails) {
               const details = userDetails;
@@ -1953,6 +1990,24 @@ export class UserAccountController {
         }
       }
       this.assertSameAccountAsEarlierSteps(sessionInfo, user);
+
+      // A Slack-only account has no password and is sent no code, so it gets
+      // the answer an unknown address gets.
+      if (isSlackOnlyAccount(user)) {
+        const submitted = (credentials ?? {}) as {
+          password?: unknown;
+          otp?: unknown;
+        };
+        if (method === AuthMethodType.OTP) {
+          await compareWithDecoyHash(submitted.otp);
+          throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+        }
+        if (method === AuthMethodType.PASSWORD) {
+          await compareWithDecoyHash(submitted.password);
+          throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+        }
+        throw new ForbiddenError(SLACK_ONLY_SIGN_IN_MESSAGE);
+      }
 
       // The account is known: what follows runs as it (its credentials, activity and token are its own).
       await asAccount(String(user.orgId), String(user._id), 'sign-in', () =>

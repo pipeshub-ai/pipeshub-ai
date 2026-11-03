@@ -472,6 +472,81 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(o1, live._id))!._id).to.equal(live._id);
     });
 
+    it('upgradeSlackOnly leaves an ordinary account as it is', async () => {
+      const org = await fx.newOrg();
+      const p = await person(org);
+      expect(await users.upgradeSlackOnly(org, p._id)).to.equal(false);
+      expect((await users.getLive(org, p._id))!.kind ?? 'human').to.equal('human');
+    });
+
+    describe('Slack-only accounts', () => {
+      const slackOnly = (org: string, extra: Record<string, unknown> = {}) =>
+        person(org, { kind: 'slack', role: 'member', hasLoggedIn: false, slackUserId: 'U1', slackTeamId: 'T1', ...extra });
+      const directory = { skip: 0, limit: 50, includeServiceAccounts: false };
+
+      it('keeps the Slack user and workspace ids', async () => {
+        const org = await fx.newOrg();
+        const s = await slackOnly(org);
+        const read = (await users.getLive(org, s._id))!;
+        expect(read).to.include({ kind: 'slack', slackUserId: 'U1', slackTeamId: 'T1' });
+      });
+
+      it('are left out of the directory unless asked for, and never listed with groups', async () => {
+        const org = await fx.newOrg();
+        const p = await person(org);
+        const s = await slackOnly(org);
+        const ids = async (q: Record<string, unknown>) =>
+          (await users.listDirectory(org, { ...directory, ...q })).rows.map((r) => r._id);
+        expect(await ids({})).to.deep.equal([p._id]);
+        expect((await ids({ includeSlackOnlyAccounts: true })).sort()).to.deep.equal([p._id, s._id].sort());
+        const listed = await users.listWithGroups(org, { includeServiceAccounts: true });
+        expect(listed.map((r) => r._id)).to.deep.equal([p._id]);
+      });
+
+      it('can never be an administrator', async () => {
+        const org = await fx.newOrg();
+        const s = await slackOnly(org);
+        const refused = async (op: () => Promise<unknown>) => {
+          let error: unknown;
+          try {
+            await op();
+          } catch (e) {
+            error = e;
+          }
+          expect((error as Error | undefined)?.message).to.equal('An account created from Slack cannot be an administrator');
+        };
+        await refused(() => slackOnly(org, { role: 'admin' }));
+        await refused(() => users.promoteToAdmin(org, [s._id]));
+        await refused(() => users.setRole(org, s._id, 'admin'));
+        expect((await users.getLive(org, s._id))!.role).to.equal('member');
+      });
+
+      it('upgradeSlackOnly turns one into an ordinary account once, keeping its id', async () => {
+        const org = await fx.newOrg();
+        const s = await slackOnly(org);
+        const [first, second] = await Promise.all([
+          users.upgradeSlackOnly(org, s._id),
+          users.upgradeSlackOnly(org, s._id),
+        ]);
+        expect([first, second].filter(Boolean)).to.have.length(1);
+        expect((await users.getLive(org, s._id))!.kind).to.equal('human');
+        expect(await users.upgradeSlackOnly(await fx.newOrg(), s._id)).to.equal(false);
+      });
+
+      it('records who created one', async () => {
+        const org = await fx.newOrg();
+        const s = await slackOnly(org);
+        await activities.record({
+          orgId: org,
+          userId: s._id,
+          email: s.email,
+          activityType: 'ACCOUNT CREATED FROM SLACK',
+          ipAddress: 'system',
+          details: 'created from Slack bot b1',
+        });
+      });
+    });
+
     it('promoteToAdmin promotes people; a batch that reaches a service account is refused by the schema', async () => {
       const org = await fx.newOrg();
       const p = await person(org);

@@ -35,6 +35,7 @@ import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { dateFilterToRange } from './date-filter';
+import { inviteAvailability } from './invite-email';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
@@ -101,6 +102,10 @@ function UsersPageContent() {
     };
   }, []);
   const smtpBlocksInvite = isSmtpConfigured !== true;
+  const smtpInviteTooltip = t(
+    'workspace.users.inviteDisabledSmtp',
+    'SMTP is not configured. Set up email settings before inviting users.'
+  );
 
   const {
     users,
@@ -148,6 +153,9 @@ function UsersPageContent() {
         page,
         limit,
         search: searchQuery || undefined,
+        // Honoured for admins only. Left out under a status filter, because a
+        // Slack-only account is none of Active, Pending or Blocked.
+        ...(filters.statuses?.length ? {} : { includeSlackOnlyAccounts: 'true' }),
       };
       // Status filter → hasLoggedIn and/or isBlocked flags
       if (filters.statuses?.length) {
@@ -612,7 +620,13 @@ function UsersPageContent() {
         render: (user) => (
           <StatusBadge
             status={
-              user.isBlocked ? 'Blocked' : user.hasLoggedIn ? 'Active' : 'Pending'
+              user.isBlocked
+                ? 'Blocked'
+                : user.kind === 'slack'
+                  ? 'SlackOnly'
+                  : user.hasLoggedIn
+                    ? 'Active'
+                    : 'Pending'
             }
           />
         ),
@@ -847,6 +861,42 @@ function UsersPageContent() {
     [addToast, t]
   );
 
+  // ── Invite a Slack-only account (upgrades the same account) ──
+  const handleInviteSlackOnly = useCallback(
+    async (user: User) => {
+      if (!user.email) return;
+      try {
+        const { queued } = await UsersApi.inviteUsers([user.email]);
+        addToast(
+          queued
+            ? {
+                variant: 'success',
+                title: t('workspace.users.invite.queuedTitle', 'Invites queued'),
+                description: t('workspace.users.invite.queuedDescription', {
+                  email: user.email,
+                }),
+                duration: 5000,
+              }
+            : {
+                variant: 'success',
+                title: t('workspace.users.actions.inviteSlackOnlySuccess', {
+                  email: user.email,
+                }),
+                duration: 3000,
+              },
+        );
+        void fetchUsers();
+      } catch {
+        addToast({
+          variant: 'error',
+          title: t('workspace.users.actions.inviteSlackOnlyError'),
+          duration: 5000,
+        });
+      }
+    },
+    [addToast, t, fetchUsers]
+  );
+
   // ── Edit Invite handler ──
   const handleEditInvite = useCallback(
     (user: User) => {
@@ -886,7 +936,28 @@ function UsersPageContent() {
 
       let actions: (RowAction | false)[];
 
-      if (user.isBlocked) {
+      if (user.kind === 'slack' && !user.isBlocked) {
+        actions = [
+          {
+            icon: 'visibility',
+            label: t('workspace.users.actions.viewProfile'),
+            onClick: () => navigateToProfilePanel(user),
+          },
+          isAdmin && {
+            icon: 'send',
+            label: t('workspace.users.actions.inviteSlackOnly'),
+            onClick: () => handleInviteSlackOnly(user),
+            ...inviteAvailability(smtpBlocksInvite, smtpInviteTooltip),
+          },
+          isAdmin && {
+            icon: 'person_remove',
+            label: t('workspace.users.actions.removeFromWorkspace'),
+            variant: 'danger' as const,
+            separatorBefore: true,
+            onClick: () => setRemoveTarget(user),
+          },
+        ];
+      } else if (user.isBlocked) {
         actions = [
           {
             icon: 'visibility',
@@ -1034,6 +1105,9 @@ function UsersPageContent() {
       navigateToProfilePanel,
       requestChangeRole,
       handleResendInvite,
+      handleInviteSlackOnly,
+      smtpBlocksInvite,
+      smtpInviteTooltip,
       handleEditInvite,
       requestCancelInvite,
       ROLE_SUB_MENU_OPTIONS,
@@ -1069,14 +1143,7 @@ function UsersPageContent() {
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
         ctaDisabled={smtpBlocksInvite}
-        ctaTooltip={
-          smtpBlocksInvite
-            ? t(
-                'workspace.users.inviteDisabledSmtp',
-                'SMTP is not configured. Set up email settings before inviting users.'
-              )
-            : undefined
-        }
+        ctaTooltip={smtpBlocksInvite ? smtpInviteTooltip : undefined}
         additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
 

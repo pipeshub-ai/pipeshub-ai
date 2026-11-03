@@ -377,6 +377,12 @@ function createMockStream(): any {
 let restoreSessionDocs: () => void = () => undefined
 
 describe('Enterprise Search Controller', () => {
+  // The flag is read from the shared settings store, which another test file
+  // in the same worker may have connected; keep it off the store and uncached.
+  beforeEach(() => {
+    ProjectsFeature.resetCache()
+    sinon.stub(ProjectsFeature, 'settingsStore').returns({ isConnected: () => false } as never)
+  })
   beforeEach(() => {
     if (!(conversationArtifacts.deleteConversationArtifacts as any).restore) {
       sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()

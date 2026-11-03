@@ -136,7 +136,7 @@ describe('a service account can never be an administrator', () => {
         );
       }
       // The narrowed query is what makes one match enough.
-      expect(findOne.firstCall.args[0]).to.include({ kind: 'service' });
+      expect(findOne.firstCall.args[0].kind).to.deep.equal({ $in: ['service', 'slack'] });
     });
 
     it('does not interfere with promoting a person', async () => {

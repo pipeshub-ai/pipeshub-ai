@@ -69,9 +69,9 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables) and the document store's branches
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES)
-HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0)}
-# platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0003", "oauth_0003", "platform_data_0004"}
+HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (4, 4), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0)}
+# platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads; identity_0004 came after it
+REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0003", "identity_0004", "oauth_0003", "platform_data_0004"}
 
 
 def test_fresh_install(db):
