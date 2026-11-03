@@ -34,7 +34,7 @@ export class MongoAgentCallRepository implements AgentCallRepository {
     };
     // The key fields are not repeated in $setOnInsert: the upsert writes them from the filter.
     const { orgId: _o, tokenId: _t, method: _m, route: _r, ...rest } = doc;
-    const upsert = () =>
+    const upsert = (): Promise<unknown> =>
       AgentCallEvent.updateOne(
         key,
         { $inc: { count: 1 }, $setOnInsert: { ...rest, createdAt: now } },
