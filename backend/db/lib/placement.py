@@ -24,7 +24,7 @@ POINTS = "retrieval.points"
 POSTINGS, POSTINGS_OPTIONS = ddl.POSTINGS, ddl.POSTINGS_OPTIONS
 SAFE_BELOW = (0, 8, 4)      # pgvector versions below this have HNSW vacuum bugs: deletes are tombstoned (HNSW safe mode)
 log = logging.getLogger(__name__)
-_ORG = re.compile(r"^[0-9a-f]{24}$")
+_ORG = re.compile(r"[0-9a-f]{24}")
 
 
 class Refused(Exception):
@@ -34,7 +34,7 @@ class Refused(Exception):
 def leaf_name(root: str, org: str) -> str:
     if root not in ROOTS:
         raise ValueError(f"not a partitioned root: {root!r}")
-    if not _ORG.match(org):
+    if not _ORG.fullmatch(org):
         raise ValueError(f"not an org id: {org!r}")
     return f"{root}_o_{org}"
 
@@ -121,18 +121,21 @@ def has_pending(jobs: psycopg.Connection) -> bool:
 def run_requests(owner: Connection, jobs: psycopg.Connection, limit: int | None = None) -> tuple[list[str], list[str]]:
     """Close every pending placement request: create the org's leaf (it has no rows yet). Every request ends: placed (done_at), or
     closed as failed with the reason in ``note`` (an org that already has rows is refused at once; a failing one is retried with a
-    growing delay and given up after MAX_ATTEMPTS). Requests that are closed or waiting out a delay are not looked at, so they never
+    growing delay (1, 2, 4 ... 60 seconds) and given up after MAX_ATTEMPTS, about two minutes in all). Requests that are closed or waiting out a delay are not looked at, so they never
     hold up newer ones. A pass handles at most ``limit`` requests (oldest first), so the migrate lock it runs under is never held for
     long; the worker's next pass takes the rest. A new ask re-opens a failed request (see ``retrieval.org_leaf_request``).
-    Returns (done, failed)."""
-    done, failed = [], []
+    A request whose org id is malformed is refused at once, never retried. Returns (done, failed, refused): ``failed`` are the ones
+    that raised (waiting for a retry or given up), ``refused`` the ones closed by the rules."""
+    done, failed, refused = [], [], []
     batch = [r[0] for r in jobs.execute(f"SELECT org_id FROM retrieval.placement_requests WHERE {PENDING} ORDER BY requested_at LIMIT %s", (limit or MAX_PER_PASS,))]
     for org in batch:
         try:
+            if not _ORG.fullmatch(org):
+                raise Refused("the request names a malformed organisation id")
             ensure_org_leaf(owner, jobs, org)
         except Refused as e:
             jobs.execute("UPDATE retrieval.placement_requests SET failed_at = now(), note = %s WHERE org_id = %s", (str(e), org))
-            failed.append(org)
+            refused.append(org)
         except Exception as e:
             reason = (str(e).strip().splitlines() or [type(e).__name__])[0][:300]
             jobs.execute(
@@ -145,4 +148,4 @@ def run_requests(owner: Connection, jobs: psycopg.Connection, limit: int | None 
         else:
             jobs.execute("UPDATE retrieval.placement_requests SET done_at = now(), note = NULL WHERE org_id = %s", (org,))
             done.append(org)
-    return done, failed
+    return done, failed, refused

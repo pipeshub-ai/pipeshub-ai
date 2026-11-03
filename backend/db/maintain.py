@@ -4,7 +4,8 @@
                                                           needs PG_JOBS_URL. --watch keeps running (the placement worker: a writing service
                                                           waits for it before an org's first vector write)
 
-Exit codes: 0 done, 1 failed, 2 configuration, 3 lock wait timed out, 5 a request was refused.
+Exit codes of a one-shot run: 0 every request placed (or none pending), 1 a request failed (it is retried by the next run), 2 configuration,
+3 lock wait timed out, 5 a request was refused by the placement rules.
 """
 import os
 import sys
@@ -36,12 +37,12 @@ def _jobs_url() -> str:
     return raw
 
 
-def _placement_pass(url: str) -> tuple[list[str], list[str]]:
+def _placement_pass(url: str) -> tuple[list[str], list[str], list[str]]:
     """One pass over the pending requests. The migrate lock is taken only when there is something to do, so an idle worker never
-    holds up a deployment."""
+    holds up a deployment. Returns (done, failed, refused)."""
     with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
         if not placement.has_pending(jobs):
-            return [], []
+            return [], [], []
         with locked(url):
             engine = create_engine(url, isolation_level="AUTOCOMMIT")
             try:
@@ -52,14 +53,19 @@ def _placement_pass(url: str) -> tuple[list[str], list[str]]:
                 engine.dispose()
 
 
+def _summary(done: list[str], failed: list[str], refused: list[str]) -> str:
+    return (f"leaves created: {', '.join(done) or 'none'}" + (f"; failed (retried later): {', '.join(failed)}" if failed else "")
+            + (f"; refused: {', '.join(refused)}" if refused else ""))
+
+
 def _watch(url: str, interval: float) -> None:
     log(f"placement worker running (every {interval:g}s)")
     while True:
         try:
-            done, failed = _placement_pass(url)
-            if done or failed:
-                log(f"leaves created: {', '.join(done) or 'none'}" + (f"; waiting or refused: {', '.join(failed)}" if failed else ""))
-            if len(done) + len(failed) >= placement.MAX_PER_PASS:
+            done, failed, refused = _placement_pass(url)
+            if done or failed or refused:
+                log(_summary(done, failed, refused))
+            if len(done) + len(failed) + len(refused) >= placement.MAX_PER_PASS:
                 continue                                            # a full pass: more wait behind the cap, and a new org's writer waits too
         except (RunnerError, psycopg.Error, OSError) as exc:        # the database is away or the lock is busy: try again
             log(f"placement pass failed: {str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__}")
@@ -80,12 +86,9 @@ def main(argv: list[str]) -> int:
                 raise RunnerError(EXIT_CONFIG, USAGE)
             _watch(url, interval)
             return 0
-        done, failed = _placement_pass(url)
-        log(f"leaves created: {', '.join(done) or 'none'}" + (f"; waiting or refused: {', '.join(failed)}" if failed else ""))
-        return 0
-    except placement.Refused as exc:
-        log(f"refused: {exc}")
-        return EXIT_REFUSED
+        done, failed, refused = _placement_pass(url)
+        log(_summary(done, failed, refused))
+        return EXIT_REFUSED if refused else EXIT_FAILED if failed else 0
     except RunnerError as exc:
         log(str(exc))
         return exc.code

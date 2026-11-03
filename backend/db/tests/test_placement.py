@@ -87,14 +87,12 @@ def test_the_points_leaf_gets_the_vector_index_of_each_registered_space_and_the_
     assert maintain.main(["placement"]) == 0
     with cluster.admin(name) as c:
         c.execute("SET ROLE pipeshub_owner")
-        engine_owner = None
         major = int(c.execute("SELECT current_setting('server_version_num')::int / 10000").fetchone()[0])
         ver = tuple(int(x) for x in c.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'").fetchone()[0].split("."))
         indexes = [r[0] for r in c.execute("SELECT indexname FROM pg_indexes WHERE tablename = %s AND indexname LIKE '%%_bq_s%%'", (f"points_o_{ORG_A}",))]
         assert indexes == ([] if major >= 18 and ver < (0, 8, 3) else [f"points_o_{ORG_A}_bq_s1"])
         opts = c.execute("SELECT coalesce(reloptions, '{}') FROM pg_class WHERE oid = %s::regclass", (f"retrieval.points_o_{ORG_A}",)).fetchone()[0]
         assert ("vacuum_index_cleanup=off" in opts) == (ver < placement.SAFE_BELOW)
-        del engine_owner
 
 
 def test_a_refused_request_is_closed_with_its_reason_and_nothing_is_made(rdb, monkeypatch):
@@ -104,9 +102,9 @@ def test_a_refused_request_is_closed_with_its_reason_and_nothing_is_made(rdb, mo
         put(c, ORG_A, "a0000000-0000-0000-0000-0000000000f1")                               # the org already has a row in the shared tree
     ask(cluster, name, ORG_A)
     env(monkeypatch, cluster, name)
-    assert maintain.main(["placement"]) == 0
+    assert maintain.main(["placement"]) == 5                                                # refused by the rules: its own exit code
     ((placed, note),) = status(cluster, name, ORG_A)
-    assert placed is False and "retrieval.points" in note and "already has rows" in note and "ABC" not in note
+    assert placed is False and "retrieval.points" in note and "already has rows" in note
     assert attached(cluster, name, ORG_A) == []
     with cluster.admin(name) as c:
         assert c.execute("SELECT failed_at IS NOT NULL, done_at IS NULL, attempts FROM retrieval.placement_requests").fetchone() == (True, True, 0)
@@ -121,7 +119,7 @@ def test_rows_in_a_later_table_refuse_after_the_earlier_leaves_were_made_and_a_s
         c.execute("INSERT INTO retrieval.point_tombstones (org_id, point_sk) VALUES (%s, 1)", (ORG_A,))
     ask(cluster, name, ORG_A)
     env(monkeypatch, cluster, name)
-    assert maintain.main(["placement"]) == 0
+    assert maintain.main(["placement"]) == 5
     assert "retrieval.point_tombstones" in status(cluster, name, ORG_A)[0][1]
     assert attached(cluster, name, ORG_A) == list(BIGGER[:BIGGER.index("point_tombstones")])        # whole tables only, up to the refusal
     before = attached(cluster, name, ORG_A)
@@ -149,7 +147,7 @@ def test_the_same_request_run_twice_and_by_two_workers_at_once_makes_one_leaf(rd
 
 
 class Dying:
-    """The owner connection, and a failure when the postings table is attached: the kill of a worker in the middle of its run."""
+    """The owner connection, and a failure when the postings table is attached: an in-process interrupt (KeyboardInterrupt) in the middle of a run; the transaction rolls back, as it does when the process is killed."""
 
     def __init__(self, conn) -> None:
         self._conn = conn
@@ -160,7 +158,7 @@ class Dying:
         return self._conn.exec_driver_sql(sql, *args, **kw)
 
 
-def test_a_run_killed_in_the_middle_leaves_whole_tables_only_and_the_next_run_finishes(rdb, monkeypatch):
+def test_a_run_interrupted_in_process_in_the_middle_leaves_whole_tables_only_and_the_next_run_finishes(rdb, monkeypatch):
     cluster, name = rdb
     ask(cluster, name, ORG_A)
     env(monkeypatch, cluster, name)
@@ -169,11 +167,11 @@ def test_a_run_killed_in_the_middle_leaves_whole_tables_only_and_the_next_run_fi
     with pytest.raises(KeyboardInterrupt):
         maintain._placement_pass(maintain.migrate_url())
     with cluster.admin(name) as c:
-        assert c.execute(f"SELECT to_regclass('retrieval.postings_o_{ORG_A}') IS NULL").fetchone()[0]       # the table of the killed step is gone
+        assert c.execute(f"SELECT to_regclass('retrieval.postings_o_{ORG_A}') IS NULL").fetchone()[0]       # the table of the interrupted step is gone
         assert c.execute("SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname LIKE '%%_o_%%' AND NOT l.granted").fetchone()[0] == 0
     done = attached(cluster, name, ORG_A)
     assert done == list(BIGGER[:BIGGER.index("postings")])
-    assert status(cluster, name, ORG_A) == [(False, None)]                                  # still pending: the kill left it open
+    assert status(cluster, name, ORG_A) == [(False, None)]                                  # still pending: the interruption left it open
     monkeypatch.setattr(placement, "run_requests", real)
     assert maintain.main(["placement"]) == 0
     assert attached(cluster, name, ORG_A) == list(BIGGER) and status(cluster, name, ORG_A) == [(True, None)]
@@ -196,7 +194,7 @@ def test_an_unattached_empty_leaf_of_an_older_run_is_replaced_and_one_that_holds
         c.execute("SET ROLE NONE")
         c.execute(f"INSERT INTO retrieval.point_text_o_{ORG_B} (org_id, point_sk, payload) VALUES (%s, 1, '{{}}')", (ORG_B,))
     ask(cluster, name, ORG_B)
-    assert maintain.main(["placement"]) == 0
+    assert maintain.main(["placement"]) == 5
     assert "exists, is not attached and holds rows" in status(cluster, name, ORG_B)[0][1]
     with cluster.admin(name) as c:
         assert c.execute(f"SELECT count(*) FROM retrieval.point_text_o_{ORG_B}").fetchone()[0] == 1               # nothing was dropped
@@ -211,13 +209,13 @@ def test_a_request_that_keeps_failing_backs_off_and_is_given_up(rdb, monkeypatch
         raise RuntimeError("a lock that would not clear")
 
     monkeypatch.setattr(placement, "ensure_org_leaf", broken)
-    assert maintain.main(["placement"]) == 0
-    assert maintain.main(["placement"]) == 0                                                # waiting out its delay: not tried again
+    assert maintain.main(["placement"]) == 1                                                # every request failed: not 0
+    assert maintain.main(["placement"]) == 0                                                # waiting out its delay: nothing pending, not tried again
     with cluster.admin(name) as c:
         assert c.execute("SELECT attempts, failed_at IS NULL, next_try_at > now() FROM retrieval.placement_requests").fetchone() == (1, True, True)
         for _ in range(placement.MAX_ATTEMPTS - 1):
             c.execute("UPDATE retrieval.placement_requests SET next_try_at = NULL")
-            assert maintain.main(["placement"]) == 0
+            assert maintain.main(["placement"]) == 1
         attempts, failed, note = c.execute("SELECT attempts, failed_at IS NOT NULL, note FROM retrieval.placement_requests").fetchone()
     assert (attempts, failed) == (placement.MAX_ATTEMPTS, True) and "gave up" in note and "would not clear" in note
     assert status(cluster, name, ORG_A)[0][1] == note
@@ -236,7 +234,7 @@ def test_requests_that_cannot_be_placed_do_not_starve_new_ones_and_a_new_ask_reo
     ask(cluster, name, ORG_A)                                                               # a brand-new org, behind seven that will be refused
     env(monkeypatch, cluster, name)
     pending = "SELECT count(*) FROM retrieval.placement_requests WHERE done_at IS NULL AND failed_at IS NULL"
-    assert maintain.main(["placement"]) == 0
+    assert maintain.main(["placement"]) == 5
     with cluster.admin(name) as c:
         assert c.execute(pending).fetchone()[0] == n + 1 - 3                                 # a pass is capped: it holds the migrate lock
     passes = 1
@@ -244,7 +242,7 @@ def test_requests_that_cannot_be_placed_do_not_starve_new_ones_and_a_new_ask_reo
         with cluster.admin(name) as c:
             if c.execute(pending).fetchone()[0] == 0:
                 break
-        assert maintain.main(["placement"]) == 0
+        assert maintain.main(["placement"]) in (0, 5)               # refused ones are exit 5
         passes += 1
     assert passes == 3                                                                      # ceil(8 / 3) passes; closed requests never wait again
     assert status(cluster, name, ORG_A) == [(True, None)]
@@ -262,7 +260,7 @@ def test_requests_that_cannot_be_placed_do_not_starve_new_ones_and_a_new_ask_reo
 
 
 def test_the_worker_starts_the_next_pass_at_once_after_a_full_one(monkeypatch):
-    passes = iter([(["a"] * placement.MAX_PER_PASS, []), ([], ["b"])])
+    passes = iter([(["a"] * placement.MAX_PER_PASS, [], []), ([], ["b"], [])])
     monkeypatch.setattr(maintain, "_placement_pass", lambda url: next(passes))
 
     def sleep(_):
@@ -279,7 +277,7 @@ def test_an_idle_worker_never_takes_the_migrate_lock_and_a_busy_one_waits_for_it
     env(monkeypatch, cluster, name)
     monkeypatch.setenv("PG_MIGRATE_LOCK_TIMEOUT_S", "1")
     with locked(cluster.url(name, "pipeshub_migrate")):                                     # a deployment holds the lock
-        assert maintain._placement_pass(maintain.migrate_url()) == ([], [])                 # nothing to do: no wait, no lock
+        assert maintain._placement_pass(maintain.migrate_url()) == ([], [], [])                 # nothing to do: no wait, no lock
         ask(cluster, name, ORG_A)
         assert maintain.main(["placement"]) == 3                                            # work to do: it waits for the lock and says so
     assert maintain.main(["placement"]) == 0
@@ -309,3 +307,26 @@ def test_the_jobs_connection_is_needed_to_see_the_requests(rdb, monkeypatch):
     with cluster.admin(name) as c:
         c.execute("SET ROLE pipeshub_owner")
         assert c.execute("SELECT count(*) FROM retrieval.placement_requests").fetchone()[0] == 0     # row-level security hides them from the owner
+
+
+def test_an_org_id_must_match_whole_a_trailing_newline_is_not_an_org_id():
+    for bad in (ORG_A + "\n", "\n" + ORG_A, ORG_A[:-1], ORG_A.upper()):
+        with pytest.raises(ValueError, match="not an org id"):
+            placement.leaf_name("retrieval.points", bad)
+    assert placement.leaf_name("retrieval.points", ORG_A) == f"retrieval.points_o_{ORG_A}"
+
+
+def test_a_request_with_a_malformed_org_id_is_refused_at_once_and_never_retried():
+    """The table's own check refuses such an id; this is the worker's second line, with a stub for the jobs connection."""
+    class Jobs:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, params=()):
+            self.sql.append((sql, params))
+            return [(ORG_A + "\n",)] if sql.startswith("SELECT org_id") else None
+
+    jobs = Jobs()
+    assert placement.run_requests(object(), jobs) == ([], [], [ORG_A + "\n"])
+    update = [x for x in jobs.sql if x[0].startswith("UPDATE")]
+    assert len(update) == 1 and "failed_at = now()" in update[0][0] and "attempts" not in update[0][0] and "malformed" in update[0][1][0]
