@@ -75,9 +75,11 @@ class InMemoryStampGraph:
     node_map: Mapping[str, StampNode] = field(default_factory=lambda: dict[str, StampNode]())
     failure: Exception | None = None
     reads: list[int] = field(default_factory=lambda: list[int]())
+    app_reads: int = 0
 
     async def app(self, org_id: str, app_id: str) -> StampApp:
         self._check()
+        self.app_reads += 1
         return self.apps.get(app_id, StampApp("", False, False)) if org_id == self.org_id else StampApp("", False, False)
 
     async def nodes(self, org_id: str, ids: frozenset[str]) -> dict[str, StampNode]:
