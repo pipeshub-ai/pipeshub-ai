@@ -54,14 +54,19 @@ from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
+from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
+    STALE_SCOPE,
+    mark_scope_stale,
     reset_membership_context,
     resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
+    scope_fields_for_state,
+    scope_org_id,
     set_membership_context,
     sync_vector_membership,
     vector_point_payload,
@@ -1266,7 +1271,7 @@ class VectorStore(Transformer):
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         with stage("vector.delete"):
             await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
-        tokens = await self._bind_membership(virtual_record_id)
+        tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
         try:
             await self._process_document_chunks([summary_doc], record_id, collection_name)
         finally:
@@ -1423,6 +1428,7 @@ class VectorStore(Transformer):
                 e,
                 exc_info=True,
             )
+            await mark_scope_stale(self.vector_db_service, self.collection_locator, virtual_record_id, self.logger)
 
     async def _record_is_gone(self, record_id: str) -> bool:
         """True only when the graph positively reports the record as absent.
@@ -1443,7 +1449,7 @@ class VectorStore(Transformer):
             return False
 
     async def _bind_membership(
-        self, virtual_record_id: str, record: Optional["Record"] = None
+        self, virtual_record_id: str, record: Optional["Record"] = None, org_id: str | None = None
     ):
         """Resolve VRID membership and bind it for the points about to be written.
 
@@ -1476,8 +1482,15 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
+        # Scope fields (permission model): written only while ACL_SCOPE_FIELDS is on. A failure never fails indexing; the
+        # point is marked stale and the post-index resync or the back-fill recomputes it.
+        scope = None
+        if scope_fields_enabled():
+            # the summary point has no record in hand: its caller names the org, then the ambient one
+            org_id = getattr(record, "org_id", None) or org_id or scope_org_id()
+            scope = await scope_fields_for_state(self.graph_provider, state, org_id, self.logger) if org_id else STALE_SCOPE
         return set_membership_context(
-            connector_ids, record_group_ids, root_record_group_ids
+            connector_ids, record_group_ids, root_record_group_ids, scope
         )
 
     # ------------------------------------------------------------------

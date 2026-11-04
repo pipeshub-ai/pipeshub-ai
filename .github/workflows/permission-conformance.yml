@@ -77,13 +77,13 @@ jobs:
       - name: Run oracle, scenario and matrix tests
         run: |
           cd backend/python
-          pytest tests/permissions -m "not integration" -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
+          pytest tests/permissions -m "not integration" -n 4 -v -rx --junitxml="$RUNNER_TEMP/oracle-junit.xml"
 
       # --min-tests pins the suite size, so a module that stopped being collected fails the job; a PR that adds tests raises it.
       # The one allowed skip is the strict expected failure that reports matrix cells without a scenario, by its exact name.
       - name: Check the oracle run for skips
         run: |
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 514 \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/oracle-junit.xml" --min-tests 639 \
             --allow test_coverage_gaps_are_reported
 
       - name: Run the viewer-scope service tests (no services)
@@ -169,7 +169,7 @@ jobs:
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-suite-junit.xml" --min-tests 609 \
             --allow "test_an_edge_from_a_removed_document_is_no_parent[neo4j]" \
             --allow "test_the_tree_labels_follow_the_edges[arango]"
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 6
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/graph-conformance-junit.xml" --min-tests 8
 
       - name: Upload the regressions the generator filed
         if: failure()
