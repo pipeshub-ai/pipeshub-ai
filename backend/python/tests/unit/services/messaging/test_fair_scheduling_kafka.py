@@ -1206,6 +1206,27 @@ class TestRebalancePurge:
         consumer._offset_tracker.track(tp1, 100)
         assert consumer._offset_tracker.mark_done(tp1, 100) == 101
 
+    @pytest.mark.parametrize("done", [True, False])
+    async def test_a_job_finishing_after_the_next_poll_commits_nothing(
+        self, logger, plain_config, done
+    ):
+        consumer = _make_consumer(logger, plain_config, _fair_config())
+        consumer.consumer = MagicMock()
+        consumer.consumer.commit = AsyncMock()
+        tp = TopicPartition("record-events", 0)
+        for offset in range(9):
+            consumer._offset_tracker.track(tp, offset)
+
+        await consumer._on_partitions_revoked([tp])
+        # What the first getmany() after the rebalance does; offsets 0..7 have
+        # not been re-read.
+        consumer._revoked_since_poll.clear()
+        await consumer._IndexingKafkaConsumer__resolve_offset(
+            _InFlightOffset(tp, 8), done=done
+        )
+
+        consumer.consumer.commit.assert_not_awaited()
+
 
 class TestDisabledIsCurrentFifo:
     def test_no_fair_scheduler_config_disables_scheduler(self, logger, plain_config):
