@@ -508,7 +508,7 @@ class TestDeletes:
         await proc.on_records_deleted_cascade(["a"], "c1", soft_delete=False)
         assert _titles(proc) == []
 
-    async def test_a_record_sent_to_the_trash_keeps_its_point(self) -> None:
+    async def test_a_record_sent_to_the_trash_loses_its_point(self) -> None:
         store = AsyncMock()
         store.soft_delete_records = AsyncMock(return_value={
             "soft_deleted_records": [{"record_id": "a"}], "org_id": "org-1", "virtual_record_ids": [],
@@ -516,5 +516,16 @@ class TestDeletes:
         proc, _ = _proc(store)
         with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()):
             await proc.on_records_deleted_cascade(["a"], "c1", soft_delete=True)
-        assert _titles(proc) == []
+        assert [(p["eventType"], p["recordId"]) for _, p in _titles(proc)] == [("delete", "a")]
+
+    async def test_a_refused_title_delete_does_not_fail_the_trash(self) -> None:
+        store = AsyncMock()
+        store.soft_delete_records = AsyncMock(return_value={
+            "soft_deleted_records": [{"record_id": "a"}], "org_id": "org-1", "virtual_record_ids": [],
+        })
+        proc, _ = _proc(store)
+        proc.messaging_producer.send_messages = AsyncMock(side_effect=ConnectionError("down"))
+        with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()):
+            result = await proc.on_records_deleted_cascade(["a"], "c1", soft_delete=True)
+        assert result["softDeleted"]
 

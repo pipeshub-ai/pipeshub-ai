@@ -4056,6 +4056,8 @@ class DataSourceEntitiesProcessor:
                 raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
         record_restored(DeleteSource(restore_source).value, len(restored))
         await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
+        # The trash dropped the title points; write them back (after the commit).
+        await self._publish_record_titles((await self.get_typed_records_by_ids(restored)).values())
         return restored
 
     @staticmethod
@@ -4629,6 +4631,7 @@ class DataSourceEntitiesProcessor:
             connector_id=connector_id,
             org_id=result.get("org_id"),
             marked=len(result["deleted_records"]),
+            record_ids=[r["record_id"] for r in result["deleted_records"] if r.get("record_id")],
             virtual_record_ids=result.get("virtual_record_ids", []),
             batch_id=batch_id,
             delete_source=delete_source,
@@ -4649,6 +4652,7 @@ class DataSourceEntitiesProcessor:
         connector_id: str,
         org_id: str | None,
         marked: int,
+        record_ids: list[str],
         virtual_record_ids: list[str],
         batch_id: str,
         delete_source: DeleteSource,
@@ -4659,6 +4663,7 @@ class DataSourceEntitiesProcessor:
         if marked:
             await notify_kb_records_changed(connector_id, org_id)
             await self._access_changed([connector_id], org_id)
+        await self._publish_record_titles(deletes=[(rid, connector_id) for rid in record_ids])
         return await self._publish_soft_delete_events(
             org_id=org_id or self.org_id,
             connector_id=connector_id,
