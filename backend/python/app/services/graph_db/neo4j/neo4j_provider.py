@@ -8708,9 +8708,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $ids AS id
                 MATCH (n:{label} {{id: id}})
                 RETURN n.id AS id,
-                       [(n)-[:BELONGS_TO]->(g) | g.id] AS belongs,
-                       [(n)-[:INHERIT_PERMISSIONS]->(q) | q.id] AS inherits,
-                       [(p)-[h:NODE_RELATION]->(n) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] | [p.id, h.relationshipType]] AS parents,
+                       [(n)-[:BELONGS_TO]->(g) | [g.id, labels(g)[0]]] AS belongs,
+                       [(n)-[:INHERIT_PERMISSIONS]->(q) | [q.id, labels(q)[0]]] AS inherits,
+                       [(p)-[h:NODE_RELATION]->(n) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] | [p.id, h.relationshipType, labels(p)[0]]] AS parents,
                        EXISTS {{ ()-[:PERMISSION]->(n) }} AS granted
                 """,
                 parameters={"ids": list(node_ids)},
@@ -8724,9 +8724,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         out: dict[str, frozenset] = {}
         for r in rows or []:
             me = r["id"]
-            edges = {(CollectionNames.BELONGS_TO.value, me, g) for g in r["belongs"] or []}
-            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q) for q in r["inherits"] or []}
-            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t) for p, t in r["parents"] or []}
+            # the collection of the other end is part of the edge: an app and a record group may share a key
+            edges = {(CollectionNames.BELONGS_TO.value, me, g, c) for g, c in r["belongs"] or []}
+            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q, c) for q, c in r["inherits"] or []}
+            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t, c) for p, t, c in r["parents"] or []}
             if r.get("granted"):
                 edges.add(("granted", me))
             out[me] = frozenset(edges)

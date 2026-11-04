@@ -25115,12 +25115,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   LET d = DOCUMENT(@coll, id)
                   FILTER d != null
                   RETURN {{id: id,
-                          belongs: (FOR b IN {CollectionNames.BELONGS_TO.value} FILTER b._from == d._id RETURN PARSE_IDENTIFIER(b._to).key),
+                          belongs: (FOR b IN {CollectionNames.BELONGS_TO.value} FILTER b._from == d._id
+                                    RETURN [PARSE_IDENTIFIER(b._to).key, PARSE_IDENTIFIER(b._to).collection]),
                           inherits: (FOR i IN {CollectionNames.INHERIT_PERMISSIONS.value} FILTER i._from == d._id
-                                     RETURN PARSE_IDENTIFIER(i._to).key),
+                                     RETURN [PARSE_IDENTIFIER(i._to).key, PARSE_IDENTIFIER(i._to).collection]),
                           parents: (FOR h IN {CollectionNames.NODE_RELATIONS.value}
                                     FILTER h._to == d._id AND h.relationshipType IN @hierarchy
-                                    RETURN [PARSE_IDENTIFIER(h._from).key, h.relationshipType]),
+                                    RETURN [PARSE_IDENTIFIER(h._from).key, h.relationshipType, PARSE_IDENTIFIER(h._from).collection]),
                           granted: LENGTH(FOR g IN {CollectionNames.PERMISSION.value} FILTER g._to == d._id LIMIT 1 RETURN 1) > 0}}
                 """,
                 {"ids": list(node_ids), "coll": collection, "hierarchy": ["PARENT_CHILD", "ATTACHMENT"]},
@@ -25134,9 +25135,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         out: dict[str, frozenset] = {}
         for r in rows or []:
             me = r["id"]
-            edges = {(CollectionNames.BELONGS_TO.value, me, g) for g in r["belongs"] or []}
-            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q) for q in r["inherits"] or []}
-            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t) for p, t in r["parents"] or []}
+            # the collection of the other end is part of the edge: an app and a record group may share a key
+            edges = {(CollectionNames.BELONGS_TO.value, me, g, c) for g, c in r["belongs"] or []}
+            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q, c) for q, c in r["inherits"] or []}
+            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t, c) for p, t, c in r["parents"] or []}
             if r.get("granted"):
                 edges.add(("granted", me))
             out[me] = frozenset(edges)

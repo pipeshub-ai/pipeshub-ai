@@ -85,3 +85,28 @@ async def test_inside_a_transaction_the_read_sees_the_transactions_own_write(bac
         after = await tx._structures_of([(R, child.id)])
     assert before != after, name
     assert before[(R, child.id)] > after[(R, child.id)], "only edges went"
+
+
+@pytest.mark.parametrize("removed", ["app first", "group first"])
+async def test_an_app_and_a_record_group_with_one_key_are_two_ends_not_one(backend, removed: str) -> None:
+    """The snapshot keeps the collection of the other end of an edge: removing either of two edges to `apps/x` and `recordGroups/x` changes
+    it, whichever goes first (it did not when it kept the key alone)."""
+    conn, _, child = await _world(backend)
+    store = GraphDataStore(MagicMock(), backend.provider)
+    same_key = _group(f"samekey-{_suffix()}", inherit=False, connector_id=conn)
+    same_key.id = conn  # a record group whose key is the key of the app
+    async with store.transaction() as tx:
+        await tx.batch_upsert_record_groups([same_key])
+    edge = {"from_id": child.id, "from_collection": R}
+    app_edge = {**edge, "to_id": conn, "to_collection": CollectionNames.APPS.value}
+    group_edge = {**edge, "to_id": conn, "to_collection": G}
+    async with store.transaction() as tx:
+        await tx.create_edges_if_absent([app_edge, group_edge], BEL)
+    first, second = (app_edge, group_edge) if removed == "app first" else (group_edge, app_edge)
+    async with store.transaction(explicit=True) as tx:
+        s0 = (await tx._structures_of([(R, child.id)]))[(R, child.id)]
+        await tx.batch_delete_edges([first], BEL)
+        s1 = (await tx._structures_of([(R, child.id)]))[(R, child.id)]
+        await tx.batch_delete_edges([second], BEL)
+        s2 = (await tx._structures_of([(R, child.id)]))[(R, child.id)]
+    assert s0 != s1 and s1 != s2, removed

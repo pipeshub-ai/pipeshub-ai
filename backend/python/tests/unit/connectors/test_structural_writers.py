@@ -129,6 +129,7 @@ ARGS = {
     "upsert_record_under_parent": (SimpleNamespace(id="r1"), "r0"),
     "batch_upsert_record_permissions": ("r1", []),
     "batch_upsert_record_group_permissions": ("g1", [], "c1"),
+    "delete_user_group_by_id": ("ug1",),
 }
 
 
@@ -657,6 +658,15 @@ async def test_a_user_losing_access_to_a_connector_moves_that_connector() -> Non
     provider.remove_user_access_to_connector = AsyncMock(return_value=3)
     assert await store.remove_user_access_to_connector("c9", "u1") == 3
     assert store.structural_connectors == {"c9"}
+
+
+async def test_deleting_a_user_group_notes_the_connector_of_the_group() -> None:
+    """The group goes with every grant it holds, and any of them may be the last on its node."""
+    store, provider = _store()
+    provider.delete_nodes_and_edges = AsyncMock()
+    await store.delete_user_group_by_id("ug1")
+    assert store.structural_connectors == {"c1"}
+    assert "delete_user_group_by_id" not in HARMLESS
 
 
 def test_the_connector_writers_are_structural_in_the_classes() -> None:
