@@ -18,9 +18,25 @@ def upgrade():
 
 
 def downgrade():
-    # The writers go, and with them the write grants the pins gave the vetted role (its reads stay, they belong to the schema): a database stopped at kg_0001 must pass the catalog check.
-    op.execute("REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA kg FROM pipeshub_vetted_kg")
-    op.execute("DELETE FROM kernel.vetted_write_pins WHERE proc::oid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'kg'::regnamespace)")
-    for name in WRITERS:
-        op.execute(f"DROP FUNCTION IF EXISTS kg.{name} CASCADE")
-    op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+    # Exactly what this revision added, by name: the writers, their pins and registry rows, and the write grants those pins gave the vetted role on a table
+    # no other function is still pinned to. A database stopped at kg_0001 must pass the catalog check; nothing else of kg or of any other schema is touched.
+    names = ", ".join(f"'{n}'" for n in WRITERS)
+    op.execute(f"""
+DO $$
+DECLARE
+  mine oid[];
+  t regclass;
+  f oid;
+BEGIN
+  SELECT coalesce(array_agg(oid), '{{}}') INTO mine FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname IN ({names});
+  FOR t IN SELECT DISTINCT p.rel FROM kernel.vetted_write_pins p WHERE p.proc::oid = ANY(mine)
+           AND NOT EXISTS (SELECT 1 FROM kernel.vetted_write_pins o WHERE o.rel = p.rel AND NOT (o.proc::oid = ANY(mine)))
+  LOOP
+    EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON %s FROM pipeshub_vetted_kg', t);
+  END LOOP;
+  DELETE FROM kernel.vetted_write_pins WHERE proc::oid = ANY(mine);
+  DELETE FROM kernel.function_registry WHERE proc::oid = ANY(mine);
+  FOREACH f IN ARRAY mine LOOP
+    EXECUTE format('DROP FUNCTION %s', f::regprocedure);
+  END LOOP;
+END $$""")
