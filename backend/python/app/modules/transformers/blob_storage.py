@@ -345,6 +345,38 @@ class StorageLookupUnavailableError(Exception):
     """Whether stored content exists could not be determined (not: it is absent)."""
 
 
+def _with_missing_org(
+    node: dict[str, Any] | None,
+    org_id: str,
+    updates: dict[str, Any],
+    expected: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Add the org to a mapping write when the row read had none, in the same write.
+
+    An older bare upsert left mappings without ``orgId``, and the stored-content cleanup
+    takes the org from the mapping. A store that validates the whole document needs the
+    org with the first change, not after it; the write expects it still absent, so a value
+    another writer set is never replaced.
+    """
+    if node is None or _names_org(node) or not org_id:
+        return updates, expected
+    return {**updates, "orgId": org_id}, {**expected, "orgId": None}
+
+
+def _names_org(node: dict[str, Any]) -> bool:
+    """Whether the row read has an org. Only presence matters here, never which org: a
+    null ``orgId`` is as missing as an absent one."""
+    return "orgId" in node and ("orgId", None) not in node.items()
+
+
+class ReconciliationMappingGoneError(Exception):
+    """The mapping disappeared between reading it and naming the metadata document on it.
+
+    Only a delete removes a mapping, so the record is most likely gone; the run fails
+    rather than report metadata no mapping names, and its retry ends on the deleted record.
+    """
+
+
 class StorageDocumentNotFoundError(aiohttp.ClientError):
     """The storage service has no live document with this id (404).
 
@@ -1739,9 +1771,12 @@ class BlobStorage(Transformer):
             )
             return bool(created)
         seq = node.get("switchSeq") if expect_seq is _KEEP_STORED_REV else expect_seq
-        return bool(await self.graph_provider.update_node_fields_if_match(
-            virtual_record_id, collection, fields,
+        updates, expected = _with_missing_org(
+            node, org_id, fields,
             {"documentId": node.get("documentId"), "switchSeq": seq, **(expect_also or {})},
+        )
+        return bool(await self.graph_provider.update_node_fields_if_match(
+            virtual_record_id, collection, updates, expected,
         ))
 
     async def _shared_content_inputs(
@@ -1944,6 +1979,9 @@ class BlobStorage(Transformer):
                     continue
                 record_store_switch(IN_PLACE, "invalidated")
                 seq = (seq or 0) + 1
+                if org_id and not _names_org(node):
+                    # The invalidation named the org; the final switch must not expect it absent.
+                    node = {**node, "orgId": org_id}
             break
         else:
             record_store_switch(IN_PLACE, "busy")
@@ -3407,7 +3445,7 @@ class BlobStorage(Transformer):
                 )
 
             if metadata_document_id and self.graph_provider:
-                await self._map_reconciliation_document(virtual_record_id, metadata_document_id)
+                await self._map_reconciliation_document(org_id, virtual_record_id, metadata_document_id)
                 self.logger.debug(
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
@@ -3423,7 +3461,9 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
 
-    async def _map_reconciliation_document(self, virtual_record_id: str, metadata_document_id: str) -> None:
+    async def _map_reconciliation_document(
+        self, org_id: str, virtual_record_id: str, metadata_document_id: str
+    ) -> None:
         """Name the metadata document on the mapping.
 
         When the mapping already names a stored document, this is a compare-and-set on
@@ -3432,16 +3472,21 @@ class BlobStorage(Transformer):
         consistent with its last switch, so it is not mistaken for an older writer's
         fingerprint. After a conflict it re-reads once; then it falls back to writing just
         the metadata id, which leaves a false fingerprint at worst (safe).
+
+        A mapping this creates carries ``orgId``, as ``_switch_mapping``'s does: the orphan
+        sweep and the stored-content cleanup take the org from the mapping, and one without
+        it leaves the content it names with no owner to purge it for.
         """
         collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        node: dict[str, Any] | None = None
         for _ in (1, 2):
             node = await self._mapping_node(virtual_record_id)
             document_id = (node or {}).get("documentId")
             if not document_id:
                 break
             now = get_epoch_timestamp_in_ms()
-            if await self.graph_provider.update_node_fields_if_match(
-                virtual_record_id, collection,
+            updates, expected = _with_missing_org(
+                node, org_id,
                 {
                     "record_metadata_doc_id": metadata_document_id,
                     "updatedAt": now,
@@ -3449,16 +3494,33 @@ class BlobStorage(Transformer):
                     "switchUpdatedAt": now,
                 },
                 {"documentId": document_id, "switchSeq": node.get("switchSeq")},
+            )
+            if await self.graph_provider.update_node_fields_if_match(
+                virtual_record_id, collection, updates, expected,
             ):
                 return
-        await self.graph_provider.batch_upsert_nodes(
-            [{
-                "_key": virtual_record_id,
-                "record_metadata_doc_id": metadata_document_id,
-                "updatedAt": get_epoch_timestamp_in_ms(),
-            }],
-            collection,
-        )
+        fields: dict[str, Any] = {
+            "record_metadata_doc_id": metadata_document_id,
+            "updatedAt": get_epoch_timestamp_in_ms(),
+        }
+        if node is None and await self.graph_provider.create_node_if_absent(
+            virtual_record_id, collection,
+            {"id": virtual_record_id, "orgId": org_id, "virtualRecordId": virtual_record_id, **fields},
+        ):
+            return
+        updates, expected = _with_missing_org(node, org_id, fields, {})
+        if expected and await self.graph_provider.update_node_fields_if_match(
+            virtual_record_id, collection, updates, expected,
+        ):
+            return
+        # The row names its org (or another writer named it since the read): the fields alone.
+        if not await self.graph_provider.batch_update_nodes(
+            [{"_key": virtual_record_id, **fields}], collection,
+        ):
+            raise ReconciliationMappingGoneError(
+                f"mapping for {virtual_record_id} disappeared before metadata document "
+                f"{metadata_document_id} was named on it"
+            )
 
     async def _update_metadata_buffer(
         self,

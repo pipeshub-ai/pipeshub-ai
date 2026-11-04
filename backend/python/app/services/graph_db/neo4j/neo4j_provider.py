@@ -145,7 +145,10 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
-from app.services.graph_db.common.team_grant_role import cypher_team_grant_role
+from app.services.graph_db.common.team_grant_role import (
+    TEAM_GRANT_ROLES,
+    cypher_team_grant_role,
+)
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -335,6 +338,14 @@ _RETIRED_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES))
 
 # What a member gets from a team's grant; the matches name the edges team_grant and team_member.
 _TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
+
+# The roles a knowledge base grant can carry; any other direct role is no access.
+_KB_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in TEAM_GRANT_ROLES) + "]"
+
+
+def _kb_edge_role_ok(edge: str) -> str:
+    """Cypher predicate: the direct grant ``edge`` on a knowledge base carries a KB role."""
+    return f"(CASE WHEN {edge}.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE {edge}.role END) IN {_KB_ROLES_CYPHER}"
 
 # The dates a time range bounds, read beside each record of a shared timeline
 # walk (``dated_scope``): as columns, as fields of a collected pair, and back
@@ -708,11 +719,13 @@ _STAGE_STATE_DELETE_BATCH = 5000
 _STAGE_STATE_VRID_BATCH = 1000
 
 # The sweeper scans stage states by status and age; the coordinator reads one revision;
-# a connector's delete removes its stage states by connectorId.
+# a connector's delete removes its stage states by connectorId; the stored-content cleanup
+# looks up a virtual record's org without a revision.
 _STAGE_STATE_INDEXES = (
     "CREATE INDEX stage_state_status_updated IF NOT EXISTS FOR (n:StageState) ON (n.status, n.updatedAtMs)",
     "CREATE INDEX stage_state_revision IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId, n.rev)",
     "CREATE INDEX stage_state_connector IF NOT EXISTS FOR (n:StageState) ON (n.connectorId)",
+    "CREATE INDEX stage_state_virtual_record IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId)",
     # A stage retry pages a connector's states in one status by id, off this index alone.
     "CREATE INDEX stage_state_page IF NOT EXISTS FOR (n:StageState) ON (n.connectorId, n.stage, n.status, n.id)",
 )
@@ -8162,8 +8175,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL {{
                 WITH userDoc
                 // Direct user-KB permissions (KB is now an App node with type="KB")
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {{type: "KB"}})
+                OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
+                // The role is read before the next match: Neo4j 5.26 cannot read it from the edge after it.
+                WITH userDoc, kb, {_kb_edge_role_ok('kbp')} AS kb_role_ok
+                WITH userDoc, kb WHERE kb_role_ok = true
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE {cypher_searchable_record("r")}
                   AND {live_record}
@@ -8245,8 +8261,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         CALL {
             WITH userDoc
-            OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {type: "KB"})
-            WHERE $includeHidden OR coalesce(kb.isHidden, false) = false
+            OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {type: "KB"})
+            WHERE __KB_EDGE_OK__ AND ($includeHidden OR coalesce(kb.isHidden, false) = false)
             RETURN collect(DISTINCT kb.id) AS directIds
         }
 
@@ -8263,7 +8279,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         UNWIND ids AS kbId
         WITH kbId WHERE kbId IS NOT NULL
         RETURN DISTINCT kbId AS kbId
-        """
+        """.replace("__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         results = await self.client.execute_query(
             query, parameters={"userId": user_id, "includeHidden": include_hidden}
         )
@@ -8311,8 +8327,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN app
                 UNION
                 WITH u
-                MATCH (u)-[:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
-                WHERE app.orgId = $org_id
+                MATCH (u)-[kbp:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id AND __KB_EDGE_OK__
                 RETURN app
                 UNION
                 WITH u
@@ -8418,7 +8434,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
 
         RETURN u.id AS user_key, apps, record_group_ids
-        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH)).replace(
+            "__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         rows = await self.client.execute_query(
             query,
             parameters={
@@ -12798,6 +12815,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (u, kh_kbs) {
                 UNWIND kh_kbs AS kb
                 MATCH (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
+                WHERE __KB_EDGE_OK__
                 RETURN [x IN COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: null}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbDirectAccess
             }
 
@@ -12832,7 +12850,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess AS allAccess
             WHERE size([a IN allAccess WHERE a.source IS NOT NULL]) > 0
             RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
-            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER).replace(
+                "__KB_EDGE_OK__", _kb_edge_role_ok("kbPerm"))
 
             access_results = await self.client.execute_query(
                 access_query,
@@ -13858,10 +13877,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User {id: $user_id})
             MATCH (kb:App {id: $kb_id, type: "KB"})
             OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
-            WITH u, kb, d.role AS direct_role
+            WITH u, kb, CASE WHEN d.role IN __RETIRED_ROLES__ THEN 'READER' ELSE d.role END AS direct_role
             OPTIONAL MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb)
             WITH direct_role, collect(DISTINCT __TEAM_GRANT_ROLE__) AS team_roles
-            WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
+            WITH CASE WHEN direct_role IN __KB_ROLES__ THEN [direct_role] ELSE [] END +
                  [x IN team_roles WHERE x IS NOT NULL] AS candidates
             UNWIND candidates AS cand
             WITH DISTINCT cand AS role
@@ -13877,7 +13896,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ORDER BY priority DESC
             LIMIT 1
             RETURN role AS role
-            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER).replace(
+                "__RETIRED_ROLES__", _RETIRED_ROLES_CYPHER).replace("__KB_ROLES__", _KB_ROLES_CYPHER)
 
             results = await self.client.execute_query(
                 query,
@@ -13885,8 +13905,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            if results:
-                role = read_role(results[0].get("role"))
+            role = read_role(results[0].get("role")) if results else None
+            if role in TEAM_GRANT_ROLES:
                 self.logger.debug(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
 
@@ -13998,6 +14018,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User {{id: $user_id}})
             CALL (u) {{
                 MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
+                WHERE CASE WHEN r.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE r.role END IN {_KB_ROLES_CYPHER}
                 RETURN kb, r.role AS stored_role, true AS is_direct
                 UNION
                 MATCH (u)-[team_member:PERMISSION {{type: "USER"}}]->(:Teams)-[team_grant:PERMISSION {{type: "TEAM"}}]->(kb:App)
@@ -16137,11 +16158,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return updated_keys
         except Exception as e:
+            # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
+            # drops the write for good (the final-attempt FAILED marking left the record in its old status).
             self.logger.error(
                 "❌ Failed compare-and-set (%s -> %s): %s",
                 expected, new_status, str(e),
             )
-            return []
+            raise
 
     # ==================== Pipeline stage states ====================
 
@@ -16164,6 +16187,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"vrid": virtual_record_id, "rev": rev},
         )
         return [dict(row["doc"]) for row in rows]
+
+    @override
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(
+            f"MATCH (n:{label}) WHERE n.virtualRecordId = $vrid AND n.orgId IS NOT NULL "
+            "RETURN n.orgId AS org LIMIT 1",
+            {"vrid": virtual_record_id},
+        )
+        return rows[0]["org"] if rows else None
 
     @override
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
@@ -19578,8 +19611,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH {keep}, [u.id] + viaMembership + viaOrg AS granteeIds
         UNWIND granteeIds AS granteeId
         MATCH (grantee:User|Group|Role|Teams|Organization {{id: granteeId}})
-        OPTIONAL MATCH (grantee)-[:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
+        OPTIONAL MATCH (grantee)-[gateRel:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
         WHERE gatedApp.orgId = {org}
+          AND (NOT (grantee:User AND type(gateRel) = 'PERMISSION' AND gatedApp.type = 'KB')
+               OR {_kb_edge_role_ok('gateRel')})
         WITH {keep}, granteeIds, collect(DISTINCT gatedApp.id) AS gatedApps
         OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)
         OPTIONAL MATCH (kh_linkedApp:App {{id: kh_link.connectorId}})
@@ -23798,6 +23833,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH principal, target
                 MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
                 WHERE p1.role IS NOT NULL AND p1.role <> ''
+                  AND (NOT (target:App AND target.type = 'KB') OR {_kb_edge_role_ok('p1')})
                 RETURN collect(DISTINCT p1.role) AS direct_roles
             }}
 
@@ -23925,6 +23961,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH principal, target
                 MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
                 WHERE p1.role IS NOT NULL AND p1.role <> ''
+                  AND (NOT (target:App AND target.type = 'KB') OR {_kb_edge_role_ok('p1')})
                 RETURN collect(DISTINCT p1.role) AS direct_roles
             }}
 
@@ -24056,14 +24093,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Get app scope and check if user is creator
             // createdBy stores the graph user key, compare with user.id
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm, team_kb_role, is_admin,
-                CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE direct_perm.role END AS direct_role,
+                CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER'
+                     WHEN {node_var}.type <> 'KB' OR direct_perm.role IN {_KB_ROLES_CYPHER} THEN direct_perm.role
+                     ELSE null END AS direct_role,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.id OR {node_var}.createdBy = {user_var}.userId) AS is_creator
 
             // Determine role based on conditions (highest privilege wins)
             RETURN CASE
                 // No access path at all: no access
-                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND direct_perm IS NULL AND team_kb_role IS NULL THEN null
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND (direct_role IS NULL AND (direct_perm IS NULL OR {node_var}.type = 'KB')) AND team_kb_role IS NULL THEN null
                 // An explicit role (direct grant or team share) wins; the higher of the two
                 WHEN direct_role IS NOT NULL AND team_kb_role IS NOT NULL
                     AND coalesce({role_priority_map}[team_kb_role], 0) > coalesce({role_priority_map}[direct_role], 0)

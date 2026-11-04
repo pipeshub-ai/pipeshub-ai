@@ -91,7 +91,11 @@ def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
                 f"values_count_lte on '{field}' cannot be expressed as a Redis "
                 "FT query; split it off before building the query"
             )
-        if cond.values is not None:
+        if cond.values is not None and not cond.values:
+            # An empty list matches nothing, and ``{}`` is a syntax error in a
+            # tag query. A tag cannot both be and not be "x".
+            parts.append(f"({redis_field}:{{x}} -{redis_field}:{{x}})")
+        elif cond.values is not None:
             escaped = "|".join(escape_tag_value(str(v)) for v in cond.values)
             parts.append(f"{redis_field}:{{{escaped}}}")
         elif cond.value is not None:

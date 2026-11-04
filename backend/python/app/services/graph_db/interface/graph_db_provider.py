@@ -2702,6 +2702,10 @@ class IGraphDBProvider(ABC):
         Returns:
             list[str]: The ids actually updated. Ids absent from the result held some
                        other status and were left alone - a normal outcome, not an error.
+
+        Raises:
+            Exception: whatever the database raised. A failed write is never answered
+                       as an empty list, which means "no id held `expected`".
         """
         pass
 
@@ -2714,6 +2718,10 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
         """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        """The ``orgId`` named by any stage state of this virtual record, or None."""
 
     @abstractmethod
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
