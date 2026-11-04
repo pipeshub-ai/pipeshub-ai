@@ -68,6 +68,11 @@ class ScopeFieldsOff(RuntimeError):
     """The back-fill was asked for while the scope fields are not written: nothing else would keep them current."""
 
 
+class ScopeGenerationUnavailable(RuntimeError):
+    """The shared scope generation could not be read: every stamp this process writes is untrusted, so a pass would only record a
+    finished back-fill that no reader may rely on."""
+
+
 class UnknownConnector(ValueError):
     """The connector instance is not an app of this organisation."""
 
@@ -121,6 +126,8 @@ class ScopeBackfill:
     async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES) -> Progress:
         if not scope_fields_enabled():
             raise ScopeFieldsOff("turn the scope fields on (ACL_SCOPE_FIELDS) before back-filling")
+        if current_scope_generation() < 0:  # UNAVAILABLE_GENERATION: before any read, write or checkpoint
+            raise ScopeGenerationUnavailable("the scope generation could not be read; fix the configuration store and run again")
         if not org_id:
             raise UnknownConnector("an organisation is required")
         with for_org(org_id, job="scope-backfill"):

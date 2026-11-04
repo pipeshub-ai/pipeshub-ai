@@ -334,3 +334,20 @@ async def test_a_page_written_again_after_a_failure_is_not_counted_twice() -> No
     done = await job.run_connector(ORG, app)
     first_page_vrids = len(loaded.records)
     assert done.state == DONE and 0 < done.stale <= first_page_vrids
+
+
+async def test_an_unavailable_scope_generation_writes_nothing_and_leaves_no_checkpoint() -> None:
+    from app.services.permissions.scope_fields import (
+        UNAVAILABLE_GENERATION,
+        set_resolved_generation,
+    )
+    from app.services.vector_db.scope_backfill import ScopeGenerationUnavailable
+
+    vdb, loaded, job, app = await setup()
+    set_resolved_generation(UNAVAILABLE_GENERATION)
+    try:
+        with pytest.raises(ScopeGenerationUnavailable):
+            await job.run_connector(ORG, app)
+    finally:
+        set_resolved_generation(None)
+    assert not any(keys_of(vdb)) and not loaded.graph.app_docs  # no point written, no DONE (or any) checkpoint
