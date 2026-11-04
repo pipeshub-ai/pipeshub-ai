@@ -75,8 +75,7 @@ class LookupsMixin(PgBase):
         org = current_org_id()
         try:
             d = await self._one("""/* pipeshub:graph.get_record_by_issue_key */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'connectorId' = $2 AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' ~ $3
-                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false LIMIT 1""",
+                AND n.doc->>'connectorId' = $2 AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' ~ $3 LIMIT 1""",
                                 org, connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:

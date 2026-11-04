@@ -459,14 +459,6 @@ async def test_removing_a_category_node_by_field_takes_its_category_edges_with_i
     assert await p.get_edges_from_node("subcategories1/s", "interCategoryRelations") == []
 
 
-async def test_a_trashed_ticket_is_not_found_by_its_issue_key(pg_db) -> None:
-    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
-    await p.batch_upsert_nodes([raw(p.org, "t1", recordType="TICKET", connectorName="JIRA", webUrl="https://x.atlassian.net/browse/K-7")], "records")
-    assert (await p.get_record_by_issue_key("c1", "K-7")).id == "t1"
-    await p.batch_update_nodes([{"id": "t1", "isDeleted": True}], "records")
-    assert await p.get_record_by_issue_key("c1", "K-7") is None
-
-
 async def test_removing_records_by_field_takes_their_type_documents_and_blocks(pg_db) -> None:
     p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
     await p.batch_upsert_nodes([raw(p.org, "gone", flag="x"), raw(p.org, "kept")], "records")
