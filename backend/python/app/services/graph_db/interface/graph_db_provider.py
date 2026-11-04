@@ -1144,7 +1144,9 @@ class IGraphDBProvider(ABC):
         self,
         edges: list[dict],
         transaction: str | None = None,
-    ) -> bool:
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch upsert record relation edges.
 
@@ -1156,9 +1158,11 @@ class IGraphDBProvider(ABC):
             edges: Edge documents with _from, _to, relationshipType and
                 optionally constraintName
             transaction: Optional transaction ID
+            count_created: return how many edges the call created instead of True (Neo4j and ArangoDB; the
+                PostgreSQL store raises NotImplementedError for True)
 
         Returns:
-            bool: True if successful
+            bool | int: True if successful, or the number of edges created when ``count_created``
 
         Raises:
             Exception: propagated from the database on failure

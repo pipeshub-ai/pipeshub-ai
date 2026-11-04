@@ -224,7 +224,11 @@ class CodeGraphMixin(PgBase):
         return bool(r)
 
     # ---- code links ----------------------------------------------------------------------------------------------
-    async def batch_upsert_node_relations(self, edges: list[dict], transaction: str | None = None) -> bool:
+    async def batch_upsert_node_relations(
+        self, edges: list[dict], transaction: str | None = None, *, count_created: bool = False
+    ) -> bool | int:
+        if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
+            raise NotImplementedError("batch_upsert_node_relations(count_created=True) is not supported on the PostgreSQL graph store")
         org = current_org_id()
         if not edges:
             return True
