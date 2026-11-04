@@ -1,13 +1,63 @@
 import { mutate, unload } from 'swr';
 
-const resetters = new Set<() => void>();
+/** How the session ended: `refetch` is true when the app stays open on another org (see clearSessionCache). */
+export interface SessionEnd {
+  refetch: boolean;
+}
+
+type SessionResetter = (end: SessionEnd) => void;
+
+const resetters = new Set<SessionResetter>();
+let generation = 0;
 
 /** Registers per-user state that must not outlive the session. Returns a function that unregisters it. */
-export function onSessionEnd(reset: () => void): () => void {
+export function onSessionEnd(reset: SessionResetter): () => void {
   resetters.add(reset);
   return () => {
     resetters.delete(reset);
   };
+}
+
+/** Captures the current session; the returned check turns false once it ends. */
+export function captureSession(): () => boolean {
+  const captured = generation;
+  return () => captured === generation;
+}
+
+/**
+ * Settles like `work`, or fails at once if the session ends first: an apiClient answer
+ * that arrives after that never settles, so a screen still on show (e.g. an OAuth popup)
+ * would otherwise wait for good. The error has no message, so callers show their fallback.
+ */
+export function failOnSessionEnd<T>(work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const stop = onSessionEnd(() => {
+      stop();
+      reject(new Error());
+    });
+    work.then(
+      (value) => {
+        stop();
+        resolve(value);
+      },
+      (error: unknown) => {
+        stop();
+        reject(error);
+      },
+    );
+  });
+}
+
+interface ResettableStore<T> {
+  getInitialState(): T;
+  setState(state: T, replace: true): unknown;
+}
+
+/** Puts a Zustand store back to the state it was created with when the session ends. */
+export function resetStoreOnSessionEnd<T>(store: ResettableStore<T>): () => void {
+  return onSessionEnd(() => {
+    store.setState(store.getInitialState(), true);
+  });
 }
 
 export interface ClearSessionCacheOptions {
@@ -24,11 +74,13 @@ export interface ClearSessionCacheOptions {
  * org switch). Never throws, so signing out always completes.
  */
 export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions = {}): void {
-  // Stores first: a refetch started by unload calls its fetcher at once, and a
+  // First, so a resetter or refetch that takes a session token already belongs to the next session.
+  generation += 1;
+  // Stores next: a refetch started by unload calls its fetcher at once, and a
   // reset after that would throw away the new session's answer.
   resetters.forEach((reset) => {
     try {
-      reset();
+      reset({ refetch });
     } catch (error) {
       console.error('Session reset failed:', error);
     }

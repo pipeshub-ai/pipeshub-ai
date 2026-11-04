@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Badge, Checkbox, Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
-import { fetchToolCatalog } from '@/chat/hooks/use-project-scope-hydration';
+import { useToolCatalog } from '@/chat/hooks/use-project-scope-hydration';
 import { bareToolFullName, type CatalogToolGroupRow } from '@/chat/tool-groups';
 import { toolDisplayName } from '@/app/(main)/workspace/mcp-servers/tool-rules';
 import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
@@ -78,38 +78,20 @@ interface ToolsMcpCardProps {
 
 /**
  * Project Tools & MCP picker over the same catalog the composer uses
- * (`fetchToolCatalog`). Persists bare `fullName`s: the server compares
+ * (`useToolCatalog`). Persists bare `fullName`s: the server compares
  * `project.tools` against the bare names on the wire, so a stored
  * `instanceId:` prefix would never match.
  */
 export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardProps) {
   const { t } = useTranslation();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
-  const [groups, setGroups] = useState<ToolGroupRow[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
+  const { data: catalog, error, isLoading } = useToolCatalog(mcpEnabled);
+  const groups = useMemo<ToolGroupRow[]>(
+    () => (catalog ? [...toCardRows(catalog.toolGroups, 'toolset'), ...toCardRows(catalog.mcpGroups, 'mcp')] : []),
+    [catalog],
+  );
+  const loadError = Boolean(error) && !catalog;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setIsLoading(true);
-      setLoadError(false);
-      try {
-        const catalog = await fetchToolCatalog(mcpEnabled);
-        if (cancelled) return;
-        setGroups([...toCardRows(catalog.toolGroups, 'toolset'), ...toCardRows(catalog.mcpGroups, 'mcp')]);
-      } catch {
-        if (!cancelled) setLoadError(true);
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [mcpEnabled]);
 
   // Tolerate legacy `instanceId:`-prefixed entries already persisted on a project.
   const selectedSet = useMemo(() => new Set(selectedTools.map(bareToolFullName)), [selectedTools]);
