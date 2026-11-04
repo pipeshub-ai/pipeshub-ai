@@ -1503,6 +1503,45 @@ class TestDeleteRecordEvent:
         pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
 
     @pytest.mark.asyncio
+    async def test_a_skipped_delete_is_retried_after_the_other_steps_ran(self) -> None:
+        """The points stayed, so an ack would strand them. The rest of the delete
+        still runs first: an event that runs out of retries must not lose it."""
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_skipped": 1, "success": False}
+        )
+        handler._hand_over_shared_copy = AsyncMock()
+
+        with pytest.raises(IndexingError, match="left in place"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_RECORD.value,
+                {"recordId": "r1", "virtualRecordId": "vr1"},
+            )
+
+        handler._hand_over_shared_copy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_delete_is_still_acked(self) -> None:
+        """No managed collection is not a skip: this event has always acked it."""
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_skipped": 0, "success": False}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.DELETE_RECORD.value,
+            {"recordId": "r1", "virtualRecordId": "vr1"},
+        )
+
+        assert events[-1].event == "indexing_complete"
+
+    @pytest.mark.asyncio
     async def test_delete_record_no_virtual_record_id(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
@@ -1528,7 +1567,7 @@ class TestDeleteRecordEvent:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
         entity_store = AsyncMock()
         handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=entity_store)
 
@@ -1550,7 +1589,7 @@ class TestDeleteRecordEvent:
         gp.get_document = AsyncMock(
             return_value={"_key": "r1", "virtualRecordId": "vr1", "orgId": "org-1"}
         )
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
         entity_store = AsyncMock()
         handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=entity_store)
 
@@ -1569,7 +1608,7 @@ class TestDeleteRecordEvent:
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org-1"})
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
 
         await _collect_events(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "virtualRecordId": "vr1"})
 
@@ -1582,7 +1621,7 @@ class TestDeleteRecordEvent:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
 
         payload = {"recordId": "r1", "virtualRecordId": "vr1"}
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
@@ -1600,7 +1639,7 @@ class TestDeleteRecordSharedCopyHandover:
     @staticmethod
     def _handler() -> "RecordEventHandler":
         handler = _make_handler()
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
         handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
         return handler
 
@@ -1656,7 +1695,7 @@ class TestDeleteRecordTaxonomyCleanup:
     @staticmethod
     def _handler(store: AsyncMock) -> MagicMock:
         handler = _make_handler()
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
         handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=store)
         return handler
 
@@ -1691,7 +1730,7 @@ class TestDeleteRecordTaxonomyCleanup:
         store.delete_unreached_entities.side_effect = lambda *a: calls.append("taxonomy points")
         handler = self._handler(store)
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = (
-            lambda *a, **k: calls.append("vectors")
+            lambda *a, **k: calls.append("vectors") or {"success": True}
         )
 
         await _collect_events(handler, EventTypes.DELETE_RECORD.value, self._payload(taxonomyRefs=self.REFS))
@@ -1748,7 +1787,7 @@ class TestDeleteRecordTaxonomyCleanup:
     @pytest.mark.asyncio
     async def test_without_an_entity_store_the_delete_completes(self) -> None:
         handler = _make_handler()
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
 
         events = await _collect_events(
             handler, EventTypes.DELETE_RECORD.value, self._payload(taxonomyRefs=self.REFS),
