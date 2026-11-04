@@ -94,6 +94,7 @@ export class MemoryThreadQueueStore implements ThreadQueueStore {
       e = { owner: null, lockExpiresAt: 0, pending: [], pendingExpiresAt: 0 };
       this.entries.set(key, e);
     }
+    // Only enqueues are capped: a takeover adds its item to stranded ones, at most one over.
     const acquired = e.owner === null;
     if (acquired) {
       e.owner = owner;
@@ -151,7 +152,29 @@ export class ThreadQueue {
     key: string,
     item: QueuedSlackMessage,
     run: (batch: QueuedSlackMessage[]) => Promise<void>,
+    onBusy?: (batch: QueuedSlackMessage[]) => void | Promise<void>,
   ): Promise<SubmitResult> {
+    const runBatch = async (
+      batch: QueuedSlackMessage[],
+    ): Promise<'ran' | 'busy'> => {
+      try {
+        const r = await this.limiter.run(() => run(batch));
+        if (r.status === 'ran') return 'ran';
+      } catch (err) {
+        console.error('[slack-bot] answer failed', err);
+        return 'ran';
+      }
+      // The batch has left the store, so this is the only chance to tell its senders.
+      try {
+        await onBusy?.(batch);
+      } catch (err) {
+        console.error('[slack-bot] busy notice failed', err);
+      }
+      return 'busy';
+    };
+    const runDirect = async (): Promise<SubmitResult> =>
+      (await runBatch([item])) === 'busy' ? 'busy' : 'direct';
+
     let outcome: 'acquired' | 'queued' | 'full';
     try {
       outcome = await this.store.acquireOrEnqueue(
@@ -165,13 +188,7 @@ export class ThreadQueue {
         '[slack-bot] thread queue unavailable, answering without queueing',
         err,
       );
-      try {
-        const r = await this.limiter.run(() => run([item]));
-        return r.status === 'busy' ? 'busy' : 'direct';
-      } catch (runErr) {
-        console.error('[slack-bot] answer failed', runErr);
-        return 'direct';
-      }
+      return runDirect();
     }
     if (outcome !== 'acquired') return outcome;
 
@@ -190,26 +207,24 @@ export class ThreadQueue {
 
     let result: SubmitResult = 'ran';
     let first = true;
+    let storeFailedFirst = false;
     try {
       for (;;) {
         const batch = await this.store.takePendingOrRelease(key, this.owner);
         if (batch.length === 0) break;
-        try {
-          const r = await this.limiter.run(() => run(batch));
-          if (first && r.status === 'busy') result = 'busy';
-        } catch (err) {
-          console.error('[slack-bot] answer failed', err);
-        }
+        if ((await runBatch(batch)) === 'busy' && first) result = 'busy';
         first = false;
         // Another owner took over after we stalled past the TTL; it drains.
         if (lock.lost) break;
       }
     } catch (err) {
-      // Pending items are picked up by the thread's next message or expire.
+      // Later pending items are picked up by the thread's next message or expire.
       console.warn('[slack-bot] thread queue hand-off failed', err);
+      storeFailedFirst = first;
     } finally {
       clearInterval(timer);
     }
-    return result;
+    // Our item never left the store, so answer it here rather than lose it.
+    return storeFailedFirst ? runDirect() : result;
   }
 }

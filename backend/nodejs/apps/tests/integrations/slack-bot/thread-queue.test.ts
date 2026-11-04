@@ -43,7 +43,12 @@ const gatedRun = () => {
     gates.push(g);
     await g.promise;
   };
-  return { run, batches, gates };
+  const gate = (i: number) => {
+    const g = gates[i];
+    if (!g) throw new Error(`run ${i} has not started`);
+    return g;
+  };
+  return { run, batches, gates, gate };
 };
 
 describe('slack-bot/utils/thread-queue', () => {
@@ -65,7 +70,7 @@ describe('slack-bot/utils/thread-queue', () => {
     const p = q.submit(KEY, msg('1'), r.run);
     await tick();
     expect(r.batches).to.deep.equal([['1']]);
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     expect(await p).to.equal('ran');
   });
 
@@ -76,10 +81,10 @@ describe('slack-bot/utils/thread-queue', () => {
     await tick();
     expect(await q.submit(KEY, msg('2'), r.run)).to.equal('queued');
     expect(await q.submit(KEY, msg('3'), r.run)).to.equal('queued');
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     await tick();
     expect(r.batches).to.deep.equal([['1'], ['2', '3']]);
-    r.gates[1].resolve();
+    r.gate(1).resolve();
     expect(await p1).to.equal('ran');
     expect(r.batches).to.have.length(2);
   });
@@ -92,10 +97,10 @@ describe('slack-bot/utils/thread-queue', () => {
     const ten = Array.from({ length: 10 }, (_, i) => String(i + 1));
     for (const ts of ten) expect(await q.submit(KEY, msg(ts), r.run)).to.equal('queued');
     expect(await q.submit(KEY, msg('11'), r.run)).to.equal('full');
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     await tick();
     expect(r.batches[1]).to.deep.equal(ten);
-    r.gates[1].resolve();
+    r.gate(1).resolve();
     expect(await p1).to.equal('ran');
   });
 
@@ -118,10 +123,10 @@ describe('slack-bot/utils/thread-queue', () => {
     const p1 = q.submit(KEY, msg('1'), r.run);
     await tick();
     await q.submit(KEY, msg('2'), r.run);
-    r.gates[0].reject(new Error('boom'));
+    r.gate(0).reject(new Error('boom'));
     await tick();
     expect(r.batches).to.deep.equal([['1'], ['2']]);
-    r.gates[1].resolve();
+    r.gate(1).resolve();
     expect(await p1).to.equal('ran');
     expect(error.called).to.equal(true);
   });
@@ -145,17 +150,20 @@ describe('slack-bot/utils/thread-queue', () => {
     });
     const p1 = q.submit(KEY, msg('1'), r.run);
     await tick();
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     await reachedGap;
     const p2 = q.submit(KEY, msg('2'), r.run);
     await tick();
     gap.resolve();
-    await tick();
-    r.gates.slice(1).forEach((g) => g.resolve());
-    await tick();
-    r.gates.slice(1).forEach((g) => g.resolve());
-    await Promise.all([p1, p2]);
-    expect(r.batches.flat().filter((ts) => ts === '2')).to.have.length(1);
+    let settled = false;
+    const all = Promise.all([p1, p2]).finally(() => (settled = true));
+    while (!settled) {
+      r.gates.forEach((g) => g.resolve());
+      await tick();
+    }
+    // The lock is still held during the gap, so '2' queues and the owner's release finds it.
+    expect(await all).to.deep.equal(['ran', 'queued']);
+    expect(r.batches).to.deep.equal([['1'], ['2']]);
   });
 
   it('takes over an expired lock', async () => {
@@ -174,9 +182,9 @@ describe('slack-bot/utils/thread-queue', () => {
     const p = fresh.submit(KEY, msg('4'), r.run);
     await tick();
     expect(r.batches[1]).to.deep.equal(['2', '3', '4']);
-    r.gates[1].resolve();
+    r.gate(1).resolve();
     expect(await p).to.equal('ran');
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     expect(await stalledDone).to.equal('ran');
     expect(r.batches).to.have.length(2);
     expect(store.size).to.equal(0);
@@ -195,11 +203,13 @@ describe('slack-bot/utils/thread-queue', () => {
     const takesBefore = take.callCount;
     clock.tick(30_000);
     await tick();
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     expect(await p1).to.equal('ran');
     expect(r.batches).to.deep.equal([['1']]);
     expect(take.callCount).to.equal(takesBefore);
     expect(clock.countTimers()).to.equal(0);
+    // The entry stays: renew was stubbed false while the lock is still held, so '2' waits for a new owner.
+    expect(store.size).to.equal(1);
   });
 
   it('answers directly when the store throws', async () => {
@@ -213,6 +223,51 @@ describe('slack-bot/utils/thread-queue', () => {
     expect(result).to.equal('direct');
     expect(batches).to.deep.equal([['1']]);
     expect(warn.called).to.equal(true);
+  });
+
+  it('answers directly when the first hand-off throws', async () => {
+    const store = new MemoryThreadQueueStore();
+    sinon.stub(store, 'takePendingOrRelease').rejects(new Error('redis down'));
+    const q = make(store);
+    const batches: string[][] = [];
+    const result = await q.submit(KEY, msg('1'), async (b) => {
+      batches.push(b.map((m) => m.ts));
+    });
+    expect(result).to.equal('direct');
+    expect(batches).to.deep.equal([['1']]);
+  });
+
+  it('tells the senders of a later batch the limiter refuses', async () => {
+    const limiter = new RunLimiter(50, 500);
+    const realRun = limiter.run.bind(limiter);
+    sinon
+      .stub(limiter, 'run')
+      .onFirstCall()
+      .callsFake(realRun)
+      .onSecondCall()
+      .resolves({ status: 'busy' });
+    const q = new ThreadQueue(new MemoryThreadQueueStore(), limiter, { owner: 'pod:1' });
+    const r = gatedRun();
+    const onBusy = sinon.spy();
+    const p1 = q.submit(KEY, msg('1'), r.run, onBusy);
+    await tick();
+    await q.submit(KEY, msg('2'), r.run, onBusy);
+    await q.submit(KEY, msg('3'), r.run, onBusy);
+    r.gate(0).resolve();
+    expect(await p1).to.equal('ran');
+    expect(r.batches).to.deep.equal([['1']]);
+    expect(onBusy.callCount).to.equal(1);
+    expect(onBusy.firstCall.args[0].map((m: QueuedSlackMessage) => m.ts)).to.deep.equal(['2', '3']);
+  });
+
+  it('tells the sender when the limiter refuses the first batch, and survives a failing notice', async () => {
+    const limiter = new RunLimiter(50, 500);
+    sinon.stub(limiter, 'run').resolves({ status: 'busy' });
+    const q = new ThreadQueue(new MemoryThreadQueueStore(), limiter, { owner: 'pod:1' });
+    const onBusy = sinon.stub().rejects(new Error('slack down'));
+    expect(await q.submit(KEY, msg('1'), async () => {}, onBusy)).to.equal('busy');
+    expect(onBusy.callCount).to.equal(1);
+    expect(onBusy.firstCall.args[0].map((m: QueuedSlackMessage) => m.ts)).to.deep.equal(['1']);
   });
 
   it('returns busy when the limiter refuses the first batch, and still releases', async () => {
@@ -237,9 +292,9 @@ describe('slack-bot/utils/thread-queue', () => {
     await tick();
     expect(clock.countTimers()).to.equal(1);
     await q.submit(KEY, msg('2'), r.run);
-    r.gates[0].resolve();
+    r.gate(0).resolve();
     await tick();
-    r.gates[1].resolve();
+    r.gate(1).resolve();
     expect(await p1).to.equal('ran');
     expect(store.size).to.equal(0);
     expect(clock.countTimers()).to.equal(0);
