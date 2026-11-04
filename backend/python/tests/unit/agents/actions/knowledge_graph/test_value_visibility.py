@@ -125,3 +125,20 @@ async def test_more_may_match_is_said_only_beside_readable_rows(
     assert ok and _listed(body) == ["r050"] and "More records may match: " in body
     ok, body = await _ask(graph, kinds=["date"], cursor=_cursor(body))
     assert ok and _listed(body) == ["r090"] and "That was the last page." in body
+
+
+async def test_the_scan_budget_of_a_page_starts_at_its_first_readable_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Records the walk passed before the first readable hit do not count toward ``_MAX_SCAN``, even in the
+    batch that holds it: the page checks a full budget after its first row."""
+    from app.modules.retrieval.entity_filters import EntityFilterHit
+
+    monkeypatch.setattr(values, "_CHECK_BATCH", 10)
+    monkeypatch.setattr(values, "_MAX_SCAN", 20)
+    hits = [EntityFilterHit(record_id=f"r{i:03}", virtual_record_id=f"v{i}", connector_id=APP) for i in range(100)]
+    graph = AsyncMock()
+    graph.filter_accessible_record_ids = AsyncMock(side_effect=lambda ids, *_: [i for i in ids if i == "r005"])
+    context = _context()
+    page, cursor, stopped = await values._readable_page(graph, context, hits, "u", "o", 0, 50)
+    assert [h.record_id for h in page] == ["r005"] and stopped
+    # 20 counted from r005 ends inside the third batch, so the page stops after r029, not after r019.
+    assert cursor is not None and cursor.endswith(":r029")

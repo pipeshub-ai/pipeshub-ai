@@ -539,25 +539,26 @@ async def _readable_page(
     deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
     counted_from = start
     for offset in range(start, len(hits), _CHECK_BATCH):
-        if not page:
-            if offset > start and time.monotonic() >= deadline:
-                logger.info(
-                    "find_records_by_value: walk stopped at its deadline with no readable hit org=%s checked=%d",
-                    org_id, offset - start,
-                )
-                return [], None, False
-            counted_from = offset
+        if not page and offset > start and time.monotonic() >= deadline:
+            logger.info(
+                "find_records_by_value: walk stopped at its deadline with no readable hit org=%s checked=%d",
+                org_id, offset - start,
+            )
+            return [], None, False
         batch = hits[offset:offset + _CHECK_BATCH]
         readable = set(await graph.filter_accessible_record_ids(
             [hit.record_id for hit in batch], user_id, org_id,
         ))
         if context.row_scopes:
             readable &= await admitted_node_ids(graph, context, readable)
-        for hit in batch:
+        for index, hit in enumerate(batch):
             if hit.record_id not in readable:
                 continue
             if len(page) == limit:
                 return page, _cursor_of(page[-1]), False
+            if not page:
+                # The budget counts from the first readable hit, not from the start of its batch.
+                counted_from = offset + index
             page.append(hit)
         checked = offset + len(batch) - counted_from
         if page and checked >= _MAX_SCAN and offset + len(batch) < len(hits):

@@ -47,8 +47,13 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
-    canonical_filter_key,
+    build_generic_conditions,
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
     split_values_count_conditions,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -649,6 +654,7 @@ class RedisVectorService(IVectorDBService):
                 "most of the collection. Pair it with a value match "
                 "(e.g. connectorIds)."
             )
+        require_filter_org(filter)
         self._assert_connected()
 
         idx = self._index_name(collection_name)
@@ -857,6 +863,8 @@ class RedisVectorService(IVectorDBService):
                 "every point in the collection. Populate at least one filter "
                 "condition (e.g. virtualRecordId)."
             )
+        require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         await self._hset_matching(collection_name, payload, points)
 
@@ -872,6 +880,8 @@ class RedisVectorService(IVectorDBService):
                 "set_payload called with an empty filter — this would update the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         await self._hset_matching(collection_name, payload, filter)
 
@@ -880,19 +890,25 @@ class RedisVectorService(IVectorDBService):
         collection_name: str,
         point_ids: list[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
         self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
-        # HSET on a missing key would create a bare hash; only touch stored points.
+        # HSET on a missing key would create a bare hash; only touch stored points of this org
+        # (HGET is nil for a missing key and for another org's point alike).
         pipeline = self.client.pipeline(transaction=False)  # type: ignore
         for point_id in point_ids:
-            pipeline.execute_command("EXISTS", self._key(collection_name, point_id))
-        present = await pipeline.execute()
+            pipeline.execute_command("HGET", self._key(collection_name, point_id), "metadata_orgId")
+        owners = await pipeline.execute()
         keys = [
             self._key(collection_name, point_id)
-            for point_id, exists in zip(point_ids, present)
-            if exists
+            for point_id, owner in zip(point_ids, owners)
+            if owner is not None and str(owner.decode() if isinstance(owner, bytes) else owner) == org_id
         ]
         await self._hset_keys(collection_name, payload, keys)
 
@@ -1203,50 +1219,68 @@ class RedisVectorService(IVectorDBService):
     ) -> list[bytes]:
         """Return all Redis keys in a collection matching a filter expression.
 
-        Uses iterative re-query-from-offset-0 after each page deletion to avoid
-        the stale-offset problem that arises when keys are deleted mid-iteration.
-        For pure reads (delete_points = False context), returns all matching keys.
+        Read through an aggregate cursor, not ``FT.SEARCH ... LIMIT offset``: an unsorted offset page is not
+        stable across calls (documents still settling in the index move between pages), so a page-by-page
+        scan repeats some keys and misses others, and a payload write would then skip the missed points.
+        A cursor can still repeat a key, so keys are de-duplicated, and a scan that ends with fewer distinct
+        keys than a count query reported for the same filter raises instead of answering with a part. The
+        count is a separate ``FT.SEARCH ... LIMIT 0 0``: the first integer of an aggregate reply is not
+        defined as the number of matches. Documents may change between the two calls, so only a scan that
+        finds fewer than counted raises (a retry by the caller then sees a settled index).
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
 
-        # Single bulk read: paginate until exhausted.
-        # Caller is responsible for not modifying the index between calls.
-        page_size = 1000
-        offset = 0
-        all_keys: list[bytes] = []
-
-        while True:
-            try:
-                raw = await self.client.execute_command(  # type: ignore
-                    "FT.SEARCH", idx, query,
-                    "NOCONTENT",
-                    "LIMIT", str(offset), str(page_size),
-                    *_NO_TIMEOUT,
+        found: dict[bytes, None] = {}
+        total = 0
+        cursor = 0
+        try:
+            counted = await self.client.execute_command(  # type: ignore
+                "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+            )
+            if not isinstance(counted, (list, tuple)) or not counted:
+                raise RuntimeError(f"unexpected count reply {counted!r}")
+            total = int(counted[0])
+            reply = await self.client.execute_command(  # type: ignore
+                "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key",
+                "WITHCURSOR", "COUNT", "1000", *_NO_TIMEOUT,
+            )
+            while True:
+                if not isinstance(reply, (list, tuple)) or len(reply) != 2:
+                    raise RuntimeError(f"unexpected reply {reply!r}")
+                rows, cursor = reply
+                for row in rows[1:]:
+                    fields = dict(zip(row[::2], row[1::2]))
+                    key = fields.get(b"__key") or fields.get("__key")
+                    if key is not None:
+                        found[key if isinstance(key, bytes) else key.encode()] = None
+                if not cursor:
+                    break
+                reply = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, cursor, "COUNT", "1000",
                 )
-            except Exception as e:
-                # A partial key list would silently update only some of a VRID's
-                # chunks while reporting success.
-                raise RuntimeError(
-                    f"Key lookup on '{collection_name}' failed after "
-                    f"{len(all_keys)} key(s): {e}"
-                ) from e
+        except asyncio.CancelledError:
+            # Not an Exception: a cancelled scan would leave its cursor open until the server expires it,
+            # and cursors are limited per shard. The delete itself is shielded from the cancellation.
+            if cursor:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
+            raise
+        except Exception as e:
+            if cursor:
+                with contextlib.suppress(Exception):  # best effort; the cursor expires on its own
+                    await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
+            # A partial key list would silently update only some of a VRID's
+            # chunks while reporting success.
+            raise RuntimeError(
+                f"Key lookup on '{collection_name}' failed after {len(found)} key(s): {e}"
+            ) from e
 
-            if not raw or not isinstance(raw, (list, tuple)):
-                break
-            total = int(raw[0]) if raw else 0
-            keys_in_page = [
-                k if isinstance(k, bytes) else k.encode()
-                for k in raw[1:]
-            ]
-            if not keys_in_page:
-                break
-            all_keys.extend(keys_in_page)
-            offset += len(keys_in_page)
-            if offset >= total:
-                break
-
-        return all_keys
+        if len(found) < total:
+            raise RuntimeError(
+                f"Key lookup on '{collection_name}' returned {len(found)} of {total} counted key(s)"
+            )
+        return list(found)
 
     # ------------------------------------------------------------------
     # Internal guards
@@ -1267,20 +1301,7 @@ def _build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCond
     We store the canonical ``metadata.x`` key here; conversion to Redis
     query syntax happens in utils.field_conditions_to_redis_query.
     """
-    conditions: list[FieldCondition] = []
-    for key, value in filters.items():
-        if value is None:
-            continue
-        field_key = canonical_filter_key(key)
-        if isinstance(value, (list, tuple)):
-            filtered = [v for v in value if v is not None]
-            if filtered:
-                conditions.append(FieldCondition(key=field_key, values=filtered))
-        elif isinstance(value, str) and not value.strip():
-            continue
-        else:
-            conditions.append(FieldCondition(key=field_key, value=value))
-    return conditions
+    return build_generic_conditions(filters)
 
 
 def _combine_text_and_filter(text_query: str, filter_query: str) -> str:
