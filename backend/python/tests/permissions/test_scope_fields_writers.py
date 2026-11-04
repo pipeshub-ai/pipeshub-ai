@@ -304,3 +304,42 @@ async def test_the_summary_point_gets_the_same_stamp_as_its_siblings(flag_on) ->
     finally:
         reset_membership_context(tokens)
     assert ScopeFields.from_payload(point) == sibling
+
+
+async def test_the_summary_point_takes_the_org_its_caller_names_when_none_is_bound(monkeypatch) -> None:
+    from app.modules.transformers.vectorstore import VectorStore
+
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    vdb = InMemoryVectorDB()
+    with oc.for_org(ORG, job="scope-fields-test"):
+        loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+        v = next(iter(loaded.records))
+        await sync_all(loaded, vdb)
+        sibling = await _stamp_state(vdb, loaded, v)
+    store = VectorStore.__new__(VectorStore)
+    store.graph_provider, store.logger = loaded.graph, log
+    for org, expected in ((None, STALE_SCOPE), (ORG, sibling)):  # nothing is bound here
+        tokens = await store._bind_membership(v, org_id=org)
+        try:
+            point = vector_point_payload({}, "summary")
+        finally:
+            reset_membership_context(tokens)
+        assert ScopeFields.from_payload(point) == expected
+
+
+async def test_the_stale_marker_is_written_even_when_no_org_is_bound(monkeypatch) -> None:
+    """Deliberate: the marker is version 0 (never trusted), so writing it by virtual record id alone can only withdraw trust; skipping
+    the write would leave an older stamp on points the failed resync could not recompute."""
+    from app.services.vector_db.membership import mark_scope_stale
+
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    vdb = InMemoryVectorDB()
+    with oc.for_org(ORG, job="scope-fields-test"):
+        loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
+        await sync_all(loaded, vdb)
+    v = next(iter(loaded.records))
+    point = (await vdb.retrieve_points(COLL, loaded.points[v]))[0]
+    assert ScopeFields.from_payload(point.payload).trusted
+    await mark_scope_stale(vdb, loaded.locator, v, log)  # nothing bound here
+    point = (await vdb.retrieve_points(COLL, loaded.points[v]))[0]
+    assert ScopeFields.from_payload(point.payload) == STALE_SCOPE
