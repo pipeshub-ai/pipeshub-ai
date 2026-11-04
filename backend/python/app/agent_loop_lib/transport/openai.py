@@ -462,7 +462,15 @@ class OpenAITransport(LLMTransport):
             {"role": "system", "content": [_marked({"type": "text", "text": text})] if marked else text}
             for text, marked in _system_parts(system, system_blocks, mark_stable=plan.breakpoint)
         ]
-        formatted.extend(self._format_message(m) for m in messages)
+        for m in messages:
+            entry = self._format_message(m)
+            if entry["role"] == "assistant" and not entry["content"] and not entry["tool_calls"]:
+                # An empty reply (no text, no tool calls) has nothing to replay;
+                # the API rejects an assistant message with neither content nor
+                # tool_calls with a 400.
+                logger.debug("openai: skipped an empty assistant turn")
+                continue
+            formatted.append(entry)
         # The images `_format_message` left out of tool results, sent the way
         # the LangChain arm sends them, so this transport loses none.
         relocated = relocated_tool_images(messages)
