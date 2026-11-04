@@ -455,7 +455,7 @@ _STRICT_XARGS_FLAGS = frozenset({"-0", "--null", "-r", "--no-run-if-empty"})
 _BACKREFERENCE_RE = re.compile(r"\\[1-9]")
 
 
-def _strict_grep_args_error(binary: str, args: list[str], *, first_stage: bool, via_xargs: bool) -> str | None:
+def _strict_grep_args_error(binary: str, args: list[str], *, first_stage: bool) -> str | None:
     allowed_short = _STRICT_SHORT_FLAGS[binary]
     patterns: list[str] = []
     operands: list[str] = []
@@ -522,10 +522,11 @@ def _strict_grep_args_error(binary: str, args: list[str], *, first_stage: bool, 
     if first_stage:
         if operands != ["."]:
             return "the first stage must search exactly '.'"
+        # grep without -r reads '.' as a file and finds nothing; rg always recurses.
+        if binary != "rg" and not recursive:
+            return "the first stage must search recursively (-r)"
     elif operands:
         return "later pipeline stages may not name files"
-    elif recursive and not via_xargs:
-        return "a recursive grep cannot read the previous stage"
     return None
 
 
@@ -558,6 +559,10 @@ def validate_pattern_match_command(cmd: str) -> tuple[bool, str]:
         if not tokens:
             return False, "empty pipeline stage"
         via_xargs = tokens[0] == "xargs"
+        # Without xargs a later grep reads the earlier stage's file names, not
+        # the files, so it would match paths where the index matches contents.
+        if index > 0 and not via_xargs:
+            return False, "a later stage must read the listed files through xargs"
         if via_xargs:
             if index == 0:
                 return False, "xargs cannot start the pipeline"
@@ -576,7 +581,7 @@ def validate_pattern_match_command(cmd: str) -> tuple[bool, str]:
         if index == 0 and not stage.rstrip().endswith(" ."):
             return False, "the first stage must end with a bare '.'"
         err = _strict_grep_args_error(
-            binary, tokens[1:], first_stage=index == 0, via_xargs=via_xargs,
+            binary, tokens[1:], first_stage=index == 0,
         )
         if err:
             return False, err
