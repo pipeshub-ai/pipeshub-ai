@@ -1,5 +1,6 @@
 """Tests for VRID-level connectorIds / recordGroupIds on vector points."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -54,12 +55,134 @@ def _graph(
     gp.get_records_by_virtual_record_id = AsyncMock(return_value=keys or [])
     recs = records or {}
 
-    async def _get_document(key, collection):
+    async def _get_document(key, collection, **_kw):
         return recs.get(key)
 
     gp.get_document = AsyncMock(side_effect=_get_document)
     gp.get_edges_from_node = AsyncMock(return_value=edges if edges is not None else [])
     return gp
+
+
+def _graph_with_failing_reads(records, edges_by_node, *, fail_edges_of=(), fail_document_of=()) -> AsyncMock:
+    """Reads as the real providers do: a failure answers [] or None unless the
+    caller passed ``raise_on_error``. A mock that always raises hides the bug
+    these tests exist for, because the real read only raises when asked."""
+    gp = AsyncMock()
+    gp.get_records_by_virtual_record_id = AsyncMock(return_value=list(records))
+
+    async def get_document(key, _collection, *, raise_on_error=False) -> dict | None:
+        if key in fail_document_of:
+            if raise_on_error:
+                raise RuntimeError("graph read failed")
+            return None
+        return records.get(key)
+
+    async def get_edges(node_id, _collection, *, raise_on_error=False) -> list[dict]:
+        if node_id in fail_edges_of:
+            if raise_on_error:
+                raise RuntimeError("graph read failed")
+            return []
+        return edges_by_node.get(node_id, [])
+
+    gp.get_document = AsyncMock(side_effect=get_document)
+    gp.get_edges_from_node = AsyncMock(side_effect=get_edges)
+    return gp
+
+
+class TestFailedGraphReadWritesNothing:
+    """The arrays replace what the points hold, so a read that failed must fail
+    the sync, which is retried, instead of writing a smaller or wrong array."""
+
+    RG = CollectionNames.RECORD_GROUPS.value
+    SLACK = {"rec-1": {"connectorId": "c1", "recordGroupId": "thread-1", "connectorName": "SLACK"}}
+    SLACK_EDGES = {
+        "records/rec-1": [{"_to": f"{RG}/thread-1"}],
+        f"{RG}/thread-1": [{"_to": f"{RG}/channel-1"}],
+    }
+
+    @staticmethod
+    async def _sync_fails_without_a_write(gp) -> None:
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+        with pytest.raises(RuntimeError, match="graph read failed"):
+            await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+        vdb.set_payload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_in_the_root_walk(self) -> None:
+        """Answered as [], the read looks like "no parent" and publishes the
+        thread as its own root."""
+        gp = _graph_with_failing_reads(
+            self.SLACK, self.SLACK_EDGES, fail_edges_of={f"{self.RG}/thread-1"}
+        )
+        await self._sync_fails_without_a_write(gp)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_a_records_groups(self) -> None:
+        """Answered as [], the shared-with-me group drops out of recordGroupIds."""
+        records = {"rec-1": {"connectorId": "c1", "recordGroupId": "primary", "connectorName": "DRIVE"}}
+        edges = {"records/rec-1": [{"_to": f"{self.RG}/primary"}, {"_to": f"{self.RG}/shared"}]}
+        gp = _graph_with_failing_reads(records, edges, fail_edges_of={"records/rec-1"})
+        await self._sync_fails_without_a_write(gp)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_one_duplicates_document(self) -> None:
+        """Answered as None, the other duplicate still resolves a connector, so
+        the empty-connectors guard passes and this connector drops out of
+        connectorIds: its users stop finding the record."""
+        records = {
+            "rec-1": {"connectorId": "c1", "recordGroupId": "g1", "connectorName": "DRIVE"},
+            "rec-2": {"connectorId": "c2", "recordGroupId": "g2", "connectorName": "DRIVE"},
+        }
+        gp = _graph_with_failing_reads(records, {}, fail_document_of={"rec-2"})
+        await self._sync_fails_without_a_write(gp)
+
+    @pytest.mark.asyncio
+    async def test_no_read_is_left_running_after_the_failure(self) -> None:
+        """A raise at the first failure would leave the other reads running
+        outside the VRID lock and its timeout."""
+        finished = []
+        records = {f"rec-{i}": {"connectorId": "c1", "connectorName": "DRIVE"} for i in range(3)}
+        gp = _graph_with_failing_reads(records, {}, fail_document_of={"rec-0"})
+
+        async def slow_edges(node_id, _collection, *, raise_on_error=False) -> list[dict]:
+            await asyncio.sleep(0.01)
+            finished.append(node_id)
+            return []
+
+        gp.get_edges_from_node = AsyncMock(side_effect=slow_edges)
+
+        await self._sync_fails_without_a_write(gp)
+
+        assert len(finished) == len(records)
+
+    @pytest.mark.asyncio
+    async def test_a_hierarchy_cycle_leaves_the_stored_root_alone(self) -> None:
+        """No read failed, so the sync still writes the rest. It has no root to
+        write, and writing the empty array would replace a good one."""
+        edges = {**self.SLACK_EDGES, f"{self.RG}/channel-1": [{"_to": f"{self.RG}/thread-1"}]}
+        gp = _graph_with_failing_reads(self.SLACK, edges)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        payload = vdb.set_payload.await_args.args[1]
+        assert ROOT_RECORD_GROUP_IDS_FIELD not in payload
+        assert payload[CONNECTOR_IDS_FIELD] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_deleted_mid_read_is_not_a_failure(self) -> None:
+        """A document that is simply gone answers None with no error, so the sync
+        does not raise. The arrays would be partial, so it writes nothing."""
+        records = {"rec-1": {"connectorId": "c1", "recordGroupId": "g1", "connectorName": "DRIVE"}}
+        gp = _graph_with_failing_reads({**records, "rec-2": None}, {})
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        vdb.set_payload.assert_not_awaited()
 
 
 class TestCanonicalFilterKey:
@@ -517,64 +640,6 @@ class TestSyncAndRewriteMembership:
         assert payload[ROOT_RECORD_GROUP_IDS_FIELD] == ["channel-1"]
 
     @pytest.mark.asyncio
-    async def test_sync_leaves_the_stored_root_alone_when_the_walk_fails(self):
-        """set_payload merges, so writing the array we resolved would replace a
-        good root with an empty one on a transient graph error, and the record
-        would then match no container filter for a root-scoped connector."""
-        gp = _graph(
-            keys=["rec-1"],
-            records={
-                "rec-1": {
-                    "connectorId": "c1",
-                    "recordGroupId": "thread-1",
-                    "connectorName": "SLACK",
-                }
-            },
-            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
-        )
-
-        async def edges_from(node_id, _collection, **kwargs):
-            if node_id.endswith("/thread-1"):
-                raise RuntimeError("graph unavailable")
-            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
-
-        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
-        vdb = AsyncMock()
-        vdb.filter_collection = AsyncMock(return_value=object())
-
-        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
-
-        payload = vdb.set_payload.await_args.args[1]
-        assert ROOT_RECORD_GROUP_IDS_FIELD not in payload
-        # the rest of the membership is still current and must still be written
-        assert payload[CONNECTOR_IDS_FIELD] == ["c1"]
-        assert payload[RECORD_GROUP_IDS_FIELD] == ["thread-1"]
-
-    @pytest.mark.asyncio
-    async def test_a_provider_that_answers_a_failed_walk_read_with_empty_does_not_publish_a_root(self) -> None:
-        """The default providers turn a read error into []: the walk must ask to be told, or the group it started from reads as the root."""
-        gp = _graph(
-            keys=["rec-1"],
-            records={"rec-1": {"connectorId": "c1", "recordGroupId": "thread-1", "connectorName": "SLACK"}},
-            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
-        )
-
-        async def edges_from(node_id, _collection, *, raise_on_error=False, **kwargs) -> list[dict]:
-            if node_id.endswith("/thread-1"):  # the walk's first hop
-                if raise_on_error:
-                    raise RuntimeError("graph unavailable")
-                return []  # what the providers do otherwise
-            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
-
-        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
-        vdb = AsyncMock()
-        vdb.filter_collection = AsyncMock(return_value=object())
-
-        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
-
-        assert ROOT_RECORD_GROUP_IDS_FIELD not in vdb.set_payload.await_args.args[1]  # not "thread-1 is its own root"
-
-    @pytest.mark.asyncio
     async def test_sync_does_not_walk_edges_for_other_connectors(self):
         """The walk is one graph call per group; only root-scoped connectors
         can use the result, so everyone else must not pay for it."""
@@ -836,7 +901,7 @@ class TestMembershipConcurrency:
             trace.append("read")
             return list(state["keys"])
 
-        async def _doc(key, collection):
+        async def _doc(key, collection, **_kw):
             await asyncio.sleep(0.01)  # yield between read and write
             return recs.get(key)
 
@@ -1347,7 +1412,7 @@ class TestResolveFansOut:
             "r3": {"connectorId": "c3"},
         }
 
-        async def _doc(key, collection):
+        async def _doc(key, collection, **_kw):
             return recs[key]
 
         gp = AsyncMock()
