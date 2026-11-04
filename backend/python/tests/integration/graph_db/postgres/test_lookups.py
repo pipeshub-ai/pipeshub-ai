@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -281,7 +282,8 @@ async def test_a_record_by_its_folder_path_and_by_name_in_a_parent(g: G) -> None
 
     found = await g.graph.get_record_by_path(g.conn, ["top", "sub", "leaf.pdf"], group.external_group_id)
     assert (found.get("id") or found.get("_key")) == leaf.id
-    assert (await g.graph.get_record_by_path(g.conn, ["top"], group.external_group_id)).get("id", root.id) == root.id
+    top = await g.graph.get_record_by_path(g.conn, ["top"], group.external_group_id)
+    assert (top.get("id") or top.get("_key")) == root.id
     assert await g.graph.get_record_by_path(g.conn, ["top", "nope"], group.external_group_id) is None
 
     again = await g.graph.find_file_by_name_in_parent("kb", "LEAF.pdf", MimeTypes.PDF.value, sub.id)
@@ -400,8 +402,12 @@ def raw(org: str, rid: str, **kw: object) -> dict:
             "origin": "CONNECTOR", "connectorName": "GITHUB", "mimeType": "text/plain", "createdAtTimestamp": 1, "updatedAtTimestamp": 1, **kw}
 
 
-async def test_cross_references_are_found_both_ways_and_only_between_live_records_of_the_org(pg_db) -> None:
+async def test_cross_references_are_found_both_ways_and_only_between_live_records_of_the_org(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+
+    async def check_access(_self: object, _u: str, _o: str, *, node_ids: list[str] = (), **_k: object) -> SimpleNamespace:
+        return SimpleNamespace(node_ids=set(node_ids))
+    monkeypatch.setattr(StandInProvider, "check_access", check_access)
     await p.batch_upsert_nodes([raw(p.org, "a"), raw(p.org, "b"), raw(p.org, "gone", isDeleted=True), raw("other", "foreign")], "records")
     link = {"from_collection": "records", "to_collection": "records", "relationshipType": "REFERENCE", "matchedBy": "url"}
     await p.batch_create_edges([{**link, "from_id": "a", "to_id": "b"}, {**link, "from_id": "gone", "to_id": "a"}, {**link, "from_id": "a", "to_id": "foreign"}], "nodeRelations")
@@ -409,7 +415,7 @@ async def test_cross_references_are_found_both_ways_and_only_between_live_record
     assert got == {"a": {"mentioned_in": [], "links_to": ["b"]}, "b": {"mentioned_in": ["a"], "links_to": []}}
     assert await p.get_address_links_batch(["a"], "") == {} and await p.get_address_links_batch([], p.org) == {}
     linked = await p.get_linked_records("a", p.org, "u", ["REFERENCE"])
-    assert [x["id"] for x in linked] == ["b"] or linked == []                       # listed first, then filtered by the access check
+    assert [x["id"] for x in linked] == ["b"]                                      # listed first, then filtered by the access check
 
 
 async def test_urls_issue_sites_threads_duplicates_and_removal_by_a_field(pg_db) -> None:
