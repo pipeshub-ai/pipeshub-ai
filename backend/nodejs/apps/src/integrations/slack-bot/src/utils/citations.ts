@@ -524,31 +524,15 @@ export function groupSources(
 /** Room in one mrkdwn text object (Slack allows 3000 characters). */
 const SOURCES_TEXT_LIMIT = 2900;
 
-/** At most this many number groups on a Sources line; the rest is counted. */
-const SOURCE_NUMBER_GROUPS = 8;
+/** At most this many citation numbers on a Sources line; the rest is counted. */
+const SOURCE_NUMBERS_SHOWN = 5;
 
-/**
- * A document's citation numbers, short enough for one line: three or more in
- * a row as a range ("[4]–[6]"), the first eight groups, then "+N more".
- */
+/** A document's citation numbers: the first five, then "+N more". */
 function compactNumbers(numbers: number[]): string {
   const sorted = [...new Set(numbers)].sort((a, b) => a - b);
-  const runs: number[][] = [];
-  for (const n of sorted) {
-    const run = runs[runs.length - 1];
-    if (run && n === run[run.length - 1]! + 1) run.push(n);
-    else runs.push([n]);
-  }
-  const groups = runs.flatMap((run) =>
-    run.length >= 3
-      ? [{ text: `[${String(run[0])}]–[${String(run[run.length - 1])}]`, count: run.length }]
-      : run.map((n) => ({ text: `[${String(n)}]`, count: 1 })),
-  );
-  const shown = groups.slice(0, SOURCE_NUMBER_GROUPS);
-  const more = groups
-    .slice(SOURCE_NUMBER_GROUPS)
-    .reduce((total, group) => total + group.count, 0);
-  return [...shown.map((g) => g.text), ...(more > 0 ? [`+${String(more)} more`] : [])].join(' ');
+  const shown = sorted.slice(0, SOURCE_NUMBERS_SHOWN).map((n) => `[${String(n)}]`);
+  const more = sorted.length - SOURCE_NUMBERS_SHOWN;
+  return [...shown, ...(more > 0 ? [`+${String(more)} more`] : [])].join(' ');
 }
 
 function sourceLine(document: SlackSourceDocument): string {

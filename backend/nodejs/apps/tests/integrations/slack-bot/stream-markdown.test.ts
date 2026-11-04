@@ -176,8 +176,8 @@ describe('slack-bot streamed markdown', () => {
           type: 'mrkdwn',
           text: [
             '*Sources*',
-            `• <${soc3}|Asana - SOC 3 Report 01-31-24.pdf>  [1]–[3] [8]–[11]`,
-            `• <${q3}|Asana Announces Record Third Quarter Fiscal 2023 Revenues.pdf>  [4]–[7]`,
+            `• <${soc3}|Asana - SOC 3 Report 01-31-24.pdf>  [1] [2] [3] [8] [9] +2 more`,
+            `• <${q3}|Asana Announces Record Third Quarter Fiscal 2023 Revenues.pdf>  [4] [5] [6] [7]`,
           ].join('\n'),
         },
       }]);
@@ -207,23 +207,24 @@ describe('slack-bot streamed markdown', () => {
       }]);
     });
 
-    it('shows a document cited many times as ranges, so its line stays short', () => {
+    it('shows the first five numbers of a document cited many times, then how many more', () => {
       const rows = new Map(Array.from({ length: 106 }, (_, i) => [i + 1, { name: '2am-thoughts.docx', url: 'https://x.test/doc', recordId: 'r1' }]));
       const [block] = numberedSourcesBlocks(rows) as AnyArgs[];
-      expect(block.text.text).to.equal('*Sources*\n• <https://x.test/doc|2am-thoughts.docx>  [1]–[106]');
+      expect(block.text.text).to.equal('*Sources*\n• <https://x.test/doc|2am-thoughts.docx>  [1] [2] [3] [4] [5] +101 more');
     });
 
-    it('keeps one or two numbers in a row apart and joins three or more', () => {
-      const rows = new Map([1, 2, 4, 5, 6, 9].map((n) => [n, { name: 'Doc', url: 'https://x.test/d', recordId: 'r1' }]));
+    it('lists five or fewer numbers in full', () => {
+      const rows = new Map([1, 2, 4, 5, 9].map((n) => [n, { name: 'Doc', url: 'https://x.test/d', recordId: 'r1' }]));
       const [block] = numberedSourcesBlocks(rows) as AnyArgs[];
-      expect(block.text.text).to.contain('<https://x.test/d|Doc>  [1] [2] [4]–[6] [9]');
+      expect(block.text.text).to.contain('<https://x.test/d|Doc>  [1] [2] [4] [5] [9]');
+      expect(block.text.text).to.not.contain('more');
     });
 
-    it('shows the first eight groups of many scattered numbers, then how many more', () => {
-      const odd = Array.from({ length: 21 }, (_, i) => i * 2 + 1);
-      const rows = new Map(odd.map((n) => [n, { name: 'Doc', url: 'https://x.test/d', recordId: 'r1' }]));
+    it('shows nine numbers as the first five and +4 more, never as a range', () => {
+      const rows = new Map([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [n, { name: 'Slack', url: 'https://x.test/s', recordId: 'r1' }]));
       const [block] = numberedSourcesBlocks(rows) as AnyArgs[];
-      expect(block.text.text).to.contain('<https://x.test/d|Doc>  [1] [3] [5] [7] [9] [11] [13] [15] +13 more');
+      expect(block.text.text).to.contain('<https://x.test/s|Slack>  [1] [2] [3] [4] [5] +4 more');
+      expect(block.text.text).to.not.contain('–');
     });
 
     it('shows a short list at normal text size too, never as small grey text', () => {
