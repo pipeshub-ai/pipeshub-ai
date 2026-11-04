@@ -449,3 +449,22 @@ async def test_a_record_moved_into_a_group_level_group_under_a_seed_the_walk_can
             checked += 1
             assert not (got and not truth[rid].admitted), f"{viewer} is admitted to {rid} ({p.fields.stamp.value}) by the stamp; the oracle refuses it"
     assert checked
+
+
+async def test_a_stamp_graph_that_leaves_the_app_out_of_nodes_gets_the_record_refused_not_stamped() -> None:
+    world = CASES["stamped:SLK-C-01"]
+    graph = stamp_graph(world)
+    app = next(n.id for n in world.nodes if n.kind == "app")
+    recs = [n.id for n in world.nodes if n.kind == "record" and n.connector == app]
+    whole = await ScopeProjector(graph).project(ORG, app, recs)
+    assert any(p.fields.stamp is Stamp.CONTAINER for p in whole.values())
+    real_nodes = graph.nodes
+
+    async def without_apps(org_id: str, ids: frozenset[str]) -> dict:
+        return {i: n for i, n in (await real_nodes(org_id, ids)).items() if n.kind != "app"}
+
+    graph.nodes = without_apps  # type: ignore[method-assign]
+    cut = await ScopeProjector(graph).project(ORG, app, recs)
+    refused = {r for r, p in cut.items() if p.refused}
+    assert refused and refused == {r for r in recs if r.startswith("reply:")}  # the records that reach the app through a parent
+    assert all(cut[r].fields == whole[r].fields for r in recs if r not in refused)  # the others are stamped as before
