@@ -143,3 +143,16 @@ async def test_two_orgs_sharing_a_collection_are_never_written_in_one_batch() ->
     written = [b for b in batches if b]
     assert written and all(len(b) == 1 for b in written)
     assert set().union(*written) == {ORG_A, ORG_B}
+
+
+async def test_an_empty_id_list_deletes_nothing_and_never_widens_to_the_org() -> None:
+    """An empty list is "match nothing" on every provider; the store must not turn it into an org-wide delete."""
+    db = _OrgSpaceDB()
+    store = _store(db)
+    await store.upsert_entities_batch([_entity(ORG_A, "t1")])
+    before = dict(db.entity_points)
+
+    await store.delete_entities(ORG_A, "topic", [])
+    await store.delete_entities(ORG_A, "topic", ["", None])
+
+    assert db.entity_points == before
