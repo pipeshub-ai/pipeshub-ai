@@ -35,7 +35,7 @@ const instrument = {
 };
 
 export const metricsBackend = {
-  createCounter: (_def: unknown) => instrument,
-  createGauge: (_def: unknown) => instrument,
-  createHistogram: (_def: unknown) => instrument,
+  createCounter: (_def: unknown): typeof instrument => instrument,
+  createGauge: (_def: unknown): typeof instrument => instrument,
+  createHistogram: (_def: unknown): typeof instrument => instrument,
 };
