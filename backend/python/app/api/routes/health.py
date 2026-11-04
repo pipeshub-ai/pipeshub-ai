@@ -909,41 +909,44 @@ async def handle_model_change(
             f"new model produces {embedding_size}"
         )
 
-    if _spaces_per_org(retrieval_service) and existing_vector_size != 0:
-        # The org's embedding space is tied to the model that first wrote to it. While the org holds no point at all (a model picked
-        # after the default one pinned an empty space) the change is allowed: the indexing service replaces the space on the first
-        # write that carries the new model, and the database refuses if a point exists by then. This is a read only.
-        # identity of the model the space already takes: an admin can always go back to it
+    if _spaces_per_org(retrieval_service):
+        # The org's embedding space is tied to the model that first wrote to it, and it can hold entity points with no managed records
+        # collection (so no dimension above): the org's points decide, not the records survey. While the org holds no point at all (a
+        # model picked after the default one pinned an empty space) the change is allowed: the indexing service replaces the space on
+        # the first write that carries the new model, and the database refuses if a point exists by then. This is a read only.
         identity = f"{new_identity}:{embedding_size}" if new_identity else None
-        current = f"{current_identity}:{existing_vector_size}" if current_identity else None
+        current = f"{current_identity}:{existing_vector_size}" if current_identity and existing_vector_size else None
         try:
             holds_points = await retrieval_service.vector_db_service.org_holds_points()
+            # Going (back) to the model and dimension the space already takes changes nothing: an admin can always return to it.
             accepts = not holds_points or await retrieval_service.vector_db_service.org_space_accepts(
                 identity, embedding_size, current
             )
         except Exception as e:  # a read that failed proves nothing: refuse (503) rather than let an unaccepted change through
             raise CollectionSurveyError(f"could not read the organisation's vector space: {type(e).__name__}") from e
         if accepts:
-            logger.info("The org's vector space accepts the embedding change: allowed")
-            return
-        logger.error(
-            "Rejected embedding change: the org's vector space is pinned to the previous model and there is no space flip yet."
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "status": "not healthy",
-                "code": EMBEDDING_CHANGE_UNSUPPORTED_CODE,
-                "error": (
-                    "The embedding model cannot be changed yet: this installation keeps "
-                    "vectors in PostgreSQL (pgvector), where each organisation's vector "
-                    "space is tied to the model that first indexed it, and existing "
-                    "data cannot be re-embedded in place. Keep the current embedding "
-                    "model, or set up a new installation to use another one."
-                ),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+            if existing_vector_size != 0:
+                logger.info("The org's vector space accepts the embedding change: allowed")
+                return
+        else:
+            logger.error(
+                "Rejected embedding change: the org's vector space is pinned to the previous model and there is no space flip yet."
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "not healthy",
+                    "code": EMBEDDING_CHANGE_UNSUPPORTED_CODE,
+                    "error": (
+                        "The embedding model cannot be changed yet: this installation keeps "
+                        "vectors in PostgreSQL (pgvector), where each organisation's vector "
+                        "space is tied to the model that first indexed it, and existing "
+                        "data cannot be re-embedded in place. Keep the current embedding "
+                        "model, or set up a new installation to use another one."
+                    ),
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
 
     if points_count > 0:
         logger.error(

@@ -299,8 +299,10 @@ async def test_the_orphan_sweep_binds_each_mappings_org_and_skips_one_without() 
 
     pipeline = MagicMock()
     pipeline.rewrite_or_delete_vector_membership = _cleanup
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())  # no org holds points of v-none: nothing to clean for it
     await sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=10)
     assert seen == [("v-a", A)]
+    pipeline.orgs_holding_points.assert_awaited_once_with("v-none")  # it was looked up, not skipped by an error
 
 
 async def test_the_membership_backfill_binds_the_org_of_each_record() -> None:
@@ -322,12 +324,14 @@ async def test_the_membership_backfill_binds_the_org_of_each_record() -> None:
 
     pipeline = MagicMock()
     pipeline.sync_vector_membership = _sync
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())  # v2: no org on either side and no points
     lock = AsyncMock()
     lock.try_acquire = AsyncMock(return_value=True)
     await run_vector_membership_backfill_tick(
         logger=MagicMock(), graph_provider=graph, pipeline=pipeline, lock=lock, page_size=10, vrid_pause_ms=0,
     )
     assert seen == [("v1", A)]  # v2 names no org: failed, never synced for "any"
+    pipeline.orgs_holding_points.assert_awaited_once_with("v2")
 
 
 # a VRID shared by two orgs: each org's delete removes its own points when it has no record left

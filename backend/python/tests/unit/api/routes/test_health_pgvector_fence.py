@@ -64,10 +64,11 @@ async def test_a_provider_switch_for_the_same_model_is_a_change() -> None:
 
 
 async def test_an_org_without_a_space_and_an_unchanged_model_pass() -> None:
-    svc = _service(holds_points=True)
-    await handle_model_change(svc, "m1", "m2", 0, 0, 512, MagicMock())     # nothing indexed yet: no space
+    svc = _service(holds_points=False)
+    await handle_model_change(svc, "m1", "m2", 0, 0, 512, MagicMock())     # nothing indexed yet: no space, no point
+    svc.vector_db_service.org_holds_points.assert_awaited_once()
     await handle_model_change(svc, "m1", "m1", 768, 40, 768, MagicMock())  # same model and size
-    svc.vector_db_service.org_holds_points.assert_not_awaited()
+    svc.vector_db_service.org_holds_points.assert_awaited_once()           # an unchanged model is never asked
 
 
 async def test_other_stores_keep_their_behaviour(monkeypatch) -> None:
@@ -129,3 +130,14 @@ async def test_a_database_error_reading_the_org_space_fails_closed(failing: str)
     setattr(svc.vector_db_service, failing, AsyncMock(side_effect=ConnectionError("db down")))
     with pytest.raises(CollectionSurveyError):
         await handle_model_change(svc, "m1", "m2", 768, 40, 512, MagicMock())
+
+
+async def test_an_org_with_entity_points_and_no_records_collection_is_refused_a_model_change() -> None:
+    """No managed records collection means no dimension from the survey, but the org's entity points still pin its space."""
+    with pytest.raises(HTTPException) as exc:
+        await handle_model_change(_service(holds_points=True), "m1", "m2", 0, 0, 512, MagicMock())
+    assert exc.value.status_code == 400 and exc.value.detail["code"] == EMBEDDING_CHANGE_UNSUPPORTED_CODE
+
+
+async def test_an_org_with_nothing_at_all_may_change_model_without_a_records_collection() -> None:
+    await handle_model_change(_service(holds_points=False), "m1", "m2", 0, 0, 512, MagicMock())
