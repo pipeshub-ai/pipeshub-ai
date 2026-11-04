@@ -3,6 +3,7 @@ from typing import Any, Dict, List, NamedTuple, Sequence
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org
 from app.exceptions.indexing_exceptions import (
     EmbeddingDeletionError,
     IndexingError,
@@ -17,13 +18,17 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     VIRTUAL_RECORD_ID_FIELD,
 )
+from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     MEMBERSHIP_WRITE_BATCH_SIZE,
-    remaining_record_keys,
+    own_record_keys,
     vrid_write_locks,
     write_membership_batch_locked,
+)
+from app.services.vector_db.membership import (
+    orgs_holding_points as _orgs_holding_points,
 )
 from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record as _rewrite_or_delete_virtual_record,
@@ -61,6 +66,7 @@ CONNECTOR_DELETE_SCROLL_PAGE_SIZE = 500
 # points are spread very thin; past it the unseen ids are left unproven and
 # retried rather than written from a read that proved nothing.
 MEMBERSHIP_REREAD_MAX_POINTS = 10_000
+
 
 
 class ScanResult(NamedTuple):
@@ -191,6 +197,20 @@ class IndexingPipeline:
             release_mapping=self._forget_virtual_record_mappings,
         )
 
+    async def orgs_holding_points(self, virtual_record_id: str) -> set[str]:
+        """The orgs that hold points of this virtual record, read from the points themselves (see ``membership.orgs_holding_points``).
+
+        For a maintenance pass that finds a virtual record whose mapping row or records name no org: the points are what is left
+        that names an owner.
+        """
+        collections = await self.collection_locator.all_collections(fresh=True, strict=True)
+        return await _orgs_holding_points(self.vector_db_service, collections, virtual_record_id)
+
+    async def release_orphan_mapping(self, virtual_record_id: str) -> bool:
+        """Drop the mapping row (and the stored content behind it) of a virtual record nothing references and no
+        org holds points of. True when it is gone."""
+        return not await self._forget_virtual_record_mappings([virtual_record_id])
+
     async def purge_connector(
         self,
         ctx: DeleteContext,
@@ -257,7 +277,7 @@ class IndexingPipeline:
         )
 
         exclusive_filter = await self.vector_db_service.filter_collection(
-            must={CONNECTOR_IDS_FIELD: ctx.connector_id},
+            must={"orgId": org_for_filter(ctx.org_id or None), CONNECTOR_IDS_FIELD: ctx.connector_id},
             max_values={CONNECTOR_IDS_FIELD: 1},
         )
         for name in collections:
@@ -379,11 +399,12 @@ class IndexingPipeline:
         found: List[str] = []
         seen: set = set()
         complete = True
+        org_id = org_for_filter()
 
         for name in collections:
             try:
                 filter_dict = await self.vector_db_service.filter_collection(
-                    must={CONNECTOR_IDS_FIELD: connector_id}
+                    must={"orgId": org_id, CONNECTOR_IDS_FIELD: connector_id}
                 )
                 offset = None
                 scanned = 0
@@ -435,12 +456,13 @@ class IndexingPipeline:
             return []
 
         survivors: set = set()
+        org_id = org_for_filter()
         for start in range(0, len(virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
             batch = list(virtual_record_ids)[
                 start:start + QDRANT_BULK_DELETE_BATCH_SIZE
             ]
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": batch}
+                must={"orgId": org_id, "virtualRecordId": batch}
             )
             for name in collections:
                 try:
@@ -586,10 +608,11 @@ class IndexingPipeline:
         rewritten = 0
         orphans = 0
         handled: set = set()
+        org_id = org_for_filter()
 
         while True:
             shared_filter = await self.vector_db_service.filter_collection(
-                must={CONNECTOR_IDS_FIELD: connector_id}
+                must={"orgId": org_id, CONNECTOR_IDS_FIELD: connector_id}
             )
             page = await self.vector_db_service.scroll(
                 collection_name=collection_name,
@@ -729,10 +752,11 @@ class IndexingPipeline:
         offset = None
         scanned = 0
         exhausted = False
+        org_id = org_for_filter()
 
         try:
             filt = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": sorted(wanted)}
+                must={"orgId": org_id, "virtualRecordId": sorted(wanted)}
             )
             while unseen and scanned < MEMBERSHIP_REREAD_MAX_POINTS:
                 page = await self.vector_db_service.scroll(
@@ -1005,10 +1029,11 @@ class IndexingPipeline:
         found: List[str] = []
         seen: set = set()
         complete = True
+        org_id = org_for_filter()
         for name in scope.collection_names:
             try:
                 filter_dict = await self.vector_db_service.filter_collection(
-                    must={scope.filter_field: scope.filter_values}
+                    must={"orgId": org_id, scope.filter_field: scope.filter_values}
                 )
                 offset = None
                 scanned = 0
@@ -1156,6 +1181,9 @@ class IndexingPipeline:
                 f"🗑️ Starting bulk deletion candidate evaluation for {len(normalized_virtual_record_ids)} virtual record IDs"
             )
 
+            # Never "every org": a missing org fails here, before the per-batch handler that logs and continues.
+            org_id = org_for_filter(org_id, match_bound=True)
+
             safe_virtual_record_ids: List[str] = []
             rewritten_virtual_record_ids: List[str] = []
             skipped_virtual_record_ids: List[str] = []
@@ -1166,11 +1194,7 @@ class IndexingPipeline:
                     # accidental data loss" and could not fire, because the
                     # provider swallowed the failure and answered [] -- which
                     # this loop reads as unreferenced and queues for deletion.
-                    remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
-                        virtual_record_id=virtual_record_id,
-                        raise_on_error=True,
-                    )
-                    remaining_keys = remaining_record_keys(remaining_records)
+                    remaining_keys = await own_record_keys(self.graph_provider, virtual_record_id, org_id)
                     if remaining_keys:
                         # rewrite_or_delete, not sync: a VRID that survives in
                         # another connector has still *left* the collections
@@ -1178,7 +1202,9 @@ class IndexingPipeline:
                         # only re-stamps where records remain, so under a
                         # multi-collection strategy the deleted connector's own
                         # collection would keep points nothing references.
-                        await self.rewrite_or_delete_vector_membership(virtual_record_id)
+                        # The explicit org is the authority here: an event with none bound still rewrites for it.
+                        with for_org(org_id, job="bulk-delete-embeddings"):
+                            await self.rewrite_or_delete_vector_membership(virtual_record_id)
                         rewritten_virtual_record_ids.append(virtual_record_id)
                         self.logger.debug(
                             f"Rewrote vector membership for virtual_record_id {virtual_record_id} "
@@ -1222,16 +1248,13 @@ class IndexingPipeline:
             confirmed_virtual_record_ids: List[str] = []
             for virtual_record_id in safe_virtual_record_ids:
                 try:
-                    recheck = await self.graph_provider.get_records_by_virtual_record_id(
-                        virtual_record_id=virtual_record_id,
-                        raise_on_error=True,
-                    )
-                    if remaining_record_keys(recheck):
+                    if await own_record_keys(self.graph_provider, virtual_record_id, org_id):
                         self.logger.warning(
                             f"Virtual record {virtual_record_id} gained records on "
                             f"re-check — rewriting membership instead of deleting"
                         )
-                        await self.rewrite_or_delete_vector_membership(virtual_record_id)
+                        with for_org(org_id, job="bulk-delete-embeddings"):
+                            await self.rewrite_or_delete_vector_membership(virtual_record_id)
                         rewritten_virtual_record_ids.append(virtual_record_id)
                         continue
                     confirmed_virtual_record_ids.append(virtual_record_id)
@@ -1300,13 +1323,9 @@ class IndexingPipeline:
                 batch_num = i // QDRANT_BULK_DELETE_BATCH_SIZE + 1
 
                 try:
-                    # Scoped to the caller's org when it is known, so one org's delete cannot reach another's points.
-                    scope = (
-                        {"must": {"orgId": org_id, "virtualRecordId": batch}}
-                        if org_id
-                        else {"should": {"virtualRecordId": batch}}
+                    filter_dict = await self.vector_db_service.filter_collection(
+                        must={"orgId": org_id, "virtualRecordId": batch}
                     )
-                    filter_dict = await self.vector_db_service.filter_collection(**scope)
 
                     for collection_name in collection_names:
                         await self.vector_db_service.delete_points(

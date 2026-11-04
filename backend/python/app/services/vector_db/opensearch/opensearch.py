@@ -66,6 +66,13 @@ from app.services.vector_db.const.const import (
     ROOT_RECORD_GROUP_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import (
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -127,6 +134,12 @@ _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
 # A partial update re-reads the document when another write lands between its
 # read and write; without retries it fails the item with a 409.
+_MERGE_IF_ORG_SCRIPT = (
+    "void merge(Map t, Map s) { for (e in s.entrySet()) { def v = e.getValue(); def c = t.get(e.getKey()); "
+    "if (v instanceof Map && c instanceof Map) { merge(c, v) } else { t.put(e.getKey(), v) } } } "
+    "if (ctx._source.metadata == null || ctx._source.metadata.orgId != params.org) { ctx.op = 'noop' } "
+    "else { merge(ctx._source, params.doc) }"
+)
 # Bounded: a conflict means a concurrent writer; a few refreshed passes outlast it, more would hide a bug.
 _DELETE_CONFLICT_RETRIES = 5
 _ANY = "*"  # a written point that names no virtual record
@@ -1150,6 +1163,7 @@ class OpenSearchService(IVectorDBService):
                 "whose field is absent satisfies those too, so this would delete "
                 "most of the index. Pair it with a value match (e.g. connectorIds)."
             )
+        require_filter_org(filter)
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
         # ``refresh`` (after the delete) is opt-in: the connector cleanup asks for it because it re-reads
@@ -1203,6 +1217,8 @@ class OpenSearchService(IVectorDBService):
                 "every document in the index. Populate at least one filter condition "
                 "(e.g. virtualRecordId)."
             )
+        require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         await self._assert_connected()
         if not await self._guard_scope_mapping(collection_name, payload):
             payload = self._without_scope(payload)
@@ -1256,6 +1272,8 @@ class OpenSearchService(IVectorDBService):
                 "set_payload called with an empty filter — this would update the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
 
     async def update_payload_by_ids(
@@ -1263,10 +1281,16 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         point_ids: List[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
         """A bulk partial update by ``_id`` reaches documents the index has
-        not refreshed yet, which ``update_by_query`` cannot."""
+        not refreshed yet, which ``update_by_query`` cannot. Only the points of
+        ``org_id`` are touched."""
         await self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         if not await self._guard_scope_mapping(collection_name, payload):
@@ -1274,10 +1298,13 @@ class OpenSearchService(IVectorDBService):
             if not payload:
                 return
         doc = OpenSearchUtils.nest_dotted_keys(payload)
+        # A scripted update checks the org on the document itself (a bulk update by _id sees unrefreshed
+        # writes) and is a noop for another org's id; it merges objects recursively like a partial doc.
         actions = [
             {
                 "_op_type": "update", "_index": collection_name, "_id": point_id,
-                "doc": doc, "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
+                "script": {"lang": "painless", "source": _MERGE_IF_ORG_SCRIPT, "params": {"org": org_id, "doc": doc}},
+                "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
             }
             for point_id in point_ids
         ]
