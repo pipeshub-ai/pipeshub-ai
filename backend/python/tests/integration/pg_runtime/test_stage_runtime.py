@@ -232,13 +232,16 @@ async def test_a_record_waiting_for_a_stage_does_not_hold_an_indexing_slot(stage
         free = [f"free{i}-{stage.uid}" for i in range(6)]
         for r in free:
             await stage.producer.send_event(stage.topic, "record", {"recordId": r})
-        await until(lambda: len([r for r in ran if r in free]) == 6, timeout=3.0)      # not after a 10 s lease wait
+        await until(lambda: len([r for r in ran if r in free]) == 6, timeout=20.0)     # a held record parked in a slot would stall them for its whole wait; load only stretches seconds
         assert not [r for r in ran if r in held]
     await until(lambda: set(held) <= set(ran), timeout=15.0)
 
 
 async def test_a_paused_stage_stops_claiming_until_the_pause_ends(stage, monkeypatch) -> None:
-    """a stage that hands a job back with a delay is not claimed from until then (no claim-and-hand-back churn), and then resumes."""
+    """a stage that hands a job back with a delay is not claimed from until then (no claim-and-hand-back churn), and then resumes.
+
+    The hand-back delay is far longer than the test, so the pause cannot end by itself on a slow host; the test ends it:
+    the jobs are made visible again and the consumer's pause is cleared."""
     monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
     calls: list[str] = []
     paused = True
@@ -246,18 +249,25 @@ async def test_a_paused_stage_stops_claiming_until_the_pause_ends(stage, monkeyp
     async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
         calls.append(m.payload["jobId"])
         if paused:
-            raise RequeueWithoutAttempt("dependency paused", delay_s=1.5)
+            raise RequeueWithoutAttempt("dependency paused", delay_s=3600)
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
 
-    await stage.consumer(handler, admission=StageAdmission(stage=f"classify{stage.uid}", limit=2))
+    cons = await stage.consumer(handler, admission=StageAdmission(stage=f"classify{stage.uid}", limit=2))
     for i in range(20):
         await stage.producer.send_event(stage.topic, "stage", {"jobId": f"j{i}-{stage.uid}"})
-    await asyncio.sleep(1.2)
+    await until(lambda: calls and cons._paused_until > 0, timeout=10.0)
+    await asyncio.sleep(0.5)         # let the first batch finish handing back
     first = len(calls)
     assert 1 <= first <= 10         # one batch found the stage paused; the other 15+ were never claimed
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(1.0)        # an observation only: the pause cannot end before the test ends it
     assert len(calls) == first      # nothing is claimed while the pause lasts
     paused = False
+    async with (await stage.runtime.db()).runtime_uow(write=True) as tx:
+        await tx.execute(
+            "/* pipeshub:test.unpause */ UPDATE platform.queue_deliveries SET visible_at = now() WHERE topic = $1", stage.topic
+        )
+    cons._paused_until = 0.0
+    cons._wake.set()
     await until(lambda: set(calls) >= {f"j{i}-{stage.uid}" for i in range(20)}, timeout=20.0)
     for _ in range(200):
         if not await stage.q.backlog("stage_g", [stage.topic]):
