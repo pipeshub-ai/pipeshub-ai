@@ -29,7 +29,7 @@ const me = { userId: USER, orgId: ORG };
 interface Result {
   status?: number;
   body?: unknown;
-  error?: { statusCode?: number; name?: string };
+  error?: { statusCode?: number; name?: string; message?: string };
 }
 
 const parent = (extra: Partial<ChatSessionDto> = {}): ChatSessionDto =>
@@ -304,7 +304,7 @@ describe('compare.controller', () => {
       { choice: BRANCH },
     );
     expect(out.error?.name).to.equal('ConflictError');
-    expect(String(out.error)).to.include('still being answered');
+    expect(out.error?.message).to.include('still being answered');
   });
 
   it('purges branch artifacts before delete, and still continues when a blob is gone', async () => {
