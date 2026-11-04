@@ -29,12 +29,13 @@ CORE = BACKEND / "db" / "versions" / "kernel" / "vetted" / "manifest.yaml"
 RETRIEVAL = BACKEND / "db" / "versions" / "retrieval" / "vetted" / "manifest.yaml"
 PLATFORM = BACKEND / "db" / "versions" / "platform" / "vetted" / "manifest.yaml"
 GRAPH = BACKEND / "db" / "versions" / "graph" / "vetted" / "manifest.yaml"
+KG = BACKEND / "db" / "versions" / "kg" / "vetted" / "manifest.yaml"
 IDENTITY = BACKEND / "db" / "versions" / "identity" / "vetted" / "manifest.yaml"
 FIXTURE = Path(__file__).with_name("vetted_manifest.yaml")
 FNS = vetted.load_all([CORE, RETRIEVAL, PLATFORM, IDENTITY, FIXTURE])
-# the catalog agreement check sees every manifest a migrated database holds; the generated suite runs on those that fit the fixture schema (graph is covered in test_graph.py)
-FNS.update(vetted.load_all([GRAPH]))
-ALL = [f for f in FNS.values() if f.schema != "graph"]
+# the catalog agreement check sees every manifest a migrated database holds; the generated suite runs on those that fit the fixture schema (graph is covered in test_graph.py, kg in test_kg_writers.py)
+FNS.update(vetted.load_all([GRAPH, KG]))
+ALL = [f for f in FNS.values() if f.schema not in ("graph", "kg")]
 IDS = [f.qualified for f in ALL]
 DB_NAME = "t_vetted"
 
