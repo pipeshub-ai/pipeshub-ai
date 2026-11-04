@@ -1209,7 +1209,7 @@ class TestRebalancePurge:
     @pytest.mark.parametrize("done", [True, False])
     async def test_a_job_finishing_after_the_next_poll_commits_nothing(
         self, logger, plain_config, done
-    ):
+    ) -> None:
         consumer = _make_consumer(logger, plain_config, _fair_config())
         consumer.consumer = MagicMock()
         consumer.consumer.commit = AsyncMock()

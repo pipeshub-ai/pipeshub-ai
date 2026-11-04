@@ -116,7 +116,7 @@ class TestRevoke:
 
 
 class TestMarkDoneWithoutPriorTrack:
-    def test_mark_done_without_track_commits_nothing(self):
+    def test_mark_done_without_track_commits_nothing(self) -> None:
         assert PartitionOffsetTracker().mark_done(_tp(), 0) is None
 
     def test_untracked_resolution_is_logged_as_an_error(self):
@@ -150,18 +150,18 @@ class TestJobThatOutlivesARebalance:
         tracker.revoke(tp)
         return tracker, tp
 
-    def test_finishing_commits_nothing(self):
+    def test_finishing_commits_nothing(self) -> None:
         tracker, tp = self._revoked_with_8_running()
         assert tracker.mark_done(tp, 8) is None
 
-    def test_handing_back_commits_nothing_and_leaves_no_floor(self):
+    def test_handing_back_commits_nothing_and_leaves_no_floor(self) -> None:
         tracker, tp = self._revoked_with_8_running()
         assert tracker.mark_redeliver(tp, 8) is None
 
         tracker.track(tp, 1)
         assert tracker.mark_done(tp, 1) == 2
 
-    def test_it_cannot_carry_a_later_commit_past_what_is_still_unread(self):
+    def test_it_cannot_carry_a_later_commit_past_what_is_still_unread(self) -> None:
         tracker, tp = self._revoked_with_8_running()
         for offset in (1, 2, 3):
             tracker.track(tp, offset)
@@ -169,7 +169,7 @@ class TestJobThatOutlivesARebalance:
 
         assert [tracker.mark_done(tp, offset) for offset in (1, 2, 3)] == [2, 3, 4]
 
-    def test_the_re_read_delivery_still_commits_normally(self):
+    def test_the_re_read_delivery_still_commits_normally(self) -> None:
         tracker, tp = self._revoked_with_8_running()
         tracker.mark_done(tp, 8)
         for offset in range(1, 9):
