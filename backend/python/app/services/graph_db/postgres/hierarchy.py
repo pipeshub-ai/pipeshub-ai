@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _ORG_FIELD = "orgId"  # the org property of a graph document
-_EDGE_COLLS = sorted({*EDGE_COLLECTION_TO_RELATIONSHIP, CollectionNames.RECORD_LINKS.value})
+_EDGE_COLLS = sorted({*EDGE_COLLECTION_TO_RELATIONSHIP, CollectionNames.RECORD_LINKS.value, CollectionNames.INTER_CATEGORY_RELATIONS.value})
 _NODE_COLLS = ["records", "blocks", *_TYPE_COLLS]
 
 
@@ -43,6 +43,10 @@ async def _remove_records(tx: Tx, org: str, ids: list[str]) -> int:
     """Remove records with their type documents, blocks and every edge touching any of them; returns the records removed."""
     if not ids:
         return 0
+    # The records are locked before anything attached to them is read: a writer that is adding a block or a type document holds its record's row until it
+    # commits, so the reads below (statements of their own, with fresh snapshots) see what it wrote instead of leaving it without an owner.
+    await tx.execute("""/* pipeshub:graph.records_remove_lock_records */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
+        ORDER BY id FOR UPDATE""", org, ids)
     extra = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.records_remove_blocks */ SELECT id FROM graph.nodes
         WHERE org_id = $1 AND coll = 'blocks' AND doc->>'recordId' = ANY($2::text[])""", org, ids)]
     linked = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.records_remove_types */ SELECT e.to_id FROM graph.edges e

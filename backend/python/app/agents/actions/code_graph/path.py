@@ -157,6 +157,8 @@ async def find_symbol_path_impl(
                 "no path here does not prove there is none. Narrow with "
                 "`edge_types`, or start from symbols closer together."
             )
+        elif not undirected and (not edge_types or RecordRelations.CALLS.value in edge_types):
+            missed["note"] = await _unproven_note(graph_provider, target_key, readable)
         return missed
 
     keys = {start_key, end_key}
@@ -194,6 +196,38 @@ async def find_symbol_path_impl(
     if capped:
         found["capped"] = True
     return found
+
+
+# Enough inbound calls to find one the caller can read without loading a hub's every caller.
+_CALLER_PROBE = 50
+
+
+async def _unproven_note(
+    graph_provider: IGraphDBProvider, target_key: str, readable: Callable[[list[str]], Awaitable[set[str]]],
+) -> str:
+    """Why an uncapped miss is still not proof: CALLS holds only calls whose receiver type is
+    known, so an untyped call, a getattr or a callback can join two symbols the graph does not.
+
+    Only readable callers count: "something calls it" from a hidden file would reveal that file.
+    """
+    rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+        node_keys=[target_key], node_collection=_BLOCKS,
+        relationship_types=[RecordRelations.CALLS.value], direction="inbound",
+        limit=_CALLER_PROBE, raise_on_error=True,
+    ) or []
+    callers = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
+    linked = bool(callers) and bool(await readable(callers))
+    reason = (
+        "No chain of linked calls joins them, but calls the graph could not link (on values "
+        "of unknown type, through getattr or callbacks) can. "
+        if linked else
+        "Nothing in the graph calls the second symbol, so every call to it is one the graph "
+        "could not link (through getattr, a callback, or a value of unknown type), and this "
+        "search cannot tell whether the first reaches it. "
+    )
+    return (reason + "Before answering that it is not reached, read the calls the first symbol "
+            "makes and follow them; a call counts even when it sits in a branch only some "
+            "arguments take.")
 
 
 async def _bfs_edges(

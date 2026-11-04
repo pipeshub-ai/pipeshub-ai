@@ -203,14 +203,6 @@ def test_identity_and_capabilities() -> None:
     assert not caps.supports_server_side_text_search
 
 
-@pytest.mark.asyncio
-async def test_reading_and_searching_are_not_implemented_yet(svc) -> None:
-    flt = await svc.filter_collection(must={"orgId": ORG})
-    for call in (svc.scroll("records", flt, 1), svc.retrieve_points("records", ["x"]), svc.query_nearest_points("records", [])):
-        with pytest.raises(NotImplementedError, match="pgvector"):
-            await call
-
-
 # ---- collections: the same answers as the other providers ------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_creating_an_existing_collection_fails_with_the_registry_token(svc) -> None:
@@ -485,3 +477,284 @@ async def test_the_orgs_space_for_a_write(writer) -> None:
     cat.name_space = AsyncMock(return_value="p:someone-else:4")
     with pytest.raises(SpaceMismatch):
         await svc._space_for_write(ORG, 4, {"p:m:4"})
+
+
+# ---- search -----------------------------------------------------------------------------------------------------------------------------
+@pytest.fixture
+def searcher(svc, monkeypatch) -> tuple[PgVectorService, SimpleNamespace]:
+    from app.services.vector_db.pgvector import dense, reads
+
+    calls = SimpleNamespace(dense=[], retrieved=[])
+    space = OrgSpace(5, "active", "p:m:4", 4, "cosine")
+    svc._catalog.require_collection = AsyncMock(return_value=ROW)
+    svc._catalog.active_space = AsyncMock(return_value=space)
+    svc._sizer = SimpleNamespace(connectors=AsyncMock(return_value=None))
+    svc._sampler = SimpleNamespace(offer=MagicMock())
+    svc.pg_capabilities = SimpleNamespace(bit_hnsw=True, hnsw_safe_mode=False)
+    rows = [(10, str(__import__("uuid").UUID(int=2))), (11, str(__import__("uuid").UUID(int=1))), (12, str(__import__("uuid").UUID(int=3)))]
+
+    async def search(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        calls.dense.append(q)
+        plan = SimpleNamespace(tier=dense.Tier.E0, share_band="all")
+        return dense.Leg(rows, plan, None), SimpleNamespace(leaf_rows=3, n_hat=3)
+
+    async def retrieve(tx, org, coll, space_id, ids) -> list:
+        calls.retrieved.append(ids)
+        return [SimpleNamespace(id=str(i), payload={"page_content": f"t{i.int}"}) for i in ids]
+
+    monkeypatch.setattr(dense, "search", search)
+    monkeypatch.setattr(reads, "retrieve", retrieve)
+    async def run(fn, **opts) -> object:
+        return await fn(None)
+
+    svc._db = SimpleNamespace(run=run)
+    return svc, calls
+
+
+def request(**kw: object) -> object:
+    from app.services.vector_db.models import (
+        FieldCondition,
+        FilterExpression,
+        HybridSearchRequest,
+    )
+
+    flt = kw.pop("filter", FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]))
+    return HybridSearchRequest(dense_query=kw.pop("dense", [1.0, 0.0, 0.0, 0.0]), filter=flt, **kw)
+
+
+@pytest.mark.asyncio
+async def test_a_dense_search_ranks_like_a_one_leg_fusion_with_the_payload_of_each_hit(searcher) -> None:
+    svc, calls = searcher
+    [hits] = await svc.query_nearest_points("records", [request(limit=2)])
+    assert [h.score for h in hits] == [pytest.approx(1 / 2), pytest.approx(1 / 3)]                       # 1 / (2 + index), as Qdrant answers a single prefetch
+    assert [h.payload["page_content"] for h in hits] == ["t2", "t1"] and all(h.degraded is None for h in hits)
+    assert calls.dense[0].org == ORG and calls.dense[0].leg == 4                                         # the org of the filter; legs of twice the limit
+    [bare] = await svc.query_nearest_points("records", [request(limit=3, with_payload=False)])
+    assert [h.payload for h in bare] == [{}, {}, {}] and len(calls.retrieved) == 1
+
+
+@pytest.fixture
+def lexical_rows(searcher, monkeypatch) -> SimpleNamespace:
+    """The lexical leg answers what the test sets; ``asked`` records its arguments."""
+    from app.services.vector_db.pgvector import lexical
+
+    u = lambda n: (100 + n, str(__import__("uuid").UUID(int=n)))  # noqa: E731
+    box = SimpleNamespace(answer=([u(3), u(4)], None), asked=[], u=u)
+
+    async def search(db, org, collection_id, sparse, scope, leg, t) -> tuple[list, str | None]:
+        box.asked.append((org, collection_id, sparse.indices, leg))
+        return box.answer
+
+    monkeypatch.setattr(lexical, "search", search)
+    return box
+
+
+@pytest.mark.asyncio
+async def test_the_legs_are_fused_by_reciprocal_rank_and_a_lexical_only_request_is_answered(searcher, lexical_rows) -> None:
+    from app.services.vector_db.models import HybridSearchRequest, SparseVector
+
+    svc, calls = searcher
+    sparse = SparseVector([7, 9], [1.0, 0.5])
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=sparse)])
+    ids = [h.id for h in hits]
+    uid = lambda n: str(__import__("uuid").UUID(int=n))  # noqa: E731
+    # dense: 2, 1, 3 (1/2, 1/3, 1/4); lexical: 3, 4 (1/2, 1/3): the point in both legs is first, equal scores go by id
+    assert ids == [uid(3), uid(2), uid(1), uid(4)]
+    assert [h.score for h in hits] == [pytest.approx(0.75), pytest.approx(0.5), pytest.approx(1 / 3), pytest.approx(1 / 3)]
+    assert lexical_rows.asked == [(ORG, ROW.collection_id, [7, 9], 20)]
+    calls.dense.clear()
+    [only] = await svc.query_nearest_points("records", [HybridSearchRequest(dense_query=None, sparse_query=sparse, filter=request().filter, limit=10)])
+    assert [h.id for h in only] == [uid(3), uid(4)] and not calls.dense                       # no dense leg ran
+    assert await svc.query_nearest_points("records", [request(sparse_query=SparseVector([], []))]) != [[]]      # an empty lexical query is the dense answer
+
+
+@pytest.mark.asyncio
+async def test_a_failing_leg_cancels_the_other_instead_of_leaving_it_running(searcher, monkeypatch) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import dense, lexical
+    from app.services.vector_db.pgvector.errors import PgVectorError
+
+    svc, _ = searcher
+    parked, seen = asyncio.Event(), SimpleNamespace(cancelled=False, finished=False)
+
+    async def lexical_leg(*a, **k) -> tuple[list, None]:
+        parked.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            seen.cancelled = True
+            raise
+        seen.finished = True
+        return [], None
+
+    async def broken_dense(*a, **k) -> None:
+        await parked.wait()                                          # the lexical leg is parked when the dense leg fails
+        raise PgVectorError("the dense leg failed")
+
+    monkeypatch.setattr(lexical, "search", lexical_leg)
+    monkeypatch.setattr(dense, "search", broken_dense)
+    with pytest.raises(PgVectorError, match="dense leg failed"):
+        await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert seen.cancelled and not seen.finished                      # it saw the cancellation before the call returned
+
+
+@pytest.mark.asyncio
+async def test_a_lexical_leg_that_failed_leaves_the_dense_answer_flagged(searcher, lexical_rows) -> None:
+    from app.services.vector_db.models import SparseVector
+
+    svc, _ = searcher
+    lexical_rows.answer = ([], "timeout")
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert len(hits) == 3 and {h.degraded for h in hits} == {"timeout"}
+    lexical_rows.answer = (lexical_rows.answer[0], None)
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert {h.degraded for h in hits} == {None}
+
+
+@pytest.mark.asyncio
+async def test_what_a_search_refuses_and_what_it_finds_nothing_for(searcher) -> None:
+    from app.services.vector_db.models import (
+        FieldCondition,
+        FilterExpression,
+        HybridSearchRequest,
+        SparseVector,
+    )
+    from app.services.vector_db.pgvector.errors import SpaceMismatch
+
+    svc, calls = searcher
+    for bad in (HybridSearchRequest(dense_query=[1.0] * 4, filter=None), request(filter=FilterExpression(must=[FieldCondition(key="metadata.kind", value="x")])),
+                request(filter=FilterExpression(must=[FieldCondition(key="metadata.orgId", value="nope")]))):
+        with pytest.raises(OrgRequired):
+            await svc.query_nearest_points("records", [bad])
+    with pytest.raises(ValueError, match="limit"):
+        await svc.query_nearest_points("records", [request(limit=0)])
+    with pytest.raises(SpaceMismatch, match="dimensions"):
+        await svc.query_nearest_points("records", [request(dense=[1.0, 0.0])])
+    with pytest.raises(ValueError, match="term id"):
+        await svc.query_nearest_points("records", [HybridSearchRequest(dense_query=[1.0] * 4, sparse_query=SparseVector([2**32], [1.0]), filter=request().filter)])
+    assert await svc.query_nearest_points("records", [request(dense=None)]) == [[]]
+    assert await svc.query_nearest_points("records", []) == []
+    svc._catalog.active_space = AsyncMock(return_value=None)
+    assert await svc.query_nearest_points("records", [request()]) == [[]]                                # an org without a space has nothing
+    assert not calls.dense
+    svc._catalog.require_collection = AsyncMock(side_effect=CollectionNotFoundError("nope"))
+    with pytest.raises(CollectionNotFoundError):
+        await svc.query_nearest_points("nope", [request()])
+
+
+@pytest.mark.asyncio
+async def test_an_empty_accessible_list_reaches_the_search_as_a_scope_that_admits_nothing(searcher) -> None:
+    from app.services.vector_db.models import FieldCondition, FilterExpression
+
+    svc, calls = searcher
+    nobody = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)], should=[FieldCondition(key="connectorIds", values=[])])
+    await svc.query_nearest_points("records", [request(filter=nobody)])
+    scope = calls.dense[0].scope
+    assert scope.apps == [] and not scope.whole_org and "EXISTS" in scope.probe()
+
+
+@pytest.mark.asyncio
+async def test_a_degraded_leg_is_flagged_on_every_hit_and_the_space_check_starts_once_for_the_index_tiers(searcher, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import dense
+
+    svc, calls = searcher
+    started = []
+    monkeypatch.setattr(org_context, "spawn_detached", lambda coro, name=None: (coro.close(), started.append(name), asyncio.get_running_loop().create_future())[2])
+
+    async def degraded(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        plan = SimpleNamespace(tier=dense.Tier.H, share_band="all")
+        return dense.Leg([(10, str(__import__("uuid").UUID(int=1)))], plan, "timeout"), SimpleNamespace(leaf_rows=9, n_hat=9)
+
+    monkeypatch.setattr(dense, "search", degraded)
+    from app.modules.retrieval import degraded_notice
+
+    degraded_notice.track()
+    before = degraded_notice.count()
+    for _ in range(2):
+        [hits] = await svc.query_nearest_points("records", [request()])
+        assert [h.degraded for h in hits] == ["timeout"]
+    assert degraded_notice.count() == before + 2                                                         # noted for the request, hits or not
+    assert started == ["pgvector-bit-recall-check"]                                                      # the verdict is read once per ttl, not per search
+
+
+@pytest.mark.asyncio
+async def test_a_leg_that_failed_twice_is_an_empty_answer_flagged_for_the_request(searcher, monkeypatch) -> None:
+    from app.modules.retrieval import degraded_notice
+    from app.services.vector_db.pgvector import dense
+
+    svc, _ = searcher
+
+    async def overloaded(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        return dense.Leg([], SimpleNamespace(tier=dense.Tier.E0, share_band="all"), "overload"), SimpleNamespace(leaf_rows=3, n_hat=3)
+
+    monkeypatch.setattr(dense, "search", overloaded)
+    degraded_notice.track()
+    before = degraded_notice.count()
+    assert await svc.query_nearest_points("records", [request()]) == [[]]                      # no hits to carry the flag
+    assert degraded_notice.count() == before + 1                                               # the request is told, as the provider contract says
+
+
+@pytest.mark.asyncio
+async def test_an_exact_scan_does_not_start_the_quantisation_check_and_the_limit_is_bounded(searcher, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import dense
+    from app.services.vector_db.pgvector.pgvector import MAX_SEARCH_LIMIT
+
+    svc, _ = searcher
+    started = []
+    monkeypatch.setattr(org_context, "spawn_detached", lambda coro, name=None: (coro.close(), started.append(name), asyncio.get_running_loop().create_future())[2])
+
+    async def exact_extended(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        return dense.Leg([], SimpleNamespace(tier=dense.Tier.E0X, share_band="all"), None), SimpleNamespace(leaf_rows=9, n_hat=9)
+
+    monkeypatch.setattr(dense, "search", exact_extended)
+    await svc.query_nearest_points("records", [request()])
+    assert started == []                                                                       # an exact scan never touches the bit index
+    await svc.query_nearest_points("records", [request(limit=MAX_SEARCH_LIMIT)])
+    with pytest.raises(ValueError, match="limit"):
+        await svc.query_nearest_points("records", [request(limit=MAX_SEARCH_LIMIT + 1)])
+
+
+@pytest.mark.asyncio
+async def test_when_one_request_fails_the_others_are_cancelled(searcher, monkeypatch) -> None:
+    from app.services.vector_db.models import HybridSearchRequest
+    from app.services.vector_db.pgvector import dense
+
+    svc, _ = searcher
+    cancelled = asyncio.Event()
+
+    async def slow(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("not reached")
+
+    monkeypatch.setattr(dense, "search", slow)
+    with pytest.raises(OrgRequired):
+        await svc.query_nearest_points("records", [request(), HybridSearchRequest(dense_query=[1.0] * 4, filter=None)])
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_validating_a_space_takes_only_the_samples_the_leaf_can_afford(searcher, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import reads, validate
+
+    svc, _ = searcher
+    got = {}
+
+    async def bit_recall(db, t, org, coll, space, dim, metric, *, samples=None, seed=None) -> float:
+        got["samples"] = samples
+        return 0.99
+
+    async def save(db, org, space, mean, samples) -> None:
+        got["saved"] = samples
+
+    async def count(tx, org, coll, space) -> int:
+        return 40_000_000
+
+    monkeypatch.setattr(validate, "bit_recall", bit_recall)
+    monkeypatch.setattr(validate, "save", save)
+    monkeypatch.setattr(reads, "count", count)
+    assert await svc.validate_space("records", ORG) == 0.99
+    assert got["samples"] == got["saved"] == validate.samples_for(svc._cfg.search, 40_000_000) == 5      # a big leaf: the least, not the default 50

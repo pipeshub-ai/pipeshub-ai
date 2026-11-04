@@ -1,5 +1,10 @@
 import os
 
+from app.services.permissions.scope_fields import (
+    ACL_SCOPE_FIELD,
+    PATH_IDS_FIELD,
+    SCOPE_STAMP_FIELD,
+)
 from app.services.vector_db.collections import CollectionType, sanitize_collection_name
 
 VIRTUAL_RECORD_ID_FIELD = "metadata.virtualRecordId"
@@ -17,6 +22,14 @@ PAYLOAD_KEYWORD_INDEXES = (
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
     (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
     (ROOT_RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
+)
+
+# Scope fields (permission model). Their indexes are created only while scope fields are written (see
+# `app.services.permissions.mode.scope_fields_enabled`): nothing reads them yet.
+SCOPE_KEYWORD_INDEXES = (
+    (PATH_IDS_FIELD, {"type": "keyword"}),
+    (ACL_SCOPE_FIELD, {"type": "keyword"}),
+    (SCOPE_STAMP_FIELD, {"type": "keyword"}),
 )
 
 VECTOR_DB_SERVICE_NAME = os.getenv("VECTOR_DB_TYPE", "qdrant")

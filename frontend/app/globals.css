@@ -111,6 +111,9 @@
 
   --page-background: #dcdcdc;
   --file-icon-fill: #ffffff;
+  /* Uploaded MCP server logos are drawn for light backgrounds: in dark mode they sit on a light plate. */
+  --mcp-logo-plate: transparent;
+  --mcp-logo-plate-on: 0;
 }
 
 /* Dark Mode */
@@ -165,6 +168,8 @@
 
   --page-background: #111113;
   --file-icon-fill: #212225;
+  --mcp-logo-plate: #ffffff;
+  --mcp-logo-plate-on: 1;
 }
 
 /* Map custom emerald to accent variables */
