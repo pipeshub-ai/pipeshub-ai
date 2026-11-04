@@ -226,7 +226,9 @@ class ChatQuery(BaseModel):
     # groups, folders and records must lie in. Node builds it from the project and
     # never copies it from the client's request. It only narrows the turn: a body
     # that names other sources, or leaves it out, reaches no record beyond the
-    # caller's own access, as in a chat outside any project.
+    # identity the turn retrieves as, as in a chat outside any project. That is the
+    # caller, except for a service-account agent, which retrieves as its creator
+    # or bound account.
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
