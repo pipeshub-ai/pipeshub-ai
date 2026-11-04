@@ -1,5 +1,6 @@
 from typing import Any, Dict, List
 
+from app.services.permissions.scope_fields import SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -206,6 +207,9 @@ class OpenSearchUtils:
                 point.payload.get(ROOT_RECORD_GROUP_IDS_FIELD) or []
             ),
         }
+        for key in SCOPE_KEYS:  # only when the writer stamped them: an absent key must not blank a stamped point
+            if key in point.payload:
+                doc[key] = point.payload[key]
         if point.dense_vector is not None:
             doc["dense_embedding"] = point.dense_vector
         return doc
