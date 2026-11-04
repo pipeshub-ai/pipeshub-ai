@@ -51,7 +51,7 @@ class FakeGraph:
         assert after_key is None or sort_field == "_key"
         source = self.records
         if collection == CollectionNames.APPS.value:
-            source = {key: {"_key": key, **app} for key, app in self.apps.items()}
+            source = {key: {"_key": key, "orgId": "org-1", **app} for key, app in self.apps.items()}
         else:
             self.record_reads.append(dict(filters or {}))
             self.reads += 1
@@ -133,6 +133,7 @@ async def _sweep(graph: FakeGraph, producer: Producer) -> int:
             run_coordination=run_coordination,
             concurrency_manager=None,
             page_size=100,
+            org_id="org-1",
         )
 
 
@@ -221,6 +222,7 @@ async def test_parked_records_are_read_only_per_connector_that_is_on() -> None:
         "connectorId": ON,
         "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
         "reason": CONNECTOR_OFF,
+        "orgId": "org-1",
     }]
 
 

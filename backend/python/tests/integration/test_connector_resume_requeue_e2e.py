@@ -282,6 +282,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
                     run_coordination=_run,
                     concurrency_manager=None,
                     page_size=100,
+                    org_id=ORG_ID,
                 )
 
         sent_before = len(producer.sent)
