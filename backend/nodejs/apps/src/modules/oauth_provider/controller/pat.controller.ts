@@ -5,12 +5,12 @@ import { DEFAULT_EXPIRY_DAYS, PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { CreatePatRequest } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
 import {
   clientTags,
   domainFromEmail,
-} from '../../../libs/services/telemetry/identity'
-import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics'
+  recordEvent,
+  recordServiceActivity,
+} from '../../../libs/services/telemetry/telemetry-impl'
 
 @injectable()
 export class PatController {
