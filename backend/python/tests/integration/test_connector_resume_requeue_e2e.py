@@ -100,8 +100,8 @@ async def _run(coro: object) -> object:
 async def _remove_connector_data(graph: IGraphDBProvider, connector_id: str) -> None:
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query(
-            "MATCH (n) WHERE n.connectorId = $c OR n.id = $c DETACH DELETE n",
-            parameters={"c": connector_id},
+            "MATCH (n) WHERE n.connectorId = $c OR n.id = $c OR n.id = $o DETACH DELETE n",
+            parameters={"c": connector_id, "o": ORG_ID},
         )
         return
     for collection, field in (
@@ -113,6 +113,14 @@ async def _remove_connector_data(graph: IGraphDBProvider, connector_id: str) -> 
             f"FOR d IN {collection} FILTER d.{field} == @c REMOVE d IN {collection}",
             {"c": connector_id},
         )
+    # The organisation node and the edge from it to the app, written by the test.
+    await graph.http_client.execute_aql(
+        f"FOR e IN {CollectionNames.ORG_APP_RELATION.value} FILTER e._to == CONCAT('apps/', @c) REMOVE e IN {CollectionNames.ORG_APP_RELATION.value}",
+        {"c": connector_id},
+    )
+    await graph.http_client.execute_aql(
+        f"FOR d IN {CollectionNames.ORGS.value} FILTER d._key == @o REMOVE d IN {CollectionNames.ORGS.value}", {"o": ORG_ID},
+    )
 
 
 @pytest.fixture(params=["neo4j", "arango"])
