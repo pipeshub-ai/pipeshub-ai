@@ -140,7 +140,9 @@ class DuplicateReconciler:
                     )
                     complete = False
 
-            await self.sync_vector_membership(virtual_record_id)
+            # The retry sweep runs with no org bound: the points are written for the record's own org.
+            with for_org(org_id, job="duplicate-reconcile"):
+                await self.sync_vector_membership(virtual_record_id)
             return complete
         except Exception as e:
             self.logger.warning(

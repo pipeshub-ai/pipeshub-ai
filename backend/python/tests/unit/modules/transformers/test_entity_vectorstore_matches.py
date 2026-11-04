@@ -250,6 +250,7 @@ class TestSkipUnchanged:
         collection, ids, payload = service.update_payload_by_ids.await_args.args
         assert ids == [EntityVectorStore._point_id("org-1", "topic", "k1")]
         assert payload == {"connectorIds": ["c1", "c2"], "recordGroupIds": []}
+        assert service.update_payload_by_ids.await_args.kwargs == {"org_id": "org-1"}
 
     async def test_text_changes_are_embedded_and_membership_changes_are_not(self) -> None:
         service = MagicMock()
@@ -372,7 +373,7 @@ class TestMembershipReadIsByPointId:
             for point in points:
                 stored[point.id] = point
 
-        async def _update_by_ids(collection_name, ids, payload):
+        async def _update_by_ids(collection_name, ids, payload, *, org_id):
             for point_id in ids:
                 if point_id in stored:
                     stored[point_id].payload.update(payload)

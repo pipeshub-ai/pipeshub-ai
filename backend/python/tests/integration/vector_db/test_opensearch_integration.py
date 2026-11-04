@@ -209,7 +209,7 @@ class TestOpenSearchMutations:
             await _refresh(opensearch_service, col)
 
             del_filter = FilterExpression(
-                must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]
+                must=[FieldCondition(key="metadata.orgId", value="org1"), FieldCondition(key="metadata.virtualRecordId", value="r1")]
             )
             await opensearch_service.delete_points(col, del_filter)
             await _refresh(opensearch_service, col)
@@ -253,7 +253,10 @@ class TestOpenSearchMutations:
             opensearch_service._unrefreshed[col] = aged
 
             await opensearch_service.delete_points(
-                col, FilterExpression(must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]),
+                col, FilterExpression(must=[
+                    FieldCondition(key="metadata.orgId", value="org1"),
+                    FieldCondition(key="metadata.virtualRecordId", value="r1"),
+                ]),
             )
             await _refresh(opensearch_service, col)
 
@@ -304,7 +307,7 @@ class TestOpenSearchMutations:
             await _refresh(opensearch_service, col)
 
             update_filter = FilterExpression(
-                must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]
+                must=[FieldCondition(key="metadata.orgId", value="org1"), FieldCondition(key="metadata.virtualRecordId", value="r1")]
             )
             await opensearch_service.overwrite_payload(
                 col, {"metadata.status": "archived"}, update_filter
