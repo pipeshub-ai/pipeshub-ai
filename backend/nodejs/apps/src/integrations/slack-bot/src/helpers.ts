@@ -454,12 +454,12 @@ function isOwnBotMessage(
 }
 
 /**
- * Supported files posted in the thread after the bot's last reply, oldest first.
+ * Files posted in the thread after the bot's last reply, oldest first, sorted by
+ * whether the bot can read them.
  *
  * Files from before that reply went out with an earlier question in this thread and
  * stay in the conversation's history, so starting here sends each file once.
- * Unsupported and oversized files are dropped without a notice: the user didn't
- * attach them to this question. Pass only a thread read to its end
+ * Pass only a thread read to its end
  * (`PriorThreadMessages.complete`): on a partial read the bot's last reply may be
  * missing, and old files would be sent again.
  */
@@ -467,7 +467,7 @@ export function collectThreadFilesSinceLastBotReply(
   priorMessages: SlackMessagePayload[],
   botUserId?: string,
   botId?: string,
-): SlackFile[] {
+): SlackFileClassification {
   let start = 0;
   priorMessages.forEach((message, index) => {
     if (isOwnBotMessage(message, botUserId, botId)) start = index + 1;
@@ -475,7 +475,7 @@ export function collectThreadFilesSinceLastBotReply(
   const files = priorMessages
     .slice(start)
     .flatMap((message) => (Array.isArray(message.files) ? message.files : []));
-  return classifySlackFiles(files).supported;
+  return classifySlackFiles(files);
 }
 
 export class SlackFileTooLargeError extends Error {

@@ -262,7 +262,7 @@ describe('slack-bot/helpers', () => {
           { ts: '1', user: 'U1', files: [png('root')] },
           { ts: '2', user: 'U2', files: [png('reply')] },
         ];
-        const files = collectThreadFilesSinceLastBotReply(prior, 'UBOT');
+        const files = collectThreadFilesSinceLastBotReply(prior, 'UBOT').supported;
         expect(files.map((f) => f.id)).to.deep.equal(['root', 'reply']);
       });
 
@@ -272,7 +272,7 @@ describe('slack-bot/helpers', () => {
           { ts: '2', user: 'UBOT', bot_id: 'B1', text: 'answer' },
           { ts: '3', user: 'U1', files: [png('new')] },
         ];
-        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').map((f) => f.id)).to.deep.equal(['new']);
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').supported.map((f) => f.id)).to.deep.equal(['new']);
       });
 
       it("ignores another bot's replies when the bot user id is known", () => {
@@ -280,7 +280,7 @@ describe('slack-bot/helpers', () => {
           { ts: '1', user: 'U1', files: [png('a')] },
           { ts: '2', user: 'UOTHER', bot_id: 'B9', text: 'other bot' },
         ];
-        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').map((f) => f.id)).to.deep.equal(['a']);
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').supported.map((f) => f.id)).to.deep.equal(['a']);
       });
 
       it('treats any bot message as a reply when the bot user id is unknown', () => {
@@ -288,10 +288,10 @@ describe('slack-bot/helpers', () => {
           { ts: '1', user: 'U1', files: [png('a')] },
           { ts: '2', bot_id: 'B1', subtype: 'bot_message', text: 'answer' },
         ];
-        expect(collectThreadFilesSinceLastBotReply(prior)).to.deep.equal([]);
+        expect(collectThreadFilesSinceLastBotReply(prior).supported).to.deep.equal([]);
       });
 
-      it('drops unsupported and oversized files silently', () => {
+      it('reports thread files it cannot read', () => {
         const prior = [{
           ts: '1',
           user: 'U1',
@@ -301,11 +301,14 @@ describe('slack-bot/helpers', () => {
             { id: 'big', mimetype: 'image/png', size: MAX_ATTACHMENT_BYTES + 1, url_private: 'https://files.slack.com/big' },
           ],
         }];
-        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').map((f) => f.id)).to.deep.equal(['ok']);
+        const result = collectThreadFilesSinceLastBotReply(prior, 'UBOT');
+        expect(result.supported.map((f) => f.id)).to.deep.equal(['ok']);
+        expect(result.unsupported.map((f) => f.id)).to.deep.equal(['zip']);
+        expect(result.oversized.map((f) => f.id)).to.deep.equal(['big']);
       });
 
       it('returns nothing for an empty thread', () => {
-        expect(collectThreadFilesSinceLastBotReply([], 'UBOT')).to.deep.equal([]);
+        expect(collectThreadFilesSinceLastBotReply([], 'UBOT').supported).to.deep.equal([]);
       });
 
       it('recognises its own reply by bot id when the message has no user', () => {
@@ -314,7 +317,7 @@ describe('slack-bot/helpers', () => {
           { ts: '2', bot_id: 'BOWN', subtype: 'bot_message', text: 'answer' },
           { ts: '3', user: 'U1', files: [png('new')] },
         ];
-        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT', 'BOWN').map((f) => f.id)).to.deep.equal(['new']);
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT', 'BOWN').supported.map((f) => f.id)).to.deep.equal(['new']);
       });
 
       it("does not take another bot's message for its own when its bot id is known", () => {
@@ -322,7 +325,7 @@ describe('slack-bot/helpers', () => {
           { ts: '1', user: 'U1', files: [png('a')] },
           { ts: '2', bot_id: 'BOTHER', subtype: 'bot_message', text: 'other bot' },
         ];
-        expect(collectThreadFilesSinceLastBotReply(prior, undefined, 'BOWN').map((f) => f.id)).to.deep.equal(['a']);
+        expect(collectThreadFilesSinceLastBotReply(prior, undefined, 'BOWN').supported.map((f) => f.id)).to.deep.equal(['a']);
       });
     });
 
