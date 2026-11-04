@@ -36,6 +36,7 @@ from app.api.middlewares.auth import (
 )
 from app.api.routes.chatbot import load_entity_vector_store
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import current_org_id, spawn_in_request
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
 from app.exceptions.fastapi_responses import Status
@@ -527,7 +528,7 @@ async def _unindexed_matches(
     for the caller's sources and limits. None when the lookup failed: the
     search answers without it."""
     user = request.state.user
-    org_id, user_id = user.get("orgId"), user.get("userId")
+    org_id, user_id = current_org_id(), user.get("userId")
     try:
         container = request.app.container
         store = await load_entity_vector_store(container, logger, org_id)
@@ -627,7 +628,7 @@ async def search(
                 if span is None and not time_range and not any(
                     filter_groups.get(key) for key in (ENTITY_FILTERS_KEY, *TAXONOMY_FILTER_KEYS)
                 ):
-                    by_name_task = asyncio.ensure_future(
+                    by_name_task = spawn_in_request(
                         _unindexed_matches(request, graph_provider, filter_groups, body.query, logger)
                     )
                 if span is None:

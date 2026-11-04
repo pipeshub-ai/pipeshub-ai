@@ -46,6 +46,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
+from app.core.org_context import spawn_in_request
 from app.modules.agents.qna.chat_state import (
     remember_record_ids,
     remember_shown_results,
@@ -892,7 +893,7 @@ async def _execute_search(
         # Titles are not scoped by entity or date, so a search that is would show
         # records outside it. Runs beside the content search, so it adds no wait.
         if state.get("entity_vector_store") is not None and not entity_scoped and not time_range:
-            title_task = asyncio.create_task(_unindexed_title_matches(
+            title_task = spawn_in_request(_unindexed_title_matches(
                 state, query,
                 [*narrowed_scope.app_ids, *narrowed_scope.kb_ids] if narrowed_scope is not None else None,
                 logger_instance,

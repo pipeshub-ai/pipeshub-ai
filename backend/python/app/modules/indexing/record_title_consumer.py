@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -138,7 +137,7 @@ class RecordTitleWriter:
         if len(self._pending) >= self.batch_size:
             # In an empty context: the consumer binds the triggering message's org around this
             # handler, and a batch may hold other orgs. Awaited, so a full batch is still back-pressure.
-            await asyncio.get_running_loop().create_task(self.flush(), context=contextvars.Context())
+            await spawn_detached(self.flush(), name="record-title-flush")
         return True
 
     # ------------------------------------------------------------------
