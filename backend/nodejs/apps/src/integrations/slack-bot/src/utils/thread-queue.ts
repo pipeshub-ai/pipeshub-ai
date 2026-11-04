@@ -258,7 +258,29 @@ export class RedisThreadQueueStore implements ThreadQueueStore {
       owner,
       this.lockTtlMs,
     )) as string[];
-    return items.map((s) => JSON.parse(s) as QueuedSlackMessage);
+    // The script already removed these, so one corrupt item must not cost the rest.
+    const batch: QueuedSlackMessage[] = [];
+    for (const raw of items) {
+      try {
+        const m: unknown = JSON.parse(raw);
+        if (
+          typeof m === 'object' &&
+          m !== null &&
+          typeof (m as { ts?: unknown }).ts === 'string'
+        ) {
+          batch.push(m as QueuedSlackMessage);
+          continue;
+        }
+      } catch {
+        // Logged below with the other unusable shapes.
+      }
+      console.warn('[slack-bot] thread queue skipped a corrupt item');
+    }
+    // [] would end the caller's loop with the lock still held; take again to release it.
+    if (batch.length === 0 && items.length > 0) {
+      return this.takePendingOrRelease(key, owner);
+    }
+    return batch;
   }
 
   async renew(key: string, owner: string): Promise<boolean> {
