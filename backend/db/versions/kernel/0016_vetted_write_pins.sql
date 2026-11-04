@@ -200,6 +200,8 @@ dels2 AS (
     (SELECT array_agg(lower(m[1]) ORDER BY lower(m[1])) FROM regexp_matches(COALESCE(d.ra[5], d.rs[2], ''), ' and [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*) = ', 'gi') m) AS lefts,
     (SELECT array_agg(lower(m[1]) ORDER BY lower(m[1])) FROM regexp_matches(COALESCE(d.ra[5], ''), ' = [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*)', 'gi') m) AS rights,
     (SELECT array_agg(lower(c) ORDER BY lower(c)) FROM unnest(string_to_array(d.ra[4], ', ')) c) AS kcols,
+    (SELECT array_agg(lower(m[1]) || '=' || lower(m[2]) ORDER BY lower(m[1]) || '=' || lower(m[2])) FROM regexp_matches(COALESCE(d.ra[5], ''), ' and [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*) = [a-z_][a-z0-9_]*\.([a-z_][a-z0-9_]*)', 'gi') m) AS pairs,
+    (SELECT array_agg(lower(k) || '=' || lower((string_to_array(d.ra[4], ', '))[ord]) ORDER BY lower(k) || '=' || lower((string_to_array(d.ra[4], ', '))[ord])) FROM unnest(d.key_cols) WITH ORDINALITY x(k, ord)) AS want_pairs,
     string_to_array(d.ra[2], ', ') AS arr_args,
     (SELECT array_agg(m[1]) FROM regexp_matches(COALESCE(d.rs[2], ''), ' = ([a-z_][a-z0-9_]*)', 'gi') m) AS scalar_args
   FROM dels d),
@@ -283,7 +285,9 @@ SELECT '106 delete is not an equality on the whole primary key (or on the curren
   WHERE NOT (
     (d.key_cols IS NOT NULL AND d.ra IS NOT NULL AND d.lefts = (SELECT array_agg(lower(c) ORDER BY lower(c)) FROM unnest(d.key_cols) c)
        AND cardinality(d.lefts) = cardinality(d.key_cols) AND d.rights = d.kcols AND cardinality(d.rights) = cardinality(d.kcols)
-       AND cardinality(d.arr_args) = cardinality(d.kcols) AND (SELECT count(DISTINCT lower(c)) FROM unnest(d.arr_args) c) = cardinality(d.arr_args))
+       AND cardinality(d.arr_args) = cardinality(d.kcols) AND (SELECT count(DISTINCT lower(c)) FROM unnest(d.arr_args) c) = cardinality(d.arr_args)
+       -- the pairs, not only the sets: the i-th key column is compared with the i-th column of the alias (in any order of the conditions)
+       AND d.pairs = d.want_pairs)
     OR (d.key_cols IS NOT NULL AND d.rs IS NOT NULL AND d.lefts = (SELECT array_agg(lower(c) ORDER BY lower(c)) FROM unnest(d.key_cols) c)
        AND cardinality(d.lefts) = cardinality(d.key_cols))
     OR (d.txn_col IS NOT NULL AND d.rt IS NOT NULL AND lower(d.rt[2]) = lower(d.txn_col)))
@@ -301,7 +305,11 @@ SELECT '108 unnested array ' || a.arg || ' is not an array argument capped by IF
   WHERE NOT (a.arg = ANY (f.proargnames))
      OR NOT EXISTS (SELECT 1 FROM unnest(f.argtypes) WITH ORDINALITY t(typ, ord) JOIN pg_type ty ON ty.oid = t.typ WHERE t.ord = array_position(f.proargnames, a.arg) AND ty.typcategory = 'A')
      OR NOT EXISTS (SELECT 1 FROM regexp_matches(f.src, '(\mif cardinality\(' || a.arg || '\) > ([0-9]{1,4}) then raise exception\M)', 'gi') m
-                    WHERE m[2]::int <= a.max_items AND strpos(lower(f.src), lower(m[1])) < COALESCE(
+                    WHERE m[2]::int <= a.max_items
+                      -- a guard that always runs: every IF opened before it is closed again, and no loop, CASE, exception handler or early RETURN, EXIT or CONTINUE stands before it
+                      AND (SELECT count(*) FROM regexp_matches(left(lower(f.src), strpos(lower(f.src), lower(m[1])) - 1), '(?<!end )\mif\M', 'g')) = (SELECT count(*) FROM regexp_matches(left(lower(f.src), strpos(lower(f.src), lower(m[1])) - 1), '\mend if\M', 'g'))
+                      AND left(lower(f.src), strpos(lower(f.src), lower(m[1])) - 1) !~ '\m(?:loop|case|while|foreach|exception when|return|exit|continue)\M'
+                      AND strpos(lower(f.src), lower(m[1])) < COALESCE(
                       least(NULLIF(strpos(lower(f.src), 'insert into'), 0), NULLIF(strpos(lower(f.src), 'delete from'), 0), NULLIF(strpos(lower(f.src), 'update '), 0)), 2147483647))
 UNION ALL
 SELECT '109 scalar key ' || sa || ' of a delete is not a scalar argument of the function', d.name FROM dels2 d, LATERAL unnest(d.scalar_args) sa, fn f

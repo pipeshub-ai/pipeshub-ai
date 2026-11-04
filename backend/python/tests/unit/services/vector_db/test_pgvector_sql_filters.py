@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from app.services.vector_db.models import FieldCondition as F
@@ -103,3 +105,14 @@ def test_the_org_is_the_single_must_value() -> None:
     assert single_org(E(should=[F("metadata.orgId", ORG)])) is None                          # only MUST pins the org
     assert single_org(E(must_not=[F("metadata.orgId", ORG)])) is None
     assert single_org(E(must=[F("metadata.virtualRecordId", "r1")])) is None
+
+
+@pytest.mark.parametrize("n", [0, 2, 3])
+def test_a_min_should_match_the_sql_cannot_honour_is_refused(n) -> None:
+    from app.services.vector_db.pgvector.errors import PgVectorUnsupportedError
+
+    expr = E(must=[F("metadata.orgId", ORG)], should=[F("metadata.virtualRecordId", "r1"), F("metadata.virtualRecordId", "r2")], min_should_match=n)
+    with pytest.raises(PgVectorUnsupportedError, match="min_should_match"):
+        compile_filter(expr, first_param=5)
+    for ok in (None, 1):
+        compile_filter(dataclasses.replace(expr, min_should_match=ok), first_param=5)

@@ -96,6 +96,41 @@ async def test_text_search_on_a_missing_path_is_an_error_naming_what_exists() ->
         assert "nothing was searched" in out["error"], wide
 
 
+async def test_a_missing_path_names_only_what_this_connector_holds() -> None:
+    """The hint lists directories, so it is scoped like the search: another
+    connector's (or repo's) files may lie outside a connected app's limit."""
+    graph = QueryGraphProvider()
+    graph.code_files["rec-x"] = "other_secret/x.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2",
+                              "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(), pattern="x", mode="text", path="nope/")
+    assert "nothing was searched" in out["error"]
+    assert "other_secret" not in out["error"] and "src" in out["error"]
+
+
+async def test_another_repos_files_do_not_crowd_this_repos_directories_out(monkeypatch) -> None:
+    """The listing's scan is org-wide; at the 400-row default another repo's files,
+    sorted first, filled it and this repo's root was listed as nothing."""
+    from app.agents.actions.code_graph import query
+
+    monkeypatch.setattr(query, "_SELECT_SCAN_LIMIT", 1)
+    graph = QueryGraphProvider()
+    graph.code_files = {"rec-x": "a_other/x.py", **graph.code_files}
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2", "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(), pattern="x", mode="text", path="nope/x/")
+    assert "The repo root holds: " in out["error"] and "src" in out["error"]
+    assert "a_other" not in out["error"]
+
+
+async def test_a_listing_from_a_capped_scan_says_it_may_be_partial(monkeypatch) -> None:
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SCAN_LIMIT", 1)
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern="x", mode="text", path="src/nope/")
+    assert "src/ holds: " in out["error"] and ", ..." in out["error"]
+
+
 async def test_text_search_skips_a_suffix_only_another_connector_holds() -> None:
     graph = QueryGraphProvider()
     graph.code_files["rec-x"] = "repo/src/b.py"
