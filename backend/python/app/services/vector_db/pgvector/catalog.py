@@ -134,8 +134,14 @@ class Catalog:
             self._spaces[org] = (time.monotonic() + self._ttl, spaces)
         return spaces
 
-    async def active_space(self, org: str) -> OrgSpace | None:
-        return next((s for s in await self.org_spaces(org) if s.role == "active"), None)
+    async def active_space(self, org: str, *, real_time: bool = False) -> OrgSpace | None:
+        """The org's active space. ``real_time``: for a read that promises to see what another service wrote a moment ago, a cached
+        "no space" is not trusted (the org's first write may have come since): the list is read again."""
+        space = next((s for s in await self.org_spaces(org) if s.role == "active"), None)
+        if space is None and real_time:
+            self.forget(org=org)
+            space = next((s for s in await self.org_spaces(org) if s.role == "active"), None)
+        return space
 
     async def stamp(self, name: str) -> str | None:
         async def read(tx: Tx) -> Any:  # noqa: ANN401
