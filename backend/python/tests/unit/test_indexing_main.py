@@ -4299,8 +4299,8 @@ class TestMappingsThatNameNoOrganisation:
     @pytest.mark.asyncio
     async def test_the_recovery_pass_reaches_the_rows_that_name_no_organisation(self) -> None:
         """Through the real entry point: the per-organisation scan never lists such a row, so this fails if the unscoped pass stops being run."""
-        from app.indexing_main import recover_in_progress_records
         import app.indexing_main as m
+        from app.indexing_main import recover_in_progress_records
 
         m._unscoped_mapping_cursor = 0
         container = _make_container()
