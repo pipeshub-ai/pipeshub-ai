@@ -1,6 +1,10 @@
 import { randomUUID } from 'crypto';
 import { hostname } from 'os';
 import type { SlackFile } from '../helpers';
+import type {
+  IRedisConnectionProvider,
+  RedisClient,
+} from '../../../../libs/services/redis/connectionProvider.interface';
 import type { RunLimiter } from './run-limiter';
 
 export interface QueuedSlackMessage {
@@ -129,6 +133,163 @@ export class MemoryThreadQueueStore implements ThreadQueueStore {
     e.lockExpiresAt = this.now() + this.lockTtlMs;
     return Promise.resolve(true);
   }
+}
+
+// KEYS[1] = lock, KEYS[2] = pending. Mirrors MemoryThreadQueueStore line by line.
+// ARGV: owner, item JSON, maxPending, lockTtlMs, pendingTtlMs.
+export const ACQUIRE_OR_ENQUEUE_LUA = `
+if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[4]) then
+  redis.call('RPUSH', KEYS[2], ARGV[2])
+  redis.call('PEXPIRE', KEYS[2], ARGV[5])
+  return 1
+end
+if redis.call('LLEN', KEYS[2]) >= tonumber(ARGV[3]) then
+  return -1
+end
+redis.call('RPUSH', KEYS[2], ARGV[2])
+redis.call('PEXPIRE', KEYS[2], ARGV[5])
+return 0
+`;
+
+// ARGV: owner, lockTtlMs.
+export const TAKE_PENDING_OR_RELEASE_LUA = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return {}
+end
+if redis.call('LLEN', KEYS[2]) == 0 then
+  redis.call('DEL', KEYS[1])
+  return {}
+end
+local items = redis.call('LRANGE', KEYS[2], 0, -1)
+redis.call('DEL', KEYS[2])
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return items
+`;
+
+// ARGV: owner, lockTtlMs.
+export const RENEW_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`;
+
+type ScriptName = 'acquire' | 'take' | 'renew';
+const SCRIPT_BODIES: Record<ScriptName, string> = {
+  acquire: ACQUIRE_OR_ENQUEUE_LUA,
+  take: TAKE_PENDING_OR_RELEASE_LUA,
+  renew: RENEW_LUA,
+};
+
+export class RedisThreadQueueStore implements ThreadQueueStore {
+  private readonly shas: Record<ScriptName, string>;
+  private readonly lockTtlMs: number;
+  private readonly pendingTtlMs: number;
+  private readonly loadScript: (body: string) => Promise<string>;
+
+  constructor(
+    private readonly client: RedisClient,
+    scriptShas: Record<ScriptName, string>,
+    options: {
+      lockTtlMs?: number;
+      pendingTtlMs?: number;
+      loadScript?: (body: string) => Promise<string>;
+    } = {},
+  ) {
+    this.shas = { ...scriptShas };
+    this.lockTtlMs = options.lockTtlMs ?? 120_000;
+    this.pendingTtlMs = options.pendingTtlMs ?? 1_800_000;
+    // The provider loads on every cluster master; a plain SCRIPT LOAD may land on another node.
+    this.loadScript =
+      options.loadScript ??
+      ((body) => client.script('LOAD', body) as Promise<string>);
+  }
+
+  private async run(
+    name: ScriptName,
+    key: string,
+    ...args: Array<string | number>
+  ): Promise<unknown> {
+    const call = (): Promise<unknown> =>
+      this.client.evalsha(
+        this.shas[name],
+        2,
+        `${key}:lock`,
+        `${key}:pending`,
+        ...args,
+      );
+    try {
+      return await call();
+    } catch (err) {
+      if (!(err instanceof Error && err.message.includes('NOSCRIPT')))
+        throw err;
+      // SCRIPT FLUSH or a node replacement dropped the cache: reload once and retry.
+      this.shas[name] = await this.loadScript(SCRIPT_BODIES[name]);
+      return call();
+    }
+  }
+
+  async acquireOrEnqueue(
+    key: string,
+    owner: string,
+    item: QueuedSlackMessage,
+    maxPending: number,
+  ): Promise<'acquired' | 'queued' | 'full'> {
+    const r = await this.run(
+      'acquire',
+      key,
+      owner,
+      JSON.stringify(item),
+      maxPending,
+      this.lockTtlMs,
+      this.pendingTtlMs,
+    );
+    return r === 1 ? 'acquired' : r === 0 ? 'queued' : 'full';
+  }
+
+  async takePendingOrRelease(
+    key: string,
+    owner: string,
+  ): Promise<QueuedSlackMessage[]> {
+    const items = (await this.run(
+      'take',
+      key,
+      owner,
+      this.lockTtlMs,
+    )) as string[];
+    return items.map((s) => JSON.parse(s) as QueuedSlackMessage);
+  }
+
+  async renew(key: string, owner: string): Promise<boolean> {
+    return (await this.run('renew', key, owner, this.lockTtlMs)) === 1;
+  }
+}
+
+export async function createThreadQueueStore(
+  provider: IRedisConnectionProvider | null,
+): Promise<{ store: ThreadQueueStore; namespace: string; shared: boolean }> {
+  try {
+    if (provider && (await provider.ping())) {
+      const load = (body: string): Promise<string> => provider.loadScript(body);
+      const store = new RedisThreadQueueStore(
+        provider.getClient(),
+        {
+          acquire: await load(ACQUIRE_OR_ENQUEUE_LUA),
+          take: await load(TAKE_PENDING_OR_RELEASE_LUA),
+          renew: await load(RENEW_LUA),
+        },
+        { loadScript: load },
+      );
+      return { store, namespace: provider.keyNamespace, shared: true };
+    }
+  } catch {
+    // Fall through: an unreachable Redis means per-process queueing, not no bot.
+  }
+  console.warn(
+    'Slack thread queue: Redis unavailable, queueing is per process',
+  );
+  return { store: new MemoryThreadQueueStore(), namespace: '', shared: false };
 }
 
 export type SubmitResult = 'ran' | 'queued' | 'full' | 'busy' | 'direct';
