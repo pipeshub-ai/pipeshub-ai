@@ -1363,6 +1363,31 @@ export const enterpriseSearchRetrieveSchema = z.object({
   }),
 });
 
+/**
+ * Exact-text search. The pattern is literal text unless `regex` is true; the
+ * AI service refuses what it cannot run (back-references, an invalid
+ * expression) and answers 400 with the reason.
+ */
+export const enterpriseSearchGrepSchema = z.object({
+  body: z.object({
+    pattern: z
+      .string()
+      .min(1, { message: 'A pattern is required' })
+      .max(500, { message: 'A pattern must be at most 500 characters' })
+      .refine((value) => !/[\r\n\0]/.test(value), {
+        message: 'A pattern must be one line',
+      }),
+    regex: z.boolean().optional(),
+    caseSensitive: z.boolean().optional(),
+    filters: filtersSchema,
+    paths: z.array(z.string().min(1).max(256)).max(20).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    contextLines: z.number().int().min(0).max(10).optional(),
+    maxMatchesPerRecord: z.number().int().min(1).max(50).optional(),
+    timeBudgetMs: z.number().int().min(500).max(30000).optional(),
+  }),
+});
+
 const ENTITY_TYPES = [
   'department',
   'category',
