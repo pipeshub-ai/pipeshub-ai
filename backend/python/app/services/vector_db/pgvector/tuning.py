@@ -57,7 +57,7 @@ _KNOBS: dict[str, tuple[float, float, float]] = {
     "validate_sample": (50, 5, 1_000),                  # queries of the bit-quantisation check
     "validate_floor": (0.95, 0.5, 1.0),                 # recall below this: the space is served exactly
 }
-_FLAGS = {"validate_quantization": True, "eliminate_all_apps": True, "fused_search": True}
+_FLAGS = {"validate_quantization": True, "eliminate_all_apps": True}
 
 
 def parse_flag(name: str, raw: object, *, default: bool) -> bool:
@@ -117,7 +117,6 @@ class Tuning:
     validate_sample: int = 50
     validate_floor: float = 0.95
     validate_quantization: bool = True
-    fused_search: bool = True            # a hybrid search is one statement in one unit of work (False: the legs run as separate statements)
     eliminate_all_apps: bool = True       # a user who can read every connector searches the whole org, without a membership probe per row
 
     @classmethod

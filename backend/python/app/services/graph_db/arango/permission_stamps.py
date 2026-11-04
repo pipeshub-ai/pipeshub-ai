@@ -47,6 +47,11 @@ FOR id IN @ids
           belongsApp: LENGTH(FOR b IN {_BEL} FILTER b._from == d._id AND b._to == CONCAT("{_APP}/", d.connectorId) LIMIT 1 RETURN 1) > 0}}
 """
 
+PAGE = f"""
+FOR r IN {_REC} FILTER r.connectorId == @app AND r.orgId == @org AND (@after == null OR r._key > @after)
+  SORT r._key LIMIT @limit RETURN r._key
+"""
+
 
 class ArangoStampGraph:
     def __init__(self, http_client: Callable[[], ArangoHTTPClient | None]) -> None:
@@ -69,6 +74,9 @@ class ArangoStampGraph:
     async def nodes(self, org_id: str, ids: frozenset[str]) -> dict[str, StampNode]:
         rows = await self._rows(NODES, {"ids": sorted(ids), "org": org_id}) if ids else []
         return {n.id: n for n in (to_node(cast("dict[str, object]", r)) for r in rows)}
+
+    async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
+        return [str(r) for r in await self._rows(PAGE, {"app": app_id, "org": org_id, "after": after, "limit": limit})]
 
 
 instrument_org_methods(ArangoStampGraph)
