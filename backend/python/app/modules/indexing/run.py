@@ -23,12 +23,10 @@ from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     MEMBERSHIP_WRITE_BATCH_SIZE,
+    _other_orgs_hold_points,
     own_record_keys,
     vrid_write_locks,
     write_membership_batch_locked,
-)
-from app.services.vector_db.membership import (
-    _other_orgs_hold_points,
 )
 from app.services.vector_db.membership import (
     orgs_holding_points as _orgs_holding_points,
