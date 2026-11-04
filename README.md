@@ -75,7 +75,7 @@ How PipesHub performs, and how each test was run.
 | **Company index vs. per-app MCP connectors** | The same Claude agent on 100 work questions, searching each app through its own connector or through PipesHub | Facts found: Haiku 55% → 80%, Sonnet 65% → 89%, Opus 85% → 92%; 27–45% faster and 27–32% cheaper per answer | [Write-up](https://pipeshub.com/blog/do-ai-agents-need-a-company-index) |
 | **Code graph accuracy** (vs. Graphify, codebase-memory-mcp, CodeGraphContext) | How accurately each tool maps relationships in code across 9 repositories | Highest accuracy (F1 score) on 8 of 9 repositories | [Write-up](https://pipeshub.com/blog/code-graph-benchmark) |
 
-Leaderboard standing as of 3 November 2026. The FRAMES, connector and code-graph tests were run by the PipesHub team. The connector test used questions about our own internal work; we will publish a version on public data.
+Leaderboard standing as of 3 November 2026 ([leaderboard data at that date](https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard/blob/cb64107947e363787d5670733404bdd2aa1cb630/data/final_display_data/leaderboard.csv)). The FRAMES, connector and code-graph tests were run by the PipesHub team. The connector test used questions about our own internal work; we will publish a version on public data.
 
 ## What can you build with PipesHub?
 
