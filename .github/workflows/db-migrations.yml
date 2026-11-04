@@ -45,7 +45,7 @@ jobs:
             suites: ''
           - shard: pins
             files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py tests/test_vetted_org_policy.py
-            min_tests: 350
+            min_tests: 351
             suites: ''
           - shard: placement
             files: tests/test_placement.py
@@ -61,8 +61,8 @@ jobs:
             suites: ''
           - shard: kg
             files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
-            min_tests: 217
-            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=208 --expect-suite tests.test_kg_downgrade=1'
+            min_tests: 218
+            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=208 --expect-suite tests.test_kg_downgrade=2'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -18,9 +18,26 @@ def upgrade():
 
 
 def downgrade():
-    # The writers go, and with them the write grants the pins gave the vetted role (its reads stay, they belong to the schema): a database stopped at kg_0001 must pass the catalog check.
-    op.execute("REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA kg FROM pipeshub_vetted_kg")
-    op.execute("DELETE FROM kernel.vetted_write_pins WHERE proc::oid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'kg'::regnamespace)")
-    for name in WRITERS:
-        op.execute(f"DROP FUNCTION IF EXISTS kg.{name} CASCADE")
-    op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
+    # Exactly what this revision added, by name: the writers, their pins and registry rows. The write grants of the vetted role are then recomputed, for the tables those pins
+    # named, from the pins that remain (kernel._sync_vetted_privs), so a grant another function's pin needs stays and the rest goes. A database stopped at kg_0001 must pass the
+    # catalog check; nothing else of kg or of any other schema is touched, and the functions are dropped without cascade.
+    names = ", ".join(f"'{n}'" for n in WRITERS)
+    op.execute(f"""
+DO $$
+DECLARE
+  mine oid[];
+  rels regclass[];
+  t regclass;
+  f oid;
+BEGIN
+  SELECT coalesce(array_agg(oid), '{{}}') INTO mine FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname IN ({names});
+  SELECT coalesce(array_agg(DISTINCT rel), '{{}}') INTO rels FROM kernel.vetted_write_pins WHERE proc::oid = ANY(mine);
+  DELETE FROM kernel.vetted_write_pins WHERE proc::oid = ANY(mine);
+  DELETE FROM kernel.function_registry WHERE proc::oid = ANY(mine);
+  FOREACH t IN ARRAY rels LOOP
+    PERFORM kernel._sync_vetted_privs(t);
+  END LOOP;
+  FOREACH f IN ARRAY mine LOOP
+    EXECUTE format('DROP FUNCTION %s RESTRICT', f::regprocedure);
+  END LOOP;
+END $$""")
