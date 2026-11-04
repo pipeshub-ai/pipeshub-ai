@@ -90,15 +90,17 @@ export async function startCluster(bin: string, work: string): Promise<Cluster> 
   }, PORT_BASE, PORT_SPAN)
   const probe = new Cluster(bin, root, port, 0)
   try {
-    // PGOPTIONS (read by every pg client) could set a session value and hide the server's, so it is out of the environment while the probe connects.
+    // PGOPTIONS could set a session value and hide the server's. pg reads it when the client is constructed (ConnectionParameters),
+    // so it is out of the environment only for that statement and is back before anything awaits.
     const pgoptions = process.env.PGOPTIONS
-    delete process.env.PGOPTIONS
-    const c = new Client({ host: '127.0.0.1', port, user: 'postgres', database: 'postgres' })
+    let c: Client
     try {
-      await c.connect()
+      delete process.env.PGOPTIONS
+      c = new Client({ host: '127.0.0.1', port, user: 'postgres', database: 'postgres' })
     } finally {
       if (pgoptions !== undefined) process.env.PGOPTIONS = pgoptions
     }
+    await c.connect()
     let major: number
     try {
       // JIT compiles the catalog queries of every migration and made each test of the reverse shard about six times slower, so a cluster with it on is a harness fault.
