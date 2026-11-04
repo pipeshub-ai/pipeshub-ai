@@ -10,10 +10,12 @@ never current until a pass over the whole connector clears the mark.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import MissingOrgContext, current_or_system, for_org, system
 from app.services.permissions.mode import scope_fields_enabled
 
 GENERATION_KEY = "scopeProjectionGeneration"
@@ -90,9 +92,20 @@ async def note_org_structure_change(graph_provider: Any, org_id: str | None, log
         return
     log = logger or logging.getLogger(__name__)
     try:
-        orgs = [org_id] if org_id else [str(o.get("_key") or o.get("id")) for o in await graph_provider.get_all_orgs(active=False, raise_on_error=True)]
-        for org in orgs:
-            for app in await graph_provider.get_org_apps(org, active_only=False, raise_on_error=True) or []:
-                await note_structure_change(graph_provider, str(app.get("_key") or app.get("id")), log)
+        try:
+            current_or_system()
+            enumeration: contextlib.AbstractContextManager = contextlib.nullcontext()
+        except MissingOrgContext:  # a job with no org bound lists the organisations in an explicit cross-org scope
+            enumeration = system("scope_structure_change")
+        with enumeration:
+            orgs = [org_id] if org_id else [str(o.get("_key") or o.get("id")) for o in await graph_provider.get_all_orgs(active=False, raise_on_error=True)]
     except Exception:
-        log.exception("could not list the connectors whose structure changed (organisation %s)", org_id or "all")
+        log.exception("could not list the organisations whose structure changed (organisation %s)", org_id or "all")
+        return
+    for org in orgs:
+        try:
+            with for_org(org, job="scope_structure_change"):  # the apps of one organisation are read, and marked, inside it
+                for app in await graph_provider.get_org_apps(org, active_only=False, raise_on_error=True) or []:
+                    await note_structure_change(graph_provider, str(app.get("_key") or app.get("id")), log)
+        except Exception:
+            log.exception("could not list the connectors whose structure changed (organisation %s)", org)
