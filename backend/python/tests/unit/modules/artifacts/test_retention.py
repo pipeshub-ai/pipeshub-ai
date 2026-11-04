@@ -875,3 +875,18 @@ async def test_two_orgs_that_share_a_virtual_record_id_never_touch_each_others_s
     assert graph.delete_orgs == ["org-a"]                      # org-a's stale revision is retired, under org-a
     assert graph.org_states == {"org-a": [], "org-b": [("v", "r1", OLD)]}      # org-b's copy is in the trash: nothing of it is touched
     assert report.skipped_trashed == 1 and report.stage_states_deleted == 1
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_between_two_orgs_pointers_of_one_virtual_record_resumes_before_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The next page reads the ids after the cursor, so a cursor equal to the id of the unfinished organisation's pointer would skip that organisation."""
+    graph, store = _TwoOrgGraph(), FakeStore()
+    graph.pointers = [{"virtualRecordId": v, "orgId": o, "currentRev": "r2", "previousRev": None} for v, o in (("a", "org-a"), ("v", "org-a"), ("v", "org-b"))]
+    graph.org_states = {"org-a": [], "org-b": []}
+    clock = iter([0.0])           # the second pointer starts in time, the third is past the deadline
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: next(clock, 100.0)))
+
+    with org_context.system("retention_test"):
+        key, report = await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+
+    assert report.cut_short and key == "a"                    # not "v": org-b's pointer of "v" is still to do

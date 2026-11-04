@@ -288,8 +288,10 @@ class RevisionRetentionSweep:
         if report.cut_short:
             done = next((i for i, f in enumerate(finished) if not f), len(pointers))
             if done < len(pointers):
+                # Not the id of the unfinished pointer: another organisation's pointer of the same id may be before it, and the next page reads the ids after the cursor.
+                unfinished = pointers[done].get("virtualRecordId")
                 resume = next(
-                    (str(p["virtualRecordId"]) for p in reversed(pointers[:done]) if p.get("virtualRecordId")),
+                    (str(p["virtualRecordId"]) for p in reversed(pointers[:done]) if p.get("virtualRecordId") and p["virtualRecordId"] != unfinished),
                     after_key,
                 )
                 return resume, report
