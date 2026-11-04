@@ -45,7 +45,7 @@ jobs:
             suites: ''
           - shard: pins
             files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py tests/test_vetted_org_policy.py
-            min_tests: 309
+            min_tests: 350
             suites: ''
           - shard: placement
             files: tests/test_placement.py
@@ -57,7 +57,7 @@ jobs:
             suites: '--expect-suite tests.test_upkeep=36'
           - shard: upgrade
             files: tests/test_pins_upgrade.py
-            min_tests: 0
+            min_tests: 8
             suites: ''
     steps:
       - name: Checkout
