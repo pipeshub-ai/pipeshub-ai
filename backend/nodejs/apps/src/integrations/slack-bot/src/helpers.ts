@@ -247,6 +247,19 @@ const TEXT_ATTACHMENT_MIMETYPES: Readonly<Record<string, string>> = {
 
 const GENERIC_MIMETYPES = new Set(["", "application/octet-stream", "binary/octet-stream"]);
 
+/** What Windows and Excel label a .csv file; the extension still says it is text. */
+const SPREADSHEET_CSV_MIMETYPES = new Set(["application/vnd.ms-excel", "application/csv"]);
+
+/**
+ * Word and Excel attachments by extension, with the MIME type the chat upload
+ * parses (the web app accepts the same two). They are zip archives, so Slack
+ * may label them application/zip.
+ */
+export const OFFICE_ATTACHMENT_EXTENSION_MIMETYPES: Readonly<Record<string, string>> = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
 /** Slack `filetype` values for text files, used only when the file name has no extension. */
 const SLACK_TEXT_FILETYPE_EXTENSIONS: Readonly<Record<string, string>> = {
   text: "txt",
@@ -259,7 +272,7 @@ export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_ATTACHMENT_MB = Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024));
 
 export const SUPPORTED_ATTACHMENTS_HINT =
-  "I can read PDF, JPEG and PNG files, and text files: plain text (.txt), " +
+  "I can read PDF, JPEG and PNG files, Word (.docx) and Excel (.xlsx) files, and text files: plain text (.txt), " +
   "Markdown (.md, .markdown, .mdx), CSV (.csv) and TSV (.tsv). " +
   `Each file can be up to ${MAX_ATTACHMENT_MB} MB.`;
 
@@ -324,15 +337,33 @@ export function resolveTextAttachmentMimetype(file: SlackFile): string | null {
   if (extension) {
     const mimeForExtension = TEXT_ATTACHMENT_EXTENSION_MIMETYPES[extension];
     if (mimeForExtension === undefined) return null;
-    return mime.startsWith("text/") || GENERIC_MIMETYPES.has(mime) ? mimeForExtension : null;
+    const labelFits =
+      mime.startsWith("text/") ||
+      GENERIC_MIMETYPES.has(mime) ||
+      (mimeForExtension === "text/csv" && SPREADSHEET_CSV_MIMETYPES.has(mime));
+    return labelFits ? mimeForExtension : null;
   }
   return TEXT_ATTACHMENT_MIMETYPES[mime] ?? null;
+}
+
+/** The MIME type to upload a Word or Excel attachment with, or null when the file is not one. */
+export function resolveOfficeAttachmentMimetype(file: SlackFile): string | null {
+  const mime = normalizeMimetype(file.mimetype);
+  const extension = slackFileExtension(file);
+  const known = Object.values(OFFICE_ATTACHMENT_EXTENSION_MIMETYPES);
+  if (!extension) return known.includes(mime) ? mime : null;
+  if (!Object.prototype.hasOwnProperty.call(OFFICE_ATTACHMENT_EXTENSION_MIMETYPES, extension)) return null;
+  const mimeForExtension = OFFICE_ATTACHMENT_EXTENSION_MIMETYPES[extension]!;
+  return mime === mimeForExtension || GENERIC_MIMETYPES.has(mime) || mime === "application/zip"
+    ? mimeForExtension
+    : null;
 }
 
 export function isSlackSupportedAttachment(file: SlackFile): boolean {
   return (
     SUPPORTED_ATTACHMENT_MIMETYPES.has(normalizeMimetype(file.mimetype)) ||
-    resolveTextAttachmentMimetype(file) !== null
+    resolveTextAttachmentMimetype(file) !== null ||
+    resolveOfficeAttachmentMimetype(file) !== null
   );
 }
 
@@ -519,7 +550,10 @@ export async function uploadSlackAttachments(
     const fileName = file.name || `attachment_${file.id}.${file.filetype || "bin"}`;
     form.append("files", binary, {
       filename: fileName,
-      contentType: textMimetype ?? (file.mimetype || "application/octet-stream"),
+      contentType:
+        textMimetype ??
+        resolveOfficeAttachmentMimetype(file) ??
+        (file.mimetype || "application/octet-stream"),
     });
     appended += 1;
   });

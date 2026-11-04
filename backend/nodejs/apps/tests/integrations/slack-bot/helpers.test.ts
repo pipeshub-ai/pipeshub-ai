@@ -182,6 +182,26 @@ describe('slack-bot/helpers', () => {
       it('returns false when mimetype is missing', () => {
         expect(isSlackSupportedAttachment({ id: '1' })).to.equal(false);
       });
+
+      it('accepts Word and Excel files, as the web app does', () => {
+        const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        const xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        expect(isSlackSupportedAttachment({ id: '1', name: 'plan.docx', mimetype: docx })).to.equal(true);
+        expect(isSlackSupportedAttachment({ id: '2', name: 'q3.xlsx', mimetype: xlsx })).to.equal(true);
+        expect(isSlackSupportedAttachment({ id: '3', name: 'PLAN.DOCX', mimetype: 'application/octet-stream' })).to.equal(true);
+        expect(isSlackSupportedAttachment({ id: '4', name: 'plan', filetype: 'docx', mimetype: 'application/zip' })).to.equal(true);
+        // The old binary formats are not parsed by the chat upload.
+        expect(isSlackSupportedAttachment({ id: '5', name: 'plan.doc', mimetype: 'application/msword' })).to.equal(false);
+        expect(isSlackSupportedAttachment({ id: '6', name: 'q3.xls', mimetype: 'application/vnd.ms-excel' })).to.equal(false);
+      });
+
+      it('accepts a CSV that Windows or Excel labels as a spreadsheet', () => {
+        for (const mimetype of ['application/vnd.ms-excel', 'application/csv', 'text/x-csv']) {
+          expect(isSlackSupportedAttachment({ id: mimetype, name: 'notes.csv', mimetype }), mimetype).to.equal(true);
+          expect(resolveTextAttachmentMimetype({ id: mimetype, name: 'notes.csv', mimetype }), mimetype).to.equal('text/csv');
+        }
+        expect(isSlackSupportedAttachment({ id: 'x', name: 'notes.txt', mimetype: 'application/vnd.ms-excel' })).to.equal(false);
+      });
     });
 
     describe('isSlackOversizedAttachment', () => {
@@ -427,7 +447,7 @@ describe('slack-bot/helpers', () => {
         for (const ext of Object.keys(TEXT_ATTACHMENT_EXTENSION_MIMETYPES)) {
           expect(SUPPORTED_ATTACHMENTS_HINT, ext).to.contain(`.${ext}`);
         }
-        for (const label of ['PDF', 'JPEG', 'PNG', `${MAX_ATTACHMENT_MB} MB`]) {
+        for (const label of ['PDF', 'JPEG', 'PNG', 'Word (.docx)', 'Excel (.xlsx)', `${MAX_ATTACHMENT_MB} MB`]) {
           expect(SUPPORTED_ATTACHMENTS_HINT).to.contain(label);
         }
       });
@@ -697,6 +717,23 @@ describe('slack-bot/helpers', () => {
           expect(body, ext).to.contain(`filename="notes.${ext}"\r\nContent-Type: ${mime}`);
         }
         expect(result).to.deep.equal({ attachments: refs, unreadable: [], oversized: [] });
+      });
+
+      it('uploads Word and Excel files with the type the backend parses, whatever Slack labelled them', async () => {
+        const files = [
+          { id: 'd', name: 'plan.docx', mimetype: 'application/octet-stream', url_private: 'https://files.slack.test/d' },
+          { id: 'x', name: 'q3.xlsx', mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', url_private: 'https://files.slack.test/x' },
+        ];
+        // Office files are zip archives: binary, never checked as text.
+        stubDownloads({ [files[0]!.url_private]: Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00]), [files[1]!.url_private]: Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00]) });
+        const postStub = sinon.stub(axios, 'post').resolves({ data: { attachments: [{ recordId: 'd' }, { recordId: 'x' }] } } as any);
+
+        const result = await uploadSlackAttachments(files, 'xoxb-bot', 'access');
+
+        expect(result.unreadable).to.deep.equal([]);
+        const body = formParts(postStub.firstCall.args[1]);
+        expect(body).to.contain('filename="plan.docx"\r\nContent-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        expect(body).to.contain('filename="q3.xlsx"\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       });
 
       it('skips a text file that is not valid UTF-8 and uploads the rest', async () => {
