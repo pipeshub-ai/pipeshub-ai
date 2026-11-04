@@ -154,7 +154,11 @@ async def test_a_costly_request_does_not_starve_a_cheap_one() -> None:
     finished: list[str] = []
 
     async def one(tag: str, compiled: regex.Pattern[str], deadline: float) -> None:
-        await find_matches_bounded(blocks, compiled, context_lines=0, max_matches=5, deadline=deadline)
+        _, total, _, complete = await find_matches_bounded(
+            blocks, compiled, context_lines=0, max_matches=5, deadline=deadline,
+        )
+        # A cheap search that gave up early would count as finished without having run.
+        assert tag != "cheap" or (complete and total == 1)
         finished.append(tag)
 
     async def request(tag: str, compiled: regex.Pattern[str], n: int) -> None:
