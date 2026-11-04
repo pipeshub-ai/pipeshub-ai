@@ -60,6 +60,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
+from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.strategy import QueryContext
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
@@ -4193,6 +4194,7 @@ async def create_record_from_vector_metadata(
 
         # Create filter
         payload_filter = await vector_db_service.filter_collection(must={
+            "orgId": org_for_filter(org_id),
             "virtualRecordId": virtual_record_id,
         })
 
