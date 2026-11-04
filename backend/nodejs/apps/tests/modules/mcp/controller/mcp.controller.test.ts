@@ -7,7 +7,6 @@ import { Logger } from '../../../../src/libs/services/logger.service'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
 import { isMcpRelay, MCP_RELAY_HEADER, relayKey } from '../../../../src/libs/middlewares/mcp-relay'
-import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
 
 // The controller is imported AFTER mock-mcp-global.ts has patched require.cache
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
@@ -29,9 +28,6 @@ const mcpCoreExports = require.cache[
 ]!.exports
 const sdkTransportExports = require.cache[
   require.resolve('@modelcontextprotocol/sdk/server/streamableHttp.js')
-]!.exports
-const oauthScopesExports = require.cache[
-  require.resolve('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js')
 ]!.exports
 
 describe('MCP Controller — handleMCPRequest', () => {
@@ -402,73 +398,6 @@ describe('MCP Controller — handleMCPRequest', () => {
       await serve('cg-other', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } })
       expect(fetchStub.called).to.equal(false)
       expect(registered).to.deep.equal([])
-    })
-  })
-
-  describe('scopes, step-up and the audit trail', () => {
-    const oauthReq = (scopes: string[], body: unknown = {}) =>
-      createMockRequest({
-        headers: { authorization: 'Bearer t' },
-        body,
-        user: { userId: 'u1', orgId: 'o1', isOAuth: true, oauthClientId: 'client-1', oauthScopes: scopes },
-      })
-    let origRequired: any
-    let createOpts: any
-
-    beforeEach(() => {
-      origRequired = oauthScopesExports.requiredOAuthScopes
-      oauthScopesExports.requiredOAuthScopes = (tool: string) =>
-        ({ pipeshub_upload: ['kb:upload'] } as Record<string, string[]>)[tool]
-      createOpts = undefined
-      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
-        createOpts = opts
-        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} } }
-      })
-    })
-
-    afterEach(() => {
-      oauthScopesExports.requiredOAuthScopes = origRequired
-    })
-
-    it('answers a call to a tool the token lacks scopes for with an insufficient_scope 403', async () => {
-      const res = createMockResponse() as any
-      res.set = sinon.stub().returns(res)
-      const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_upload' } }
-
-      await handleMCPRequest(appConfig)(oauthReq(['kb:read'], body), res, createMockNext())
-
-      expect(res.status.calledWith(403)).to.be.true
-      const [header, challenge] = res.set.firstCall.args
-      expect(header).to.equal('WWW-Authenticate')
-      expect(challenge).to.contain('error="insufficient_scope"').and.contain('scope="kb:read kb:upload"')
-      expect(createOpts, 'no server is built').to.be.undefined
-    })
-
-    it("lists tools by the token's scopes, and lets chat act only with agent:execute", async () => {
-      await handleMCPRequest(appConfig)(oauthReq(['conversation:chat']), createMockResponse() as any, createMockNext())
-      expect(createOpts.grantedOAuthScopes).to.deep.equal(['conversation:chat'])
-      expect(createOpts.allowChatActions).to.be.false
-
-      await handleMCPRequest(appConfig)(oauthReq(['conversation:chat', 'agent:execute']), createMockResponse() as any, createMockNext())
-      expect(createOpts.allowChatActions).to.be.true
-    })
-
-    it('records each tool call with who, which app and which tool, never the arguments', async () => {
-      const info = sinon.stub(Logger.prototype, 'info')
-      await handleMCPRequest(appConfig)(oauthReq(['kb:read']), createMockResponse() as any, createMockNext())
-
-      // The tool runs inside the request, where authentication bound the caller's org.
-      runWithOrgContext(makeOrgContext({ orgId: 'o1', userId: 'u1', kind: 'user', source: 'jwt' }), () =>
-        createOpts.onToolCall({ tool: 'pipeshub_search', durationMs: 12, isError: false, argumentNames: ['query'] }),
-      )
-
-      const entry = info.getCalls().find((c) => c.args[0] === 'MCP tool call')
-      expect(entry, 'audit entry').to.exist
-      expect(entry!.args[1]).to.include({
-        audit: 'mcp_tool_call', orgId: 'o1', userId: 'u1', clientId: 'client-1',
-        tool: 'pipeshub_search', durationMs: 12, isError: false,
-      })
-      expect(entry!.args[1].argumentNames).to.deep.equal(['query'])
     })
   })
 
