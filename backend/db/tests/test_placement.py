@@ -259,6 +259,35 @@ def test_requests_that_cannot_be_placed_do_not_starve_new_ones_and_a_new_ask_reo
         assert c.execute("SELECT failed_at, note FROM retrieval.placement_requests WHERE org_id = %s", (refused,)).fetchone() == (None, None)
 
 
+def test_the_worker_retries_a_lost_owner_connection_and_stops_on_an_error_that_will_not_pass(monkeypatch):
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    calls = iter([OperationalError("connect", {}, Exception("too many clients")), ([], [], [])])
+
+    def one_pass(url):
+        item = next(calls)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(maintain, "_placement_pass", one_pass)
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(maintain.time, "sleep", sleep)
+    with pytest.raises(KeyboardInterrupt):
+        maintain._watch("unused", 1.0)
+    assert len(sleeps) == 2                                                             # the failed pass was followed by another
+    monkeypatch.setattr(maintain, "_placement_pass", lambda url: (_ for _ in ()).throw(ProgrammingError("SET ROLE", {}, Exception("role does not exist"))))
+    monkeypatch.setenv("PG_MIGRATE_URL", "postgresql+psycopg://x@127.0.0.1:1/x")
+    monkeypatch.setenv("PG_JOBS_URL", "postgresql://x@127.0.0.1:1/x")
+    assert maintain.main(["placement", "--watch"]) == maintain.EXIT_FAILED                # a failure that will not pass ends the worker
+
+
 def test_the_worker_starts_the_next_pass_at_once_after_a_full_one(monkeypatch):
     passes = iter([(["a"] * placement.MAX_PER_PASS, [], []), ([], ["b"], [])])
     monkeypatch.setattr(maintain, "_placement_pass", lambda url: next(passes))
@@ -291,6 +320,12 @@ def test_wrong_arguments_and_a_missing_jobs_url_are_configuration_errors(rdb, mo
     for argv in ([], ["fold"], ["placement", "--now"], ["placement", "--watch", "soon"], ["placement", "--watch", "0"], ["placement", "--watch", "1", "x"]):
         assert maintain.main(argv) == 2, argv
     assert maintain.main(["placement"]) == 2                                                # no PG_JOBS_URL
+
+    def sleep(_):
+        raise KeyboardInterrupt                      # the old loop retried the missing setting forever: this makes that a failure, not a hang
+
+    monkeypatch.setattr(maintain.time, "sleep", sleep)
+    assert maintain.main(["placement", "--watch"]) == 2 and maintain.main(["placement", "--watch", "5"]) == 2     # in watch mode too
     with pytest.raises(RunnerError):
         maintain._jobs_url()
     with pytest.raises(ValueError):
