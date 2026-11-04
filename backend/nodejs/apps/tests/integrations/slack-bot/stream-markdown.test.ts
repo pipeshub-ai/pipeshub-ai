@@ -80,6 +80,15 @@ describe('slack-bot streamed markdown', () => {
       expect([...markers.sources().keys()]).to.deep.equal([1, 2]);
     });
 
+    it('reads a citation the model closed with ] instead of ), as the backend does', () => {
+      const markers = new CitationMarkers();
+      markers.checkpoint();
+      const marked = markers.mark('Pain [source](ref1]. All in [source](ref2) and [Notes](https://ref3.xyz].');
+      expect(marked).to.not.contain('ref');
+      expect(markers.resolve(marked, new Map([[1, row('a')], [2, row('b')], [3, row('c')]]), true)[0])
+        .to.equal('Pain [1](https://x.test/a). All in [2](https://x.test/b) and Notes [3](https://x.test/c).');
+    });
+
     it('spaces adjacent markers', () => {
       const markers = new CitationMarkers();
       markers.checkpoint();
@@ -114,6 +123,10 @@ describe('slack-bot streamed markdown', () => {
       expect(withoutPlaceholderRefs('See the [Trust Center](https://ref12.xyz), [source](ref3) and https://ref5.xyz/ now.'))
         .to.equal('See the Trust Center,  and  now.');
     });
+
+    it('drops a bare citation the model closed with ]', () => {
+      expect(withoutPlaceholderRefs('I will check [source](ref30] now.')).to.equal('I will check  now.');
+    });
   });
 
   describe('splitOpenLinkTail', () => {
@@ -124,6 +137,8 @@ describe('slack-bot streamed markdown', () => {
       expect(splitOpenLinkTail('See ht')).to.deep.equal(['See ', 'ht']);
       expect(splitOpenLinkTail('Up 12% [1](/record/r1) done')).to.deep.equal(['Up 12% [1](/record/r1) done', '']);
       expect(splitOpenLinkTail('with')[1]).to.equal('');
+      // A ] closes a citation the model wrote as [source](ref30]: nothing is held after it.
+      expect(splitOpenLinkTail('Pain [source](ref30] and more text')).to.deep.equal(['Pain [source](ref30] and more text', '']);
     });
 
     it('holds an artifact marker until its closing brace', () => {

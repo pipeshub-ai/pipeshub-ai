@@ -200,6 +200,14 @@ export function rewriteCitationsForSlack(
 const PLACEHOLDER_REF_LINK =
   /\[([^\]\n]*)\]\(\s*(?:https?:\/\/)?ref\d+(?:\.xyz)?(?:\/[^)\s]*)?\s*\)/gi;
 const BARE_PLACEHOLDER_REF = /\bhttps?:\/\/ref\d+\.xyz\/?/gi;
+/** A citation the model closed with `]` instead of `)`: `[source](ref30]`. */
+const REF_CLOSED_WITH_BRACKET =
+  /\]\(\s*((?:https?:\/\/)?ref\d+(?:\.xyz)?\/?)\s*\]/gi;
+
+/** Models mix up `)` and `]` after a ref; the backend reads either, and so does Slack. */
+function repairRefClosers(text: string): string {
+  return text.replace(REF_CLOSED_WITH_BRACKET, ']($1)');
+}
 const CITATION_ONLY_LABEL = /^\s*(?:source|\d+)?\s*$/i;
 
 /**
@@ -207,7 +215,7 @@ const CITATION_ONLY_LABEL = /^\s*(?:source|\d+)?\s*$/i;
  * with its own words keeps them, a bare citation or placeholder URL goes.
  */
 export function withoutPlaceholderRefs(text: string): string {
-  return text
+  return repairRefClosers(text)
     .replace(PLACEHOLDER_REF_LINK, (_match, label: string) =>
       CITATION_ONLY_LABEL.test(label) ? '' : label,
     )
@@ -215,7 +223,7 @@ export function withoutPlaceholderRefs(text: string): string {
 }
 
 /** An unfinished `[label](target)` at the end of a streamed piece, held until it closes. */
-const OPEN_LINK_TAIL = /\[[^\]\n]*(?:\](?:\([^)\n]*)?)?$/;
+const OPEN_LINK_TAIL = /\[[^\]\n]*(?:\](?:\([^)\]\n]*)?)?$/;
 /** An unfinished `::artifact[name](url){meta}` (or a `:` that may start one), held until its `}`. */
 const OPEN_MARKER_TAIL =
   /:(?::[a-z_]*(?:\[[^\]\n]*(?:\](?:\([^)\n]*(?:\)(?:\{[^}\n]*)?)?)?)?)?)?$/;
@@ -294,7 +302,7 @@ export class CitationMarkers {
   }
 
   mark(text: string): string {
-    return text.replace(
+    return repairRefClosers(text).replace(
       CITATION_TOKEN,
       (
         match,
