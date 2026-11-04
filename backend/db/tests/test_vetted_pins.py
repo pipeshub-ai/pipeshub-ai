@@ -151,6 +151,7 @@ PLANTS = [
     ("106 a delete with an OR", mutated(GD, "AND t.gtype = k.c;", "AND t.gtype = k.c OR true;"), "106"),
     ("106 a delete by part of the key", mutated(GD, " AND t.gtype = k.c;", ";"), "106"),
     ("106 a delete by range", mutated(GD, "t.node_sk = k.b", "t.node_sk > k.b"), "106"),
+    ("106 a delete whose key columns are paired with the wrong array columns", mutated(GD, "t.principal_sk = k.a AND t.node_sk = k.b", "t.principal_sk = k.b AND t.node_sk = k.a"), "106"),
     ("106 a delete of the whole org", mutated(GD, "USING unnest(p_principals, p_nodes, p_gtypes) AS k(a, b, c) WHERE t.org_id = v_org AND t.principal_sk = k.a AND t.node_sk = k.b AND t.gtype = k.c;",
                                               "WHERE t.org_id = v_org;"), "106"),
     ("106 a delete by the current transaction with a comparison other than equality", mutated(CA, "t.txid = pg_current_xact_id()", "t.txid <= pg_current_xact_id()"), "106"),
@@ -170,6 +171,9 @@ PLANTS = [
     ("107 an upsert joined to another table", mutated(GS, "AS k(a, b, c, d)\n", "AS k(a, b, c, d) JOIN kt.fences f ON f.id = k.a\n"), "107"),
     ("108 an upsert whose array has no cardinality cap", mutated(GS, "cardinality(p_principals) > 5000", "p_principals IS NULL AND false"), "108"),
     ("108 a delete whose cap is above the pin's", mutated(GD, "cardinality(p_nodes) > 5000", "cardinality(p_nodes) > 6000"), "108"),
+    ("108 a delete whose cap guard is inside an IF that never runs", mutated(GD, "IF cardinality(p_nodes) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_nodes takes at most 5000 items' USING ERRCODE = '22023'; END IF;", "IF false THEN IF cardinality(p_nodes) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_nodes takes at most 5000 items' USING ERRCODE = '22023'; END IF; END IF;"), "108"),
+    ("108 a delete whose cap guard is in the ELSE of an IF", mutated(GD, "IF cardinality(p_nodes) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_nodes takes at most 5000 items' USING ERRCODE = '22023'; END IF;", "IF true THEN NULL; ELSE IF cardinality(p_nodes) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_nodes takes at most 5000 items' USING ERRCODE = '22023'; END IF; END IF;"), "108"),
+    ("108 the cap guard comes after an early RETURN", mutated(GD, "IF cardinality(p_nodes) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_nodes takes at most 5000 items' USING ERRCODE = '22023'; END IF;", "IF p_nodes IS NOT NULL THEN RETURN 0; END IF; IF cardinality(p_nodes) > 5000 THEN RAISE EXCEPTION 'w_grants_delete: p_nodes takes at most 5000 items' USING ERRCODE = '22023'; END IF;"), "108"),
     ("108 a delete that unnests something that is not an argument", mutated(GD, "USING unnest(p_principals, p_nodes, p_gtypes)", "USING unnest(p_principals, p_nodes, v_n)"), "108"),
     ("109 a scalar delete keyed by a variable", mutated(FR, "t.id = p_id;", "t.id = v_n;"), "109"),
     ("114 a function with no pin updates a pinned table",
@@ -221,6 +225,12 @@ def test_a_planted_violation_is_reported(pdb, plant):
     full = rule in ("57", "88", "89")             # the rules of the old views, which the public view must still apply to a function or table with no pin
     got = installed(pdb, sql, full) if sql.startswith("-- generated") else planted(pdb, sql, full)
     assert any(r.startswith(rule) for r, _ in got), got
+
+
+def test_a_delete_with_its_conditions_in_another_order_is_accepted_when_the_pairs_are_right(pdb):
+    # the pairing is what matters (key column i with alias column i), not the order the conditions are written in
+    reordered = mutated(GD, "t.principal_sk = k.a AND t.node_sk = k.b AND t.gtype = k.c", "t.gtype = k.c AND t.principal_sk = k.a AND t.node_sk = k.b")
+    assert not any(r.startswith("106") for r, _ in planted(pdb, reordered, False))
 
 
 FOLDED = ("106 a delete without the org predicate", "107 an upsert that sets more than it pins", "114 a function with no pin updates a pinned table",
@@ -383,7 +393,7 @@ def test_the_generated_sql_pins_after_it_registers():
 def test_array_items_are_validated_with_22023():
     sql = vetted.render(FNS[SIG[GS]])
     assert "EXISTS (SELECT 1 FROM unnest(p_principals) e WHERE e IS NULL)" in sql
-    assert "e NOT BETWEEN 1 AND 4" in sql and "e NOT IN (1, 2, 3)" in sql
+    assert "e NOT BETWEEN 1 AND 4" in sql and "e NOT IN ('1', '2', '3')" in sql
     assert sql.count("USING ERRCODE = '22023'") >= 12
     for bad in ({"item_not_null": True}, {"item_length": [1, 2]}):
         with pytest.raises(vetted.ManifestError, match="array argument"):

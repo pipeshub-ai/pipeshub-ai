@@ -422,7 +422,7 @@ if TYPE_CHECKING:
         EntityCandidateRows,
         PermittedEntityRows,
     )
-    from app.services.permissions.ports import HierarchyView
+    from app.services.permissions.ports import HierarchyView, StampGraph
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -4949,6 +4949,13 @@ class IGraphDBProvider(ABC):
         Concrete and failing, like ``check_access``: a backend without it must be refused loudly, never read as
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
+
+    def permission_stamp_graph(self) -> "StampGraph":
+        """What a scope-field stamper reads about records and record groups, for `app.services.permissions.ScopeProjector`.
+
+        Concrete and failing, like ``permission_hierarchy_view``: a backend without it must be refused loudly, never read
+        as "every record is its container"."""
+        raise NotImplementedError(f"{type(self).__name__} has no permission stamp graph")
 
     @abstractmethod
     async def get_entity_access_context(
