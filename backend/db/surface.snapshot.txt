@@ -1169,6 +1169,7 @@ index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=fals
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
 index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6
+index graph.nodes_record_virtual_rev on graph.nodes unique=false exclusion=false valid=true def=a10c3897ff0363e31ff8ae7c8069dcea
 index graph.nodes_record_vrid on graph.nodes unique=false exclusion=false valid=true def=c8f1528dde8fa54a9cf01bc2dfd49d53
 index graph.nodes_role_by_external on graph.nodes unique=false exclusion=false valid=true def=353135118a2dd9ecdfe83e015234d030
 index graph.nodes_stage_revision on graph.nodes unique=false exclusion=false valid=true def=f470ce92e9ebd24b110106584a1c4de4
