@@ -423,6 +423,28 @@ export class InMemoryChatStore {
       store.writes.push('citation.updateMany')
       return new FakeQuery(() => ({ modifiedCount: 0 }))
     }) as never)
+    sinon.stub(Citation, 'deleteMany').callsFake(((filter: Filter) => {
+      store.writes.push('citation.deleteMany')
+      for (let i = store.citations.length - 1; i >= 0; i -= 1) {
+        if (matchesFilter(plain(store.citations[i] as never), filter)) store.citations.splice(i, 1)
+      }
+      return Promise.resolve({ deletedCount: 1 })
+    }) as never)
+    sinon.stub(ChatSession, 'deleteOne').callsFake(((filter: Filter) => {
+      const index = store.sessions.findIndex((s) => matchesFilter(plain(s), filter))
+      if (index >= 0) {
+        store.sessions.splice(index, 1)
+        store.writes.push('chatSession.deleteOne')
+      }
+      return Promise.resolve({ deletedCount: index >= 0 ? 1 : 0 })
+    }) as never)
+    sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: Filter) => {
+      store.writes.push('message.deleteMany')
+      for (let i = store.messages.length - 1; i >= 0; i -= 1) {
+        if (matchesFilter(plain(store.messages[i] as never), filter)) store.messages.splice(i, 1)
+      }
+      return Promise.resolve({ deletedCount: 1 })
+    }) as never)
     sinon.stub(Users, 'find').callsFake((() => new FakeQuery(() => [])) as never)
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)

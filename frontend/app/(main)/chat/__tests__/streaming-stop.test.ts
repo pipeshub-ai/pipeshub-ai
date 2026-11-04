@@ -76,6 +76,7 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     agentStreamTools: null,
     projectId: null,
     isTemp: false,
+    isTemporaryChat: false,
     isInitialized: true,
     hasLoaded: true,
     messages: [],
@@ -841,5 +842,43 @@ describe('Stop keeps the streamed partial answer when the server saved it empty'
     expect(earlier.content).not.toEqual([{ type: 'text', text: 'Regenerated partial' }]);
     regenSpy.mockRestore();
     fetchSpy.mockRestore();
+  });
+});
+
+describe('streamMessageForSlot — temporary chat stays off the sidebar', () => {
+  it('does not enqueue a pending sidebar row when the slot is a temporary chat', async () => {
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockResolvedValue(undefined);
+    useChatStore.setState({ pendingConversations: {} });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: true,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+
+    expect(useChatStore.getState().pendingConversations).toEqual({});
+    streamSpy.mockRestore();
+  });
+
+  it('still enqueues a pending sidebar row for a normal new chat', async () => {
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockResolvedValue(undefined);
+    useChatStore.setState({ pendingConversations: {} });
+    seedSlot({
+      convId: null,
+      isTemp: true,
+      isTemporaryChat: false,
+      isStreaming: false,
+      runId: null,
+      messages: [],
+    });
+
+    await streamMessageForSlot(SLOT_ID, 'hello', { query: 'hello' } as never);
+
+    expect(useChatStore.getState().pendingConversations[SLOT_ID]).toBeTruthy();
+    streamSpy.mockRestore();
   });
 });
