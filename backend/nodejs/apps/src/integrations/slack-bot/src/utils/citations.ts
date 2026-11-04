@@ -230,7 +230,7 @@ const MARKER_TOKEN = /(\d+):(\d+):(\d+)/g;
 
 /**
  * Streamed answer text with each citation placeholder (`refN`,
- * `https://refN.xyz`) as a clickable `[n]`.
+ * `https://refN.xyz`) as a clickable `n`.
  *
  * - Each distinct ref gets one number for the whole reply, given when its
  *   first marker is shown, so a number never stands for two refs and the
@@ -299,7 +299,7 @@ export class CitationMarkers {
   }
 
   /**
-   * Marked text with each known citation as a clickable `[n]`. `rows` are the
+   * Marked text with each known citation as a clickable `n`. `rows` are the
    * current call's citations by number. Returns what can go out and what
    * waits for a citation; with `final`, an unknown one shows as a plain `[n]`.
    */
@@ -402,7 +402,7 @@ export class CitationMarkers {
 
 /**
  * The finished answer's citation links (`[N](/record/…)`, as the backend
- * numbers them) as clickable `[N]` markers to each source's absolute link,
+ * numbers them) as clickable `N` markers to each source's absolute link,
  * matching the numbered Sources list. Only numbers a citation carries change;
  * other numbered links stay as written.
  */
@@ -432,9 +432,9 @@ export function stripNumberedCitationLinkTargets(
   );
 }
 
-/** "[5][6]" reads as one blob: adjacent markers get a space between them. */
+/** "56" reads as one number: adjacent markers get a space between them. */
 function spaceAdjacentMarkers(text: string): string {
-  return text.replace(/(\[\[\d+\]\]\([^)\s]*\)|\[\d+\])(?=\[\[?\d+\])/g, '$1 ');
+  return text.replace(/(\[\d+\](?:\([^)\s]*\))?)(?=\[\d+\])/g, '$1 ');
 }
 
 /** A cited source: where `[n]` links and what the Sources list calls it. */
@@ -470,9 +470,9 @@ export function citationRows(
   return rows;
 }
 
-/** A clickable `[n]`: markdown link text "[n]" to the source. */
+/** A clickable `n` to the source. Slack shows `[[n]](url)` as raw text: link text can't hold brackets. */
 export function linkedCitationMarker(n: number, url: string): string {
-  return `[[${String(n)}]](${url.replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
+  return `[${String(n)}](${url.replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
 }
 
 /** One cited document and the citation numbers that point into it. */
@@ -501,8 +501,6 @@ export function groupSources(
   return [...documents.values()];
 }
 
-/** Up to this many documents show as small text; a longer list goes in a section Slack can fold. */
-const SOURCES_SHOWN = 3;
 /** Room in one mrkdwn text object (Slack allows 3000 characters). */
 const SOURCES_TEXT_LIMIT = 2900;
 
@@ -533,21 +531,14 @@ function packLines(lines: string[], limit: number): string[] {
 }
 
 /**
- * The Sources list, kept secondary to the answer. Up to three documents: a
- * context block (Slack's small grey text, links clickable). More: the whole
- * list in one section with `expand: false`, one text size throughout, which
- * Slack folds behind "Show more" when it is long. Nothing when nothing was
- * cited.
+ * The Sources list in sections of normal-size text with `expand: false`, which
+ * Slack folds behind "Show more" when it is long. Nothing when nothing was cited.
  */
 export function sourcesBlocks(
   documents: SlackSourceDocument[],
 ): Record<string, unknown>[] {
   if (documents.length === 0) return [];
   const lines = ['*Sources*', ...documents.map(sourceLine)];
-  const text = lines.join('\n');
-  if (documents.length <= SOURCES_SHOWN && text.length <= SOURCES_TEXT_LIMIT) {
-    return [{ type: 'context', elements: [{ type: 'mrkdwn', text }] }];
-  }
   // A text over Slack's limit goes on in the next section.
   return packLines(lines, SOURCES_TEXT_LIMIT).map((part) => ({
     type: 'section',
