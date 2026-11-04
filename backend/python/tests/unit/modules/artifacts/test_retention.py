@@ -896,3 +896,38 @@ async def test_a_deadline_never_cuts_inside_the_organisations_that_share_a_virtu
     assert report.cut_short and key == "v"                                   # cut after the whole group, before "w"
     assert after_first == {"org-a": ["w"], "org-b": ["w"], "org-c": ["w"]}   # every organisation of "v" was done in the first walk
     assert second is None and graph.org_states["org-a"] == [] and graph.org_states["org-b"] == [("w", "r1", OLD)]      # "w" has one pointer, in org-a
+
+
+@dataclass
+class _PerOrgStore(FakeStore):
+    """Revisions told by organisation: what each organisation deleted."""
+
+    org_deleted: set[tuple[str, str]] = field(default_factory=set)
+
+    async def list_revisions(self, org_id: str, vrid: str, *, timeout_seconds: float | None = None) -> list[dict[str, Any]]:
+        return [r for r in self.revisions.get(vrid, []) if (org_id, r["documentId"]) not in self.org_deleted]
+
+    async def delete_revision(self, org_id: str, document_id: str, **_: object) -> int | None:
+        self.org_deleted.add((org_id, document_id))
+        return 1
+
+
+@dataclass
+class _MappedPerOrgGraph(_TwoOrgGraph):
+    async def get_document(self, key: str, collection: str) -> dict[str, Any] | None:
+        return {"id": key, "orgId": current_org_id_or_none(), "currentRev": "r2", "previousRev": None}
+
+
+@pytest.mark.asyncio
+async def test_the_organisations_joining_a_started_group_after_the_deadline_still_retire_their_revisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finished is final for the cursor: left to the deadline, a later organisation of the group kept its old revisions and was not looked at again until the next lap."""
+    graph, store = _MappedPerOrgGraph(), _PerOrgStore()
+    orgs = ("org-a", "org-b", "org-c")
+    graph.pointers = [{"virtualRecordId": "v", "orgId": o, "currentRev": "r2", "previousRev": None} for o in orgs]
+    store.add("v", "r1")
+    monkeypatch.setattr(retention_module, "time", types.SimpleNamespace(monotonic=lambda: 100.0))          # the budget is spent from the first pointer on
+
+    with org_context.system("retention_test"):
+        await _sweep(graph, store, concurrency=1).run_page(None, deadline=50.0)
+
+    assert {("org-b", "v@r1"), ("org-c", "v@r1")} <= store.org_deleted      # the first one is held to the budget as before; the ones that join it are not

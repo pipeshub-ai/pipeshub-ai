@@ -270,11 +270,14 @@ class RevisionRetentionSweep:
                 if not leader() or stop_starting(vrid):
                     return
                 tried += 1
+                # An organisation that joins a group already started is finished whatever the deadline says: the cursor moves past
+                # the whole group, so what is left of it here would wait for the next lap.
+                joined = vrid in started
                 started.add(vrid)
                 try:
                     with for_org(key[0], job="revision_retention"):
                         ok = await self._retire_virtual_record(
-                            pointer, unheld.get(key, []), cutoff_ms, report, leader, deadline
+                            pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
                         )
                 except Exception as exc:
                     ok = False
