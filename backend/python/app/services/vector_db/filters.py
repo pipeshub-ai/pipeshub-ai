@@ -87,7 +87,7 @@ def org_for_filter(org_id: str | None = None, *, match_bound: bool = False) -> s
         raise OrgRequired(f"no organisation is bound for this vector call: {exc}") from exc
 
 
-def require_filter_org(expr: FilterExpression) -> None:
+def require_filter_org(expr: FilterExpression) -> str:
     """Raise OrgRequired unless MUST pins ``metadata.orgId`` to a non-blank value.
 
     Every delete and update names its org, so a filter without one is a bug of the caller,
@@ -105,6 +105,31 @@ def require_filter_org(expr: FilterExpression) -> None:
         raise OrgRequired("the filter carries no organisation (metadata.orgId in MUST is required)")
     if len(orgs) > 1:
         raise OrgMismatch("the filter names more than one organisation")
+    return next(iter(orgs))
+
+
+def _org_in_payload(payload: dict) -> tuple[bool, object]:
+    """Whether a payload names ``orgId`` (nested under ``metadata``, dotted, or as the flattened Redis field) and what it says."""
+    meta = payload.get("metadata")
+    if isinstance(meta, dict) and "orgId" in meta:
+        return True, meta["orgId"]
+    for key in ("metadata.orgId", "metadata_orgId"):
+        if key in payload:
+            return True, payload[key]
+    return False, None
+
+
+def forbid_org_in_payload(payload: dict) -> None:
+    """A payload merge must not change which org a point belongs to (the org is what every write filter pins)."""
+    if _org_in_payload(payload)[0]:
+        raise OrgMismatch("a payload update may not name orgId: it would move points to another organisation")
+
+
+def keep_org_in_overwrite(payload: dict, expr: FilterExpression) -> None:
+    """An overwrite replaces the whole payload, so it carries ``metadata.orgId``; it must be the org the filter pins."""
+    named, value = _org_in_payload(payload)
+    if named and value != require_filter_org(expr):
+        raise OrgMismatch("an overwritten payload must keep the organisation of the points it replaces")
 
 
 def build_max_values_conditions(max_values: Dict[str, int]) -> List[FieldCondition]:
@@ -242,22 +267,13 @@ def build_filter_expression(
     )
 
 
-def is_valid_filter_value(value: FilterValue) -> bool:
-    """Return True if the value is a non-empty, non-None filter value."""
-    if value is None:
-        return False
-    if isinstance(value, str) and not value.strip():
-        return False
-    if isinstance(value, list) and not value:
-        return False
-    return True
-
-
 def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondition]:
     """Backend-neutral ``FieldCondition`` list from a key -> value dict.
 
     Keys are canonicalised to ``metadata.x``; None and blank-string values are
-    skipped. Providers translate the conditions into their own query syntax.
+    skipped. A list is kept even when empty (after dropping None): an empty list
+    matches nothing, it is not the absence of a filter. Providers translate the
+    conditions into their own query syntax.
     """
     conditions: list[FieldCondition] = []
     for key, value in filters.items():
@@ -266,8 +282,7 @@ def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondi
         field_key = canonical_filter_key(key)
         if isinstance(value, (list, tuple)):
             filtered = [v for v in value if v is not None]
-            if filtered:
-                conditions.append(FieldCondition(key=field_key, values=filtered))
+            conditions.append(FieldCondition(key=field_key, values=filtered))
         elif isinstance(value, str) and not value.strip():
             continue
         else:

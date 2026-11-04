@@ -49,8 +49,10 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
-    canonical_filter_key,
+    build_generic_conditions,
+    forbid_org_in_payload,
     is_missing,
+    keep_org_in_overwrite,
     require_filter_org,
     split_values_count_conditions,
 )
@@ -862,6 +864,7 @@ class RedisVectorService(IVectorDBService):
                 "condition (e.g. virtualRecordId)."
             )
         require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         await self._hset_matching(collection_name, payload, points)
 
@@ -878,6 +881,7 @@ class RedisVectorService(IVectorDBService):
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
         require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         await self._hset_matching(collection_name, payload, filter)
 
@@ -892,6 +896,7 @@ class RedisVectorService(IVectorDBService):
         self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         # HSET on a missing key would create a bare hash; only touch stored points of this org
@@ -1296,20 +1301,7 @@ def _build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCond
     We store the canonical ``metadata.x`` key here; conversion to Redis
     query syntax happens in utils.field_conditions_to_redis_query.
     """
-    conditions: list[FieldCondition] = []
-    for key, value in filters.items():
-        if value is None:
-            continue
-        field_key = canonical_filter_key(key)
-        if isinstance(value, (list, tuple)):
-            filtered = [v for v in value if v is not None]
-            if filtered:
-                conditions.append(FieldCondition(key=field_key, values=filtered))
-        elif isinstance(value, str) and not value.strip():
-            continue
-        else:
-            conditions.append(FieldCondition(key=field_key, value=value))
-    return conditions
+    return build_generic_conditions(filters)
 
 
 def _combine_text_and_filter(text_query: str, filter_query: str) -> str:

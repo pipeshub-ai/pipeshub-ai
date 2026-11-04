@@ -52,6 +52,7 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createMcpServersRouter POST /oauth/discover',
   'createMcpServersRouter POST /instances',
   'createMcpServersRouter PUT /instances/:instanceId',
+  'createMcpServersRouter PUT /instances/:instanceId/logo',
   'createMcpServersRouter PUT /instances/:instanceId/my-tool-rules',
   'createMcpServersRouter POST /instances/:instanceId/authenticate',
   'createMcpServersRouter PUT /instances/:instanceId/credentials',

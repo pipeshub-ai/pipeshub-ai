@@ -1025,3 +1025,27 @@ class TestDeletesAndUpdatesNeedAnOrg:
             with pytest.raises(OrgRequired):
                 await call
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        {"metadata": {"orgId": "o2"}}, {"metadata.orgId": "o2"}, {"metadata_orgId": "o2"},
+    ])
+    async def test_a_payload_that_names_an_org_is_refused(self, connected_service, payload) -> None:
+        """A merge must not move points to another org, in any spelling of the field."""
+        from app.services.vector_db.errors import OrgMismatch
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        with pytest.raises(OrgMismatch):
+            await connected_service.set_payload("col", payload, flt)
+        with pytest.raises(OrgMismatch):
+            await connected_service.update_payload_by_ids("col", ["p1"], payload, org_id="o1")
+        with pytest.raises(OrgMismatch):                      # an overwrite may carry the org only if it is the same one
+            await connected_service.overwrite_payload("col", payload, flt)
+
+    @pytest.mark.asyncio
+    async def test_an_overwrite_that_keeps_the_org_is_allowed(self, connected_service) -> None:
+        from app.services.vector_db.models import FieldCondition, FilterExpression
+
+        flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")])
+        await connected_service.overwrite_payload("col", {"page_content": "t", "metadata": {"orgId": "o1", "virtualRecordId": "vr-1"}}, flt)
