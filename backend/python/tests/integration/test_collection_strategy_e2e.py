@@ -25,7 +25,7 @@ import pytest
 
 from app.services.vector_db.collection_manifest import CollectionManifestStore
 from app.services.vector_db.collection_registry import CollectionRegistry
-from app.services.vector_db.filters import build_filter_expression, canonical_filter_key
+from app.services.vector_db.filters import build_filter_expression, canonical_filter_key, require_filter_org
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -239,6 +239,7 @@ class FakeVectorDBService(IVectorDBService):
         self.collections[collection_name] = list(by_id.values())
 
     async def delete_points(self, collection_name: str, filter: FilterExpression) -> None:
+        require_filter_org(filter)  # as every real provider: a delete names its organisation
         points = self.collections.get(collection_name, [])
         self.collections[collection_name] = [
             p for p in points if not _filter_matches(p.payload, filter)
@@ -247,11 +248,13 @@ class FakeVectorDBService(IVectorDBService):
     async def overwrite_payload(
         self, collection_name: str, payload: dict, points: FilterExpression
     ) -> None:
+        require_filter_org(points)
         for p in self.collections.get(collection_name, []):
             if _filter_matches(p.payload, points):
                 p.payload = dict(payload)
 
     async def set_payload(self, collection_name: str, payload: dict, filter: FilterExpression) -> None:
+        require_filter_org(filter)
         for p in self.collections.get(collection_name, []):
             if _filter_matches(p.payload, filter):
                 p.payload.update(payload)
@@ -259,7 +262,7 @@ class FakeVectorDBService(IVectorDBService):
     async def update_payload_by_ids(self, collection_name: str, point_ids: List[str], payload: dict, *, org_id) -> None:
         wanted = set(point_ids)
         for p in self.collections.get(collection_name, []):
-            if p.id in wanted:
+            if p.id in wanted and p.payload.get("metadata", {}).get("orgId") == org_id:  # another org's point is not reachable
                 p.payload.update(payload)
 
 
@@ -300,6 +303,30 @@ def _point(point_id: str, org_id: str, vrid: str, connector_id: str, vector: Lis
             "connectorIds": [connector_id],
         },
     )
+
+
+class TestTheFakeRefusesWhatTheRealProvidersRefuse:
+    """A fake that let a cross-org write through could not catch one in the code under test."""
+
+    @pytest.mark.asyncio
+    async def test_writes_without_an_org_fail_and_updates_by_id_stay_inside_the_org(self):
+        from app.services.vector_db.errors import OrgRequired
+
+        vdb = FakeVectorDBService()
+        await vdb.upsert_points("c", [
+            _point("a", "org-1", "vr-1", "conn", [1.0, 0.0, 0.0, 0.0]),
+            _point("b", "org-2", "vr-1", "conn", [0.0, 1.0, 0.0, 0.0]),
+        ])
+        no_org = await vdb.filter_collection(must={"virtualRecordId": "vr-1"})
+        with pytest.raises(OrgRequired):
+            await vdb.delete_points("c", no_org)
+        with pytest.raises(OrgRequired):
+            await vdb.set_payload("c", {"x": 1}, no_org)
+        with pytest.raises(OrgRequired):
+            await vdb.overwrite_payload("c", {"x": 1}, no_org)
+        await vdb.update_payload_by_ids("c", ["a", "b"], {"x": 1}, org_id="org-1")
+        by_id = {p.id: p for p in vdb.collections["c"]}
+        assert by_id["a"].payload.get("x") == 1 and "x" not in by_id["b"].payload
 
 
 # ---------------------------------------------------------------------------
