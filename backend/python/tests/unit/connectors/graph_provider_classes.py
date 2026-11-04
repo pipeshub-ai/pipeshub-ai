@@ -64,7 +64,7 @@ READS = frozenset("""
     has_records_indexed_since is_named_entity_write_retryable is_record_descendant_of is_record_folder is_transient_error
     is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions list_kb_records
     list_trashed_records list_user_knowledge_bases opens_explicit_transaction query_named_entities
-    resolve_named_entity_redirects search_nodes_by_field_terms validate_folder_exists_in_kb validate_folder_for_upload
+    resolve_named_entity_redirects search_nodes_by_field_terms stage_state_org_for_virtual_record validate_folder_exists_in_kb validate_folder_for_upload
     validate_folder_in_kb
 """.split())
 
