@@ -190,6 +190,49 @@ describe('slack-bot/utils/thread-queue', () => {
     expect(store.size).to.equal(0);
   });
 
+  it('stops a stalled answer from draining after the same pod takes the thread over', async () => {
+    let now = 1_000;
+    const store = new MemoryThreadQueueStore(() => now);
+    const acquire = sinon.spy(store, 'acquireOrEnqueue');
+    const q = make(store); // renews never fire here: the 30 s timer is not reached, as in an outage
+    const r = gatedRun();
+    const p1 = q.submit(KEY, msg('1'), r.run);
+    await tick();
+    now += 120_001; // the first answer's lock expires
+    const p2 = q.submit(KEY, msg('2'), r.run);
+    await tick();
+    expect(r.batches).to.deep.equal([['1'], ['2']]);
+    const [first, second] = acquire.getCalls().map((c) => c.args[1]);
+    expect(first).to.not.equal(second);
+    expect(await store.renew(KEY, first!)).to.equal(false);
+    expect(await q.submit(KEY, msg('3'), r.run)).to.equal('queued');
+    r.gate(0).resolve();
+    expect(await p1).to.equal('ran');
+    // The stalled loop stopped; '3' waits for the current owner, not a second answer.
+    expect(r.batches).to.have.length(2);
+    r.gate(1).resolve();
+    await tick();
+    expect(r.batches[2]).to.deep.equal(['3']);
+    r.gate(2).resolve();
+    expect(await p2).to.equal('ran');
+    expect(store.size).to.equal(0);
+  });
+
+  it('answers a message queued twice once', async () => {
+    const q = make();
+    const r = gatedRun();
+    const p1 = q.submit(KEY, msg('1'), r.run);
+    await tick();
+    await q.submit(KEY, msg('2'), r.run);
+    await q.submit(KEY, msg('3'), r.run);
+    await q.submit(KEY, msg('2'), r.run); // a Slack retry handled by another pod
+    r.gate(0).resolve();
+    await tick();
+    expect(r.batches[1]).to.deep.equal(['2', '3']);
+    r.gate(1).resolve();
+    expect(await p1).to.equal('ran');
+  });
+
   it('stops draining when renew reports the lock lost', async () => {
     const clock = sinon.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const store = new MemoryThreadQueueStore();

@@ -2,7 +2,7 @@
  "detached_work": {
   "app.ts": 2,
   "integrations/slack-bot/src/utils/plan-stream.ts": 1,
- "integrations/slack-bot/src/utils/thread-queue.ts": 1,
+  "integrations/slack-bot/src/utils/thread-queue.ts": 1,
   "libs/services/outbox/outbox.dispatcher.ts": 1,
   "libs/services/telemetry/telemetry.service.ts": 1,
   "libs/services/ttl-sweeper.service.ts": 1,
