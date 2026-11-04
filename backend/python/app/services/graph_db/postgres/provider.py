@@ -17,9 +17,11 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
 from app.services.graph_db.postgres.codegraph import CodeGraphMixin
 from app.services.graph_db.postgres.core import CoreMixin
+from app.services.graph_db.postgres.delete import DeleteMixin
 from app.services.graph_db.postgres.hierarchy import HierarchyMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.graph_db.postgres.kg.guard import instrument_writers
+from app.services.graph_db.postgres.lookups import LookupsMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
 from app.services.graph_db.postgres.records import RecordsMixin
 from app.services.graph_db.postgres.trash import TrashMixin
@@ -29,7 +31,7 @@ if TYPE_CHECKING:
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, TrashMixin, IdentityMixin, PermissionsMixin, CoreMixin)
+_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, TrashMixin, LookupsMixin, DeleteMixin, IdentityMixin, PermissionsMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
     instrument_writers(_m)  # the kg registry's guard names the provider method that writes the graph

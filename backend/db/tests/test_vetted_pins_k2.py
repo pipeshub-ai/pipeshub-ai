@@ -164,7 +164,8 @@ def test_an_org_rebinding_function_cannot_reach_the_other_org_because_the_policy
         except BaseException:
             c.execute("ROLLBACK")
             raise
-        assert c.execute("SELECT org_id FROM kt.fences").fetchall() == [(ORG_A,)] or c.execute("SELECT count(*) FROM kt.fences WHERE org_id = %s", (ORG_B,)).fetchone()[0] == 1
+        # the policy kept both rows: the function ran as org A, so its DELETE of org B's id 1 saw nothing
+        assert sorted(c.execute("SELECT org_id FROM kt.fences").fetchall()) == sorted([(ORG_A,), (ORG_B,)])
         c.execute("BEGIN")
         c.execute("DROP FUNCTION kt.p01a(bigint)")
         c.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")

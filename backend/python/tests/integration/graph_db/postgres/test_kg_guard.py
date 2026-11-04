@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import app.services.graph_db.postgres as pgpkg
+from app.config.constants.arangodb import DeleteSource
 from app.services.graph_db.postgres.base import PgBase
 from app.services.graph_db.postgres.kg import flush
 from app.services.graph_db.postgres.kg.guard import instrument_writers
@@ -24,7 +25,7 @@ from app.services.graph_db.postgres.kg.registry import (
 )
 from app.services.graph_db.postgres.kg.writers import KgWriter
 
-from .kg_fresh import differences
+from .kg_fresh import differences, graph_rows
 from .pg_support import new_org
 from .test_kg_derivation import ctx, held, prov
 from .test_kg_projection_races import world2
@@ -132,20 +133,25 @@ async def test_outside_the_provider_a_graph_write_is_logged_and_refused_only_in_
 
 # The writers that reach graph.nodes and graph.edges through a private helper are classified PROJECTED, so what they change must reach kg: each runs on a small world, the
 # flush projects what the triggers logged in the writer's own transaction, and kg then equals a whole projection of the graph.
-async def _trash_then_restore(p) -> None:
-    await p.soft_delete_records(["f1"], "app1", delete_source="USER", batch_id="b2", deleted_by_user_id="u1")
-    await p.restore_records([{"id": "f1"}], "b2")
+async def _trash_then_restore(p, _org: str) -> None:
+    await p.soft_delete_records(["x1"], "app2", delete_source="USER", batch_id="b2", deleted_by_user_id="u1")
+    assert await p.restore_records([{"id": "x1"}], "b2") == ["x1"]
 
 
 HELPERS = {
-    "soft_delete_records": lambda p: p.soft_delete_records(["f1"], "app1", delete_source="USER", batch_id="b1", deleted_by_user_id="u1"),
+    "soft_delete_records": lambda p, _org: p.soft_delete_records(["x1"], "app2", delete_source="USER", batch_id="b1", deleted_by_user_id="u1"),
     "restore_records": _trash_then_restore,
-    "delete_single_record": lambda p: p.delete_single_record("f1"),
-    "delete_records_and_relations": lambda p: p.delete_records_and_relations("fold"),
-    "delete_records_recursive": lambda p: p.delete_records_recursive(["fold"], "app1"),
-    "delete_parent_child_edge_to_record": lambda p: p.delete_parent_child_edge_to_record("f1"),
-    "delete_edges_touching_nodes": lambda p: p.delete_edges_touching_nodes(["f1"], "records", "nodeRelations"),
-    "delete_edges_by_source_keys": lambda p: p.delete_edges_by_source_keys(["fold"], "nodeRelations"),
+    "delete_record": lambda p, org: p.delete_record("x1", "u1", org, delete_source=DeleteSource.CONNECTOR),
+    "unlink_nodes_missed_by_full_sync": lambda p, _org: p.unlink_nodes_missed_by_full_sync("app1", {"records": ["fold"], "recordGroups": ["g1"]}),
+    "link_record_to_group": lambda p, _org: p.link_record_to_group("f2", "g2", inherit=True),
+    "update_node_if_match": lambda p, org: p.update_node_if_match("f1", "records", {"recordName": "Matched", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}, "connectorId", "app1"),
+    "remove_nodes_by_field": lambda p, _org: p.remove_nodes_by_field("records", "recordName", field_value="Two"),
+    "delete_single_record": lambda p, _org: p.delete_single_record("x1"),
+    "delete_records_and_relations": lambda p, _org: p.delete_records_and_relations("fold"),
+    "delete_records_recursive": lambda p, _org: p.delete_records_recursive(["fold"], "app1"),
+    "delete_parent_child_edge_to_record": lambda p, _org: p.delete_parent_child_edge_to_record("f1"),
+    "delete_edges_touching_nodes": lambda p, _org: p.delete_edges_touching_nodes(["f1"], "records", "nodeRelations"),
+    "delete_edges_by_source_keys": lambda p, _org: p.delete_edges_by_source_keys(["fold"], "nodeRelations"),
 }
 
 
@@ -158,8 +164,10 @@ async def test_a_writer_classified_projected_through_a_helper_leaves_kg_equal_to
     p, org = prov(pg_db), new_org()
     await world2(p, org)
     assert not await differences(p, org)
+    before = [[tuple(map(str, r.values())) for r in rows] for rows in await graph_rows(p, org)]
     with ctx(org):
-        await HELPERS[name](p)
+        await HELPERS[name](p, org)
+    assert [[tuple(map(str, r.values())) for r in rows] for rows in await graph_rows(p, org)] != before, "the writer changed nothing: the case proves nothing"
     assert await log_rows(p, org) == 0
     assert not await differences(p, org)
 
