@@ -632,6 +632,34 @@ async def test_pg_the_sweep_clears_a_burst_in_one_call_and_counts_a_dead_letter_
     assert age is not None and age < 5  # stamped when it died, not when it was queued
 
 
+def _indexes_scanned_for(plan: list[str], relation: str) -> list[str]:
+    """The indexes the plan reads for `relation` (e.g. " on d e "), or [] when it reads none (a sequential scan).
+
+    A bitmap heap scan names no index on its own line; its indexes are the bitmap index scans beneath it."""
+    found: list[str] = []
+    for i, line in enumerate(plan):
+        if relation not in line + " ":
+            continue
+        if "Index Scan using " in line or "Index Only Scan using " in line:
+            found.append(line.split(" using ", 1)[1].split()[0])
+        elif "Bitmap Heap Scan" in line:
+            depth = len(line) - len(line.lstrip())
+            for child in plan[i + 1:]:
+                if child.strip() and len(child) - len(child.lstrip()) <= depth:
+                    break
+                if "Bitmap Index Scan on " in child:
+                    found.append(child.split("Bitmap Index Scan on ", 1)[1].split()[0])
+        else:
+            return []
+    return found
+
+
+def _pages_read(plan: list[str]) -> int:
+    """Shared buffers the whole statement touched (hit + read), from the root node's Buffers line."""
+    line = next(line for line in plan if line.strip().startswith("Buffers:"))
+    return sum(int(part.split("=")[1]) for part in line.split() if part.startswith(("hit=", "read=")))
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("analysed", [False, True], ids=["cold", "analysed"])
 async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -> None:
@@ -659,15 +687,14 @@ async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -
         tx = con.transaction()
         await tx.start()
         try:
-            plan = [r[0] for r in await con.fetch("EXPLAIN (ANALYZE, COSTS OFF) " + sql, "go", ["t"], 7, 60.0, "x")]
+            plan = [r[0] for r in await con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, "go", ["t"], 7, 60.0, "x")]
         finally:
             await tx.rollback()
         text = "\n".join(plan)
-        probes = [line for line in plan if "Index" in line and " on d e" in line]
+        probes = _indexes_scanned_for(plan, " on d e ")
         assert probes, text
-        assert all("msg_key" in line for line in probes), text         # the key index, not d_pkey or the open index
-        ms = float(next(line for line in plan if "Execution Time" in line).split(":")[1].split()[0])
-        assert ms < 25, text                                            # milliseconds; ~1 ms when it holds, 75+ on a backlog walk
+        assert all("msg_key" in name for name in probes), text         # the key index, not d_pkey or the open index
+        assert _pages_read(plan) < 1000, text                          # about 200 when it holds; a backlog walk reads the table per candidate
     finally:
         await con.execute("DROP SCHEMA IF EXISTS plan_test CASCADE")
         await con.close()
