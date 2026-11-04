@@ -30,7 +30,7 @@ from app.services.graph_db.postgres.base import (
     _j,
     _node,
 )
-from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS
+from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
 from app.services.graph_db.postgres.records import _rec, _uniq, _vis
 from app.services.graph_db.postgres.trash import _sweep_edges
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -619,7 +619,9 @@ class LookupsMixin(PgBase):
         async def go(tx: Tx) -> int:
             ids = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.remove_nodes_by_field */ SELECT id FROM graph.nodes
                 WHERE org_id = $1 AND coll = $2 AND doc->$3::text = $4::jsonb""", org, collection, field_name, _j(field_value))]
-            if ids:
+            if ids and collection == CollectionNames.RECORDS.value:      # a record goes with its type documents and blocks
+                await _remove_records(tx, org, ids)
+            elif ids:
                 await _sweep_edges(tx, org, _EDGE_COLLS, [f"{collection}/{i}" for i in ids])
                 await tx.execute("/* pipeshub:graph.remove_nodes_by_field_delete */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])", org, collection, ids)
             return len(ids)
