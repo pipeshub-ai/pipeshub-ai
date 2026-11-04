@@ -263,15 +263,30 @@ async def test_a_paused_stage_stops_claiming_until_the_pause_ends(stage, monkeyp
             raise RequeueWithoutAttempt("dependency paused", delay_s=3600)
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
 
+    # Claims are counted when they start and while they run, so that "nothing is in flight" is known, not waited for.
+    claims_started, claims_running = 0, 0
+    real_claim = stage.q.claim
+
+    async def counting_claim(*args: object, **kwargs: object) -> list:
+        nonlocal claims_started, claims_running
+        claims_started += 1
+        claims_running += 1
+        try:
+            return await real_claim(*args, **kwargs)
+        finally:
+            claims_running -= 1     # the consumer adds the handlers of the batch without awaiting again
+
+    monkeypatch.setattr(stage.q, "claim", counting_claim)
     cons = await stage.consumer(handler, admission=StageAdmission(stage=f"classify{stage.uid}", limit=2))
     for i in range(20):
         await stage.producer.send_event(stage.topic, "stage", {"jobId": f"j{i}-{stage.uid}"})
-    # every handler of the first batch has handed its job back (a task ends after its nack) and the pause is set
-    await until(lambda: calls and cons._paused_until > 0 and not cons._tasks, timeout=10.0)
-    first = len(calls)
+    # the pause is set, no claim is running and no handler is: a paused consumer starts no claim, so nothing can still arrive
+    await until(lambda: calls and cons._paused_until > 0 and not cons._tasks and claims_running == 0, timeout=10.0)
+    first, first_claims = len(calls), claims_started
     assert 1 <= first <= 10         # one batch found the stage paused; the other 15+ were never claimed
     await asyncio.sleep(1.0)        # an observation only: the pause cannot end before the test ends it
     assert len(calls) == first      # nothing is claimed while the pause lasts
+    assert claims_started == first_claims
     paused = False
     async with (await stage.runtime.db()).runtime_uow(write=True) as tx:
         await tx.execute(

@@ -504,32 +504,56 @@ async def test_pg_two_indexing_workers_share_one_cluster_wide_cap(
     )  # four handlers could have run (2 workers x 2 slots): the cap held across both
 
 
+class _Rollback(Exception):
+    pass
+
+
+async def _claim_buffers(pg) -> int:  # noqa: ANN001
+    """Buffer pages the ordered claim touches (planner and executor counts, not a clock). EXPLAIN ANALYZE runs the claim, so
+    it runs in a transaction that is rolled back."""
+    from app.services.messaging.postgres import queue as qmod
+
+    statement = qmod._CLAIM_ORDERED.split("*/", 1)[1]
+    try:
+        async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
+            raw = await tx.fetchval(
+                "/* pipeshub:test.explain */ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" + statement,
+                "g", [pg.topic], 7, 600.0, "c",
+            )
+            plan = json.loads(raw)[0]["Plan"]
+            raise_after = plan["Shared Hit Blocks"] + plan["Shared Read Blocks"]
+            raise _Rollback(raise_after)
+    except _Rollback as done:
+        return int(done.args[0])
+    return 0
+
+
 @pytest.mark.perf
 @pytest.mark.timeout(300)       # 100k rows published and a slow host: the claim itself is asserted, not the set-up
 async def test_pg_ordered_claim_costs_the_batch_not_the_backlog(pg) -> None:
-    """100k queued messages with distinct keys (an initial sync): a claim of a few records takes milliseconds, not minutes."""
-    import statistics
-    import time
+    """100k queued messages with distinct keys (an initial sync): a claim of a few records reads pages for the batch, not the backlog.
 
+    Counted in buffer pages at 10k and at 100k queued messages, not timed: a claim that walked the backlog reads about ten times
+    as many pages at 100k (it was 3.7 s at 1k messages and minutes at 100k), a claim of the batch reads about the same."""
     await pg.queue.ensure_group(pg.topic, "g", from_start=False)
-    for start in range(0, 100_000, 5000):
-        await pg.queue.publish(
-            pg.topic, [(f"rec{start + i}", "{}") for i in range(5000)]
-        )
-    async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
-        await tx.execute(
-            "/* pipeshub:test.analyze */ ANALYZE platform.queue_deliveries"
-        )
-    times, held = [], []
+
+    async def publish(first: int, last: int) -> None:
+        for start in range(first, last, 5000):
+            await pg.queue.publish(pg.topic, [(f"rec{start + i}", "{}") for i in range(5000)])
+        async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
+            await tx.execute("/* pipeshub:test.analyze */ ANALYZE platform.queue_deliveries")
+
+    await publish(0, 10_000)
+    small = await _claim_buffers(pg)
+    await publish(10_000, 100_000)
+    large = await _claim_buffers(pg)
+    assert large <= 3 * small + 50, (small, large)  # ten times the backlog; a scan would be about ten times the pages
+
+    held = []
     for _ in range(15):
-        t0 = time.perf_counter()
         got = await pg.queue.claim("g", [pg.topic], "c", 7, 600.0, ordered=True)
-        times.append(1000 * (time.perf_counter() - t0))
         assert len(got) == 7
         held += got
-    assert statistics.median(times) < 50, (
-        times
-    )  # was 3.7 s at 1k messages and minutes at 100k
     assert len({d.key for d in held}) == len(held)  # and each record once
     await pg.queue.drop_group(pg.topic, "g")
     await pg.queue.sweep()
