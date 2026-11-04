@@ -25,7 +25,11 @@ import pytest
 
 from app.services.vector_db.collection_manifest import CollectionManifestStore
 from app.services.vector_db.collection_registry import CollectionRegistry
-from app.services.vector_db.filters import build_filter_expression, canonical_filter_key, require_filter_org
+from app.services.vector_db.filters import (
+    build_filter_expression,
+    canonical_filter_key,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -309,7 +313,7 @@ class TestTheFakeRefusesWhatTheRealProvidersRefuse:
     """A fake that let a cross-org write through could not catch one in the code under test."""
 
     @pytest.mark.asyncio
-    async def test_writes_without_an_org_fail_and_updates_by_id_stay_inside_the_org(self):
+    async def test_writes_without_an_org_fail_and_updates_by_id_stay_inside_the_org(self) -> None:
         from app.services.vector_db.errors import OrgRequired
 
         vdb = FakeVectorDBService()
