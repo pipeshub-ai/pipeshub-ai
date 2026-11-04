@@ -395,10 +395,11 @@ def _sweep_graph(rows: list[dict]) -> AsyncMock:
 
 
 async def test_the_orphan_sweep_cleans_a_row_with_no_org_org_by_org_then_drops_the_row(db) -> None:
-    from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
+    import app.indexing_main as m
 
+    m._unscoped_mapping_cursor = 0
     pipeline = _pipeline(db)
-    swept = await sweep(graph_provider=_sweep_graph([{"_key": VRID}]), pipeline=pipeline, logger=MagicMock(), page_size=10, org_id=A)
+    swept = await m._clean_mappings_without_org(graph_provider=_sweep_graph([{"_key": VRID}]), pipeline=pipeline, logger=MagicMock(), page_size=10)
 
     assert _ids(db) == set()                       # A's and B's points both went, each under its own org
     assert pipeline._forget_virtual_record_mappings.await_count == 1  # and the row only after the last org's
@@ -406,10 +407,11 @@ async def test_the_orphan_sweep_cleans_a_row_with_no_org_org_by_org_then_drops_t
 
 
 async def test_the_orphan_sweep_drops_a_row_with_no_org_and_no_points(db) -> None:
-    from app.indexing_main import _sweep_orphaned_virtual_record_mappings as sweep
+    import app.indexing_main as m
 
+    m._unscoped_mapping_cursor = 0
     pipeline = _pipeline(db)
-    await sweep(graph_provider=_sweep_graph([{"_key": "vr-nothing-left"}]), pipeline=pipeline, logger=MagicMock(), page_size=10, org_id=A)
+    await m._clean_mappings_without_org(graph_provider=_sweep_graph([{"_key": "vr-nothing-left"}]), pipeline=pipeline, logger=MagicMock(), page_size=10)
 
     pipeline._forget_virtual_record_mappings.assert_awaited_once_with(["vr-nothing-left"])
     assert len(_ids(db)) == 4

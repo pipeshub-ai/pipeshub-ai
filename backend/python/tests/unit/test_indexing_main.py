@@ -4237,35 +4237,87 @@ class TestOneOrganisationsStaleScanFailingDoesNotStopTheOthers:
 
 class TestMappingsThatNameNoOrganisation:
     @staticmethod
-    def _graph(pages: list[list[dict]], *, in_use: set[str] | None = None) -> AsyncMock:
+    def _graph(pages: list[list[dict]], *, in_use: set[str] | None = None, trashed: set[str] | None = None) -> AsyncMock:
         graph = AsyncMock()
         graph.get_documents_paginated = AsyncMock(side_effect=pages)
-        graph.get_virtual_record_ids_in_use = AsyncMock(return_value=in_use or set())
+
+        async def used(vrids: list[str], *, visibility: object = None) -> set[str]:
+            return (trashed or set()) & set(vrids) if visibility is not None else (in_use or set()) & set(vrids)
+
+        graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=used)
         return graph
 
+    @staticmethod
+    def _pipeline(owners: dict[str, set[str]], outcomes: dict[str, str] | None = None) -> tuple[MagicMock, list[tuple[str, str | None]]]:
+        from app.core import org_context
+
+        cleaned: list[tuple[str, str | None]] = []
+        pipeline = MagicMock()
+        pipeline.orgs_holding_points = AsyncMock(side_effect=lambda vrid: owners.get(vrid, set()))
+        pipeline.release_orphan_mapping = AsyncMock(return_value=True)
+
+        async def rewrite(vrid: str) -> str:
+            cleaned.append((vrid, org_context.current_org_id()))
+            return (outcomes or {}).get(vrid, "deleted")
+
+        pipeline.rewrite_or_delete_vector_membership = rewrite
+        return pipeline, cleaned
+
     @pytest.mark.asyncio
-    async def test_a_mapping_that_cannot_be_marked_does_not_stop_the_others_or_say_it_was_marked(self) -> None:
+    async def test_each_owning_organisations_points_are_cleaned_for_that_virtual_record_only_and_the_row_goes_with_the_last(self) -> None:
         import app.indexing_main as m
 
         m._unscoped_mapping_cursor = 0
-        graph = self._graph([[{"_key": "bad"}, {"_key": "good"}]])
-        graph.update_node = AsyncMock(side_effect=[RuntimeError("write failed"), True])
+        page = [{"_key": "bare"}, {"_key": "scoped", "orgId": "o1"}, {"_key": "marked", "orgNotResolved": True}, {"_key": "used"}, {"_key": "trash"}, {"_key": "empty"}]
+        graph = self._graph([page], in_use={"used"}, trashed={"trash"})
+        pipeline, cleaned = self._pipeline({"bare": {"o2", "o1"}, "used": {"o1"}, "trash": {"o1"}})
+        swept = await m._clean_mappings_without_org(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=10)
+        assert cleaned == [("bare", "o1"), ("bare", "o2")]               # only that virtual record, once under each owner
+        pipeline.release_orphan_mapping.assert_awaited_once_with("empty")      # no points left: the row goes at once
+        assert swept == 2
+
+    @pytest.mark.asyncio
+    async def test_a_row_another_organisation_still_holds_points_of_is_kept(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        pipeline, cleaned = self._pipeline({"bare": {"o1", "o2"}}, {"bare": "kept"})
+        swept = await m._clean_mappings_without_org(graph_provider=self._graph([[{"_key": "bare"}]]), pipeline=pipeline, logger=MagicMock(), page_size=10)
+        assert cleaned == [("bare", "o1"), ("bare", "o2")] and swept == 0
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_that_cannot_be_cleaned_does_not_stop_the_others(self) -> None:
+        import app.indexing_main as m
+
+        m._unscoped_mapping_cursor = 0
+        pipeline, cleaned = self._pipeline({"good": {"o1"}})
+        pipeline.orgs_holding_points = AsyncMock(side_effect=[RuntimeError("points unreadable"), {"o1"}])
         logger = MagicMock()
-        await m._mark_mappings_without_org(graph_provider=graph, logger=logger, page_size=10)
-        assert [c.args[0] for c in graph.update_node.await_args_list] == ["bad", "good"]
-        said = [c.args[1] for c in logger.warning.call_args_list if "cannot clean" in c.args[0]]
-        assert said == ["good"]
+        swept = await m._clean_mappings_without_org(graph_provider=self._graph([[{"_key": "bad"}, {"_key": "good"}]]), pipeline=pipeline, logger=logger, page_size=10)
+        assert cleaned == [("good", "o1")] and swept == 1 and logger.error.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_an_unreferenced_one_is_marked_once_and_the_scoped_and_marked_ones_are_left(self) -> None:
+    async def test_the_recovery_pass_reaches_the_rows_that_name_no_organisation(self) -> None:
+        """Through the real entry point: the per-organisation scan never lists such a row, so this fails if the unscoped pass stops being run."""
+        from app.indexing_main import recover_in_progress_records
         import app.indexing_main as m
 
         m._unscoped_mapping_cursor = 0
-        page = [{"_key": "bare"}, {"_key": "scoped", "orgId": "o1"}, {"_key": "marked", "orgNotResolved": True}, {"_key": "used"}]
-        graph = self._graph([page], in_use={"used"})
-        await m._mark_mappings_without_org(graph_provider=graph, logger=MagicMock(), page_size=10)
-        assert [c.args[0] for c in graph.update_node.await_args_list] == ["bare"]
-        assert graph.update_node.await_args.args[2] == {"orgNotResolved": True}
+        container = _make_container()
+        pipeline, cleaned = self._pipeline({"bare": {"org-a"}})
+        container.indexing_pipeline = MagicMock(return_value=pipeline)
+        graph = _graph_with_orgs("org-a")
+
+        async def read(collection: str, *, filters: dict | None = None, **_: object) -> list[dict]:
+            if collection == CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value and not filters:
+                return [{"_key": "bare"}]
+            return []
+
+        graph.get_documents_paginated = AsyncMock(side_effect=read)
+        graph.get_virtual_record_ids_in_use = AsyncMock(return_value=set())
+        with _stranded_env():
+            await recover_in_progress_records(container, graph)
+        assert cleaned == [("bare", "org-a")]
 
     @pytest.mark.asyncio
     async def test_a_store_that_keeps_every_row_under_an_org_has_none_to_look_for(self) -> None:
@@ -4275,7 +4327,7 @@ class TestMappingsThatNameNoOrganisation:
         m._unscoped_mapping_cursor = 0
         graph = AsyncMock()
         graph.get_documents_paginated = AsyncMock(side_effect=SystemContextNotAllowed("x"))
+        pipeline, cleaned = self._pipeline({})
         logger = MagicMock()
-        await m._mark_mappings_without_org(graph_provider=graph, logger=logger, page_size=10)
-        graph.update_node.assert_not_awaited()
-        logger.warning.assert_not_called()
+        assert await m._clean_mappings_without_org(graph_provider=graph, pipeline=pipeline, logger=logger, page_size=10) == 0
+        assert cleaned == [] and logger.warning.call_count == 0 and logger.error.call_count == 0

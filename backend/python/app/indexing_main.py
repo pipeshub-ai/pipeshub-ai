@@ -730,7 +730,7 @@ async def recover_in_progress_records(
                         )
                 except Exception as exc:
                     _org_pass_failed(logger, "orphan_mapping_sweep", org_id, exc)
-            await _mark_mappings_without_org(graph_provider=graph_provider, logger=logger, page_size=page_size)
+            await _clean_mappings_without_org(graph_provider=graph_provider, pipeline=pipeline, logger=logger, page_size=page_size)
 
         # A primary whose handler could not copy its taxonomy to promoted
         # duplicates keeps duplicateReconcilePending; a redelivery finds
@@ -1205,26 +1205,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             if vrid in trashed:
                 continue
             if not org_of.get(vrid):
-                # A row written before rows named their org: the points name their owners. Each org's points go
-                # (the row stays while another org still holds some); with no points left the row goes too.
-                try:
-                    orgs = await pipeline.orgs_holding_points(vrid)
-                    if not orgs:
-                        if await pipeline.release_orphan_mapping(vrid):
-                            swept += 1
-                            swept_this_page += 1
-                        continue
-                    outcome = None
-                    for owner in sorted(orgs):
-                        with for_org(owner, job="orphan-sweep"):
-                            outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
-                except Exception as exc:
-                    logger.error("Failed to clean up the orphaned vectors of org-less mapping %s: %s", vrid, exc)
-                    continue
-                if outcome == "deleted":
-                    swept += 1
-                    swept_this_page += 1
-                continue
+                continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
                     outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -1260,20 +1241,23 @@ async def _sweep_orphaned_virtual_record_mappings(
 _unscoped_mapping_cursor = 0
 
 
-async def _mark_mappings_without_org(*, graph_provider: IGraphDBProvider, logger: logging.Logger, page_size: int) -> None:
-    """Mark the orphan mappings that name no organisation, so the warning comes once and not every pass.
+async def _clean_mappings_without_org(
+    *, graph_provider: IGraphDBProvider, pipeline: "IndexingPipeline", logger: logging.Logger, page_size: int,
+) -> int:
+    """Clean up the orphan mappings that name no organisation: each owning organisation's points of that virtual record, then the row.
 
     The per-organisation scan filters on ``orgId``, so a mapping an older bare upsert wrote without one is never listed under any
-    organisation and its vectors are not cleaned up (storage only; nothing is read or deleted across organisations). It is found
-    here, by a bounded unscoped slice, and marked ``orgNotResolved`` as the vector org-resolution sweep marks it. A store that keeps
-    every row under an organisation refuses an unscoped read: it has no such rows.
+    organisation. It is found here, by a bounded unscoped slice (a store that keeps every row under an organisation refuses an unscoped
+    read: it has no such rows). The points name their owners; the cleanup runs under each owner for that one virtual record only, and the
+    row goes with the last of them, or at once when no points are left. Rows marked ``orgNotResolved`` by the vector org-resolution sweep
+    are that sweep's. Returns how many were cleaned up.
     """
     global _unscoped_mapping_cursor  # noqa: PLW0603 - per process, like the per-organisation cursors
     mapping = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-    offset = _unscoped_mapping_cursor
+    swept, offset = 0, _unscoped_mapping_cursor
     try:
-        with system("orphan_mapping_unscoped"):
-            for _ in range(ORPHAN_SCAN_MAX_PAGES_PER_TICK):
+        for _ in range(ORPHAN_SCAN_MAX_PAGES_PER_TICK):
+            with system("orphan_mapping_unscoped"):
                 page = await graph_provider.get_documents_paginated(mapping, skip=offset, limit=page_size, sort_field="_key", raise_on_error=True)
                 if not page:
                     offset = 0
@@ -1283,24 +1267,39 @@ async def _mark_mappings_without_org(*, graph_provider: IGraphDBProvider, logger
                     if (d.get("_key") or d.get("id")) and not d.get("orgId") and not d.get("orgNotResolved")
                 ]
                 in_use = await graph_provider.get_virtual_record_ids_in_use(bare) if bare else set()
-                for vrid in bare:
-                    if vrid in in_use:
-                        continue
-                    try:
-                        await graph_provider.update_node(vrid, mapping, {"orgNotResolved": True})
-                    except Exception as exc:      # the rest of the page is still marked; this one is tried again next pass
-                        logger.warning("Could not mark the mapping of virtual record %s that names no org: %s: %s", vrid, type(exc).__name__, exc)
-                        continue
-                    logger.warning("Orphan sweep cannot clean virtual record %s: its mapping names no org", vrid)
-                if len(page) < page_size:
-                    offset = 0
-                    break
-                offset += len(page)
+                unreferenced = [v for v in bare if v not in in_use]
+                # Content still held by a record in the trash is the purge's to remove.
+                trashed = await graph_provider.get_virtual_record_ids_in_use(unreferenced, visibility=RecordVisibility.DELETED) if unreferenced else set()
+            swept_this_page = 0
+            for vrid in unreferenced:
+                if vrid in trashed:
+                    continue
+                try:
+                    with system("orphan_mapping_unscoped"):
+                        owners = await pipeline.orgs_holding_points(vrid)
+                        if not owners and await pipeline.release_orphan_mapping(vrid):
+                            swept += 1
+                            swept_this_page += 1
+                    outcome = None
+                    for owner in sorted(owners):
+                        with for_org(owner, job="orphan-sweep"):
+                            outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
+                except Exception as exc:      # the rest of the page is still cleaned; this one is tried again next pass
+                    logger.error("Failed to clean up the orphaned vectors of org-less mapping %s: %s", vrid, exc)
+                    continue
+                if outcome == "deleted":
+                    swept += 1
+                    swept_this_page += 1
+            if len(page) < page_size:
+                offset = 0
+                break
+            offset += len(page) - swept_this_page
     except SystemContextNotAllowed:
-        return      # the store keeps every row under an organisation: there is nothing without one
+        return swept      # the store keeps every row under an organisation: there is nothing without one
     except Exception as exc:
         logger.warning("Could not look for mappings without an organisation this pass: %s: %s", type(exc).__name__, exc)
     _unscoped_mapping_cursor = offset
+    return swept
 
 
 async def _sweep_queued_records_for_inactive_connectors(

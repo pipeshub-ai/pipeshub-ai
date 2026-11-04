@@ -132,18 +132,21 @@ async def test_the_lane_upkeep_reads_only_the_connectors_of_each_organisation(gr
     assert found is not None and connectors[0] in found and connectors[1] not in found
 
 
-async def test_a_mapping_without_an_organisation_is_marked_not_resolved(graph: IGraphDBProvider) -> None:
+async def test_a_mapping_without_an_organisation_is_found_by_the_unscoped_pass_and_released(graph: IGraphDBProvider) -> None:
     import app.indexing_main as m
 
     key = f"v-bare-{uuid.uuid4().hex[:10]}"
     mapping = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
     await graph.batch_upsert_nodes([{"_key": key, "id": key, "virtualRecordId": key}], mapping)
+    pipeline = MagicMock()
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())            # no points are left under any organisation
+    pipeline.release_orphan_mapping = AsyncMock(return_value=True)
     m._unscoped_mapping_cursor = 0
     try:
         for _ in range(200):       # the slice is bounded; walk it until the pass has been over this row
-            await m._mark_mappings_without_org(graph_provider=graph, logger=logger, page_size=500)
-            if (await graph.get_document(key, mapping)).get("orgNotResolved"):
+            await m._clean_mappings_without_org(graph_provider=graph, pipeline=pipeline, logger=logger, page_size=500)
+            if any(c.args == (key,) for c in pipeline.release_orphan_mapping.await_args_list):
                 break
     finally:
         m._unscoped_mapping_cursor = 0
-    assert (await graph.get_document(key, mapping))["orgNotResolved"] is True
+    assert any(c.args == (key,) for c in pipeline.release_orphan_mapping.await_args_list)
