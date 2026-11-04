@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind
-from app.services.graph_db.postgres.kg.model import COLL_CODE
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
 from app.services.graph_db.postgres.kg.project import decode, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
@@ -140,6 +140,17 @@ async def is_current(tx: Tx, org: str, app_id: str) -> bool:
     known = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.known_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
         WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, pending)}
     return not linked and known >= set(pending)
+
+
+async def serves(tx: Tx, org: str, app_id: str) -> bool:
+    """May a reader answer from kg for this connector? The stricter question, for the readers: :func:`is_current`, and the connector is in ``enforce`` (``shadow`` only compares), it was
+    verified by this code (``code_epoch`` is the code's, ``verified_at`` is set), and the org's principals are copied (their pseudo-connector, ``app_sk`` 0, has finished its copy:
+    the closure of every user is part of every answer). Anything else is the walk."""
+    if not await is_current(tx, org, app_id):
+        return False
+    row = await tx.fetchrow("""/* pipeshub:kg.serves */ SELECT s.mode, s.code_epoch, s.verified_at, (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) AS principals
+        FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
+    return bool(row and row["mode"] == "enforce" and row["code_epoch"] == CODE_EPOCH and row["verified_at"] is not None and row["principals"] == "done")
 
 
 async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE) -> int:

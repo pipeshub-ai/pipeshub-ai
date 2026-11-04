@@ -135,6 +135,13 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
             """/* pipeshub:kg.verify_sk */ SELECT r.sk, r.coll, r.id, k.sk AS key_sk FROM kg.records r
                 LEFT JOIN kg.node_keys k ON k.org_id = r.org_id AND k.coll = r.coll AND k.id = r.id
                 WHERE r.org_id = $1 AND r.app_sk = $2 AND k.sk IS DISTINCT FROM r.sk ORDER BY r.sk LIMIT $3""", org, app_sk, LIMIT)]
+    if app_sk is not None:
+        for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_links */ SELECT l.parent_sk, l.kind, l.child_sk FROM kg.links l JOIN kg.records p ON p.org_id = l.org_id AND p.sk = l.parent_sk AND p.app_sk = $2
+                WHERE l.org_id = $1 AND NOT EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = l.org_id AND c.sk = l.child_sk) ORDER BY l.parent_sk, l.child_sk LIMIT $3""", org, app_sk, LIMIT):
+            res.extra.append(f"l|{r['parent_sk']}|{r['kind']}|{r['child_sk']} (child gone)")        # a link under one of this connector's records whose child row is gone
+    for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_grants */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m
+            WHERE m.org_id = $1 AND m.app_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = m.org_id AND r.sk = m.node_sk) ORDER BY m.node_sk LIMIT $2""", org, LIMIT):
+        res.extra.append(f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (node gone)")      # a grant on a node that is gone leaves its row without a connector: the per-connector scan cannot find it
     if cross:   # superset: kg may mark a connector the graph no longer needs marked, never miss one
         marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",
                                                       org, sorted(cross))}

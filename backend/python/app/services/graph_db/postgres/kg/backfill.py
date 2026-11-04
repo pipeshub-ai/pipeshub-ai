@@ -148,12 +148,14 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
 
         async def flip(tx: Tx) -> Outcome:
             await lock_apps(tx, org, {app_id}, org_wide=False)
-            pending = await _pending(tx, org, app_id)
             res = await verify_app(tx, org, app_id) + await verify_principals(tx, org)
+            pending = await _pending(tx, org, app_id)       # after the verify, under the lock: a change that committed meanwhile is in the log, and no take-back can delete it while we hold the lock
             app_sk = await _app_sk(tx, app_id)
-            _, mode = await modes.state(tx, org, app_sk)
+            cursor, mode = await modes.state(tx, org, app_sk)
             if pending:      # the log explains a difference: nothing is decided, the caller drains and asks again
                 return Outcome(False, n, res, pending)
+            if cursor != "done":      # a demotion (or a restart) cleared the copy while we verified: it is not a copy any more
+                return Outcome(False, n, res, 0)
             if not res.ok:
                 if mode != "legacy":      # nothing waits and kg still differs: back to the walk for readers, and the next backfill starts over
                     await modes.demote(tx, org, app_sk)
@@ -179,9 +181,12 @@ async def promote(db: KernelDB, org: str, app_id: str) -> Result:
             row = await tx.fetchrow("/* pipeshub:kg.promote_read */ SELECT mode, code_epoch, verified_at FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2", org, app_sk)
             if row is None or row["mode"] != "shadow" or row["code_epoch"] != CODE_EPOCH or row["verified_at"] is None:
                 raise Refused(f"{app_id} is not in shadow at epoch {CODE_EPOCH}: backfill it first")
-            if pending := await _pending(tx, org, app_id):
-                raise Refused(f"{app_id} has {pending} change(s) waiting in the log")
             res = await verify_app(tx, org, app_id) + await verify_principals(tx, org)
+            if pending := await _pending(tx, org, app_id):      # after the verify, under the lock (see the flip)
+                raise Refused(f"{app_id} has {pending} change(s) waiting in the log")
+            cursor, mode = await modes.state(tx, org, app_sk)
+            if mode != "shadow" or cursor != "done":
+                raise Refused(f"{app_id} was demoted while it was verified")
             if not res.ok:
                 raise Refused(f"{app_id} differs from the graph: {res.summary()}")
             await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))

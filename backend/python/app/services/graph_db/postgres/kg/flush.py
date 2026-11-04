@@ -108,6 +108,10 @@ _pending: set[asyncio.Task] = set()
 _in_sweep: contextvars.ContextVar[bool] = contextvars.ContextVar("kg_in_sweep", default=False)
 
 
+class _Busy(Exception):
+    """A connector on a copy is locked by a flip or a promotion."""
+
+
 async def _take_back(tx: Tx) -> None:
     """Projection off: keep no change-log row. Every write unit of the connectors service (not only one that wrote the graph: the indexing and query roles log too, cannot take
     their rows back, and may be the only ones writing) takes back its own rows at commit; rows taken back send every connector of the org back to the walk (one select when nothing is on the copy). The ack runs in a savepoint: a lock wait or a timeout in it rolls back to the savepoint,
@@ -118,9 +122,13 @@ async def _take_back(tx: Tx) -> None:
         return
     try:
         async with tx.savepoint("kg_take_back"):
+            if not await modes.try_lock_copies(tx, tx.org_id):      # a flip or a promotion holds a connector: it must see the rows, and this unit must not wait
+                raise _Busy
             taken = await KgWriter(tx).changes_ack()
             if taken:
                 await modes.demote_org(tx, tx.org_id)      # the rows just deleted were the only evidence that kg is behind: no copy of this org can be trusted any more
+    except _Busy:
+        TAKE_BACK_FAILED.inc("busy")
     except Exception:
         TAKE_BACK_FAILED.inc("ack")
         logger.exception("kg take-back of this unit's change-log rows failed; the unit commits and the rows wait for the sweep")
@@ -145,6 +153,9 @@ def _after_commit(tx: Tx) -> None:
 async def _sweep(db: KernelDB, org: str) -> None:
     async def go(tx: Tx) -> None:
         w = KgWriter(tx)
+        if not await modes.try_lock_copies(tx, org):
+            TAKE_BACK_FAILED.inc("busy")
+            return
         for _ in range(SWEEP_PAGES):
             ids = [r["id"] for r in await tx.fetch("/* pipeshub:kg.sweep_read */ SELECT id FROM kg.graph_changes WHERE org_id = $1 ORDER BY id LIMIT $2", org, SWEEP_PAGE)]
             if ids:

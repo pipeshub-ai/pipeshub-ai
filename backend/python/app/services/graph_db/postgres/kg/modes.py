@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres.kg.locks import try_lock_apps
 from app.services.graph_db.postgres.kg.writers import KgWriter
 
 if TYPE_CHECKING:
@@ -35,3 +36,12 @@ async def demote_org(tx: Tx, org: str) -> int:
     for r in rows:
         await demote(tx, org, r["app_sk"])
     return len(rows)
+
+
+async def try_lock_copies(tx: Tx, org: str) -> bool:
+    """Take, without waiting, the lock of every connector that is on a copy (not ``legacy``, or with a cursor). A flip or a promotion holds its connector's lock from before its verify to its
+    write, so a take-back that demotes without this lock could delete the log row of a change that the verify never saw and demote, and the flip would then overwrite the demotion with
+    ``shadow`` or ``enforce``. False when one is held: the take-back leaves its rows, which then also show the flip a change is waiting."""
+    ids = [r["id"] for r in await tx.fetch("""/* pipeshub:kg.copies */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1
+        WHERE s.org_id = $1 AND (s.mode <> 'legacy' OR s.backfill_cursor IS NOT NULL)""", org)]
+    return await try_lock_apps(tx, org, set(ids))
