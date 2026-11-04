@@ -20,6 +20,26 @@ export type SlackCitationLike = {
   };
 };
 
+/**
+ * Citations in the saved shape. A saved conversation wraps each in
+ * `citationData`; live stream snapshots send it flat. Anything without
+ * metadata (an unresolved id, a null) is left out.
+ */
+export function asSlackCitations(
+  citations: readonly unknown[] | undefined,
+): SlackCitationLike[] {
+  return (citations ?? []).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const data =
+      'citationData' in entry
+        ? (entry as { citationData: unknown }).citationData
+        : entry;
+    const metadata = (data as { metadata?: unknown } | null)?.metadata;
+    if (!metadata || typeof metadata !== 'object') return [];
+    return [{ citationData: data as SlackCitationLike['citationData'] }];
+  });
+}
+
 const FRAGMENT_DIRECTIVE_DELIMITER = ":~:";
 
 /**
@@ -129,7 +149,7 @@ export function rewriteCitationsForSlack(
   }
 
   const citationNumberToUrl = new Map<number, string>();
-  for (const citation of citations || []) {
+  for (const citation of asSlackCitations(citations)) {
     const citationNumber = parseCitationNumber(citation.citationData.chunkIndex);
     if (!citationNumber || citationNumberToUrl.has(citationNumber)) {
       continue;
@@ -357,7 +377,7 @@ export class CitationMarkers {
   ): string {
     const rows = citationRows(citations, frontendBaseUrl);
     const numbers = new Set(
-      (citations ?? []).flatMap((citation) => {
+      asSlackCitations(citations).flatMap((citation) => {
         const n = parseCitationNumber(citation.citationData.chunkIndex);
         return n === null ? [] : [n];
       }),
@@ -413,7 +433,7 @@ export function stripNumberedCitationLinkTargets(
 ): string {
   const rows = citationRows(citations, frontendBaseUrl);
   const numbers = new Set(
-    (citations ?? []).flatMap((citation) => {
+    asSlackCitations(citations).flatMap((citation) => {
       const n = parseCitationNumber(citation.citationData.chunkIndex);
       return n === null ? [] : [n];
     }),
@@ -451,7 +471,7 @@ export function citationRows(
   frontendBaseUrl: string,
 ): Map<number, SlackSourceRow> {
   const rows = new Map<number, SlackSourceRow>();
-  for (const citation of citations ?? []) {
+  for (const citation of asSlackCitations(citations)) {
     const citationNumber = parseCitationNumber(
       citation.citationData.chunkIndex,
     );
