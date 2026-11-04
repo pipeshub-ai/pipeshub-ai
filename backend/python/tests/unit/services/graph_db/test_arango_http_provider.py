@@ -13767,6 +13767,8 @@ class TestDeleteConnectorInstanceFull:
     @pytest.mark.asyncio
     async def test_success_with_records(self, connected_provider):
         connected_provider.get_document = AsyncMock(return_value={"_key": "c1"})
+        # Nothing was written during the delete, so its sweep finds nothing left at once.
+        connected_provider._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
         connected_provider._collect_connector_entities = AsyncMock(return_value={
             "record_keys": ["r1"],
             "record_group_keys": ["rg1"],

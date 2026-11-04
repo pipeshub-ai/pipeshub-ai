@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from neo4j.exceptions import Neo4jError
 
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
@@ -16,7 +17,7 @@ def _provider() -> Neo4jProvider:
     p.client = MagicMock(execute_query=AsyncMock(return_value=[]))
     # Every other coroutine the delete may call (cleanup steps added later) is a mock too.
     for name, _ in inspect.getmembers(Neo4jProvider, inspect.iscoroutinefunction):
-        if name != "_delete_connector_instance":
+        if name not in ("_delete_connector_instance", "_sweep_writes_during_delete"):
             setattr(p, name, AsyncMock())
     p.get_document = AsyncMock(return_value={"type": "Jira"})
     p._collect_connector_entities = AsyncMock(return_value={
@@ -37,6 +38,7 @@ def _provider() -> Neo4jProvider:
     p._delete_nodes_by_keys.side_effect = lambda *a, **k: (1, 0)
     p._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
     p._delete_stage_states_by_connector_id = AsyncMock(return_value=(0, True))
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
     p.remove_authenticated_as = AsyncMock()
     p._stash_connector_delete_handles = AsyncMock(side_effect=lambda _c, groups, vrids: (list(groups), vrids))
     p._delete_connector_with_its_delete_handles = AsyncMock(return_value=1)
@@ -266,19 +268,40 @@ async def test_get_existing_keys_reads_the_collection_and_raises_on_a_failed_rea
     assert await p.get_existing_keys("records", []) == set()
 
 
+
+@pytest.fixture
+def no_wait(monkeypatch) -> AsyncMock:
+    wait = AsyncMock()
+    monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.cascade_backoff", wait)
+    return wait
+
+
 @pytest.mark.asyncio
-async def test_blocks_and_stage_states_written_during_the_delete_are_swept_after_it() -> None:
+async def test_blocks_and_stage_states_written_during_the_delete_are_swept_until_none_is_left(no_wait) -> None:
     """A duplicate code file indexed while the delete runs projects its blocks after the blocks
-    step; a stage job can record a state. Both carry the connector id and must not outlive it."""
+    step; a stage job can record a state. The delete has committed and nothing runs it again,
+    so the sweep repeats until the connector has none left."""
     p = _provider()
-    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 6])
-    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), (1, True)])
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 6, 0])
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), (0, False), (1, True)])
+    p._count_connector_blocks_and_stage_states = AsyncMock(side_effect=[1, 0])
 
     result = await p._delete_connector_instance("c1", "org")
 
     assert result["success"] is True, result
-    assert p.delete_blocks_by_connector_id.await_args_list[-1].args == ("c1",)
+    assert [c.args for c in p.delete_blocks_by_connector_id.await_args_list] == [("c1",)] * 3
     assert p._delete_stage_states_by_connector_id.await_args_list[-1].args == (None, "c1")
-    p.logger.warning.assert_any_call(
-        "Connector c1 gained 6 block(s) and 1 stage state(s) during delete; removed them"
-    )
+    assert no_wait.await_args.kwargs["base"] >= 0.5
+    p.logger.error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_what_outlasts_every_sweep_is_logged_as_an_error(no_wait) -> None:
+    p = _provider()
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=2)
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    assert p._count_connector_blocks_and_stage_states.await_count == CASCADE_ATTEMPTS
+    assert "still has 2 block(s) or stage state(s)" in p.logger.error.call_args.args[0]

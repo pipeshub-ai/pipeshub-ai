@@ -256,7 +256,10 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
-from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import (
+    CASCADE_ATTEMPTS,
+    CONNECTOR_DELETE_BASE_SECONDS,
+)
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.conditions import (
     EQ,
@@ -387,11 +390,6 @@ def _remove_opts(transaction: str | None) -> str:
     keep the best-effort behaviour."""
     return "OPTIONS { ignoreErrors: true }" if transaction is None else ""
 
-
-# Indexing and stage jobs already in flight keep writing a deleted connector's records
-# and stage states for seconds after its sync stops: 50 ms rounds (0.75 s in all) lost
-# every attempt to them, so a connector delete backs off from 0.5 s (about 7.5 s in all).
-_CONNECTOR_DELETE_BACKOFF_S = 0.5
 
 
 def _is_write_conflict(exc: Exception) -> bool:
@@ -12023,6 +12021,57 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Error deleting from {collection}: {str(e)}")
             return (0, False)
 
+    async def _sweep_writes_during_delete(self, connector_id: str) -> None:
+        """Remove the blocks and stage states in-flight indexing wrote for a connector after its
+        delete removed them: a duplicate code file projects its blocks, a stage job records its
+        state. The delete has committed and nothing runs it again, so the pass repeats, backing
+        off, until nothing of the connector is left; what outlasts every pass is logged as an error.
+        """
+        removed = 0
+        left: int | None = None
+        for attempt in range(CASCADE_ATTEMPTS):
+            try:
+                removed += await self.delete_blocks_by_connector_id(connector_id)
+            except Exception as e:
+                self.logger.warning(f"⚠️ Sweep of blocks written during delete of {connector_id} failed: {e}")
+            try:
+                states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
+                removed += states
+            except Exception as e:
+                self.logger.warning(f"⚠️ Sweep of stage states written during delete of {connector_id} failed: {e}")
+            try:
+                left = await self._count_connector_blocks_and_stage_states(connector_id)
+            except Exception as e:
+                left = None
+                self.logger.warning(f"⚠️ Could not count what is left of connector {connector_id}: {e}")
+            if left == 0:
+                if removed:
+                    self.logger.warning(
+                        f"Connector {connector_id}: removed {removed} block(s) and stage state(s) "
+                        "written during its delete"
+                    )
+                return
+            if attempt + 1 < CASCADE_ATTEMPTS:
+                await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
+        self.logger.error(
+            f"❌ Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
+            f"block(s) or stage state(s) after {CASCADE_ATTEMPTS} sweeps following its delete"
+        )
+
+    async def _count_connector_blocks_and_stage_states(self, connector_id: str) -> int:
+        rows = await self.http_client.execute_aql(
+            query="""
+            RETURN LENGTH(FOR b IN @@blocks FILTER b.connectorId == @connector_id RETURN 1)
+                + LENGTH(FOR s IN @@states FILTER s.connectorId == @connector_id RETURN 1)
+            """,
+            bind_vars={
+                "@blocks": CollectionNames.BLOCKS.value,
+                "@states": CollectionNames.STAGE_STATES.value,
+                "connector_id": connector_id,
+            },
+        )
+        return int(rows[0]) if rows else 0
+
     async def _delete_stage_states_by_connector_id(
         self, transaction: str | None, connector_id: str
     ) -> tuple[int, bool]:
@@ -12502,20 +12551,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             self.logger.warning(
                                 f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                             )
-                        try:
-                            # In-flight indexing can write after the steps above ran: a duplicate code file
-                            # projects its blocks, a stage job records its state. Both carry the connector id.
-                            late_blocks = await self.delete_blocks_by_connector_id(connector_id)
-                            late_states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
-                            if late_blocks or late_states:
-                                self.logger.warning(
-                                    f"Connector {connector_id} gained {late_blocks} block(s) and {late_states} "
-                                    "stage state(s) during delete; removed them"
-                                )
-                        except Exception as late_err:
-                            self.logger.warning(
-                                f"⚠️ Could not remove blocks or stage states written during delete of {connector_id}: {late_err}"
-                            )
+                        await self._sweep_writes_during_delete(connector_id)
                         try:
                             orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                         except Exception as sweep_err:
@@ -12590,7 +12626,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             "Connector %s delete lost to a concurrent write (attempt %d); retrying",
                             connector_id, attempt + 1,
                         )
-                        await cascade_backoff(attempt, base=_CONNECTOR_DELETE_BACKOFF_S)
+                        await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
                         continue
                     raise tx_error
 

@@ -128,7 +128,10 @@ from app.schema.node_schema_registry import (
 )
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
-from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import (
+    CASCADE_ATTEMPTS,
+    CONNECTOR_DELETE_BASE_SECONDS,
+)
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
@@ -11402,6 +11405,55 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete nodes from {collection} by connectorId: {str(e)}")
             return (0, False)
 
+    async def _sweep_writes_during_delete(self, connector_id: str) -> None:
+        """Remove the blocks and stage states in-flight indexing wrote for a connector after its
+        delete removed them: a duplicate code file projects its blocks, a stage job records its
+        state. The delete has committed and nothing runs it again, so the pass repeats, backing
+        off, until nothing of the connector is left; what outlasts every pass is logged as an error.
+        """
+        removed = 0
+        left: int | None = None
+        for attempt in range(CASCADE_ATTEMPTS):
+            try:
+                removed += await self.delete_blocks_by_connector_id(connector_id)
+            except Exception as e:
+                self.logger.warning(f"⚠️ Sweep of blocks written during delete of {connector_id} failed: {e}")
+            try:
+                states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
+                removed += states
+            except Exception as e:
+                self.logger.warning(f"⚠️ Sweep of stage states written during delete of {connector_id} failed: {e}")
+            try:
+                left = await self._count_connector_blocks_and_stage_states(connector_id)
+            except Exception as e:
+                left = None
+                self.logger.warning(f"⚠️ Could not count what is left of connector {connector_id}: {e}")
+            if left == 0:
+                if removed:
+                    self.logger.warning(
+                        f"Connector {connector_id}: removed {removed} block(s) and stage state(s) "
+                        "written during its delete"
+                    )
+                return
+            if attempt + 1 < CASCADE_ATTEMPTS:
+                await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
+        self.logger.error(
+            f"❌ Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
+            f"block(s) or stage state(s) after {CASCADE_ATTEMPTS} sweeps following its delete"
+        )
+
+    async def _count_connector_blocks_and_stage_states(self, connector_id: str) -> int:
+        blocks = collection_to_label(CollectionNames.BLOCKS.value)
+        states = collection_to_label(CollectionNames.STAGE_STATES.value)
+        total = 0
+        for label in (blocks, states):
+            rows = await self.client.execute_query(
+                f"MATCH (n:{label} {{connectorId: $connector_id}}) RETURN count(n) AS n",
+                parameters={"connector_id": connector_id},
+            )
+            total += int(rows[0]["n"]) if rows else 0
+        return total
+
     async def _delete_stage_states_by_connector_id(
         self, transaction: str | None, connector_id: str
     ) -> tuple[int, bool]:
@@ -11815,20 +11867,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         self.logger.warning(
                             f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                         )
-                    try:
-                        # In-flight indexing can write after the steps above ran: a duplicate code file
-                        # projects its blocks, a stage job records its state. Both carry the connector id.
-                        late_blocks = await self.delete_blocks_by_connector_id(connector_id)
-                        late_states, _ = await self._delete_stage_states_by_connector_id(None, connector_id)
-                        if late_blocks or late_states:
-                            self.logger.warning(
-                                f"Connector {connector_id} gained {late_blocks} block(s) and {late_states} "
-                                "stage state(s) during delete; removed them"
-                            )
-                    except Exception as late_err:
-                        self.logger.warning(
-                            f"⚠️ Could not remove blocks or stage states written during delete of {connector_id}: {late_err}"
-                        )
+                    await self._sweep_writes_during_delete(connector_id)
                     try:
                         orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                     except Exception as sweep_err:

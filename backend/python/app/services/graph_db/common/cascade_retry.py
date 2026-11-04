@@ -12,6 +12,10 @@ import random
 
 CASCADE_ATTEMPTS = 5
 _BASE_SECONDS = 0.05
+# Indexing and stage jobs already in flight keep writing a deleted connector's records,
+# blocks and stage states for seconds after its sync stops: 50 ms rounds (0.75 s in all)
+# lost every attempt to them, so a connector delete backs off from 0.5 s (about 7.5 s).
+CONNECTOR_DELETE_BASE_SECONDS = 0.5
 
 
 async def backoff(attempt: int, *, base: float = _BASE_SECONDS) -> None:

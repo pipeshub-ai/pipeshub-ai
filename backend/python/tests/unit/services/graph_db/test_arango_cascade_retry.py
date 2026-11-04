@@ -40,6 +40,7 @@ def p() -> ArangoHTTPProvider:
     provider._delete_type_docs_matching_record_keys = AsyncMock(return_value=0)
     provider._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
     provider._delete_stage_states_by_connector_id = AsyncMock(return_value=(0, True))
+    provider._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
     provider._sweep_orphan_type_docs_for_org = AsyncMock(return_value=0)
     provider._delete_unlinked_taxonomy_nodes = AsyncMock(return_value=0)
     provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
@@ -148,7 +149,7 @@ async def test_get_existing_keys_reads_the_collection_and_raises_on_a_failed_rea
 async def test_a_conflict_deleting_stage_states_runs_the_transaction_again(p, backoff) -> None:
     """Indexing still writing the connector's stage states: the round is run again, after a
     longer wait than a push conflict needs, instead of failing the delete outright."""
-    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[CONFLICT, (3, True)])
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[CONFLICT, (3, True), (0, True)])
 
     result = await p.delete_connector_instance("c1", "org1")
 
@@ -171,13 +172,18 @@ async def test_the_stage_state_delete_raises_a_conflict_and_reports_other_failur
 
 
 
+
 @pytest.mark.asyncio
-async def test_blocks_and_stage_states_written_during_the_delete_are_swept_after_it(p) -> None:
-    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 6])
-    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), (1, True)])
+async def test_a_sweep_that_loses_to_a_writer_runs_again_until_none_is_left(p, backoff) -> None:
+    """Outside the delete transaction a block REMOVE ignores per-document errors and a stage-state
+    conflict is raised: either way rows stay, so the count, not the calls, decides."""
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 0, 6])
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), CONFLICT, (1, True)])
+    p._count_connector_blocks_and_stage_states = AsyncMock(side_effect=[7, 0])
 
     result = await p.delete_connector_instance("c1", "org1")
 
     assert result["success"] is True, result
-    assert p.delete_blocks_by_connector_id.await_args_list[-1].args == ("c1",)
-    assert p._delete_stage_states_by_connector_id.await_args_list[-1].args == (None, "c1")
+    assert [c.args for c in p.delete_blocks_by_connector_id.await_args_list] == [("c1",)] * 3
+    assert [c.args for c in p._delete_stage_states_by_connector_id.await_args_list[1:]] == [(None, "c1")] * 2
+    assert p._count_connector_blocks_and_stage_states.await_count == 2
