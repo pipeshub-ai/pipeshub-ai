@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         pg: ['17', '18']
-        shard: [rls, integration, graph, vetted, pins, placement, upkeep, upgrade]
+        shard: [rls, integration, graph, vetted, pins, placement, upkeep, upgrade, kg]
         include:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
@@ -59,6 +59,10 @@ jobs:
             files: tests/test_pins_upgrade.py
             min_tests: 8
             suites: ''
+          - shard: kg
+            files: tests/test_kg_schema.py
+            min_tests: 8
+            suites: '--expect-suite tests.test_kg_schema=8'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
+from app.core import org_context
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -502,13 +503,16 @@ class EntityVectorStore:
         return self.collection_name
 
     async def collection_stamp(self) -> str:
-        """A token kept in the collection as a point of its own, so that it
-        goes when the collection's points go.
+        """A token that identifies this incarnation of the collection.
 
-        A collection dropped, recreated or emptied from outside (by hand, or
-        by a records rebuild in a release that took the entity index along)
-        therefore has no stamp. It is then set up again (``ensure_collection``)
-        and given a new one. The rebuild puts the stamp in its marker: what
+        Where the provider has no catalog for it, it is a point of its own, so it
+        goes when the collection's points go: a collection dropped, recreated or
+        emptied from outside (by hand, or by a records rebuild in a release that
+        took the entity index along) then has no stamp. A provider that keeps it
+        itself (``stamps_in_catalog``, pgvector) loses it only when the collection
+        is dropped and created again; emptying the points leaves it, and the
+        rebuild is then not triggered by that alone. A missing stamp is set up
+        again (``ensure_collection``) and given a new one. The rebuild puts the stamp in its marker: what
         was projected under another stamp is not in this collection, however
         many points indexing has written to it since. One read by id per call.
         For the rebuild leader only (see ``ensure_collection``).
@@ -518,21 +522,12 @@ class EntityVectorStore:
         reaches that org (``recreate_stale_collection``)."""
         if self._shared_collection is None:
             return ""
-        stamp = await self._read_stamp()
+        in_catalog = getattr(self.vector_db_service.get_capabilities(), "stamps_in_catalog", False) is True
+        stamp = await self._read_stamp(in_catalog=in_catalog)
         if stamp:
             return stamp
         await self.ensure_collection()
-        # Never all digits: Redis hands a numeric string back as a number.
-        stamp = f"s{uuid.uuid4().hex[:11]}"
-        unit = [1.0] + [0.0] * (self._embedding_size - 1)
-        await self.vector_db_service.upsert_points(
-            collection_name=self._shared_collection,
-            # No orgId and no entityType: no search, sweep or delete matches it.
-            points=[VectorPoint(
-                id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
-                payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp}},
-            )],
-        )
+        stamp = await self._ensure_stamp(in_catalog=in_catalog)
         self.logger.info(
             "Entity collection '%s' carried no stamp (it is new, or was dropped, recreated or "
             "emptied from outside); stamped %s, so the rebuild projects the graph into it again",
@@ -540,7 +535,28 @@ class EntityVectorStore:
         )
         return stamp
 
-    async def _read_stamp(self) -> str | None:
+    async def _ensure_stamp(self, *, in_catalog: bool) -> str:
+        """Writes a new stamp: to the provider's catalog, or as a point that carries no org, written here and nowhere else
+        under the explicit system scope."""
+        # Never all digits: Redis hands a numeric string back as a number.
+        stamp = f"s{uuid.uuid4().hex[:11]}"
+        if in_catalog:
+            return await self.vector_db_service.set_collection_stamp(self._shared_collection, stamp)
+        unit = [1.0] + [0.0] * (self._embedding_size - 1)
+        with org_context.system("entity-collection-stamp"):
+            await self.vector_db_service.upsert_points(
+                collection_name=self._shared_collection,
+                # No orgId and no entityType: no search, sweep or delete matches it.
+                points=[VectorPoint(
+                    id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
+                    payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp}},
+                )],
+            )
+        return stamp
+
+    async def _read_stamp(self, *, in_catalog: bool = False) -> str | None:
+        if in_catalog:
+            return await self.vector_db_service.get_collection_stamp(self._shared_collection)
         try:
             points = await self.vector_db_service.retrieve_points(self._shared_collection, [_STAMP_POINT_ID])
         except Exception:
@@ -841,6 +857,11 @@ class EntityVectorStore:
         as well as the dimension."""
         if not info.exists:
             return None
+        if getattr(self._capabilities, "spaces_per_org", False) is True:
+            # The model belongs to each org's space, which a call can only see
+            # for its own org; the provider refuses a write of another model.
+            # Nothing here may read or drop the collection of every org.
+            return None
         if info.dense_dimension and info.dense_dimension != self._embedding_size:
             return f"dimension {info.dense_dimension}, model now produces {self._embedding_size}"
         stored = await self._model_of_a_stored_point(name)
@@ -995,11 +1016,12 @@ class EntityVectorStore:
         if not entities:
             return outcome
         failed_keys: list[str] = []
-        # A batch may span orgs, and so collections.
-        by_collection: dict[str, list[EntityRecord]] = {}
+        # A batch may span orgs, and so collections. One org per write: a
+        # provider with a space per org takes one org at a time.
+        by_collection: dict[tuple[str, str], list[EntityRecord]] = {}
         for entity in self._coalesce_by_key(entities):
             try:
-                by_collection.setdefault(self._collection_name_for(entity.org_id), []).append(entity)
+                by_collection.setdefault((self._collection_name_for(entity.org_id), entity.org_id), []).append(entity)
             except Exception as exc:
                 self.logger.error(
                     "No entity collection for org '%s'; %s/%s not written: %s",
@@ -1009,7 +1031,7 @@ class EntityVectorStore:
                 failed_keys.append(f"{entity.entity_type.value}/{entity.entity_id}")
         batches = [
             (collection, start, group[start : start + batch_size])
-            for collection, group in by_collection.items()
+            for (collection, _org), group in by_collection.items()
             for start in range(0, len(group), batch_size)
         ]
         for collection, start, batch in batches:
@@ -1268,6 +1290,12 @@ class EntityVectorStore:
             self._entity_locks[lock_map_key] = lock
         return lock
 
+    async def _retrieve(self, collection: str, org_id: str, ids: list[str]) -> list[VectorPoint]:
+        """A read by id, which names no org itself: it takes the one bound for the
+        call (a job such as the rebuild has none; a bound other org is refused)."""
+        with org_context.for_org(org_id, job="entity_store"):
+            return await self.vector_db_service.retrieve_points(collection, ids)
+
     async def _fetch_existing_states(
         self, collection: str, entities: list[EntityRecord]
     ) -> dict[str, dict[str, Any]]:
@@ -1286,7 +1314,7 @@ class EntityVectorStore:
             self._point_id(e.org_id, e.entity_type.value, e.entity_id) for e in entities
         ]
         try:
-            points = await self.vector_db_service.retrieve_points(collection, ids)
+            points = await self._retrieve(collection, entities[0].org_id, ids)
         except Exception as exc:
             raise _MembershipReadError(
                 f"membership read failed for {len(ids)} entities"
@@ -1709,9 +1737,7 @@ class EntityVectorStore:
                 await locks.enter_async_context(self._entity_lock(key))
             fresh = {
                 point.id: point.payload or {}
-                for point in await self.vector_db_service.retrieve_points(
-                    collection, [point_id for point_id, _, _ in refs],
-                )
+                for point in await self._retrieve(collection, org_id, [point_id for point_id, _, _ in refs])
             }
             stripped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
             exclusive: dict[str, list[str]] = {}
