@@ -2349,6 +2349,36 @@ class TestFailOpenRobustness:
         assert semantic_cache is None
 
     @pytest.mark.asyncio
+    async def test_load_semantic_cache_service_shields_provider_from_cancellation(self) -> None:
+        """load_semantic_cache_service shields provider awaitable so request timeouts do not cancel shared init."""
+        from app.api.routes.chatbot import load_semantic_cache_service
+
+        logger = logging.getLogger("test_shield")
+        initialized = False
+
+        async def _slow_shared_init() -> str:
+            nonlocal initialized
+            await asyncio.sleep(0.05)
+            initialized = True
+            return "shared_service_instance"
+
+        shared_task = asyncio.create_task(_slow_shared_init())
+        container = MagicMock()
+        container.semantic_cache_service = MagicMock(return_value=shared_task)
+
+        import contextlib
+
+        req1 = asyncio.create_task(load_semantic_cache_service(container, logger))
+        with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+            await asyncio.wait_for(req1, timeout=0.01)
+
+        assert not shared_task.cancelled()
+        req2 = asyncio.create_task(load_semantic_cache_service(container, logger))
+        result = await req2
+        assert result == "shared_service_instance"
+        assert initialized is True
+
+    @pytest.mark.asyncio
     async def test_background_store_task_tracking_and_exception_counting(self) -> None:
         """Item 6: Background store tasks held in strong refs, exceptions counted, not raised."""
         from app.agents.chat_modes.bridge import get_background_tasks

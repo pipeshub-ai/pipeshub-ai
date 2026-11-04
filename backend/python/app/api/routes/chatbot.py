@@ -1557,7 +1557,7 @@ async def load_semantic_cache_service(container: Any, logger_: Any) -> Any | Non
     try:
         service = provider()
         if inspect.isawaitable(service):
-            service = await service
+            service = await asyncio.shield(service)
         return service
     except Exception as exc:
         if not _semantic_cache_warned:
