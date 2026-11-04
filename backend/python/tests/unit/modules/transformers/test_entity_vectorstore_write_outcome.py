@@ -56,7 +56,7 @@ class _DB:
             self.points[p.id] = dict(p.payload)
             self.upserted.append(p.id)
 
-    async def update_payload_by_ids(self, collection: str, ids: list[str], payload: dict) -> None:
+    async def update_payload_by_ids(self, collection: str, ids: list[str], payload: dict, *, org_id) -> None:
         for i in ids:
             self.points[i].update(payload)
 

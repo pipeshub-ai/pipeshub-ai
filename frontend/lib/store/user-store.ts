@@ -21,6 +21,7 @@
 import { create } from 'zustand';
 import { devtools, persist, createJSONStorage } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 // ============================================================
 // Types
@@ -182,6 +183,10 @@ export const useUserStore = create<UserProfileStore>()(
     { name: 'UserStore' }
   )
 );
+
+// The profile initializer is unmounted by the time auth turns false, so it cannot clear this;
+// without it the next person on the desktop app would inherit this name and admin role.
+onSessionEnd(() => useUserStore.getState().clearProfile());
 
 // ============================================================
 // Selectors (stable references — use in components)

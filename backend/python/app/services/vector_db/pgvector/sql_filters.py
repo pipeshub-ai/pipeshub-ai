@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.services.vector_db.pgvector.errors import PgVectorUnsupportedError
+
 if TYPE_CHECKING:
     from app.services.vector_db.models import FieldCondition, FilterExpression
 
@@ -115,7 +117,10 @@ class _Builder:
 
 
 def compile_filter(expr: FilterExpression, *, first_param: int, org_param: int = 1, coll_param: int = 2) -> Compiled:
-    """``must`` ANDs, ``should`` ORs (at least one when present), ``must_not`` negates each condition."""
+    """``must`` ANDs, ``should`` ORs (at least one when present), ``must_not`` negates each condition. A ``min_should_match`` other than
+    1 is refused: the SQL cannot honour it, and ignoring it would match points the caller excluded."""
+    if expr.min_should_match not in (None, 1):
+        raise PgVectorUnsupportedError("a filter takes any-of SHOULD conditions only (min_should_match is not supported)")
     b = _Builder(first_param, org_param, coll_param)
     parts = [f"({b.condition(c, 'must')})" for c in expr.must]
     if expr.should:

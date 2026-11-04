@@ -69,17 +69,17 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0),
+HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (3, 0), "platform_data": (4, 0),
          "graph": (2, 0), "retrieval": (1, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "graph_0002", "retrieval_0001"}
+REVISION_HEADS = {"kernel_0017", "platform_0004", "content_0003", "oauth_0003", "platform_data_0004", "graph_0002", "retrieval_0001"}
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=15 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
+    assert "epoch kernel=17 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -96,7 +96,7 @@ def test_service_role_grants(db):
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     with connect(cluster, name, "pipeshub_node_login") as c:
         c.execute("SET ROLE pipeshub_node")
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 15
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 17
         c.execute("SELECT kernel.assert_profile_epoch(1)")
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="expects 2"):
             c.execute("SELECT kernel.assert_profile_epoch(2)")
@@ -232,7 +232,7 @@ def test_contract_epochs_and_dev_downgrade(db, tmp_path):
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == {"kernel": (1, 11)}                      # the contract stays
     assert run_migrate(url, **env).returncode == 0                                     # and forward again
-    assert epochs(cluster, name)["kernel"] == (15, 11)
+    assert epochs(cluster, name)["kernel"] == (17, 11)
 
 
 def test_one_module_down_and_up_leaves_a_clean_catalog(db):
@@ -702,3 +702,23 @@ def test_an_older_build_tells_the_operator_to_roll_forward_when_the_newer_schema
     _as_newer_build(cluster, name, min_code=99)
     r = run_migrate(url)
     assert r.returncode == 2 and "roll forward" in r.stdout, r.stdout
+
+
+def test_an_install_with_such_helpers_upgrades_to_the_pinned_writes_revision(db):
+    """kernel_0015 -> kernel_0016 on a database that already holds admin-owned helpers with constructs the routine rules refuse in a vetted function's reach:
+    the run must succeed (the migrate job exits 4 and rolls back on any catalog violation)."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip").returncode == 0
+    r = run_migrate(url, "downgrade", "kernel_0015", PG_MIGRATE_ALLOW_DOWNGRADE="1", PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with cluster.admin(name) as c:
+        c.execute("CREATE FUNCTION public.h_set() RETURNS void LANGUAGE plpgsql AS 'BEGIN SET LOCAL statement_timeout = 5; END'")
+        c.execute("CREATE FUNCTION public.h_analyze() RETURNS void LANGUAGE plpgsql AS 'BEGIN ANALYZE; END'")
+        c.execute("CREATE FUNCTION public.h_temp() RETURNS void LANGUAGE plpgsql AS 'BEGIN CREATE TEMP TABLE h_t (a int); END'")
+        c.execute("CREATE FUNCTION public.h_cfg() RETURNS text LANGUAGE sql AS $$ SELECT set_config('statement_timeout', '5', true) $$")
+        c.execute("CREATE FUNCTION public.h_ret(a int) RETURNS int LANGUAGE sql RETURN a + 1")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []

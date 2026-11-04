@@ -66,10 +66,10 @@ async def seeded(redis_service) -> AsyncIterator[tuple[str, FilterExpression]]:
         if await _count(redis_service, col) == POINTS:
             break
         await asyncio.sleep(1)
-    filt = FilterExpression(must=[FieldCondition(
-        key="metadata.virtualRecordId",
-        values=[f"vr-{i}" for i in range(VRIDS)],
-    )])
+    filt = FilterExpression(must=[
+        FieldCondition(key="metadata.orgId", value="org1"),
+        FieldCondition(key="metadata.virtualRecordId", values=[f"vr-{i}" for i in range(VRIDS)]),
+    ])
     # search-timeout belongs to the server, not to this test: under xdist two workers that each read the
     # "original" while the other has it at 1 ms would restore 1 ms for good. The lock makes the tests of
     # this module take turns, so the original is only ever read while nobody has changed it.

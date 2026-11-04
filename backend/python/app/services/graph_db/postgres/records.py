@@ -336,17 +336,24 @@ class RecordsMixin(PgBase):
     # ---- delete ------------------------------------------------------------------------------------------------
     async def _delete_records_with_their_types(self, record_ids: list[str], transaction: str | None = None) -> int:
         """Delete records with their type documents (the ``isOfType`` targets, and a type document that shares the record's id) and every edge of
-        any of them, in one statement, so a failure deletes nothing. Blocks are not touched (``delete_blocks_for_records``). Returns the records deleted."""
+        any of them, in one unit, so a failure deletes nothing. Blocks are not touched (``delete_blocks_for_records``). Returns the records deleted."""
         org = current_org_id()
         ids = _uniq(record_ids)
         if not ids:
             return 0
-        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_records_with_their_types */ WITH typed AS (
-              SELECT e.to_coll AS coll, e.to_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_coll = 'records'
-                AND e.from_id = ANY($2::text[]) AND e.to_coll = ANY($3::text[])
-              UNION SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($3::text[]) AND n.id = ANY($2::text[])),
-            gone AS (SELECT 'records' AS coll, i AS id FROM unnest($2::text[]) i UNION SELECT coll, id FROM typed),
-            edges_from AS (DELETE FROM graph.edges e USING gone g WHERE e.org_id = $1 AND e.from_coll = g.coll AND e.from_id = g.id RETURNING 1),
-            edges_to AS (DELETE FROM graph.edges e USING gone g WHERE e.org_id = $1 AND e.to_coll = g.coll AND e.to_id = g.id RETURNING 1),
-            d AS (DELETE FROM graph.nodes n USING gone g WHERE n.org_id = $1 AND n.coll = g.coll AND n.id = g.id RETURNING n.coll)
-            SELECT count(*) FILTER (WHERE coll = 'records') FROM d""", org, ids, _TYPE_COLLS), transaction, write=True) or 0)
+
+        async def go(tx: Tx) -> int:
+            # The records are locked before their type documents are read: a writer that attaches a type to one of them holds that row until it commits,
+            # so the read below (a statement of its own, with a fresh snapshot) sees what it wrote instead of leaving a type document no record owns.
+            await tx.execute("""/* pipeshub:graph.delete_records_lock */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
+                ORDER BY id FOR UPDATE""", org, ids)
+            return await tx.fetchval("""/* pipeshub:graph.delete_records_with_their_types */ WITH typed AS (
+                  SELECT e.to_coll AS coll, e.to_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_coll = 'records'
+                    AND e.from_id = ANY($2::text[]) AND e.to_coll = ANY($3::text[])
+                  UNION SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($3::text[]) AND n.id = ANY($2::text[])),
+                gone AS (SELECT 'records' AS coll, i AS id FROM unnest($2::text[]) i UNION SELECT coll, id FROM typed),
+                edges_from AS (DELETE FROM graph.edges e USING gone g WHERE e.org_id = $1 AND e.from_coll = g.coll AND e.from_id = g.id RETURNING 1),
+                edges_to AS (DELETE FROM graph.edges e USING gone g WHERE e.org_id = $1 AND e.to_coll = g.coll AND e.to_id = g.id RETURNING 1),
+                d AS (DELETE FROM graph.nodes n USING gone g WHERE n.org_id = $1 AND n.coll = g.coll AND n.id = g.id RETURNING n.coll)
+                SELECT count(*) FILTER (WHERE coll = 'records') FROM d""", org, ids, _TYPE_COLLS)
+        return int(await self._q(go, transaction, write=True) or 0)
