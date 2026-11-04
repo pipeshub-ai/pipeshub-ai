@@ -1372,6 +1372,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -1401,6 +1402,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -2845,6 +2847,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -4537,6 +4540,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -4567,6 +4571,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -5232,6 +5237,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain1 as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -5262,6 +5268,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -5300,6 +5307,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
       stubUsersFindForSharedBy([
@@ -5352,6 +5360,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -5387,6 +5396,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub(),
       }
+      restoreIfStubbed(ChatSession, 'find')
       const findStub = sinon.stub(ChatSession, 'find')
       findChain.exec.resolves(mockConversations)
       const findChain2: any = {
@@ -8960,6 +8970,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -10283,6 +10294,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -12140,6 +12152,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -12604,6 +12617,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -12638,6 +12652,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 

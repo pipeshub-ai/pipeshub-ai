@@ -1603,11 +1603,8 @@ export const addMessageStream =
         throw new NotFoundError('Conversation not found');
       }
       const confirmedConversation = existingConversation as ChatSessionDto;
-      await emitTurnStarted(
-        res,
-        req.body,
-        confirmedConversation._id,
-        () => Promise.resolve(addedQuestionId),
+      await emitTurnStarted(res, req.body, confirmedConversation._id, () =>
+        Promise.resolve(addedQuestionId),
       );
 
       // Format previous conversations for context (excluding the user message we just added)
