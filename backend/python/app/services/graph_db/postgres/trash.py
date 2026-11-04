@@ -128,9 +128,10 @@ class TrashMixin(PgBase):
                     h.doc->>'externalRecordId', 'externalRecordId', $4::text || h.id) FROM jsonb_to_recordset($2::jsonb) c(id text, ext text)
                     WHERE h.org_id = $1 AND h.coll = 'records' AND h.doc->>'externalRecordId' = c.ext AND h.doc->>'connectorId' = $3
                       AND coalesce((h.doc->>'isDeleted')::boolean, false) AND NOT h.id = ANY($5::text[])""", org, _j(reclaims), connector_id, TRASHED_EXTERNAL_ID_PREFIX, ids)
-            rows = await tx.fetch("""/* pipeshub:graph.restore_records */ UPDATE graph.nodes n SET doc = jsonb_strip_nulls(((n.doc - $3::text[]) ||
-                  jsonb_build_object('isDeleted', false, 'updatedAtTimestamp', $4::bigint)) || x.set)
-                FROM jsonb_to_recordset($2::jsonb) x(id text, set jsonb) WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id RETURNING n.id""",
+            rows = await tx.fetch("""/* pipeshub:graph.restore_records */ UPDATE graph.nodes n SET doc = ((n.doc - $3::text[] - z.cleared) ||
+                  jsonb_build_object('isDeleted', false, 'updatedAtTimestamp', $4::bigint)) || (x.set - z.cleared)
+                FROM jsonb_to_recordset($2::jsonb) x(id text, set jsonb),
+                  LATERAL (SELECT coalesce(array_agg(k.key), '{}'::text[]) AS cleared FROM jsonb_each(x.set) k WHERE k.value = 'null'::jsonb) z WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id RETURNING n.id""",
                                   org, _j(items), list(TRASH_STATE_FIELDS), get_epoch_timestamp_in_ms())
             return [r["id"] for r in rows]
         return await self._q(go, transaction, write=True)
@@ -306,10 +307,12 @@ class TrashMixin(PgBase):
             if not cand:
                 return []
             due = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.purge_kept_record_groups_due */ SELECT g.id FROM graph.nodes g
-                WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = ANY($2::text[]) AND coalesce((g.doc->>'isDeletedAtSource')::boolean, false) AND NOT EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = g.org_id AND m.coll IN ('belongsTo', 'inheritPermissions') AND m.to_coll = 'recordGroups'
+                LEFT JOIN graph.nodes app ON app.org_id = g.org_id AND app.coll = 'apps' AND app.id = g.doc->>'connectorId'
+                WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id = ANY($2::text[]) AND coalesce((g.doc->>'isDeletedAtSource')::boolean, false)
+                   AND coalesce(app.doc->>'status', '') <> $3 AND NOT EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = g.org_id AND m.coll IN ('belongsTo', 'inheritPermissions') AND m.to_coll = 'recordGroups'
                        AND m.to_id = g.id AND m.from_coll IN ('records', 'recordGroups'))
                    AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = g.org_id AND r.coll = 'records' AND r.doc->>'connectorId' = g.doc->>'connectorId'
-                       AND r.doc->>'recordGroupId' = g.id)""", org, cand)]
+                       AND r.doc->>'recordGroupId' = g.id)""", org, cand, APP_STATUS_DELETING)]
             if due:
                 await _sweep_edges(tx, org, _EDGE_COLLS, [f"recordGroups/{i}" for i in due])
                 await tx.execute("/* pipeshub:graph.purge_kept_record_groups_delete */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups' AND id = ANY($2::text[])", org, due)

@@ -95,6 +95,16 @@ async def test_records_in_a_batch_are_read_with_their_parent_and_a_restore_is_al
     assert got["isDeleted"] is False and got["note"] == "back" and "deleteBatchId" not in got and "deletedAtTimestamp" not in got
 
 
+async def test_a_restore_keeps_the_null_fields_it_was_not_told_about_and_clears_the_ones_it_is(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "n", extra={"w": {"x": None, "y": 1}}, gone="old")], "records")
+    await trash(p, ["n"])
+    assert await p.restore_records([{"id": "n", "set": {"gone": None, "note": "back"}}], "bt1") == ["n"]
+    got = await p.get_document("n", "records")
+    assert got["extra"] == {"w": {"x": None, "y": 1}}     # what the caller did not name is as it was, a nested null too
+    assert "gone" not in got and got["note"] == "back" and got["isDeleted"] is False                              # a null in ``set`` clears the field
+
+
 async def test_a_restore_refuses_while_the_parent_is_in_the_trash_and_when_the_external_id_was_taken(pg_db) -> None:
     p = bound(pg_db)
     await tree(p)
@@ -163,6 +173,48 @@ async def test_record_groups_marked_deleted_at_source_are_purged_only_when_empty
     assert await p.take_back_kept_record_group("g2") is True and await p.take_back_kept_record_group("nope") is False
     assert (await p.get_document("g2", "recordGroups"))["isDeletedAtSource"] is False
     assert await p.purge_trash_kept_record_groups(p.org) == []
+
+
+async def test_a_restore_is_not_undone_by_trash_state_in_its_set(pg_db) -> None:
+    p = bound(pg_db)
+    await tree(p)
+    await trash(p, ["b"])
+    assert sorted(await p.restore_records([{"id": "b", "set": {"isDeleted": True, "deleteBatchId": "bt1", "deletedAtTimestamp": 5, "note": "back"}}, {"id": "c"}], "bt1")) == ["b", "c"]
+    got = await p.get_document("b", "records")
+    assert got["isDeleted"] is False and got["note"] == "back" and "deleteBatchId" not in got and "deletedAtTimestamp" not in got
+
+
+class _Flip:
+    """A transaction that sets the connector's status just before the kept groups are looked at again: the status that changed after the candidates were chosen."""
+
+    def __init__(self, tx: object, org: str) -> None:
+        self._tx, self._org = tx, org
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._tx, name)
+
+    async def fetch(self, sql: str, *args: object) -> object:
+        if "purge_kept_record_groups_due" in sql:
+            await self._tx.execute("UPDATE graph.nodes SET doc = doc || '{\"status\": \"DELETING\"}'::jsonb WHERE org_id = $1 AND coll = 'apps' AND id = 'c1'", self._org)
+        return await self._tx.fetch(sql, *args)
+
+
+async def test_a_kept_record_group_is_not_purged_once_its_connector_is_being_deleted(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([{"_key": "c1", "orgId": p.org, "name": "Drive", "type": "DRIVE", "status": "ACTIVE"}], "apps")
+    await p.batch_upsert_nodes([{"_key": "g1", "orgId": p.org, "connectorId": "c1", "isDeletedAtSource": True}], "recordGroups")
+    real = StandInProvider._q
+
+    async def flipping(self: object, fn: object, transaction: object = None, **kw: object) -> object:
+        async def go(tx: object) -> object:
+            return await fn(_Flip(tx, p.org))
+        return await real(self, go, transaction, **kw)
+    StandInProvider._q = flipping
+    try:
+        assert await p.purge_trash_kept_record_groups(p.org) == []
+    finally:
+        StandInProvider._q = real
+    assert await p.get_document("g1", "recordGroups") is not None
 
 
 async def kb(p: OrgBound, status: str = "ACTIVE") -> None:

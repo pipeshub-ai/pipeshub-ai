@@ -196,7 +196,7 @@ class LookupsMixin(PgBase):
             WHERE link.org_id = $1 AND link.coll = 'records' AND link.doc->>'webUrl' = ANY($2::text[]) AND link.doc->>'orgId' = $3
               AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
               AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
-            ORDER BY h.id LIMIT $6""", current_org_id(), list(weburls), org_id, list(connector_names), after, limit)
+            ORDER BY h.id LIMIT $6""", current_org_id(), list(weburls), org_id, list(connector_names), after, limit, transaction=transaction)
         return [r["id"] for r in rows]
 
     async def get_issue_sites(self, org_id: str, connector_names: list[str], limit: int | None = None, transaction: str | None = None) -> list[str]:
@@ -494,6 +494,8 @@ class LookupsMixin(PgBase):
             ids = await self._page_ids(sql, (org, parent_record_id, 100 if depth == -1 else depth, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id,
                                        limit, offset, transaction)
             return await self._records_page(ids, transaction)
+        except PermissionVerificationUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve records by parent record {parent_record_id}: {e}", exc_info=True)
             return []
@@ -535,6 +537,8 @@ class LookupsMixin(PgBase):
                 SELECT DISTINCT id FROM reach ORDER BY id OFFSET $8 LIMIT $9"""
             ids = await self._page_ids(sql, (org, groups, connector_id, org_id, status_filters or None, exclude_statuses or None, after_key), user_key, org_id, limit, offset, transaction)
             return await self._records_page(ids, transaction)
+        except PermissionVerificationUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve records by record group {record_group_id}: {e}", exc_info=True)
             return []
