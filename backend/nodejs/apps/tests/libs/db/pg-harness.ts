@@ -83,13 +83,17 @@ export async function startCluster(bin: string, work: string): Promise<Cluster> 
   const port = await withFreePort(async (p) => {
     execFileSync(
       join(bin, 'pg_ctl'),
-      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on -c fsync=off -c synchronous_commit=off -c full_page_writes=off`, 'start'],
+      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c jit=off`, 'start'],
       { stdio: 'ignore' },
     )
     return p
   }, PORT_BASE, PORT_SPAN)
   const probe = new Cluster(bin, root, port, 0)
-  const major = await probe.admin(async (c) => Math.floor(Number((await c.query("SHOW server_version_num")).rows[0].server_version_num) / 10000))
+  const major = await probe.admin(async (c) => {
+    // JIT compiles the catalog queries of every migration and made each test of the reverse shard about six times slower, so a cluster with it on is a harness fault
+    if ((await c.query('SHOW jit')).rows[0].jit !== 'off') throw new Error('the test cluster started with jit on')
+    return Math.floor(Number((await c.query("SHOW server_version_num")).rows[0].server_version_num) / 10000)
+  })
   return new Cluster(bin, root, port, major)
 }
 
