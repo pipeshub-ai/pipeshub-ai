@@ -188,3 +188,25 @@ def is_valid_filter_value(value: FilterValue) -> bool:
     if isinstance(value, list) and not value:
         return False
     return True
+
+
+def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondition]:
+    """Backend-neutral ``FieldCondition`` list from a key -> value dict.
+
+    Keys are canonicalised to ``metadata.x``; None and blank-string values are
+    skipped. Providers translate the conditions into their own query syntax.
+    """
+    conditions: list[FieldCondition] = []
+    for key, value in filters.items():
+        if value is None:
+            continue
+        field_key = canonical_filter_key(key)
+        if isinstance(value, (list, tuple)):
+            filtered = [v for v in value if v is not None]
+            if filtered:
+                conditions.append(FieldCondition(key=field_key, values=filtered))
+        elif isinstance(value, str) and not value.strip():
+            continue
+        else:
+            conditions.append(FieldCondition(key=field_key, value=value))
+    return conditions

@@ -20,25 +20,25 @@ import { World, startWorld } from './world';
 
 const suite = haveStack && haveMongod ? describe : describe.skip;
 const DB = 'es_reverse';
-const ONLINE = { MIGRATE_BATCH_DELAY_MS: '20', MIGRATE_TEST_HOOKS: '1' };
+const ONLINE = { MIGRATE_TEST_HOOKS: '1' };
 const FLAGS = ['--fence-armed', '--shadow-clean', '--drain-wait', '20', '--grace', '0.3'];
 
 for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
   suite(`docstore-migrate: rollback and the reverse copy (${bin})`, function () {
-    this.timeout(600_000);
     let w: World;
-    const hooks = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS };
+    const hooks = { hooks: process.env.MIGRATE_TEST_HOOKS, opts: process.env.MIGRATE_FENCE_CLIENT_OPTIONS, ms: process.env.MIGRATE_FENCE_TEST_MS };
     const base = (): Record<string, unknown[]> => ({ ...identityDocs(), ...conversationDocs(), ...contentDocs() });
 
     before(async () => {
       // the cut waits as long as the application's client could hold a write (two minutes with the usual options); the tests shorten it
       process.env.MIGRATE_TEST_HOOKS = '1';
       process.env.MIGRATE_FENCE_CLIENT_OPTIONS = JSON.stringify({ waitQueueTimeoutMS: 100, connectTimeoutMS: 100, serverSelectionTimeoutMS: 100, retryWrites: true });
+      process.env.MIGRATE_FENCE_TEST_MS = '200';
       w = await startWorld(bin, 'migrate_reverse', DB);
     });
     after(async () => {
       await w?.stop();
-      for (const [k, v] of [['MIGRATE_TEST_HOOKS', hooks.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', hooks.opts]] as const)
+      for (const [k, v] of [['MIGRATE_TEST_HOOKS', hooks.hooks], ['MIGRATE_FENCE_CLIENT_OPTIONS', hooks.opts], ['MIGRATE_FENCE_TEST_MS', hooks.ms]] as const)
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
     });

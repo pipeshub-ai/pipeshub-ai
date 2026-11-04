@@ -21,10 +21,17 @@ on:
       - 'backend/python/tests/integration/db/**'
       - 'backend/python/tests/integration/pg_runtime/**'
       - 'backend/python/app/services/graph_db/postgres/**'
-      - 'backend/python/app/services/graph_db/interface/**'
+      - 'backend/python/app/services/graph_db/**'
+      - 'backend/python/app/modules/code_graph/**'
+      - 'backend/python/app/models/entities.py'
+      - 'backend/python/app/exceptions/graph_db_exceptions.py'
+      - 'backend/python/app/utils/time_conversion.py'
       - 'backend/python/app/services/graph_db/graph_db_provider_factory.py'
       - 'backend/python/app/models/permission.py'
       - 'backend/python/tests/integration/graph_db/postgres/**'
+      - 'backend/python/tests/integration/graph_db/test_code_graph_real_backends.py'
+      - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
+      - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
       - 'backend/python/pyproject.toml'
@@ -136,8 +143,8 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        # exactly the graph suite's cases ran (78), none failed: a suite that registered nothing is not a pass
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=78'
+        # exactly the graph suite's cases ran (331), none failed: a suite that registered nothing is not a pass
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml" "$RUNNER_TEMP/py-graph-junit.xml" --expect-suite 'tests.integration.graph_db.postgres=331'
 
   node:
     runs-on: ubuntu-latest
