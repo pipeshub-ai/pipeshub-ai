@@ -55,3 +55,28 @@ def test_downgrading_the_writers_touches_nothing_that_is_not_theirs(db):
         assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
+
+
+def test_a_function_that_only_shares_a_writers_name_is_not_taken_away_with_the_writers(db):
+    """The writers are selected by exact signature: an overload of a writer's name keeps its function, its registry row and its pin."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        c.execute("CREATE FUNCTION kg.w_records_upsert(text) RETURNS int LANGUAGE sql AS 'SELECT 1'")
+        c.execute("INSERT INTO kernel.function_registry (proc, class) VALUES ('kg.w_records_upsert(text)'::regprocedure, 'read')")
+        c.execute("INSERT INTO kernel.vetted_write_pins (proc, rel, op, key_cols, set_cols, txn_col, max_items) VALUES ('kg.w_records_upsert(text)'::regprocedure, 'kg.links'::regclass, 'insert', NULL, NULL, NULL, 1)")
+    r = run_migrate(url, "downgrade", "kg_0001", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname LIKE 'w\\_%'").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM pg_proc WHERE oid = 'kg.w_records_upsert(text)'::regprocedure").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM kernel.function_registry WHERE proc = 'kg.w_records_upsert(text)'::regprocedure").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM kernel.vetted_write_pins WHERE proc = 'kg.w_records_upsert(text)'::regprocedure").fetchone()[0] == 1
+        c.execute("DELETE FROM kernel.vetted_write_pins WHERE proc = 'kg.w_records_upsert(text)'::regprocedure")
+        c.execute("DELETE FROM kernel.function_registry WHERE proc = 'kg.w_records_upsert(text)'::regprocedure")
+        c.execute("DROP FUNCTION kg.w_records_upsert(text)")
+        c.execute("SELECT kernel._sync_vetted_privs('kg.links'::regclass)")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
