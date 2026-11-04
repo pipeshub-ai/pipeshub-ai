@@ -27,6 +27,8 @@ BEGIN
     IF cardinality(p_kinds) <> cardinality(p_parents) OR cardinality(p_children) <> cardinality(p_parents) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3) INTO p_parents, p_kinds, p_children FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3 FROM unnest(p_parents, p_kinds, p_children) WITH ORDINALITY AS k(c1, c2, c3, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
     DELETE FROM kg.links t USING unnest(p_parents, p_kinds, p_children) AS k(a, b, c) WHERE t.org_id = v_org AND t.parent_sk = k.a AND t.kind = k.b AND t.child_sk = k.c;
     GET DIAGNOSTICS v_n = ROW_COUNT;
     RETURN v_n;

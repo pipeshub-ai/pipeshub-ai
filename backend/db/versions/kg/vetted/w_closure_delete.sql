@@ -26,6 +26,8 @@ BEGIN
     IF cardinality(p_principals) <> cardinality(p_users) OR cardinality(p_apps) <> cardinality(p_users) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3) INTO p_users, p_principals, p_apps FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3 FROM unnest(p_users, p_principals, p_apps) WITH ORDINALITY AS k(c1, c2, c3, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
     DELETE FROM kg.principal_closure t USING unnest(p_users, p_principals, p_apps) AS k(a, b, c) WHERE t.org_id = v_org AND t.user_sk = k.a AND t.principal_sk = k.b AND t.app_sk = k.c;
     GET DIAGNOSTICS v_n = ROW_COUNT;
     RETURN v_n;

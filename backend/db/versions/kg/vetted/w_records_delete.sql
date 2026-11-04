@@ -17,6 +17,8 @@ BEGIN
   IF v_org IS NULL THEN RETURN 0; END IF;       -- no org (or someone else's): no rows, the same answer
   DECLARE v_n integer;
   BEGIN
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1) INTO p_sks FROM (SELECT DISTINCT ON (k.c1) k.c1 FROM unnest(p_sks) WITH ORDINALITY AS k(c1, n) ORDER BY k.c1, k.n DESC) s;
     DELETE FROM kg.records t USING unnest(p_sks) AS k(a) WHERE t.org_id = v_org AND t.sk = k.a;
     GET DIAGNOSTICS v_n = ROW_COUNT;
     RETURN v_n;

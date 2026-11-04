@@ -31,6 +31,17 @@ BEGIN
     IF cardinality(p_app_sks) <> cardinality(p_ids) OR cardinality(p_group_sks) <> cardinality(p_ids) OR cardinality(p_clauses) <> cardinality(p_ids) OR cardinality(p_hashes) <> cardinality(p_ids) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
+    IF EXISTS (SELECT 1 FROM unnest(p_clauses) AS e WHERE jsonb_typeof(e) <> 'array') THEN
+      RAISE EXCEPTION 'w_classes_set: the clauses of a class are an array' USING ERRCODE = '22023';
+    END IF;
+    -- A class is content-addressed: an id that is named twice, or already stored, with other content is refused, never silently kept as it was.
+    IF EXISTS (SELECT 1 FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e) GROUP BY k.a HAVING count(DISTINCT (k.b, k.c, k.d, k.e)) > 1)
+       OR EXISTS (SELECT 1 FROM kg.scope_classes t JOIN unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e) ON t.id = k.a
+                  WHERE t.org_id = v_org AND (t.app_sk <> k.b OR t.group_sk IS DISTINCT FROM k.c OR t.clauses <> k.d OR t.hash <> k.e)) THEN
+      RAISE EXCEPTION 'w_classes_set: the class id is taken by other content' USING ERRCODE = '22023';
+    END IF;
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1), array_agg(s.c2 ORDER BY s.c1), array_agg(s.c3 ORDER BY s.c1), array_agg(s.c4 ORDER BY s.c1), array_agg(s.c5 ORDER BY s.c1) INTO p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes FROM (SELECT DISTINCT ON (k.c1) k.c1, k.c2, k.c3, k.c4, k.c5 FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, n) ORDER BY k.c1, k.n DESC) s;
     INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e)
       ON CONFLICT (org_id, id) DO NOTHING;
     GET DIAGNOSTICS v_n = ROW_COUNT;

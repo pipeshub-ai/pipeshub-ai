@@ -35,6 +35,8 @@ BEGIN
     IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_roles) <> cardinality(p_principals) OR cardinality(p_apps) <> cardinality(p_principals) OR cardinality(p_leaves) <> cardinality(p_principals) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c5 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c6 ORDER BY s.c1, s.c2, s.c3) INTO p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4, k.c5, k.c6 FROM unnest(p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, c6, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
     INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype, role, app_sk, leaf) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f FROM unnest(p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves) AS k(a, b, c, d, e, f)
       ON CONFLICT (org_id, principal_sk, node_sk, gtype) DO UPDATE SET role = excluded.role, app_sk = excluded.app_sk, leaf = excluded.leaf;
     GET DIAGNOSTICS v_n = ROW_COUNT;

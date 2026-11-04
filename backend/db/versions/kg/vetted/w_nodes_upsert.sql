@@ -24,6 +24,8 @@ BEGIN
     IF cardinality(p_colls) <> cardinality(p_ids) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1, s.c2), array_agg(s.c2 ORDER BY s.c1, s.c2) INTO p_colls, p_ids FROM (SELECT DISTINCT ON (k.c1, k.c2) k.c1, k.c2 FROM unnest(p_colls, p_ids) WITH ORDINALITY AS k(c1, c2, n) ORDER BY k.c1, k.c2, k.n DESC) s;
     INSERT INTO kg.node_keys (org_id, coll, id) SELECT v_org, k.a, k.b FROM unnest(p_colls, p_ids) AS k(a, b)
       ON CONFLICT (org_id, coll, id) DO NOTHING;
     RETURN QUERY SELECT k.coll, k.id, k.sk FROM kg.node_keys k JOIN unnest(p_colls, p_ids) AS x(c, i) ON k.coll = x.c AND k.id = x.i WHERE k.org_id = v_org LIMIT 5000;

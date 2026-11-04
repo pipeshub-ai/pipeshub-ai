@@ -18,6 +18,8 @@ def upgrade():
 
 
 def downgrade():
+    # The writers go, and with them the write grants the pins gave the vetted role (its reads stay, they belong to the schema): a database stopped at kg_0001 must pass the catalog check.
+    op.execute("REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA kg FROM pipeshub_vetted_kg")
     op.execute("DELETE FROM kernel.vetted_write_pins WHERE proc::oid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'kg'::regnamespace)")
     for name in WRITERS:
         op.execute(f"DROP FUNCTION IF EXISTS kg.{name} CASCADE")

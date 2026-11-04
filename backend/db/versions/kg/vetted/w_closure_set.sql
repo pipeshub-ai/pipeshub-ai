@@ -23,13 +23,15 @@ BEGIN
   IF p_vias IS NULL THEN RAISE EXCEPTION 'w_closure_set: p_vias is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_vias) > 5000 THEN RAISE EXCEPTION 'w_closure_set: p_vias takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_vias) e WHERE e IS NULL) THEN RAISE EXCEPTION 'w_closure_set: p_vias has a NULL item' USING ERRCODE = '22023'; END IF;
-  IF EXISTS (SELECT 1 FROM unnest(p_vias) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 1 AND 32) THEN RAISE EXCEPTION 'w_closure_set: p_vias has an item of the wrong length' USING ERRCODE = '22023'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(p_vias) e WHERE e IS NOT NULL AND e NOT IN ('self', 'membership', 'org', 'link', 'link_badge')) THEN RAISE EXCEPTION 'w_closure_set: p_vias has an item that is not one of the allowed values' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN 0; END IF;       -- no org (or someone else's): no rows, the same answer
   DECLARE v_n integer;
   BEGIN
     IF cardinality(p_principals) <> cardinality(p_users) OR cardinality(p_apps) <> cardinality(p_users) OR cardinality(p_vias) <> cardinality(p_users) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
+    -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+    SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3) INTO p_users, p_principals, p_apps, p_vias FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4 FROM unnest(p_users, p_principals, p_apps, p_vias) WITH ORDINALITY AS k(c1, c2, c3, c4, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
     INSERT INTO kg.principal_closure (org_id, user_sk, principal_sk, app_sk, via) SELECT v_org, k.a, k.b, k.c, k.d FROM unnest(p_users, p_principals, p_apps, p_vias) AS k(a, b, c, d)
       ON CONFLICT (org_id, user_sk, principal_sk, app_sk) DO UPDATE SET via = excluded.via;
     GET DIAGNOSTICS v_n = ROW_COUNT;
