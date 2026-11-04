@@ -792,6 +792,24 @@ export function describeAnswerWiring(
       expect(visibleText(client)).to.equal(answer);
     });
 
+    it('links a citation while the answer streams, from the flat citations the backend streams', async () => {
+      // Live snapshots carry citations without the saved conversation's `citationData` wrapper.
+      const live = [{ content: 'Revenue grew 12%.', chunkIndex: 1, metadata: { recordId: 'rec-1', recordName: 'Q3 report', webUrl: 'https://x.test/q3' }, citationType: 'vectordb|document' }];
+      const errors = console.error as unknown as sinon.SinonStub;
+      {
+        const client = await ask([
+          { type: 'RUN_STARTED', runId: 'r1' },
+          { type: 'TEXT_MESSAGE_START', runId: 'r1' },
+          { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: live }] },
+          ...tokens(`${ANSWER}\n\nMore detail follows here.`),
+          { type: 'STATE_DELTA', runId: 'r1', delta: [{ op: 'replace', path: '/citations', value: [null, 'id-only', ...live] }] },
+          finished(NORMALIZED_ANSWER, CITATIONS),
+        ]);
+        expect(errors.getCalls().map((c) => String(c.args[0]))).to.not.include('Error handling AG-UI stream event:');
+        expect(visibleText(client)).to.include('Revenue grew 12% [1](https://x.test/q3).');
+      }
+    });
+
     it('shows citation placeholders as [n] markers that match a numbered Sources list with real links', async () => {
       const answer =
         'Revenue grew [source](ref1). The [Asana Trust Center](https://ref2.xyz) lists the report https://ref1.xyz.';
