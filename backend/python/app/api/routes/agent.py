@@ -223,7 +223,10 @@ class ChatQuery(BaseModel):
     toolApproval: dict[str, Any] | None = None
     # Set by Node for a project-scoped chat whose turn selects below app level:
     # the project's own sources (`{"apps": [...]}`), which the selected record
-    # groups, folders and records must lie in. Never taken from a client.
+    # groups, folders and records must lie in. Node builds it from the project and
+    # never copies it from the client's request. It only narrows the turn: a body
+    # that names other sources, or leaves it out, reaches no record beyond the
+    # caller's own access, as in a chat outside any project.
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
