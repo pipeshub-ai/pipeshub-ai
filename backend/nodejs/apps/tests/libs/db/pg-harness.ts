@@ -83,7 +83,7 @@ export async function startCluster(bin: string, work: string): Promise<Cluster> 
   const port = await withFreePort(async (p) => {
     execFileSync(
       join(bin, 'pg_ctl'),
-      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on`, 'start'],
+      ['-D', join(root, 'data'), '-w', '-l', join(root, 'log'), '-o', `-p ${p} -k ${root} -c listen_addresses=127.0.0.1 -c max_connections=100 -c track_commit_timestamp=on -c fsync=off -c synchronous_commit=off -c full_page_writes=off`, 'start'],
       { stdio: 'ignore' },
     )
     return p
