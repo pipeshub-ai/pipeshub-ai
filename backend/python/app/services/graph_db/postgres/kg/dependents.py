@@ -17,8 +17,10 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 
-def _ids(keys: set[Key]) -> list[str]:
-    return sorted({k[1] for k in keys})
+def _pairs(keys: set[Key]) -> tuple[list[str], list[str]]:
+    """The collections and ids of ``keys`` as two parallel arrays, sorted: an edge end is matched on both, never on the id alone (a record and a record group can share one)."""
+    ks = sorted(keys)
+    return [k[0] for k in ks], [k[1] for k in ks]
 
 
 async def held_keys(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
@@ -53,8 +55,10 @@ async def _kg_parents(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
 
 
 async def _graph_parents(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
-    rows = await tx.fetch("""/* pipeshub:kg.graph_ups */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = ANY($2::text[])
-        AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.from_coll = ANY($4::text[])""", org, _ids(keys), list(HIERARCHY), list(RECORD_COLLS))
+    colls, ids = _pairs(keys)
+    rows = await tx.fetch("""/* pipeshub:kg.graph_ups */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+        AND EXISTS (SELECT 1 FROM unnest($2::text[], $5::text[]) AS k(c, i) WHERE k.c = e.to_coll AND k.i = e.to_id)
+        AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.from_coll = ANY($4::text[])""", org, colls, list(HIERARCHY), list(RECORD_COLLS), ids)
     return {(r[0], r[1]) for r in rows}
 
 
@@ -73,21 +77,23 @@ async def moved_parents(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
     recs = {k for k in keys if k[0] in RECORD_COLLS}
     if not recs:
         return set()
-    now: dict[str, set[Key]] = {}
-    for r in await tx.fetch("""/* pipeshub:kg.parent_now */ SELECT e.to_id AS child, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
-            AND e.to_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.from_coll = ANY($4::text[])
-            AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id)""", org, _ids(recs), list(HIERARCHY), list(RECORD_COLLS)):
-        now.setdefault(r["child"], set()).add((r["from_coll"], r["from_id"]))
-    before: dict[str, set[Key]] = {}
+    now: dict[Key, set[Key]] = {}
+    rcolls, rids = _pairs(recs)
+    for r in await tx.fetch("""/* pipeshub:kg.parent_now */ SELECT e.to_coll AS ccoll, e.to_id AS child, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+            AND EXISTS (SELECT 1 FROM unnest($2::text[], $5::text[]) AS k(c, i) WHERE k.c = e.to_coll AND k.i = e.to_id)
+            AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.from_coll = ANY($4::text[])
+            AND EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id)""", org, rcolls, list(HIERARCHY), list(RECORD_COLLS), rids):
+        now.setdefault((r["ccoll"], r["child"]), set()).add((r["from_coll"], r["from_id"]))
+    before: dict[Key, set[Key]] = {}
     sks = sorted((await load_sks(tx, org, recs)).values())
-    for r in await tx.fetch("""/* pipeshub:kg.parent_before */ SELECT c.id AS child, p.coll AS pcoll, p.id AS pid FROM kg.records r JOIN kg.node_keys c ON c.org_id = r.org_id AND c.sk = r.sk
+    for r in await tx.fetch("""/* pipeshub:kg.parent_before */ SELECT c.coll AS ccoll, c.id AS child, p.coll AS pcoll, p.id AS pid FROM kg.records r JOIN kg.node_keys c ON c.org_id = r.org_id AND c.sk = r.sk
             JOIN kg.node_keys p ON p.org_id = r.org_id AND p.sk = r.parent_sk WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])
-            UNION SELECT c.id, p.coll, p.id FROM kg.links l JOIN kg.node_keys c ON c.org_id = l.org_id AND c.sk = l.child_sk JOIN kg.node_keys p ON p.org_id = l.org_id AND p.sk = l.parent_sk
+            UNION SELECT c.coll, c.id, p.coll, p.id FROM kg.links l JOIN kg.node_keys c ON c.org_id = l.org_id AND c.sk = l.child_sk JOIN kg.node_keys p ON p.org_id = l.org_id AND p.sk = l.parent_sk
             WHERE l.org_id = $1 AND l.child_sk = ANY($2::bigint[]) AND l.kind = 1""", org, sks):
-        before.setdefault(r["child"], set()).add((CODE_COLL[r["pcoll"]], r["pid"]))
+        before.setdefault((CODE_COLL[r["ccoll"]], r["child"]), set()).add((CODE_COLL[r["pcoll"]], r["pid"]))
     out: set[Key] = set()
     for k in recs:
-        out |= now.get(k[1], set()) ^ before.get(k[1], set())
+        out |= now.get(k, set()) ^ before.get(k, set())
     return {k for k in out if k[0] in RECORD_COLLS} - recs
 
 
@@ -96,13 +102,15 @@ async def children_of(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
     recs = {k for k in keys if k[0] in RECORD_COLLS}
     if not recs:
         return set()
-    ids = _ids(recs)
+    colls, ids = _pairs(recs)
     out: set[Key] = set()
-    for r in await tx.fetch("""/* pipeshub:kg.graph_kids */ SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[])
-            AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])""", org, ids, list(HIERARCHY), list(RECORD_COLLS)):
+    for r in await tx.fetch("""/* pipeshub:kg.graph_kids */ SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+            AND EXISTS (SELECT 1 FROM unnest($2::text[], $5::text[]) AS k(c, i) WHERE k.c = e.from_coll AND k.i = e.from_id)
+            AND e.doc->>'relationshipType' = ANY($3::text[]) AND e.to_coll = ANY($4::text[])""", org, colls, list(HIERARCHY), list(RECORD_COLLS), ids):
         out.add((r[0], r[1]))
-    for r in await tx.fetch("""/* pipeshub:kg.graph_members */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = ANY($2::text[])
-            AND e.from_coll = ANY($3::text[])""", org, ids, list(RECORD_COLLS)):
+    for r in await tx.fetch("""/* pipeshub:kg.graph_members */ SELECT e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+            AND EXISTS (SELECT 1 FROM unnest($2::text[], $4::text[]) AS k(c, i) WHERE k.c = e.to_coll AND k.i = e.to_id)
+            AND e.from_coll = ANY($3::text[])""", org, colls, list(RECORD_COLLS), ids):
         out.add((r[0], r[1]))
     sks = sorted((await load_sks(tx, org, recs)).values())
     if sks:

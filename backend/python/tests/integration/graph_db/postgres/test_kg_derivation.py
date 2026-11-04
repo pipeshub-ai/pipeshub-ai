@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.core.org_context import OrgContext, bind
-from app.services.graph_db.postgres.kg import reader
+from app.services.graph_db.postgres.kg import dependents, reader
 from app.services.graph_db.postgres.kg.model import (
     LINK_GROUP,
     LINK_HIERARCHY,
@@ -171,3 +171,20 @@ async def test_a_hierarchy_edge_to_another_collection_does_not_count_as_a_child_
         keys = {("records", "lone"), ("records", "real")}
         got = await p._q(lambda tx: reader.load_has_children(tx, org, keys), None)
     assert got == {("records", "real")}
+
+
+async def test_the_dependents_of_a_record_do_not_include_those_of_a_record_group_of_the_same_id(pg_db) -> None:
+    """An edge end is matched on its collection and id: the parents, children and members of ``recordGroups/x`` are not those of ``records/x``."""
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("x", "up", "kid", "member")], "records")
+        await p.batch_upsert_nodes([{"_key": "x", "groupName": "same id", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_create_edges([edge("up", "records", "x", "recordGroups", relationshipType="PARENT_CHILD"),
+                                    edge("x", "recordGroups", "kid", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("member", "records", "x", "recordGroups")], "belongsTo")
+        key = {("records", "x")}
+        parents = await p._q(lambda tx: dependents.parents_of(tx, org, key), None)
+        kids = await p._q(lambda tx: dependents.children_of(tx, org, key), None)
+        moved = await p._q(lambda tx: dependents.moved_parents(tx, org, key), None)
+    assert (parents, kids, moved) == (set(), set(), set())
