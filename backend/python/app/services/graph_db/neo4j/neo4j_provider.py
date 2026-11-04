@@ -718,11 +718,13 @@ _STAGE_STATE_DELETE_BATCH = 5000
 _STAGE_STATE_VRID_BATCH = 1000
 
 # The sweeper scans stage states by status and age; the coordinator reads one revision;
-# a connector's delete removes its stage states by connectorId.
+# a connector's delete removes its stage states by connectorId; the stored-content cleanup
+# looks up a virtual record's org without a revision.
 _STAGE_STATE_INDEXES = (
     "CREATE INDEX stage_state_status_updated IF NOT EXISTS FOR (n:StageState) ON (n.status, n.updatedAtMs)",
     "CREATE INDEX stage_state_revision IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId, n.rev)",
     "CREATE INDEX stage_state_connector IF NOT EXISTS FOR (n:StageState) ON (n.connectorId)",
+    "CREATE INDEX stage_state_virtual_record IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId)",
     # A stage retry pages a connector's states in one status by id, off this index alone.
     "CREATE INDEX stage_state_page IF NOT EXISTS FOR (n:StageState) ON (n.connectorId, n.stage, n.status, n.id)",
 )
@@ -8148,9 +8150,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # reaches its own hidden KB — is honoured as-is.
             kb_filter_clause = ""
             if kb_ids:
-                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND kb.id IN $kb_ids"
+                kb_filter_clause = " WHERE kb.id IN $kb_ids"
             else:
-                kb_filter_clause = f" WHERE {_kb_edge_role_ok('kbp')} AND coalesce(kb.isHidden, false) = false"
+                kb_filter_clause = " WHERE coalesce(kb.isHidden, false) = false"
 
             # Prepare parameters (populated further below, and mutated by time-range conditions)
             parameters = {
@@ -8174,6 +8176,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Direct user-KB permissions (KB is now an App node with type="KB")
                 OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
+                // The role is read before the next match: Neo4j 5.26 cannot read it from the edge after it.
+                WITH userDoc, kb, {_kb_edge_role_ok('kbp')} AS kb_role_ok
+                WITH userDoc, kb WHERE kb_role_ok = true
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE {cypher_searchable_record("r")}
                   AND {live_record}
@@ -16178,6 +16183,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"vrid": virtual_record_id, "rev": rev},
         )
         return [dict(row["doc"]) for row in rows]
+
+    @override
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(
+            f"MATCH (n:{label}) WHERE n.virtualRecordId = $vrid AND n.orgId IS NOT NULL "
+            "RETURN n.orgId AS org LIMIT 1",
+            {"vrid": virtual_record_id},
+        )
+        return rows[0]["org"] if rows else None
 
     @override
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
