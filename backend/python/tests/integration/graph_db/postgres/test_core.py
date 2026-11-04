@@ -5,6 +5,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING
 
@@ -145,6 +146,7 @@ CALLS = [
     ("batch_upsert_nodes", ([{"_key": "k"}], "things"), {}),
     ("create_node_if_absent", ("k", "things", {}), {}),
     ("update_node", ("k", "things", {"v": 1}), {}),
+    ("increment_node_field", ("k", "things", "v"), {}),
     ("batch_update_nodes", ([{"_key": "k", "v": 1}], "things"), {}),
     ("update_node_fields_if_match", ("k", "things", {"v": 1}, {"v": 0}), {}),
     ("delete_nodes", (["k"], "things"), {}),
@@ -430,3 +432,17 @@ async def test_deleting_all_edges_of_a_node_follows_the_relationship_type_of_the
         await seed()
         assert await p.delete_all_edges_for_node("records/x", "recordLinks") == 1
         assert len(await p.get_edges_from_node("records/x", "nodeRelations")) == 1                                   # the hierarchy edge stayed
+
+
+async def test_increment_node_field_is_atomic_stays_in_the_org_and_answers_none_for_a_missing_node(pg_provider, orgs, org_ctx) -> None:
+    a, b = orgs
+    p = pg_provider
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "app", "name": "x"}], "things")
+        assert await p.increment_node_field("app", "things", "gen") == 1  # an absent field counts as 0
+        got = await asyncio.gather(*(p.increment_node_field("app", "things", "gen") for _ in range(12)))
+        assert sorted(got) == list(range(2, 14)), got  # no two callers get the same value
+        assert (await p.get_document("app", "things"))["gen"] == 13
+        assert await p.increment_node_field("missing", "things", "gen") is None
+    with org_ctx(b):
+        assert await p.increment_node_field("app", "things", "gen") is None  # another org's node is not found
