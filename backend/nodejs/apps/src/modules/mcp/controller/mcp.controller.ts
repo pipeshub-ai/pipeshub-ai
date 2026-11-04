@@ -5,7 +5,7 @@
  * connected via StreamableHTTP transport.
  */
 
-import { KeyObject } from 'node:crypto';
+import { createHash, KeyObject } from 'node:crypto';
 import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -314,7 +314,8 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         mayReadCode(req.user) &&
         (await callerHasCodeRepos(
           codeDeps,
-          `${req.user?.orgId}:${req.user?.userId}`,
+          // Per token too: an app's knowledge limit narrows which repos it reads.
+          `${req.user?.orgId}:${req.user?.userId}:${createHash('sha256').update(codeDeps.authorization).digest('hex')}`,
         ))
       ) {
         // A client asking for code only (`/mcp?tools=code`) is not sent the

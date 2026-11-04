@@ -3502,6 +3502,7 @@
         "disconnected": "已成功断开连接",
         "disconnectError": "断开连接失败",
         "credentialsSaveError": "服务器已保存，但凭证无法保存。您可以稍后在“管理”中添加。",
+        "logoSaveError": "服务器已保存，但其徽标未能保存。您可以在“管理”中重试。",
         "credentialsSaved": "凭据已保存",
         "credentialsReset": "MCP 服务器已更新。由于连接已更改，已保存的凭证已被删除；请重新连接后再使用。",
         "oauthTimedOut": "登录用时过长，已停止。请重试。",
@@ -3516,6 +3517,16 @@
       "form": {
         "name": "名称",
         "description": "描述",
+        "logo": "徽标",
+        "logoHint": "PNG、JPEG、WebP、GIF 或 SVG，最大 2 MB。正方形图片效果最佳。",
+        "logoUpload": "上传徽标",
+        "logoChange": "更换徽标",
+        "logoRemove": "移除",
+        "logoErrors": {
+          "type": "请使用 PNG、JPEG、WebP、GIF 或 SVG 图片。",
+          "size": "请使用不超过 2 MB 的图片。",
+          "unreadable": "无法读取此图片，请尝试其他文件。"
+        },
         "transport": "传输方式",
         "command": "命令",
         "args": "参数",

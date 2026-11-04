@@ -12,7 +12,7 @@ import pytest
 from app.core import org_context
 from app.core.db import CapabilityError, shared
 from app.services.vector_db.collection_registry import _is_collection_missing
-from app.services.vector_db.models import FilterMode, HealthStatus
+from app.services.vector_db.models import FilterMode, HealthStatus, VectorPoint
 from app.services.vector_db.pgvector.catalog import CollectionRow, OrgSpace
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
@@ -204,11 +204,9 @@ def test_identity_and_capabilities() -> None:
 
 
 @pytest.mark.asyncio
-async def test_points_methods_are_not_implemented_yet(svc) -> None:
+async def test_reading_and_searching_are_not_implemented_yet(svc) -> None:
     flt = await svc.filter_collection(must={"orgId": ORG})
-    for call in (svc.scroll("records", flt, 1), svc.retrieve_points("records", ["x"]), svc.upsert_points("records", []),
-                 svc.delete_points("records", flt), svc.update_payload_by_ids("records", ["x"], {}),
-                 svc.overwrite_payload("records", {}, flt), svc.set_payload("records", {}, flt), svc.query_nearest_points("records", [])):
+    for call in (svc.scroll("records", flt, 1), svc.retrieve_points("records", ["x"]), svc.query_nearest_points("records", [])):
         with pytest.raises(NotImplementedError, match="pgvector"):
             await call
 
@@ -331,3 +329,159 @@ def test_transient_errors_are_classified() -> None:
     s = PgVectorService(PgVectorConfig(dsn="postgresql://h/db"))
     assert s.transient_search_error(asyncpg.QueryCanceledError()) is SearchFailureKind.TIMEOUT
     assert s.transient_search_error(ValueError("x")) is None
+
+
+# ---- writes -----------------------------------------------------------------------------------------------------------------------
+def point(i: int, org: str = ORG, dim: int = 4, model: str | None = "p:m:4") -> VectorPoint:
+    import uuid
+
+    meta = {"orgId": org, "virtualRecordId": "r1", **({"embeddingModel": model} if model else {})}
+    return VectorPoint(id=str(uuid.UUID(int=i)), dense_vector=[0.5] * dim, payload={"page_content": "t", "metadata": meta})
+
+
+@pytest.fixture
+def writer(svc, monkeypatch) -> tuple[PgVectorService, SimpleNamespace]:
+    """A connected provider whose catalog answers and whose statements are recorded instead of run."""
+    from app.services.vector_db.pgvector import writes
+
+    calls = SimpleNamespace(upsert=[], delete=[], placed=[], payload=[])
+    space = OrgSpace(5, "active", "p:m:4", 4, "cosine")
+    svc._catalog.require_collection = AsyncMock(return_value=ROW)
+    svc._catalog.org_spaces = AsyncMock(return_value=[space])
+    svc._catalog.forget = MagicMock()
+
+    async def upsert(tx, coll, space_id, batch, computed_at, *, safe_mode) -> None:
+        calls.upsert.append((coll, space_id, len(batch.point_ids), batch.org))
+
+    async def delete_batch(tx, org, coll, compiled, *, safe_mode) -> int:
+        calls.delete.append(org)
+        return writes.DELETE_BATCH if len(calls.delete) < 3 else 7
+
+    monkeypatch.setattr(writes, "upsert", upsert)
+    monkeypatch.setattr(writes, "delete_batch", delete_batch)
+    svc.placement = SimpleNamespace(before_first_write=AsyncMock(side_effect=lambda org: calls.placed.append(org)))
+    return svc, calls
+
+
+@pytest.mark.asyncio
+async def test_a_batch_is_written_in_pieces_after_the_org_is_placed_and_into_the_orgs_space(writer) -> None:
+    svc, calls = writer
+    await svc.upsert_points("records", [point(i) for i in range(1, 1202)])
+    assert calls.upsert == [(7, 5, 500, ORG), (7, 5, 500, ORG), (7, 5, 201, ORG)] and calls.placed == [ORG] * 3
+    await svc.upsert_points("records", [])                                   # nothing to write is not an error
+    assert len(calls.upsert) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [None, "", "  ", "not-an-org", "A" * 24])
+async def test_a_write_without_a_valid_org_never_reaches_the_database(writer, bad) -> None:
+    svc, calls = writer
+    flt = await svc.filter_collection(must={"virtualRecordId": "r1"})
+    meta_bad = point(1)
+    meta_bad.payload["metadata"]["orgId"] = bad
+    with pytest.raises(OrgRequired):
+        await svc.upsert_points("records", [meta_bad])
+    with pytest.raises(OrgRequired):
+        await svc.update_payload_by_ids("records", ["x"], {"k": 1}, org_id=bad if bad is not None else "")
+    for call in (svc.delete_points("records", flt), svc.set_payload("records", {"k": 1}, flt), svc.overwrite_payload("records", {"k": 1}, flt)):
+        with pytest.raises(OrgRequired):
+            await call
+    assert not calls.upsert and not calls.delete and not calls.placed
+
+
+@pytest.mark.asyncio
+async def test_a_batch_of_two_orgs_or_two_models_or_two_dimensions_is_refused(writer) -> None:
+    from app.services.vector_db.pgvector.errors import OrgMismatch, SpaceMismatch
+
+    svc, calls = writer
+    with pytest.raises(OrgMismatch):
+        await svc.upsert_points("records", [point(1), point(2, org="b" * 24)])
+    with pytest.raises(SpaceMismatch, match="one embedding model"):
+        await svc.upsert_points("records", [point(1), point(2, model="p:other:4")])
+    with pytest.raises(SpaceMismatch, match="one dimension"):
+        await svc.upsert_points("records", [point(1), point(2, dim=8)])
+    assert not calls.upsert
+
+
+@pytest.mark.asyncio
+async def test_a_destructive_call_with_a_filter_that_matches_everything_is_refused(writer) -> None:
+    svc, calls = writer
+    empty = await svc.filter_collection()
+    only_count = await svc.filter_collection(max_values={"connectorIds": 1})
+    for call in (svc.delete_points("records", empty), svc.set_payload("records", {"k": 1}, empty), svc.overwrite_payload("records", {"k": 1}, empty)):
+        with pytest.raises(ValueError, match="empty filter"):
+            await call
+    with pytest.raises(ValueError, match="array-length"):
+        await svc.delete_points("records", only_count)
+    assert not calls.delete
+
+
+@pytest.mark.asyncio
+async def test_deletes_run_batch_by_batch_until_one_is_short(writer) -> None:
+    svc, calls = writer
+    await svc.delete_points("records", await svc.filter_collection(must={"orgId": ORG, "virtualRecordId": "r1"}))
+    assert calls.delete == [ORG] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_key_failure_is_a_space_mismatch_and_forgets_the_cached_spaces(writer, monkeypatch) -> None:
+    import asyncpg
+
+    from app.services.vector_db.pgvector import writes
+    from app.services.vector_db.pgvector.errors import SpaceMismatch
+
+    svc, _ = writer
+
+    async def stale(*a, **k) -> None:
+        raise asyncpg.ForeignKeyViolationError("fk")
+
+    monkeypatch.setattr(writes, "upsert", stale)
+    with pytest.raises(SpaceMismatch):
+        await svc.upsert_points("records", [point(1)])
+    svc._catalog.forget.assert_called_with(org=ORG)
+
+
+@pytest.mark.asyncio
+async def test_ids_that_are_not_uuids_name_no_point_and_the_request_org_is_the_default(writer, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import writes
+
+    svc, _ = writer
+    seen = []
+
+    async def merge(tx, org, coll, payload, c, ids, *, replace=False) -> int:
+        seen.append((org, ids))
+        return 1
+
+    monkeypatch.setattr(writes, "merge_payload", merge)
+    await svc.update_payload_by_ids("records", ["not-a-uuid"], {"k": 1}, org_id=ORG)
+    assert seen == []                                                          # nothing named a point: no statement
+    with pytest.raises(OrgRequired):
+        await svc.update_payload_by_ids("records", ["00000000-0000-0000-0000-000000000001"], {"k": 1})
+    with in_org():
+        await svc.update_payload_by_ids("records", ["00000000-0000-0000-0000-000000000001"], {"k": 1})
+    assert [o for o, _ in seen] == [ORG]
+
+
+@pytest.mark.asyncio
+async def test_the_orgs_space_for_a_write(writer) -> None:
+    from app.services.vector_db.pgvector.errors import SpaceMismatch
+
+    svc, _ = writer
+    cat = svc._catalog
+    cat.activate_space = AsyncMock(return_value=OrgSpace(9, "active", "p:new:8", 8, "cosine"))
+    cat.replace_empty_space = AsyncMock(return_value=False)
+    cat.name_space = AsyncMock(return_value="p:m:4")
+    assert (await svc._space_for_write(ORG, 4, {"p:m:4"})).space_id == 5       # the org's own space
+    cat.org_spaces = AsyncMock(return_value=[])
+    assert (await svc._space_for_write(ORG, 8, {"p:new:8"})).space_id == 9     # no space yet: the vectors define it
+    cat.activate_space.assert_awaited_with(ORG, "p:new:8", 8)
+    cat.org_spaces = AsyncMock(return_value=[OrgSpace(5, "active", "p:m:4", 4, "cosine")])
+    with pytest.raises(SpaceMismatch):                                         # another dimension while the org holds points
+        await svc._space_for_write(ORG, 8, {"p:new:8"})
+    cat.replace_empty_space.assert_awaited_once()
+    nameless = OrgSpace(5, "active", UNKNOWN_MODEL, 4, "cosine")
+    cat.org_spaces = AsyncMock(return_value=[nameless])
+    assert (await svc._space_for_write(ORG, 4, {"p:m:4"})).effective_model == "p:m:4"      # the first stamped write names it
+    cat.name_space = AsyncMock(return_value="p:someone-else:4")
+    with pytest.raises(SpaceMismatch):
+        await svc._space_for_write(ORG, 4, {"p:m:4"})

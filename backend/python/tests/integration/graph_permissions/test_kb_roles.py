@@ -201,7 +201,7 @@ def _odd_graph(role: str, team_reader: bool) -> tuple[list[dict], list[dict]]:
     nodes, edges = [], []
     for kb, name in (("kbr-odd", "odd"), ("kbr-ok", "ok")):
         nodes += [_org(app(kb, name, connector=KB, app_group="Local Storage", scope="personal")),
-                  _org(rec(f"{kb}-r", f"{name} record", origin="UPLOAD", connector_id=kb, virtualRecordId=f"{kb}-v"))]
+                  _org(rec(f"{kb}-r", f"{name} record", origin="UPLOAD", connector_id=kb, virtualRecordId=f"{kb}-v", indexingStatus="COMPLETED"))]
         edges += [bt(f"{kb}-r", kb), perm(USER, kb, role="READER" if kb == "kbr-ok" else role)]
     if team_reader:
         nodes.append(_org(_node("Teams", "kbr-odd-team", name="kbr-odd-team")))
@@ -235,6 +235,8 @@ async def test_an_unrecognised_direct_role_opens_no_collection_or_record(store, 
 
     accessible = await provider._get_accessible_kb_ids("kbr-m")
     assert "kbr-ok" in accessible and "kbr-odd" not in accessible
+    mapped = await provider._get_kb_virtual_ids("kbr-m", ORG, raise_on_error=True)
+    assert "kbr-ok-v" in mapped and "kbr-odd-v" not in mapped
     gated = {a["id"] for a in await provider.get_gated_apps(USER, ORG)}
     assert "kbr-ok" in gated and "kbr-odd" not in gated
     assert await provider.check_record_access_with_details("kbr-m", ORG, "kbr-odd-r") is None

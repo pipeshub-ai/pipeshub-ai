@@ -59532,6 +59532,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/logos:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the logos of the MCP servers I can see
+      description: |
+        The logos uploaded for custom MCP servers the caller can see (the organization's servers
+        and the caller's own personal ones), by instance id. A server without a logo is left out.
+        Catalog servers never have one: the app shows their vendor's logo.
+
+        Each logo is a PNG at most 96 pixels on a side, as a base64 data URL.
+      operationId: getMcpLogos
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      responses:
+        '200':
+          description: Logos by instance id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logos:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logos
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/instances:
     get:
       tags:
@@ -59887,6 +59941,168 @@ paths:
             Whether agents use the server couldn't be checked, so nothing was deleted
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/instances/{instanceId}/logo:
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Set the logo of a custom MCP server
+      description: |
+        Custom servers only; a catalog server shows its vendor's logo. Organization servers for
+        administrators, a personal server for its owner.
+
+        Send a PNG, JPEG, WebP or GIF image (1 MB at most, under 4096 × 4096 pixels) as a base64
+        data URL. The declared type is ignored: the bytes decide. SVG is refused, since it can
+        carry script; the web app turns an SVG into a PNG before sending it. The image is drawn
+        again as a PNG at most 96 pixels on a side, keeping its shape and transparency (an
+        animated GIF keeps its first frame), and that PNG is stored and returned, never the bytes
+        sent. It replaces any earlier logo.
+
+        The app-wide XSS filter does not check this body: base64 can look like markup to it.
+      operationId: setMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                logo:
+                  type: string
+                  maxLength: 1398165
+                  description: The image as a base64 data URL.
+                  example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAABk...
+              required:
+                - logo
+      responses:
+        '200':
+          description: The logo as stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logo:
+                    type: string
+                    description: A PNG at most 96 pixels on a side, as a base64 data URL.
+                    example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAw...
+                required:
+                  - logo
+        '400':
+          description: |
+            Bad request — one of:
+            - a path id contains characters that are not allowed in an id (for example `/`, `?`, `#`, `%`); this check runs before authentication
+            - the server is a catalog server ("Only custom MCP servers take a logo. ...")
+            - `logo` isn't a base64 data URL, or isn't valid base64, or is empty
+            - the image is not a PNG, JPEG, WebP or GIF, or can't be read
+            - the image is over 1 MB, or over 4096 × 4096 pixels
+            - a JSON body that does not parse ("The request body is not valid JSON.")
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`logo` is missing, not a string, or longer than allowed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service, including a failed write of the logo.
+
+            A JSON body larger than 10 MB is answered `413` by the app-wide body parser instead, before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - MCP Server Instances
+      summary: Remove the logo of a custom MCP server
+      description: |
+        The server shows its default icon again. Succeeds when the server has no logo too.
+        Organization servers for administrators, a personal server for its owner. Needs
+        `mcp:write`, not `mcp:delete`: it changes the server and destroys nothing.
+      operationId: removeMcpInstanceLogo
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The server has no logo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                required:
+                  - success
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:write` scope
+            - the server is an organization server and the caller isn't an administrator
+            - the server is inherited from another organization and can't be changed here
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such server, or it is another user's personal server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service, including a failed removal.
           content:
             application/json:
               schema:
