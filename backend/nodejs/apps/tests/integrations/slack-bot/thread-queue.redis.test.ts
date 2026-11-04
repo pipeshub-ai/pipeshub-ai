@@ -2,9 +2,12 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { realIoredis } from '../../helpers/mock-ioredis-global';
 import {
+  ACQUIRE_OR_ENQUEUE_LUA,
   MemoryThreadQueueStore,
   QueuedSlackMessage,
+  RENEW_LUA,
   RedisThreadQueueStore,
+  TAKE_PENDING_OR_RELEASE_LUA,
   createThreadQueueStore,
   threadQueueKey,
 } from '../../../src/integrations/slack-bot/src/utils/thread-queue';
@@ -78,6 +81,19 @@ describe('slack-bot/utils/thread-queue redis store', () => {
     expect((err as Error).message).to.equal('ECONNRESET');
   });
 
+  it('skips a corrupt queued item instead of losing its batch', async () => {
+    const warn = sinon.stub(console, 'warn');
+    const replies: unknown[] = [['{bad', JSON.stringify(msg('1'))], ['null', '{"x":1}'], []];
+    const evalsha = sinon.stub().callsFake(async () => replies.shift());
+    const store = new RedisThreadQueueStore({ evalsha } as any, SHAS);
+    expect(await store.takePendingOrRelease(KEY, 'o1')).to.deep.equal([msg('1')]);
+    expect(warn.callCount).to.equal(1);
+    // All corrupt: take again so the lock is released rather than held for a TTL.
+    expect(await store.takePendingOrRelease(KEY, 'o1')).to.deep.equal([]);
+    expect(evalsha.callCount).to.equal(3);
+    expect(warn.callCount).to.equal(3);
+  });
+
   it('falls back to memory when Redis is not configured or does not answer', async () => {
     const warn = sinon.stub(console, 'warn');
     const provider = (ping: () => Promise<boolean>, load: () => Promise<string>) =>
@@ -94,7 +110,8 @@ describe('slack-bot/utils/thread-queue redis store', () => {
       expect(r.namespace).to.equal('');
       expect(r.store).to.be.instanceOf(MemoryThreadQueueStore);
     }
-    expect(warn.alwaysCalledWith('Slack thread queue: Redis unavailable, queueing is per process')).to.equal(true);
+    expect(warn.callCount).to.equal(4);
+    expect(warn.alwaysCalledWithExactly('Slack thread queue: Redis unavailable, queueing is per process')).to.equal(true);
 
     const ok = await createThreadQueueStore(provider(async () => true, async () => 'sha'));
     expect(ok.shared).to.equal(true);
@@ -117,9 +134,6 @@ describe('slack-bot/utils/thread-queue redis store', () => {
     before(async () => {
       // The global ioredis mock would answer in-process; this block needs the real driver.
       client = new realIoredis.Redis(url);
-      const { ACQUIRE_OR_ENQUEUE_LUA, TAKE_PENDING_OR_RELEASE_LUA, RENEW_LUA } = await import(
-        '../../../src/integrations/slack-bot/src/utils/thread-queue'
-      );
       shas = {
         acquire: await client.script('LOAD', ACQUIRE_OR_ENQUEUE_LUA),
         take: await client.script('LOAD', TAKE_PENDING_OR_RELEASE_LUA),
