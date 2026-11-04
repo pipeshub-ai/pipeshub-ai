@@ -70,3 +70,13 @@ def test_stub_covers_what_the_app_uses(module: str) -> None:
                 for p in inspect.signature(s).parameters.values()
             ]
             assert sp == rp, f"{module}.{name} takes different parameters"
+
+
+def test_stub_bind_keeps_the_pusher() -> None:
+    from fastapi import FastAPI
+
+    from app.telemetry_stub.setup import setup_telemetry
+
+    pending = setup_telemetry(FastAPI(), "test")
+    bound = pending.bind(object(), object())
+    assert pending.pusher is bound
