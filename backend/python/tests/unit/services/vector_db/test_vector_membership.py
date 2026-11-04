@@ -140,7 +140,7 @@ class TestResolveVectorMembership:
             edges=[],
         )
 
-        async def _edges(node_id, collection):
+        async def _edges(node_id, collection, **kwargs):
             if node_id.endswith("/r1"):
                 return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/space-a"}]
             return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/space-b"}]
@@ -500,7 +500,7 @@ class TestSyncAndRewriteMembership:
             edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
         )
         # thread-1 belongs to channel-1, which has no parent of its own
-        async def edges_from(node_id, _collection):
+        async def edges_from(node_id, _collection, **kwargs):
             if node_id.endswith("/thread-1"):
                 return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/channel-1"}]
             if node_id.endswith("/channel-1"):
@@ -533,7 +533,7 @@ class TestSyncAndRewriteMembership:
             edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
         )
 
-        async def edges_from(node_id, _collection):
+        async def edges_from(node_id, _collection, **kwargs):
             if node_id.endswith("/thread-1"):
                 raise RuntimeError("graph unavailable")
             return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
@@ -549,6 +549,30 @@ class TestSyncAndRewriteMembership:
         # the rest of the membership is still current and must still be written
         assert payload[CONNECTOR_IDS_FIELD] == ["c1"]
         assert payload[RECORD_GROUP_IDS_FIELD] == ["thread-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_answers_a_failed_walk_read_with_empty_does_not_publish_a_root(self) -> None:
+        """The default providers turn a read error into []: the walk must ask to be told, or the group it started from reads as the root."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={"rec-1": {"connectorId": "c1", "recordGroupId": "thread-1", "connectorName": "SLACK"}},
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+
+        async def edges_from(node_id, _collection, *, raise_on_error=False, **kwargs) -> list[dict]:
+            if node_id.endswith("/thread-1"):  # the walk's first hop
+                if raise_on_error:
+                    raise RuntimeError("graph unavailable")
+                return []  # what the providers do otherwise
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        assert ROOT_RECORD_GROUP_IDS_FIELD not in vdb.set_payload.await_args.args[1]  # not "thread-1 is its own root"
 
     @pytest.mark.asyncio
     async def test_sync_does_not_walk_edges_for_other_connectors(self):
