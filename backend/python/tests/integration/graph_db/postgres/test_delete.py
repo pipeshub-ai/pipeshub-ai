@@ -29,13 +29,19 @@ def rec(org: str, rid: str, **kw: object) -> dict:
             "virtualRecordId": f"v-{rid}", **kw}
 
 
+async def grant(p: OrgBound, record: str, role: str, user: str = "ext-u") -> None:
+    """The user ``user`` (created if need be) holds ``role`` on the record."""
+    await p.batch_upsert_nodes([{"_key": f"k-{user}", "userId": user, "orgId": p.org}], "users")
+    await p.batch_create_edges([{"from_id": f"k-{user}", "from_collection": "users", "to_id": record, "to_collection": "records", "type": "USER", "role": role}], "permission")
+
+
 def attach(f: str, t: str) -> dict:
     return {"from_id": f, "from_collection": "records", "to_id": t, "to_collection": "records", "relationshipType": "ATTACHMENT"}
 
 
 NO_ORG = {"delete_record": ("r", "u", "o"), "delete_record_by_external_id": ("c", "e", "u"), "unlink_nodes_missed_by_full_sync": ("c", {}),
           "_direct_attachment_ids": ("r", "o", None), "_attachments_to_delete": ("r", "o", None), "_collect_connector_entities": ("c",),
-          "_node_fields_by_id": ("records", ["a"], ("f",)), "_delete_all_edges_for_nodes": ("", ["records/a"], ["nodeRelations"])}
+          "_refuse_without_delete_role": ("r", {}, "u", None), "_node_fields_by_id": ("records", ["a"], ("f",)), "_delete_all_edges_for_nodes": ("", ["records/a"], ["nodeRelations"])}
 METHODS = {n for n, f in vars(DeleteMixin).items() if not n.startswith("__") and callable(f)} - {"_drows"}
 
 
@@ -80,6 +86,7 @@ async def test_a_mail_goes_with_its_attachments_and_one_event_each_and_a_soft_de
     p = bound(pg_db)
     await p.batch_upsert_nodes([rec(p.org, "mail"), rec(p.org, "att1"), rec(p.org, "att2"), rec(p.org, "keep"), rec(p.org, "k_att")], "records")
     await p.batch_create_edges([attach("mail", "att1"), attach("mail", "att2"), attach("keep", "k_att")], "nodeRelations")
+    await grant(p, "mail", "OWNER")
     soft = await p.delete_record("keep", "ext-u", p.org, soft_delete=True, delete_source=DeleteSource.CONNECTOR)
     assert soft["success"] and soft["softDeleted"]
     assert (await p.get_document("k_att", "records"))["isDeleted"] is True and (await p.get_document("keep", "records"))["deleteBatchId"] == (await p.get_document("k_att", "records"))["deleteBatchId"]
@@ -87,6 +94,34 @@ async def test_a_mail_goes_with_its_attachments_and_one_event_each_and_a_soft_de
     assert res["success"] and res["attachments_deleted"] == 2 and res["eventData"]["eventType"] == "deleteRecord"
     assert {x["recordId"] for x in res["eventData"]["payloads"]} == {"mail", "att1", "att2"}
     assert await p.get_existing_record_keys(["mail", "att1", "att2", "keep"]) == {"keep"}
+
+
+@pytest.mark.parametrize("soft", [False, True])
+async def test_a_user_who_can_only_view_a_connector_record_cannot_delete_it(pg_db, soft: bool) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "doc"), rec(p.org, "other")], "records")
+    await grant(p, "doc", "READER", "ext-viewer")
+    await p.batch_upsert_nodes([{"_key": "k-none", "userId": "ext-none", "orgId": p.org}], "users")       # holds nothing on it
+    for who in ("ext-viewer", "ext-none"):
+        out = await p.delete_record("doc", who, p.org, soft_delete=soft)
+        assert out["success"] is False and out["code"] == 403
+    assert (await p.delete_record("doc", "ext-nobody", p.org, soft_delete=soft))["code"] == 404
+    assert (await p.delete_record("doc", "ext-viewer", p.org, soft_delete=soft))["success"] is False
+    assert (await p.get_document("doc", "records")).get("isDeleted") is not True
+    await grant(p, "doc", "WRITER", "ext-writer")
+    assert (await p.delete_record("doc", "ext-writer", p.org, soft_delete=soft))["success"]
+
+
+async def test_a_role_given_through_a_group_counts_and_a_connector_s_own_delete_needs_no_user(pg_db) -> None:
+    p = bound(pg_db)
+    await p.batch_upsert_nodes([rec(p.org, "g1"), rec(p.org, "g2")], "records")
+    await p.batch_upsert_nodes([{"_key": "k-m", "userId": "ext-m", "orgId": p.org}], "users")
+    await p.batch_upsert_nodes([{"_key": "team", "orgId": p.org}], "groups")
+    await p.batch_create_edges([{"from_id": "k-m", "from_collection": "users", "to_id": "team", "to_collection": "groups", "entityType": "GROUP"}], "belongsTo")
+    await p.batch_create_edges([{"from_id": "team", "from_collection": "groups", "to_id": "g1", "to_collection": "records", "type": "GROUP", "role": "OWNER"}], "permission")
+    assert (await p.delete_record("g1", "ext-m", p.org))["success"]
+    assert (await p.delete_record("g2", "ext-m", p.org))["code"] == 403
+    assert (await p.delete_record("g2", "ext-m", p.org, soft_delete=True, delete_source=DeleteSource.CONNECTOR))["success"]
 
 
 async def test_delete_by_external_id_hard_and_soft_and_a_missing_one_is_none(pg_db) -> None:
@@ -116,6 +151,7 @@ async def test_a_full_sync_unlinks_what_it_missed_and_keeps_what_it_saw(pg_db) -
 async def test_a_delete_inside_a_caller_transaction_rolls_back_with_it(pg_db) -> None:
     p = bound(pg_db)
     await p.batch_upsert_nodes([rec(p.org, "a")], "records")
+    await grant(p, "a", "OWNER")
     t = await p.begin_transaction([], [])
     assert (await p.delete_record("a", "ext-u", p.org, t))["success"]
     await p.rollback_transaction(t)

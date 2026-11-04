@@ -35,6 +35,16 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
 _ORG_FIELD = "orgId"  # the org property of a graph document
+# The roles that may delete a connector's record on a user's request, as on ArangoDB (Drive, Gmail, Outlook, Local FS); a connector not listed needs
+# OWNER or WRITER, so a user who can only view a record never deletes it.
+_DELETE_ROLES = {
+    Connectors.GOOGLE_DRIVE.value: ("OWNER", "WRITER", "FILEORGANIZER"),
+    Connectors.GOOGLE_MAIL.value: ("OWNER", "WRITER"),
+    Connectors.OUTLOOK.value: ("OWNER",),
+    Connectors.OUTLOOK_INDIVIDUAL.value: ("OWNER",),
+    Connectors.LOCAL_FS.value: ("OWNER",),
+}
+_DEFAULT_DELETE_ROLES = ("OWNER", "WRITER")
 
 
 class DeleteMixin(PgBase):
@@ -68,6 +78,23 @@ class DeleteMixin(PgBase):
                 payload["connectorName"], payload["origin"] = rec.get("connectorName"), rec.get("origin")
                 payloads.append(payload)
         return ids, payloads
+
+    async def _refuse_without_delete_role(self, record_id: str, record: dict, user_id: str, transaction: str | None) -> dict | None:
+        """A refusal unless the user holds a deleting role on the record (granted to them or to a group of theirs); a role that cannot be read refuses."""
+        user = await self.get_user_by_user_id(user_id)
+        if not user:
+            return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+        user_key = user.get("id") or user.get("_key")
+        rows = await self._drows("""/* pipeshub:graph.delete_record_roles */ SELECT p.doc->>'role' AS role FROM graph.edges p
+            WHERE p.org_id = $1 AND p.coll = 'permission' AND p.to_coll = 'records' AND p.to_id = $2
+              AND ((p.from_coll = 'users' AND p.from_id = $3 AND p.doc->>'type' = 'USER')
+                OR (p.doc->>'type' IN ('GROUP', 'ROLE') AND p.from_coll = 'groups' AND EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1
+                    AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = $3 AND b.to_coll = 'groups' AND b.to_id = p.from_id
+                    AND b.doc->>'entityType' = 'GROUP')))""", current_org_id(), record_id, user_key, transaction=transaction)
+        allowed = _DELETE_ROLES.get(record.get("connectorName", ""), _DEFAULT_DELETE_ROLES)
+        if not any(r["role"] in allowed for r in rows):
+            return {"success": False, "code": 403, "reason": "User lacks permission to delete this record"}
+        return None
 
     async def delete_record(
         self,
@@ -155,6 +182,10 @@ class DeleteMixin(PgBase):
                     "orgId": record.get(_ORG_FIELD),
                     "isKb": True,
                 }
+
+            # A user's request needs a deleting role; a connector's own delete (a sync removing what the source removed) is not a user's.
+            if DeleteSource(delete_source) is DeleteSource.USER and (refusal := await self._refuse_without_delete_role(record_id, record, user_id, transaction)):
+                return refusal
 
             if soft_delete:
                 deleted_by = None
@@ -274,7 +305,7 @@ class DeleteMixin(PgBase):
                     record.id, user_id, record.org_id, transaction,
                     soft_delete=True, delete_source=DeleteSource.CONNECTOR,
                 )
-            result = await self.delete_record(record.id, user_id, record.org_id, transaction)
+            result = await self.delete_record(record.id, user_id, record.org_id, transaction, delete_source=DeleteSource.CONNECTOR)
             # Raised, as on ArangoDB, so the caller's transaction rolls back.
             if not result.get("success"):
                 raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
