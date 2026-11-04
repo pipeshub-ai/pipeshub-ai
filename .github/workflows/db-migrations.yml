@@ -52,9 +52,9 @@ jobs:
             min_tests: 8
             suites: ''
           - shard: kg
-            files: tests/test_kg_schema.py tests/test_kg_writers.py
-            min_tests: 203
-            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=195'
+            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
+            min_tests: 216
+            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=207 --expect-suite tests.test_kg_downgrade=1'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

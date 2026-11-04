@@ -192,3 +192,163 @@ def test_text_in_arguments_is_data(pdb):
         assert c.execute("SELECT id FROM kg.node_keys WHERE org_id = %s", (ORG_A,)).fetchall() == [(evil,)]
         assert c.execute("SELECT to_regclass('kg.records') IS NOT NULL").fetchone()[0]
         clean(c)
+
+
+# ---- what is stored, not that a row exists --------------------------------------------------------------------------------------------------------------
+REC_FIELDS = ("coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated", "created", "size", "record_type", "origin",
+              "external_id", "deleted", "placeholder", "granted")
+REC_COLUMNS = "coll, id, kind, app_sk, group_sk, parent_sk, rule, model, vrid, name, name_key, updated_ms, created_ms, size_bytes, record_type, origin, external_id, deleted, placeholder, granted"
+
+
+def rec_values(**over) -> dict:
+    base = {"coll": 3, "id": "rec-1", "kind": 3, "app_sk": 5, "group_sk": 6, "parent_sk": 7, "rule": "RESTRICTED", "model": "RECORD_LEVEL", "vrid": "v1", "name": "Name",
+            "name_key": "name", "updated": 20, "created": 10, "size": 100, "record_type": "FILE", "origin": "CONNECTOR", "external_id": "ext-1", "deleted": True,
+            "placeholder": False, "granted": True}
+    return {**base, **over}
+
+
+def rec_args(*items: tuple[int, dict]) -> tuple:
+    return ([sk for sk, _ in items], *([v[f] for _, v in items] for f in REC_FIELDS))
+
+
+def stored_record(c, sk: int, org: str = ORG_A) -> tuple:
+    return tuple(c.execute(f"SELECT {REC_COLUMNS} FROM kg.records WHERE org_id = %s AND sk = %s", (org, sk)).fetchone())
+
+
+def test_a_record_is_stored_as_given_updated_in_place_and_a_repeat_changes_nothing(pdb):
+    first, second = rec_values(), rec_values(name="Other", updated=30, deleted=False, placeholder=True, granted=False, rule="OPEN", app_sk=None)
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, first))) == [(1,)]
+        assert stored_record(c, 11) == tuple(first[f] for f in REC_FIELDS)               # deleted and placeholder are not swapped, every column is the one given
+        assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, first))) == [(1,)]
+        assert stored_record(c, 11) == tuple(first[f] for f in REC_FIELDS)               # the same batch twice leaves the same row
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, second)))
+        assert stored_record(c, 11) == tuple(second[f] for f in REC_FIELDS)              # a conflict updates the row in place
+        assert c.execute("SELECT count(*) FROM kg.records WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 1
+        clean(c)
+
+
+def test_a_key_named_twice_in_a_batch_keeps_its_last_item_in_every_writer(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(name="first")), (12, rec_values(id="rec-2")), (11, rec_values(name="last"))))
+        assert stored_record(c, 11)[9] == "last" and c.execute("SELECT count(*) FROM kg.records WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 2
+        call(c, "kg.w_closure_set", ORG_A, ([1, 1], [2, 2], [0, 0], ["self", "org"]))
+        assert c.execute("SELECT via FROM kg.principal_closure WHERE org_id = %s", (ORG_A,)).fetchall() == [("org",)]
+        call(c, "kg.w_grants_set", ORG_A, ([1, 1], [2, 2], ["USER", "USER"], ["READER", "OWNER"], [5, 6], [False, True]))
+        assert c.execute("SELECT role, app_sk, leaf FROM kg.scope_members WHERE org_id = %s", (ORG_A,)).fetchall() == [("OWNER", 6, True)]
+        assert call(c, "kg.w_links_set", ORG_A, ([1, 1], [1, 1], [2, 2])) == [(1,)]
+        assert call(c, "kg.w_app_cross_set", ORG_A, ([5, 5],)) == [(1,)]
+        assert call(c, "kg.w_class_literals_set", ORG_A, ([5, 5], [7, 7])) == [(1,)]
+        assert call(c, "kg.w_nodes_upsert", ORG_A, ([3, 3], ["dup", "dup"])) == [(3, "dup", c.execute("SELECT sk FROM kg.node_keys WHERE org_id = %s AND id = 'dup'", (ORG_A,)).fetchone()[0])]
+        assert call(c, "kg.w_classes_set", ORG_A, ([7, 7], [1, 1], [None, None], ['[[1]]', '[[1]]'], [b"\x01" * 32, b"\x01" * 32])) == [(1,)]
+        clean(c)
+
+
+def test_each_set_writer_stores_the_values_it_is_given_and_updates_them_in_place(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        for _ in range(2):                                                                  # the same call twice is the same state
+            call(c, "kg.w_grants_set", ORG_A, ([1], [2], ["USER"], ["READER"], [5], [True]))
+            assert c.execute("SELECT principal_sk, node_sk, gtype, role, app_sk, leaf FROM kg.scope_members WHERE org_id = %s", (ORG_A,)).fetchall() == [(1, 2, "USER", "READER", 5, True)]
+        call(c, "kg.w_grants_set", ORG_A, ([1], [2], ["USER"], [None], [6], [False]))
+        assert c.execute("SELECT role, app_sk, leaf FROM kg.scope_members WHERE org_id = %s", (ORG_A,)).fetchall() == [(None, 6, False)]
+        call(c, "kg.w_closure_set", ORG_A, ([1], [2], [0], ["self"]))
+        call(c, "kg.w_closure_set", ORG_A, ([1], [2], [0], ["link"]))
+        assert c.execute("SELECT user_sk, principal_sk, app_sk, via FROM kg.principal_closure WHERE org_id = %s", (ORG_A,)).fetchall() == [(1, 2, 0, "link")]
+        call(c, "kg.w_links_set", ORG_A, ([1], [2], [3]))
+        assert c.execute("SELECT parent_sk, kind, child_sk FROM kg.links WHERE org_id = %s", (ORG_A,)).fetchall() == [(1, 2, 3)]
+        call(c, "kg.w_class_literals_set", ORG_A, ([5], [7]))
+        assert c.execute("SELECT anchor_sk, class_id FROM kg.class_literals WHERE org_id = %s", (ORG_A,)).fetchall() == [(5, 7)]
+        call(c, "kg.w_classes_set", ORG_A, ([7], [1], [2], ['[[1,"@self"]]'], [b"\x01" * 32]))
+        assert c.execute("SELECT id, app_sk, group_sk, clauses, hash FROM kg.scope_classes WHERE org_id = %s", (ORG_A,)).fetchall() == [(7, 1, 2, [[1, "@self"]], b"\x01" * 32)]
+        assert call(c, "kg.w_classes_set", ORG_A, ([7], [1], [2], ['[[1,"@self"]]'], [b"\x01" * 32])) == [(0,)]       # the same class again: nothing new
+        clean(c)
+
+
+def test_the_facts_of_a_connector_are_written_by_their_own_writer_and_leave_the_others_alone(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        cols = "app_sk, code_epoch, mode, verify_digest, backfill_cursor, opens, has_group_level, facts_set, cross_app"
+        call(c, "kg.w_app_facts_set", ORG_A, (5, True, True))
+        assert tuple(c.execute(f"SELECT {cols} FROM kg.projection_state WHERE org_id = %s", (ORG_A,)).fetchone()) == (5, 0, "legacy", None, None, True, True, True, False)
+        call(c, "kg.w_app_cross_set", ORG_A, ([5],))
+        assert tuple(c.execute(f"SELECT {cols} FROM kg.projection_state WHERE org_id = %s", (ORG_A,)).fetchone()) == (5, 0, "legacy", None, None, True, True, True, True)
+        call(c, "kg.w_projection_set", ORG_A, (5, 3, "enforce", "digest", "cursor", None))
+        assert tuple(c.execute(f"SELECT {cols} FROM kg.projection_state WHERE org_id = %s", (ORG_A,)).fetchone()) == (5, 3, "enforce", "digest", "cursor", True, True, True, True)
+        call(c, "kg.w_app_facts_set", ORG_A, (5, False, False))
+        assert tuple(c.execute(f"SELECT {cols} FROM kg.projection_state WHERE org_id = %s", (ORG_A,)).fetchone()) == (5, 3, "enforce", "digest", "cursor", False, False, True, True)
+        clean(c)
+
+
+@pytest.mark.parametrize("column, value", [("rule", "ADMIN"), ("model", "everything"), ("origin", "ELSEWHERE")])
+def test_a_closed_set_refuses_a_value_outside_it_in_a_record(pdb, column, value):
+    with conn(pdb) as c:
+        clean(c)
+        with pytest.raises(pg.InvalidParameterValue):
+            call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(**{column: value}))))
+        clean(c)
+
+
+def test_a_closure_via_outside_the_set_is_refused(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        with pytest.raises(pg.InvalidParameterValue):
+            call(c, "kg.w_closure_set", ORG_A, ([1], [2], [0], ["friend"]))
+        for via in ("self", "membership", "org", "link", "link_badge"):
+            call(c, "kg.w_closure_set", ORG_A, ([1], [2], [0], [via]))
+        clean(c)
+
+
+def test_a_class_id_is_not_reused_for_other_content_and_its_clauses_are_an_array(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_classes_set", ORG_A, ([21], [1], [None], ["[[1]]"], [b"\x02" * 32]))
+        for bad in (([21], [2], [None], ["[[2]]"], [b"\x03" * 32]),                                     # the id is stored with other content
+                    ([22, 22], [1, 1], [None, None], ["[[1]]", "[[2]]"], [b"\x04" * 32, b"\x05" * 32]),   # named twice with different content
+                    ([23], [1], [None], ["null"], [b"\x06" * 32])):                                    # a JSON null is not a list of clauses
+            with pytest.raises(pg.InvalidParameterValue):
+                call(c, "kg.w_classes_set", ORG_A, bad)
+        assert c.execute("SELECT id, app_sk FROM kg.scope_classes WHERE org_id = %s", (ORG_A,)).fetchall() == [(21, 1)]
+        clean(c)
+
+
+# ---- locks are taken in key order -----------------------------------------------------------------------------------------------------------------------
+def _hammer(pdb, name: str, make, rounds: int) -> list[str]:
+    """Two sessions of one org call ``name`` with the same keys, one ascending and one descending; the errors they met."""
+    import threading
+    errors: list[str] = []
+
+    def run(descending: bool) -> None:
+        with conn(pdb) as c:
+            for i in range(rounds):
+                keys = make(i)
+                args = tuple(a[::-1] if descending else a for a in keys)
+                try:
+                    with unit(c, "pipeshub_connectors", ORG_A):
+                        c.execute(f"SELECT * FROM {name}({marks(args, name)})", args).fetchall()
+                except Exception as exc:
+                    errors.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=run, args=(d,)) for d in (False, True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return errors
+
+
+@pytest.mark.parametrize("name, make", [
+    ("kg.w_closure_set", lambda i: (list(range(1, 201)), list(range(1001, 1201)), [0] * 200, ["self"] * 200)),
+    ("kg.w_grants_set", lambda i: (list(range(1, 201)), list(range(1001, 1201)), ["USER"] * 200, ["READER"] * 200, [5] * 200, [False] * 200)),
+    ("kg.w_nodes_upsert", lambda i: ([3] * 200, [f"n{i}-{j:03}" for j in range(200)])),
+])
+def test_overlapping_batches_in_opposite_orders_do_not_deadlock(pdb, name, make):
+    with conn(pdb) as c:
+        clean(c)
+        if name != "kg.w_nodes_upsert":
+            call(c, name, ORG_A, make(0))                                                     # the rows exist, so a conflict locks them
+    assert _hammer(pdb, name, make, 100) == []
+    with conn(pdb) as c:
+        clean(c)
