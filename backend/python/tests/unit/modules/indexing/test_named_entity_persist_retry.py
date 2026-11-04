@@ -214,7 +214,7 @@ async def test_a_retry_with_no_org_is_dropped_so_it_does_not_fill_the_page() -> 
     graph = _graph(rows)
     graph.get_due_named_entity_persist_retries = AsyncMock(side_effect=lambda page_size: pending[:page_size])
 
-    async def clear(record_id, due):
+    async def clear(record_id: str, due: int) -> bool:
         pending[:] = [row for row in pending if (row["recordId"], row["dueAt"]) != (record_id, due)]
         return True
 
