@@ -12,6 +12,7 @@ export const SWR_NS = {
   aiModelConfig: 'ai-models/config',
   aiModelRegistry: 'ai-models/registry',
   profile: 'profile',
+  myToolCatalog: 'tools/my-catalog',
 } as const;
 
 export type SwrNamespace = (typeof SWR_NS)[keyof typeof SWR_NS];
@@ -29,6 +30,13 @@ export const SWR_POLICY = {
   list30s: { dedupingInterval: 30_000, shouldRetryOnError: false },
   /** Org lists (agents, team connectors): not refetched on focus. */
   list60s: { dedupingInterval: 60_000, shouldRetryOnError: false, revalidateOnFocus: false },
+  /** The caller's own toolsets and MCP servers: reused for 5 min, never refetched on focus or reconnect. */
+  list5m: {
+    dedupingInterval: 300_000,
+    shouldRetryOnError: false,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+  },
   /**
    * Read once per session (org, model config, profile): only this user's own
    * writes change it, and they update or invalidate the cache.

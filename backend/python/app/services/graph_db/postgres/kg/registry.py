@@ -61,6 +61,11 @@ WRITERS: dict[str, tuple[str, str]] = {
     "update_sync_point_if": (NO_PROJECTION, _SYNC),
     "upsert_authenticated_as": (PROJECTED, ""),
     "upsert_sync_point": (NO_PROJECTION, _SYNC),
+    # trash.py
+    "soft_delete_records": (PROJECTED, ""), "restore_records": (PROJECTED, ""), "purge_trashed_records": (PROJECTED, ""), "purge_trash_kept_record_groups": (PROJECTED, ""),
+    "take_back_kept_record_group": (PROJECTED, ""), "claim_push_record": (PROJECTED, ""),
+    "record_purge_failure": (NO_PROJECTION, "purge attempt counters of a trashed record"),
+    "retag_push_record": (NO_PROJECTION, "the external revision tag of a pushed record: not an access field"),
 }
 
 
