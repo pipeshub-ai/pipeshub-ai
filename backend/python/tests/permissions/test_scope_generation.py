@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -62,11 +61,10 @@ async def test_processes_starting_together_bump_once() -> None:
     assert got == [2] * 6 and await current_generation(a) == 2
 
 
-async def test_a_deployment_that_never_enabled_the_fields_writes_nothing_and_reads_no_graph() -> None:
+async def test_a_deployment_that_never_enabled_the_fields_writes_nothing() -> None:
     a = config_service()
-    graph = MagicMock()  # any use of it would be recorded
     assert await init_scope_generation(a, log, OFF) is None
-    assert a.store.store == {} and graph.mock_calls == []
+    assert a.store.store == {}
     assert current_scope_generation() == 0
 
 
