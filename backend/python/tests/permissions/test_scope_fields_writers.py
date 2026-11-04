@@ -24,6 +24,7 @@ from app.services.permissions.scope_fields import (
     Stamp,
 )
 from app.services.vector_db import membership
+from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.membership import (
     STALE_SCOPE,
     reset_membership_context,
@@ -60,6 +61,12 @@ def flag_on(monkeypatch) -> Iterator[None]:
         yield
 
 
+@pytest.fixture
+def in_org() -> Iterator[None]:
+    with oc.for_org(ORG, job="scope-fields-test"):
+        yield
+
+
 def test_scope_fields_are_off_unless_asked_for() -> None:
     assert not scope_fields_enabled({})
     assert not scope_fields_enabled({ENV_ACL_FILTER_MODE: "off"})
@@ -68,7 +75,7 @@ def test_scope_fields_are_off_unless_asked_for() -> None:
     assert not scope_fields_enabled({ENV_SCOPE_FIELDS: "maybe"})
 
 
-async def test_with_the_flag_off_no_scope_key_is_written_and_the_graph_is_not_asked(monkeypatch) -> None:
+async def test_with_the_flag_off_no_scope_key_is_written_and_the_graph_is_not_asked(monkeypatch, in_org) -> None:
     monkeypatch.delenv(ENV_SCOPE_FIELDS, raising=False)
     vdb = InMemoryVectorDB()
     loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
@@ -144,13 +151,35 @@ def test_one_writer_path_builds_the_fields() -> None:
     assert "scope_fields_for_state" in inspect.getsource(membership._sync_vector_membership_locked)
 
 
-async def test_with_no_org_bound_the_point_gets_the_stale_marker_and_the_graph_is_not_read(monkeypatch) -> None:
+async def test_with_no_org_bound_the_sync_fails_closed_but_still_invalidates_the_stamp_and_reads_no_graph(monkeypatch) -> None:
     monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
     vdb = InMemoryVectorDB()
     loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
     loaded.graph.stamps.failure = AssertionError("no graph read without an org")
-    await sync_all(loaded, vdb)
+    for v in loaded.records:
+        with pytest.raises(OrgRequired):
+            await sync_vector_membership(vdb, loaded.locator, loaded.graph, v, log)
     assert all(f == STALE_SCOPE for f in (await read_stamps(vdb, loaded)).values())
+
+
+async def test_the_org_less_invalidation_reaches_only_this_records_points_in_each_owning_org(monkeypatch) -> None:
+    other_org = "cd" * 12
+    monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"], "x": CASES["stamped:SLK-C-01"]})
+    mine, neighbour = sorted(loaded.records)[:2]
+    with oc.for_org(ORG, job="scope-fields-test"):
+        await sync_all(loaded, vdb)
+    assert all(f != STALE_SCOPE for f in (await read_stamps(vdb, loaded)).values())
+    other = {**(await vdb.retrieve_points(COLL, loaded.points[mine][:1]))[0].payload}
+    other["metadata"] = {**other["metadata"], "orgId": other_org}
+    await vdb.upsert_points(COLL, [VectorPoint(id="other-org-point", dense_vector=[0.0] * 8, payload=other)])
+    with pytest.raises(OrgRequired):
+        await sync_vector_membership(vdb, loaded.locator, loaded.graph, mine, log)
+    assert await _stamp_state(vdb, loaded, mine) == STALE_SCOPE
+    assert (await _stamp_state(vdb, loaded, neighbour)).trusted  # another record of the same org keeps its stamp
+    assert vdb.collections[COLL]["other-org-point"].payload["metadata"]["orgId"] == other_org
+    assert ScopeFields.from_payload(vdb.collections[COLL]["other-org-point"].payload) == STALE_SCOPE  # the second owner is invalidated too
 
 
 async def test_the_write_touches_only_the_points_of_the_bound_org(flag_on) -> None:
@@ -164,7 +193,7 @@ async def test_the_write_touches_only_the_points_of_the_bound_org(flag_on) -> No
     assert not set(SCOPE_KEYS) & set(vdb.collections[COLL]["other-org-point"].payload)
 
 
-async def test_with_the_flag_off_a_purge_and_new_points_carry_no_scope_key_and_the_graph_is_not_asked(monkeypatch) -> None:
+async def test_with_the_flag_off_a_purge_and_new_points_carry_no_scope_key_and_the_graph_is_not_asked(monkeypatch, in_org) -> None:
     from app.modules.transformers.vectorstore import VectorStore
 
     monkeypatch.delenv(ENV_SCOPE_FIELDS, raising=False)
@@ -206,7 +235,8 @@ async def test_a_stamp_from_before_the_latest_enable_is_never_trusted(monkeypatc
     for rid in loaded.records[v]:
         n = loaded.graph.stamps.node_map[rid]
         loaded.graph.stamps.node_map = {**loaded.graph.stamps.node_map, rid: replace(n, rule="RESTRICTED", granted=True)}
-    await sync_all(loaded, vdb)
+    with oc.for_org(ORG, job="scope-fields-test"):
+        await sync_all(loaded, vdb)
     assert await _stamp_state(vdb, loaded, v) == first
     monkeypatch.setenv(ENV_SCOPE_FIELDS, "on")
     monkeypatch.setenv(ENV_SCOPE_GENERATION, "2")  # the operator raises the generation when switching on again
@@ -250,7 +280,8 @@ async def test_a_point_whose_records_are_all_skipped_gets_the_stale_marker_not_a
     assert fields == STALE_SCOPE and fields.version == 0
 
 
-async def test_with_the_flag_on_a_point_without_an_org_still_gets_its_membership_refreshed(flag_on) -> None:
+async def test_with_the_flag_on_a_point_without_an_org_is_left_untouched_by_an_org_bound_sync(flag_on) -> None:
+    """An org-named write never falls back to "all orgs", so a point that names no org is out of its reach (deliberate)."""
     vdb = InMemoryVectorDB()
     loaded = await load(vdb, COLL, {"w": CASES["stamped:SLK-C-01"]})
     for p in vdb.collections[COLL].values():
@@ -258,8 +289,7 @@ async def test_with_the_flag_on_a_point_without_an_org_still_gets_its_membership
         p.payload["connectorIds"] = ["old"]
         p.payload["recordGroupIds"] = ["old"]
     await sync_all(loaded, vdb)
-    assert all(p.payload["connectorIds"] != ["old"] and p.payload["recordGroupIds"] != ["old"] for p in vdb.collections[COLL].values())
-    assert not any(set(SCOPE_KEYS) & set(p.payload) for p in vdb.collections[COLL].values())  # no org: no stamp, so the legacy filter
+    assert all(p.payload["connectorIds"] == ["old"] and not set(SCOPE_KEYS) & set(p.payload) for p in vdb.collections[COLL].values())
 
 
 async def test_a_sync_that_writes_nothing_leaves_the_stale_marker_when_the_flag_is_on(flag_on) -> None:

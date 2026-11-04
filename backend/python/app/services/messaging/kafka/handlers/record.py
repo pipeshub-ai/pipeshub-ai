@@ -1638,20 +1638,20 @@ class RecordEventHandler(BaseEventService):
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 org_id = payload.get("orgId") or None
+                # Resolved before the embeddings go: they are deleted for one org, and an event
+                # without its org takes it from the record. The read is non-raising; with no org
+                # at all (and none bound) the delete fails closed.
+                if not org_id:
+                    record_doc = await self.event_processor.graph_provider.get_document(
+                        record_id, CollectionNames.RECORDS.value
+                    )
+                    org_id = (record_doc or {}).get("orgId")
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=org_id
                 )
                 entity_store = self._entity_vector_store()
                 if entity_store is not None:
-                    # delete_entity filters on orgId, so an empty one would
-                    # match no point and strand the entity. The fallback read
-                    # is non-raising: the embeddings are already gone, and an
-                    # unreadable graph must not fail the delete.
-                    if not org_id:
-                        record_doc = await self.event_processor.graph_provider.get_document(
-                            record_id, CollectionNames.RECORDS.value
-                        )
-                        org_id = (record_doc or {}).get("orgId")
+                    # delete_entity filters on orgId, so an empty one would match no point and strand the entity.
                     if org_id:
                         await entity_store.delete_entity(
                             org_id, EntityType.RECORD.value, record_id

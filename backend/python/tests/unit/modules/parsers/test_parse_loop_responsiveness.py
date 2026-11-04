@@ -207,14 +207,26 @@ def _processor() -> PDFPlumberOpenCVProcessor:
 
 
 class TestTableRows:
-    async def test_a_large_table_does_not_block_the_loop(self, frozen_heap: None) -> None:
-        region = _table_region(rows=20_000)
-        proc = _processor()
-        worst, container = await _worst_loop_gap(
-            lambda: proc.create_blocks([_page(region)], skip_llm_enrichment=True)
-        )
+    async def test_a_large_table_does_not_block_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The row walk must run off the loop's thread. Where it ran is checked, not how long the
+        # loop stalled: a stall bound also measures every other thread the host is running.
+        loop_thread = threading.get_ident()
+        ran_on: list[int] = []
+        real_run_sized = pdfplumber_opencv_processor._run_sized
+
+        async def spy(fn: Callable[..., object], n_rows: int, *args: object) -> object:
+            def traced(*a: object) -> object:
+                ran_on.append(threading.get_ident())
+                return fn(*a)
+
+            return await real_run_sized(traced, n_rows, *args)
+
+        monkeypatch.setattr(pdfplumber_opencv_processor, "_run_sized", spy)
+        container = await _processor().create_blocks([_page(_table_region(rows=20_000))], skip_llm_enrichment=True)
+
         assert len(container.blocks) == 20_000
-        assert worst < MAX_GAP_SECONDS, worst
+        assert ran_on
+        assert loop_thread not in ran_on
 
     async def test_row_text_is_unchanged(self) -> None:
         region = LayoutRegion(

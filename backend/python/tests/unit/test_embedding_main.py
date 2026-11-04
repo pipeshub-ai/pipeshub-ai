@@ -1714,9 +1714,14 @@ class TestTokenizerRace:
             copies = 0
             active = 0
             peak = 0
+            copy_threads: list[int] = []
+            copy_gate: threading.Event | None = None  # a test may hold the copy until it releases this
 
             def __deepcopy__(self, memo: dict) -> "Spy":
                 Spy.copies += 1
+                Spy.copy_threads.append(threading.get_ident())
+                if Spy.copy_gate is not None:
+                    Spy.copy_gate.wait(30)
                 time.sleep(0.1)
                 return Spy()
 
@@ -1792,14 +1797,28 @@ class TestTokenizerRace:
 
     @pytest.mark.asyncio
     async def test_listing_without_a_counter_returns_at_once_and_builds_in_the_background(self) -> None:
-        model, _ = self._prompted_model()
+        model, spy = self._prompted_model()
         manager = ModelManager()
         manager._models = {"m": model}
-        start = time.perf_counter()
-        assert manager.prompt_tokens("m") == 0  # not known yet
-        assert time.perf_counter() - start < 0.05  # the 0.1 s copy is not on the loop
-        await asyncio.sleep(0.4)
+        # The copy is held until released. Returning 0 while it is still held proves the call did not wait for
+        # it; a watchdog thread releases it if a wait blocks the loop, so a regression fails instead of hanging.
+        spy.copy_gate = threading.Event()
+        watchdog = threading.Timer(5, spy.copy_gate.set)
+        watchdog.start()
+        try:
+            assert manager.prompt_tokens("m") == 0  # not known yet
+            assert not spy.copy_gate.is_set(), "prompt_tokens waited for the counter build"
+        finally:
+            watchdog.cancel()
+            spy.copy_gate.set()
+        for _ in range(500):  # bounded poll for the background build, 10 s
+            if manager.prompt_tokens("m") == 1:
+                break
+            await asyncio.sleep(0.02)
         assert manager.prompt_tokens("m") == 1  # known once the build is done
+        # The copy ran, and not on the loop: where it ran is checked, not how long the listing took.
+        assert spy.copy_threads
+        assert threading.get_ident() not in spy.copy_threads
 
     @pytest.mark.asyncio
     async def test_listing_without_a_counter_survives_a_failing_build(self) -> None:
