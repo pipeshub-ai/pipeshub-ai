@@ -45,7 +45,7 @@ def test_the_change_log_refuses_an_entry_that_names_no_node(rdb):
     cluster, name = rdb
     with connect(cluster, name) as c:
         with pytest.raises(psycopg.errors.CheckViolation):
-            c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES ('o', '{}')")
+            c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, '{}')", ("a" * 24,))      # a valid org id: only the ends check can refuse it
 
 
 def test_the_graph_is_not_touched_by_the_schema(rdb):
