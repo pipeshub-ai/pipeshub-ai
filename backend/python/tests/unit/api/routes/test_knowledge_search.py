@@ -534,6 +534,8 @@ async def test_grep_drops_apps_the_caller_cannot_reach_and_searches_nothing_if_n
 
 # ---- one bounded request ------------------------------------------------------
 async def test_grep_with_a_catastrophic_regex_returns_within_the_budget_and_says_it_is_incomplete() -> None:
+    """End to end with the real line matcher. Only a loose backstop on the wall clock (5 times the budget); what makes it stop in time and
+    keeps the event loop free is asserted structurally by the three tests after it."""
     import time
 
     line = ",".join(f"v{j}" for j in range(60))
@@ -541,18 +543,6 @@ async def test_grep_with_a_catastrophic_regex_returns_within_the_budget_and_says
     retrieval.blob_store.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [
         {"index": 0, "data": "\n".join([line] * 400)},
     ]}})
-    ticks: list[float] = []
-
-    async def ticker() -> None:
-        import asyncio
-
-        while True:
-            ticks.append(time.monotonic())
-            await asyncio.sleep(0.01)
-
-    import asyncio
-
-    tick = asyncio.ensure_future(ticker())
     start = time.monotonic()
     with patch.object(ks, "run_pattern_match_with_llm_grep", _fake_grep), \
          patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
@@ -560,11 +550,72 @@ async def test_grep_with_a_catastrophic_regex_returns_within_the_budget_and_says
         response = await ks.grep(
             _request(), ks.GrepQuery(pattern=r"(?:.*?,){40}x|v0_0", regex=True, timeBudgetMs=1000), retrieval, _graph(True),
         )
-    tick.cancel()
-    assert time.monotonic() - start < 1.5
-    assert max(b - a for a, b in zip(ticks, ticks[1:])) < 0.15  # other requests kept being served
+    assert time.monotonic() - start < 5.0
     out = json.loads(response.body)
     assert out["coverage"]["complete"] is False and "time limit" in out["coverage"]["note"]
+
+
+def test_the_line_scan_observes_the_deadline_before_every_line() -> None:
+    """A virtual clock that moves one unit per reading: with 100 lines and a deadline 3.5 units away, only the first lines are searched."""
+    from app.utils import grep_lines
+
+    class Clock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            self.now += 1.0
+            return self.now
+
+    class CountingPattern:
+        pattern = "needle"
+        searched = 0
+
+        def search(self, text: str, **kwargs: object) -> None:
+            type(self).searched += 1
+
+    blocks = [{"index": 0, "data": "\n".join(f"line {n}" for n in range(100))}]
+    with patch.object(grep_lines, "time", Clock()):
+        matches, total, _language, complete = grep_lines.find_matches(
+            blocks, CountingPattern(), context_lines=0, max_matches=5, deadline=3.5,
+        )
+    assert complete is False and 1 <= CountingPattern.searched <= 4 and matches == [] and total == 0
+
+
+async def test_the_line_scan_runs_in_a_worker_thread_not_on_the_event_loop() -> None:
+    import threading
+
+    from app.utils import grep_lines
+
+    ran_in: list[int] = []
+
+    def fake_find_matches(*args: object, **kwargs: object) -> tuple[list, int, None, bool]:
+        ran_in.append(threading.get_ident())
+        return [], 0, None, True
+
+    with patch.object(grep_lines, "find_matches", fake_find_matches):
+        await grep_lines.find_matches_bounded([], object(), context_lines=0, max_matches=1, deadline=None)
+    assert ran_in and ran_in[0] != threading.get_ident()
+
+
+async def test_the_route_hands_the_line_scan_one_deadline_of_the_time_budget() -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_bounded(*args: object, **kwargs: object) -> tuple[list, int, None, bool]:
+        seen.update(kwargs)
+        return [], 0, None, False
+
+    class FixedClock:
+        @staticmethod
+        def monotonic() -> float:
+            return 1000.0
+
+    with patch.object(ks, "time", FixedClock), patch.object(ks, "find_matches_bounded", fake_bounded), \
+         patch.object(ks, "run_pattern_match_with_llm_grep", _fake_grep), \
+         patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
+         patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
+        response = await ks.grep(_request(), ks.GrepQuery(pattern="x", timeBudgetMs=2500), _retrieval(), _graph(True))
+    assert seen["deadline"] == 1002.5
+    assert json.loads(response.body)["coverage"]["complete"] is False
 
 
 def test_grep_command_also_selects_records_stored_compressed(tmp_path) -> None:
