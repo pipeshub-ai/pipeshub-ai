@@ -61,6 +61,7 @@ from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     STALE_SCOPE,
+    mark_scope_stale,
     reset_membership_context,
     resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
@@ -1427,20 +1428,7 @@ class VectorStore(Transformer):
                 e,
                 exc_info=True,
             )
-            await self._mark_scope_stale(virtual_record_id)
-
-    async def _mark_scope_stale(self, virtual_record_id: str) -> None:
-        """The post-write resync failed, so the stamp the upsert carried (read before a long embed) may be older than a
-        structural change: put the legacy marker on the points. Best effort; logged when it fails."""
-        org_id = scope_org_id() if scope_fields_enabled() else None
-        if not org_id:
-            return
-        try:
-            filt = await self.vector_db_service.filter_collection(must={"orgId": org_id, "virtualRecordId": virtual_record_id})
-            for name in await self.collection_locator.all_collections(fresh=True):
-                await self.vector_db_service.set_payload(name, STALE_SCOPE.to_payload(), filt)
-        except Exception as exc:
-            self.logger.error("could not mark the scope fields of %s stale: %s", virtual_record_id, exc)
+            await mark_scope_stale(self.vector_db_service, self.collection_locator, virtual_record_id, self.logger)
 
     async def _record_is_gone(self, record_id: str) -> bool:
         """True only when the graph positively reports the record as absent.
