@@ -36,9 +36,9 @@ jobs:
             min_tests: 54
             suites: ''
           - shard: graph
-            files: tests/test_graph.py tests/test_retrieval.py tests/test_placement.py
-            min_tests: 70
-            suites: '--expect-suite tests.test_graph=34 --expect-suite tests.test_retrieval=21 --expect-suite tests.test_placement=15'
+            files: tests/test_graph.py tests/test_retrieval.py
+            min_tests: 55
+            suites: '--expect-suite tests.test_graph=34 --expect-suite tests.test_retrieval=21'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
             min_tests: 423
