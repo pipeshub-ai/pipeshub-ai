@@ -40,6 +40,10 @@ LOGO_SIDE_PX = 96
 # Checked before decoding: a small file can declare a huge canvas.
 MAX_SOURCE_PIXELS = 4096 * 4096
 _FORMATS = ("PNG", "JPEG", "WEBP", "GIF")
+# Modes where shrinking and then converting to RGBA draws the same picture as the other way round.
+# Pillow shrinks palette images by nearest neighbour, and a colour-key transparency would blur away,
+# so those are converted first.
+_SHRINK_BEFORE_CONVERT = frozenset({"L", "LA", "RGB", "RGBA"})
 _PNG_DATA_URL_PREFIX = "data:image/png;base64,"
 # What Pillow raises for a file it can't read as an image: unknown or truncated data, a broken
 # chunk, a canvas over its own size limit, a mode it can't convert.
@@ -56,15 +60,26 @@ def normalize_logo(data_url: str) -> str:
     try:
         with Image.open(io.BytesIO(raw), formats=_FORMATS) as image:
             fits = image.width * image.height <= MAX_SOURCE_PIXELS
-            logo = image.convert("RGBA") if fits else None
+            logo = _small_rgba(image) if fits else None
     except _UNREADABLE as e:
         raise LogoError("The logo must be a PNG, JPEG, WebP or GIF image.") from e
     if logo is None:
         raise LogoError("The logo is too large. Use an image under 4096 × 4096 pixels.")
-    logo.thumbnail((LOGO_SIDE_PX, LOGO_SIDE_PX), Image.Resampling.LANCZOS)
     out = io.BytesIO()
     logo.save(out, format="PNG", optimize=True)
     return _PNG_DATA_URL_PREFIX + base64.b64encode(out.getvalue()).decode("ascii")
+
+
+def _small_rgba(image: Image.Image) -> Image.Image:
+    """`image` shrunk to fit `LOGO_SIDE_PX` square, as RGBA. Shrunk first where that draws the same
+    picture, so a large upload is not also held as a full-size RGBA copy (64 MiB at 4096 × 4096)."""
+    if image.mode not in _SHRINK_BEFORE_CONVERT or "transparency" in image.info:
+        # RGB where there is nothing to keep see-through: a third smaller, and Pillow shrinks RGBA
+        # through a second, premultiplied full-size copy.
+        image = image.convert("RGBA" if image.has_transparency_data else "RGB")
+    # Decodes a JPEG at a reduced scale (draft) and shrinks by whole factors (reduce) before resampling.
+    image.thumbnail((LOGO_SIDE_PX, LOGO_SIDE_PX), Image.Resampling.LANCZOS)
+    return image.convert("RGBA")
 
 
 def _decode_data_url(data_url: str) -> bytes:

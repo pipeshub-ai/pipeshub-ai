@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw, ImageFile
 
 from app.agents.mcp import logo as mcp_logo
 from app.agents.mcp.logo import LOGO_SIDE_PX, LogoError, normalize_logo
@@ -112,6 +112,116 @@ class TestNormalizeLogo:
     def test_a_canvas_over_the_pixel_limit_is_refused_before_it_is_decoded(self) -> None:
         with patch.object(mcp_logo, "MAX_SOURCE_PIXELS", 100), pytest.raises(LogoError, match="too large"):
             normalize_logo(_data_url(_image_bytes("PNG", size=(11, 10))))
+
+
+def _picture(mode: str, size: tuple[int, int]) -> Image.Image:
+    """Shapes on a gradient, with a varying alpha for the modes that have one."""
+    picture = Image.linear_gradient("L").resize(size).convert("RGB")
+    draw = ImageDraw.Draw(picture)
+    draw.ellipse((size[0] // 10, size[1] // 10, size[0] // 2, size[1] * 9 // 10), fill=(200, 30, 30))
+    draw.rectangle((size[0] * 6 // 10, size[1] // 5, size[0] * 9 // 10, size[1] * 4 // 5), fill=(20, 160, 90))
+    if mode in ("RGBA", "LA"):
+        shaped = picture.convert(mode)
+        shaped.putalpha(Image.linear_gradient("L").rotate(90).resize(size))
+        return shaped
+    if mode == "P":
+        return picture.quantize(16)
+    return picture.convert(mode)
+
+
+def _encoded(mode: str, fmt: str, size: tuple[int, int], **save: Any) -> bytes:  # noqa: ANN401
+    out = io.BytesIO()
+    _picture(mode, size).save(out, format=fmt, **save)
+    return out.getvalue()
+
+
+# (source mode, format, save options): every mode the four formats open as, opaque and see-through.
+_SOURCES = {
+    "png-rgba": ("RGBA", "PNG", {}),
+    "png-rgb": ("RGB", "PNG", {}),
+    "png-grey": ("L", "PNG", {}),
+    "png-grey-alpha": ("LA", "PNG", {}),
+    "png-palette": ("P", "PNG", {}),
+    "png-palette-transparent": ("P", "PNG", {"transparency": 0}),
+    "png-rgb-colour-key": ("RGB", "PNG", {"transparency": (200, 30, 30)}),
+    "png-bilevel": ("1", "PNG", {}),
+    "jpeg-rgb": ("RGB", "JPEG", {"quality": 95}),
+    "jpeg-grey": ("L", "JPEG", {"quality": 95}),
+    "jpeg-cmyk": ("CMYK", "JPEG", {"quality": 95}),
+    "webp-rgba": ("RGBA", "WEBP", {"lossless": True}),
+    "webp-rgb": ("RGB", "WEBP", {"quality": 95}),
+    "gif-palette": ("P", "GIF", {}),
+    "gif-palette-transparent": ("P", "GIF", {"transparency": 0}),
+}
+# Sources with nothing see-through to keep by colour: shrunk before any full-size RGBA copy.
+_SHRUNK_FIRST = [name for name in _SOURCES if "transparent" not in name and "colour-key" not in name]
+
+
+def _rgba(data_url: str) -> Image.Image:
+    return _decoded(data_url).convert("RGBA")
+
+
+def _converted_then_shrunk(raw: bytes) -> Image.Image:
+    """What a logo looks like drawn the plain way: the whole image as RGBA, then shrunk."""
+    with Image.open(io.BytesIO(raw)) as image:
+        logo = image.convert("RGBA")
+    logo.thumbnail((LOGO_SIDE_PX, LOGO_SIDE_PX), Image.Resampling.LANCZOS)
+    return logo
+
+
+class TestLargeUploads:
+    @pytest.mark.parametrize("name", list(_SOURCES))
+    def test_the_logo_is_the_same_as_converting_the_whole_image_first(self, name: str) -> None:
+        mode, fmt, save = _SOURCES[name]
+        raw = _encoded(mode, fmt, (300, 150), **save)
+
+        logo = _rgba(normalize_logo(_data_url(raw)))
+
+        assert logo.size == (LOGO_SIDE_PX, LOGO_SIDE_PX // 2)
+        assert ImageChops.difference(logo, _converted_then_shrunk(raw)).getbbox() is None
+
+    @pytest.mark.parametrize("name", ["png-palette-transparent", "png-rgb-colour-key", "gif-palette-transparent"])
+    def test_see_through_parts_stay_see_through(self, name: str) -> None:
+        mode, fmt, save = _SOURCES[name]
+
+        logo = _rgba(normalize_logo(_data_url(_encoded(mode, fmt, (300, 150), **save))))
+
+        assert logo.getextrema()[3][0] == 0
+
+    @pytest.mark.parametrize("name", _SHRUNK_FIRST)
+    def test_a_large_image_is_shrunk_before_it_is_held_as_rgba(self, name: str) -> None:
+        mode, fmt, save = _SOURCES[name]
+        raw = _encoded(mode, fmt, (1200, 600), **save)
+        rgba_sizes: list[tuple[int, int]] = []
+        convert = Image.Image.convert
+
+        def _spy(image: Image.Image, *args: Any, **kwargs: Any) -> Image.Image:  # noqa: ANN401
+            converted = convert(image, *args, **kwargs)
+            if converted.mode == "RGBA":
+                rgba_sizes.append(converted.size)
+            return converted
+
+        with patch.object(Image.Image, "convert", _spy):
+            normalize_logo(_data_url(raw))
+
+        assert rgba_sizes
+        assert all(max(size) <= LOGO_SIDE_PX for size in rgba_sizes)
+
+    def test_a_large_jpeg_is_decoded_at_a_reduced_scale(self) -> None:
+        raw = _encoded("RGB", "JPEG", (2400, 1200), quality=90)
+        decoded: list[tuple[int, int]] = []
+        load = ImageFile.ImageFile.load
+
+        def _spy(image: ImageFile.ImageFile) -> Any:  # noqa: ANN401
+            if image.format == "JPEG":
+                decoded.append(image.size)
+            return load(image)
+
+        with patch.object(ImageFile.ImageFile, "load", _spy):
+            assert _decoded(normalize_logo(_data_url(raw, "image/jpeg"))).size == (LOGO_SIDE_PX, LOGO_SIDE_PX // 2)
+
+        assert decoded
+        assert max(width for width, _ in decoded) < 2400
 
 
 class TestStorage:

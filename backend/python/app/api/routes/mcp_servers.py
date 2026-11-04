@@ -777,6 +777,10 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
 
 # Logos read at once for a listing.
 _LOGO_READ_CONCURRENCY = 16
+# Uploads decoded at once in this process: decoding a large image takes tens of MiB, so the rest
+# wait their turn rather than adding up.
+_LOGO_NORMALIZE_CONCURRENCY = 2
+_LOGO_NORMALIZE_SLOTS = asyncio.Semaphore(_LOGO_NORMALIZE_CONCURRENCY)
 
 
 @router.get("/logos", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
@@ -817,7 +821,8 @@ async def set_instance_logo(request: Request, instance_id: str, payload: MCPServ
         raise _bad_request("Only custom MCP servers take a logo. A catalog server shows its vendor's.")
     try:
         # Decoding and shrinking a large image takes long enough to stall other requests.
-        logo = await asyncio.to_thread(mcp_logo.normalize_logo, payload.logo)
+        async with _LOGO_NORMALIZE_SLOTS:
+            logo = await asyncio.to_thread(mcp_logo.normalize_logo, payload.logo)
     except mcp_logo.LogoError as e:
         raise _bad_request(str(e)) from e
     if not await mcp_logo.save_logo(config_service, instance_id, logo):

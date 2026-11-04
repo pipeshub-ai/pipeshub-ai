@@ -5,8 +5,10 @@ Goes through the real resolver/service lookups against one in-memory store, as
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import threading
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -153,6 +155,50 @@ class TestSetLogo:
         store.set_config = _fail  # type: ignore[method-assign]
 
         assert await _status(set_instance_logo(route_request(store, user_id="admin-1"), "org-custom", _png_upload())) == 500
+
+    async def test_only_a_few_uploads_are_decoded_at_once(self) -> None:
+        limit = mcp_servers._LOGO_NORMALIZE_CONCURRENCY
+        store = _store()
+        lock = threading.Lock()
+        running, most = 0, 0
+        release = threading.Event()
+
+        def _slow_normalize(_data_url: str) -> str:
+            nonlocal running, most
+            with lock:
+                running += 1
+                most = max(most, running)
+            release.wait(timeout=10)
+            with lock:
+                running -= 1
+            return "data:image/png;base64,AA=="
+
+        async def _running_reaches(count: int, *, within: float) -> bool:
+            deadline = asyncio.get_running_loop().time() + within
+            while asyncio.get_running_loop().time() < deadline:
+                if running >= count:
+                    return True
+                await asyncio.sleep(0.005)
+            return False
+
+        uploads = [
+            set_instance_logo(route_request(store, user_id="admin-1"), "org-custom", _png_upload()) for _ in range(limit + 3)
+        ]
+        # A fresh limiter, bound to this test's event loop.
+        with patch.object(mcp_servers, "_LOGO_NORMALIZE_SLOTS", asyncio.Semaphore(limit)), patch.object(
+            mcp_servers.mcp_logo, "normalize_logo", new=_slow_normalize,
+        ):
+            pending = asyncio.gather(*uploads)
+            try:
+                assert await _running_reaches(limit, within=5)
+                # The rest are queued, not decoding: nothing frees a slot until the release below.
+                assert not await _running_reaches(limit + 1, within=0.2)
+            finally:
+                release.set()
+            results = await pending
+
+        assert most == limit
+        assert len(results) == limit + 3
 
     async def test_an_upload_over_the_limit_is_refused_before_the_handler(self) -> None:
         with pytest.raises(ValueError, match="at most"):
