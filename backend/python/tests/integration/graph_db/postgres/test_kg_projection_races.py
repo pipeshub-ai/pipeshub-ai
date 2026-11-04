@@ -25,7 +25,7 @@ from .test_kg_projection import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]       # a regression that blocks fails in a minute, not at the runner's limit
 
 
 async def world2(p, org: str) -> set:
@@ -78,12 +78,12 @@ async def test_a_unit_that_reaches_into_another_connector_locks_it_and_waits_for
     async def slow(tx, o, d) -> tuple:
         if not paused.is_set():
             paused.set()
-            await release.wait()
+            await asyncio.wait_for(release.wait(), 30)
         return await real(tx, o, d)
     project_mod.current = slow
     try:
-        first = asyncio.create_task(run(p, org, touched))
-        await paused.wait()
+        first = asyncio.create_task(asyncio.wait_for(run(p, org, touched), 30))
+        await asyncio.wait_for(paused.wait(), 15)
         second = asyncio.create_task(run(p, org, {("records", "f2")}))      # the parent's own connector: the first unit rewrites the parent's flags, so it holds this lock too
         await asyncio.sleep(0.5)
         assert not second.done()
@@ -107,7 +107,7 @@ async def test_an_empty_set_of_connectors_to_lock_takes_the_whole_organisation(p
     async def holder(tx) -> None:
         await lock_apps(tx, org, set(), org_wide=False)
         opened.set()
-        await release.wait()
+        await asyncio.wait_for(release.wait(), 30)
 
     async def other(tx) -> None:
         await lock_apps(tx, org, {"app1"}, org_wide=False)
@@ -120,7 +120,7 @@ async def test_an_empty_set_of_connectors_to_lock_takes_the_whole_organisation(p
         with ctx(org):
             await p._q(other, None, write=True)
     task = asyncio.create_task(hold())
-    await opened.wait()
+    await asyncio.wait_for(opened.wait(), 15)
     waiting = asyncio.create_task(take())
     await asyncio.sleep(0.5)
     assert not waiting.done()                       # the shared key of a connector's unit waits behind an exclusive one
@@ -156,21 +156,26 @@ async def test_a_record_that_moves_to_another_connector_re_derives_its_children_
 
 
 async def test_the_parents_a_parent_gains_or_drops_when_it_is_re_derived_are_re_derived_too(pg_db) -> None:
-    """fold -> f1 -> f2 with a grant on fold: both edges go with nothing projecting f1, then f2 is projected: fold's grant has lost its child, as in a fresh projection."""
+    """gp -> p -> c with a grant on gp: both edges go with nothing projecting p, then c is projected: gp has lost its child, and its grant's `leaf` flag says so, as in a fresh projection."""
     p, a, b = prov(pg_db), new_org(), new_org()
     for o in (a, b):
         await load_world(p, o)
-        await add_edge(p, o, ("records", "f1"), ("records", "f2"), "nodeRelations", relationshipType="PARENT_CHILD")
-        await add_edge(p, o, ("users", "u1"), ("records", "fold"), "permission", type="USER", role="READER")
-    await run(p, a, {*FOCUS, ("organizations", a)})
+        with ctx(o):
+            await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": o, "recordType": "FILE", "origin": "CONNECTOR"} for k in ("gp", "pa", "ch")], "records")
+        await add_edge(p, o, ("records", "gp"), ("records", "pa"), "nodeRelations", relationshipType="PARENT_CHILD")
+        await add_edge(p, o, ("records", "pa"), ("records", "ch"), "nodeRelations", relationshipType="PARENT_CHILD")
+        await add_edge(p, o, ("users", "u1"), ("records", "gp"), "permission", type="USER", role="READER")
+    await run(p, a, {*FOCUS, ("organizations", a), ("records", "gp"), ("records", "pa"), ("records", "ch")})
     for o in (a, b):
-        await delete_edge(p, o, ("records", "fold"), ("records", "f1"), "nodeRelations", relationshipType="PARENT_CHILD")
-        await delete_edge(p, o, ("records", "f1"), ("records", "f2"), "nodeRelations", relationshipType="PARENT_CHILD")
-    await run(p, a, {("records", "f2")})
-    await run(p, b, {*FOCUS, ("organizations", b)})
+        await delete_edge(p, o, ("records", "gp"), ("records", "pa"), "nodeRelations", relationshipType="PARENT_CHILD")
+        await delete_edge(p, o, ("records", "pa"), ("records", "ch"), "nodeRelations", relationshipType="PARENT_CHILD")
+    await run(p, a, {("records", "ch")})
+    await run(p, b, {*FOCUS, ("organizations", b), ("records", "gp"), ("records", "pa"), ("records", "ch")})
+
     def grants(h: dict) -> dict:
-        return {k: v for k, v in h["grants"].items() if k[1] in ("fold", "f1")}
-    assert grants(await held(p, a)) == grants(await held(p, b))
+        return {k: v for k, v in h["grants"].items() if k[1] == "gp"}
+    got = grants(await held(p, a))
+    assert got and got == grants(await held(p, b))
 
 
 OPS = (
