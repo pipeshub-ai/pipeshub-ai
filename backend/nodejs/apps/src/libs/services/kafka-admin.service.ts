@@ -60,16 +60,14 @@ function partitionsSetExplicitly(): boolean {
  */
 export function buildRequiredTopics(): TopicDefinition[] {
   // Title events are keyed by record id, so they spread over partitions like record-events.
-  const keyed = (topic: BrokerTopic) =>
+  const keyed = (topic: BrokerTopic): boolean =>
     topic === BrokerTopic.RECORD_EVENTS ||
     topic === BrokerTopic.RECORD_TITLE_EVENTS;
   return Object.values(BrokerTopic).map((topic) => ({
     topic,
-    numPartitions:
-      keyed(topic) ? configuredPartitions() : 1,
+    numPartitions: keyed(topic) ? configuredPartitions() : 1,
     replicationFactor: 1,
-    growExisting:
-      keyed(topic) && partitionsSetExplicitly(),
+    growExisting: keyed(topic) && partitionsSetExplicitly(),
   }));
 }
 
