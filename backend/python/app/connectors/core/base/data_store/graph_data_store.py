@@ -1618,12 +1618,14 @@ _STRUCTURAL_WRITERS: dict[str, Callable[[dict], list[tuple[str, str | None]]]] =
     # grants: the first one added to a node, or the last removed from it, changes what its descendants are stamped with
     "batch_upsert_record_permissions": lambda b: [(_R, b["record_id"])],
     "batch_upsert_record_group_permissions": lambda b: [(_G, b["record_group_id"])],
+    # removes the group with every grant it holds (PERMISSION edges), any of which may be the last on its node
+    "delete_user_group_by_id": lambda b: [(CollectionNames.GROUPS.value, b["group_id"])],
 }
 
 
 # Writers that remove the node itself: structural whenever the node existed (the connector is resolved before the call).
 _REMOVES_NODE = frozenset({"delete_record_by_key", "delete_nodes", "delete_nodes_and_edges", "delete_single_record",
-                           "delete_records_and_relations"})
+                           "delete_records_and_relations", "delete_user_group_by_id"})
 
 
 # Edge writers that name only one end of the edges they remove: (which end, the argument holding the edge collection). When the named end
@@ -1827,7 +1829,7 @@ _wrap_patch("batch_upsert_nodes")
 
 # writes that move no structure: grants, memberships, people, sync points, content and indexing state, and the transaction itself
 _HARMLESS_WRITERS = frozenset({
-    "batch_upsert_nodes", "batch_update_nodes", "delete_user_group_by_id", "batch_upsert_people",
+    "batch_upsert_nodes", "batch_update_nodes", "batch_upsert_people",
     "upsert_person_by_email", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
     "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",

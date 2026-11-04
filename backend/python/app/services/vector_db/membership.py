@@ -503,9 +503,11 @@ async def resolve_virtual_record_state(
 
         async def _get_edges(key: str):
             async with semaphore:
+                # raising: a failed read is not "no groups", which would drop real members from the point
                 return await graph_provider.get_edges_from_node(
                     f"{CollectionNames.RECORDS.value}/{key}",
                     CollectionNames.BELONGS_TO.value,
+                    raise_on_error=True,
                 )
 
         docs, edge_lists = await asyncio.gather(
@@ -750,6 +752,14 @@ async def _sync_vector_membership_locked(
     """
     state = await resolve_virtual_record_state(graph_provider, virtual_record_id)
     connector_ids, record_group_ids = state.connector_ids, state.record_group_ids
+
+    # A record the graph did not return (a failed read, or one deleted meanwhile) makes the arrays and the stamp partial: writing them
+    # would drop real members or keep stale ones, and a stamp from them could be trusted. Write nothing; the point is marked stale.
+    if not state.complete:
+        if logger is not None:
+            logger.warning("Skipping vector membership write for %s: not every record of it could be read", virtual_record_id)
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
+        return None
 
     # Every record carries a connectorId, so an empty result means the graph
     # returned nothing for this VRID — a lagging read or a record mid-delete, not
