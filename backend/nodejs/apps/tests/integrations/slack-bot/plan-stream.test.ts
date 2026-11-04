@@ -636,6 +636,49 @@ describe('slack-bot/utils/plan-stream', () => {
       expect(calls(c, 'chat.appendStream').pop().chunks[0]).to.include({ title: 'Late step' });
     });
 
+    describe('splits a long reply between words and lines, never inside them', () => {
+      const textOf = (c: ReturnType<typeof slackClient>, ts: string): string => {
+        const opened = calls(c, 'chat.startStream').findIndex((_call, i) => `s${String(i + 1)}` === ts);
+        const chunks = [
+          ...(calls(c, 'chat.startStream')[opened]?.chunks ?? []),
+          ...calls(c, 'chat.appendStream').filter((call) => call.ts === ts).flatMap((call) => call.chunks),
+        ] as AnyArgs[];
+        return chunks.filter((chunk) => chunk.type === 'markdown_text').map((chunk) => String(chunk.text)).join('');
+      };
+
+      it('counts big Thinking rows toward the message, so the answer starts whole in the next one', async () => {
+        const { c, s, plan } = stream();
+        // Thinking text whose rows nearly fill a message.
+        // One piece of thinking text keeps about 2,700 characters; four of them nearly fill a message.
+        for (let i = 0; i < 4; i += 1) {
+          await s.tasks(plan.narration(`Step ${String(i)}: the agent checks one more source before it answers. `.repeat(60)));
+        }
+        await s.answer(`## PipesHub connector setup guide\n\n${'Intro text. '.repeat(200)}`);
+
+        expect(textOf(c, 's1')).to.not.contain('Pipes');
+        expect(textOf(c, 's2').startsWith('## PipesHub connector setup guide')).to.equal(true);
+      });
+
+      it('ends a full message at a space, not inside a word', async () => {
+        const { c, s } = stream();
+        const words = 'alpha beta gamma delta '.repeat(Math.ceil((SLACK_STREAM_MESSAGE_CHAR_LIMIT * 1.5) / 23));
+        await s.answer(words);
+
+        const first = textOf(c, 's1');
+        expect(first.endsWith(' ')).to.equal(true);
+        expect(first + textOf(c, 's2')).to.equal(words);
+      });
+
+      it('starts a heading in the next message when little room is left', async () => {
+        const { c, s } = stream();
+        await s.answer(`${'word '.repeat(Math.floor((SLACK_STREAM_MESSAGE_CHAR_LIMIT - 300) / 5))}\n`);
+        await s.answer('## Next section\n\nBody of the next section is long enough to need more room than is left. '.repeat(8));
+
+        expect(textOf(c, 's1')).to.not.contain('## Next');
+        expect(textOf(c, 's2').startsWith('## Next section')).to.equal(true);
+      });
+    });
+
     it('goes on in a new message when Slack finds the message too long for more answer text', async () => {
       const { c, s, plan } = stream();
       await s.tasks(plan.toolStarted('search', 'Searching', 'c1'));
