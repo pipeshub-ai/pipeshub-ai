@@ -41,7 +41,12 @@ from qdrant_client.http.models import (  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.vector_db.errors import OrgRequired
-from app.services.vector_db.filters import is_missing, require_filter_org
+from app.services.vector_db.filters import (
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -918,6 +923,7 @@ class QdrantService(IVectorDBService):
                 "condition (e.g. virtualRecordId)."
             )
         require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(points)
         await self.client.overwrite_payload(  # type: ignore
@@ -939,6 +945,7 @@ class QdrantService(IVectorDBService):
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
         require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True for the same reason as delete_points: the connector cleanup
@@ -961,6 +968,7 @@ class QdrantService(IVectorDBService):
         self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         # A plain id list fails the whole call with a 404 if any id is missing;

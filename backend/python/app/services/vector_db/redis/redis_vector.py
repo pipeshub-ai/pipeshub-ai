@@ -50,7 +50,9 @@ from app.config.constants.service import config_node_constants
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     build_generic_conditions,
+    forbid_org_in_payload,
     is_missing,
+    keep_org_in_overwrite,
     require_filter_org,
     split_values_count_conditions,
 )
@@ -862,6 +864,7 @@ class RedisVectorService(IVectorDBService):
                 "condition (e.g. virtualRecordId)."
             )
         require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         await self._hset_matching(collection_name, payload, points)
 
@@ -878,6 +881,7 @@ class RedisVectorService(IVectorDBService):
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
         require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         await self._hset_matching(collection_name, payload, filter)
 
@@ -892,6 +896,7 @@ class RedisVectorService(IVectorDBService):
         self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         # HSET on a missing key would create a bare hash; only touch stored points of this org

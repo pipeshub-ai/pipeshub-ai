@@ -63,7 +63,12 @@ from app.services.vector_db.const.const import (
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.errors import OrgRequired
-from app.services.vector_db.filters import is_missing, require_filter_org
+from app.services.vector_db.filters import (
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -1156,6 +1161,7 @@ class OpenSearchService(IVectorDBService):
                 "(e.g. virtualRecordId)."
             )
         require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(points)
         script_parts = []
@@ -1205,6 +1211,8 @@ class OpenSearchService(IVectorDBService):
                 "set_payload called with an empty filter — this would update the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
 
     async def update_payload_by_ids(
@@ -1221,6 +1229,7 @@ class OpenSearchService(IVectorDBService):
         await self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         doc = OpenSearchUtils.nest_dotted_keys(payload)

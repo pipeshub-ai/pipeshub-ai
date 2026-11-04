@@ -458,3 +458,17 @@ async def test_vector_store_deletes_take_the_explicit_org_and_refuse_a_different
     with _as(A), pytest.raises(OrgMismatch):
         await store.delete_blocks_by_ids({"b1"}, VRID, COLL, org_id=B)
     assert _ids(db) == {"b-b1", "b-b2"}
+
+
+@pytest.mark.parametrize("payload", [{"metadata": {"orgId": B}}, {"metadata.orgId": B}, {"metadata_orgId": B}])
+async def test_a_payload_cannot_move_points_to_another_org(db, payload) -> None:
+    from app.services.vector_db.errors import OrgMismatch
+
+    flt = await db.filter_collection(must={"orgId": A, "virtualRecordId": VRID})
+    with pytest.raises(OrgMismatch):
+        await db.set_payload(COLL, payload, flt)
+    with pytest.raises(OrgMismatch):
+        await db.update_payload_by_ids(COLL, ["a-b1"], payload, org_id=A)
+    with pytest.raises(OrgMismatch):
+        await db.overwrite_payload(COLL, payload, flt)
+    assert _payload(db, A)["metadata"]["orgId"] == A

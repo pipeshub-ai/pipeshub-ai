@@ -87,7 +87,7 @@ def org_for_filter(org_id: str | None = None, *, match_bound: bool = False) -> s
         raise OrgRequired(f"no organisation is bound for this vector call: {exc}") from exc
 
 
-def require_filter_org(expr: FilterExpression) -> None:
+def require_filter_org(expr: FilterExpression) -> str:
     """Raise OrgRequired unless MUST pins ``metadata.orgId`` to a non-blank value.
 
     Every delete and update names its org, so a filter without one is a bug of the caller,
@@ -105,6 +105,31 @@ def require_filter_org(expr: FilterExpression) -> None:
         raise OrgRequired("the filter carries no organisation (metadata.orgId in MUST is required)")
     if len(orgs) > 1:
         raise OrgMismatch("the filter names more than one organisation")
+    return next(iter(orgs))
+
+
+def _org_in_payload(payload: dict) -> tuple[bool, object]:
+    """Whether a payload names ``orgId`` (nested under ``metadata``, dotted, or as the flattened Redis field) and what it says."""
+    meta = payload.get("metadata")
+    if isinstance(meta, dict) and "orgId" in meta:
+        return True, meta["orgId"]
+    for key in ("metadata.orgId", "metadata_orgId"):
+        if key in payload:
+            return True, payload[key]
+    return False, None
+
+
+def forbid_org_in_payload(payload: dict) -> None:
+    """A payload merge must not change which org a point belongs to (the org is what every write filter pins)."""
+    if _org_in_payload(payload)[0]:
+        raise OrgMismatch("a payload update may not name orgId: it would move points to another organisation")
+
+
+def keep_org_in_overwrite(payload: dict, expr: FilterExpression) -> None:
+    """An overwrite replaces the whole payload, so it carries ``metadata.orgId``; it must be the org the filter pins."""
+    named, value = _org_in_payload(payload)
+    if named and value != require_filter_org(expr):
+        raise OrgMismatch("an overwritten payload must keep the organisation of the points it replaces")
 
 
 def build_max_values_conditions(max_values: Dict[str, int]) -> List[FieldCondition]:
