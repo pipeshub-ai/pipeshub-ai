@@ -237,6 +237,9 @@ async def _resolve_indexing_pipeline(app_container: Any) -> Any | None:  # noqa:
     return pipeline
 
 
+_APP_ORG_FIELD = "orgId"  # the org property of the app document the backfill walks, not a claim
+
+
 async def run_vector_membership_backfill_tick(
     *,
     logger: Logger,
@@ -271,14 +274,17 @@ async def run_vector_membership_backfill_tick(
 
     failed = 0
     vrids = distinct_non_empty_vrids(page)
-    # Each point set is written for the org its record names; a VRID shared by two orgs is synced once per org.
+    # The membership write acts for one org. Each point set is written for the org its record names (a VRID shared by two orgs is
+    # synced once per org); a record that names none falls back to the app's own org, which the loop has no ambient context for.
+    app_org = app.get(_APP_ORG_FIELD)
     orgs_of: dict[str, list[str]] = {}
     for row in page:
         row_vrid, row_org = row.get("virtualRecordId"), row.get("orgId")
         if isinstance(row_vrid, str) and row_org and row_org not in orgs_of.setdefault(row_vrid, []):
             orgs_of[row_vrid].append(row_org)
     for processed, vrid in enumerate(vrids, start=1):
-        if not orgs_of.get(vrid):
+        owners = orgs_of.get(vrid) or ([str(app_org)] if app_org else [])
+        if not owners:
             # Not a failure: retrying cannot name an org, and a failure would hold the connector's backfill open for ever.
             ORG_SKIPPED.inc("membership_backfill")
             logger.warning(
@@ -287,8 +293,8 @@ async def run_vector_membership_backfill_tick(
             )
         else:
             try:
-                for org_id in orgs_of[vrid]:
-                    with for_org(org_id, job="vector-membership-backfill"):
+                for org_id in owners:
+                    with for_org(org_id, job="vector_membership_backfill"):
                         await pipeline.sync_vector_membership(vrid)
             except asyncio.CancelledError:
                 raise

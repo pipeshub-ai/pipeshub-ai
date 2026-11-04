@@ -49,6 +49,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Union
 
 from opensearchpy import AsyncOpenSearch  # type: ignore
@@ -57,10 +58,13 @@ from opensearchpy.exceptions import NotFoundError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.scope_fields import SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
+    SCOPE_KEYWORD_INDEXES,
 )
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
@@ -223,6 +227,52 @@ class OpenSearchService(IVectorDBService):
         if self._cfg is None:
             raise RuntimeError("OpenSearch config not loaded. Call connect() first.")
         return _LoopClient(self._build_client(self._cfg))
+
+    async def _guard_scope_mapping(self, collection_name: str, keys: Any) -> bool:  # noqa: ANN401
+        """Before the first write that carries scope fields to an index: the id lists must be mapped as keyword. An index
+        created before they existed maps an unseen string field dynamically as text (split on hyphens, and impossible to change
+        afterwards), where a `terms` filter on a path id would never match. Map the fields when they are absent. When one is
+        already mapped as anything else, return False: the caller writes the point **without** the scope fields (it stays
+        unstamped, which is the legacy filter), so indexing and membership go on; this is logged once per index and listed in
+        ``scope_blocked``, and such an index must never be switched to the scope filter."""
+        mapped: set[str] = self.__dict__.setdefault("_scope_mapped", set())
+        blocked: set[str] = self.__dict__.setdefault("scope_blocked", set())
+        if collection_name in blocked:
+            return False
+        if collection_name in mapped or not set(keys) & set(SCOPE_KEYS):
+            return True
+        await self._assert_connected()
+        try:
+            got = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        except NotFoundError:
+            return True  # no index to guard: the write itself reports a missing index as it always did; nothing is remembered
+        # A name may be an alias over several indices: every one behind it must map the fields as keyword.
+        for index, body in got.items():
+            props = body.get("mappings", {}).get("properties", {})
+            missing = {}
+            for field, _ in SCOPE_KEYWORD_INDEXES:
+                kind = (props.get(field) or {}).get("type")
+                if kind is None:
+                    missing[field] = {"type": "keyword"}
+                elif kind != "keyword":
+                    blocked.add(collection_name)
+                    logger.error(
+                        "index '%s' maps '%s' as %s, not keyword: scope fields are not written to it and it must not be switched to "
+                        "the scope filter (re-create the index, or reindex it with the keyword mapping)", index, field, kind)
+                    return False
+            if missing:
+                await self.client.indices.put_mapping(index=index, body={"properties": missing})  # type: ignore
+        mapped.add(collection_name)
+        return True
+
+    def _forget_scope_mapping(self, collection_name: str) -> None:
+        """An index that is created or deleted is a different one next time: what was learned about its mapping no longer holds."""
+        self.__dict__.setdefault("_scope_mapped", set()).discard(collection_name)
+        self.__dict__.setdefault("scope_blocked", set()).discard(collection_name)
+
+    @staticmethod
+    def _without_scope(payload: dict) -> dict:
+        return {k: v for k, v in payload.items() if k not in SCOPE_KEYS}
 
     # ------------------------------------------------------------------
     # Factory
@@ -427,6 +477,7 @@ class OpenSearchService(IVectorDBService):
         config: Optional[CollectionConfig] = None,
     ) -> None:
         await self._assert_connected()
+        self._forget_scope_mapping(collection_name)
         if config is None:
             config = CollectionConfig()
 
@@ -527,6 +578,8 @@ class OpenSearchService(IVectorDBService):
                         "connectorIds": {"type": "keyword"},
                         "recordGroupIds": {"type": "keyword"},
                         "rootRecordGroupIds": {"type": "keyword"},
+                        # scope fields (permission model): keyword mappings up front, so a dynamic mapping never types them as text
+                        **({field: {"type": "keyword"} for field, _ in SCOPE_KEYWORD_INDEXES} if scope_fields_enabled() else {}),
                         # Keep explicit keyword declarations for the two most-used
                         # filter fields so the mapping is readable without introspection.
                         "metadata": {
@@ -737,6 +790,7 @@ class OpenSearchService(IVectorDBService):
 
     async def delete_collection(self, collection_name: str) -> None:
         await self._assert_connected()
+        self._forget_scope_mapping(collection_name)
         if await self.client.indices.exists(index=collection_name):  # type: ignore
             await self.client.indices.delete(index=collection_name)  # type: ignore
             logger.info(f"Deleted OpenSearch index '{collection_name}'")
@@ -882,6 +936,7 @@ class OpenSearchService(IVectorDBService):
                 CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
                 RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
                 ROOT_RECORD_GROUP_IDS_FIELD: list(source.get(ROOT_RECORD_GROUP_IDS_FIELD) or []),
+                **{k: source[k] for k in SCOPE_KEYS if k in source},
             },
         )
 
@@ -983,6 +1038,8 @@ class OpenSearchService(IVectorDBService):
           the merge policy keeps the segment count low continuously.
         """
         await self._assert_connected()
+        if not await self._guard_scope_mapping(collection_name, {k for p in points for k in p.payload}):
+            points = [replace(p, payload=self._without_scope(p.payload)) for p in points]
         start = time.perf_counter()
         logger.debug(
             f"Upserting {len(points)} points into OpenSearch index '{collection_name}'"
@@ -1163,6 +1220,10 @@ class OpenSearchService(IVectorDBService):
         require_filter_org(points)
         keep_org_in_overwrite(payload, points)
         await self._assert_connected()
+        if not await self._guard_scope_mapping(collection_name, payload):
+            payload = self._without_scope(payload)
+            if not payload:
+                return
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(points)
         script_parts = []
         params: Dict[str, Any] = {}
@@ -1232,6 +1293,10 @@ class OpenSearchService(IVectorDBService):
         forbid_org_in_payload(payload)
         if not point_ids:
             return
+        if not await self._guard_scope_mapping(collection_name, payload):
+            payload = self._without_scope(payload)
+            if not payload:
+                return
         doc = OpenSearchUtils.nest_dotted_keys(payload)
         # A scripted update checks the org on the document itself (a bulk update by _id sees unrefreshed
         # writes) and is a noop for another org's id; it merges objects recursively like a partial doc.
