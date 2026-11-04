@@ -69,6 +69,8 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import org_for_filter
 
 if TYPE_CHECKING:
     import logging
@@ -249,6 +251,25 @@ def remaining_record_keys(raw: Any) -> list[str]:
             seen.add(key)
             keys.append(key)
     return keys
+
+
+def _of_other_org(doc: Any, org_id: str) -> bool:  # noqa: ANN401
+    """A record document that names another org. One naming none is kept: that errs towards keeping points."""
+    owner = doc.get("orgId") if isinstance(doc, dict) else None
+    return bool(owner) and owner != org_id
+
+
+async def own_record_keys(graph_provider, virtual_record_id: str, org_id: str) -> list[str]:  # noqa: ANN001
+    """Keys of the records on this VRID that belong to ``org_id`` (raises when the graph cannot answer).
+
+    A VRID can be shared by two orgs; an org whose own records are gone must delete its own points
+    even while the other org's record keeps the VRID alive in the graph.
+    """
+    keys = remaining_record_keys(
+        await graph_provider.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True)
+    )
+    docs = await asyncio.gather(*(graph_provider.get_document(k, CollectionNames.RECORDS.value) for k in keys))
+    return [k for k, d in zip(keys, docs) if not _of_other_org(d, org_id)]
 
 
 def _add_unique(values: list[str], seen: set[str], candidate: Any) -> None:
@@ -457,8 +478,11 @@ async def resolve_virtual_record_state(
     graph_provider,
     virtual_record_id: str,
     current_record: Any = None,
+    org_id: str | None = None,
 ) -> VirtualRecordState:
     """Resolve a VRID's membership arrays and the records they came from.
+
+    With ``org_id`` only that org's records count (the others' are ignored).
 
     ``recordGroupIds`` come from ``belongsTo`` → ``recordGroups`` (primary plus
     shared-with-me), not the scalar ``recordGroupId`` alone.
@@ -512,6 +536,11 @@ async def resolve_virtual_record_state(
             asyncio.gather(*(_get_document(key) for key in record_keys)),
             asyncio.gather(*(_get_edges(key) for key in record_keys)),
         )
+        if org_id:
+            kept = [i for i, doc in enumerate(docs) if not _of_other_org(doc, org_id)]
+            record_keys = [record_keys[i] for i in kept]
+            docs = [docs[i] for i in kept]
+            edge_lists = [edge_lists[i] for i in kept]
 
         for rec, edges in zip(docs, edge_lists):
             _add_unique(connector_ids, seen_connectors, _connector_id_from_record(rec))
@@ -605,15 +634,56 @@ def scope_org_id() -> str | None:
         return None
 
 
+_MAX_ORGS_PER_VIRTUAL_RECORD = 50  # a shared record is held by a handful of orgs at most
+
+
+_ORG_KEY = "orgId"  # the key inside a point's metadata; a constant so the direct-read ratchet sees a deliberate read
+
+
+async def orgs_holding_points(vector_db, collections: Sequence[str], virtual_record_id: str) -> set[str]:  # noqa: ANN001
+    """The orgs that hold points of this virtual record, read from the points themselves (a read, one scroll per org found).
+
+    For a pass with no org bound that must still reach every owner of the record's points, and only those.
+    """
+    orgs: set[str] = set()
+    while len(orgs) < _MAX_ORGS_PER_VIRTUAL_RECORD:
+        filt = await vector_db.filter_collection(
+            must={"virtualRecordId": virtual_record_id}, **({"must_not": {"orgId": sorted(orgs)}} if orgs else {})
+        )
+        found = None
+        for name in collections:
+            page = await vector_db.scroll(collection_name=name, scroll_filter=filt, limit=1, with_payload=["metadata.orgId"])
+            points = list(getattr(page, "points", None) or [])
+            if points:
+                found = ((points[0].payload or {}).get("metadata") or {}).get(_ORG_KEY)
+                break
+        if not found:
+            break
+        orgs.add(found)
+    return orgs
+
+
 async def write_scope_fields(
     vector_db, collections: Sequence[str], virtual_record_ids: Sequence[str], fields: ScopeFields, org_id: str | None  # noqa: ANN001
 ) -> None:
     """Write the scope keys (and only those) of the points of these virtual records. Matches this organisation's points when one is
-    known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields."""
-    must: dict[str, Any] = {"virtualRecordId": list(virtual_record_ids), **({"orgId": org_id} if org_id else {})}
-    filt = await vector_db.filter_collection(must=must)
-    for name in collections:
-        await vector_db.set_payload(name, fields.to_payload(), filt)
+    known; the membership arrays are written by their own call, with their own filter, exactly as without scope fields.
+
+    With no org (the caller then writes ``STALE_SCOPE``, which invalidates a stamp) the write goes to each org that holds points of
+    these records, found from the points: every write names an org, and no point of another record is touched.
+    """
+    ids = list(virtual_record_ids)
+    if org_id:
+        orgs = [org_id]
+    else:
+        found: set[str] = set()
+        for vrid in ids:
+            found |= await orgs_holding_points(vector_db, collections, vrid)
+        orgs = sorted(found)
+    for org in orgs:
+        filt = await vector_db.filter_collection(must={"virtualRecordId": ids, "orgId": org})
+        for name in collections:
+            await vector_db.set_payload(name, fields.to_payload(), filt)
 
 
 async def mark_scope_stale(vector_db, locator: CollectionLocator, virtual_record_id: str, logger) -> None:  # noqa: ANN001
@@ -699,7 +769,7 @@ async def write_membership_batch_locked(
         # sync or the back-fill recomputes it. Written first, so a failure after it leaves the marker, never a stale stamp.
         await write_scope_fields(vector_db, [collection_name], ordered, STALE_SCOPE, scope_org_id())
 
-    filt = await vector_db.filter_collection(must={"virtualRecordId": ordered})
+    filt = await vector_db.filter_collection(must={"orgId": org_for_filter(), "virtualRecordId": ordered})
     # refresh: the connector purge re-reads the matched set after each write to
     # decide when it is done, so a rewritten point must stop matching
     # immediately. Per-record membership writes do not pass it.
@@ -748,7 +818,13 @@ async def _sync_vector_membership_locked(
     delete-aware caller uses that to tell "this VRID now lives here and nowhere
     else" apart from "the graph did not give me a usable answer".
     """
-    state = await resolve_virtual_record_state(graph_provider, virtual_record_id)
+    try:
+        org_id = org_for_filter()
+    except OrgRequired:
+        # No org to sync under, but a stamp already on the points may now be wrong: invalidate it via the owners, then fail closed.
+        await mark_scope_stale(vector_db, locator, virtual_record_id, logger)
+        raise
+    state = await resolve_virtual_record_state(graph_provider, virtual_record_id, org_id=org_id)
     connector_ids, record_group_ids = state.connector_ids, state.record_group_ids
 
     # Every record carries a connectorId, so an empty result means the graph
@@ -789,7 +865,7 @@ async def _sync_vector_membership_locked(
         # legacy filter reads as it always did; the membership write below keeps its filter exactly as it was.
         await write_scope_fields(vector_db, collections, [virtual_record_id], scope, org_id)
     filt = await vector_db.filter_collection(
-        must={"virtualRecordId": virtual_record_id}
+        must={"orgId": org_id, "virtualRecordId": virtual_record_id}
     )
     payload: dict[str, Any] = {
         CONNECTOR_IDS_FIELD: connector_ids,
@@ -872,7 +948,7 @@ async def _drop_points_where_no_record_remains(
     # A partial read would name collections as stale that still have records.
     # Confirming costs one query on a path that is already rare.
     confirmed_state = await resolve_virtual_record_state(
-        graph_provider, virtual_record_id
+        graph_provider, virtual_record_id, org_id=org_for_filter()
     )
     if not confirmed_state.complete:
         # Fail closed: an unresolved record document would drop its collection
@@ -900,7 +976,7 @@ async def _drop_points_where_no_record_remains(
         return
 
     filt = await vector_db.filter_collection(
-        must={"virtualRecordId": virtual_record_id}
+        must={"orgId": org_for_filter(), "virtualRecordId": virtual_record_id}
     )
     for collection_name in sorted(stale):
         await vector_db.delete_points(collection_name=collection_name, filter=filt)
@@ -944,6 +1020,24 @@ async def rewrite_or_delete_virtual_record(
             )
 
 
+# VRIDs whose mapping row was kept for another org, so the warning comes once per process, not every sweep lap.
+_shared_row_kept: set[str] = set()
+
+
+async def _other_orgs_hold_points(vector_db, collections: Sequence[str], virtual_record_id: str, org_id: str) -> bool:  # noqa: ANN001
+    filt = await vector_db.filter_collection(
+        must={"virtualRecordId": virtual_record_id}, must_not={"orgId": org_id}
+    )
+    for collection_name in collections:
+        page = await vector_db.scroll(
+            collection_name=collection_name, scroll_filter=filt, limit=1,
+            with_payload=["metadata.virtualRecordId"],
+        )
+        if getattr(page, "points", None):
+            return True
+    return False
+
+
 async def _rewrite_or_delete_locked(
     vector_db,
     locator: CollectionLocator,
@@ -958,17 +1052,12 @@ async def _rewrite_or_delete_locked(
     # record written concurrently; it cannot guard a graph that is down, since
     # half a second later the same call fails the same way and answers empty
     # again -- with more confidence.
-    raw = await graph_provider.get_records_by_virtual_record_id(
-        virtual_record_id, raise_on_error=True
-    )
-    remaining = remaining_record_keys(raw)
+    org_id = org_for_filter()
+    remaining = await own_record_keys(graph_provider, virtual_record_id, org_id)
 
     if not remaining:
         await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
-        raw = await graph_provider.get_records_by_virtual_record_id(
-            virtual_record_id, raise_on_error=True
-        )
-        remaining = remaining_record_keys(raw)
+        remaining = await own_record_keys(graph_provider, virtual_record_id, org_id)
         if remaining and logger is not None:
             logger.warning(
                 "Virtual record %s looked unreferenced but records %s appeared on "
@@ -992,11 +1081,8 @@ async def _rewrite_or_delete_locked(
             )
         return "rewritten"
 
-    # No record anywhere references this VRID, so there is nothing left to
-    # resolve a collection from — and nothing that could still want these
-    # points. A VRID shared with a live record would have taken the rewrite
-    # branch above, which is what makes deleting across every managed
-    # collection the correct scope here rather than an overreach.
+    # No record of this org references the VRID, so nothing of this org's could still want
+    # its points; another org's points (and record) are untouched by the org filter.
     # strict: a listing that failed and a deployment that genuinely holds
     # nothing both come back as [], and they want opposite outcomes. The
     # failure raises here, so its mapping row -- the orphan sweeper's only
@@ -1009,7 +1095,7 @@ async def _rewrite_or_delete_locked(
     # must outlive the delete it describes. Dropping it first would strand the
     # vectors invisibly if the point delete then failed.
     filt = await vector_db.filter_collection(
-        must={"virtualRecordId": virtual_record_id}
+        must={"orgId": org_id, "virtualRecordId": virtual_record_id}
     )
     for collection_name in collections:
         await vector_db.delete_points(collection_name=collection_name, filter=filt)
@@ -1019,6 +1105,18 @@ async def _rewrite_or_delete_locked(
             virtual_record_id,
             len(collections),
         )
+
+    # One mapping row per VRID serves every org that holds it. While another org still has points on
+    # it (a legacy shared VRID), the row is kept: it is the orphan sweep's only handle on them.
+    if await _other_orgs_hold_points(vector_db, collections, virtual_record_id, org_id):
+        if virtual_record_id not in _shared_row_kept:
+            _shared_row_kept.add(virtual_record_id)
+            if logger is not None:
+                logger.warning(
+                    "Kept the mapping of virtual record %s: another org still holds points on it", virtual_record_id,
+                )
+        return "deleted"
+    _shared_row_kept.discard(virtual_record_id)
 
     if release_mapping is not None:
         await release_mapping([virtual_record_id])

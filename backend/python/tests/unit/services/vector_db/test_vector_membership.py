@@ -21,9 +21,12 @@ from app.services.vector_db.membership import (
     sync_vector_membership,
     vector_point_payload,
 )
+from app.services.vector_db.models import ScrollResult
 from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
 )
+
+pytestmark = pytest.mark.usefixtures("bound_org")
 
 
 def _loc(names=("records",)) -> StaticCollectionLocator:
@@ -597,6 +600,7 @@ class TestSyncAndRewriteMembership:
         gp = _graph(keys=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -1176,6 +1180,7 @@ class TestDeleteConfirmation:
         gp.delete_nodes = AsyncMock(side_effect=lambda **k: order.append("mapping"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
         vdb.delete_points = AsyncMock(side_effect=lambda **k: order.append("points"))
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS

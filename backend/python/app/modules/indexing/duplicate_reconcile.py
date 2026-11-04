@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.core.org_context import for_org
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
@@ -138,7 +139,9 @@ class DuplicateReconciler:
                     )
                     complete = False
 
-            await self.sync_vector_membership(virtual_record_id)
+            # The retry sweep runs with no org bound: the points are written for the record's own org.
+            with for_org(org_id, job="duplicate-reconcile"):
+                await self.sync_vector_membership(virtual_record_id)
             return complete
         except Exception as e:
             self.logger.warning(
