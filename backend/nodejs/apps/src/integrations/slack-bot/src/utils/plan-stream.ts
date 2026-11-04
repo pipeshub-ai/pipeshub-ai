@@ -48,6 +48,8 @@ const MAX_ARGS_CHARS = 300;
 const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 /** Room kept free in a full message to close a code fence before moving on. */
 const FENCE_ROOM = 24;
+/** Below this much room a new line waits for the next message. */
+const MIN_LINE_ROOM = 1000;
 
 /**
  * The fence still open at the end of `text`, if any, per CommonMark: a block
@@ -1451,10 +1453,27 @@ export class SlackPlanStream {
         await this.rollover();
         continue;
       }
+      // A line (a heading, a list item, a paragraph) starts in the next message
+      // when it would not get far in this one.
+      const atLineStart =
+        this.text === '' || (this.text + gap).endsWith('\n');
+      if (this.ts && atLineStart && rest.length > room && room < MIN_LINE_ROOM) {
+        await this.rollover();
+        continue;
+      }
       let piece = rest;
       if (rest.length > room) {
-        const newline = rest.slice(0, room).lastIndexOf('\n');
-        piece = rest.slice(0, newline > 0 ? newline + 1 : room);
+        // Split at a line break, else at a space: never inside a word.
+        const head = rest.slice(0, room);
+        const newline = head.lastIndexOf('\n');
+        const space = Math.max(head.lastIndexOf(' '), head.lastIndexOf('\t'));
+        const cut = newline > 0 ? newline + 1 : space > 0 ? space + 1 : 0;
+        if (cut === 0 && this.ts && this.chars > 0) {
+          // Not even one word fits: it goes in the next message.
+          await this.rollover();
+          continue;
+        }
+        piece = rest.slice(0, cut > 0 ? cut : room);
       }
       const sent = gap + piece;
       const chunk: SlackStreamChunk = { type: 'markdown_text', text: sent };
@@ -1743,6 +1762,17 @@ export class SlackPlanStream {
           chunk.sources !== undefined
         ) {
           this.detailed.add(chunk.id);
+        }
+        // Rows count toward Slack's message limit as the answer text does.
+        if (!ticker) {
+          this.chars +=
+            (this.taskIds.has(chunk.id) ? 0 : chunk.title.length) +
+            (chunk.details?.length ?? 0) +
+            (chunk.output?.length ?? 0) +
+            (chunk.sources ?? []).reduce(
+              (total, source) => total + source.text.length + source.url.length,
+              0,
+            );
         }
         if (!this.taskIds.has(chunk.id))
           this.currentLog().push({ task: chunk.id });
