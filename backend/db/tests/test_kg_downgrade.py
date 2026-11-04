@@ -29,6 +29,7 @@ def test_downgrading_the_writers_touches_nothing_that_is_not_theirs(db):
         c.execute("CREATE FUNCTION kg.sentinel_not_mine() RETURNS int LANGUAGE sql AS 'SELECT 1'")
         c.execute("INSERT INTO kernel.function_registry (proc, class) VALUES ('kg.sentinel_not_mine()'::regprocedure, 'read')")
         c.execute("INSERT INTO kernel.vetted_write_pins (proc, rel, op, key_cols, set_cols, txn_col, max_items) VALUES ('kg.sentinel_not_mine()'::regprocedure, 'kg.node_keys'::regclass, 'upsert', NULL, '{}', NULL, 1)")
+        c.execute("INSERT INTO kernel.vetted_write_pins (proc, rel, op, key_cols, set_cols, txn_col, max_items) VALUES ('kg.sentinel_not_mine()'::regprocedure, 'kg.links'::regclass, 'insert', NULL, NULL, NULL, 1)")
         others = lambda cur: sorted(  # noqa: E731
             [tuple(x) for x in cur.execute("SELECT proc::text FROM kernel.function_registry WHERE proc::text NOT LIKE 'kg.w\\_%' ORDER BY 1")],
         )
@@ -43,10 +44,13 @@ def test_downgrading_the_writers_touches_nothing_that_is_not_theirs(db):
         assert sorted(tuple(x) for x in c.execute("SELECT proc::text, rel::text, op FROM kernel.vetted_write_pins WHERE proc::text NOT LIKE 'kg.w\\_%'")) == pins_before
         assert c.execute("SELECT has_table_privilege('pipeshub_vetted_kg', 'kg.node_keys', 'INSERT')").fetchone()[0] is True      # the sentinel's pin still needs it
         assert c.execute("SELECT has_table_privilege('pipeshub_vetted_kg', 'kg.records', 'INSERT')").fetchone()[0] is False       # only the writers' pins gave this one
+        # a remaining pin keeps exactly the operations it needs: kg.links had insert and delete pins of the writers, the sentinel keeps insert
+        assert [c.execute(f"SELECT has_table_privilege('pipeshub_vetted_kg', 'kg.links', '{op}')").fetchone()[0] for op in ("INSERT", "UPDATE", "DELETE")] == [True, False, False]
         c.execute("DELETE FROM kernel.vetted_write_pins WHERE proc = 'kg.sentinel_not_mine()'::regprocedure")
         c.execute("DELETE FROM kernel.function_registry WHERE proc = 'kg.sentinel_not_mine()'::regprocedure")
         c.execute("DROP FUNCTION kg.sentinel_not_mine()")
-        c.execute("REVOKE INSERT, UPDATE, DELETE ON kg.node_keys FROM pipeshub_vetted_kg")
+        c.execute("SELECT kernel._sync_vetted_privs('kg.node_keys'::regclass)")
+        c.execute("SELECT kernel._sync_vetted_privs('kg.links'::regclass)")
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
         assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
     r = run_migrate(url)
