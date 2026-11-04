@@ -159,22 +159,3 @@ export function listParams(
     order: q.order === 'asc' ? 'asc' : 'desc',
   };
 }
-
-/** One retrieval chunk as an OpenAI vector store search result. */
-export function searchResult(
-  chunk: Json,
-  fileIdFor: (recordId: string) => string,
-): Json | null {
-  const record = isJson(chunk.record) ? chunk.record : {};
-  const recordId = typeof record.recordId === 'string' ? record.recordId : '';
-  if (recordId === '') return null;
-  return {
-    file_id: fileIdFor(recordId),
-    filename: typeof record.name === 'string' ? record.name : '',
-    score: typeof chunk.score === 'number' ? chunk.score : 0,
-    attributes: {},
-    content: [
-      { type: 'text', text: typeof chunk.text === 'string' ? chunk.text : '' },
-    ],
-  };
-}

@@ -21,18 +21,16 @@ import {
   Json,
   kbIdFromVectorStoreId,
   recordIdFromFileId,
-  toFileId,
   toVectorStoreId,
 } from '../utils/openai-format';
 import {
   fileCounts,
   listPage,
   listParams,
-  searchResult,
   vectorStoreFileObject,
   vectorStoreObject,
 } from '../utils/openai-objects';
-import { ApiCaller, apiJson } from '../utils/pipeshub-api';
+import { ApiCaller } from '../utils/pipeshub-api';
 import { callerOf } from './files.controller';
 import {
   OpenAICompatDeps,
@@ -502,64 +500,6 @@ export const listFileBatchFiles =
           listParams(req.query, 20, 100),
         ),
       );
-    } catch (error) {
-      sendRunError(res, error);
-    }
-  };
-
-export const searchVectorStore =
-  (deps: OpenAICompatDeps): Handler =>
-  async (req, res) => {
-    const kbId = kbIdParam(req, res);
-    if (kbId === null) return;
-    const body = requestBody(req);
-    const query = Array.isArray(body.query)
-      ? body.query
-          .map(asString)
-          .filter((q) => q !== '')
-          .join('\n')
-      : asString(body.query);
-    if (query.trim() === '') {
-      sendError(
-        res,
-        400,
-        'query is required',
-        'missing_required_parameter',
-        'query',
-      );
-      return;
-    }
-    const raw = Number(body.max_num_results);
-    const limit = Number.isInteger(raw) && raw >= 1 && raw <= 50 ? raw : 10;
-    try {
-      const result = await apiJson(
-        callerOf(deps, req),
-        '/retrieve',
-        {
-          method: 'POST',
-          json: {
-            query,
-            limit,
-            filters: { apps: [kbId] },
-            ...(body.rewrite_query === true ? { rewriteQuery: true } : {}),
-          },
-        },
-        'Searching the vector store',
-      );
-      const chunks =
-        isJson(result) && Array.isArray(result.chunks)
-          ? result.chunks.filter(isJson)
-          : [];
-      const data = chunks
-        .map((chunk) => searchResult(chunk, toFileId))
-        .filter((r): r is Json => r !== null);
-      res.status(200).json({
-        object: 'vector_store.search_results.page',
-        search_query: Array.isArray(body.query) ? body.query : [query],
-        data,
-        has_more: false,
-        next_page: null,
-      });
     } catch (error) {
       sendRunError(res, error);
     }

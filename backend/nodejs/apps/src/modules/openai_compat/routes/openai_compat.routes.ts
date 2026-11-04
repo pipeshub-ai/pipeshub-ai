@@ -42,7 +42,6 @@ import {
   retrieveFileBatch,
   retrieveVectorStore,
   retrieveVectorStoreFile,
-  searchVectorStore,
 } from '../controller/vector-stores.controller';
 import {
   cancelFileBatchSchema,
@@ -53,7 +52,6 @@ import {
   createVectorStoreSchema,
   modifyVectorStoreSchema,
   responseSchema,
-  searchVectorStoreSchema,
 } from '../validators/openai_compat.validators';
 
 // Buffered in memory only to forward it: the collection upload route enforces the platform's own size limit.
@@ -191,13 +189,6 @@ export function createOpenAICompatRouter(container: Container): Router {
     '/vector_stores/:vectorStoreId/file_batches/:batchId/files',
     ...kbRead,
     listFileBatchFiles(deps),
-  );
-  router.post(
-    '/vector_stores/:vectorStoreId/search',
-    authenticate,
-    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
-    ValidationMiddleware.validate(searchVectorStoreSchema),
-    searchVectorStore(deps),
   );
 
   const projectRead = [

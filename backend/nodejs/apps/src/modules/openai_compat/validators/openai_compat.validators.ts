@@ -57,12 +57,3 @@ export const cancelFileBatchSchema = z.object({
     batchId: z.string().min(1).max(20000),
   }),
 });
-
-export const searchVectorStoreSchema = z.object({
-  params: z.object({ vectorStoreId: id }),
-  body: z.object({
-    query: z.union([z.string().min(1), z.array(z.string()).min(1)]),
-    max_num_results: z.number().int().min(1).max(50).optional(),
-    rewrite_query: z.boolean().optional(),
-  }),
-});

@@ -22,7 +22,6 @@ import {
   listVectorStoreFiles,
   retrieveFileBatch,
   retrieveVectorStoreFile,
-  searchVectorStore,
 } from '../../../src/modules/openai_compat/controller/vector-stores.controller';
 import { listProjects, projectObject } from '../../../src/modules/openai_compat/controller/projects.controller';
 import {
@@ -157,9 +156,6 @@ describe('openai_compat files, vector stores and projects against a fake collect
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.end(`event: file:succeeded\ndata: ${JSON.stringify({ recordId: id })}\n\nevent: done\ndata: {}\n\n`);
     });
-    fake.post('/api/v1/retrieve', (req, res) => {
-      res.json({ chunks: [{ text: `hit in ${req.body.filters.apps[0]}`, score: 0.9, record: { recordId: 'rec-x', name: 'doc' } }] });
-    });
     fake.get('/api/v1/projects', (_req, res) => {
       res.json({ projects: [{ _id: PROJECT, name: 'Launch', createdAt: 1000 }], pagination: { hasNext: false } });
     });
@@ -189,7 +185,6 @@ describe('openai_compat files, vector stores and projects against a fake collect
     app.get('/vector_stores/:vectorStoreId/files/:fileId', retrieveVectorStoreFile(deps));
     app.post('/vector_stores/:vectorStoreId/file_batches', createFileBatch(deps));
     app.get('/vector_stores/:vectorStoreId/file_batches/:batchId', retrieveFileBatch(deps));
-    app.post('/vector_stores/:vectorStoreId/search', searchVectorStore(deps));
     app.get('/organization/projects', listProjects(deps));
     app.post('/chat/completions', createChatCompletion(deps));
     app.post('/responses', createResponse(deps));
@@ -251,12 +246,6 @@ describe('openai_compat files, vector stores and projects against a fake collect
     const again = await (await json('GET', `/vector_stores/${vs.id}/file_batches/${batch.id}`)).json();
     expect(again.file_counts).to.include({ completed: 1, total: 1 });
     expect((await json('POST', `/vector_stores/${vs.id}/files`, { file_id: 'nope' })).status).to.equal(400);
-  });
-
-  it('searches only the store’s collection', async () => {
-    const page = await (await json('POST', '/vector_stores/vs_kb9/search', { query: 'x', max_num_results: 2 })).json();
-    expect(page.object).to.equal('vector_store.search_results.page');
-    expect(page.data[0]).to.deep.include({ file_id: 'file-rec-x', filename: 'doc', content: [{ type: 'text', text: 'hit in kb9' }] });
   });
 
   it('lists projects as organization.project objects', async () => {
