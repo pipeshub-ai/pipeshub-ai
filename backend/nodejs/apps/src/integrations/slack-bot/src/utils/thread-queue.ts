@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { hostname } from 'os';
+import { spawnDetached } from '../../../../libs/context/orgContext';
 import type { SlackFile } from '../helpers';
 import type {
   IRedisConnectionProvider,
@@ -384,16 +385,19 @@ export class ThreadQueue {
     if (outcome !== 'acquired') return outcome;
 
     const lock = { lost: false };
-    const timer = setInterval(() => {
-      this.store.renew(key, this.owner).then(
-        (ok) => {
-          if (!ok) lock.lost = true;
-        },
-        (err: unknown) => {
-          console.warn('[slack-bot] thread queue renew failed', err);
-        },
-      );
-    }, this.renewMs);
+    // Started outside the request's org context: it only renews the lock, and ends with the drain.
+    const timer = spawnDetached(() =>
+      setInterval(() => {
+        this.store.renew(key, this.owner).then(
+          (ok) => {
+            if (!ok) lock.lost = true;
+          },
+          (err: unknown) => {
+            console.warn('[slack-bot] thread queue renew failed', err);
+          },
+        );
+      }, this.renewMs),
+    );
     timer.unref();
 
     let result: SubmitResult = 'ran';
