@@ -531,6 +531,7 @@ async def test_a_vrid_whose_records_name_no_org_is_skipped_and_does_not_block_th
     )
     graph.update_node = AsyncMock()
     pipeline = AsyncMock()
+    pipeline.orgs_holding_points = AsyncMock(return_value=set())     # and no point holds it: no stamp can exist
     logger = _logger()
 
     await run_vector_membership_backfill_tick(
@@ -565,3 +566,34 @@ async def test_each_sync_runs_in_the_organisation_of_the_app_being_backfilled() 
         logger=_logger(), graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0
     )
     assert seen == ["org-7"]
+
+
+@pytest.mark.asyncio
+async def test_a_vrid_with_no_org_on_either_side_is_synced_under_each_org_that_holds_its_points() -> None:
+    """The org-less case must still re-stamp or invalidate the points' scope fields: the owners are read from the points."""
+    from app.core.org_context import MissingOrgContext, current_org_id
+
+    graph = AsyncMock()
+    graph.get_app_needing_vector_membership_backfill = AsyncMock(return_value={"_key": "app-1"})     # no org on the app
+    graph.page_records_for_vector_membership_backfill = AsyncMock(
+        return_value=[{"_key": "r1", "virtualRecordId": "v1", "orgId": None}]                       # none on the record
+    )
+    graph.update_node = AsyncMock()
+    seen: list[object] = []
+
+    async def sync(vrid: str) -> None:
+        try:
+            seen.append((vrid, current_org_id()))
+        except MissingOrgContext:
+            seen.append((vrid, None))
+
+    pipeline = AsyncMock()
+    pipeline.orgs_holding_points = AsyncMock(return_value={"org-b", "org-a"})
+    pipeline.sync_vector_membership = sync
+    await run_vector_membership_backfill_tick(
+        logger=_logger(), graph_provider=graph, pipeline=pipeline, lock=_Lock(), page_size=50, vrid_pause_ms=0
+    )
+
+    assert seen == [("v1", "org-a"), ("v1", "org-b")]
+    update = graph.update_node.await_args.args[2]
+    assert update[ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED] is True
