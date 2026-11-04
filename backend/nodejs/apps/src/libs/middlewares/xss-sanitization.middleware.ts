@@ -126,8 +126,23 @@ interface QuestionField {
   key: string;
 }
 
-/** MCP tools whose `query` argument is a question typed for chat or search. */
-const MCP_QUESTION_TOOLS = new Set(['pipeshub_chat', 'pipeshub_search']);
+/** MCP tools with a free-text argument typed for chat or search, and its name.
+ *  `pipeshub_grep`'s pattern is exact text to find, such as `List<String>`. */
+const MCP_QUESTION_TOOLS = new Map([
+  ['pipeshub_chat', 'query'],
+  ['pipeshub_search', 'query'],
+  ['pipeshub_search_entities', 'query'],
+  ['pipeshub_grep', 'pattern'],
+]);
+
+/** The routes behind those tools, and the field each reads. */
+const SEARCH_QUESTION_ROUTES = new Map([
+  ['/api/v1/search', 'query'],
+  // /retrieve takes the same plain-text query and renders nothing.
+  ['/api/v1/retrieve', 'query'],
+  ['/api/v1/search/entities', 'query'],
+  ['/api/v1/search/grep', 'pattern'],
+]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Object.prototype.toString.call(value) === '[object Object]';
@@ -164,18 +179,11 @@ function findQuestionField(req: Request): QuestionField | undefined {
   }
   const body = req.body;
 
-  // The search route MCP's pipeshub_search calls, and the web search box,
-  // and /retrieve and /search/entities, which take the same plain-text query and render nothing.
-  if (
-    req.path === '/api/v1/search' ||
-    req.path === '/api/v1/search/' ||
-    req.path === '/api/v1/retrieve' ||
-    req.path === '/api/v1/retrieve/' ||
-    req.path === '/api/v1/search/entities' ||
-    req.path === '/api/v1/search/entities/'
-  ) {
-    return typeof body.query === 'string'
-      ? { holder: body, key: 'query' }
+  // The search route MCP's pipeshub_search calls, and the web search box.
+  const routeField = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
+  if (routeField !== undefined) {
+    return typeof body[routeField] === 'string'
+      ? { holder: body, key: routeField }
       : undefined;
   }
 
@@ -191,8 +199,9 @@ function findQuestionField(req: Request): QuestionField | undefined {
       return undefined;
     }
     const args = params.arguments;
-    return isPlainObject(args) && typeof args.query === 'string'
-      ? { holder: args, key: 'query' }
+    const field = MCP_QUESTION_TOOLS.get(params.name) as string;
+    return isPlainObject(args) && typeof args[field] === 'string'
+      ? { holder: args, key: field }
       : undefined;
   }
 

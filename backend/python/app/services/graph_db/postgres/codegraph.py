@@ -75,6 +75,17 @@ def _neighbour(r: Any, key: str, coll: str) -> dict[str, Any]:  # noqa: ANN401
             "confidence": d.get("confidence")}
 
 
+
+def _page_whole_ids(pointers: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """The first ``limit`` pointers by virtual record id, and with them every other organisation's pointer of the id the page ends on.
+    A walk continues after that id, so a pointer cut off from its id here would never be read."""
+    ordered = sorted(pointers, key=lambda p: p["virtualRecordId"])
+    page = ordered[:limit]
+    if page and len(ordered) > limit:
+        page += [p for p in ordered[limit:] if p["virtualRecordId"] == page[-1]["virtualRecordId"]]
+    return page
+
+
 class CodeGraphMixin(PgBase):
     async def _sweep_orgs(self) -> list[str | None]:
         """``[None]`` under an org context (the ambient org); under a system context (the indexing tick's sweeps) every organisation, through the
@@ -559,7 +570,7 @@ class CodeGraphMixin(PgBase):
                 out += [{"virtualRecordId": d["id"], "orgId": org, "documentId": d.get("documentId"), "switchSeq": d.get("switchSeq"),
                          "lastSwitchAt": d.get("lastSwitchAt"), "retired": _retired(d.get("retired"))} for d in await self._pointer_page(after_key, limit)]
         self._raise_failed(errors)
-        return sorted(out, key=lambda p: p["virtualRecordId"])[:limit]
+        return _page_whole_ids(out, limit)
 
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
         current_or_system()
@@ -571,7 +582,7 @@ class CodeGraphMixin(PgBase):
                 out += [{"virtualRecordId": d["id"], "orgId": org, "currentRev": d.get("currentRev"), "previousRev": d.get("previousRev")}
                         for d in await self._pointer_page(after_key, limit)]
         self._raise_failed(errors)
-        return sorted(out, key=lambda p: p["virtualRecordId"])[:limit]
+        return _page_whole_ids(out, limit)
 
     async def stage_states_unheld_revisions(self, virtual_record_ids: list[str], *, updated_before_ms: int) -> list[tuple[str, str]]:
         """``(virtualRecordId, rev)`` with stage states, held by no record (``contentRev``, trash included), newest state older than the cut-off."""

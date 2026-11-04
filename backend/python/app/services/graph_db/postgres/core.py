@@ -151,6 +151,15 @@ class CoreMixin(PgBase):
             WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd)), transaction, write=True)
         return bool(r)
 
+    async def increment_node_field(self, key: str, collection: str, field: str, transaction: str | None = None) -> int | None:
+        """One UPDATE that adds one to the stored value under the row's lock (two callers get two different values); None when no node
+        matches."""
+        org = current_org_id()
+        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.increment_node_field */ UPDATE graph.nodes
+            SET doc = jsonb_set(doc, ARRAY[$4::text], to_jsonb(coalesce((doc->>$4)::bigint, 0) + 1))
+            WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING (doc->>$4)::bigint""", org, collection, key, field), transaction, write=True)
+        return None if r is None else int(r)
+
     async def batch_update_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         """One statement, so a batch outside a transaction is all or nothing; a node that does not exist is left alone."""
         items = [{"id": k, "doc": {f: v for f, v in it.items() if f not in ("id", "_key", "_id")}} for it in nodes if (k := it.get("id") or it.get("_key"))]

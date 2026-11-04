@@ -4971,7 +4971,8 @@ class IGraphDBProvider(ABC):
         if node is None:
             return None
         value = int(node.get(field) or 0) + 1
-        await self.update_node(key, collection, {field: value}, transaction)
+        if not await self.update_node(key, collection, {field: value}, transaction):
+            return None  # the node went away between the read and the write
         return value
 
     async def get_structure_of_nodes(

@@ -1422,7 +1422,11 @@ class GraphDataStore(DataStoreProvider):
         self.graph_provider = graph_provider
 
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
-        return isinstance(error, ScopeGenerationConflict) or self.graph_provider.is_transient_error(error, explicit=explicit)
+        if isinstance(error, ScopeGenerationConflict):
+            # a conflict on the counter rolled the block back only when it ran in a real transaction; outside one, the block's statements
+            # already committed and running it again would repeat them
+            return self.graph_provider.opens_explicit_transaction(explicit) is True
+        return self.graph_provider.is_transient_error(error, explicit=explicit)
 
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
@@ -1484,6 +1488,7 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
                 self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)
+            await self._mark_unsafe_after_failed_block(tx_store)
             try:
                 await tx_store.rollback()
             except Exception as rb_err:
@@ -1530,6 +1535,25 @@ class GraphDataStore(DataStoreProvider):
         org_id = org_context.current().org_id
         apps = await self.graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
         await self._mark_unsafe(tx_store, {str(k) for a in apps if (k := a.get("_key") or a.get("id"))} - seen)
+
+    async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
+        """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
+        unclassified) write touched changed with no bump, so their stamps are marked unsafe. In an explicit transaction the rollback
+        undoes it all. Best effort: a mark that cannot be written is logged at error and never masks the failure."""
+        if not tx_store.tracked or tx_store.explicit:
+            return
+        connectors = set(tx_store.structural_connectors)
+        if tx_store.unclassified_write:
+            try:  # the whole organisation, as when the block completes
+                await self._mark_unsafe_after_unclassified_write(tx_store)
+            except Exception:
+                self.logger.error("could not mark the connectors of the organisation scope-unsafe after a failed block")
+            connectors |= {c for c in tx_store._connector_of.values() if c}
+        for connector_id in sorted(connectors):
+            try:
+                await self._mark_unsafe(tx_store, [connector_id])
+            except BaseException:
+                self.logger.error("could not mark connector %s scope-unsafe after a failed block", connector_id)
 
     async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
         if not tx_store.tracked:
@@ -1721,7 +1745,10 @@ async def _note_removed_at_parent_end(self: GraphTransactionStore, name: str, ar
             continue
         if types is not None and kind not in types:
             continue
-        coll, _, key = str(e.get(other_key, "")).partition("/")
+        endpoint = "to" if end == "from" else "from"
+        key, coll = e.get(f"{endpoint}_id"), e.get(f"{endpoint}_collection")  # the generic shape (Neo4j's edges-to-node)
+        if not key:
+            coll, _, key = str(e.get(other_key, "")).partition("/")  # the document shape
         if other_collection is not None and coll != other_collection:
             continue
         ends.append((coll or _R, key or None))

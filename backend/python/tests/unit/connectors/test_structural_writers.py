@@ -300,6 +300,91 @@ async def test_without_explicit_transactions_a_failed_bump_marks_the_connector_u
     provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, None)  # on its own: it must survive the failure
 
 
+def _block_provider(explicit: bool) -> MagicMock:
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
+    provider.get_nodes_by_field_in = _by_field_in
+    provider.begin_transaction = AsyncMock(return_value="t")
+    provider.opens_explicit_transaction = MagicMock(return_value=explicit)
+    provider.rollback_transaction = AsyncMock()
+    provider.update_node = AsyncMock()
+    provider.delete_single_record = AsyncMock()
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
+
+
+async def test_a_block_that_fails_after_a_structural_write_without_a_transaction_marks_the_connector_unsafe() -> None:
+    """The write already committed, the bump is never reached: the connector must not stay trusted."""
+    provider = _block_provider(explicit=False)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction() as tx:
+            await tx.delete_single_record("r1")
+            raise RuntimeError("connection reset after the first statement")
+    provider.update_node.assert_awaited_with("c1", "apps", {"scopeProjectionUnsafe": True}, None)
+
+
+async def test_a_block_that_fails_in_a_real_transaction_marks_nothing_because_the_rollback_undoes_it() -> None:
+    provider = _block_provider(explicit=True)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction() as tx:
+            await tx.delete_single_record("r1")
+            raise RuntimeError("boom")
+    provider.update_node.assert_not_awaited()
+    provider.rollback_transaction.assert_awaited()
+
+
+async def test_a_failed_block_with_no_structural_write_marks_nothing() -> None:
+    provider = _block_provider(explicit=False)
+    with pytest.raises(RuntimeError):
+        async with GraphDataStore(MagicMock(), provider).transaction():
+            raise RuntimeError("boom")
+    provider.update_node.assert_not_awaited()
+
+
+def test_a_conflict_on_the_counter_is_transient_only_when_the_block_ran_in_a_real_transaction() -> None:
+    from app.services.permissions.structure_generation import ScopeGenerationConflict
+
+    for explicit, expected in ((True, True), (False, False)):
+        provider = _block_provider(explicit=explicit)
+        provider.is_transient_error = MagicMock(return_value=False)
+        assert GraphDataStore(MagicMock(), provider).is_transient_error(ScopeGenerationConflict("x")) is expected
+
+
+async def test_the_parent_end_read_understands_the_generic_edge_shape_of_edges_to_a_node() -> None:
+    """Neo4j answers `get_edges_to_node` with from_id / from_collection, not `_from`."""
+    store, provider = _store()
+
+    class Provider:
+        logger = provider.logger
+        get_document = provider.get_document
+
+        @staticmethod
+        async def get_nodes_by_field_in(collection, field, values, *a, **k) -> list[dict]:  # only the child end has a connector
+            return [{"_key": v, "connectorId": "c9" if v == "r9" else None} for v in values]
+
+        async def get_structure_of_nodes(self, collection, ids, **k) -> dict:
+            return {i: frozenset() for i in ids}
+
+        async def get_edges_to_node(self, *a, **k) -> list[dict]:
+            return [{"from_id": "r9", "from_collection": R, "to_id": "r1", "to_collection": R}]
+
+        delete_edges_to = AsyncMock()
+
+    store.graph_provider = Provider()
+    await store.delete_edges_to("r1", R, CollectionNames.INHERIT_PERMISSIONS.value)  # r1 is the parent end: r9 inherits from it
+    assert store.structural_connectors == {"c9"}  # the connector of the other end, found from the generic shape
+
+
+async def test_the_default_increment_answers_none_when_the_node_goes_away_between_the_read_and_the_write() -> None:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+    node = SimpleNamespace(get_document=AsyncMock(return_value={"n": 4}), update_node=AsyncMock(return_value=False))
+    assert await IGraphDBProvider.increment_node_field(node, "k", "apps", "n") is None
+    node.update_node = AsyncMock(return_value=True)
+    assert await IGraphDBProvider.increment_node_field(node, "k", "apps", "n") == 5
+
+
 async def test_an_upsert_that_changes_the_access_rule_of_an_existing_record_is_structural() -> None:
     store, provider = _store()
     store.graph_provider = SimpleNamespace(get_nodes_by_field_in=_stored_as(accessRule="STRICT"), logger=provider.logger,

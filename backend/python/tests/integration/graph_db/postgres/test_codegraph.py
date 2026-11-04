@@ -503,3 +503,17 @@ async def test_the_retention_reads_carry_each_rows_org(pg_db) -> None:
         for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
             got = {x["virtualRecordId"]: x["orgId"] for x in await read(None, 100000) if x["virtualRecordId"].endswith(tag)}
             assert got == {f"v{i}-{tag}": o for i, o in enumerate(orgs)}
+
+
+async def test_a_pointer_page_that_ends_on_a_shared_virtual_record_id_holds_every_orgs_pointer_of_it(pg_db) -> None:
+    orgs = [new_org(), new_org()]
+    vrid = f"v-{uuid.uuid4().hex}"
+    for i, o in enumerate(orgs):
+        p = bound(pg_db, o)
+        await p.batch_upsert_nodes([{"_key": o, "name": f"org{i}"}], "organizations")
+        await p.batch_upsert_nodes([{"_key": vrid, "documentId": f"d{i}", "switchSeq": 1, "retired": [], "currentRev": f"r{i}"}], "virtualRecordToDocIdMapping")
+    sys_p = StandInProvider(logging.getLogger("cg"), pg_db)
+    with org_context.system("test.pointer_page"):
+        for read in (sys_p.get_switch_pointers, sys_p.get_revision_pointers):
+            got = [x for x in await read(vrid[:-1] + chr(ord(vrid[-1]) - 1), 1) if x["virtualRecordId"] == vrid]
+            assert sorted(x["orgId"] for x in got) == sorted(orgs)       # a page of one still holds both, so a walk that continues after it misses neither
