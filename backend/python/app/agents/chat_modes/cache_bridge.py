@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Iterable, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.transport.opik_tracing import (
     is_opik_configured,
@@ -31,7 +31,7 @@ GMAIL_CONNECTORS: frozenset[str] = frozenset({
 })
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from app.agents.agent_loop.context import AgentContext
     from app.agents.chat_modes.prefetch import PrefetchResult

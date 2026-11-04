@@ -26,7 +26,6 @@ from app.services.cache.config import (
     DEFAULT_MAX_ENTRIES,
     DEFAULT_SIMILARITY_THRESHOLD,
     DEFAULT_TTL_SECONDS,
-    SemanticCacheConfig,
     clear_config_cache,
     get_semantic_cache_config,
 )

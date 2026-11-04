@@ -2449,13 +2449,10 @@ class TestFailOpenRobustness:
         Tests: corrupt data-key JSON, missing 'answer', wrong schema version
         => the live agent runs, no error event emitted.
         """
-        import hashlib
-
         import fakeredis.aioredis
 
         from app.services.cache.semantic_cache_service import (
             SemanticCacheService,
-            normalize_for_key,
         )
 
         sql_patch, slack_patch = _patch_connectors()
@@ -2467,8 +2464,6 @@ class TestFailOpenRobustness:
         )
 
         query = "what is the security policy?"
-        norm_query = normalize_for_key(query)
-        entry_id = hashlib.sha256(norm_query.encode("utf-8")).hexdigest()[:16]
 
         fake_prefetch = _make_fake_prefetch(
             query_embedding=[0.1, 0.2, 0.3],
