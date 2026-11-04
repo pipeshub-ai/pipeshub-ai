@@ -165,6 +165,7 @@ describe('OAuthAuthorizeView scope choice', () => {
   // The checkbox in the label that holds this scope name.
   const box = (text: string) =>
     screen.getByText(text).closest('label')!.querySelector('[role="checkbox"]')!;
+  const groupBox = (category: string) => screen.getByRole('checkbox', { name: category });
   const header = (category: string) => screen.getByRole('button', { name: new RegExp(`^${category}`) });
   const expand = async (...categories: string[]) => {
     await screen.findByRole('button', { name: /^Identity/ });
@@ -193,10 +194,10 @@ describe('OAuthAuthorizeView scope choice', () => {
     expect(groups.map((g) => text.indexOf(g))).toEqual(
       [...groups].map((g) => text.indexOf(g)).sort((a, b) => a - b),
     );
-    // Collapsed: the headers show the counts, the scopes stay hidden, and a header has no checkbox.
+    // Collapsed: the headers show their checkbox and count, and the scopes stay hidden.
     expect(groups.map((g) => header(g).getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false']);
     expect(screen.queryByText('kb:write')).toBeNull();
-    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(groups.map((g) => groupBox(g).getAttribute('aria-checked'))).toEqual(['true', 'true', 'true']);
     expect(screen.getByText('2/2')).toBeTruthy();
 
     groups.forEach((g) => fireEvent.click(header(g)));
@@ -206,7 +207,24 @@ describe('OAuthAuthorizeView scope choice', () => {
       'true',
       'true',
     ]);
-    expect(screen.queryAllByRole('checkbox')).toHaveLength(4);
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(7);
+  });
+
+  it('unticks and ticks a whole category from its checkbox, without opening it', async () => {
+    get.mockResolvedValue(consentResponse([], false, scopes));
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    await expand();
+    fireEvent.click(groupBox('Knowledge Base'));
+    expect(groupBox('Knowledge Base').getAttribute('aria-checked')).toBe('false');
+    expect(header('Knowledge Base').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByText('0/2')).toBeTruthy();
+
+    fireEvent.click(header('Knowledge Base'));
+    fireEvent.click(box('kb:read'));
+    expect(groupBox('Knowledge Base').getAttribute('aria-checked')).toBe('mixed');
+    fireEvent.click(groupBox('Knowledge Base'));
+    expect(['kb:read', 'kb:write'].map(state)).toEqual(['true', 'true']);
   });
 
   it('keeps the choices made in a category after it is collapsed again', async () => {
@@ -257,7 +275,8 @@ describe('OAuthAuthorizeView scope choice', () => {
     expect(state('openid')).toBe('true');
     fireEvent.click(box('openid'));
     expect(state('openid')).toBe('true');
-    fireEvent.click(box('offline_access'));
+    fireEvent.click(groupBox('Identity'));
+    expect(state('openid')).toBe('true');
     fireEvent.click(allow());
 
     await waitFor(() => expect(post).toHaveBeenCalled());

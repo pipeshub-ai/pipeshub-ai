@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
 import { Box, Button, Checkbox, Flex, Separator, Text } from '@radix-ui/themes';
+import type { CheckedState } from '@radix-ui/react-checkbox';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
@@ -670,6 +671,8 @@ export function OAuthAuthorizeView() {
           >
             {scopeGroups.map(([category, items], index) => {
               const tickedInGroup = items.filter((i) => ticked.has(i.name)).length;
+              const groupChecked: CheckedState =
+                tickedInGroup === items.length ? true : tickedInGroup === 0 ? false : 'indeterminate';
               const open = openCategories.has(category);
               const bodyId = `oauth-consent-scopes-${index}`;
               const toggleOpen = () =>
@@ -688,43 +691,52 @@ export function OAuthAuthorizeView() {
                     background: 'var(--gray-2)',
                   }}
                 >
-                  <button
-                    type="button"
-                    aria-expanded={open}
-                    aria-controls={bodyId}
-                    onClick={toggleOpen}
-                    style={{
-                      appearance: 'none',
-                      margin: 0,
-                      padding: 0,
-                      font: 'inherit',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 'var(--space-2)',
-                      width: '100%',
-                      minHeight: 32,
-                      border: 'none',
-                      background: 'transparent',
-                      color: 'var(--gray-12)',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                    }}
-                  >
-                    <span aria-hidden style={{ display: 'inline-flex' }}>
-                      <MaterialIcon
-                        name="chevron_right"
-                        size={18}
-                        color="var(--gray-11)"
-                        style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform 150ms ease' }}
-                      />
-                    </span>
-                    <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0 }}>
-                      {category}
-                    </Text>
-                    <Text size="2" color="gray">
-                      {tickedInGroup}/{items.length}
-                    </Text>
-                  </button>
+                  <Flex align="center" gap="2">
+                    <Checkbox
+                      aria-label={category}
+                      checked={groupChecked}
+                      onCheckedChange={(c) => toggleScopes(items, c === true)}
+                      disabled={submitting}
+                    />
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      aria-controls={bodyId}
+                      onClick={toggleOpen}
+                      style={{
+                        appearance: 'none',
+                        margin: 0,
+                        padding: 0,
+                        font: 'inherit',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 'var(--space-2)',
+                        flex: 1,
+                        minWidth: 0,
+                        minHeight: 32,
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--gray-12)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0 }}>
+                        {category}
+                      </Text>
+                      <Text size="2" color="gray">
+                        {tickedInGroup}/{items.length}
+                      </Text>
+                      <span aria-hidden style={{ display: 'inline-flex' }}>
+                        <MaterialIcon
+                          name="expand_more"
+                          size={20}
+                          color="var(--gray-11)"
+                          style={{ transform: open ? 'rotate(180deg)' : undefined, transition: 'transform 150ms ease' }}
+                        />
+                      </span>
+                    </button>
+                  </Flex>
                   {open ? (
                     <Flex id={bodyId} direction="column" gap="2" mt="3">
                       {items.map((scopeItem) => (
