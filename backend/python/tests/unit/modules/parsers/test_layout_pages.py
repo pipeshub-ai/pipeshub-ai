@@ -1,7 +1,6 @@
 """Page layout parsing runs in a parse worker, so a long PDF cannot hold the loop's GIL."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from types import SimpleNamespace
