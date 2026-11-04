@@ -116,6 +116,32 @@ async def purge_quarantined(db: KernelDB, org: str) -> int:
         return await db.run(go, write=True)
 
 
+async def is_current(tx: Tx, org: str, app_id: str) -> bool:
+    """May a reader trust kg for this connector? Its copy is verified (``shadow`` or ``enforce``), no row of the log is unreadable, and no change is waiting that can alter it: none logged
+    for it or for the org as a whole (edges, principals), and none logged for another connector while either of the two links records across connectors (``cross_app``: a record's
+    parent or group belongs to the other, so a change there reaches this one). A pending connector kg has never seen may link anything, so it is not current either. A node that changed
+    connector is logged under both, so neither is current. The fence of a queued restamp (a connector hidden whole until its restamp is done) is a later change: it needs the restamp
+    queue, which this schema does not have yet, and must be added here with it."""
+    st = await tx.fetchrow("""/* pipeshub:kg.current_mode */ SELECT s.mode, s.cross_app FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
+    if st is None or st["mode"] not in ("shadow", "enforce"):
+        return False
+    if await tx.fetchval(r"/* pipeshub:kg.poison_any */ SELECT EXISTS (SELECT 1 FROM kg.graph_changes WHERE org_id = $1 AND EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258))", org):
+        return False                                  # a row that cannot be read may name anything
+    pending = [r["app_id"] for r in await tx.fetch("/* pipeshub:kg.pending_apps */ SELECT DISTINCT app_id FROM kg.graph_changes WHERE org_id = $1", org)]
+    if any(a in (app_id, "") for a in pending):
+        return False
+    if not pending:
+        return True
+    if st["cross_app"]:
+        return False
+    linked = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.cross_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND s.cross_app AND k.id = ANY($2::text[])""", org, pending)}
+    known = {r["id"] for r in await tx.fetch("""/* pipeshub:kg.known_apps */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, pending)}
+    return not linked and known >= set(pending)
+
+
 async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE) -> int:
     """One pass over an org that never raises: the rows taken, or 0 after a failure. A projection that gave up (``RuntimeError``) wrote nothing and leaves its rows in the log:
     it is counted and logged, and the next pass tries again. Any other error is counted as a failed pass and retried the same way."""
