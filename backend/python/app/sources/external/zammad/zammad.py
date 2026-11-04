@@ -3171,7 +3171,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="get_current_user succeeded" if status_ok else "get_current_user failed"
+                message="get_current_user succeeded" if status_ok else "get_current_user failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -3217,7 +3218,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="list_groups succeeded" if status_ok else "list_groups failed"
+                message="list_groups succeeded" if status_ok else "list_groups failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -3736,13 +3738,16 @@ class ZammadDataSource:
     async def list_roles(
         self,
         page: Optional[int] = None,
-        per_page: Optional[int] = None
+        per_page: Optional[int] = None,
+        expand: Optional[bool] = None,
     ) -> ZammadResponse:
         """List roles
 
         Args:
             page: Optional[int] (optional)
             per_page: Optional[int] (optional)
+            expand: Optional[bool] (optional) - adds association names, such as
+                ``permissions`` (the names behind ``permission_ids``)
 
         Returns:
             ZammadResponse
@@ -3753,6 +3758,8 @@ class ZammadDataSource:
             query_params["page"] = str(page)
         if per_page is not None:
             query_params["per_page"] = str(per_page)
+        if expand is not None:
+            query_params["expand"] = str(expand).lower()
         request_body = None
 
         try:
@@ -3770,7 +3777,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="list_roles succeeded" if status_ok else "list_roles failed"
+                message="list_roles succeeded" if status_ok else "list_roles failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
